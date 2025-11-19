@@ -1,6 +1,6 @@
 #!/bin/bash
 # ==============================================================================
-# AWS Spot Optimizer - Complete EC2 Setup Script (v3.2 - PERMISSION FIX)
+# AWS Spot Optimizer - Complete EC2 Setup Script (v3.3 - API FIX + DEMO DATA)
 # ==============================================================================
 # Compatible with:
 #   - Backend: backend.py (Flask 3.0, MySQL Connector, APScheduler)
@@ -118,6 +118,10 @@ fi
 if [ ! -d "$REPO_DIR/frontend" ]; then
     error "frontend directory not found in repository!"
     exit 1
+fi
+
+if [ -f "$REPO_DIR/demo-data.sql" ]; then
+    log "✓ Demo data file found (will import for testing)"
 fi
 
 log "✓ All required files verified"
@@ -427,6 +431,31 @@ docker exec spot-mysql mysql -u root -p"$DB_ROOT_PASSWORD" --silent -e "
 
 log "Database privileges configured"
 
+# Import demo data if available (optional)
+DEMO_DATA_FILE="$REPO_DIR/demo-data.sql"
+if [ -f "$DEMO_DATA_FILE" ]; then
+    log "Found demo data file - importing for testing..."
+
+    set +e
+    docker exec -i spot-mysql mysql -u root -p"$DB_ROOT_PASSWORD" < "$DEMO_DATA_FILE" 2>&1 | grep -v "Warning" || true
+    set -e
+
+    # Verify demo data was imported
+    DEMO_CLIENT_COUNT=$(docker exec spot-mysql mysql -u root -p"$DB_ROOT_PASSWORD" -N -e "SELECT COUNT(*) FROM spot_optimizer.clients WHERE email LIKE '%demo%';" 2>/dev/null || echo "0")
+
+    if [ "$DEMO_CLIENT_COUNT" -gt 0 ]; then
+        log "✅ Demo data imported successfully ($DEMO_CLIENT_COUNT demo clients)"
+        log "Demo Accounts:"
+        log "  - demo@acme.com (token: demo_token_acme_12345) - Enterprise plan"
+        log "  - demo@startupxyz.com (token: demo_token_startup_67890) - Professional plan"
+        log "  - demo@betatester.com (token: demo_token_beta_11111) - Free plan"
+    else
+        warn "Demo data import may have issues - check manually"
+    fi
+else
+    log "No demo data file found - skipping (production setup)"
+fi
+
 # ==============================================================================
 # STEP 8: SETUP PYTHON BACKEND
 # ==============================================================================
@@ -555,19 +584,45 @@ fi
 
 cd "$FRONTEND_DIR"
 
-# Update API URL in App.jsx to use the public IP
-if [ -f "App.jsx" ]; then
-    log "Updating API URL in App.jsx..."
-    # Replace the BASE_URL with the actual public IP
-    sed -i "s|BASE_URL: '[^']*'|BASE_URL: 'http://$PUBLIC_IP:5000'|g" App.jsx
-    log "✓ Updated API URL to http://$PUBLIC_IP:5000"
-else
-    warn "App.jsx not found at root, checking src/"
-    if [ -f "src/App.jsx" ]; then
-        sed -i "s|BASE_URL: '[^']*'|BASE_URL: 'http://$PUBLIC_IP:5000'|g" src/App.jsx
-        log "✓ Updated API URL in src/App.jsx"
-    fi
+# Update API URL in all possible locations to use the public IP
+log "Updating API URL to http://$PUBLIC_IP:5000..."
+
+# Primary location: src/config/api.jsx (most common in Vite projects)
+if [ -f "src/config/api.jsx" ]; then
+    sed -i "s|BASE_URL: '[^']*'|BASE_URL: 'http://$PUBLIC_IP:5000'|g" src/config/api.jsx
+    log "✓ Updated API URL in src/config/api.jsx"
 fi
+
+# Also check src/config/api.js
+if [ -f "src/config/api.js" ]; then
+    sed -i "s|BASE_URL: '[^']*'|BASE_URL: 'http://$PUBLIC_IP:5000'|g" src/config/api.js
+    log "✓ Updated API URL in src/config/api.js"
+fi
+
+# Fallback: Check App.jsx locations
+if [ -f "App.jsx" ]; then
+    sed -i "s|BASE_URL: '[^']*'|BASE_URL: 'http://$PUBLIC_IP:5000'|g" App.jsx
+    log "✓ Updated API URL in App.jsx"
+fi
+
+if [ -f "src/App.jsx" ]; then
+    sed -i "s|BASE_URL: '[^']*'|BASE_URL: 'http://$PUBLIC_IP:5000'|g" src/App.jsx
+    log "✓ Updated API URL in src/App.jsx"
+fi
+
+# Universal fix: Find and replace in all JSX/JS files containing BASE_URL or API endpoint
+log "Scanning all source files for API URL references..."
+find . -type f \( -name "*.jsx" -o -name "*.js" -o -name "*.ts" -o -name "*.tsx" \) -not -path "*/node_modules/*" -not -path "*/dist/*" -not -path "*/build/*" | while read file; do
+    if grep -q "BASE_URL\|http://[0-9.]*:5000" "$file" 2>/dev/null; then
+        # Replace any hardcoded localhost or IP addresses
+        sed -i "s|http://localhost:5000|http://$PUBLIC_IP:5000|g" "$file"
+        sed -i "s|http://127.0.0.1:5000|http://$PUBLIC_IP:5000|g" "$file"
+        sed -i "s|http://[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}:5000|http://$PUBLIC_IP:5000|g" "$file"
+        log "✓ Updated $(basename $file)"
+    fi
+done
+
+log "API URL configuration complete"
 
 # Install npm dependencies
 log "Installing npm dependencies (this may take a few minutes)..."
