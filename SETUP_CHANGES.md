@@ -1,4 +1,37 @@
-# Setup Script Changes - v3.2
+# Setup Script Changes - v3.3
+
+## What's New in v3.3 (API FIX + DEMO DATA)
+
+This version fixes critical frontend API configuration issues and adds comprehensive demo data for testing:
+
+### 🔧 Fixed: API URL Configuration
+- **Problem**: Setup script was updating `App.jsx` but the actual API configuration is in `src/config/api.jsx`
+- **Root Cause**: Frontend stores BASE_URL in a separate config file, not in App.jsx
+- **Solution**:
+  - Updated to check `src/config/api.jsx` and `src/config/api.js` first (primary locations)
+  - Added universal find/replace across all JSX/JS/TS/TSX files
+  - Replaces localhost, 127.0.0.1, and any hardcoded IPs with actual public IP
+  - Scans entire source tree (excluding node_modules, dist, build)
+- **Impact**: Frontend now correctly connects to backend API after deployment
+
+### ✨ New: Demo Data for Testing
+- **What**: Comprehensive demo data SQL file with realistic test data
+- **Includes**:
+  - 3 demo client accounts (Free, Professional, Enterprise plans)
+  - 8 agents in various statuses (online, offline, spot, on-demand)
+  - 12 spot pools across multiple regions and instance types
+  - Historical pricing data (spot and on-demand)
+  - 72 hours of cost tracking records
+  - Switch history with various scenarios
+  - System events, notifications, and audit logs
+- **Demo Accounts**:
+  - `demo@acme.com` (Enterprise) - Token: `demo_token_acme_12345` - $15,847 savings
+  - `demo@startupxyz.com` (Professional) - Token: `demo_token_startup_67890` - $3,421 savings
+  - `demo@betatester.com` (Free) - Token: `demo_token_beta_11111` - $892 savings
+- **Auto-Import**: Setup script automatically imports demo data if `demo-data.sql` exists
+- **Impact**: Can immediately test all features without waiting for real data
+
+---
 
 ## What's New in v3.2 (PERMISSION FIX)
 
@@ -274,20 +307,22 @@ sudo cp -r dist/* /var/www/spot-optimizer/
 
 ## Comparison: Old vs New Setup Script
 
-| Feature | Old Setup (v2.1) | Setup v3.0 | Setup v3.2 (Current) |
-|---------|------------------|------------|----------------------|
-| Frontend Framework | Create React App | Vite + React | Vite + React |
-| Build Directory | build/ | dist/ | dist/ |
-| Repository Cloning | Clone external repo | Use existing files | Auto-clone from GitHub |
-| CORS Support | Partial (backend only) | Full (backend + nginx) | Full (backend + nginx) |
-| Permission Handling | After file copy | Before file operations | Before + Docker group fix |
-| MySQL Data Directory | ubuntu:ubuntu owned | ubuntu:ubuntu owned | Docker auto-creates (mysql:mysql) |
-| Docker Group Activation | Manual logout/login | Manual logout/login | Automatic in-script |
-| Nginx Buffers | Default (small) | Enhanced (128k-256k) | Enhanced (128k-256k) |
-| API URL Config | Hardcoded | Dynamic (auto-detect IP) | Dynamic (auto-detect IP) |
-| Error Handling | Basic | Comprehensive | Comprehensive + Permission fixes |
-| Security | Basic | Enhanced (systemd sandboxing) | Enhanced (systemd sandboxing) |
-| MySQL Wait | Simple ping | Auth readiness check | Auth readiness check |
+| Feature | Old Setup (v2.1) | Setup v3.0 | Setup v3.2 | Setup v3.3 (Current) |
+|---------|------------------|------------|------------|----------------------|
+| Frontend Framework | Create React App | Vite + React | Vite + React | Vite + React |
+| Build Directory | build/ | dist/ | dist/ | dist/ |
+| Repository Cloning | Clone external repo | Use existing files | Auto-clone from GitHub | Auto-clone from GitHub |
+| CORS Support | Partial (backend only) | Full (backend + nginx) | Full (backend + nginx) | Full (backend + nginx) |
+| Permission Handling | After file copy | Before file operations | Before + Docker group fix | Before + Docker group fix |
+| MySQL Data Directory | ubuntu:ubuntu owned | ubuntu:ubuntu owned | Docker auto-creates (mysql:mysql) | Docker auto-creates (mysql:mysql) |
+| Docker Group Activation | Manual logout/login | Manual logout/login | Automatic in-script | Automatic in-script |
+| Nginx Buffers | Default (small) | Enhanced (128k-256k) | Enhanced (128k-256k) | Enhanced (128k-256k) |
+| API URL Config | Hardcoded | Dynamic (auto-detect IP) | Dynamic (auto-detect IP) | **Universal scan & replace** |
+| API URL Location | App.jsx assumed | App.jsx assumed | App.jsx assumed | **src/config/api.jsx + universal** |
+| Demo Data | None | None | None | **Comprehensive test data** |
+| Error Handling | Basic | Comprehensive | Comprehensive + Permission fixes | Comprehensive + Permission fixes |
+| Security | Basic | Enhanced (systemd sandboxing) | Enhanced (systemd sandboxing) | Enhanced (systemd sandboxing) |
+| MySQL Wait | Simple ping | Auth readiness check | Auth readiness check | Auth readiness check |
 
 ## Additional Notes
 
@@ -350,4 +385,11 @@ docker exec spot-mysql mysql -u spotuser -pSpotUser2024! -e "SHOW TABLES;" spot_
 ✅ **Auto-Cleanup**: Removes conflicting mysql-data directory before container creation
 ✅ **Production Tested**: All permission issues resolved and verified in production environment
 
-The setup script is now fully production-ready and addresses all discovered issues!
+### v3.3 Latest Updates
+✅ **Frontend API Configuration**: Fixed API URL update to target correct file (src/config/api.jsx)
+✅ **Universal API URL Scanner**: Scans and updates ALL source files with BASE_URL references
+✅ **Demo Data**: Added comprehensive test data with 3 clients, 8 agents, pricing history, and events
+✅ **Instant Testing**: Can test all features immediately without waiting for real data
+✅ **Production Ready**: Both frontend-backend connectivity and testing data fully working
+
+The setup script is now fully production-ready, addresses all discovered issues, and includes comprehensive demo data for testing!
