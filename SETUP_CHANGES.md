@@ -1,4 +1,26 @@
-# Setup Script Changes - v3.0
+# Setup Script Changes - v3.2
+
+## What's New in v3.2 (PERMISSION FIX)
+
+This version specifically addresses critical permission issues discovered during production deployment:
+
+### 🔧 Fixed: Docker Permission Denied Error
+- **Problem**: After adding user to docker group, commands failed with "permission denied while trying to connect to the docker API"
+- **Root Cause**: Group membership changes don't take effect until user logs out/in or uses `newgrp`
+- **Solution**: Added group activation check after `usermod -aG docker ubuntu`
+- **Impact**: Script can now continue without requiring logout/login
+
+### 🔧 Fixed: MySQL InnoDB Permission Errors
+- **Problem**: MySQL container couldn't write to `/var/lib/mysql` causing errors:
+  - `[ERROR] [MY-012592] [InnoDB] Operating system error number 13`
+  - `[ERROR] [MY-012595] [InnoDB] The error means mysqld does not have the access rights to the directory`
+  - `[ERROR] [MY-012894] [InnoDB] Unable to open './#innodb_redo/#ib_redo9'`
+- **Root Cause**: `mysql-data` directory was pre-created with ubuntu:ubuntu ownership (UID 1000), but MySQL container runs as mysql user (UID 999)
+- **Solution**:
+  - Removed pre-creation of `/home/ubuntu/mysql-data` directory
+  - Added cleanup step before Docker run to remove old mysql-data
+  - Let Docker create the directory automatically with proper ownership
+- **Impact**: MySQL container now starts successfully without permission errors
 
 ## Overview
 This document explains the changes made to the setup script to address permission handling, CORS errors, and proper integration with the frontend, backend, and database.
@@ -252,18 +274,20 @@ sudo cp -r dist/* /var/www/spot-optimizer/
 
 ## Comparison: Old vs New Setup Script
 
-| Feature | Old Setup (v2.1) | New Setup (v3.0) |
-|---------|------------------|------------------|
-| Frontend Framework | Create React App | Vite + React |
-| Build Directory | build/ | dist/ |
-| Repository Cloning | Clone external repo | Use existing files |
-| CORS Support | Partial (backend only) | Full (backend + nginx) |
-| Permission Handling | After file copy | Before file operations |
-| Nginx Buffers | Default (small) | Enhanced (128k-256k) |
-| API URL Config | Hardcoded | Dynamic (auto-detect IP) |
-| Error Handling | Basic | Comprehensive |
-| Security | Basic | Enhanced (systemd sandboxing) |
-| MySQL Wait | Simple ping | Auth readiness check |
+| Feature | Old Setup (v2.1) | Setup v3.0 | Setup v3.2 (Current) |
+|---------|------------------|------------|----------------------|
+| Frontend Framework | Create React App | Vite + React | Vite + React |
+| Build Directory | build/ | dist/ | dist/ |
+| Repository Cloning | Clone external repo | Use existing files | Auto-clone from GitHub |
+| CORS Support | Partial (backend only) | Full (backend + nginx) | Full (backend + nginx) |
+| Permission Handling | After file copy | Before file operations | Before + Docker group fix |
+| MySQL Data Directory | ubuntu:ubuntu owned | ubuntu:ubuntu owned | Docker auto-creates (mysql:mysql) |
+| Docker Group Activation | Manual logout/login | Manual logout/login | Automatic in-script |
+| Nginx Buffers | Default (small) | Enhanced (128k-256k) | Enhanced (128k-256k) |
+| API URL Config | Hardcoded | Dynamic (auto-detect IP) | Dynamic (auto-detect IP) |
+| Error Handling | Basic | Comprehensive | Comprehensive + Permission fixes |
+| Security | Basic | Enhanced (systemd sandboxing) | Enhanced (systemd sandboxing) |
+| MySQL Wait | Simple ping | Auth readiness check | Auth readiness check |
 
 ## Additional Notes
 
@@ -309,6 +333,7 @@ docker exec spot-mysql mysql -u spotuser -pSpotUser2024! -e "SHOW TABLES;" spot_
 
 ## Summary of Fixes
 
+### v3.0 Improvements
 ✅ **Permission Handling**: All directories created with correct ownership from start
 ✅ **CORS Configuration**: Complete CORS support in Nginx with OPTIONS handling
 ✅ **Nginx Buffers**: Increased to handle large API responses
@@ -319,4 +344,10 @@ docker exec spot-mysql mysql -u spotuser -pSpotUser2024! -e "SHOW TABLES;" spot_
 ✅ **Security**: Enhanced systemd service with security options
 ✅ **Documentation**: Comprehensive setup summary and helper scripts
 
-The new setup script is production-ready and addresses all the issues in the original script!
+### v3.2 Critical Fixes
+✅ **Docker Group Permissions**: Fixed "permission denied" error when running docker commands
+✅ **MySQL Data Directory**: Fixed InnoDB permission errors by letting Docker manage directory ownership
+✅ **Auto-Cleanup**: Removes conflicting mysql-data directory before container creation
+✅ **Production Tested**: All permission issues resolved and verified in production environment
+
+The setup script is now fully production-ready and addresses all discovered issues!
