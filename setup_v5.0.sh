@@ -1,11 +1,11 @@
 #!/bin/bash
 # ==============================================================================
-# AWS Spot Optimizer - Complete EC2 Setup Script (v4.0 - Simplified)
+# AWS Spot Optimizer - Complete EC2 Setup Script v5.0
 # ==============================================================================
 # Compatible with:
 #   - Backend: https://github.com/atharva0608/final-ml.git
 #   - Frontend: https://github.com/atharva0608/frontend-.git
-#   - Database: schema.sql v5.1 (MySQL 8.0)
+#   - Database: schema_cleaned.sql v6.0 (MySQL 8.0) - Optimized schema
 # ==============================================================================
 
 set -e  # Exit on any error
@@ -120,9 +120,16 @@ if [ ! -f "$REPO_DIR/backend.py" ]; then
     exit 1
 fi
 
-if [ ! -f "$REPO_DIR/schema.sql" ]; then
-    error "schema.sql not found in repository!"
+# Check for schema files (prefer cleaned, fallback to original)
+if [ ! -f "$REPO_DIR/schema_cleaned.sql" ] && [ ! -f "$REPO_DIR/schema.sql" ]; then
+    error "No schema file (schema_cleaned.sql or schema.sql) found in repository!"
     exit 1
+fi
+
+if [ -f "$REPO_DIR/schema_cleaned.sql" ]; then
+    log "✓ Found cleaned schema v6.0 (optimized)"
+elif [ -f "$REPO_DIR/schema.sql" ]; then
+    log "✓ Found original schema v5.1"
 fi
 
 if [ ! -d "$FRONTEND_DIR/src" ]; then
@@ -408,28 +415,32 @@ log "MySQL is fully ready!"
 
 log "Step 7: Importing database schema..."
 
-# Schema file should be in the repository root
-SCHEMA_FILE="$REPO_DIR/schema.sql"
-
-if [ -f "$SCHEMA_FILE" ]; then
-    log "Found schema file: $SCHEMA_FILE"
-
-    # Import schema
-    set +e
-    docker exec -i spot-mysql mysql -u root -p"$DB_ROOT_PASSWORD" "$DB_NAME" < "$SCHEMA_FILE" 2>&1 | grep -v "Warning" || true
-    set -e
-
-    # Verify tables were created
-    TABLE_COUNT=$(docker exec spot-mysql mysql -u root -p"$DB_ROOT_PASSWORD" -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='$DB_NAME';" 2>/dev/null || echo "0")
-
-    if [ "$TABLE_COUNT" -gt 0 ]; then
-        log "Database schema imported successfully ($TABLE_COUNT tables created)"
-    else
-        warn "Schema import may have issues - check manually"
-    fi
+# Try cleaned schema first (v6.0), fallback to original schema (v5.1)
+SCHEMA_FILE=""
+if [ -f "$REPO_DIR/schema_cleaned.sql" ]; then
+    SCHEMA_FILE="$REPO_DIR/schema_cleaned.sql"
+    log "Found cleaned schema v6.0: $SCHEMA_FILE"
+elif [ -f "$REPO_DIR/schema.sql" ]; then
+    SCHEMA_FILE="$REPO_DIR/schema.sql"
+    log "Found original schema v5.1: $SCHEMA_FILE"
 else
-    error "Schema file not found at $SCHEMA_FILE"
+    error "No schema file found in repository!"
     exit 1
+fi
+
+# Import schema
+set +e
+docker exec -i spot-mysql mysql -u root -p"$DB_ROOT_PASSWORD" "$DB_NAME" < "$SCHEMA_FILE" 2>&1 | grep -v "Warning" || true
+set -e
+
+# Verify tables were created
+TABLE_COUNT=$(docker exec spot-mysql mysql -u root -p"$DB_ROOT_PASSWORD" -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='$DB_NAME';" 2>/dev/null || echo "0")
+
+if [ "$TABLE_COUNT" -gt 0 ]; then
+    log "Database schema imported successfully ($TABLE_COUNT tables created)"
+    log "Schema version: $(basename $SCHEMA_FILE)"
+else
+    warn "Schema import may have issues - check manually"
 fi
 
 # Grant privileges
@@ -1019,7 +1030,7 @@ log "Step 16: Creating setup summary..."
 
 cat > /home/ubuntu/SETUP_COMPLETE.txt << EOF
 ================================================================================
-AWS SPOT OPTIMIZER - SETUP COMPLETE (v3.1)
+AWS SPOT OPTIMIZER - SETUP COMPLETE (v5.0)
 ================================================================================
 
 Date: $(date)
@@ -1029,10 +1040,19 @@ Availability Zone: $AZ
 Public IP: $PUBLIC_IP
 
 ================================================================================
-REPOSITORY
+REPOSITORIES
 ================================================================================
-Location: $CLONE_DIR
-GitHub: $GITHUB_REPO
+Backend: $CLONE_DIR
+  GitHub: $GITHUB_REPO
+Frontend: $FRONTEND_DIR
+  GitHub: https://github.com/atharva0608/frontend-.git
+
+================================================================================
+DATABASE SCHEMA
+================================================================================
+Version: $(basename ${SCHEMA_FILE:-"Unknown"})
+Tables Created: $TABLE_COUNT
+Note: Using optimized schema v6.0 with reduced complexity
 
 ================================================================================
 ACCESS URLS
