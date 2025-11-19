@@ -605,84 +605,74 @@ fi
 
 cd "$FRONTEND_DIR"
 
-# Update API URL in all possible locations to use the public IP
-log "Updating API URL to http://$PUBLIC_IP:5000..."
+# ==============================================================================
+# IMPROVED API URL CONFIGURATION - AUTO-DETECTION
+# ==============================================================================
+# Instead of using sed to replace URLs, we deploy an auto-detection config
+# that automatically determines the correct backend URL at runtime.
+# ==============================================================================
 
-# Primary location: src/config/api.jsx (CRITICAL - This is the main config file)
-if [ -f "src/config/api.jsx" ]; then
-    # Multiple replacement patterns to ensure it works
-    # Pattern 1: Match with trailing comma
-    sed -i "s|BASE_URL: '[^']*',|BASE_URL: 'http://$PUBLIC_IP:5000',|g" src/config/api.jsx
-    # Pattern 2: Match without trailing comma
-    sed -i "s|BASE_URL: '[^']*'|BASE_URL: 'http://$PUBLIC_IP:5000'|g" src/config/api.jsx
-    # Pattern 3: Match any IP address pattern specifically
-    sed -i "s|BASE_URL: 'http://[0-9.]*:[0-9]*'|BASE_URL: 'http://$PUBLIC_IP:5000'|g" src/config/api.jsx
+log "Configuring API auto-detection for http://$PUBLIC_IP:5000..."
 
-    # Verify the change was made
-    if grep -q "BASE_URL: 'http://$PUBLIC_IP:5000'" src/config/api.jsx; then
-        log "✓ Successfully updated API URL in src/config/api.jsx"
-    else
-        warn "Failed to update src/config/api.jsx - manual check needed"
-        log "File contents:"
-        cat src/config/api.jsx
-    fi
-fi
+# Create the auto-detection config file
+mkdir -p src/config
+cat > src/config/api.jsx << 'APICONFIG_EOF'
+// ==============================================================================
+// API CONFIGURATION - AUTO-DETECTION
+// ==============================================================================
+// This configuration automatically detects the correct backend URL:
+// - In production (EC2): Uses the EC2 instance's public IP
+// - In development: Uses localhost:5000
+// - Can be overridden with VITE_API_URL environment variable during build
+// ==============================================================================
 
-# Also check src/config/api.js
-if [ -f "src/config/api.js" ]; then
-    sed -i "s|BASE_URL: '[^']*',|BASE_URL: 'http://$PUBLIC_IP:5000',|g" src/config/api.js
-    sed -i "s|BASE_URL: '[^']*'|BASE_URL: 'http://$PUBLIC_IP:5000'|g" src/config/api.js
-    log "✓ Updated API URL in src/config/api.js"
-fi
+// Method 1: Environment variable set during build (highest priority)
+const ENV_API_URL = import.meta.env.VITE_API_URL;
 
-# Fallback: Check App.jsx locations
-if [ -f "App.jsx" ]; then
-    sed -i "s|BASE_URL: '[^']*'|BASE_URL: 'http://$PUBLIC_IP:5000'|g" App.jsx
-    log "✓ Updated API URL in App.jsx"
-fi
+// Method 2: Auto-detect from current browser location
+const getAutoDetectedURL = () => {
+  // If we're in the browser
+  if (typeof window !== 'undefined') {
+    const { protocol, hostname } = window.location;
 
-if [ -f "src/App.jsx" ]; then
-    sed -i "s|BASE_URL: '[^']*'|BASE_URL: 'http://$PUBLIC_IP:5000'|g" src/App.jsx
-    log "✓ Updated API URL in src/App.jsx"
-fi
+    // If running on localhost (development), connect to localhost:5000
+    if (hostname === 'localhost' || hostname === '127.0.0.1') {
+      return 'http://localhost:5000';
+    }
 
-# Universal fix: Find and replace in all JSX/JS files containing BASE_URL or API endpoint
-log "Scanning all source files for hardcoded API URLs..."
-find . -type f \( -name "*.jsx" -o -name "*.js" -o -name "*.ts" -o -name "*.tsx" \) \
-    -not -path "*/node_modules/*" \
-    -not -path "*/dist/*" \
-    -not -path "*/build/*" \
-    -not -path "*/.git/*" 2>/dev/null | while read file; do
-    if grep -q "BASE_URL\|http://[0-9.]*:5000" "$file" 2>/dev/null; then
-        # Replace any hardcoded localhost or IP addresses
-        sed -i "s|http://localhost:5000|http://$PUBLIC_IP:5000|g" "$file" 2>/dev/null || true
-        sed -i "s|http://127.0.0.1:5000|http://$PUBLIC_IP:5000|g" "$file" 2>/dev/null || true
-        # Replace any IP:5000 pattern
-        sed -i "s|http://[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}:5000|http://$PUBLIC_IP:5000|g" "$file" 2>/dev/null || true
-    fi
-done
+    // Otherwise, use the current hostname with port 5000 (production on EC2)
+    return `${protocol}//${hostname}:5000`;
+  }
 
-log "✓ API URL configuration complete"
+  // Fallback for SSR or non-browser environments
+  return 'http://localhost:5000';
+};
 
-# Final verification
-if [ -f "src/config/api.jsx" ]; then
-    CONFIGURED_URL=$(grep "BASE_URL" src/config/api.jsx | grep -o "http://[^']*" || echo "NOT_FOUND")
-    log "Final API URL: $CONFIGURED_URL"
-    if [ "$CONFIGURED_URL" != "http://$PUBLIC_IP:5000" ]; then
-        error "API URL was not properly configured!"
-        error "Expected: http://$PUBLIC_IP:5000"
-        error "Got: $CONFIGURED_URL"
-        error "Please check src/config/api.jsx manually"
-    fi
-fi
+// Final configuration with priority:
+// 1. Environment variable (VITE_API_URL) - set during build
+// 2. Auto-detected from window.location
+export const API_CONFIG = {
+  BASE_URL: ENV_API_URL || getAutoDetectedURL(),
+};
+
+// Log the configuration in development
+if (import.meta.env.DEV) {
+  console.log('[API Config] Using BASE_URL:', API_CONFIG.BASE_URL);
+  console.log('[API Config] Source:', ENV_API_URL ? 'Environment Variable' : 'Auto-detected');
+}
+APICONFIG_EOF
+
+log "✓ API auto-detection config created"
+log "  → Auto-detection: Frontend will use window.location to find backend"
+log "  → Environment override: VITE_API_URL=http://$PUBLIC_IP:5000"
 
 # Install npm dependencies
 log "Installing npm dependencies (this may take a few minutes)..."
 npm install --legacy-peer-deps
 
-# Build the frontend
-log "Building frontend for production..."
-npm run build
+# Build the frontend with environment variable
+log "Building frontend for production with API URL: http://$PUBLIC_IP:5000..."
+VITE_API_URL="http://$PUBLIC_IP:5000" npm run build
 
 # Copy build to Nginx root
 sudo rm -rf "$NGINX_ROOT"/*
