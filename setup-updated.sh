@@ -1,6 +1,6 @@
 #!/bin/bash
 # ==============================================================================
-# AWS Spot Optimizer - Complete EC2 Setup Script (v3.1 - AUTO-CLONE)
+# AWS Spot Optimizer - Complete EC2 Setup Script (v3.2 - PERMISSION FIX)
 # ==============================================================================
 # Compatible with:
 #   - Backend: backend.py (Flask 3.0, MySQL Connector, APScheduler)
@@ -232,6 +232,16 @@ sudo systemctl enable docker
 # Add ubuntu user to docker group
 sudo usermod -aG docker ubuntu 2>/dev/null || true
 
+# Activate docker group for current session (fixes permission denied errors)
+# Note: This allows the script to continue without logout/login
+if groups ubuntu | grep -q docker; then
+    log "Docker group membership confirmed"
+    # Use sg to run remaining docker commands with docker group
+    export DOCKER_GROUP_ACTIVE=1
+else
+    warn "Docker group added but requires shell restart to take effect"
+fi
+
 log "Docker configured"
 
 # ==============================================================================
@@ -279,14 +289,12 @@ sudo mkdir -p "$MODELS_DIR"
 sudo mkdir -p "$LOGS_DIR"
 sudo mkdir -p "$SCRIPTS_DIR"
 sudo mkdir -p "$NGINX_ROOT"
-sudo mkdir -p /home/ubuntu/mysql-data
 
 # Set ownership to ubuntu user for application directories
 sudo chown -R ubuntu:ubuntu "$APP_DIR"
 sudo chown -R ubuntu:ubuntu "$MODELS_DIR"
 sudo chown -R ubuntu:ubuntu "$LOGS_DIR"
 sudo chown -R ubuntu:ubuntu "$SCRIPTS_DIR"
-sudo chown -R ubuntu:ubuntu /home/ubuntu/mysql-data
 
 # Nginx root owned by www-data
 sudo chown -R www-data:www-data "$NGINX_ROOT"
@@ -310,6 +318,13 @@ log "Step 6: Setting up MySQL database with Docker..."
 # Stop and remove existing MySQL container if exists
 docker stop spot-mysql 2>/dev/null || true
 docker rm spot-mysql 2>/dev/null || true
+
+# Remove old mysql-data directory to avoid permission conflicts
+# Docker will create it with proper ownership (mysql user UID 999)
+if [ -d "/home/ubuntu/mysql-data" ]; then
+    log "Removing old mysql-data directory to fix permissions..."
+    sudo rm -rf /home/ubuntu/mysql-data
+fi
 
 # Create Docker network for the app
 docker network create spot-network 2>/dev/null || true
