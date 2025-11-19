@@ -1449,7 +1449,7 @@ def get_all_instances_global():
                 a.status as agent_status
             FROM instances i
             LEFT JOIN clients c ON i.client_id = c.id
-            LEFT JOIN agents a ON i.instance_id = a.instance_id
+            LEFT JOIN agents a ON i.id = a.instance_id
             WHERE 1=1
         """
         params = []
@@ -1474,21 +1474,33 @@ def get_all_instances_global():
 
         result = [{
             'id': inst['id'],
-            'instanceId': inst['instance_id'],
+            'instanceId': inst['id'],  # id IS the instance_id
             'clientId': inst['client_id'],
             'clientName': inst['client_name'],
+            'agentId': inst['agent_id'],
             'region': inst['region'],
             'az': inst['az'],
             'instanceType': inst['instance_type'],
             'currentMode': inst['current_mode'],
             'currentPoolId': inst['current_pool_id'],
+            'spotPrice': float(inst['spot_price']) if inst['spot_price'] else None,
+            'ondemandPrice': float(inst['ondemand_price']) if inst['ondemand_price'] else None,
             'isActive': bool(inst['is_active']),
+            'installedAt': inst['installed_at'].isoformat() if inst['installed_at'] else None,
             'createdAt': inst['created_at'].isoformat() if inst['created_at'] else None,
             'logicalAgentId': inst['logical_agent_id'],
             'agentStatus': inst['agent_status']
         } for inst in (instances or [])]
 
-        return jsonify(result)
+        return jsonify({
+            'instances': result,
+            'total': len(result),
+            'filters': {
+                'status': status,
+                'mode': mode,
+                'region': region
+            }
+        })
 
     except Exception as e:
         logger.error(f"Get all instances error: {e}")
@@ -1512,7 +1524,7 @@ def get_all_agents_global():
                 i.current_mode
             FROM agents a
             LEFT JOIN clients c ON a.client_id = c.id
-            LEFT JOIN instances i ON a.instance_id = i.instance_id
+            LEFT JOIN instances i ON a.instance_id = i.id
             WHERE 1=1
         """
         params = []
@@ -1521,13 +1533,14 @@ def get_all_agents_global():
             query += " AND a.status = %s"
             params.append(status)
 
-        query += " ORDER BY a.last_heartbeat DESC LIMIT 500"
+        query += " ORDER BY a.last_heartbeat_at DESC LIMIT 500"
 
         agents = execute_query(query, tuple(params), fetch=True)
 
         result = [{
             'id': agent['id'],
             'logicalAgentId': agent['logical_agent_id'],
+            'hostname': agent['hostname'],
             'clientId': agent['client_id'],
             'clientName': agent['client_name'],
             'instanceId': agent['instance_id'],
@@ -1535,14 +1548,22 @@ def get_all_agents_global():
             'region': agent['region'],
             'az': agent['az'],
             'currentMode': agent['current_mode'],
+            'currentPoolId': agent['current_pool_id'],
             'status': agent['status'],
             'enabled': bool(agent['enabled']),
-            'version': agent['version'],
-            'lastHeartbeat': agent['last_heartbeat'].isoformat() if agent['last_heartbeat'] else None,
+            'autoSwitchEnabled': bool(agent['auto_switch_enabled']),
+            'version': agent['agent_version'],
+            'lastHeartbeatAt': agent['last_heartbeat_at'].isoformat() if agent['last_heartbeat_at'] else None,
             'createdAt': agent['created_at'].isoformat() if agent['created_at'] else None
         } for agent in (agents or [])]
 
-        return jsonify(result)
+        return jsonify({
+            'agents': result,
+            'total': len(result),
+            'filters': {
+                'status': status
+            }
+        })
 
     except Exception as e:
         logger.error(f"Get all agents error: {e}")
