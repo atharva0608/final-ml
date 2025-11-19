@@ -1,6 +1,6 @@
 #!/bin/bash
 # ==============================================================================
-# AWS Spot Optimizer - Complete EC2 Setup Script (v3.0 - PRODUCTION READY)
+# AWS Spot Optimizer - Complete EC2 Setup Script (v3.1 - AUTO-CLONE)
 # ==============================================================================
 # Compatible with:
 #   - Backend: backend.py (Flask 3.0, MySQL Connector, APScheduler)
@@ -38,18 +38,11 @@ info() {
 # CONFIGURATION
 # ==============================================================================
 
-# NOTE: This script assumes it's being run from the repository root
-# Repository structure:
-#   /home/ubuntu/final-ml/
-#   ├── backend.py
-#   ├── schema.sql
-#   ├── frontend/
-#   │   ├── App.jsx
-#   │   ├── package.json
-#   │   └── src/
-#   └── setup-updated.sh (this file)
+# GitHub repository
+GITHUB_REPO="https://github.com/atharva0608/final-ml.git"
+CLONE_DIR="/home/ubuntu/final-ml"
 
-REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Application directories
 APP_DIR="/home/ubuntu/spot-optimizer"
 BACKEND_DIR="$APP_DIR/backend"
 FRONTEND_DIR="$APP_DIR/frontend"
@@ -72,8 +65,62 @@ BACKEND_HOST="0.0.0.0"
 NGINX_ROOT="/var/www/spot-optimizer"
 
 log "Starting AWS Spot Optimizer Setup..."
-log "Repository directory: $REPO_DIR"
 log "============================================"
+
+# ==============================================================================
+# STEP 0: CLONE OR UPDATE REPOSITORY
+# ==============================================================================
+
+log "Step 0: Ensuring repository is available..."
+
+if [ -d "$CLONE_DIR/.git" ]; then
+    log "Repository already exists at $CLONE_DIR"
+    cd "$CLONE_DIR"
+
+    # Update repository
+    log "Pulling latest changes..."
+    git pull origin main 2>/dev/null || git pull origin master 2>/dev/null || warn "Could not pull latest changes (might be on a branch)"
+
+    # Update submodules
+    log "Updating git submodules..."
+    git submodule update --init --recursive 2>/dev/null || warn "No submodules or submodule update failed"
+else
+    log "Cloning repository from $GITHUB_REPO..."
+    cd /home/ubuntu
+
+    # Remove any existing directory if not a git repo
+    if [ -d "$CLONE_DIR" ]; then
+        warn "Directory exists but is not a git repository, removing..."
+        sudo rm -rf "$CLONE_DIR"
+    fi
+
+    # Clone with submodules
+    git clone --recurse-submodules "$GITHUB_REPO" "$CLONE_DIR"
+    cd "$CLONE_DIR"
+fi
+
+# Set REPO_DIR to the cloned directory
+REPO_DIR="$CLONE_DIR"
+
+log "Repository available at: $REPO_DIR"
+
+# Verify critical files exist
+if [ ! -f "$REPO_DIR/backend.py" ]; then
+    error "backend.py not found in repository!"
+    exit 1
+fi
+
+if [ ! -f "$REPO_DIR/schema.sql" ]; then
+    error "schema.sql not found in repository!"
+    exit 1
+fi
+
+if [ ! -d "$REPO_DIR/frontend" ]; then
+    error "frontend directory not found in repository!"
+    exit 1
+fi
+
+log "✓ All required files verified"
 
 # ==============================================================================
 # STEP 1: GET INSTANCE METADATA USING IMDSv2
@@ -153,32 +200,39 @@ log "Base packages installed"
 
 log "Step 3: Installing Docker..."
 
-# Remove old Docker versions if any
-sudo apt-get remove -y docker docker-engine docker.io containerd runc 2>/dev/null || true
+# Check if Docker is already installed
+if command -v docker &> /dev/null; then
+    log "Docker is already installed: $(docker --version)"
+else
+    # Remove old Docker versions if any
+    sudo apt-get remove -y docker docker-engine docker.io containerd runc 2>/dev/null || true
 
-# Add Docker's official GPG key
-sudo install -m 0755 -d /etc/apt/keyrings
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg 2>/dev/null
-sudo chmod a+r /etc/apt/keyrings/docker.gpg
+    # Add Docker's official GPG key
+    sudo install -m 0755 -d /etc/apt/keyrings
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg 2>/dev/null
+    sudo chmod a+r /etc/apt/keyrings/docker.gpg
 
-# Set up Docker repository
-echo \
-  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
-  $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
-  sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+    # Set up Docker repository
+    echo \
+      "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
+      $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
+      sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
 
-# Install Docker
-sudo apt-get update -y
-sudo DEBIAN_FRONTEND=noninteractive apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+    # Install Docker
+    sudo apt-get update -y
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+    log "Docker installed"
+fi
 
 # Start and enable Docker
-sudo systemctl start docker
+sudo systemctl start docker 2>/dev/null || true
 sudo systemctl enable docker
 
 # Add ubuntu user to docker group
-sudo usermod -aG docker ubuntu
+sudo usermod -aG docker ubuntu 2>/dev/null || true
 
-log "Docker installed and configured"
+log "Docker configured"
 
 # ==============================================================================
 # STEP 4: INSTALL NODE.JS (LTS v20)
@@ -186,9 +240,24 @@ log "Docker installed and configured"
 
 log "Step 4: Installing Node.js LTS..."
 
-# Install Node.js 20.x LTS
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-sudo DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs
+# Check if Node.js is already installed
+if command -v node &> /dev/null; then
+    NODE_VERSION=$(node --version)
+    log "Node.js is already installed: $NODE_VERSION"
+
+    # Check if it's v20.x
+    if [[ $NODE_VERSION == v20.* ]]; then
+        log "Node.js v20.x detected, skipping installation"
+    else
+        warn "Different Node.js version detected, installing v20.x..."
+        curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs
+    fi
+else
+    # Install Node.js 20.x LTS
+    curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs
+fi
 
 # Verify installation
 NODE_VERSION=$(node --version)
@@ -457,7 +526,12 @@ log "Step 9: Setting up Vite React frontend..."
 # Copy entire frontend directory from repository
 log "Copying frontend from repository..."
 if [ -d "$REPO_DIR/frontend" ]; then
-    cp -r "$REPO_DIR/frontend"/* "$FRONTEND_DIR/"
+    # Copy all frontend files
+    cp -r "$REPO_DIR/frontend"/* "$FRONTEND_DIR/" 2>/dev/null || true
+
+    # Also copy hidden files like .gitignore
+    cp -r "$REPO_DIR/frontend"/.[!.]* "$FRONTEND_DIR/" 2>/dev/null || true
+
     log "✓ Copied frontend files"
 else
     error "frontend directory not found in repository!"
@@ -523,7 +597,7 @@ server {
 
     # Serve React frontend
     location / {
-        try_files \\\$uri \\\$uri/ /index.html;
+        try_files \$uri \$uri/ /index.html;
 
         # Cache static assets
         location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)$ {
@@ -541,7 +615,7 @@ server {
         add_header 'Access-Control-Expose-Headers' 'Content-Length,Content-Range' always;
 
         # Handle preflight requests
-        if (\\\$request_method = 'OPTIONS') {
+        if (\$request_method = 'OPTIONS') {
             add_header 'Access-Control-Allow-Origin' '*';
             add_header 'Access-Control-Allow-Methods' 'GET, POST, PUT, DELETE, OPTIONS';
             add_header 'Access-Control-Allow-Headers' 'DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range,Authorization';
@@ -553,13 +627,13 @@ server {
 
         proxy_pass http://127.0.0.1:$BACKEND_PORT;
         proxy_http_version 1.1;
-        proxy_set_header Upgrade \\\$http_upgrade;
+        proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection 'upgrade';
-        proxy_set_header Host \\\$host;
-        proxy_set_header X-Real-IP \\\$remote_addr;
-        proxy_set_header X-Forwarded-For \\\$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \\\$scheme;
-        proxy_cache_bypass \\\$http_upgrade;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_cache_bypass \$http_upgrade;
         proxy_read_timeout 120s;
         proxy_connect_timeout 120s;
         proxy_send_timeout 120s;
@@ -569,7 +643,7 @@ server {
     location /health {
         add_header 'Access-Control-Allow-Origin' '*' always;
         proxy_pass http://127.0.0.1:$BACKEND_PORT/health;
-        proxy_set_header Host \\\$host;
+        proxy_set_header Host \$host;
     }
 
     # Security headers
@@ -754,8 +828,8 @@ read -p "Choice [1-6]: " choice
 
 case $choice in
     1) sudo journalctl -u spot-optimizer-backend -f ;;
-    2) tail -f /home/ubuntu/logs/backend_access.log ;;
-    3) tail -f /home/ubuntu/logs/backend_error.log ;;
+    2) tail -f /home/ubuntu/logs/backend_access.log 2>/dev/null || echo "Log file not found" ;;
+    3) tail -f /home/ubuntu/logs/backend_error.log 2>/dev/null || echo "Log file not found" ;;
     4) sudo tail -f /var/log/nginx/spot-optimizer.access.log ;;
     5) sudo tail -f /var/log/nginx/spot-optimizer.error.log ;;
     6) docker logs -f spot-mysql ;;
@@ -822,6 +896,9 @@ chmod -R 755 /home/ubuntu/mysql-data
 sudo chown -R www-data:www-data "$NGINX_ROOT"
 chmod -R 755 "$NGINX_ROOT"
 
+# Repository permissions
+sudo chown -R ubuntu:ubuntu "$CLONE_DIR"
+
 log "All permissions fixed"
 
 # ==============================================================================
@@ -862,7 +939,7 @@ log "Step 16: Creating setup summary..."
 
 cat > /home/ubuntu/SETUP_COMPLETE.txt << EOF
 ================================================================================
-AWS SPOT OPTIMIZER - SETUP COMPLETE (v3.0)
+AWS SPOT OPTIMIZER - SETUP COMPLETE (v3.1)
 ================================================================================
 
 Date: $(date)
@@ -870,6 +947,12 @@ Instance ID: $INSTANCE_ID
 Region: $REGION
 Availability Zone: $AZ
 Public IP: $PUBLIC_IP
+
+================================================================================
+REPOSITORY
+================================================================================
+Location: $CLONE_DIR
+GitHub: $GITHUB_REPO
 
 ================================================================================
 ACCESS URLS
@@ -881,6 +964,7 @@ Health Check: http://$PUBLIC_IP/health
 ================================================================================
 DIRECTORY STRUCTURE
 ================================================================================
+Repository: $CLONE_DIR
 Application: $APP_DIR
 Backend: $BACKEND_DIR
 Frontend: $FRONTEND_DIR
@@ -936,6 +1020,9 @@ NEXT STEPS
 4. Upload ML models (optional):
    scp -i your-key.pem models/* ubuntu@$PUBLIC_IP:$MODELS_DIR/
 
+5. Update repository:
+   cd $CLONE_DIR && git pull
+
 ================================================================================
 TROUBLESHOOTING
 ================================================================================
@@ -955,6 +1042,11 @@ CORS errors:
   - Verify Nginx config: sudo nginx -t
   - Check backend CORS: curl -I http://localhost:5000/health
 
+Repository updates:
+  cd $CLONE_DIR
+  git pull origin main
+  ~/scripts/restart.sh
+
 ================================================================================
 EOF
 
@@ -964,6 +1056,7 @@ log "============================================"
 log "SETUP COMPLETE!"
 log "============================================"
 log ""
+log "✓ Repository cloned: $CLONE_DIR"
 log "✓ Backend: Flask app running on port 5000"
 log "✓ Frontend: Vite React app served by Nginx"
 log "✓ Database: MySQL 8.0 running in Docker"
@@ -973,4 +1066,5 @@ log "Dashboard URL: http://$PUBLIC_IP/"
 log ""
 log "View status: ~/scripts/status.sh"
 log "View logs: ~/scripts/logs.sh"
+log "View details: cat ~/SETUP_COMPLETE.txt"
 log "============================================"
