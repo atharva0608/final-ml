@@ -1431,6 +1431,123 @@ def get_clients_growth():
         logger.error(f"Get clients growth error: {e}")
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/admin/instances', methods=['GET'])
+def get_all_instances_global():
+    """Get all instances across all clients (global view)"""
+    try:
+        # Get filters from query params
+        status = request.args.get('status')  # 'active', 'terminated'
+        mode = request.args.get('mode')  # 'spot', 'on-demand'
+        region = request.args.get('region')
+
+        query = """
+            SELECT
+                i.*,
+                c.name as client_name,
+                c.id as client_id,
+                a.logical_agent_id,
+                a.status as agent_status
+            FROM instances i
+            LEFT JOIN clients c ON i.client_id = c.id
+            LEFT JOIN agents a ON i.instance_id = a.instance_id
+            WHERE 1=1
+        """
+        params = []
+
+        if status:
+            if status == 'active':
+                query += " AND i.is_active = TRUE"
+            elif status == 'terminated':
+                query += " AND i.is_active = FALSE"
+
+        if mode:
+            query += " AND i.current_mode = %s"
+            params.append(mode)
+
+        if region:
+            query += " AND i.region = %s"
+            params.append(region)
+
+        query += " ORDER BY i.created_at DESC LIMIT 500"
+
+        instances = execute_query(query, tuple(params), fetch=True)
+
+        result = [{
+            'id': inst['id'],
+            'instanceId': inst['instance_id'],
+            'clientId': inst['client_id'],
+            'clientName': inst['client_name'],
+            'region': inst['region'],
+            'az': inst['az'],
+            'instanceType': inst['instance_type'],
+            'currentMode': inst['current_mode'],
+            'currentPoolId': inst['current_pool_id'],
+            'isActive': bool(inst['is_active']),
+            'createdAt': inst['created_at'].isoformat() if inst['created_at'] else None,
+            'logicalAgentId': inst['logical_agent_id'],
+            'agentStatus': inst['agent_status']
+        } for inst in (instances or [])]
+
+        return jsonify(result)
+
+    except Exception as e:
+        logger.error(f"Get all instances error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/admin/agents', methods=['GET'])
+def get_all_agents_global():
+    """Get all agents across all clients (global view)"""
+    try:
+        # Get filters from query params
+        status = request.args.get('status')  # 'online', 'offline'
+
+        query = """
+            SELECT
+                a.*,
+                c.name as client_name,
+                c.id as client_id,
+                i.instance_type,
+                i.region,
+                i.az,
+                i.current_mode
+            FROM agents a
+            LEFT JOIN clients c ON a.client_id = c.id
+            LEFT JOIN instances i ON a.instance_id = i.instance_id
+            WHERE 1=1
+        """
+        params = []
+
+        if status:
+            query += " AND a.status = %s"
+            params.append(status)
+
+        query += " ORDER BY a.last_heartbeat DESC LIMIT 500"
+
+        agents = execute_query(query, tuple(params), fetch=True)
+
+        result = [{
+            'id': agent['id'],
+            'logicalAgentId': agent['logical_agent_id'],
+            'clientId': agent['client_id'],
+            'clientName': agent['client_name'],
+            'instanceId': agent['instance_id'],
+            'instanceType': agent['instance_type'],
+            'region': agent['region'],
+            'az': agent['az'],
+            'currentMode': agent['current_mode'],
+            'status': agent['status'],
+            'enabled': bool(agent['enabled']),
+            'version': agent['version'],
+            'lastHeartbeat': agent['last_heartbeat'].isoformat() if agent['last_heartbeat'] else None,
+            'createdAt': agent['created_at'].isoformat() if agent['created_at'] else None
+        } for agent in (agents or [])]
+
+        return jsonify(result)
+
+    except Exception as e:
+        logger.error(f"Get all agents error: {e}")
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/api/client/<client_id>', methods=['GET'])
 def get_client_details(client_id: str):
     """Get client overview"""
@@ -1821,6 +1938,74 @@ def get_instance_metrics(instance_id: str):
         
     except Exception as e:
         logger.error(f"Get instance metrics error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/client/instances/<instance_id>/price-history', methods=['GET'])
+def get_instance_price_history(instance_id: str):
+    """Get historical pricing data for an instance"""
+    try:
+        days = request.args.get('days', 7, type=int)
+        interval = request.args.get('interval', 'hour')  # 'hour' or 'day'
+
+        # Limit to reasonable range
+        days = min(max(days, 1), 90)
+
+        # Get instance info
+        instance = execute_query("""
+            SELECT i.id, i.instance_id, i.instance_type, i.region, i.az
+            FROM instances i
+            WHERE i.id = %s
+        """, (instance_id,), fetch_one=True)
+
+        if not instance:
+            return jsonify({'error': 'Instance not found'}), 404
+
+        # Get pricing reports for this agent/instance
+        if interval == 'hour':
+            # Hourly granularity
+            price_data = execute_query("""
+                SELECT
+                    DATE_FORMAT(pr.received_at, '%%Y-%%m-%%d %%H:00:00') as time,
+                    AVG(pr.spot_price) as avgPrice,
+                    MIN(pr.spot_price) as minPrice,
+                    MAX(pr.spot_price) as maxPrice,
+                    AVG(pr.ondemand_price) as avgOnDemand
+                FROM pricing_reports pr
+                JOIN agents a ON pr.agent_id = a.id
+                WHERE a.instance_id = %s
+                  AND pr.received_at >= DATE_SUB(NOW(), INTERVAL %s DAY)
+                GROUP BY DATE_FORMAT(pr.received_at, '%%Y-%%m-%%d %%H:00:00')
+                ORDER BY time ASC
+            """, (instance['instance_id'], days), fetch=True)
+        else:
+            # Daily granularity
+            price_data = execute_query("""
+                SELECT
+                    DATE(pr.received_at) as time,
+                    AVG(pr.spot_price) as avgPrice,
+                    MIN(pr.spot_price) as minPrice,
+                    MAX(pr.spot_price) as maxPrice,
+                    AVG(pr.ondemand_price) as avgOnDemand
+                FROM pricing_reports pr
+                JOIN agents a ON pr.agent_id = a.id
+                WHERE a.instance_id = %s
+                  AND pr.received_at >= DATE_SUB(NOW(), INTERVAL %s DAY)
+                GROUP BY DATE(pr.received_at)
+                ORDER BY time ASC
+            """, (instance['instance_id'], days), fetch=True)
+
+        result = [{
+            'time': str(row['time']),
+            'avgPrice': float(row['avgPrice'] or 0),
+            'minPrice': float(row['minPrice'] or 0),
+            'maxPrice': float(row['maxPrice'] or 0),
+            'avgOnDemand': float(row['avgOnDemand'] or 0)
+        } for row in (price_data or [])]
+
+        return jsonify(result)
+
+    except Exception as e:
+        logger.error(f"Get price history error: {e}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/client/instances/<instance_id>/available-options', methods=['GET'])
