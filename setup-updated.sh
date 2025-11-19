@@ -126,6 +126,27 @@ fi
 
 log "✓ All required files verified"
 
+# Apply frontend updates patch if available
+if [ -f "$REPO_DIR/frontend-updates.patch" ]; then
+    log "Applying frontend updates patch..."
+    cd "$REPO_DIR/frontend"
+
+    # Check if patch is already applied by looking for specific new files
+    if [ ! -f "src/components/charts/ClientGrowthChart.jsx" ]; then
+        git apply --check "$REPO_DIR/frontend-updates.patch" 2>/dev/null
+        if [ $? -eq 0 ]; then
+            git apply "$REPO_DIR/frontend-updates.patch"
+            log "✓ Frontend updates applied successfully"
+        else
+            warn "Frontend patch cannot be applied (may already be applied or conflicts exist)"
+        fi
+    else
+        log "✓ Frontend updates already applied"
+    fi
+
+    cd "$REPO_DIR"
+fi
+
 # ==============================================================================
 # STEP 1: GET INSTANCE METADATA USING IMDSv2
 # ==============================================================================
