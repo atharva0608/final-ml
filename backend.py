@@ -245,6 +245,7 @@ class ForceSwitchSchema(Schema):
     """Validation schema for force switch"""
     target = fields.Str(required=True, validate=validate.OneOf(['ondemand', 'pool', 'spot']))
     pool_id = fields.Str(required=False, validate=validate.Length(max=128))
+    new_instance_type = fields.Str(required=False, validate=validate.Length(max=50))
 
 # ==============================================================================
 # AUTHENTICATION MIDDLEWARE
@@ -1120,7 +1121,31 @@ def get_decision(agent_id: str):
             decision.get('expected_savings_per_hour'), decision.get('allowed'),
             decision.get('reason'), decision_engine_manager.engine_version
         ))
-        
+
+        # Log decision to history table for analytics
+        try:
+            execute_query("""
+                INSERT INTO agent_decision_history (
+                    agent_id, client_id, decision_type, recommended_action,
+                    recommended_pool_id, risk_score, expected_savings,
+                    current_mode, current_pool_id, current_price, decision_time
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+            """, (
+                agent_id,
+                request.client_id,
+                decision.get('recommended_action', 'stay'),
+                decision.get('recommended_action'),
+                decision.get('recommended_pool_id'),
+                decision.get('risk_score', 0),
+                decision.get('expected_savings_per_hour', 0),
+                instance.get('current_mode'),
+                instance.get('current_pool_id'),
+                pricing.get('current_spot_price', 0)
+            ))
+        except Exception as log_error:
+            # Don't fail the request if logging fails
+            logger.warning(f"Failed to log decision history: {log_error}")
+
         return jsonify(decision)
         
     except Exception as e:
@@ -1359,6 +1384,37 @@ def get_all_clients():
         logger.error(f"Get all clients error: {e}")
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/admin/clients/growth', methods=['GET'])
+def get_clients_growth():
+    """Get client growth analytics over time"""
+    try:
+        days = request.args.get('days', 30, type=int)
+
+        # Limit to reasonable range
+        days = min(max(days, 1), 365)
+
+        growth_data = execute_query("""
+            SELECT
+                snapshot_date,
+                total_clients,
+                new_clients_today,
+                active_clients
+            FROM clients_daily_snapshot
+            WHERE snapshot_date >= DATE_SUB(CURDATE(), INTERVAL %s DAY)
+            ORDER BY snapshot_date ASC
+        """, (days,), fetch=True)
+
+        return jsonify([{
+            'date': g['snapshot_date'].isoformat() if g['snapshot_date'] else None,
+            'total': g['total_clients'],
+            'new': g['new_clients_today'],
+            'active': g['active_clients']
+        } for g in growth_data or []])
+
+    except Exception as e:
+        logger.error(f"Get clients growth error: {e}")
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/api/client/<client_id>', methods=['GET'])
 def get_client_details(client_id: str):
     """Get client overview"""
@@ -1428,6 +1484,95 @@ def get_client_agents(client_id: str):
         logger.error(f"Get agents error: {e}")
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/client/<client_id>/agents/decisions', methods=['GET'])
+def get_agents_decisions(client_id: str):
+    """Get agent decision history with pricing health status"""
+    try:
+        # Get all active agents with last decision
+        agents_data = execute_query("""
+            SELECT
+                a.id,
+                a.logical_agent_id,
+                a.status,
+                a.current_mode,
+                a.current_pool_id,
+
+                -- Last decision (subquery)
+                (SELECT decision_type FROM agent_decision_history adh
+                 WHERE adh.agent_id = a.id
+                 ORDER BY decision_time DESC LIMIT 1) as last_decision,
+
+                (SELECT decision_time FROM agent_decision_history adh
+                 WHERE adh.agent_id = a.id
+                 ORDER BY decision_time DESC LIMIT 1) as last_decision_time
+
+            FROM agents a
+            WHERE a.client_id = %s AND a.status = 'online'
+            ORDER BY a.logical_agent_id
+        """, (client_id,), fetch=True)
+
+        result = []
+        for agent in (agents_data or []):
+            # Get last 5 pricing reports for health check
+            recent_reports = execute_query("""
+                SELECT received_at, ondemand_price, current_spot_price
+                FROM pricing_reports
+                WHERE agent_id = %s
+                ORDER BY received_at DESC
+                LIMIT 5
+            """, (agent['id'],), fetch=True)
+
+            # Count recent reports (within last 10 minutes)
+            recent_count = execute_query("""
+                SELECT COUNT(*) as cnt
+                FROM pricing_reports
+                WHERE agent_id = %s
+                  AND received_at >= DATE_SUB(NOW(), INTERVAL 10 MINUTE)
+            """, (agent['id'],), fetch_one=True)
+            recent_reports_count = recent_count['cnt'] if recent_count else 0
+
+            # Health check: at least 5 reports in last 10 minutes
+            is_healthy = recent_reports_count >= 5
+
+            # Calculate time elapsed since last decision
+            time_elapsed = None
+            if agent.get('last_decision_time'):
+                try:
+                    delta = datetime.utcnow() - agent['last_decision_time']
+                    minutes_ago = int(delta.total_seconds() / 60)
+                    time_elapsed = {
+                        'minutes': minutes_ago,
+                        'formatted': f"{minutes_ago} minutes ago" if minutes_ago > 0 else "Just now"
+                    }
+                except Exception as e:
+                    logger.warning(f"Error calculating time elapsed: {e}")
+
+            result.append({
+                'agentId': agent['id'],
+                'agentName': agent['logical_agent_id'],
+                'status': agent['status'],
+                'lastDecision': {
+                    'type': agent.get('last_decision'),
+                    'time': agent['last_decision_time'].isoformat() if agent.get('last_decision_time') else None,
+                    'elapsed': time_elapsed
+                },
+                'pricingHealth': {
+                    'status': 'healthy' if is_healthy else 'unhealthy',
+                    'recentReportsCount': recent_reports_count,
+                    'recentReports': [{
+                        'time': r['received_at'].isoformat() if r.get('received_at') else None,
+                        'onDemandPrice': float(r['ondemand_price']) if r.get('ondemand_price') else 0,
+                        'spotPrice': float(r['current_spot_price']) if r.get('current_spot_price') else 0
+                    } for r in (recent_reports or [])]
+                }
+            })
+
+        return jsonify(result)
+
+    except Exception as e:
+        logger.error(f"Get agents decisions error: {e}")
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/api/client/agents/<agent_id>/toggle-enabled', methods=['POST'])
 def toggle_agent(agent_id: str):
     """Enable/disable agent"""
@@ -1491,39 +1636,25 @@ def update_agent_settings(agent_id: str):
 
 @app.route('/api/client/agents/<agent_id>/config', methods=['POST'])
 def update_agent_config(agent_id: str):
-    """Update agent configuration parameters"""
+    """Update agent configuration - simplified to only termination timeout"""
     data = request.json or {}
-    
+
     try:
-        updates = []
-        params = []
-        
-        if 'min_savings_percent' in data:
-            updates.append("min_savings_percent = %s")
-            params.append(data['min_savings_percent'])
-        
-        if 'risk_threshold' in data:
-            updates.append("risk_threshold = %s")
-            params.append(data['risk_threshold'])
-        
-        if 'max_switches_per_week' in data:
-            updates.append("max_switches_per_week = %s")
-            params.append(data['max_switches_per_week'])
-        
-        if 'min_pool_duration_hours' in data:
-            updates.append("min_pool_duration_hours = %s")
-            params.append(data['min_pool_duration_hours'])
-        
-        if updates:
-            params.append(agent_id)
-            execute_query(f"""
-                UPDATE agent_configs
-                SET {', '.join(updates)}
-                WHERE agent_id = %s
-            """, tuple(params))
-        
+        # Only accept terminate_wait_minutes (converted to seconds)
+        if 'terminate_wait_minutes' in data:
+            terminate_wait_seconds = int(data['terminate_wait_minutes']) * 60
+
+            execute_query("""
+                UPDATE agents
+                SET terminate_wait_seconds = %s,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s
+            """, (terminate_wait_seconds, agent_id))
+
+            logger.info(f"Updated agent {agent_id} termination timeout to {terminate_wait_seconds}s")
+
         return jsonify({'success': True})
-        
+
     except Exception as e:
         logger.error(f"Update agent config error: {e}")
         return jsonify({'error': str(e)}), 500
@@ -1676,6 +1807,70 @@ def get_instance_metrics(instance_id: str):
         logger.error(f"Get instance metrics error: {e}")
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/client/instances/<instance_id>/available-options', methods=['GET'])
+def get_instance_available_options(instance_id: str):
+    """Get available pools and instance types for switching"""
+    try:
+        # Get current instance information
+        agent = execute_query("""
+            SELECT instance_type, region, az FROM agents WHERE instance_id = %s
+        """, (instance_id,), fetch_one=True)
+
+        if not agent:
+            return jsonify({'error': 'Instance not found'}), 404
+
+        current_type = agent['instance_type']
+        region = agent['region']
+
+        # Get available pools for current instance type
+        pools = execute_query("""
+            SELECT
+                sp.id as pool_id,
+                sp.az,
+                sp.instance_type,
+                spr.price as current_price
+            FROM spot_pools sp
+            LEFT JOIN (
+                SELECT
+                    pool_id,
+                    price,
+                    ROW_NUMBER() OVER (PARTITION BY pool_id ORDER BY captured_at DESC) as rn
+                FROM spot_price_snapshots
+            ) spr ON spr.pool_id = sp.id AND spr.rn = 1
+            WHERE sp.instance_type = %s
+              AND sp.region = %s
+              AND sp.is_active = TRUE
+            ORDER BY spr.price ASC
+        """, (current_type, region), fetch=True)
+
+        # Get instance types in same family (e.g., t3.medium -> t3.*)
+        base_family = current_type.split('.')[0] if current_type else ''
+        instance_types = execute_query("""
+            SELECT DISTINCT instance_type
+            FROM spot_pools
+            WHERE region = %s
+              AND instance_type LIKE %s
+              AND is_active = TRUE
+            ORDER BY instance_type
+        """, (region, f"{base_family}.%"), fetch=True) if base_family else []
+
+        return jsonify({
+            'currentType': current_type,
+            'currentRegion': region,
+            'currentAz': agent.get('az'),
+            'availablePools': [{
+                'id': p['pool_id'],
+                'az': p['az'],
+                'instanceType': p['instance_type'],
+                'price': float(p['current_price']) if p.get('current_price') else None
+            } for p in pools or []],
+            'availableTypes': [t['instance_type'] for t in instance_types or []]
+        })
+
+    except Exception as e:
+        logger.error(f"Get available options error: {e}")
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/api/client/instances/<instance_id>/force-switch', methods=['POST'])
 def force_instance_switch(instance_id: str):
     """Manually force instance switch"""
@@ -1708,11 +1903,22 @@ def force_instance_switch(instance_id: str):
         
         target_mode = validated_data['target']
         target_pool_id = validated_data.get('pool_id')
-        
+        new_instance_type = validated_data.get('new_instance_type')
+
+        # Build metadata for logging
+        metadata = {
+            'target': target_mode,
+            'pool_id': target_pool_id
+        }
+        if new_instance_type:
+            metadata['new_instance_type'] = new_instance_type
+            # Note: Instance type changes require agent-side support
+            logger.info(f"Instance type change requested: {new_instance_type}")
+
         # Insert pending command with manual priority (75)
         command_id = generate_uuid()
         execute_query("""
-            INSERT INTO commands 
+            INSERT INTO commands
             (id, client_id, agent_id, instance_id, command_type, target_mode, target_pool_id, priority, status, created_by)
             VALUES (%s, %s, %s, %s, 'switch', %s, %s, 75, 'pending', 'manual')
         """, (
@@ -1723,17 +1929,21 @@ def force_instance_switch(instance_id: str):
             target_mode if target_mode != 'pool' else 'spot',
             target_pool_id
         ))
-        
+
+        notification_msg = f"Manual switch queued for {instance_id}"
+        if new_instance_type:
+            notification_msg += f" (type: {new_instance_type})"
+
         create_notification(
-            f"Manual switch queued for {instance_id}",
+            notification_msg,
             'warning',
             instance['client_id']
         )
-        
+
         log_system_event('manual_switch_requested', 'info',
                         f"Manual switch requested for {instance_id} to {target_mode}",
                         instance['client_id'], instance['agent_id'], instance_id,
-                        metadata={'target': target_mode, 'pool_id': target_pool_id})
+                        metadata=metadata)
         
         return jsonify({
             'success': True,
@@ -1993,11 +2203,37 @@ def get_system_health():
             execute_query("SELECT 1", fetch_one=True)
         except:
             db_status = 'Disconnected'
-        
+
         engine_status = 'Loaded' if decision_engine_manager.models_loaded else 'Not Loaded'
-        
+
         pool_active = connection_pool._cnx_queue.qsize() if connection_pool else 0
-        
+
+        # Count model files in MODEL_DIR
+        model_files_count = 0
+        try:
+            if config.MODEL_DIR.exists():
+                model_files_count = len([f for f in config.MODEL_DIR.glob('*') if f.is_file()])
+        except Exception as e:
+            logger.warning(f"Could not count model files: {e}")
+
+        # Get active models from registry
+        active_models = []
+        try:
+            models = execute_query("""
+                SELECT model_name, version, is_active, created_at
+                FROM model_registry
+                WHERE is_active = TRUE
+                ORDER BY created_at DESC
+                LIMIT 10
+            """, fetch=True)
+            active_models = [{
+                'name': m['model_name'],
+                'version': m['version'],
+                'active': bool(m['is_active'])
+            } for m in (models or [])]
+        except Exception as e:
+            logger.warning(f"Could not fetch models from registry: {e}")
+
         return jsonify({
             'apiStatus': 'Healthy',
             'database': db_status,
@@ -2005,10 +2241,16 @@ def get_system_health():
             'connectionPool': f'{pool_active}/{config.DB_POOL_SIZE}',
             'timestamp': datetime.utcnow().isoformat(),
             'modelStatus': {
-                'decisionEngineLoaded': decision_engine_manager.models_loaded,
-                'mlModelsLoaded': decision_engine_manager.models_loaded,
-                'engineType': decision_engine_manager.engine_type or 'None',
-                'engineVersion': decision_engine_manager.engine_version or 'N/A'
+                'loaded': decision_engine_manager.models_loaded,
+                'name': decision_engine_manager.engine_type or 'None',
+                'version': decision_engine_manager.engine_version or 'N/A',
+                'filesUploaded': model_files_count,
+                'activeModels': active_models
+            },
+            'decisionEngineStatus': {
+                'loaded': decision_engine_manager.models_loaded,
+                'type': decision_engine_manager.engine_type or 'None',
+                'version': decision_engine_manager.engine_version or 'N/A'
             }
         })
     except Exception as e:
@@ -2036,6 +2278,43 @@ def health_check():
 # ==============================================================================
 # BACKGROUND JOBS
 # ==============================================================================
+
+def snapshot_clients_daily():
+    """Take daily snapshot of client counts for growth analytics"""
+    try:
+        logger.info("Taking daily client snapshot...")
+
+        # Get current counts
+        today_count = execute_query(
+            "SELECT COUNT(*) as cnt FROM clients WHERE is_active = TRUE",
+            fetch_one=True
+        )
+        total_clients = today_count['cnt'] if today_count else 0
+
+        # Get yesterday's count to calculate new clients
+        yesterday_row = execute_query("""
+            SELECT total_clients FROM clients_daily_snapshot
+            ORDER BY snapshot_date DESC LIMIT 1
+        """, fetch_one=True)
+        yesterday_count = yesterday_row['total_clients'] if yesterday_row else 0
+
+        new_clients_today = total_clients - yesterday_count if yesterday_count else total_clients
+
+        # Insert today's snapshot
+        execute_query("""
+            INSERT INTO clients_daily_snapshot
+            (snapshot_date, total_clients, new_clients_today, active_clients)
+            VALUES (CURDATE(), %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                total_clients=%s,
+                new_clients_today=%s,
+                active_clients=%s
+        """, (total_clients, new_clients_today, total_clients,
+              total_clients, new_clients_today, total_clients))
+
+        logger.info(f"✓ Daily snapshot: {total_clients} total, {new_clients_today} new")
+    except Exception as e:
+        logger.error(f"Daily snapshot error: {e}")
 
 def compute_monthly_savings_job():
     """Compute monthly savings for all clients"""
@@ -2176,19 +2455,23 @@ def initialize_app():
     # Start background jobs
     if config.ENABLE_BACKGROUND_JOBS:
         scheduler = BackgroundScheduler()
-        
+
+        # Daily client snapshot (daily at 12:05 AM)
+        scheduler.add_job(snapshot_clients_daily, 'cron', hour=0, minute=5)
+        logger.info("✓ Scheduled daily client snapshot job")
+
         # Monthly savings computation (daily at 1 AM)
         scheduler.add_job(compute_monthly_savings_job, 'cron', hour=1, minute=0)
         logger.info("✓ Scheduled monthly savings computation job")
-        
+
         # Data cleanup (daily at 2 AM)
         scheduler.add_job(cleanup_old_data_job, 'cron', hour=2, minute=0)
         logger.info("✓ Scheduled data cleanup job")
-        
+
         # Agent health check (every 5 minutes)
         scheduler.add_job(check_agent_health_job, 'interval', minutes=5)
         logger.info("✓ Scheduled agent health check job")
-        
+
         scheduler.start()
         logger.info("✓ Background jobs started")
     
