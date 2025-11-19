@@ -608,14 +608,29 @@ cd "$FRONTEND_DIR"
 # Update API URL in all possible locations to use the public IP
 log "Updating API URL to http://$PUBLIC_IP:5000..."
 
-# Primary location: src/config/api.jsx (most common in Vite projects)
+# Primary location: src/config/api.jsx (CRITICAL - This is the main config file)
 if [ -f "src/config/api.jsx" ]; then
+    # Multiple replacement patterns to ensure it works
+    # Pattern 1: Match with trailing comma
+    sed -i "s|BASE_URL: '[^']*',|BASE_URL: 'http://$PUBLIC_IP:5000',|g" src/config/api.jsx
+    # Pattern 2: Match without trailing comma
     sed -i "s|BASE_URL: '[^']*'|BASE_URL: 'http://$PUBLIC_IP:5000'|g" src/config/api.jsx
-    log "✓ Updated API URL in src/config/api.jsx"
+    # Pattern 3: Match any IP address pattern specifically
+    sed -i "s|BASE_URL: 'http://[0-9.]*:[0-9]*'|BASE_URL: 'http://$PUBLIC_IP:5000'|g" src/config/api.jsx
+
+    # Verify the change was made
+    if grep -q "BASE_URL: 'http://$PUBLIC_IP:5000'" src/config/api.jsx; then
+        log "✓ Successfully updated API URL in src/config/api.jsx"
+    else
+        warn "Failed to update src/config/api.jsx - manual check needed"
+        log "File contents:"
+        cat src/config/api.jsx
+    fi
 fi
 
 # Also check src/config/api.js
 if [ -f "src/config/api.js" ]; then
+    sed -i "s|BASE_URL: '[^']*',|BASE_URL: 'http://$PUBLIC_IP:5000',|g" src/config/api.js
     sed -i "s|BASE_URL: '[^']*'|BASE_URL: 'http://$PUBLIC_IP:5000'|g" src/config/api.js
     log "✓ Updated API URL in src/config/api.js"
 fi
@@ -632,18 +647,34 @@ if [ -f "src/App.jsx" ]; then
 fi
 
 # Universal fix: Find and replace in all JSX/JS files containing BASE_URL or API endpoint
-log "Scanning all source files for API URL references..."
-find . -type f \( -name "*.jsx" -o -name "*.js" -o -name "*.ts" -o -name "*.tsx" \) -not -path "*/node_modules/*" -not -path "*/dist/*" -not -path "*/build/*" | while read file; do
+log "Scanning all source files for hardcoded API URLs..."
+find . -type f \( -name "*.jsx" -o -name "*.js" -o -name "*.ts" -o -name "*.tsx" \) \
+    -not -path "*/node_modules/*" \
+    -not -path "*/dist/*" \
+    -not -path "*/build/*" \
+    -not -path "*/.git/*" 2>/dev/null | while read file; do
     if grep -q "BASE_URL\|http://[0-9.]*:5000" "$file" 2>/dev/null; then
         # Replace any hardcoded localhost or IP addresses
-        sed -i "s|http://localhost:5000|http://$PUBLIC_IP:5000|g" "$file"
-        sed -i "s|http://127.0.0.1:5000|http://$PUBLIC_IP:5000|g" "$file"
-        sed -i "s|http://[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}:5000|http://$PUBLIC_IP:5000|g" "$file"
-        log "✓ Updated $(basename $file)"
+        sed -i "s|http://localhost:5000|http://$PUBLIC_IP:5000|g" "$file" 2>/dev/null || true
+        sed -i "s|http://127.0.0.1:5000|http://$PUBLIC_IP:5000|g" "$file" 2>/dev/null || true
+        # Replace any IP:5000 pattern
+        sed -i "s|http://[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}:5000|http://$PUBLIC_IP:5000|g" "$file" 2>/dev/null || true
     fi
 done
 
-log "API URL configuration complete"
+log "✓ API URL configuration complete"
+
+# Final verification
+if [ -f "src/config/api.jsx" ]; then
+    CONFIGURED_URL=$(grep "BASE_URL" src/config/api.jsx | grep -o "http://[^']*" || echo "NOT_FOUND")
+    log "Final API URL: $CONFIGURED_URL"
+    if [ "$CONFIGURED_URL" != "http://$PUBLIC_IP:5000" ]; then
+        error "API URL was not properly configured!"
+        error "Expected: http://$PUBLIC_IP:5000"
+        error "Got: $CONFIGURED_URL"
+        error "Please check src/config/api.jsx manually"
+    fi
+fi
 
 # Install npm dependencies
 log "Installing npm dependencies (this may take a few minutes)..."
