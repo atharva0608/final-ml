@@ -1568,7 +1568,96 @@ CALL update_client_total_savings();
 */
 
 -- ============================================================================
+-- NEW FEATURES (v5.1) - Enhanced Analytics and Decision Tracking
+-- ============================================================================
+
+-- Track daily client growth for analytics
+CREATE TABLE IF NOT EXISTS clients_daily_snapshot (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    snapshot_date DATE NOT NULL UNIQUE,
+    total_clients INT NOT NULL,
+    new_clients_today INT DEFAULT 0,
+    active_clients INT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    INDEX idx_snapshot_date (snapshot_date DESC)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+COMMENT='Daily snapshots of client counts for growth analytics';
+
+-- Track agent decision history from decision engine
+CREATE TABLE IF NOT EXISTS agent_decision_history (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    agent_id CHAR(36) NOT NULL,
+    client_id CHAR(36) NOT NULL,
+
+    -- Decision details
+    decision_type VARCHAR(50) NOT NULL COMMENT 'stay, switch_spot, switch_ondemand',
+    recommended_action VARCHAR(50),
+    recommended_pool_id VARCHAR(128),
+    risk_score DECIMAL(5, 4),
+    expected_savings DECIMAL(10, 6),
+
+    -- Context at decision time
+    current_mode VARCHAR(20),
+    current_pool_id VARCHAR(128),
+    current_price DECIMAL(10, 6),
+
+    -- Timing
+    decision_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    -- Execution tracking
+    executed BOOLEAN DEFAULT FALSE,
+    execution_time TIMESTAMP NULL,
+
+    INDEX idx_agent_decision_agent_time (agent_id, decision_time DESC),
+    INDEX idx_agent_decision_client (client_id),
+    INDEX idx_agent_decision_type (decision_type),
+
+    CONSTRAINT fk_agent_decision_agent FOREIGN KEY (agent_id)
+        REFERENCES agents(id) ON DELETE CASCADE,
+    CONSTRAINT fk_agent_decision_client FOREIGN KEY (client_id)
+        REFERENCES clients(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+COMMENT='Historical log of all agent decisions made by the decision engine';
+
+-- Add index for pricing health checks (used in Models view)
+CREATE INDEX IF NOT EXISTS idx_pricing_reports_agent_time
+ON pricing_reports(agent_id, received_at DESC);
+
+-- ============================================================================
+-- SCHEMA CLEANUP NOTES (Optional - for existing deployments)
+-- ============================================================================
+
+/*
+-- The following tables are UNUSED in the current backend implementation.
+-- They can be safely dropped to simplify the schema:
+
+-- 1. Replicas table (no backend code uses this)
+-- DROP TABLE IF EXISTS replicas;
+
+-- 2. Model predictions table (decision_engine_log is used instead)
+-- DROP TABLE IF EXISTS model_predictions;
+
+-- 3. Cost records table (never populated by current backend)
+-- DROP TABLE IF EXISTS cost_records;
+
+-- 4. Client savings monthly (replaced by clients_daily_snapshot)
+-- DROP TABLE IF EXISTS client_savings_monthly;
+
+-- Simplify agent_configs by removing unused columns:
+-- ALTER TABLE agent_configs
+-- DROP COLUMN IF EXISTS max_switches_per_week,
+-- DROP COLUMN IF EXISTS max_switches_per_day,
+-- DROP COLUMN IF EXISTS min_pool_duration_hours,
+-- DROP COLUMN IF EXISTS custom_config;
+
+-- Note: Only run these DROP statements if you're certain you don't need
+-- the old data. For new installations, these tables can be removed from
+-- the schema entirely.
+*/
+
+-- ============================================================================
 -- END OF SCHEMA
 -- ============================================================================
 
-SELECT '✓ AWS Spot Optimizer MySQL Schema v5.0 - Setup Complete!' AS status;
+SELECT '✓ AWS Spot Optimizer MySQL Schema v5.1 - Setup Complete!' AS status;

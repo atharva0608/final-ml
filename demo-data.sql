@@ -400,6 +400,111 @@ VALUES
      504, 0, 18.92, 78.43, 59.51);
 
 -- ==============================================================================
+-- 14. CLIENT DAILY SNAPSHOTS (For growth analytics)
+-- ==============================================================================
+
+INSERT INTO clients_daily_snapshot (snapshot_date, total_clients, new_clients_today, active_clients)
+SELECT
+    DATE_SUB(CURDATE(), INTERVAL seq DAY) as snapshot_date,
+    CASE
+        WHEN seq >= 90 THEN 1  -- First client 90 days ago
+        WHEN seq >= 30 THEN 2  -- Second client 30 days ago
+        WHEN seq >= 7 THEN 3   -- Third client 7 days ago
+        ELSE 3
+    END as total_clients,
+    CASE
+        WHEN seq = 90 THEN 1
+        WHEN seq = 30 THEN 1
+        WHEN seq = 7 THEN 1
+        ELSE 0
+    END as new_clients_today,
+    CASE
+        WHEN seq >= 90 THEN 1
+        WHEN seq >= 30 THEN 2
+        WHEN seq >= 7 THEN 3
+        ELSE 3
+    END as active_clients
+FROM (
+    SELECT @row := @row + 1 AS seq FROM
+        (SELECT 0 UNION SELECT 1 UNION SELECT 2 UNION SELECT 3 UNION SELECT 4 UNION
+         SELECT 5 UNION SELECT 6 UNION SELECT 7 UNION SELECT 8 UNION SELECT 9) t1,
+        (SELECT 0 UNION SELECT 1 UNION SELECT 2 UNION SELECT 3 UNION SELECT 4) t2,
+        (SELECT @row := -1) r
+) sequences
+WHERE seq < 90
+ORDER BY seq DESC;
+
+-- ==============================================================================
+-- 15. AGENT DECISION HISTORY (For Models view)
+-- ==============================================================================
+
+-- Recent decisions for each active agent
+INSERT INTO agent_decision_history (
+    agent_id, client_id, decision_type, recommended_action,
+    recommended_pool_id, risk_score, expected_savings,
+    current_mode, current_pool_id, current_price, decision_time
+)
+VALUES
+    -- agent-001 decisions (last 24 hours)
+    ('agent-001', 'demo-client-001', 'stay', 'stay', NULL,
+     0.15, 0.0319, 'spot', 't3.medium-ap-south-1-ap-south-1a', 0.0137,
+     DATE_SUB(NOW(), INTERVAL 30 MINUTE)),
+
+    ('agent-001', 'demo-client-001', 'stay', 'stay', NULL,
+     0.18, 0.0319, 'spot', 't3.medium-ap-south-1-ap-south-1a', 0.0137,
+     DATE_SUB(NOW(), INTERVAL 2 HOUR)),
+
+    ('agent-001', 'demo-client-001', 'switch_spot', 'switch_spot',
+     't3.medium-ap-south-1-ap-south-1a', 0.75, 0.0015, 'spot',
+     't3.medium-ap-south-1-ap-south-1b', 0.0152, DATE_SUB(NOW(), INTERVAL 3 HOUR)),
+
+    -- agent-002 decisions
+    ('agent-002', 'demo-client-001', 'stay', 'stay', NULL,
+     0.12, 0.0756, 'spot', 'm5.large-ap-south-1-ap-south-1b', 0.0348,
+     DATE_SUB(NOW(), INTERVAL 45 MINUTE)),
+
+    ('agent-002', 'demo-client-001', 'switch_spot', 'switch_spot',
+     'm5.large-ap-south-1-ap-south-1b', 0.22, 0.0017, 'spot',
+     'm5.large-ap-south-1-ap-south-1a', 0.0365, DATE_SUB(NOW(), INTERVAL 1 HOUR)),
+
+    -- agent-003 decisions
+    ('agent-003', 'demo-client-001', 'stay', 'stay', NULL,
+     0.25, 0.0655, 'spot', 'c5.large-ap-south-1-ap-south-1a', 0.0281,
+     DATE_SUB(NOW(), INTERVAL 20 MINUTE)),
+
+    ('agent-003', 'demo-client-001', 'switch_spot', 'switch_spot',
+     'c5.large-ap-south-1-ap-south-1a', 0.40, 0.0014, 'spot',
+     'c5.large-ap-south-1-ap-south-1b', 0.0295, DATE_SUB(NOW(), INTERVAL 6 HOUR)),
+
+    -- agent-004 decisions (switched to on-demand)
+    ('agent-004', 'demo-client-001', 'switch_ondemand', 'switch_ondemand', NULL,
+     0.78, -0.1528, 'spot', 'm5.xlarge-ap-south-1-ap-south-1a', 0.0680,
+     DATE_SUB(NOW(), INTERVAL 2 HOUR)),
+
+    ('agent-004', 'demo-client-001', 'stay', 'stay', NULL,
+     0.82, -0.1528, 'spot', 'm5.xlarge-ap-south-1-ap-south-1a', 0.0698,
+     DATE_SUB(NOW(), INTERVAL 3 HOUR)),
+
+    -- agent-006 decisions
+    ('agent-006', 'demo-client-002', 'stay', 'stay', NULL,
+     0.20, 0.0638, 'spot', 't3.large-ap-south-1-ap-south-1a', 0.0274,
+     DATE_SUB(NOW(), INTERVAL 1 HOUR)),
+
+    ('agent-006', 'demo-client-002', 'switch_spot', 'switch_spot',
+     't3.large-ap-south-1-ap-south-1a', 0.35, 0.0014, 'spot',
+     't3.large-ap-south-1-ap-south-1b', 0.0288, DATE_SUB(NOW(), INTERVAL 4 HOUR)),
+
+    -- agent-007 decisions
+    ('agent-007', 'demo-client-002', 'stay', 'stay', NULL,
+     0.28, 0.0963, 'spot', 'r5.large-ap-south-1-ap-south-1a', 0.0413,
+     DATE_SUB(NOW(), INTERVAL 1 HOUR)),
+
+    -- agent-008 decisions
+    ('agent-008', 'demo-client-003', 'stay', 'stay', NULL,
+     0.15, 0.0291, 'spot', 't3.medium-us-east-1-us-east-1a', 0.0125,
+     DATE_SUB(NOW(), INTERVAL 30 MINUTE));
+
+-- ==============================================================================
 -- SUMMARY
 -- ==============================================================================
 
@@ -418,7 +523,11 @@ SELECT 'Cost Records', COUNT(*) FROM cost_records WHERE client_id IN (SELECT id 
 UNION ALL
 SELECT 'System Events', COUNT(*) FROM system_events WHERE client_id IN (SELECT id FROM clients WHERE email LIKE '%demo%')
 UNION ALL
-SELECT 'Notifications', COUNT(*) FROM notifications WHERE client_id IN (SELECT id FROM clients WHERE email LIKE '%demo%');
+SELECT 'Notifications', COUNT(*) FROM notifications WHERE client_id IN (SELECT id FROM clients WHERE email LIKE '%demo%')
+UNION ALL
+SELECT 'Client Snapshots', COUNT(*) FROM clients_daily_snapshot
+UNION ALL
+SELECT 'Agent Decisions', COUNT(*) FROM agent_decision_history WHERE client_id IN (SELECT id FROM clients WHERE email LIKE '%demo%');
 
 SELECT '🎯 You can now test all features with these demo accounts:' AS Message;
 SELECT name AS 'Client', email AS 'Email', client_token AS 'Token', plan AS 'Plan', total_savings AS 'Total Savings ($)'
