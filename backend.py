@@ -1,11 +1,12 @@
 """
-AWS Spot Optimizer - Central Server Backend v4.1
+AWS Spot Optimizer - Central Server Backend v4.2
 ==============================================================
 Fully compatible with Agent v4.0 and MySQL Schema v5.1
 
 Features:
 - All v4.0 features preserved
 - File upload for Decision Engine and ML Models
+- Automatic backend restart after upload (dev & production)
 - Automatic model reloading after upload
 - Enhanced system health endpoint
 - Pluggable decision engine architecture
@@ -28,6 +29,10 @@ import string
 import logging
 import importlib
 import uuid
+import signal
+import subprocess
+import threading
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
@@ -1426,6 +1431,123 @@ def get_clients_growth():
         logger.error(f"Get clients growth error: {e}")
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/admin/instances', methods=['GET'])
+def get_all_instances_global():
+    """Get all instances across all clients (global view)"""
+    try:
+        # Get filters from query params
+        status = request.args.get('status')  # 'active', 'terminated'
+        mode = request.args.get('mode')  # 'spot', 'on-demand'
+        region = request.args.get('region')
+
+        query = """
+            SELECT
+                i.*,
+                c.name as client_name,
+                c.id as client_id,
+                a.logical_agent_id,
+                a.status as agent_status
+            FROM instances i
+            LEFT JOIN clients c ON i.client_id = c.id
+            LEFT JOIN agents a ON i.instance_id = a.instance_id
+            WHERE 1=1
+        """
+        params = []
+
+        if status:
+            if status == 'active':
+                query += " AND i.is_active = TRUE"
+            elif status == 'terminated':
+                query += " AND i.is_active = FALSE"
+
+        if mode:
+            query += " AND i.current_mode = %s"
+            params.append(mode)
+
+        if region:
+            query += " AND i.region = %s"
+            params.append(region)
+
+        query += " ORDER BY i.created_at DESC LIMIT 500"
+
+        instances = execute_query(query, tuple(params), fetch=True)
+
+        result = [{
+            'id': inst['id'],
+            'instanceId': inst['instance_id'],
+            'clientId': inst['client_id'],
+            'clientName': inst['client_name'],
+            'region': inst['region'],
+            'az': inst['az'],
+            'instanceType': inst['instance_type'],
+            'currentMode': inst['current_mode'],
+            'currentPoolId': inst['current_pool_id'],
+            'isActive': bool(inst['is_active']),
+            'createdAt': inst['created_at'].isoformat() if inst['created_at'] else None,
+            'logicalAgentId': inst['logical_agent_id'],
+            'agentStatus': inst['agent_status']
+        } for inst in (instances or [])]
+
+        return jsonify(result)
+
+    except Exception as e:
+        logger.error(f"Get all instances error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/admin/agents', methods=['GET'])
+def get_all_agents_global():
+    """Get all agents across all clients (global view)"""
+    try:
+        # Get filters from query params
+        status = request.args.get('status')  # 'online', 'offline'
+
+        query = """
+            SELECT
+                a.*,
+                c.name as client_name,
+                c.id as client_id,
+                i.instance_type,
+                i.region,
+                i.az,
+                i.current_mode
+            FROM agents a
+            LEFT JOIN clients c ON a.client_id = c.id
+            LEFT JOIN instances i ON a.instance_id = i.instance_id
+            WHERE 1=1
+        """
+        params = []
+
+        if status:
+            query += " AND a.status = %s"
+            params.append(status)
+
+        query += " ORDER BY a.last_heartbeat DESC LIMIT 500"
+
+        agents = execute_query(query, tuple(params), fetch=True)
+
+        result = [{
+            'id': agent['id'],
+            'logicalAgentId': agent['logical_agent_id'],
+            'clientId': agent['client_id'],
+            'clientName': agent['client_name'],
+            'instanceId': agent['instance_id'],
+            'instanceType': agent['instance_type'],
+            'region': agent['region'],
+            'az': agent['az'],
+            'currentMode': agent['current_mode'],
+            'status': agent['status'],
+            'enabled': bool(agent['enabled']),
+            'version': agent['version'],
+            'lastHeartbeat': agent['last_heartbeat'].isoformat() if agent['last_heartbeat'] else None,
+            'createdAt': agent['created_at'].isoformat() if agent['created_at'] else None
+        } for agent in (agents or [])]
+
+        return jsonify(result)
+
+    except Exception as e:
+        logger.error(f"Get all agents error: {e}")
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/api/client/<client_id>', methods=['GET'])
 def get_client_details(client_id: str):
     """Get client overview"""
@@ -1816,6 +1938,74 @@ def get_instance_metrics(instance_id: str):
         
     except Exception as e:
         logger.error(f"Get instance metrics error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/client/instances/<instance_id>/price-history', methods=['GET'])
+def get_instance_price_history(instance_id: str):
+    """Get historical pricing data for an instance"""
+    try:
+        days = request.args.get('days', 7, type=int)
+        interval = request.args.get('interval', 'hour')  # 'hour' or 'day'
+
+        # Limit to reasonable range
+        days = min(max(days, 1), 90)
+
+        # Get instance info
+        instance = execute_query("""
+            SELECT i.id, i.instance_id, i.instance_type, i.region, i.az
+            FROM instances i
+            WHERE i.id = %s
+        """, (instance_id,), fetch_one=True)
+
+        if not instance:
+            return jsonify({'error': 'Instance not found'}), 404
+
+        # Get pricing reports for this agent/instance
+        if interval == 'hour':
+            # Hourly granularity
+            price_data = execute_query("""
+                SELECT
+                    DATE_FORMAT(pr.received_at, '%%Y-%%m-%%d %%H:00:00') as time,
+                    AVG(pr.spot_price) as avgPrice,
+                    MIN(pr.spot_price) as minPrice,
+                    MAX(pr.spot_price) as maxPrice,
+                    AVG(pr.ondemand_price) as avgOnDemand
+                FROM pricing_reports pr
+                JOIN agents a ON pr.agent_id = a.id
+                WHERE a.instance_id = %s
+                  AND pr.received_at >= DATE_SUB(NOW(), INTERVAL %s DAY)
+                GROUP BY DATE_FORMAT(pr.received_at, '%%Y-%%m-%%d %%H:00:00')
+                ORDER BY time ASC
+            """, (instance['instance_id'], days), fetch=True)
+        else:
+            # Daily granularity
+            price_data = execute_query("""
+                SELECT
+                    DATE(pr.received_at) as time,
+                    AVG(pr.spot_price) as avgPrice,
+                    MIN(pr.spot_price) as minPrice,
+                    MAX(pr.spot_price) as maxPrice,
+                    AVG(pr.ondemand_price) as avgOnDemand
+                FROM pricing_reports pr
+                JOIN agents a ON pr.agent_id = a.id
+                WHERE a.instance_id = %s
+                  AND pr.received_at >= DATE_SUB(NOW(), INTERVAL %s DAY)
+                GROUP BY DATE(pr.received_at)
+                ORDER BY time ASC
+            """, (instance['instance_id'], days), fetch=True)
+
+        result = [{
+            'time': str(row['time']),
+            'avgPrice': float(row['avgPrice'] or 0),
+            'minPrice': float(row['minPrice'] or 0),
+            'maxPrice': float(row['maxPrice'] or 0),
+            'avgOnDemand': float(row['avgOnDemand'] or 0)
+        } for row in (price_data or [])]
+
+        return jsonify(result)
+
+    except Exception as e:
+        logger.error(f"Get price history error: {e}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/client/instances/<instance_id>/available-options', methods=['GET'])
@@ -2294,6 +2484,37 @@ def allowed_file(filename: str, allowed_extensions: set) -> bool:
     """Check if file extension is allowed"""
     return Path(filename).suffix.lower() in allowed_extensions
 
+def restart_backend(delay_seconds: int = 3):
+    """Restart the backend server after a delay
+
+    Args:
+        delay_seconds: Seconds to wait before restart (allows response to be sent)
+    """
+    def _restart():
+        try:
+            time.sleep(delay_seconds)
+            logger.info("="*80)
+            logger.info("RESTARTING BACKEND SERVER...")
+            logger.info("="*80)
+
+            # Check if running under gunicorn
+            if 'gunicorn' in os.environ.get('SERVER_SOFTWARE', ''):
+                logger.info("Detected gunicorn - sending HUP signal to reload workers")
+                # Send HUP signal to master process to reload workers
+                os.kill(os.getppid(), signal.SIGHUP)
+            else:
+                logger.info("Restarting Python process...")
+                # Restart the Python process
+                python = sys.executable
+                os.execv(python, [python] + sys.argv)
+        except Exception as e:
+            logger.error(f"Failed to restart backend: {e}")
+
+    # Start restart in a background thread
+    restart_thread = threading.Thread(target=_restart, daemon=True)
+    restart_thread.start()
+    logger.info(f"Backend restart scheduled in {delay_seconds} seconds...")
+
 @app.route('/api/admin/decision-engine/upload', methods=['POST'])
 def upload_decision_engine():
     """Upload decision engine files"""
@@ -2330,10 +2551,14 @@ def upload_decision_engine():
             log_system_event('decision_engine_updated', 'info',
                            f'Decision engine files uploaded and reloaded: {", ".join(uploaded_files)}')
 
+            # Schedule backend restart
+            restart_backend(delay_seconds=3)
+
             return jsonify({
                 'success': True,
-                'message': 'Decision engine files uploaded and reloaded successfully',
+                'message': 'Decision engine files uploaded successfully. Backend will restart in 3 seconds.',
                 'files': uploaded_files,
+                'restarting': True,
                 'engine_status': {
                     'loaded': decision_engine_manager.models_loaded,
                     'type': decision_engine_manager.engine_type,
@@ -2408,10 +2633,14 @@ def upload_ml_models():
             log_system_event('ml_models_updated', 'info',
                            f'ML model files uploaded and loaded: {", ".join(uploaded_files)}')
 
+            # Schedule backend restart
+            restart_backend(delay_seconds=3)
+
             return jsonify({
                 'success': True,
-                'message': 'ML model files uploaded and loaded successfully',
+                'message': 'ML model files uploaded successfully. Backend will restart in 3 seconds.',
                 'files': uploaded_files,
+                'restarting': True,
                 'model_status': {
                     'loaded': decision_engine_manager.models_loaded,
                     'filesUploaded': model_files_count,
@@ -2597,7 +2826,7 @@ def check_agent_health_job():
 def initialize_app():
     """Initialize application on startup"""
     logger.info("="*80)
-    logger.info("AWS Spot Optimizer - Central Server v4.1")
+    logger.info("AWS Spot Optimizer - Central Server v4.2")
     logger.info("="*80)
 
     # Create necessary directories
