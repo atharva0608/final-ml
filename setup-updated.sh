@@ -1,11 +1,11 @@
 #!/bin/bash
 # ==============================================================================
-# AWS Spot Optimizer - Complete EC2 Setup Script (v3.3 - API FIX + DEMO DATA)
+# AWS Spot Optimizer - Complete EC2 Setup Script (v4.0 - Simplified)
 # ==============================================================================
 # Compatible with:
-#   - Backend: backend.py (Flask 3.0, MySQL Connector, APScheduler)
-#   - Frontend: Vite + React 18 + Recharts + Tailwind CSS
-#   - Database: schema.sql (MySQL 8.0)
+#   - Backend: https://github.com/atharva0608/final-ml.git
+#   - Frontend: https://github.com/atharva0608/frontend-.git
+#   - Database: schema.sql v5.1 (MySQL 8.0)
 # ==============================================================================
 
 set -e  # Exit on any error
