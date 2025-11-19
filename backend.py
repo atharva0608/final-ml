@@ -1,11 +1,12 @@
 """
-AWS Spot Optimizer - Central Server Backend v4.1
+AWS Spot Optimizer - Central Server Backend v4.2
 ==============================================================
 Fully compatible with Agent v4.0 and MySQL Schema v5.1
 
 Features:
 - All v4.0 features preserved
 - File upload for Decision Engine and ML Models
+- Automatic backend restart after upload (dev & production)
 - Automatic model reloading after upload
 - Enhanced system health endpoint
 - Pluggable decision engine architecture
@@ -28,6 +29,10 @@ import string
 import logging
 import importlib
 import uuid
+import signal
+import subprocess
+import threading
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
@@ -2294,6 +2299,37 @@ def allowed_file(filename: str, allowed_extensions: set) -> bool:
     """Check if file extension is allowed"""
     return Path(filename).suffix.lower() in allowed_extensions
 
+def restart_backend(delay_seconds: int = 3):
+    """Restart the backend server after a delay
+
+    Args:
+        delay_seconds: Seconds to wait before restart (allows response to be sent)
+    """
+    def _restart():
+        try:
+            time.sleep(delay_seconds)
+            logger.info("="*80)
+            logger.info("RESTARTING BACKEND SERVER...")
+            logger.info("="*80)
+
+            # Check if running under gunicorn
+            if 'gunicorn' in os.environ.get('SERVER_SOFTWARE', ''):
+                logger.info("Detected gunicorn - sending HUP signal to reload workers")
+                # Send HUP signal to master process to reload workers
+                os.kill(os.getppid(), signal.SIGHUP)
+            else:
+                logger.info("Restarting Python process...")
+                # Restart the Python process
+                python = sys.executable
+                os.execv(python, [python] + sys.argv)
+        except Exception as e:
+            logger.error(f"Failed to restart backend: {e}")
+
+    # Start restart in a background thread
+    restart_thread = threading.Thread(target=_restart, daemon=True)
+    restart_thread.start()
+    logger.info(f"Backend restart scheduled in {delay_seconds} seconds...")
+
 @app.route('/api/admin/decision-engine/upload', methods=['POST'])
 def upload_decision_engine():
     """Upload decision engine files"""
@@ -2330,10 +2366,14 @@ def upload_decision_engine():
             log_system_event('decision_engine_updated', 'info',
                            f'Decision engine files uploaded and reloaded: {", ".join(uploaded_files)}')
 
+            # Schedule backend restart
+            restart_backend(delay_seconds=3)
+
             return jsonify({
                 'success': True,
-                'message': 'Decision engine files uploaded and reloaded successfully',
+                'message': 'Decision engine files uploaded successfully. Backend will restart in 3 seconds.',
                 'files': uploaded_files,
+                'restarting': True,
                 'engine_status': {
                     'loaded': decision_engine_manager.models_loaded,
                     'type': decision_engine_manager.engine_type,
@@ -2408,10 +2448,14 @@ def upload_ml_models():
             log_system_event('ml_models_updated', 'info',
                            f'ML model files uploaded and loaded: {", ".join(uploaded_files)}')
 
+            # Schedule backend restart
+            restart_backend(delay_seconds=3)
+
             return jsonify({
                 'success': True,
-                'message': 'ML model files uploaded and loaded successfully',
+                'message': 'ML model files uploaded successfully. Backend will restart in 3 seconds.',
                 'files': uploaded_files,
+                'restarting': True,
                 'model_status': {
                     'loaded': decision_engine_manager.models_loaded,
                     'filesUploaded': model_files_count,
@@ -2597,7 +2641,7 @@ def check_agent_health_job():
 def initialize_app():
     """Initialize application on startup"""
     logger.info("="*80)
-    logger.info("AWS Spot Optimizer - Central Server v4.1")
+    logger.info("AWS Spot Optimizer - Central Server v4.2")
     logger.info("="*80)
 
     # Create necessary directories
