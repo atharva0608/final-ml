@@ -1,12 +1,19 @@
 """
-AWS Spot Optimizer - Central Server Backend v3.0
+AWS Spot Optimizer - Central Server Backend v4.0 (COMPLETE)
 ==============================================================
-Modular, production-ready central server with:
+Fully compatible with Agent v4.0 and MySQL Schema v5.0
+
+Features:
+- All v3.0 features preserved
 - Pluggable decision engine architecture
 - Model registry and management
 - Agent connection management
 - Comprehensive logging and monitoring
 - RESTful API for frontend and agents
+- Replica configuration support
+- Full dashboard endpoints
+- Notification system
+- Background jobs
 ==============================================================
 """
 
@@ -17,12 +24,14 @@ import secrets
 import string
 import logging
 import importlib
+import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 from functools import wraps
+from decimal import Decimal
 
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, g
 from flask_cors import CORS
 import mysql.connector
 from mysql.connector import Error, pooling
@@ -66,7 +75,7 @@ class Config:
     DEBUG = os.getenv('DEBUG', 'False').lower() == 'true'
     
     # Agent Communication
-    AGENT_HEARTBEAT_TIMEOUT = int(os.getenv('AGENT_HEARTBEAT_TIMEOUT', 120))  # seconds
+    AGENT_HEARTBEAT_TIMEOUT = int(os.getenv('AGENT_HEARTBEAT_TIMEOUT', 120))
     
     # Background Jobs
     ENABLE_BACKGROUND_JOBS = os.getenv('ENABLE_BACKGROUND_JOBS', 'True').lower() == 'true'
@@ -129,7 +138,7 @@ def execute_query(query: str, params: tuple = None, fetch: bool = False,
         elif fetch:
             result = cursor.fetchall()
         else:
-            result = cursor.lastrowid if cursor.lastrowid else None
+            result = cursor.lastrowid if cursor.lastrowid else cursor.rowcount
             
         if commit and not fetch and not fetch_one:
             connection.commit()
@@ -139,7 +148,7 @@ def execute_query(query: str, params: tuple = None, fetch: bool = False,
         if connection:
             connection.rollback()
         logger.error(f"Query execution error: {e}")
-        logger.error(f"Query: {query}")
+        logger.error(f"Query: {query[:200]}")
         log_system_event('database_error', 'error', str(e), metadata={'query': query[:200]})
         raise
     finally:
@@ -151,6 +160,10 @@ def execute_query(query: str, params: tuple = None, fetch: bool = False,
 # ==============================================================================
 # UTILITY FUNCTIONS
 # ==============================================================================
+
+def generate_uuid() -> str:
+    """Generate UUID"""
+    return str(uuid.uuid4())
 
 def generate_client_token() -> str:
     """Generate a secure random client token"""
@@ -180,9 +193,9 @@ def create_notification(message: str, severity: str = 'info', client_id: str = N
     """Create a notification"""
     try:
         execute_query("""
-            INSERT INTO notifications (message, severity, client_id, created_at)
-            VALUES (%s, %s, %s, NOW())
-        """, (message, severity, client_id))
+            INSERT INTO notifications (id, message, severity, client_id, created_at)
+            VALUES (%s, %s, %s, %s, NOW())
+        """, (generate_uuid(), message, severity, client_id))
         logger.info(f"Notification created: {message[:50]}...")
     except Exception as e:
         logger.error(f"Failed to create notification: {e}")
@@ -194,25 +207,25 @@ def create_notification(message: str, severity: str = 'info', client_id: str = N
 class AgentRegistrationSchema(Schema):
     """Validation schema for agent registration"""
     client_token = fields.Str(required=True)
-    hostname = fields.Str(required=True, validate=validate.Length(max=255))
-    logical_agent_id = fields.Str(required=True, validate=validate.Length(max=128))
-    instance_id = fields.Str(required=True, validate=validate.Regexp(r'^i-[a-f0-9]+$'))
+    hostname = fields.Str(required=False, validate=validate.Length(max=255))
+    logical_agent_id = fields.Str(required=True, validate=validate.Length(max=255))
+    instance_id = fields.Str(required=True)
     instance_type = fields.Str(required=True, validate=validate.Length(max=64))
-    region = fields.Str(required=True, validate=validate.Regexp(r'^[a-z]+-[a-z]+-\d+$'))
-    az = fields.Str(required=True, validate=validate.Regexp(r'^[a-z]+-[a-z]+-\d+[a-z]$'))
-    ami_id = fields.Str(required=True, validate=validate.Regexp(r'^ami-[a-f0-9]+$'))
+    region = fields.Str(required=True)
+    az = fields.Str(required=True)
+    ami_id = fields.Str(required=False)
     mode = fields.Str(required=True, validate=validate.OneOf(['spot', 'ondemand', 'unknown']))
-    agent_version = fields.Str(required=True, validate=validate.Length(max=32))
+    agent_version = fields.Str(required=False, validate=validate.Length(max=32))
     private_ip = fields.Str(required=False, validate=validate.Length(max=45))
     public_ip = fields.Str(required=False, validate=validate.Length(max=45))
 
 class HeartbeatSchema(Schema):
     """Validation schema for heartbeat"""
     status = fields.Str(required=True, validate=validate.OneOf(['online', 'offline', 'disabled', 'switching', 'error']))
-    instance_id = fields.Str(required=True)
-    instance_type = fields.Str(required=True)
-    mode = fields.Str(required=True)
-    az = fields.Str(required=True)
+    instance_id = fields.Str(required=False)
+    instance_type = fields.Str(required=False)
+    mode = fields.Str(required=False)
+    az = fields.Str(required=False)
 
 class PricingReportSchema(Schema):
     """Validation schema for pricing report"""
@@ -225,12 +238,12 @@ class SwitchReportSchema(Schema):
     new_instance = fields.Dict(required=True)
     timing = fields.Dict(required=True)
     pricing = fields.Dict(required=True)
-    trigger = fields.Str(required=True, validate=validate.OneOf(['manual', 'model', 'emergency', 'scheduled']))
-    command_id = fields.Int(required=False)
+    trigger = fields.Str(required=True)
+    command_id = fields.Str(required=False)
 
 class ForceSwitchSchema(Schema):
     """Validation schema for force switch"""
-    target = fields.Str(required=True, validate=validate.OneOf(['ondemand', 'pool']))
+    target = fields.Str(required=True, validate=validate.OneOf(['ondemand', 'pool', 'spot']))
     pool_id = fields.Str(required=False, validate=validate.Length(max=128))
 
 # ==============================================================================
@@ -249,7 +262,7 @@ def require_client_token(f):
             return jsonify({'error': 'Missing client token'}), 401
         
         client = execute_query(
-            "SELECT id, name FROM clients WHERE client_token = %s AND status = 'active'",
+            "SELECT id, name FROM clients WHERE client_token = %s AND is_active = TRUE",
             (token,),
             fetch_one=True
         )
@@ -309,8 +322,7 @@ class DecisionEngineManager:
             return True
             
         except Exception as e:
-            logger.error(f"Failed to load decision engine: {e}", exc_info=True)
-            log_system_event('decision_engine_load_failed', 'error', str(e))
+            logger.warning(f"Decision engine not loaded: {e}")
             self.models_loaded = False
             return False
     
@@ -332,7 +344,7 @@ class DecisionEngineManager:
                         is_active = VALUES(is_active),
                         loaded_at = NOW()
                 """, (
-                    model_info.get('id'),
+                    model_info.get('id', generate_uuid()),
                     model_info.get('name'),
                     model_info.get('type'),
                     model_info.get('version'),
@@ -436,12 +448,12 @@ def register_agent():
         return jsonify({'error': 'Validation failed', 'details': e.messages}), 400
     
     try:
-        agent_id = f"agent-{validated_data['instance_id'][:8]}-{secrets.token_hex(4)}"
+        logical_agent_id = validated_data['logical_agent_id']
         
         # Check if agent exists
         existing = execute_query(
             "SELECT id FROM agents WHERE logical_agent_id = %s AND client_id = %s",
-            (validated_data['logical_agent_id'], request.client_id),
+            (logical_agent_id, request.client_id),
             fetch_one=True
         )
         
@@ -450,12 +462,30 @@ def register_agent():
             # Update existing agent
             execute_query("""
                 UPDATE agents 
-                SET status = 'online', hostname = %s, agent_version = %s,
-                    private_ip = %s, public_ip = %s, last_heartbeat = NOW(),
+                SET status = 'online',
+                    hostname = %s,
+                    instance_id = %s,
+                    instance_type = %s,
+                    region = %s,
+                    az = %s,
+                    ami_id = %s,
+                    current_mode = %s,
+                    current_pool_id = %s,
+                    agent_version = %s,
+                    private_ip = %s,
+                    public_ip = %s,
+                    last_heartbeat_at = NOW(),
                     updated_at = NOW()
                 WHERE id = %s
             """, (
                 validated_data.get('hostname'),
+                validated_data['instance_id'],
+                validated_data['instance_type'],
+                validated_data['region'],
+                validated_data['az'],
+                validated_data.get('ami_id'),
+                validated_data['mode'],
+                f"{validated_data['instance_type']}.{validated_data['az']}" if validated_data['mode'] == 'spot' else None,
                 validated_data.get('agent_version'),
                 validated_data.get('private_ip'),
                 validated_data.get('public_ip'),
@@ -463,16 +493,25 @@ def register_agent():
             ))
         else:
             # Insert new agent
+            agent_id = generate_uuid()
             execute_query("""
                 INSERT INTO agents 
-                (id, client_id, logical_agent_id, hostname, status, agent_version,
-                 private_ip, public_ip, last_heartbeat)
-                VALUES (%s, %s, %s, %s, 'online', %s, %s, %s, NOW())
+                (id, client_id, logical_agent_id, hostname, instance_id, instance_type,
+                 region, az, ami_id, current_mode, current_pool_id, agent_version,
+                 private_ip, public_ip, status, last_heartbeat_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'online', NOW())
             """, (
                 agent_id,
                 request.client_id,
-                validated_data['logical_agent_id'],
+                logical_agent_id,
                 validated_data.get('hostname'),
+                validated_data['instance_id'],
+                validated_data['instance_type'],
+                validated_data['region'],
+                validated_data['az'],
+                validated_data.get('ami_id'),
+                validated_data['mode'],
+                f"{validated_data['instance_type']}.{validated_data['az']}" if validated_data['mode'] == 'spot' else None,
                 validated_data.get('agent_version'),
                 validated_data.get('private_ip'),
                 validated_data.get('public_ip')
@@ -485,22 +524,14 @@ def register_agent():
             """, (agent_id,))
             
             create_notification(
-                f"New agent registered: {agent_id}",
+                f"New agent registered: {logical_agent_id}",
                 'info',
                 request.client_id
             )
         
-        # Get agent config
-        config_data = execute_query("""
-            SELECT ac.*, a.enabled, a.auto_switch_enabled, a.auto_terminate_enabled
-            FROM agent_configs ac
-            JOIN agents a ON a.id = ac.agent_id
-            WHERE ac.agent_id = %s
-        """, (agent_id,), fetch_one=True)
-        
         # Handle instance registration
         instance_exists = execute_query(
-            "SELECT id, baseline_ondemand_price FROM instances WHERE id = %s",
+            "SELECT id FROM instances WHERE id = %s",
             (validated_data['instance_id'],),
             fetch_one=True
         )
@@ -528,10 +559,28 @@ def register_agent():
                 validated_data['instance_type'],
                 validated_data['region'],
                 validated_data['az'],
-                validated_data['ami_id'],
+                validated_data.get('ami_id'),
                 validated_data['mode'],
                 baseline_price
             ))
+        
+        # Get agent config
+        config_data = execute_query("""
+            SELECT 
+                a.enabled,
+                a.auto_switch_enabled,
+                a.auto_terminate_enabled,
+                a.terminate_wait_seconds,
+                a.replica_enabled,
+                a.replica_count,
+                COALESCE(ac.min_savings_percent, 15.00) as min_savings_percent,
+                COALESCE(ac.risk_threshold, 0.30) as risk_threshold,
+                COALESCE(ac.max_switches_per_week, 10) as max_switches_per_week,
+                COALESCE(ac.min_pool_duration_hours, 2) as min_pool_duration_hours
+            FROM agents a
+            LEFT JOIN agent_configs ac ON ac.agent_id = a.id
+            WHERE a.id = %s
+        """, (agent_id,), fetch_one=True)
         
         log_system_event('agent_registered', 'info', 
                         f"Agent {agent_id} registered successfully",
@@ -544,6 +593,9 @@ def register_agent():
                 'enabled': config_data['enabled'],
                 'auto_switch_enabled': config_data['auto_switch_enabled'],
                 'auto_terminate_enabled': config_data['auto_terminate_enabled'],
+                'terminate_wait_seconds': config_data['terminate_wait_seconds'],
+                'replica_enabled': config_data['replica_enabled'],
+                'replica_count': config_data['replica_count'],
                 'min_savings_percent': float(config_data['min_savings_percent']),
                 'risk_threshold': float(config_data['risk_threshold']),
                 'max_switches_per_week': config_data['max_switches_per_week'],
@@ -553,51 +605,54 @@ def register_agent():
         
     except Exception as e:
         logger.error(f"Agent registration error: {e}", exc_info=True)
-        log_system_event('agent_registration_failed', 'error', str(e), 
-                        request.client_id)
+        log_system_event('agent_registration_failed', 'error', str(e), request.client_id)
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/agents/<agent_id>/heartbeat', methods=['POST'])
 @require_client_token
 def agent_heartbeat(agent_id: str):
     """Update agent heartbeat"""
-    data = request.json
-    
-    schema = HeartbeatSchema()
-    try:
-        schema.load(data)
-    except ValidationError as e:
-        return jsonify({'error': 'Validation failed', 'details': e.messages}), 400
+    data = request.json or {}
     
     try:
-        prev_status = execute_query(
-            "SELECT status FROM agents WHERE id = %s",
-            (agent_id,),
+        new_status = data.get('status', 'online')
+        
+        # Get previous status
+        prev = execute_query(
+            "SELECT status FROM agents WHERE id = %s AND client_id = %s",
+            (agent_id, request.client_id),
             fetch_one=True
         )
         
-        new_status = data.get('status', 'online')
+        if not prev:
+            return jsonify({'error': 'Agent not found'}), 404
         
+        # Update heartbeat
         execute_query("""
             UPDATE agents 
-            SET status = %s, last_heartbeat = NOW()
+            SET status = %s, 
+                last_heartbeat_at = NOW(),
+                instance_id = COALESCE(%s, instance_id),
+                instance_type = COALESCE(%s, instance_type),
+                current_mode = COALESCE(%s, current_mode),
+                az = COALESCE(%s, az)
             WHERE id = %s AND client_id = %s
-        """, (new_status, agent_id, request.client_id))
+        """, (
+            new_status,
+            data.get('instance_id'),
+            data.get('instance_type'),
+            data.get('mode'),
+            data.get('az'),
+            agent_id,
+            request.client_id
+        ))
         
         # Check for status change
-        if prev_status and prev_status['status'] != new_status:
+        if prev['status'] != new_status:
             if new_status == 'offline':
-                create_notification(
-                    f"Agent {agent_id} went offline",
-                    'warning',
-                    request.client_id
-                )
-            elif new_status == 'online' and prev_status['status'] == 'offline':
-                create_notification(
-                    f"Agent {agent_id} is back online",
-                    'info',
-                    request.client_id
-                )
+                create_notification(f"Agent {agent_id} went offline", 'warning', request.client_id)
+            elif new_status == 'online' and prev['status'] == 'offline':
+                create_notification(f"Agent {agent_id} is back online", 'info', request.client_id)
         
         # Update client sync time
         execute_query(
@@ -611,68 +666,26 @@ def agent_heartbeat(agent_id: str):
         logger.error(f"Heartbeat error: {e}")
         return jsonify({'error': str(e)}), 500
 
-@app.route('/api/agents/<agent_id>/pricing-report', methods=['POST'])
-@require_client_token
-def pricing_report(agent_id: str):
-    """Receive pricing data from agent"""
-    data = request.json
-    
-    schema = PricingReportSchema()
-    try:
-        schema.load(data)
-    except ValidationError as e:
-        return jsonify({'error': 'Validation failed', 'details': e.messages}), 400
-    
-    try:
-        instance = data['instance']
-        pricing = data['pricing']
-        
-        # Update instance pricing
-        execute_query("""
-            UPDATE instances
-            SET ondemand_price = %s, updated_at = NOW()
-            WHERE id = %s AND client_id = %s
-        """, (pricing['on_demand_price'], instance['instance_id'], request.client_id))
-        
-        # Store spot pool data
-        for pool in pricing['spot_pools']:
-            pool_id = pool['pool_id']
-            
-            # Ensure pool exists
-            execute_query("""
-                INSERT INTO spot_pools (id, instance_type, region, az)
-                VALUES (%s, %s, %s, %s)
-                ON DUPLICATE KEY UPDATE id = id
-            """, (pool_id, instance['instance_type'], instance['region'], pool['az']))
-            
-            # Store price snapshot
-            execute_query("""
-                INSERT INTO spot_price_snapshots (pool_id, price, captured_at)
-                VALUES (%s, %s, NOW())
-            """, (pool_id, pool['price']))
-        
-        # Store on-demand price snapshot
-        execute_query("""
-            INSERT INTO ondemand_price_snapshots (region, instance_type, price, captured_at)
-            VALUES (%s, %s, %s, NOW())
-        """, (instance['region'], instance['instance_type'], pricing['on_demand_price']))
-        
-        return jsonify({'success': True})
-        
-    except Exception as e:
-        logger.error(f"Pricing report error: {e}")
-        return jsonify({'error': str(e)}), 500
-
 @app.route('/api/agents/<agent_id>/config', methods=['GET'])
 @require_client_token
 def get_agent_config(agent_id: str):
     """Get agent configuration"""
     try:
         config_data = execute_query("""
-            SELECT ac.*, a.enabled, a.auto_switch_enabled, a.auto_terminate_enabled
-            FROM agent_configs ac
-            JOIN agents a ON a.id = ac.agent_id
-            WHERE ac.agent_id = %s AND a.client_id = %s
+            SELECT 
+                a.enabled,
+                a.auto_switch_enabled,
+                a.auto_terminate_enabled,
+                a.terminate_wait_seconds,
+                a.replica_enabled,
+                a.replica_count,
+                COALESCE(ac.min_savings_percent, 15.00) as min_savings_percent,
+                COALESCE(ac.risk_threshold, 0.30) as risk_threshold,
+                COALESCE(ac.max_switches_per_week, 10) as max_switches_per_week,
+                COALESCE(ac.min_pool_duration_hours, 2) as min_pool_duration_hours
+            FROM agents a
+            LEFT JOIN agent_configs ac ON ac.agent_id = a.id
+            WHERE a.id = %s AND a.client_id = %s
         """, (agent_id, request.client_id), fetch_one=True)
         
         if not config_data:
@@ -682,6 +695,9 @@ def get_agent_config(agent_id: str):
             'enabled': config_data['enabled'],
             'auto_switch_enabled': config_data['auto_switch_enabled'],
             'auto_terminate_enabled': config_data['auto_terminate_enabled'],
+            'terminate_wait_seconds': config_data['terminate_wait_seconds'],
+            'replica_enabled': config_data['replica_enabled'],
+            'replica_count': config_data['replica_count'],
             'min_savings_percent': float(config_data['min_savings_percent']),
             'risk_threshold': float(config_data['risk_threshold']),
             'max_switches_per_week': config_data['max_switches_per_week'],
@@ -697,44 +713,166 @@ def get_agent_config(agent_id: str):
 def get_pending_commands(agent_id: str):
     """Get pending commands for agent (sorted by priority)"""
     try:
+        # Check both commands table and pending_switch_commands for compatibility
         commands = execute_query("""
-            SELECT * FROM pending_switch_commands
+            SELECT 
+                id,
+                instance_id,
+                target_mode,
+                target_pool_id,
+                priority,
+                terminate_wait_seconds,
+                created_at
+            FROM commands
+            WHERE agent_id = %s AND status = 'pending'
+            
+            UNION ALL
+            
+            SELECT 
+                CAST(id AS CHAR) as id,
+                instance_id,
+                target_mode,
+                target_pool_id,
+                priority,
+                terminate_wait_seconds,
+                created_at
+            FROM pending_switch_commands
             WHERE agent_id = %s AND executed_at IS NULL
+            
             ORDER BY priority DESC, created_at ASC
-        """, (agent_id,), fetch=True)
+        """, (agent_id, agent_id), fetch=True)
         
         return jsonify([{
-            'id': cmd['id'],
+            'id': str(cmd['id']),
             'instance_id': cmd['instance_id'],
             'target_mode': cmd['target_mode'],
             'target_pool_id': cmd['target_pool_id'],
             'priority': cmd['priority'],
             'terminate_wait_seconds': cmd['terminate_wait_seconds'],
-            'created_at': cmd['created_at'].isoformat()
+            'created_at': cmd['created_at'].isoformat() if cmd['created_at'] else None
         } for cmd in commands or []])
         
     except Exception as e:
         logger.error(f"Get pending commands error: {e}")
         return jsonify({'error': str(e)}), 500
 
-@app.route('/api/agents/<agent_id>/commands/<int:command_id>/executed', methods=['POST'])
+@app.route('/api/agents/<agent_id>/commands/<command_id>/executed', methods=['POST'])
 @require_client_token
-def mark_command_executed(agent_id: str, command_id: int):
+def mark_command_executed(agent_id: str, command_id: str):
     """Mark command as executed"""
-    data = request.json
+    data = request.json or {}
     
     try:
+        success = data.get('success', True)
+        message = data.get('message', '')
+        
+        # Try to update in commands table first
         execute_query("""
-            UPDATE pending_switch_commands
-            SET executed_at = NOW(),
-                execution_result = %s
+            UPDATE commands
+            SET status = %s,
+                success = %s,
+                message = %s,
+                executed_at = NOW(),
+                completed_at = NOW()
             WHERE id = %s AND agent_id = %s
-        """, (json.dumps(data), command_id, agent_id))
+        """, (
+            'completed' if success else 'failed',
+            success,
+            message,
+            command_id,
+            agent_id
+        ))
+        
+        # Also try pending_switch_commands for backwards compatibility
+        if command_id.isdigit():
+            execute_query("""
+                UPDATE pending_switch_commands
+                SET executed_at = NOW(),
+                    execution_result = %s
+                WHERE id = %s AND agent_id = %s
+            """, (json.dumps(data), int(command_id), agent_id))
         
         return jsonify({'success': True})
         
     except Exception as e:
         logger.error(f"Mark command executed error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/agents/<agent_id>/pricing-report', methods=['POST'])
+@require_client_token
+def pricing_report(agent_id: str):
+    """Receive pricing data from agent"""
+    data = request.json
+    
+    try:
+        instance = data.get('instance', {})
+        pricing = data.get('pricing', {})
+        
+        # Update instance pricing
+        execute_query("""
+            UPDATE instances
+            SET ondemand_price = %s, spot_price = %s, updated_at = NOW()
+            WHERE id = %s AND client_id = %s
+        """, (
+            pricing.get('on_demand_price'),
+            pricing.get('current_spot_price'),
+            instance.get('instance_id'),
+            request.client_id
+        ))
+        
+        # Store pricing report
+        report_id = generate_uuid()
+        execute_query("""
+            INSERT INTO pricing_reports (
+                id, agent_id, instance_id, instance_type, region, az,
+                current_mode, current_pool_id, on_demand_price, current_spot_price,
+                cheapest_pool_id, cheapest_pool_price, spot_pools, collected_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """, (
+            report_id,
+            agent_id,
+            instance.get('instance_id'),
+            instance.get('instance_type'),
+            instance.get('region'),
+            instance.get('az'),
+            instance.get('mode'),
+            instance.get('pool_id'),
+            pricing.get('on_demand_price'),
+            pricing.get('current_spot_price'),
+            pricing.get('cheapest_pool', {}).get('pool_id') if pricing.get('cheapest_pool') else None,
+            pricing.get('cheapest_pool', {}).get('price') if pricing.get('cheapest_pool') else None,
+            json.dumps(pricing.get('spot_pools', [])),
+            pricing.get('collected_at')
+        ))
+        
+        # Store spot pool prices
+        for pool in pricing.get('spot_pools', []):
+            pool_id = pool['pool_id']
+            
+            # Ensure pool exists
+            execute_query("""
+                INSERT INTO spot_pools (id, instance_type, region, az)
+                VALUES (%s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE updated_at = NOW()
+            """, (pool_id, instance.get('instance_type'), instance.get('region'), pool['az']))
+            
+            # Store price snapshot
+            execute_query("""
+                INSERT INTO spot_price_snapshots (pool_id, price)
+                VALUES (%s, %s)
+            """, (pool_id, pool['price']))
+        
+        # Store on-demand price snapshot
+        if pricing.get('on_demand_price'):
+            execute_query("""
+                INSERT INTO ondemand_price_snapshots (region, instance_type, price)
+                VALUES (%s, %s, %s)
+            """, (instance.get('region'), instance.get('instance_type'), pricing['on_demand_price']))
+        
+        return jsonify({'success': True})
+        
+    except Exception as e:
+        logger.error(f"Pricing report error: {e}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/agents/<agent_id>/switch-report', methods=['POST'])
@@ -743,38 +881,46 @@ def switch_report(agent_id: str):
     """Record switch event"""
     data = request.json
     
-    schema = SwitchReportSchema()
     try:
-        schema.load(data)
-    except ValidationError as e:
-        return jsonify({'error': 'Validation failed', 'details': e.messages}), 400
-    
-    try:
-        old_inst = data['old_instance']
-        new_inst = data['new_instance']
-        timing = data['timing']
-        prices = data['pricing']
+        old_inst = data.get('old_instance', {})
+        new_inst = data.get('new_instance', {})
+        timing = data.get('timing', {})
+        prices = data.get('pricing', {})
         
-        savings_impact = (prices.get('old_spot', prices['on_demand']) - 
-                         prices.get('new_spot', prices['on_demand']))
+        # Calculate savings impact
+        old_price = prices.get('old_spot') or prices.get('on_demand', 0)
+        new_price = prices.get('new_spot') or prices.get('on_demand', 0)
+        savings_impact = old_price - new_price
         
-        # Insert switch event
+        # Insert switch record
+        switch_id = generate_uuid()
         execute_query("""
-            INSERT INTO switch_events (
-                client_id, agent_id, instance_id, old_instance_id, new_instance_id,
-                event_trigger, from_mode, to_mode, from_pool_id, to_pool_id,
+            INSERT INTO switches (
+                id, client_id, agent_id, command_id,
+                old_instance_id, old_instance_type, old_region, old_az, old_mode, old_pool_id, old_ami_id,
+                new_instance_id, new_instance_type, new_region, new_az, new_mode, new_pool_id, new_ami_id,
                 on_demand_price, old_spot_price, new_spot_price, savings_impact,
-                ami_id, timing_data, timestamp
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                event_trigger, trigger_type, timing_data,
+                initiated_at, ami_created_at, instance_launched_at, instance_ready_at, old_terminated_at
+            ) VALUES (
+                %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s,
+                %s, %s, %s,
+                %s, %s, %s, %s, %s
+            )
         """, (
-            request.client_id, agent_id, new_inst['instance_id'],
-            old_inst['instance_id'], new_inst['instance_id'],
-            data['trigger'], old_inst['mode'], new_inst['mode'],
-            old_inst.get('pool_id'), new_inst.get('pool_id'),
-            prices['on_demand'], prices.get('old_spot'), prices.get('new_spot'),
-            savings_impact, new_inst.get('ami_id'),
-            json.dumps(timing),
-            timing.get('instance_launched_at', datetime.utcnow().isoformat())
+            switch_id, request.client_id, agent_id, data.get('command_id'),
+            old_inst.get('instance_id'), old_inst.get('instance_type'), old_inst.get('region'),
+            old_inst.get('az'), old_inst.get('mode'), old_inst.get('pool_id'), old_inst.get('ami_id'),
+            new_inst.get('instance_id'), new_inst.get('instance_type'), new_inst.get('region'),
+            new_inst.get('az'), new_inst.get('mode'), new_inst.get('pool_id'), new_inst.get('ami_id'),
+            prices.get('on_demand'), prices.get('old_spot'), prices.get('new_spot'), savings_impact,
+            data.get('trigger'), data.get('trigger'), json.dumps(timing),
+            timing.get('initiated_at'), timing.get('ami_created_at'),
+            timing.get('instance_launched_at'), timing.get('instance_ready_at'),
+            timing.get('old_terminated_at')
         ))
         
         # Deactivate old instance
@@ -782,7 +928,7 @@ def switch_report(agent_id: str):
             UPDATE instances
             SET is_active = FALSE, terminated_at = %s
             WHERE id = %s AND client_id = %s
-        """, (timing.get('old_terminated_at'), old_inst['instance_id'], request.client_id))
+        """, (timing.get('old_terminated_at'), old_inst.get('instance_id'), request.client_id))
         
         # Register new instance
         execute_query("""
@@ -798,11 +944,26 @@ def switch_report(agent_id: str):
                 is_active = TRUE,
                 last_switch_at = VALUES(last_switch_at)
         """, (
-            new_inst['instance_id'], request.client_id, agent_id,
-            new_inst['instance_type'], new_inst['region'], new_inst['az'],
-            new_inst.get('ami_id'), new_inst['mode'], new_inst.get('pool_id'),
-            prices.get('new_spot', 0), prices['on_demand'],
+            new_inst.get('instance_id'), request.client_id, agent_id,
+            new_inst.get('instance_type'), new_inst.get('region'), new_inst.get('az'),
+            new_inst.get('ami_id'), new_inst.get('mode'), new_inst.get('pool_id'),
+            prices.get('new_spot', 0), prices.get('on_demand'),
             timing.get('instance_launched_at'), timing.get('instance_launched_at')
+        ))
+        
+        # Update agent with new instance info
+        execute_query("""
+            UPDATE agents
+            SET instance_id = %s,
+                current_mode = %s,
+                current_pool_id = %s,
+                last_switch_at = NOW()
+            WHERE id = %s
+        """, (
+            new_inst.get('instance_id'),
+            new_inst.get('mode'),
+            new_inst.get('pool_id'),
+            agent_id
         ))
         
         # Update total savings
@@ -811,36 +972,50 @@ def switch_report(agent_id: str):
                 UPDATE clients
                 SET total_savings = total_savings + %s
                 WHERE id = %s
-            """, (savings_impact * 24, request.client_id))  # Convert to daily savings
+            """, (savings_impact * 24, request.client_id))
         
         create_notification(
-            f"Instance switched: {new_inst['instance_id']} - Saved ${savings_impact:.4f}/hr",
+            f"Instance switched: {new_inst.get('instance_id')} - Saved ${savings_impact:.4f}/hr",
             'info',
             request.client_id
         )
         
         log_system_event('switch_completed', 'info',
-                        f"Switch from {old_inst['instance_id']} to {new_inst['instance_id']}",
-                        request.client_id, agent_id, new_inst['instance_id'],
+                        f"Switch from {old_inst.get('instance_id')} to {new_inst.get('instance_id')}",
+                        request.client_id, agent_id, new_inst.get('instance_id'),
                         metadata={'savings_impact': float(savings_impact)})
         
         return jsonify({'success': True})
         
     except Exception as e:
-        logger.error(f"Switch report error: {e}")
+        logger.error(f"Switch report error: {e}", exc_info=True)
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/agents/<agent_id>/termination', methods=['POST'])
 @require_client_token
 def report_termination(agent_id: str):
     """Report instance termination"""
-    data = request.json
+    data = request.json or {}
     
     try:
+        reason = data.get('reason', 'Unknown')
+        
+        # Update agent status
+        execute_query("""
+            UPDATE agents
+            SET status = 'offline',
+                terminated_at = NOW()
+            WHERE id = %s AND client_id = %s
+        """, (agent_id, request.client_id))
+        
+        create_notification(
+            f"Agent {agent_id} terminated: {reason}",
+            'warning',
+            request.client_id
+        )
+        
         log_system_event('instance_terminated', 'warning',
-                        data.get('reason', 'Unknown reason'),
-                        request.client_id, agent_id,
-                        metadata=data)
+                        reason, request.client_id, agent_id, metadata=data)
         
         return jsonify({'success': True})
         
@@ -848,7 +1023,28 @@ def report_termination(agent_id: str):
         logger.error(f"Termination report error: {e}")
         return jsonify({'error': str(e)}), 500
 
-# Continuing central_server_v3.py...
+@app.route('/api/agents/<agent_id>/replica-config', methods=['GET'])
+@require_client_token
+def get_replica_config(agent_id: str):
+    """Get replica configuration for agent"""
+    try:
+        config_data = execute_query("""
+            SELECT replica_enabled, replica_count
+            FROM agents
+            WHERE id = %s AND client_id = %s
+        """, (agent_id, request.client_id), fetch_one=True)
+        
+        if not config_data:
+            return jsonify({'error': 'Agent not found'}), 404
+        
+        return jsonify({
+            'enabled': config_data['replica_enabled'],
+            'count': config_data['replica_count']
+        })
+        
+    except Exception as e:
+        logger.error(f"Get replica config error: {e}")
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/agents/<agent_id>/decide', methods=['POST'])
 @require_client_token
@@ -862,18 +1058,24 @@ def get_decision(agent_id: str):
         
         # Get agent config
         config_data = execute_query("""
-            SELECT ac.*, a.enabled, a.auto_switch_enabled
-            FROM agent_configs ac
-            JOIN agents a ON a.id = ac.agent_id
-            WHERE ac.agent_id = %s AND a.client_id = %s
+            SELECT 
+                a.enabled,
+                a.auto_switch_enabled,
+                COALESCE(ac.min_savings_percent, 15.00) as min_savings_percent,
+                COALESCE(ac.risk_threshold, 0.30) as risk_threshold,
+                COALESCE(ac.max_switches_per_week, 10) as max_switches_per_week,
+                COALESCE(ac.min_pool_duration_hours, 2) as min_pool_duration_hours
+            FROM agents a
+            LEFT JOIN agent_configs ac ON ac.agent_id = a.id
+            WHERE a.id = %s AND a.client_id = %s
         """, (agent_id, request.client_id), fetch_one=True)
         
         if not config_data or not config_data['enabled']:
             return jsonify({
-                'instance_id': instance['instance_id'],
+                'instance_id': instance.get('instance_id'),
                 'risk_score': 0.0,
                 'recommended_action': 'stay',
-                'recommended_mode': instance['current_mode'],
+                'recommended_mode': instance.get('current_mode'),
                 'recommended_pool_id': instance.get('current_pool_id'),
                 'expected_savings_per_hour': 0.0,
                 'allowed': False,
@@ -883,17 +1085,17 @@ def get_decision(agent_id: str):
         # Get recent switches count
         recent_switches = execute_query("""
             SELECT COUNT(*) as count
-            FROM switch_events
-            WHERE agent_id = %s AND timestamp >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+            FROM switches
+            WHERE agent_id = %s AND initiated_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
         """, (agent_id,), fetch_one=True)
         
         # Get last switch time
         last_switch = execute_query("""
-            SELECT timestamp FROM switch_events
-            WHERE instance_id = %s OR new_instance_id = %s
-            ORDER BY timestamp DESC
+            SELECT initiated_at FROM switches
+            WHERE agent_id = %s
+            ORDER BY initiated_at DESC
             LIMIT 1
-        """, (instance['instance_id'], instance['instance_id']), fetch_one=True)
+        """, (agent_id,), fetch_one=True)
         
         # Make decision
         decision = decision_engine_manager.make_decision(
@@ -901,7 +1103,7 @@ def get_decision(agent_id: str):
             pricing=pricing,
             config_data=config_data,
             recent_switches_count=recent_switches['count'] if recent_switches else 0,
-            last_switch_time=last_switch['timestamp'] if last_switch else None
+            last_switch_time=last_switch['initiated_at'] if last_switch else None
         )
         
         # Store decision in database
@@ -912,7 +1114,7 @@ def get_decision(agent_id: str):
                 allowed, reason, model_version
             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """, (
-            request.client_id, instance['instance_id'], agent_id,
+            request.client_id, instance.get('instance_id'), agent_id,
             decision.get('risk_score'), decision.get('recommended_action'),
             decision.get('recommended_pool_id'), decision.get('recommended_mode'),
             decision.get('expected_savings_per_hour'), decision.get('allowed'),
@@ -932,15 +1134,11 @@ def get_decision(agent_id: str):
 @app.route('/api/admin/clients/create', methods=['POST'])
 def create_client():
     """Create a new client with auto-generated token"""
-    data = request.json
+    data = request.json or {}
     
-    if not data or 'name' not in data:
+    client_name = data.get('name', '').strip()
+    if not client_name:
         return jsonify({'error': 'Client name is required'}), 400
-    
-    client_name = data['name'].strip()
-    
-    if not client_name or len(client_name) > 255:
-        return jsonify({'error': 'Invalid client name'}), 400
     
     try:
         # Check if exists
@@ -951,15 +1149,16 @@ def create_client():
         )
         
         if existing:
-            return jsonify({'error': f'Client with name "{client_name}" already exists'}), 409
+            return jsonify({'error': f'Client "{client_name}" already exists'}), 409
         
-        client_id = generate_client_id()
+        client_id = generate_uuid()
         client_token = generate_client_token()
+        email = data.get('email', f"{client_name.lower().replace(' ', '_')}@example.com")
         
         execute_query("""
-            INSERT INTO clients (id, name, status, client_token, created_at, total_savings)
-            VALUES (%s, %s, 'active', %s, NOW(), 0.0000)
-        """, (client_id, client_name, client_token))
+            INSERT INTO clients (id, name, email, client_token, is_active, total_savings)
+            VALUES (%s, %s, %s, %s, TRUE, 0.0000)
+        """, (client_id, client_name, email, client_token))
         
         create_notification(f"New client created: {client_name}", 'info', client_id)
         log_system_event('client_created', 'info', f"Client {client_name} created",
@@ -983,7 +1182,7 @@ def create_client():
 
 @app.route('/api/admin/clients/<client_id>', methods=['DELETE'])
 def delete_client(client_id: str):
-    """Delete a client and all associated data (cascades)"""
+    """Delete a client and all associated data"""
     try:
         client = execute_query(
             "SELECT id, name FROM clients WHERE id = %s",
@@ -1015,7 +1214,7 @@ def delete_client(client_id: str):
 
 @app.route('/api/admin/clients/<client_id>/regenerate-token', methods=['POST'])
 def regenerate_client_token(client_id: str):
-    """Regenerate client token (invalidates old token)"""
+    """Regenerate client token"""
     try:
         client = execute_query(
             "SELECT id, name FROM clients WHERE id = %s",
@@ -1043,8 +1242,6 @@ def regenerate_client_token(client_id: str):
                         f"Token regenerated for {client['name']}",
                         client_id=client_id)
         
-        logger.warning(f"⚠ Token regenerated for client: {client['name']} ({client_id})")
-        
         return jsonify({
             'success': True,
             'token': new_token,
@@ -1057,7 +1254,7 @@ def regenerate_client_token(client_id: str):
 
 @app.route('/api/admin/clients/<client_id>/token', methods=['GET'])
 def get_client_token(client_id: str):
-    """Get client token (for admin viewing)"""
+    """Get client token"""
     try:
         client = execute_query(
             "SELECT client_token, name FROM clients WHERE id = %s",
@@ -1090,16 +1287,23 @@ def get_global_stats():
                 COUNT(DISTINCT c.id) as total_accounts,
                 COUNT(DISTINCT CASE WHEN a.status = 'online' THEN a.id END) as agents_online,
                 COUNT(DISTINCT a.id) as agents_total,
-                COUNT(DISTINCT sp.id) as pools_covered,
-                SUM(c.total_savings) as total_savings,
-                COUNT(se.id) as total_switches,
-                COUNT(CASE WHEN se.event_trigger = 'manual' THEN 1 END) as manual_switches,
-                COUNT(CASE WHEN se.event_trigger = 'model' THEN 1 END) as model_switches
+                COALESCE(SUM(c.total_savings), 0) as total_savings
             FROM clients c
             LEFT JOIN agents a ON a.client_id = c.id
-            LEFT JOIN spot_pools sp ON 1=1
-            LEFT JOIN switch_events se ON se.client_id = c.id
         """, fetch_one=True)
+        
+        switch_stats = execute_query("""
+            SELECT 
+                COUNT(*) as total_switches,
+                COUNT(CASE WHEN event_trigger = 'manual' THEN 1 END) as manual_switches,
+                COUNT(CASE WHEN event_trigger = 'model' THEN 1 END) as model_switches
+            FROM switches
+        """, fetch_one=True)
+        
+        pool_count = execute_query(
+            "SELECT COUNT(*) as count FROM spot_pools WHERE is_active = TRUE",
+            fetch_one=True
+        )
         
         backend_health = 'Healthy'
         if not decision_engine_manager.models_loaded:
@@ -1109,11 +1313,11 @@ def get_global_stats():
             'totalAccounts': stats['total_accounts'] or 0,
             'agentsOnline': stats['agents_online'] or 0,
             'agentsTotal': stats['agents_total'] or 0,
-            'poolsCovered': stats['pools_covered'] or 0,
+            'poolsCovered': pool_count['count'] if pool_count else 0,
             'totalSavings': float(stats['total_savings'] or 0),
-            'totalSwitches': stats['total_switches'] or 0,
-            'manualSwitches': stats['manual_switches'] or 0,
-            'modelSwitches': stats['model_switches'] or 0,
+            'totalSwitches': switch_stats['total_switches'] if switch_stats else 0,
+            'manualSwitches': switch_stats['manual_switches'] if switch_stats else 0,
+            'modelSwitches': switch_stats['model_switches'] if switch_stats else 0,
             'backendHealth': backend_health,
             'decisionEngineLoaded': decision_engine_manager.models_loaded,
             'mlModelsLoaded': decision_engine_manager.models_loaded
@@ -1143,7 +1347,7 @@ def get_all_clients():
         return jsonify([{
             'id': client['id'],
             'name': client['name'],
-            'status': client['status'],
+            'status': 'active' if client['is_active'] else 'inactive',
             'agentsOnline': client['agents_online'] or 0,
             'agentsTotal': client['agents_total'] or 0,
             'instances': client['instances'] or 0,
@@ -1178,7 +1382,7 @@ def get_client_details(client_id: str):
         return jsonify({
             'id': client['id'],
             'name': client['name'],
-            'status': client['status'],
+            'status': 'active' if client['is_active'] else 'inactive',
             'agentsOnline': client['agents_online'] or 0,
             'agentsTotal': client['agents_total'] or 0,
             'instances': client['instances'] or 0,
@@ -1200,17 +1404,24 @@ def get_client_agents(client_id: str):
             FROM agents a
             LEFT JOIN agent_configs ac ON ac.agent_id = a.id
             WHERE a.client_id = %s
-            ORDER BY a.last_heartbeat DESC
+            ORDER BY a.last_heartbeat_at DESC
         """, (client_id,), fetch=True)
         
         return jsonify([{
             'id': agent['id'],
+            'logicalAgentId': agent['logical_agent_id'],
+            'instanceId': agent['instance_id'],
+            'instanceType': agent['instance_type'],
+            'region': agent['region'],
+            'az': agent['az'],
+            'currentMode': agent['current_mode'],
             'status': agent['status'],
-            'lastHeartbeat': agent['last_heartbeat'].isoformat() if agent['last_heartbeat'] else None,
+            'lastHeartbeat': agent['last_heartbeat_at'].isoformat() if agent['last_heartbeat_at'] else None,
             'instanceCount': agent['instance_count'] or 0,
             'enabled': agent['enabled'],
-            'auto_switch_enabled': agent['auto_switch_enabled'],
-            'auto_terminate_enabled': agent['auto_terminate_enabled']
+            'autoSwitchEnabled': agent['auto_switch_enabled'],
+            'autoTerminateEnabled': agent['auto_terminate_enabled'],
+            'agentVersion': agent['agent_version']
         } for agent in agents or []])
         
     except Exception as e:
@@ -1220,17 +1431,17 @@ def get_client_agents(client_id: str):
 @app.route('/api/client/agents/<agent_id>/toggle-enabled', methods=['POST'])
 def toggle_agent(agent_id: str):
     """Enable/disable agent"""
-    data = request.json
+    data = request.json or {}
     
     try:
         execute_query("""
             UPDATE agents
             SET enabled = %s
             WHERE id = %s
-        """, (data['enabled'], agent_id))
+        """, (data.get('enabled', True), agent_id))
         
         log_system_event('agent_toggled', 'info',
-                        f"Agent {agent_id} {'enabled' if data['enabled'] else 'disabled'}",
+                        f"Agent {agent_id} {'enabled' if data.get('enabled') else 'disabled'}",
                         agent_id=agent_id)
         
         return jsonify({'success': True})
@@ -1242,7 +1453,7 @@ def toggle_agent(agent_id: str):
 @app.route('/api/client/agents/<agent_id>/settings', methods=['POST'])
 def update_agent_settings(agent_id: str):
     """Update agent settings"""
-    data = request.json
+    data = request.json or {}
     
     try:
         updates = []
@@ -1255,6 +1466,14 @@ def update_agent_settings(agent_id: str):
         if 'auto_terminate_enabled' in data:
             updates.append("auto_terminate_enabled = %s")
             params.append(data['auto_terminate_enabled'])
+        
+        if 'replica_enabled' in data:
+            updates.append("replica_enabled = %s")
+            params.append(data['replica_enabled'])
+        
+        if 'replica_count' in data:
+            updates.append("replica_count = %s")
+            params.append(data['replica_count'])
         
         if updates:
             params.append(agent_id)
@@ -1273,7 +1492,7 @@ def update_agent_settings(agent_id: str):
 @app.route('/api/client/agents/<agent_id>/config', methods=['POST'])
 def update_agent_config(agent_id: str):
     """Update agent configuration parameters"""
-    data = request.json
+    data = request.json or {}
     
     try:
         updates = []
@@ -1340,11 +1559,13 @@ def get_client_instances(client_id: str):
         return jsonify([{
             'id': inst['id'],
             'type': inst['instance_type'],
+            'region': inst['region'],
             'az': inst['az'],
             'mode': inst['current_mode'],
             'poolId': inst['current_pool_id'] or 'n/a',
             'spotPrice': float(inst['spot_price'] or 0),
             'onDemandPrice': float(inst['ondemand_price'] or 0),
+            'isActive': inst['is_active'],
             'lastSwitch': inst['last_switch_at'].isoformat() if inst['last_switch_at'] else None
         } for inst in instances or []])
         
@@ -1390,6 +1611,7 @@ def get_instance_pricing(instance_id: str):
             },
             'pools': [{
                 'id': pool['pool_id'],
+                'az': pool['az'],
                 'price': float(pool['price']),
                 'savings': ((ondemand_price - float(pool['price'])) / ondemand_price * 100) if ondemand_price > 0 else 0
             } for pool in pools or []]
@@ -1414,17 +1636,17 @@ def get_instance_metrics(instance_id: str):
                 i.baseline_ondemand_price,
                 TIMESTAMPDIFF(HOUR, i.installed_at, NOW()) as uptime_hours,
                 TIMESTAMPDIFF(HOUR, i.last_switch_at, NOW()) as hours_since_last_switch,
-                (SELECT COUNT(*) FROM switch_events WHERE new_instance_id = i.id) as total_switches,
-                (SELECT COUNT(*) FROM switch_events 
+                (SELECT COUNT(*) FROM switches WHERE new_instance_id = i.id) as total_switches,
+                (SELECT COUNT(*) FROM switches 
                  WHERE new_instance_id = i.id 
-                 AND timestamp >= DATE_SUB(NOW(), INTERVAL 7 DAY)) as switches_last_7_days,
-                (SELECT COUNT(*) FROM switch_events 
+                 AND initiated_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)) as switches_last_7_days,
+                (SELECT COUNT(*) FROM switches 
                  WHERE new_instance_id = i.id 
-                 AND timestamp >= DATE_SUB(NOW(), INTERVAL 30 DAY)) as switches_last_30_days,
-                (SELECT SUM(savings_impact * 24) FROM switch_events 
+                 AND initiated_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)) as switches_last_30_days,
+                (SELECT SUM(savings_impact * 24) FROM switches 
                  WHERE new_instance_id = i.id 
-                 AND timestamp >= DATE_SUB(NOW(), INTERVAL 30 DAY)) as savings_last_30_days,
-                (SELECT SUM(savings_impact * 24) FROM switch_events 
+                 AND initiated_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)) as savings_last_30_days,
+                (SELECT SUM(savings_impact * 24) FROM switches 
                  WHERE new_instance_id = i.id) as total_savings
             FROM instances i
             WHERE i.id = %s
@@ -1457,7 +1679,7 @@ def get_instance_metrics(instance_id: str):
 @app.route('/api/client/instances/<instance_id>/force-switch', methods=['POST'])
 def force_instance_switch(instance_id: str):
     """Manually force instance switch"""
-    data = request.json
+    data = request.json or {}
     
     schema = ForceSwitchSchema()
     try:
@@ -1470,18 +1692,37 @@ def force_instance_switch(instance_id: str):
             SELECT agent_id, client_id FROM instances WHERE id = %s
         """, (instance_id,), fetch_one=True)
         
-        if not instance or not instance['agent_id']:
-            return jsonify({'error': 'Instance or agent not found'}), 404
+        if not instance:
+            # Try to find agent by instance_id
+            agent = execute_query("""
+                SELECT id, client_id FROM agents WHERE instance_id = %s
+            """, (instance_id,), fetch_one=True)
+            
+            if not agent:
+                return jsonify({'error': 'Instance or agent not found'}), 404
+            
+            instance = {'agent_id': agent['id'], 'client_id': agent['client_id']}
+        
+        if not instance.get('agent_id'):
+            return jsonify({'error': 'No agent assigned to instance'}), 404
         
         target_mode = validated_data['target']
-        target_pool_id = validated_data.get('pool_id') if target_mode == 'pool' else None
+        target_pool_id = validated_data.get('pool_id')
         
         # Insert pending command with manual priority (75)
+        command_id = generate_uuid()
         execute_query("""
-            INSERT INTO pending_switch_commands 
-            (client_id, agent_id, instance_id, target_mode, target_pool_id, priority, created_at)
-            VALUES (%s, %s, %s, %s, %s, 75, NOW())
-        """, (instance['client_id'], instance['agent_id'], instance_id, target_mode, target_pool_id))
+            INSERT INTO commands 
+            (id, client_id, agent_id, instance_id, command_type, target_mode, target_pool_id, priority, status, created_by)
+            VALUES (%s, %s, %s, %s, 'switch', %s, %s, 75, 'pending', 'manual')
+        """, (
+            command_id,
+            instance['client_id'],
+            instance['agent_id'],
+            instance_id,
+            target_mode if target_mode != 'pool' else 'spot',
+            target_pool_id
+        ))
         
         create_notification(
             f"Manual switch queued for {instance_id}",
@@ -1496,6 +1737,7 @@ def force_instance_switch(instance_id: str):
         
         return jsonify({
             'success': True,
+            'command_id': command_id,
             'message': 'Switch command queued. Agent will execute on next check.'
         })
         
@@ -1512,7 +1754,7 @@ def get_client_savings(client_id: str):
         if range_param == 'monthly':
             savings = execute_query("""
                 SELECT 
-                    CONCAT(MONTHNAME(CONCAT(year, '-', month, '-01'))) as name,
+                    MONTHNAME(CONCAT(year, '-', LPAD(month, 2, '0'), '-01')) as name,
                     baseline_cost as onDemandCost,
                     actual_cost as modelCost,
                     savings
@@ -1526,9 +1768,9 @@ def get_client_savings(client_id: str):
             
             return jsonify([{
                 'name': s['name'],
-                'savings': float(s['savings']),
-                'onDemandCost': float(s['onDemandCost']),
-                'modelCost': float(s['modelCost'])
+                'savings': float(s['savings'] or 0),
+                'onDemandCost': float(s['onDemandCost'] or 0),
+                'modelCost': float(s['modelCost'] or 0)
             } for s in savings])
         
         return jsonify([])
@@ -1545,7 +1787,7 @@ def get_switch_history(client_id: str):
     try:
         query = """
             SELECT *
-            FROM switch_events
+            FROM switches
             WHERE client_id = %s
         """
         params = [client_id]
@@ -1554,18 +1796,19 @@ def get_switch_history(client_id: str):
             query += " AND (old_instance_id = %s OR new_instance_id = %s)"
             params.extend([instance_id, instance_id])
         
-        query += " ORDER BY timestamp DESC LIMIT 100"
+        query += " ORDER BY initiated_at DESC LIMIT 100"
         
         history = execute_query(query, tuple(params), fetch=True)
         
         return jsonify([{
             'id': h['id'],
-            'instanceId': h['new_instance_id'],
-            'timestamp': h['timestamp'].isoformat(),
-            'fromMode': h['from_mode'],
-            'toMode': h['to_mode'],
-            'fromPool': h['from_pool_id'] or 'n/a',
-            'toPool': h['to_pool_id'] or 'n/a',
+            'oldInstanceId': h['old_instance_id'],
+            'newInstanceId': h['new_instance_id'],
+            'timestamp': h['initiated_at'].isoformat() if h['initiated_at'] else None,
+            'fromMode': h['old_mode'],
+            'toMode': h['new_mode'],
+            'fromPool': h['old_pool_id'] or 'n/a',
+            'toPool': h['new_pool_id'] or 'n/a',
             'trigger': h['event_trigger'],
             'price': float(h['new_spot_price'] or h['on_demand_price'] or 0),
             'savingsImpact': float(h['savings_impact'] or 0)
@@ -1581,7 +1824,7 @@ def get_client_chart_data(client_id: str):
     try:
         savings_trend = execute_query("""
             SELECT 
-                MONTHNAME(CONCAT(year, '-', month, '-01')) as month,
+                MONTHNAME(CONCAT(year, '-', LPAD(month, 2, '0'), '-01')) as month,
                 savings,
                 baseline_cost,
                 actual_cost
@@ -1602,21 +1845,21 @@ def get_client_chart_data(client_id: str):
         
         switch_freq = execute_query("""
             SELECT 
-                DATE(timestamp) as date,
+                DATE(initiated_at) as date,
                 COUNT(*) as switches
-            FROM switch_events
+            FROM switches
             WHERE client_id = %s
-              AND timestamp >= DATE_SUB(NOW(), INTERVAL 30 DAY)
-            GROUP BY DATE(timestamp)
+              AND initiated_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
+            GROUP BY DATE(initiated_at)
             ORDER BY date ASC
         """, (client_id,), fetch=True)
         
         return jsonify({
             'savingsTrend': [{
                 'month': s['month'],
-                'savings': float(s['savings']),
-                'baseline': float(s['baseline_cost']),
-                'actual': float(s['actual_cost'])
+                'savings': float(s['savings'] or 0),
+                'baseline': float(s['baseline_cost'] or 0),
+                'actual': float(s['actual_cost'] or 0)
             } for s in reversed(savings_trend or [])],
             'modeDistribution': [{
                 'mode': m['current_mode'],
@@ -1664,8 +1907,8 @@ def get_notifications():
         logger.error(f"Get notifications error: {e}")
         return jsonify({'error': str(e)}), 500
 
-@app.route('/api/notifications/<int:notif_id>/mark-read', methods=['POST'])
-def mark_notification_read(notif_id: int):
+@app.route('/api/notifications/<notif_id>/mark-read', methods=['POST'])
+def mark_notification_read(notif_id: str):
     """Mark notification as read"""
     try:
         execute_query("""
@@ -1682,7 +1925,8 @@ def mark_notification_read(notif_id: int):
 @app.route('/api/notifications/mark-all-read', methods=['POST'])
 def mark_all_notifications_read():
     """Mark all notifications as read"""
-    client_id = request.json.get('client_id') if request.json else None
+    data = request.json or {}
+    client_id = data.get('client_id')
     
     try:
         if client_id:
@@ -1763,7 +2007,8 @@ def get_system_health():
             'modelStatus': {
                 'decisionEngineLoaded': decision_engine_manager.models_loaded,
                 'mlModelsLoaded': decision_engine_manager.models_loaded,
-                'engineType': decision_engine_manager.engine_type or 'None'
+                'engineType': decision_engine_manager.engine_type or 'None',
+                'engineVersion': decision_engine_manager.engine_version or 'N/A'
             }
         })
     except Exception as e:
@@ -1797,7 +2042,7 @@ def compute_monthly_savings_job():
     try:
         logger.info("Starting monthly savings computation...")
         
-        clients = execute_query("SELECT id FROM clients WHERE status = 'active'", fetch=True)
+        clients = execute_query("SELECT id FROM clients WHERE is_active = TRUE", fetch=True)
         
         now = datetime.utcnow()
         year = now.year
@@ -1816,13 +2061,13 @@ def compute_monthly_savings_job():
                 actual = execute_query("""
                     SELECT 
                         SUM(CASE 
-                            WHEN to_mode = 'spot' THEN new_spot_price * 24 * 30
+                            WHEN new_mode = 'spot' THEN new_spot_price * 24 * 30
                             ELSE on_demand_price * 24 * 30
                         END) as cost
-                    FROM switch_events
+                    FROM switches
                     WHERE client_id = %s 
-                    AND YEAR(timestamp) = %s 
-                    AND MONTH(timestamp) = %s
+                    AND YEAR(initiated_at) = %s 
+                    AND MONTH(initiated_at) = %s
                 """, (client['id'], year, month), fetch_one=True)
                 
                 baseline_cost = float(baseline['cost'] or 0)
@@ -1892,7 +2137,7 @@ def check_agent_health_job():
         stale_agents = execute_query(f"""
             SELECT id, client_id FROM agents
             WHERE status = 'online' 
-            AND last_heartbeat < DATE_SUB(NOW(), INTERVAL {timeout} SECOND)
+            AND last_heartbeat_at < DATE_SUB(NOW(), INTERVAL {timeout} SECOND)
         """, fetch=True)
         
         for agent in (stale_agents or []):
@@ -1919,7 +2164,7 @@ def check_agent_health_job():
 def initialize_app():
     """Initialize application on startup"""
     logger.info("="*80)
-    logger.info("AWS Spot Optimizer - Central Server v3.0")
+    logger.info("AWS Spot Optimizer - Central Server v4.0 (COMPLETE)")
     logger.info("="*80)
     
     # Initialize database
