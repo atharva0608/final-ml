@@ -1,10 +1,13 @@
 """
-AWS Spot Optimizer - Central Server Backend v4.0 (COMPLETE)
+AWS Spot Optimizer - Central Server Backend v4.1
 ==============================================================
-Fully compatible with Agent v4.0 and MySQL Schema v5.0
+Fully compatible with Agent v4.0 and MySQL Schema v5.1
 
 Features:
-- All v3.0 features preserved
+- All v4.0 features preserved
+- File upload for Decision Engine and ML Models
+- Automatic model reloading after upload
+- Enhanced system health endpoint
 - Pluggable decision engine architecture
 - Model registry and management
 - Agent connection management
@@ -33,6 +36,7 @@ from decimal import Decimal
 
 from flask import Flask, request, jsonify, g
 from flask_cors import CORS
+from werkzeug.utils import secure_filename
 import mysql.connector
 from mysql.connector import Error, pooling
 from marshmallow import Schema, fields, validate, ValidationError
@@ -68,7 +72,13 @@ class Config:
     DECISION_ENGINE_MODULE = os.getenv('DECISION_ENGINE_MODULE', 'decision_engines.ml_based_engine')
     DECISION_ENGINE_CLASS = os.getenv('DECISION_ENGINE_CLASS', 'MLBasedDecisionEngine')
     MODEL_DIR = Path(os.getenv('MODEL_DIR', './models'))
-    
+    DECISION_ENGINE_DIR = Path(os.getenv('DECISION_ENGINE_DIR', './decision_engines'))
+
+    # File Upload
+    MAX_CONTENT_LENGTH = 100 * 1024 * 1024  # 100MB max file size
+    ALLOWED_MODEL_EXTENSIONS = {'.pkl', '.joblib', '.h5', '.pb', '.pth', '.onnx', '.pt'}
+    ALLOWED_ENGINE_EXTENSIONS = {'.py', '.pkl', '.joblib'}
+
     # Server
     HOST = os.getenv('HOST', '0.0.0.0')
     PORT = int(os.getenv('PORT', 5000))
@@ -87,6 +97,7 @@ config = Config()
 # ==============================================================================
 
 app = Flask(__name__)
+app.config['MAX_CONTENT_LENGTH'] = config.MAX_CONTENT_LENGTH
 CORS(app)
 
 # ==============================================================================
@@ -2276,6 +2287,149 @@ def health_check():
         }), 500
 
 # ==============================================================================
+# FILE UPLOAD ENDPOINTS
+# ==============================================================================
+
+def allowed_file(filename: str, allowed_extensions: set) -> bool:
+    """Check if file extension is allowed"""
+    return Path(filename).suffix.lower() in allowed_extensions
+
+@app.route('/api/admin/decision-engine/upload', methods=['POST'])
+def upload_decision_engine():
+    """Upload decision engine files"""
+    try:
+        if 'files' not in request.files:
+            return jsonify({'error': 'No files provided'}), 400
+
+        files = request.files.getlist('files')
+        if not files or all(f.filename == '' for f in files):
+            return jsonify({'error': 'No files selected'}), 400
+
+        uploaded_files = []
+        for file in files:
+            if file and file.filename:
+                filename = secure_filename(file.filename)
+
+                # Validate file extension
+                if not allowed_file(filename, config.ALLOWED_ENGINE_EXTENSIONS):
+                    return jsonify({
+                        'error': f'File type not allowed: {filename}. Allowed types: {", ".join(config.ALLOWED_ENGINE_EXTENSIONS)}'
+                    }), 400
+
+                # Save file
+                file_path = config.DECISION_ENGINE_DIR / filename
+                file.save(str(file_path))
+                uploaded_files.append(filename)
+                logger.info(f"✓ Uploaded decision engine file: {filename}")
+
+        # Reload decision engine
+        logger.info("Reloading decision engine after file upload...")
+        success = decision_engine_manager.load_engine()
+
+        if success:
+            log_system_event('decision_engine_updated', 'info',
+                           f'Decision engine files uploaded and reloaded: {", ".join(uploaded_files)}')
+
+            return jsonify({
+                'success': True,
+                'message': 'Decision engine files uploaded and reloaded successfully',
+                'files': uploaded_files,
+                'engine_status': {
+                    'loaded': decision_engine_manager.models_loaded,
+                    'type': decision_engine_manager.engine_type,
+                    'version': decision_engine_manager.engine_version
+                }
+            }), 200
+        else:
+            return jsonify({
+                'success': False,
+                'message': 'Files uploaded but failed to reload decision engine',
+                'files': uploaded_files
+            }), 500
+
+    except Exception as e:
+        logger.error(f"Decision engine upload error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/admin/ml-models/upload', methods=['POST'])
+def upload_ml_models():
+    """Upload ML model files"""
+    try:
+        if 'files' not in request.files:
+            return jsonify({'error': 'No files provided'}), 400
+
+        files = request.files.getlist('files')
+        if not files or all(f.filename == '' for f in files):
+            return jsonify({'error': 'No files selected'}), 400
+
+        uploaded_files = []
+        for file in files:
+            if file and file.filename:
+                filename = secure_filename(file.filename)
+
+                # Validate file extension
+                if not allowed_file(filename, config.ALLOWED_MODEL_EXTENSIONS):
+                    return jsonify({
+                        'error': f'File type not allowed: {filename}. Allowed types: {", ".join(config.ALLOWED_MODEL_EXTENSIONS)}'
+                    }), 400
+
+                # Save file
+                file_path = config.MODEL_DIR / filename
+                file.save(str(file_path))
+                uploaded_files.append(filename)
+                logger.info(f"✓ Uploaded ML model file: {filename}")
+
+        # Reload decision engine to pick up new models
+        logger.info("Reloading decision engine to load new ML models...")
+        success = decision_engine_manager.load_engine()
+
+        if success:
+            # Get updated model count
+            model_files_count = len([f for f in config.MODEL_DIR.glob('*') if f.is_file()])
+
+            # Get active models from registry
+            active_models = []
+            try:
+                models = execute_query("""
+                    SELECT model_name, version, is_active
+                    FROM model_registry
+                    WHERE is_active = TRUE
+                    ORDER BY created_at DESC
+                    LIMIT 10
+                """, fetch=True)
+                active_models = [{
+                    'name': m['model_name'],
+                    'version': m['version'],
+                    'active': bool(m['is_active'])
+                } for m in (models or [])]
+            except Exception as e:
+                logger.warning(f"Could not fetch models from registry: {e}")
+
+            log_system_event('ml_models_updated', 'info',
+                           f'ML model files uploaded and loaded: {", ".join(uploaded_files)}')
+
+            return jsonify({
+                'success': True,
+                'message': 'ML model files uploaded and loaded successfully',
+                'files': uploaded_files,
+                'model_status': {
+                    'loaded': decision_engine_manager.models_loaded,
+                    'filesUploaded': model_files_count,
+                    'activeModels': active_models
+                }
+            }), 200
+        else:
+            return jsonify({
+                'success': False,
+                'message': 'Files uploaded but failed to reload models',
+                'files': uploaded_files
+            }), 500
+
+    except Exception as e:
+        logger.error(f"ML models upload error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+# ==============================================================================
 # BACKGROUND JOBS
 # ==============================================================================
 
@@ -2443,12 +2597,17 @@ def check_agent_health_job():
 def initialize_app():
     """Initialize application on startup"""
     logger.info("="*80)
-    logger.info("AWS Spot Optimizer - Central Server v4.0 (COMPLETE)")
+    logger.info("AWS Spot Optimizer - Central Server v4.1")
     logger.info("="*80)
-    
+
+    # Create necessary directories
+    config.MODEL_DIR.mkdir(parents=True, exist_ok=True)
+    config.DECISION_ENGINE_DIR.mkdir(parents=True, exist_ok=True)
+    logger.info(f"✓ Ensured directories exist: {config.MODEL_DIR}, {config.DECISION_ENGINE_DIR}")
+
     # Initialize database
     init_db_pool()
-    
+
     # Load decision engine
     decision_engine_manager.load_engine()
     
