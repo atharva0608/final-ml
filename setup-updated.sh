@@ -68,41 +68,51 @@ log "Starting AWS Spot Optimizer Setup..."
 log "============================================"
 
 # ==============================================================================
-# STEP 0: CLONE OR UPDATE REPOSITORY
+# STEP 0: CLONE OR UPDATE REPOSITORIES
 # ==============================================================================
 
-log "Step 0: Ensuring repository is available..."
+log "Step 0: Ensuring repositories are available..."
 
+# Clone/update backend repository
 if [ -d "$CLONE_DIR/.git" ]; then
-    log "Repository already exists at $CLONE_DIR"
+    log "Backend repository already exists at $CLONE_DIR"
     cd "$CLONE_DIR"
-
-    # Update repository
-    log "Pulling latest changes..."
-    git pull origin main 2>/dev/null || git pull origin master 2>/dev/null || warn "Could not pull latest changes (might be on a branch)"
-
-    # Update submodules
-    log "Updating git submodules..."
-    git submodule update --init --recursive 2>/dev/null || warn "No submodules or submodule update failed"
+    log "Pulling latest backend changes..."
+    git pull origin main 2>/dev/null || git pull origin master 2>/dev/null || warn "Could not pull backend changes"
 else
-    log "Cloning repository from $GITHUB_REPO..."
+    log "Cloning backend repository from $GITHUB_REPO..."
     cd /home/ubuntu
-
-    # Remove any existing directory if not a git repo
     if [ -d "$CLONE_DIR" ]; then
         warn "Directory exists but is not a git repository, removing..."
         sudo rm -rf "$CLONE_DIR"
     fi
-
-    # Clone with submodules
-    git clone --recurse-submodules "$GITHUB_REPO" "$CLONE_DIR"
+    git clone "$GITHUB_REPO" "$CLONE_DIR"
     cd "$CLONE_DIR"
 fi
 
 # Set REPO_DIR to the cloned directory
 REPO_DIR="$CLONE_DIR"
 
-log "Repository available at: $REPO_DIR"
+# Clone/update frontend repository separately
+FRONTEND_REPO="https://github.com/atharva0608/frontend-.git"
+FRONTEND_DIR="$REPO_DIR/frontend"
+
+if [ -d "$FRONTEND_DIR/.git" ]; then
+    log "Frontend repository already exists at $FRONTEND_DIR"
+    cd "$FRONTEND_DIR"
+    log "Pulling latest frontend changes..."
+    git pull origin main 2>/dev/null || warn "Could not pull frontend changes"
+    cd "$REPO_DIR"
+else
+    log "Cloning frontend repository from $FRONTEND_REPO..."
+    if [ -d "$FRONTEND_DIR" ]; then
+        warn "Frontend directory exists, removing..."
+        sudo rm -rf "$FRONTEND_DIR"
+    fi
+    git clone "$FRONTEND_REPO" "$FRONTEND_DIR"
+fi
+
+log "✓ Repositories cloned/updated successfully"
 
 # Verify critical files exist
 if [ ! -f "$REPO_DIR/backend.py" ]; then
@@ -115,8 +125,8 @@ if [ ! -f "$REPO_DIR/schema.sql" ]; then
     exit 1
 fi
 
-if [ ! -d "$REPO_DIR/frontend" ]; then
-    error "frontend directory not found in repository!"
+if [ ! -d "$FRONTEND_DIR/src" ]; then
+    error "frontend/src directory not found!"
     exit 1
 fi
 
@@ -125,27 +135,6 @@ if [ -f "$REPO_DIR/demo-data.sql" ]; then
 fi
 
 log "✓ All required files verified"
-
-# Apply frontend updates patch if available
-if [ -f "$REPO_DIR/frontend-updates.patch" ]; then
-    log "Applying frontend updates patch..."
-    cd "$REPO_DIR/frontend"
-
-    # Check if patch is already applied by looking for specific new files
-    if [ ! -f "src/components/charts/ClientGrowthChart.jsx" ]; then
-        git apply --check "$REPO_DIR/frontend-updates.patch" 2>/dev/null
-        if [ $? -eq 0 ]; then
-            git apply "$REPO_DIR/frontend-updates.patch"
-            log "✓ Frontend updates applied successfully"
-        else
-            warn "Frontend patch cannot be applied (may already be applied or conflicts exist)"
-        fi
-    else
-        log "✓ Frontend updates already applied"
-    fi
-
-    cd "$REPO_DIR"
-fi
 
 # ==============================================================================
 # STEP 1: GET INSTANCE METADATA USING IMDSv2
