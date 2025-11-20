@@ -7,6 +7,8 @@
 USE spot_optimizer;
 
 -- Clean existing demo data if re-running
+DELETE FROM agent_decision_history WHERE client_id IN (SELECT id FROM clients WHERE email LIKE '%demo%');
+DELETE FROM clients_daily_snapshot;
 DELETE FROM audit_logs WHERE client_id IN (SELECT id FROM clients WHERE email LIKE '%demo%');
 DELETE FROM system_events WHERE client_id IN (SELECT id FROM clients WHERE email LIKE '%demo%');
 DELETE FROM notifications WHERE client_id IN (SELECT id FROM clients WHERE email LIKE '%demo%');
@@ -400,6 +402,173 @@ VALUES
      504, 0, 18.92, 78.43, 59.51);
 
 -- ==============================================================================
+-- 14. CLIENT DAILY SNAPSHOTS (Growth Analytics - Last 30 Days)
+-- ==============================================================================
+
+INSERT INTO clients_daily_snapshot (snapshot_date, total_clients, new_clients_today, active_clients)
+VALUES
+    -- 30 days ago: 1 client (demo-client-001 already existed)
+    (DATE_SUB(CURDATE(), INTERVAL 30 DAY), 1, 0, 1),
+    (DATE_SUB(CURDATE(), INTERVAL 29 DAY), 1, 0, 1),
+    (DATE_SUB(CURDATE(), INTERVAL 28 DAY), 1, 0, 1),
+    (DATE_SUB(CURDATE(), INTERVAL 27 DAY), 1, 0, 1),
+    (DATE_SUB(CURDATE(), INTERVAL 26 DAY), 1, 0, 1),
+    (DATE_SUB(CURDATE(), INTERVAL 25 DAY), 1, 0, 1),
+    (DATE_SUB(CURDATE(), INTERVAL 24 DAY), 1, 0, 1),
+    (DATE_SUB(CURDATE(), INTERVAL 23 DAY), 1, 0, 1),
+    (DATE_SUB(CURDATE(), INTERVAL 22 DAY), 1, 0, 1),
+    (DATE_SUB(CURDATE(), INTERVAL 21 DAY), 1, 0, 1),
+    (DATE_SUB(CURDATE(), INTERVAL 20 DAY), 1, 0, 1),
+    (DATE_SUB(CURDATE(), INTERVAL 19 DAY), 1, 0, 1),
+    (DATE_SUB(CURDATE(), INTERVAL 18 DAY), 1, 0, 1),
+    (DATE_SUB(CURDATE(), INTERVAL 17 DAY), 1, 0, 1),
+    (DATE_SUB(CURDATE(), INTERVAL 16 DAY), 1, 0, 1),
+    (DATE_SUB(CURDATE(), INTERVAL 15 DAY), 1, 0, 1),
+    (DATE_SUB(CURDATE(), INTERVAL 14 DAY), 1, 0, 1),
+    (DATE_SUB(CURDATE(), INTERVAL 13 DAY), 1, 0, 1),
+    (DATE_SUB(CURDATE(), INTERVAL 12 DAY), 1, 0, 1),
+    (DATE_SUB(CURDATE(), INTERVAL 11 DAY), 1, 0, 1),
+    (DATE_SUB(CURDATE(), INTERVAL 10 DAY), 1, 0, 1),
+    (DATE_SUB(CURDATE(), INTERVAL 9 DAY), 1, 0, 1),
+    (DATE_SUB(CURDATE(), INTERVAL 8 DAY), 1, 0, 1),
+
+    -- 7 days ago: demo-client-003 created (new_clients_today = 1)
+    (DATE_SUB(CURDATE(), INTERVAL 7 DAY), 2, 1, 2),
+    (DATE_SUB(CURDATE(), INTERVAL 6 DAY), 2, 0, 2),
+    (DATE_SUB(CURDATE(), INTERVAL 5 DAY), 2, 0, 2),
+    (DATE_SUB(CURDATE(), INTERVAL 4 DAY), 2, 0, 2),
+    (DATE_SUB(CURDATE(), INTERVAL 3 DAY), 2, 0, 2),
+    (DATE_SUB(CURDATE(), INTERVAL 2 DAY), 2, 0, 2),
+    (DATE_SUB(CURDATE(), INTERVAL 1 DAY), 2, 0, 2),
+
+    -- Today: all 3 clients active (demo-client-002 was created 30 days ago but shows in total)
+    (CURDATE(), 3, 0, 3);
+
+-- ==============================================================================
+-- 15. AGENT DECISION HISTORY (Decision Engine Recommendations)
+-- ==============================================================================
+
+INSERT INTO agent_decision_history (
+    agent_id, client_id, decision_type, recommended_action, recommended_pool_id,
+    risk_score, expected_savings, current_mode, current_pool_id, current_price, decision_time
+)
+VALUES
+    -- ====== AGENT-001 (web-server-prod-01) - 8 decisions - HEALTHY ======
+    ('agent-001', 'demo-client-001', 'price_monitor', 'stay_spot', 't3.medium-ap-south-1-ap-south-1a',
+     0.1234, 0.0319, 'spot', 't3.medium-ap-south-1-ap-south-1a', 0.0137, DATE_SUB(NOW(), INTERVAL 30 MINUTE)),
+
+    ('agent-001', 'demo-client-001', 'price_monitor', 'stay_spot', 't3.medium-ap-south-1-ap-south-1a',
+     0.0987, 0.0319, 'spot', 't3.medium-ap-south-1-ap-south-1a', 0.0137, DATE_SUB(NOW(), INTERVAL 2 HOUR)),
+
+    ('agent-001', 'demo-client-001', 'interruption_risk', 'switch_to_spot', 't3.medium-ap-south-1-ap-south-1a',
+     0.7823, 0.0315, 'spot', 't3.medium-ap-south-1-ap-south-1b', 0.0152, DATE_SUB(NOW(), INTERVAL 3 HOUR)),
+
+    ('agent-001', 'demo-client-001', 'price_monitor', 'stay_spot', 't3.medium-ap-south-1-ap-south-1b',
+     0.1456, 0.0304, 'spot', 't3.medium-ap-south-1-ap-south-1b', 0.0152, DATE_SUB(NOW(), INTERVAL 6 HOUR)),
+
+    ('agent-001', 'demo-client-001', 'price_monitor', 'stay_spot', 't3.medium-ap-south-1-ap-south-1b',
+     0.1123, 0.0304, 'spot', 't3.medium-ap-south-1-ap-south-1b', 0.0152, DATE_SUB(NOW(), INTERVAL 12 HOUR)),
+
+    ('agent-001', 'demo-client-001', 'price_monitor', 'stay_spot', 't3.medium-ap-south-1-ap-south-1b',
+     0.0876, 0.0304, 'spot', 't3.medium-ap-south-1-ap-south-1b', 0.0152, DATE_SUB(NOW(), INTERVAL 18 HOUR)),
+
+    ('agent-001', 'demo-client-001', 'price_monitor', 'stay_spot', 't3.medium-ap-south-1-ap-south-1b',
+     0.0945, 0.0304, 'spot', 't3.medium-ap-south-1-ap-south-1b', 0.0152, DATE_SUB(NOW(), INTERVAL 24 HOUR)),
+
+    ('agent-001', 'demo-client-001', 'price_monitor', 'stay_spot', 't3.medium-ap-south-1-ap-south-1b',
+     0.1034, 0.0304, 'spot', 't3.medium-ap-south-1-ap-south-1b', 0.0152, DATE_SUB(NOW(), INTERVAL 30 HOUR)),
+
+    -- ====== AGENT-002 (api-server-prod-01) - 7 decisions - HEALTHY ======
+    ('agent-002', 'demo-client-001', 'price_monitor', 'stay_spot', 'm5.large-ap-south-1-ap-south-1b',
+     0.1567, 0.0756, 'spot', 'm5.large-ap-south-1-ap-south-1b', 0.0348, DATE_SUB(NOW(), INTERVAL 45 MINUTE)),
+
+    ('agent-002', 'demo-client-001', 'price_optimization', 'switch_to_spot', 'm5.large-ap-south-1-ap-south-1b',
+     0.2134, 0.0773, 'spot', 'm5.large-ap-south-1-ap-south-1a', 0.0365, DATE_SUB(NOW(), INTERVAL 1 HOUR)),
+
+    ('agent-002', 'demo-client-001', 'price_monitor', 'stay_spot', 'm5.large-ap-south-1-ap-south-1a',
+     0.1245, 0.0756, 'spot', 'm5.large-ap-south-1-ap-south-1a', 0.0365, DATE_SUB(NOW(), INTERVAL 4 HOUR)),
+
+    ('agent-002', 'demo-client-001', 'price_monitor', 'stay_spot', 'm5.large-ap-south-1-ap-south-1a',
+     0.1389, 0.0756, 'spot', 'm5.large-ap-south-1-ap-south-1a', 0.0365, DATE_SUB(NOW(), INTERVAL 8 HOUR)),
+
+    ('agent-002', 'demo-client-001', 'price_monitor', 'stay_spot', 'm5.large-ap-south-1-ap-south-1a',
+     0.0998, 0.0756, 'spot', 'm5.large-ap-south-1-ap-south-1a', 0.0365, DATE_SUB(NOW(), INTERVAL 16 HOUR)),
+
+    ('agent-002', 'demo-client-001', 'price_monitor', 'stay_spot', 'm5.large-ap-south-1-ap-south-1a',
+     0.1123, 0.0756, 'spot', 'm5.large-ap-south-1-ap-south-1a', 0.0365, DATE_SUB(NOW(), INTERVAL 24 HOUR)),
+
+    ('agent-002', 'demo-client-001', 'price_monitor', 'stay_spot', 'm5.large-ap-south-1-ap-south-1a',
+     0.1456, 0.0756, 'spot', 'm5.large-ap-south-1-ap-south-1a', 0.0365, DATE_SUB(NOW(), INTERVAL 32 HOUR)),
+
+    -- ====== AGENT-003 (worker-01) - 2 decisions - BORDERLINE (recently online) ======
+    ('agent-003', 'demo-client-001', 'price_monitor', 'stay_spot', 'c5.large-ap-south-1-ap-south-1a',
+     0.1678, 0.0655, 'spot', 'c5.large-ap-south-1-ap-south-1a', 0.0281, DATE_SUB(NOW(), INTERVAL 1 HOUR)),
+
+    ('agent-003', 'demo-client-001', 'interruption_risk', 'switch_to_spot', 'c5.large-ap-south-1-ap-south-1a',
+     0.6234, 0.0641, 'spot', 'c5.large-ap-south-1-ap-south-1b', 0.0295, DATE_SUB(NOW(), INTERVAL 6 HOUR)),
+
+    -- ====== AGENT-004 (db-primary) - 6 decisions - HEALTHY (on-demand) ======
+    ('agent-004', 'demo-client-001', 'price_monitor', 'stay_ondemand', NULL,
+     0.7891, 0.0000, 'on-demand', NULL, 0.2208, DATE_SUB(NOW(), INTERVAL 1 HOUR)),
+
+    ('agent-004', 'demo-client-001', 'interruption_risk', 'switch_to_ondemand', NULL,
+     0.8456, 0.0000, 'spot', 'm5.xlarge-ap-south-1-ap-south-1a', 0.0680, DATE_SUB(NOW(), INTERVAL 2 HOUR)),
+
+    ('agent-004', 'demo-client-001', 'price_monitor', 'stay_spot', 'm5.xlarge-ap-south-1-ap-south-1a',
+     0.3456, 0.1546, 'spot', 'm5.xlarge-ap-south-1-ap-south-1a', 0.0680, DATE_SUB(NOW(), INTERVAL 5 HOUR)),
+
+    ('agent-004', 'demo-client-001', 'price_monitor', 'stay_spot', 'm5.xlarge-ap-south-1-ap-south-1a',
+     0.2987, 0.1546, 'spot', 'm5.xlarge-ap-south-1-ap-south-1a', 0.0680, DATE_SUB(NOW(), INTERVAL 10 HOUR)),
+
+    ('agent-004', 'demo-client-001', 'price_monitor', 'stay_spot', 'm5.xlarge-ap-south-1-ap-south-1a',
+     0.3234, 0.1546, 'spot', 'm5.xlarge-ap-south-1-ap-south-1a', 0.0680, DATE_SUB(NOW(), INTERVAL 15 HOUR)),
+
+    ('agent-004', 'demo-client-001', 'price_monitor', 'stay_spot', 'm5.xlarge-ap-south-1-ap-south-1a',
+     0.2876, 0.1546, 'spot', 'm5.xlarge-ap-south-1-ap-south-1a', 0.0680, DATE_SUB(NOW(), INTERVAL 20 HOUR)),
+
+    -- ====== AGENT-005 (worker-02) - 0 decisions - UNHEALTHY (offline) ======
+    -- No decisions for offline agent
+
+    -- ====== AGENT-006 (app-server-01) - 5 decisions - HEALTHY ======
+    ('agent-006', 'demo-client-002', 'price_monitor', 'stay_spot', 't3.large-ap-south-1-ap-south-1a',
+     0.1345, 0.0638, 'spot', 't3.large-ap-south-1-ap-south-1a', 0.0274, DATE_SUB(NOW(), INTERVAL 2 HOUR)),
+
+    ('agent-006', 'demo-client-002', 'price_optimization', 'switch_to_spot', 't3.large-ap-south-1-ap-south-1a',
+     0.1987, 0.0624, 'spot', 't3.large-ap-south-1-ap-south-1b', 0.0288, DATE_SUB(NOW(), INTERVAL 4 HOUR)),
+
+    ('agent-006', 'demo-client-002', 'price_monitor', 'stay_spot', 't3.large-ap-south-1-ap-south-1b',
+     0.1123, 0.0624, 'spot', 't3.large-ap-south-1-ap-south-1b', 0.0288, DATE_SUB(NOW(), INTERVAL 8 HOUR)),
+
+    ('agent-006', 'demo-client-002', 'price_monitor', 'stay_spot', 't3.large-ap-south-1-ap-south-1b',
+     0.0987, 0.0624, 'spot', 't3.large-ap-south-1-ap-south-1b', 0.0288, DATE_SUB(NOW(), INTERVAL 14 HOUR)),
+
+    ('agent-006', 'demo-client-002', 'price_monitor', 'stay_spot', 't3.large-ap-south-1-ap-south-1b',
+     0.1456, 0.0624, 'spot', 't3.large-ap-south-1-ap-south-1b', 0.0288, DATE_SUB(NOW(), INTERVAL 20 HOUR)),
+
+    -- ====== AGENT-007 (cache-server-01) - 4 decisions - BORDERLINE ======
+    ('agent-007', 'demo-client-002', 'price_monitor', 'stay_spot', 'r5.large-ap-south-1-ap-south-1a',
+     0.1234, 0.0963, 'spot', 'r5.large-ap-south-1-ap-south-1a', 0.0413, DATE_SUB(NOW(), INTERVAL 3 HOUR)),
+
+    ('agent-007', 'demo-client-002', 'price_monitor', 'stay_spot', 'r5.large-ap-south-1-ap-south-1a',
+     0.0876, 0.0963, 'spot', 'r5.large-ap-south-1-ap-south-1a', 0.0413, DATE_SUB(NOW(), INTERVAL 8 HOUR)),
+
+    ('agent-007', 'demo-client-002', 'price_monitor', 'stay_spot', 'r5.large-ap-south-1-ap-south-1a',
+     0.1123, 0.0963, 'spot', 'r5.large-ap-south-1-ap-south-1a', 0.0413, DATE_SUB(NOW(), INTERVAL 14 HOUR)),
+
+    ('agent-007', 'demo-client-002', 'price_monitor', 'stay_spot', 'r5.large-ap-south-1-ap-south-1a',
+     0.1456, 0.0963, 'spot', 'r5.large-ap-south-1-ap-south-1a', 0.0413, DATE_SUB(NOW(), INTERVAL 20 HOUR)),
+
+    -- ====== AGENT-008 (test-instance-01) - 3 decisions - BORDERLINE (new agent) ======
+    ('agent-008', 'demo-client-003', 'price_monitor', 'stay_spot', 't3.medium-us-east-1-us-east-1a',
+     0.1567, 0.0291, 'spot', 't3.medium-us-east-1-us-east-1a', 0.0125, DATE_SUB(NOW(), INTERVAL 4 HOUR)),
+
+    ('agent-008', 'demo-client-003', 'price_monitor', 'stay_spot', 't3.medium-us-east-1-us-east-1a',
+     0.1234, 0.0291, 'spot', 't3.medium-us-east-1-us-east-1a', 0.0125, DATE_SUB(NOW(), INTERVAL 12 HOUR)),
+
+    ('agent-008', 'demo-client-003', 'price_monitor', 'stay_spot', 't3.medium-us-east-1-us-east-1a',
+     0.0987, 0.0291, 'spot', 't3.medium-us-east-1-us-east-1a', 0.0125, DATE_SUB(NOW(), INTERVAL 24 HOUR));
+
+-- ==============================================================================
 -- SUMMARY
 -- ==============================================================================
 
@@ -418,7 +587,11 @@ SELECT 'Cost Records', COUNT(*) FROM cost_records WHERE client_id IN (SELECT id 
 UNION ALL
 SELECT 'System Events', COUNT(*) FROM system_events WHERE client_id IN (SELECT id FROM clients WHERE email LIKE '%demo%')
 UNION ALL
-SELECT 'Notifications', COUNT(*) FROM notifications WHERE client_id IN (SELECT id FROM clients WHERE email LIKE '%demo%');
+SELECT 'Notifications', COUNT(*) FROM notifications WHERE client_id IN (SELECT id FROM clients WHERE email LIKE '%demo%')
+UNION ALL
+SELECT 'Daily Snapshots', COUNT(*) FROM clients_daily_snapshot
+UNION ALL
+SELECT 'Decision History', COUNT(*) FROM agent_decision_history WHERE client_id IN (SELECT id FROM clients WHERE email LIKE '%demo%');
 
 SELECT '🎯 You can now test all features with these demo accounts:' AS Message;
 SELECT name AS 'Client', email AS 'Email', client_token AS 'Token', plan AS 'Plan', total_savings AS 'Total Savings ($)'
