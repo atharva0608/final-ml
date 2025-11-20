@@ -26,11 +26,12 @@ const SystemHealthPage = () => {
     try {
       const [healthData, sessionsData] = await Promise.all([
         api.getSystemHealth(),
-        api.getMLModelSessions().catch(() => ({ sessions: [] }))
+        api.getMLModelSessions().catch(() => [])
       ]);
 
       setHealth(healthData);
-      setSessions(sessionsData.sessions || []);
+      // Backend returns array directly, not wrapped in object
+      setSessions(Array.isArray(sessionsData) ? sessionsData : []);
     } catch (error) {
       console.error('Failed to load data:', error);
     } finally {
@@ -189,9 +190,10 @@ const SystemHealthPage = () => {
     return <div className="flex justify-center items-center h-64"><LoadingSpinner /></div>;
   }
 
-  const liveSession = sessions.find(s => s.is_live);
-  const fallbackSession = sessions.find(s => s.is_fallback);
-  const pendingSession = sessions.find(s => !s.is_live && !s.is_fallback);
+  // Backend returns camelCase fields: isLive, isFallback
+  const liveSession = sessions.find(s => s.isLive);
+  const fallbackSession = sessions.find(s => s.isFallback);
+  const pendingSession = sessions.find(s => !s.isLive && !s.isFallback);
 
   return (
     <div className="space-y-6">
@@ -350,10 +352,10 @@ const SystemHealthPage = () => {
                 <div className="space-y-1">
                   <div className="flex justify-between text-xs">
                     <span className="text-blue-700">Files:</span>
-                    <span className="font-semibold text-blue-900">{liveSession.file_count || 0}</span>
+                    <span className="font-semibold text-blue-900">{liveSession.fileCount || 0}</span>
                   </div>
                   <div className="text-xs text-blue-600">
-                    {liveSession.file_names ? JSON.parse(liveSession.file_names).join(', ') : 'N/A'}
+                    {liveSession.files && liveSession.files.length > 0 ? liveSession.files.join(', ') : 'N/A'}
                   </div>
                 </div>
               </div>
@@ -369,10 +371,10 @@ const SystemHealthPage = () => {
                 <div className="space-y-1">
                   <div className="flex justify-between text-xs">
                     <span className="text-orange-700">Files:</span>
-                    <span className="font-semibold text-orange-900">{fallbackSession.file_count || 0}</span>
+                    <span className="font-semibold text-orange-900">{fallbackSession.fileCount || 0}</span>
                   </div>
                   <div className="text-xs text-orange-600">
-                    {fallbackSession.file_names ? JSON.parse(fallbackSession.file_names).join(', ') : 'N/A'}
+                    {fallbackSession.files && fallbackSession.files.length > 0 ? fallbackSession.files.join(', ') : 'N/A'}
                   </div>
                 </div>
               </div>
@@ -388,10 +390,10 @@ const SystemHealthPage = () => {
                 <div className="space-y-1">
                   <div className="flex justify-between text-xs">
                     <span className="text-yellow-700">Files:</span>
-                    <span className="font-semibold text-yellow-900">{pendingSession.file_count || 0}</span>
+                    <span className="font-semibold text-yellow-900">{pendingSession.fileCount || 0}</span>
                   </div>
                   <div className="text-xs text-yellow-600">
-                    {pendingSession.file_names ? JSON.parse(pendingSession.file_names).join(', ') : 'N/A'}
+                    {pendingSession.files && pendingSession.files.length > 0 ? pendingSession.files.join(', ') : 'N/A'}
                   </div>
                   <p className="text-xs text-yellow-800 mt-2 font-medium">
                     ⚠️ Click 🔴 RESTART to activate these models
@@ -416,10 +418,10 @@ const SystemHealthPage = () => {
                       <div className="flex items-center justify-between">
                         <span className="text-xs text-blue-700">Files:</span>
                         <span className="text-xs font-semibold text-blue-900">
-                          {liveSession.file_count || 0} file{liveSession.file_count !== 1 ? 's' : ''}
+                          {liveSession.fileCount || 0} file{liveSession.fileCount !== 1 ? 's' : ''}
                         </span>
                       </div>
-                      {liveSession.file_names && JSON.parse(liveSession.file_names).map((filename, idx) => (
+                      {liveSession.files && liveSession.files.map((filename, idx) => (
                         <div key={idx} className="flex items-center space-x-2 mt-2">
                           <CheckCircle size={12} className="text-blue-600 flex-shrink-0" />
                           <code className="text-xs text-blue-800 font-mono break-all">
