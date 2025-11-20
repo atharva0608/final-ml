@@ -488,12 +488,9 @@ def create_emergency_replica(app):
 
             agent = agent[0]
 
-            # Check if auto replica is enabled
-            if not agent.get('auto_replica_enabled'):
-                return jsonify({
-                    'error': 'Automatic replicas not enabled',
-                    'hint': 'Enable auto_replica_enabled in agent settings'
-                }), 400
+            # Emergency replicas bypass auto_replica_enabled setting
+            # In emergencies (rebalance/termination), we ALWAYS create replica for safety
+            logger.warning(f"Emergency replica creation for agent {agent_id} - bypassing auto_replica_enabled setting")
 
             # Select best pool for emergency replica
             target_pool_id = _select_safest_pool(

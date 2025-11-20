@@ -1,5 +1,5 @@
 """
-AWS Spot Optimizer - Central Server Backend v4.2
+AWS Spot Optimizer - Central Server Backend v4.3
 ==============================================================
 Fully compatible with Agent v4.0 and MySQL Schema v5.1
 
@@ -18,6 +18,81 @@ Features:
 - Full dashboard endpoints
 - Notification system
 - Background jobs
+
+SWITCHING WORKFLOW ARCHITECTURE:
+==============================================================
+This system supports multiple switching workflows with different triggers:
+
+1. NORMAL ML-BASED SWITCHING (Controlled by auto_switch_enabled)
+   ---------------------------------------------------------------
+   Endpoint: GET /api/agents/<agent_id>/switch-recommendation
+   - Always returns ML-based recommendation (works even if auto_switch is OFF)
+   - Shows users what the system suggests
+   - Response includes 'will_auto_execute' flag based on auto_switch_enabled
+
+   Endpoint: POST /api/agents/<agent_id>/issue-switch-command
+   - CHECKS auto_switch_enabled before creating command
+   - If auto_switch is OFF: Returns 403 error
+   - If auto_switch is ON: Creates switch command in 'commands' table
+   - Agent polls /api/agents/<agent_id>/pending-commands and executes
+
+   Workflow:
+   a) When auto_switch is ON:
+      - ML model recommends switch → Command issued automatically → Agent executes
+   b) When auto_switch is OFF:
+      - ML model recommends switch → Shown as suggestion only → No action taken
+      - User must manually switch via UI (uses manual override endpoint)
+
+2. EMERGENCY SCENARIOS (ALWAYS BYPASS auto_switch and ML models)
+   ---------------------------------------------------------------
+   Endpoint: POST /api/agents/<agent_id>/create-emergency-replica
+   - Triggered by AWS rebalance recommendation or termination notice
+   - BYPASSES auto_replica_enabled setting (emergency override)
+   - Works even if ML models are not loaded or broken
+   - Creates replica immediately in safest available pool
+
+   Endpoint: POST /api/agents/<agent_id>/termination-imminent
+   - Handles 2-minute termination warning
+   - BYPASSES all settings and ML models
+   - Promotes existing replica to primary (if available)
+   - Failover completes in <15 seconds typically
+   - Works even if decision engine is offline
+
+   Workflow:
+   - AWS sends rebalance/termination notice → Agent calls emergency endpoint
+   - Backend creates replica OR promotes existing replica
+   - NO checks for auto_switch, auto_replica, or ML model state
+   - This is a safety mechanism - ALWAYS executes
+
+3. MANUAL REPLICA CREATION (User-controlled failover preparation)
+   ---------------------------------------------------------------
+   Endpoint: POST /api/agents/<agent_id>/replicas
+   - User creates replica manually from UI
+   - Replica stays active until manually promoted or deleted
+   - Checks manual_replica_enabled setting
+
+   Endpoint: POST /api/agents/<agent_id>/replicas/<replica_id>/promote
+   - User manually promotes replica to primary
+   - Used for planned maintenance or manual failover
+   - Available in instance section UI
+
+   Workflow:
+   - User clicks "Create Replica" → Replica created and syncing
+   - Replica stays ready (not auto-promoted)
+   - User clicks "Switch to Replica" when ready → Manual promotion
+   - If not used, can be deleted manually
+
+4. MANUAL OVERRIDE SWITCHING (User-initiated, bypasses auto_switch check)
+   ---------------------------------------------------------------
+   (Can be implemented in future if needed - direct UI switch button)
+
+
+KEY DIFFERENCES:
+- Normal switching: Respects auto_switch_enabled, uses ML models
+- Emergency: Ignores all settings, bypasses ML models, always executes
+- Manual replica: User-controlled timing, requires manual promotion
+- Manual override: User decision, bypasses auto_switch (future feature)
+
 ==============================================================
 """
 
@@ -1174,6 +1249,223 @@ def get_decision(agent_id: str):
         
     except Exception as e:
         logger.error(f"Decision error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/agents/<agent_id>/switch-recommendation', methods=['GET'])
+@require_client_token
+def get_switch_recommendation(agent_id: str):
+    """
+    Get ML-based switch recommendation for an agent (ALWAYS returns suggestion).
+    This endpoint provides recommendations regardless of auto_switch_enabled setting.
+    Use this to show suggestions to users even when auto-switch is disabled.
+    """
+    try:
+        # Get agent and instance details
+        agent_data = execute_query("""
+            SELECT
+                a.id, a.hostname, a.enabled, a.auto_switch_enabled,
+                a.current_mode, a.current_pool_id, a.instance_id,
+                i.instance_type, i.region, i.az, i.spot_price, i.ondemand_price,
+                sp.pool_name, sp.az as pool_az,
+                COALESCE(ac.min_savings_percent, 15.00) as min_savings_percent,
+                COALESCE(ac.risk_threshold, 0.30) as risk_threshold
+            FROM agents a
+            JOIN instances i ON a.instance_id = i.id
+            LEFT JOIN spot_pools sp ON i.current_pool_id = sp.id
+            LEFT JOIN agent_configs ac ON ac.agent_id = a.id
+            WHERE a.id = %s AND a.client_id = %s
+        """, (agent_id, request.client_id), fetch_one=True)
+
+        if not agent_data:
+            return jsonify({'error': 'Agent not found'}), 404
+
+        # Get recent pricing data
+        pricing_data = execute_query("""
+            SELECT pool_id, spot_price, time_bucket
+            FROM pricing_snapshots_clean
+            WHERE pool_id = %s
+            ORDER BY time_bucket DESC
+            LIMIT 10
+        """, (agent_data['current_pool_id'],), fetch=True)
+
+        # Get alternative pools
+        alternative_pools = execute_query("""
+            SELECT
+                sp.id, sp.pool_name, sp.instance_type, sp.az,
+                psc.spot_price, psc.time_bucket
+            FROM spot_pools sp
+            JOIN pricing_snapshots_clean psc ON sp.id = psc.pool_id
+            WHERE sp.instance_type = %s
+              AND sp.region = %s
+              AND sp.id != %s
+              AND psc.time_bucket >= NOW() - INTERVAL 5 MINUTE
+            ORDER BY psc.spot_price ASC
+            LIMIT 5
+        """, (agent_data['instance_type'], agent_data['region'], agent_data['current_pool_id']), fetch=True)
+
+        # Prepare data for decision engine
+        instance_info = {
+            'instance_id': agent_data['instance_id'],
+            'instance_type': agent_data['instance_type'],
+            'region': agent_data['region'],
+            'current_mode': agent_data['current_mode'],
+            'current_pool_id': agent_data['current_pool_id']
+        }
+
+        pricing_info = {
+            'spot_price': float(agent_data['spot_price']) if agent_data['spot_price'] else 0,
+            'ondemand_price': float(agent_data['ondemand_price']) if agent_data['ondemand_price'] else 0,
+            'pool_id': agent_data['current_pool_id']
+        }
+
+        # Get recommendation from decision engine
+        if decision_engine_manager.engine and decision_engine_manager.models_loaded:
+            decision = decision_engine_manager.engine.make_decision(
+                instance_info, pricing_info, {'alternative_pools': alternative_pools}
+            )
+        else:
+            # Fallback: simple rule-based logic
+            savings_percent = 0
+            if agent_data['ondemand_price'] and agent_data['spot_price']:
+                savings_percent = ((agent_data['ondemand_price'] - agent_data['spot_price']) / agent_data['ondemand_price']) * 100
+
+            decision = {
+                'decision_type': 'stay_spot' if agent_data['current_mode'] == 'spot' else 'stay_ondemand',
+                'recommended_pool_id': agent_data['current_pool_id'],
+                'risk_score': 0.3,
+                'expected_savings': float(agent_data['ondemand_price'] - agent_data['spot_price']) if agent_data['ondemand_price'] and agent_data['spot_price'] else 0,
+                'confidence': 0.6,
+                'reason': f'Current configuration optimal ({savings_percent:.1f}% savings)'
+            }
+
+        # Add auto_switch status to response
+        response = {
+            **decision,
+            'agent_id': agent_id,
+            'auto_switch_enabled': agent_data['auto_switch_enabled'],
+            'will_auto_execute': agent_data['auto_switch_enabled'] and decision.get('decision_type') not in ('stay_spot', 'stay_ondemand'),
+            'current_pool': {
+                'id': agent_data['current_pool_id'],
+                'name': agent_data.get('pool_name'),
+                'az': agent_data.get('pool_az')
+            },
+            'alternative_pools': [
+                {
+                    'id': p['id'],
+                    'name': p['pool_name'],
+                    'az': p['az'],
+                    'spot_price': float(p['spot_price'])
+                } for p in (alternative_pools or [])
+            ]
+        }
+
+        logger.info(f"Switch recommendation for agent {agent_id}: {decision.get('decision_type')} (auto_switch={agent_data['auto_switch_enabled']})")
+
+        return jsonify(response)
+
+    except Exception as e:
+        logger.error(f"Switch recommendation error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/agents/<agent_id>/issue-switch-command', methods=['POST'])
+@require_client_token
+def issue_switch_command(agent_id: str):
+    """
+    Issue a switch command to an agent (CHECKS auto_switch_enabled).
+    If auto_switch is disabled, returns error. If enabled, creates switch command.
+
+    Request body:
+    {
+        "target_mode": "spot" | "ondemand",
+        "target_pool_id": 123,  # required for spot mode
+        "reason": "ML recommendation",
+        "priority": 5  # 1-10, default 5
+    }
+    """
+    try:
+        data = request.json or {}
+
+        # Get agent configuration
+        agent = execute_query("""
+            SELECT id, hostname, auto_switch_enabled, enabled, instance_id, current_mode, current_pool_id
+            FROM agents
+            WHERE id = %s AND client_id = %s
+        """, (agent_id, request.client_id), fetch_one=True)
+
+        if not agent:
+            return jsonify({'error': 'Agent not found'}), 404
+
+        if not agent['enabled']:
+            return jsonify({
+                'error': 'Agent is disabled',
+                'hint': 'Enable the agent first'
+            }), 400
+
+        # CHECK AUTO_SWITCH_ENABLED - This is the key check
+        if not agent['auto_switch_enabled']:
+            return jsonify({
+                'error': 'Auto-switch is disabled for this agent',
+                'hint': 'Enable auto_switch_enabled in agent settings, or use manual switch from UI',
+                'auto_switch_enabled': False
+            }), 403
+
+        # Validate request
+        target_mode = data.get('target_mode')
+        if target_mode not in ('spot', 'ondemand'):
+            return jsonify({'error': 'Invalid target_mode'}), 400
+
+        target_pool_id = data.get('target_pool_id')
+        if target_mode == 'spot' and not target_pool_id:
+            return jsonify({'error': 'target_pool_id required for spot mode'}), 400
+
+        # Don't create redundant command if already in target state
+        if agent['current_mode'] == target_mode and (target_mode != 'spot' or agent['current_pool_id'] == target_pool_id):
+            return jsonify({
+                'success': False,
+                'message': 'Agent already in target state',
+                'current_mode': agent['current_mode'],
+                'current_pool_id': agent['current_pool_id']
+            }), 200
+
+        # Create switch command
+        command_id = generate_uuid()
+        execute_query("""
+            INSERT INTO commands (
+                id, agent_id, client_id, instance_id,
+                target_mode, target_pool_id, priority,
+                terminate_wait_seconds, status, created_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, 300, 'pending', NOW())
+        """, (
+            command_id,
+            agent_id,
+            request.client_id,
+            agent['instance_id'],
+            target_mode,
+            target_pool_id,
+            data.get('priority', 5)
+        ))
+
+        logger.info(f"✓ Switch command issued for agent {agent_id}: {target_mode} (pool: {target_pool_id})")
+
+        create_notification(
+            f"Switch command issued to {agent.get('hostname', agent_id)}: {target_mode}",
+            'info',
+            request.client_id
+        )
+
+        return jsonify({
+            'success': True,
+            'command_id': command_id,
+            'agent_id': agent_id,
+            'target_mode': target_mode,
+            'target_pool_id': target_pool_id,
+            'reason': data.get('reason', 'Manual command'),
+            'message': 'Switch command queued. Agent will execute on next heartbeat.',
+            'auto_switch_enabled': True
+        }), 201
+
+    except Exception as e:
+        logger.error(f"Issue switch command error: {e}", exc_info=True)
         return jsonify({'error': str(e)}), 500
 
 # ==============================================================================
