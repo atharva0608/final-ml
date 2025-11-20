@@ -519,29 +519,59 @@ CREATE TABLE IF NOT EXISTS model_registry (
     model_name VARCHAR(128) NOT NULL,
     model_type VARCHAR(50) NOT NULL,
     version VARCHAR(32) NOT NULL,
-    
+
     -- Storage
     file_path VARCHAR(512) NOT NULL,
-    
+    upload_session_id CHAR(36),
+
     -- Status
     is_active BOOLEAN DEFAULT FALSE,
-    
+    is_fallback BOOLEAN DEFAULT FALSE,
+
     -- Metadata
     performance_metrics JSON,
     config JSON,
     description TEXT,
-    
+
     -- Timestamps
     loaded_at TIMESTAMP NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    
+
     UNIQUE KEY uk_model_version (model_name, version),
     INDEX idx_model_registry_type_active (model_type, is_active),
     INDEX idx_model_registry_name (model_name),
-    INDEX idx_model_registry_active (is_active)
+    INDEX idx_model_registry_active (is_active),
+    INDEX idx_model_registry_session (upload_session_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
 COMMENT='ML model versions and metadata for decision engines';
+
+CREATE TABLE IF NOT EXISTS model_upload_sessions (
+    id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
+    session_type VARCHAR(20) NOT NULL DEFAULT 'models',
+
+    -- Status
+    status VARCHAR(20) DEFAULT 'active',
+    is_live BOOLEAN DEFAULT FALSE,
+    is_fallback BOOLEAN DEFAULT FALSE,
+
+    -- Files
+    file_count INT DEFAULT 0,
+    file_names JSON,
+    total_size_bytes BIGINT DEFAULT 0,
+
+    -- Metadata
+    uploaded_by VARCHAR(128),
+    notes TEXT,
+
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    activated_at TIMESTAMP NULL,
+
+    INDEX idx_upload_session_type_status (session_type, status),
+    INDEX idx_upload_session_live (is_live),
+    INDEX idx_upload_session_created (created_at DESC)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+COMMENT='Tracks model upload sessions for versioning (keeps last 2 sessions)';
 
 -- ============================================================================
 -- ML MODEL PREDICTIONS & RISK SCORES
