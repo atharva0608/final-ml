@@ -2610,8 +2610,16 @@ def restart_backend(delay_seconds: int = 3):
             logger.info("RESTARTING BACKEND SERVER...")
             logger.info("="*80)
 
+            # Check if running as systemd service (check for restart script)
+            restart_script = Path('/home/ubuntu/spot-optimizer/backend/restart_backend.sh')
+            if restart_script.exists():
+                logger.info("Using restart script to restart systemd service")
+                subprocess.Popen([str(restart_script)],
+                               stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL,
+                               start_new_session=True)
             # Check if running under gunicorn
-            if 'gunicorn' in os.environ.get('SERVER_SOFTWARE', ''):
+            elif 'gunicorn' in os.environ.get('SERVER_SOFTWARE', ''):
                 logger.info("Detected gunicorn - sending HUP signal to reload workers")
                 # Send HUP signal to master process to reload workers
                 os.kill(os.getppid(), signal.SIGHUP)
@@ -2622,6 +2630,7 @@ def restart_backend(delay_seconds: int = 3):
                 os.execv(python, [python] + sys.argv)
         except Exception as e:
             logger.error(f"Failed to restart backend: {e}")
+            logger.info("Please manually restart: sudo systemctl restart spot-optimizer-backend")
 
     # Start restart in a background thread
     restart_thread = threading.Thread(target=_restart, daemon=True)
