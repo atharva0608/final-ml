@@ -53,9 +53,47 @@ const ViewTokenModal = ({ client, onClose, onRegenerate }) => {
 
   const handleCopy = () => {
     if (token) {
-      navigator.clipboard.writeText(token);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      // Try modern clipboard API first (works with HTTPS)
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(token)
+          .then(() => {
+            setCopied(true);
+            setTimeout(() => setCopied(false), 2000);
+          })
+          .catch(err => {
+            console.error('Clipboard API failed:', err);
+            fallbackCopy(token);
+          });
+      } else {
+        // Fallback for HTTP or older browsers
+        fallbackCopy(token);
+      }
+    }
+  };
+
+  const fallbackCopy = (text) => {
+    try {
+      const textArea = document.createElement('textarea');
+      textArea.value = text;
+      textArea.style.position = 'fixed';
+      textArea.style.left = '-999999px';
+      textArea.style.top = '-999999px';
+      document.body.appendChild(textArea);
+      textArea.focus();
+      textArea.select();
+
+      const successful = document.execCommand('copy');
+      document.body.removeChild(textArea);
+
+      if (successful) {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      } else {
+        alert('Failed to copy. Please copy manually: ' + text);
+      }
+    } catch (err) {
+      console.error('Fallback copy failed:', err);
+      alert('Failed to copy. Please copy manually: ' + text);
     }
   };
 
