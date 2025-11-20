@@ -441,9 +441,13 @@ log "Configuring database user privileges..."
 # Wait a moment for user to be fully created
 sleep 2
 
-# Grant privileges from any host (%), localhost, and docker network
+# Create users and grant privileges (MySQL 8.0 compatible - separate CREATE from GRANT)
 docker exec spot-mysql mysql -u root -p"$DB_ROOT_PASSWORD" -e "
-    -- Grant to user from any host
+    -- Create spotuser for different host patterns if they don't exist
+    CREATE USER IF NOT EXISTS '$DB_USER'@'localhost' IDENTIFIED BY '$DB_PASSWORD';
+    CREATE USER IF NOT EXISTS '$DB_USER'@'172.18.%' IDENTIFIED BY '$DB_PASSWORD';
+
+    -- Grant to user from any host (already created during schema import)
     GRANT ALL PRIVILEGES ON $DB_NAME.* TO '$DB_USER'@'%';
 
     -- Grant to user from localhost
