@@ -452,17 +452,22 @@ docker exec spot-mysql mysql -u root -p"$DB_ROOT_PASSWORD" -e "
     -- Grant to user from docker network (172.18.0.0/16)
     GRANT ALL PRIVILEGES ON $DB_NAME.* TO '$DB_USER'@'172.18.%';
 
-    -- Also grant root access from docker network for admin tasks
-    GRANT ALL PRIVILEGES ON *.* TO 'root'@'172.18.%' IDENTIFIED BY '$DB_ROOT_PASSWORD' WITH GRANT OPTION;
+    -- Create root user for docker network if it doesn't exist (MySQL 8.0 syntax)
+    CREATE USER IF NOT EXISTS 'root'@'172.18.%' IDENTIFIED BY '$DB_ROOT_PASSWORD';
+
+    -- Grant root access from docker network for admin tasks
+    GRANT ALL PRIVILEGES ON *.* TO 'root'@'172.18.%' WITH GRANT OPTION;
 
     FLUSH PRIVILEGES;
 " 2>/dev/null
 
 # Verify the grants worked
 log "Verifying database connection..."
-docker exec spot-mysql mysql -u "$DB_USER" -p"$DB_PASSWORD" -e "SELECT 1;" "$DB_NAME" > /dev/null 2>&1 &&
-    log "✓ Database user can connect successfully" ||
+if docker exec spot-mysql mysql -u "$DB_USER" -p"$DB_PASSWORD" -e "SELECT 1;" "$DB_NAME" > /dev/null 2>&1; then
+    log "✓ Database user can connect successfully"
+else
     warn "Database user connection test failed - may need manual verification"
+fi
 
 log "Database privileges configured"
 
