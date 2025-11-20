@@ -2365,6 +2365,18 @@ def get_client_instances(client_id: str):
 def get_client_replicas(client_id: str):
     """Get all instances with active replicas for a client"""
     try:
+        # Check if replica_instances table exists
+        table_exists = execute_query("""
+            SELECT COUNT(*) as count
+            FROM information_schema.tables
+            WHERE table_schema = DATABASE()
+            AND table_name = 'replica_instances'
+        """, fetch_one=True)
+
+        if not table_exists or table_exists.get('count', 0) == 0:
+            logger.info("replica_instances table does not exist yet, returning empty list")
+            return jsonify([])
+
         # Get all active replicas with their parent instance and agent info
         replicas = execute_query("""
             SELECT
