@@ -17,10 +17,9 @@ sudo bash setup.sh
 ```
 final-ml/
 ├── backend.py              - Flask API (42 endpoints)
-├── schema_cleaned.sql      - MySQL schema (19 tables)
+├── schema.sql             - MySQL schema (19 tables)
 ├── demo-data.sql          - Demo data (3 clients, 8 agents)
 ├── setup.sh               - Automated deployment script
-├── fix_mysql_permissions.sh - MySQL permissions utility
 ├── requirements.txt       - Python dependencies
 └── frontend--main/        - React + Vite frontend
 ```
@@ -66,7 +65,8 @@ sudo systemctl restart spot-optimizer-backend
 
 ### Fix MySQL Permissions
 ```bash
-bash fix_mysql_permissions.sh
+sudo chown -R 999:999 /home/ubuntu/mysql-data
+docker restart spot-mysql
 ```
 
 ### View Logs
@@ -126,7 +126,8 @@ sudo journalctl -u spot-optimizer-backend -n 100
 
 ### MySQL Permission Errors
 ```bash
-bash fix_mysql_permissions.sh
+sudo chown -R 999:999 /home/ubuntu/mysql-data
+docker restart spot-mysql
 ```
 
 ### CORS Errors

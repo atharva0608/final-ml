@@ -12,7 +12,9 @@
 #   ✓ All error fixes included
 #
 # Usage:
-#   sudo bash setup.sh
+#   curl -fsSL https://raw.githubusercontent.com/atharva0608/final-ml/main/setup.sh | sudo bash
+#   OR clone repo first:
+#   git clone https://github.com/atharva0608/final-ml.git && cd final-ml && sudo bash setup.sh
 # ==============================================================================
 
 set -e  # Exit on any error
@@ -42,11 +44,65 @@ info() {
 }
 
 # ==============================================================================
+# STEP 0: ENSURE REPOSITORY IS CLONED
+# ==============================================================================
+
+log "Starting AWS Spot Optimizer Setup..."
+log "============================================"
+
+# Determine repository directory
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || pwd)"
+CLONE_DIR="/home/ubuntu/final-ml"
+
+# Check if we're already in the repository
+if [ -f "$SCRIPT_DIR/backend.py" ] && [ -f "$SCRIPT_DIR/schema.sql" ]; then
+    REPO_DIR="$SCRIPT_DIR"
+    log "Running from repository directory: $REPO_DIR"
+else
+    # Need to clone the repository
+    log "Repository files not found in current directory"
+    log "Cloning repository to: $CLONE_DIR"
+
+    # Remove old clone if exists
+    if [ -d "$CLONE_DIR" ]; then
+        warn "Removing existing directory: $CLONE_DIR"
+        rm -rf "$CLONE_DIR"
+    fi
+
+    # Clone repository
+    git clone https://github.com/atharva0608/final-ml.git "$CLONE_DIR"
+    cd "$CLONE_DIR"
+
+    # Checkout the correct branch
+    git checkout claude/unified-repo-final-01DYWUjjfqXjVeiFr7yFRN2P 2>/dev/null || git checkout main
+
+    REPO_DIR="$CLONE_DIR"
+    log "Repository cloned to: $REPO_DIR"
+fi
+
+# Verify required files exist
+if [ ! -f "$REPO_DIR/backend.py" ]; then
+    error "backend.py not found in $REPO_DIR"
+    exit 1
+fi
+
+if [ ! -f "$REPO_DIR/schema.sql" ]; then
+    error "schema.sql not found in $REPO_DIR"
+    exit 1
+fi
+
+if [ ! -d "$REPO_DIR/frontend--main" ]; then
+    error "frontend--main directory not found in $REPO_DIR"
+    exit 1
+fi
+
+log "✓ All required files verified"
+log "Repository: $REPO_DIR"
+
+# ==============================================================================
 # CONFIGURATION
 # ==============================================================================
 
-# Repository location (should be current directory or specify)
-REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FRONTEND_SOURCE="$REPO_DIR/frontend--main"
 
 # Application directories
@@ -70,10 +126,6 @@ BACKEND_HOST="0.0.0.0"
 
 # Frontend build directory (served by Nginx)
 NGINX_ROOT="/var/www/spot-optimizer"
-
-log "Starting AWS Spot Optimizer Setup..."
-log "============================================"
-log "Repository: $REPO_DIR"
 
 # ==============================================================================
 # STEP 1: RETRIEVE INSTANCE METADATA USING IMDSv2
@@ -360,8 +412,8 @@ log "MySQL restarted with correct permissions"
 
 log "Step 7: Importing database schema..."
 
-# Use schema_cleaned.sql
-SCHEMA_FILE="$REPO_DIR/schema_cleaned.sql"
+# Use schema.sql
+SCHEMA_FILE="$REPO_DIR/schema.sql"
 if [ ! -f "$SCHEMA_FILE" ]; then
     error "Schema file not found: $SCHEMA_FILE"
     exit 1
@@ -871,8 +923,9 @@ echo "  - Check browser console for specific errors"
 echo "  - Verify Nginx config: sudo nginx -t"
 echo "  - Check backend CORS: curl -I http://localhost:5000/health"
 echo ""
-echo "Fix MySQL permissions:"
-echo "  bash $REPO_DIR/fix_mysql_permissions.sh"
+echo "MySQL permission errors:"
+echo "  sudo chown -R 999:999 /home/ubuntu/mysql-data"
+echo "  docker restart spot-mysql"
 echo ""
 echo "==========================================================="
 log "============================================"
