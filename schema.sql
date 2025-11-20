@@ -762,6 +762,53 @@ CREATE TABLE IF NOT EXISTS client_savings_monthly (
 COMMENT='Pre-aggregated monthly savings summary by client';
 
 -- ============================================================================
+-- ANALYTICS & TRACKING
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS clients_daily_snapshot (
+    snapshot_date DATE PRIMARY KEY,
+    total_clients INT NOT NULL DEFAULT 0,
+    new_clients_today INT NOT NULL DEFAULT 0,
+    active_clients INT NOT NULL DEFAULT 0,
+
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    INDEX idx_snapshot_date (snapshot_date DESC)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+COMMENT='Daily snapshots of client counts for growth analytics';
+
+CREATE TABLE IF NOT EXISTS agent_decision_history (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    agent_id CHAR(36) NOT NULL,
+    client_id CHAR(36) NOT NULL,
+
+    -- Decision details
+    decision_type VARCHAR(64) NOT NULL,
+    recommended_action VARCHAR(64),
+    recommended_pool_id VARCHAR(128),
+    risk_score DECIMAL(5, 4),
+    expected_savings DECIMAL(15, 4),
+
+    -- Current state at decision time
+    current_mode VARCHAR(20),
+    current_pool_id VARCHAR(128),
+    current_price DECIMAL(10, 6),
+
+    decision_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    INDEX idx_decision_agent (agent_id, decision_time DESC),
+    INDEX idx_decision_client (client_id, decision_time DESC),
+    INDEX idx_decision_time (decision_time DESC),
+    INDEX idx_decision_type (decision_type),
+
+    CONSTRAINT fk_decision_agent FOREIGN KEY (agent_id)
+        REFERENCES agents(id) ON DELETE CASCADE,
+    CONSTRAINT fk_decision_client FOREIGN KEY (client_id)
+        REFERENCES clients(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+COMMENT='History of all agent decision engine recommendations';
+
+-- ============================================================================
 -- SYSTEM EVENTS & LOGGING
 -- ============================================================================
 

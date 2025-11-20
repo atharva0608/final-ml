@@ -2555,6 +2555,9 @@ def upload_decision_engine():
         if not files or all(f.filename == '' for f in files):
             return jsonify({'error': 'No files selected'}), 400
 
+        # Ensure decision engine directory exists
+        config.DECISION_ENGINE_DIR.mkdir(parents=True, exist_ok=True)
+
         uploaded_files = []
         for file in files:
             if file and file.filename:
@@ -2615,6 +2618,9 @@ def upload_ml_models():
         files = request.files.getlist('files')
         if not files or all(f.filename == '' for f in files):
             return jsonify({'error': 'No files selected'}), 400
+
+        # Ensure model directory exists
+        config.MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
         uploaded_files = []
         for file in files:
