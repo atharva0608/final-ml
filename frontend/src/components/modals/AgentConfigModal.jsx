@@ -5,12 +5,20 @@ import api from '../../services/api';
 
 const AgentConfigModal = ({ agent, onClose, onSave }) => {
   const [terminateWaitMinutes, setTerminateWaitMinutes] = useState(agent.terminateWaitMinutes || 30);
+  const [autoSwitchEnabled, setAutoSwitchEnabled] = useState(agent.autoSwitchEnabled ?? true);
+  const [autoReplicaEnabled, setAutoReplicaEnabled] = useState(agent.autoReplicaEnabled ?? true);
+  const [manualReplicaEnabled, setManualReplicaEnabled] = useState(agent.manualReplicaEnabled ?? true);
   const [saving, setSaving] = useState(false);
 
   const handleSave = async () => {
     setSaving(true);
     try {
-      await api.updateAgentConfig(agent.id, terminateWaitMinutes);
+      await api.updateAgentConfig(agent.id, {
+        terminateWaitMinutes,
+        autoSwitchEnabled,
+        autoReplicaEnabled,
+        manualReplicaEnabled
+      });
       onSave();
       onClose();
     } catch (error) {
@@ -35,7 +43,89 @@ const AgentConfigModal = ({ agent, onClose, onSave }) => {
           </div>
         </div>
 
-        <div className="p-6">
+        <div className="p-6 space-y-6">
+          {/* Auto-Switch Toggle */}
+          <div className="pb-4 border-b border-gray-200">
+            <div className="flex items-center justify-between mb-2">
+              <div>
+                <label className="block text-sm font-medium text-gray-900">
+                  Auto-Switch
+                </label>
+                <p className="text-xs text-gray-500 mt-1">
+                  When enabled, ML model recommendations will automatically trigger instance switches.
+                  When disabled, recommendations are shown as suggestions only.
+                </p>
+              </div>
+              <label className="relative inline-flex items-center cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={autoSwitchEnabled}
+                  onChange={(e) => setAutoSwitchEnabled(e.target.checked)}
+                  className="sr-only peer"
+                />
+                <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+              </label>
+            </div>
+            <p className="text-xs text-blue-600">
+              💡 Recommended: Enable for automated cost optimization
+            </p>
+          </div>
+
+          {/* Auto-Replica Toggle */}
+          <div className="pb-4 border-b border-gray-200">
+            <div className="flex items-center justify-between mb-2">
+              <div>
+                <label className="block text-sm font-medium text-gray-900">
+                  Auto-Replica (Emergency)
+                </label>
+                <p className="text-xs text-gray-500 mt-1">
+                  Automatically create replicas when AWS sends rebalance recommendations or termination notices.
+                  <span className="font-semibold text-red-600"> Emergency scenarios always bypass this setting.</span>
+                </p>
+              </div>
+              <label className="relative inline-flex items-center cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={autoReplicaEnabled}
+                  onChange={(e) => setAutoReplicaEnabled(e.target.checked)}
+                  className="sr-only peer"
+                />
+                <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-orange-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-orange-600"></div>
+              </label>
+            </div>
+            <p className="text-xs text-orange-600">
+              ⚡ Recommended: Keep enabled for automatic failover protection
+            </p>
+          </div>
+
+          {/* Manual Replica Toggle */}
+          <div className="pb-4 border-b border-gray-200">
+            <div className="flex items-center justify-between mb-2">
+              <div>
+                <label className="block text-sm font-medium text-gray-900">
+                  Manual Replica
+                </label>
+                <p className="text-xs text-gray-500 mt-1">
+                  Allow creating manual replicas for testing or planned maintenance.
+                  Manual replicas stay active until you promote or delete them.
+                </p>
+              </div>
+              <label className="relative inline-flex items-center cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={manualReplicaEnabled}
+                  onChange={(e) => setManualReplicaEnabled(e.target.checked)}
+                  className="sr-only peer"
+                />
+                <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-green-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-green-600"></div>
+              </label>
+            </div>
+            <p className="text-xs text-green-600">
+              🛡️ Recommended: Enable for manual control over failover preparation
+            </p>
+          </div>
+
+          {/* Terminate Wait Minutes */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">
               Minimum Retention Before Terminating (minutes)
@@ -54,7 +144,7 @@ const AgentConfigModal = ({ agent, onClose, onSave }) => {
               This prevents frequent terminations and ensures stability.
             </p>
             <p className="text-xs text-blue-600 mt-1">
-              Recommended: 30-60 minutes
+              ⏱️ Recommended: 30-60 minutes
             </p>
           </div>
         </div>

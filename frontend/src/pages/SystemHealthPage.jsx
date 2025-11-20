@@ -291,19 +291,26 @@ const SystemHealthPage = () => {
             <div className="flex justify-between items-center">
               <span className="text-sm text-gray-600">Type:</span>
               <span className="text-sm font-semibold text-gray-900">
-                {health?.decisionEngineStatus?.type || 'MLBasedDecisionEngine'}
+                {health?.decisionEngineStatus?.type || 'None'}
               </span>
             </div>
             <div className="flex justify-between items-center">
               <span className="text-sm text-gray-600">Version:</span>
               <span className="text-sm font-semibold text-gray-900">
-                {health?.decisionEngineStatus?.version || '1.0.0'}
+                {health?.decisionEngineStatus?.version || 'N/A'}
               </span>
             </div>
             {health?.decisionEngineStatus?.loaded && (
               <div className="mt-4 p-3 bg-green-50 rounded-lg border border-green-200">
                 <p className="text-xs font-medium text-green-800">
                   ✓ Decision engine loaded and ready
+                </p>
+              </div>
+            )}
+            {!health?.decisionEngineStatus?.loaded && (
+              <div className="mt-4 p-3 bg-red-50 rounded-lg border border-red-200">
+                <p className="text-xs font-medium text-red-800">
+                  ✗ Decision engine not loaded
                 </p>
               </div>
             )}
@@ -349,22 +356,48 @@ const SystemHealthPage = () => {
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center space-x-3">
               <div className={`p-3 rounded-lg ${
-                liveSession ? 'bg-blue-100' : 'bg-gray-100'
+                health?.modelStatus?.loaded ? 'bg-blue-100' : 'bg-gray-100'
               }`}>
                 <Brain size={24} className={
-                  liveSession ? 'text-blue-600' : 'text-gray-600'
+                  health?.modelStatus?.loaded ? 'text-blue-600' : 'text-gray-600'
                 } />
               </div>
               <div>
                 <h3 className="text-lg font-bold text-gray-900">ML Models</h3>
-                <Badge variant={liveSession ? 'success' : 'warning'}>
-                  {liveSession ? 'Active' : 'Not Active'}
+                <Badge variant={health?.modelStatus?.loaded ? 'success' : 'warning'}>
+                  {health?.modelStatus?.loaded ? 'Loaded' : 'Not Loaded'}
                 </Badge>
               </div>
             </div>
           </div>
 
+          {/* System Status Summary */}
           <div className="space-y-3 mt-4">
+            <div className="flex justify-between items-center">
+              <span className="text-sm text-gray-600">Files:</span>
+              <span className="text-sm font-semibold text-gray-900">
+                {health?.modelStatus?.filesUploaded || 0}
+              </span>
+            </div>
+            {health?.modelStatus?.loaded && (
+              <div className="mt-4 p-3 bg-blue-50 rounded-lg border border-blue-200">
+                <p className="text-xs font-medium text-blue-800">
+                  ✓ ML models loaded and ready
+                </p>
+              </div>
+            )}
+            {!health?.modelStatus?.loaded && (
+              <div className="mt-4 p-3 bg-gray-50 rounded-lg border border-gray-200">
+                <p className="text-xs font-medium text-gray-600">
+                  No ML models currently loaded
+                </p>
+              </div>
+            )}
+          </div>
+
+          <div className="mt-4 pt-4 border-t border-gray-200">
+            <p className="text-xs font-semibold text-gray-700 mb-3">📦 Model Sessions:</p>
+
             {/* Live Session */}
             {liveSession && (
               <div className="p-3 bg-blue-50 rounded-lg border border-blue-200">
