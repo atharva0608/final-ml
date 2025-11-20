@@ -2174,12 +2174,32 @@ def update_agent_settings(agent_id: str):
 
 @app.route('/api/client/agents/<agent_id>/config', methods=['POST'])
 def update_agent_config(agent_id: str):
-    """Update agent configuration including switches and replica settings"""
+    """
+    Update agent configuration including switches and replica settings.
+
+    IMPORTANT: auto_switch_enabled and manual_replica_enabled are MUTUALLY EXCLUSIVE
+    - When auto_switch_enabled = ON: ML model auto-switches + emergency replicas on interruption
+    - When manual_replica_enabled = ON: Manual replica maintained, no auto-switching
+    """
     data = request.json or {}
 
     try:
         updates = []
         params = []
+
+        # Get current agent state
+        agent = execute_query("""
+            SELECT auto_switch_enabled, manual_replica_enabled, replica_count, instance_id
+            FROM agents WHERE id = %s
+        """, (agent_id,), fetch_one=True)
+
+        if not agent:
+            return jsonify({'error': 'Agent not found'}), 404
+
+        current_auto_switch = agent.get('auto_switch_enabled', False)
+        current_manual_replica = agent.get('manual_replica_enabled', False)
+        replica_count = agent.get('replica_count', 0)
+        instance_id = agent.get('instance_id')
 
         # Handle terminate_wait_minutes (for backwards compatibility)
         if 'terminate_wait_minutes' in data:
@@ -2193,17 +2213,85 @@ def update_agent_config(agent_id: str):
             updates.append("terminate_wait_seconds = %s")
             params.append(terminate_wait_seconds)
 
-        if 'autoSwitchEnabled' in data:
-            updates.append("auto_switch_enabled = %s")
-            params.append(bool(data['autoSwitchEnabled']))
+        # MUTUAL EXCLUSIVITY ENFORCEMENT
+        # Case 1: User enables auto_switch_enabled
+        if 'autoSwitchEnabled' in data and bool(data['autoSwitchEnabled']):
+            updates.append("auto_switch_enabled = TRUE")
+            updates.append("manual_replica_enabled = FALSE")  # Force off
 
-        if 'autoReplicaEnabled' in data:
-            updates.append("auto_replica_enabled = %s")
-            params.append(bool(data['autoReplicaEnabled']))
+            # If manual replicas exist, terminate them
+            if current_manual_replica and replica_count > 0:
+                logger.info(f"Auto-switch enabled for agent {agent_id}, terminating manual replicas")
+                execute_query("""
+                    UPDATE replica_instances
+                    SET is_active = FALSE, status = 'terminated', terminated_at = NOW()
+                    WHERE agent_id = %s AND is_active = TRUE AND replica_type = 'manual'
+                """, (agent_id,))
+                updates.append("replica_count = 0")
+                updates.append("current_replica_id = NULL")
 
-        if 'manualReplicaEnabled' in data:
-            updates.append("manual_replica_enabled = %s")
-            params.append(bool(data['manualReplicaEnabled']))
+        # Case 2: User disables auto_switch_enabled
+        elif 'autoSwitchEnabled' in data and not bool(data['autoSwitchEnabled']):
+            updates.append("auto_switch_enabled = FALSE")
+
+        # Case 3: User enables manual_replica_enabled
+        if 'manualReplicaEnabled' in data and bool(data['manualReplicaEnabled']):
+            updates.append("manual_replica_enabled = TRUE")
+            updates.append("auto_switch_enabled = FALSE")  # Force off
+
+            # Create a manual replica immediately if none exists
+            if not current_manual_replica or replica_count == 0:
+                logger.info(f"Manual replica enabled for agent {agent_id}, creating replica")
+                # Trigger replica creation via internal API call
+                try:
+                    from replica_management_api import _select_cheapest_pool
+
+                    # Get instance details
+                    instance = execute_query("""
+                        SELECT instance_type, region, current_pool_id FROM instances WHERE id = %s
+                    """, (instance_id,), fetch_one=True)
+
+                    if instance:
+                        target_pool_id = _select_cheapest_pool(
+                            instance_type=instance['instance_type'],
+                            region=instance['region'],
+                            current_pool_id=instance['current_pool_id']
+                        )
+
+                        if target_pool_id:
+                            # Create replica record
+                            replica_id = str(uuid.uuid4())
+                            execute_query("""
+                                INSERT INTO replica_instances (
+                                    id, agent_id, instance_id, replica_type, pool_id, status,
+                                    created_by, parent_instance_id, is_active, created_at
+                                ) VALUES (
+                                    %s, %s, %s, 'manual', %s, 'launching', 'system', %s, TRUE, NOW()
+                                )
+                            """, (replica_id, agent_id, f"replica-{replica_id[:8]}", target_pool_id, instance_id))
+
+                            updates.append("replica_count = 1")
+                            updates.append("current_replica_id = %s")
+                            params.insert(0, replica_id)
+
+                            logger.info(f"Created manual replica {replica_id} for agent {agent_id}")
+                except Exception as replica_error:
+                    logger.error(f"Failed to create automatic replica: {replica_error}")
+
+        # Case 4: User disables manual_replica_enabled
+        elif 'manualReplicaEnabled' in data and not bool(data['manualReplicaEnabled']):
+            updates.append("manual_replica_enabled = FALSE")
+
+            # Terminate all manual replicas
+            if current_manual_replica and replica_count > 0:
+                logger.info(f"Manual replica disabled for agent {agent_id}, terminating all replicas")
+                execute_query("""
+                    UPDATE replica_instances
+                    SET is_active = FALSE, status = 'terminated', terminated_at = NOW()
+                    WHERE agent_id = %s AND is_active = TRUE
+                """, (agent_id,))
+                updates.append("replica_count = 0")
+                updates.append("current_replica_id = NULL")
 
         if updates:
             updates.append("updated_at = CURRENT_TIMESTAMP")
@@ -2218,7 +2306,11 @@ def update_agent_config(agent_id: str):
 
             logger.info(f"Updated agent {agent_id} configuration: {data}")
 
-        return jsonify({'success': True})
+        return jsonify({
+            'success': True,
+            'auto_switch_enabled': bool(data.get('autoSwitchEnabled', current_auto_switch)),
+            'manual_replica_enabled': bool(data.get('manualReplicaEnabled', current_manual_replica))
+        })
 
     except Exception as e:
         logger.error(f"Update agent config error: {e}", exc_info=True)
@@ -2269,52 +2361,157 @@ def get_client_instances(client_id: str):
         logger.error(f"Get instances error: {e}")
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/client/<client_id>/replicas', methods=['GET'])
+def get_client_replicas(client_id: str):
+    """Get all instances with active replicas for a client"""
+    try:
+        # Get all active replicas with their parent instance and agent info
+        replicas = execute_query("""
+            SELECT
+                ri.id as replica_id,
+                ri.instance_id as replica_instance_id,
+                ri.replica_type,
+                ri.pool_id,
+                ri.status as replica_status,
+                ri.sync_status,
+                ri.sync_latency_ms,
+                ri.state_transfer_progress,
+                ri.hourly_cost,
+                ri.total_cost,
+                ri.created_by,
+                ri.created_at as replica_created_at,
+                ri.ready_at as replica_ready_at,
+                ri.terminated_at as replica_terminated_at,
+                ri.is_active as replica_is_active,
+                sp.pool_name,
+                sp.instance_type as pool_instance_type,
+                sp.region as pool_region,
+                sp.az as pool_az,
+                a.id as agent_id,
+                a.instance_id as primary_instance_id,
+                i.instance_type as primary_instance_type,
+                i.region as primary_region,
+                i.az as primary_az,
+                i.current_mode as primary_mode
+            FROM replica_instances ri
+            LEFT JOIN spot_pools sp ON ri.pool_id = sp.id
+            JOIN agents a ON ri.agent_id = a.id
+            LEFT JOIN instances i ON a.instance_id = i.id
+            WHERE a.client_id = %s
+              AND ri.is_active = TRUE
+              AND ri.status NOT IN ('terminated', 'promoted')
+            ORDER BY ri.created_at DESC
+        """, (client_id,), fetch=True)
+
+        result = []
+        for r in (replicas or []):
+            result.append({
+                'agentId': r['agent_id'],
+                'primary': {
+                    'instanceId': r['primary_instance_id'],
+                    'instanceType': r['primary_instance_type'],
+                    'region': r['primary_region'],
+                    'az': r['primary_az'],
+                    'mode': r['primary_mode']
+                },
+                'replica': {
+                    'id': r['replica_id'],
+                    'instanceId': r['replica_instance_id'],
+                    'type': r['replica_type'],
+                    'status': r['replica_status'],
+                    'sync_status': r['sync_status'],
+                    'sync_latency_ms': r['sync_latency_ms'],
+                    'state_transfer_progress': float(r['state_transfer_progress']) if r['state_transfer_progress'] else 0.0,
+                    'pool': {
+                        'id': r['pool_id'],
+                        'name': r['pool_name'],
+                        'instance_type': r['pool_instance_type'],
+                        'region': r['pool_region'],
+                        'az': r['pool_az']
+                    } if r['pool_id'] else None,
+                    'cost': {
+                        'hourly': float(r['hourly_cost']) if r['hourly_cost'] else None,
+                        'total': float(r['total_cost']) if r['total_cost'] else 0.0
+                    },
+                    'created_by': r['created_by'],
+                    'created_at': r['replica_created_at'].isoformat() if r['replica_created_at'] else None,
+                    'ready_at': r['replica_ready_at'].isoformat() if r['replica_ready_at'] else None,
+                    'terminated_at': r['replica_terminated_at'].isoformat() if r['replica_terminated_at'] else None,
+                    'is_active': bool(r['replica_is_active'])
+                }
+            })
+
+        return jsonify(result)
+
+    except Exception as e:
+        logger.error(f"Get client replicas error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/api/client/instances/<instance_id>/pricing', methods=['GET'])
 def get_instance_pricing(instance_id: str):
-    """Get pricing details for instance"""
+    """Get pricing details for instance with current mode and pool info"""
     try:
+        # Get instance details including current state
         instance = execute_query("""
-            SELECT instance_type, region, ondemand_price, current_pool_id
-            FROM instances
-            WHERE id = %s
+            SELECT i.instance_type, i.region, i.ondemand_price, i.current_pool_id, i.current_mode
+            FROM instances i
+            WHERE i.id = %s
         """, (instance_id,), fetch_one=True)
-        
+
         if not instance:
             return jsonify({'error': 'Instance not found'}), 404
-        
+
+        # Get all available pools for this instance type
         pools = execute_query("""
-            SELECT 
+            SELECT
                 sp.id as pool_id,
+                sp.pool_name,
                 sp.az,
-                sps.price,
-                sps.captured_at
+                psc.spot_price as price,
+                psc.time_bucket as captured_at
             FROM spot_pools sp
-            JOIN (
-                SELECT pool_id, price, captured_at,
-                       ROW_NUMBER() OVER (PARTITION BY pool_id ORDER BY captured_at DESC) as rn
-                FROM spot_price_snapshots
-            ) sps ON sps.pool_id = sp.id AND sps.rn = 1
+            LEFT JOIN (
+                SELECT pool_id, spot_price, time_bucket,
+                       ROW_NUMBER() OVER (PARTITION BY pool_id ORDER BY time_bucket DESC) as rn
+                FROM pricing_snapshots_clean
+            ) psc ON psc.pool_id = sp.id AND psc.rn = 1
             WHERE sp.instance_type = %s AND sp.region = %s
-            ORDER BY sps.price ASC
+            ORDER BY psc.spot_price ASC
         """, (instance['instance_type'], instance['region']), fetch=True)
-        
+
         ondemand_price = float(instance['ondemand_price'] or 0)
-        
+
+        # Get current pool details
+        current_pool = None
+        if instance['current_pool_id']:
+            current_pool_data = execute_query("""
+                SELECT id, pool_name, az FROM spot_pools WHERE id = %s
+            """, (instance['current_pool_id'],), fetch_one=True)
+            if current_pool_data:
+                current_pool = {
+                    'id': current_pool_data['id'],
+                    'name': current_pool_data['pool_name'],
+                    'az': current_pool_data['az']
+                }
+
         return jsonify({
+            'currentMode': instance['current_mode'] or 'ondemand',
+            'currentPool': current_pool,
             'onDemand': {
                 'name': 'On-Demand',
                 'price': ondemand_price
             },
             'pools': [{
                 'id': pool['pool_id'],
+                'name': pool['pool_name'] or f"Pool {pool['pool_id']}",
                 'az': pool['az'],
-                'price': float(pool['price']),
-                'savings': ((ondemand_price - float(pool['price'])) / ondemand_price * 100) if ondemand_price > 0 else 0
+                'price': float(pool['price']) if pool['price'] else 0,
+                'savings': ((ondemand_price - float(pool['price'])) / ondemand_price * 100) if (ondemand_price > 0 and pool['price']) else 0
             } for pool in pools or []]
         })
-        
+
     except Exception as e:
-        logger.error(f"Get instance pricing error: {e}")
+        logger.error(f"Get instance pricing error: {e}", exc_info=True)
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/client/instances/<instance_id>/metrics', methods=['GET'])
@@ -2374,7 +2571,7 @@ def get_instance_metrics(instance_id: str):
 
 @app.route('/api/client/instances/<instance_id>/price-history', methods=['GET'])
 def get_instance_price_history(instance_id: str):
-    """Get historical pricing data for an instance"""
+    """Get historical pricing data for all pools (for multi-line chart)"""
     try:
         days = request.args.get('days', 7, type=int)
         interval = request.args.get('interval', 'hour')  # 'hour' or 'day'
@@ -2384,7 +2581,7 @@ def get_instance_price_history(instance_id: str):
 
         # Get instance info
         instance = execute_query("""
-            SELECT i.id, i.instance_id, i.instance_type, i.region, i.az
+            SELECT i.id, i.instance_id, i.instance_type, i.region, i.ondemand_price
             FROM instances i
             WHERE i.id = %s
         """, (instance_id,), fetch_one=True)
@@ -2392,52 +2589,83 @@ def get_instance_price_history(instance_id: str):
         if not instance:
             return jsonify({'error': 'Instance not found'}), 404
 
-        # Get pricing reports for this agent/instance
-        if interval == 'hour':
-            # Hourly granularity
-            price_data = execute_query("""
-                SELECT
-                    DATE_FORMAT(pr.received_at, '%%Y-%%m-%%d %%H:00:00') as time,
-                    AVG(pr.spot_price) as avgPrice,
-                    MIN(pr.spot_price) as minPrice,
-                    MAX(pr.spot_price) as maxPrice,
-                    AVG(pr.ondemand_price) as avgOnDemand
-                FROM pricing_reports pr
-                JOIN agents a ON pr.agent_id = a.id
-                WHERE a.instance_id = %s
-                  AND pr.received_at >= DATE_SUB(NOW(), INTERVAL %s DAY)
-                GROUP BY DATE_FORMAT(pr.received_at, '%%Y-%%m-%%d %%H:00:00')
-                ORDER BY time ASC
-            """, (instance['instance_id'], days), fetch=True)
-        else:
-            # Daily granularity
-            price_data = execute_query("""
-                SELECT
-                    DATE(pr.received_at) as time,
-                    AVG(pr.spot_price) as avgPrice,
-                    MIN(pr.spot_price) as minPrice,
-                    MAX(pr.spot_price) as maxPrice,
-                    AVG(pr.ondemand_price) as avgOnDemand
-                FROM pricing_reports pr
-                JOIN agents a ON pr.agent_id = a.id
-                WHERE a.instance_id = %s
-                  AND pr.received_at >= DATE_SUB(NOW(), INTERVAL %s DAY)
-                GROUP BY DATE(pr.received_at)
-                ORDER BY time ASC
-            """, (instance['instance_id'], days), fetch=True)
+        # Get all pools for this instance type
+        pools = execute_query("""
+            SELECT id, pool_name, az
+            FROM spot_pools
+            WHERE instance_type = %s AND region = %s
+        """, (instance['instance_type'], instance['region']), fetch=True)
 
-        result = [{
-            'time': str(row['time']),
-            'avgPrice': float(row['avgPrice'] or 0),
-            'minPrice': float(row['minPrice'] or 0),
-            'maxPrice': float(row['maxPrice'] or 0),
-            'avgOnDemand': float(row['avgOnDemand'] or 0)
-        } for row in (price_data or [])]
+        if not pools:
+            return jsonify([])
 
-        return jsonify(result)
+        # Get pricing data for all pools
+        time_format = '%%Y-%%m-%%d %%H:00' if interval == 'hour' else '%%Y-%%m-%%d'
+
+        # Build IN clause with proper parameters
+        pool_ids = [p['id'] for p in pools]
+        placeholders = ','.join(['%s'] * len(pool_ids))
+
+        # Query to get pricing for all pools
+        query = f"""
+            SELECT
+                DATE_FORMAT(psc.time_bucket, %s) as time,
+                psc.pool_id,
+                AVG(psc.spot_price) as price
+            FROM pricing_snapshots_clean psc
+            WHERE psc.pool_id IN ({placeholders})
+              AND psc.time_bucket >= DATE_SUB(NOW(), INTERVAL %s DAY)
+            GROUP BY DATE_FORMAT(psc.time_bucket, %s), psc.pool_id
+            ORDER BY time ASC, psc.pool_id
+        """
+
+        params = [time_format] + pool_ids + [days, time_format]
+        price_data = execute_query(query, tuple(params), fetch=True)
+
+        # Get unique timestamps
+        timestamps = sorted(set(row['time'] for row in (price_data or [])))
+
+        # Build result with each timestamp having prices for all pools
+        pool_map = {p['id']: {'name': p['pool_name'], 'az': p['az']} for p in pools}
+        price_map = {}
+        for row in (price_data or []):
+            key = str(row['time'])
+            if key not in price_map:
+                price_map[key] = {}
+            price_map[key][row['pool_id']] = float(row['price'])
+
+        # Build final result
+        result = []
+        ondemand_price = float(instance['ondemand_price'] or 0)
+
+        for timestamp in timestamps:
+            data_point = {
+                'time': timestamp,
+                'onDemand': ondemand_price
+            }
+            # Add each pool's price
+            for pool in pools:
+                pool_id = pool['id']
+                pool_key = f"pool_{pool_id}"
+                data_point[pool_key] = price_map.get(timestamp, {}).get(pool_id, None)
+            result.append(data_point)
+
+        # Also return pool metadata for the frontend to know which lines to draw
+        pool_metadata = [{
+            'id': p['id'],
+            'name': p['pool_name'] or f"Pool {p['id']}",
+            'az': p['az'],
+            'key': f"pool_{p['id']}"
+        } for p in pools]
+
+        return jsonify({
+            'data': result,
+            'pools': pool_metadata,
+            'onDemandPrice': ondemand_price
+        })
 
     except Exception as e:
-        logger.error(f"Get price history error: {e}")
+        logger.error(f"Get price history error: {e}", exc_info=True)
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/client/instances/<instance_id>/available-options', methods=['GET'])
@@ -3475,6 +3703,14 @@ def initialize_app():
     logger.info(f"Models Loaded: {decision_engine_manager.models_loaded}")
     logger.info(f"Listening on {config.HOST}:{config.PORT}")
     logger.info("="*80)
+
+# Register replica management endpoints
+try:
+    from replica_management_api import register_replica_management_endpoints
+    register_replica_management_endpoints(app)
+    logger.info("✓ Replica management endpoints registered")
+except Exception as e:
+    logger.warning(f"Failed to register replica management endpoints: {e}")
 
 # Initialize on import (for gunicorn)
 initialize_app()
