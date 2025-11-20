@@ -283,13 +283,22 @@ const SystemHealthPage = () => {
               </div>
             )}
 
-            {/* Upload Section */}
+            {/* Currently In Use */}
             <div className="mt-4 pt-4 border-t border-gray-200">
+              <div className="mb-3">
+                <p className="text-xs font-semibold text-gray-700 mb-2">📂 Currently In Use:</p>
+                <div className="bg-gray-50 rounded-lg p-2 border border-gray-200">
+                  <code className="text-xs text-gray-800 font-mono">
+                    decision_engines/ml_based_engine.py
+                  </code>
+                </div>
+              </div>
+
               <button
                 onClick={() => setShowDecisionEngineUpload(!showDecisionEngineUpload)}
                 className="w-full text-left text-sm font-semibold text-blue-600 hover:text-blue-800 transition-colors"
               >
-                {showDecisionEngineUpload ? '▼' : '▶'} Upload Decision Engine Files
+                {showDecisionEngineUpload ? '▼' : '▶'} Upload New Decision Engine
               </button>
 
               {showDecisionEngineUpload && (
@@ -397,13 +406,41 @@ const SystemHealthPage = () => {
               </div>
             )}
 
-            {/* Upload Section */}
+            {/* Currently In Use */}
             <div className="mt-4 pt-4 border-t border-gray-200">
+              <div className="mb-3">
+                <p className="text-xs font-semibold text-gray-700 mb-2">📂 Currently In Use:</p>
+                {liveSession ? (
+                  <div className="bg-blue-50 rounded-lg p-3 border border-blue-200">
+                    <div className="space-y-1">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs text-blue-700">Files:</span>
+                        <span className="text-xs font-semibold text-blue-900">
+                          {liveSession.file_count || 0} file{liveSession.file_count !== 1 ? 's' : ''}
+                        </span>
+                      </div>
+                      {liveSession.file_names && JSON.parse(liveSession.file_names).map((filename, idx) => (
+                        <div key={idx} className="flex items-center space-x-2 mt-2">
+                          <CheckCircle size={12} className="text-blue-600 flex-shrink-0" />
+                          <code className="text-xs text-blue-800 font-mono break-all">
+                            {filename}
+                          </code>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="bg-gray-50 rounded-lg p-2 border border-gray-200">
+                    <p className="text-xs text-gray-600 italic">No active model files</p>
+                  </div>
+                )}
+              </div>
+
               <button
                 onClick={() => setShowMLModelsUpload(!showMLModelsUpload)}
                 className="w-full text-left text-sm font-semibold text-blue-600 hover:text-blue-800 transition-colors"
               >
-                {showMLModelsUpload ? '▼' : '▶'} Upload ML Model Files
+                {showMLModelsUpload ? '▼' : '▶'} Upload New ML Models
               </button>
 
               {showMLModelsUpload && (
