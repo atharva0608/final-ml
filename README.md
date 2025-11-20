@@ -667,15 +667,274 @@ SELECT * FROM replica_instances WHERE is_active=TRUE;
 
 ---
 
-## 📞 Support
+## 🤖 Agent Backend Setup
 
-For issues or questions:
-1. Check database logs: `spot_interruption_events`, `instance_switches`
-2. Review backend logs
-3. Check agent logs on EC2 instances
+### Complete Python Agent (agent/spot_agent.py)
+
+The agent runs on each EC2 instance and communicates with the central server.
+
+#### Installation on EC2 Instance
+
+```bash
+# 1. Install agent
+cd /opt
+sudo git clone https://github.com/atharva0608/final-ml.git
+cd final-ml/agent
+sudo pip3 install -r requirements.txt
+
+# 2. Configure environment
+export CENTRAL_SERVER_URL="http://your-server:5000"
+export CLIENT_TOKEN="your-client-token"  # Get from UI
+
+# 3. Run agent
+sudo python3 spot_agent.py
+```
+
+#### As Systemd Service (Production)
+
+```bash
+# Copy service file
+sudo cp spot-agent.service /etc/systemd/system/
+
+# Edit configuration
+sudo nano /etc/systemd/system/spot-agent.service
+# Update: CENTRAL_SERVER_URL and CLIENT_TOKEN
+
+# Enable and start
+sudo systemctl enable spot-agent
+sudo systemctl start spot-agent
+sudo systemctl status spot-agent
+```
+
+#### Agent Features
+
+- ✅ **Auto-registration** with central server
+- ✅ **Heartbeat** every 30s (configurable)
+- ✅ **Pricing reporting** every 2.5 minutes
+- ✅ **Command polling** and execution
+- ✅ **Switch execution** (spot ↔ on-demand)
+- ✅ **Interruption detection**:
+  - Rebalance recommendations (10-15 min warning)
+  - Termination notices (2-min warning)
+- ✅ **Emergency replica creation**
+- ✅ **Automatic failover** handling
+- ✅ **Graceful shutdown**
+
+See `agent/README.md` for complete documentation.
 
 ---
 
-**Version:** 1.0
+## 🎛️ Configuration Toggles (Frontend)
+
+### Agent Configuration Modal
+
+Access via: **Agents** → Click agent → **Configure**
+
+#### 1. Auto-Switch (Blue Toggle)
+- **ON**: ML recommendations automatically trigger instance switches
+- **OFF**: Recommendations shown as suggestions only (manual override required)
+- **Use case**: Enable for full automation, disable for manual control
+
+#### 2. Auto-Replica (Orange Toggle)
+- **ON**: Automatically create replicas for rebalance/termination notices
+- **OFF**: Manual replica creation only
+- **Note**: Emergency scenarios ALWAYS bypass this setting (safety mechanism)
+- **Use case**: Keep enabled for automatic failover protection
+
+#### 3. Manual Replica (Green Toggle)
+- **ON**: Allow creating manual replicas via UI
+- **OFF**: Disable manual replica creation
+- **Use case**: Enable for planned maintenance or testing scenarios
+
+### Instance Switching UI (Redesigned)
+
+**Access via**: **Clients** → **Instances** → Click instance row
+
+#### Visual Design:
+- **On-Demand**: Always at top with **RED button** (guaranteed availability)
+- **Cheapest Pool**: Highlighted with **GREEN button** and "Cheapest" badge
+- **Current Pool**: **Greyed out** and disabled (shows "Current" badge)
+- **Other Pools**: Regular blue buttons with pricing and savings
+
+#### Features:
+- ❌ **No more dropdowns** - All pools visible in clean list
+- ✅ Real-time pricing for all pools
+- ✅ Savings percentage for each pool
+- ✅ One-click switching
+- ✅ Current pool clearly indicated and unclickable
+
+---
+
+## 🔄 Switching Workflows
+
+### 1. Normal ML-Based Switching
+
+**When**: ML model recommends a switch to cheaper pool
+
+**With auto_switch ON**:
+```
+ML Model → Recommendation → Command Created → Agent Executes → Switch Complete
+```
+
+**With auto_switch OFF**:
+```
+ML Model → Recommendation → Displayed in UI → User Decides → Manual Override
+```
+
+**Endpoints**:
+- `GET /api/agents/<id>/switch-recommendation` - Get ML recommendation
+- `POST /api/agents/<id>/issue-switch-command` - Issue command (checks auto_switch)
+
+### 2. Emergency Scenarios (ALWAYS Bypass Settings)
+
+**When**: AWS sends rebalance or termination notice
+
+**Workflow**:
+```
+AWS Signal → Agent Detects → Emergency Replica Created → Failover (if needed)
+```
+
+**Key Point**: Emergencies **ALWAYS execute** regardless of:
+- auto_switch setting
+- auto_replica setting
+- ML model state (works even if models offline)
+
+**Endpoints**:
+- `POST /api/agents/<id>/create-emergency-replica` - Create emergency replica
+- `POST /api/agents/<id>/termination-imminent` - Handle 2-min termination
+
+### 3. Manual Replica Creation
+
+**When**: User wants to prepare for planned maintenance
+
+**Workflow**:
+```
+User Clicks "Create Replica" → Replica Created → Stays Ready → User Promotes When Ready
+```
+
+**Endpoints**:
+- `POST /api/agents/<id>/replicas` - Create manual replica
+- `POST /api/agents/<id>/replicas/<replica_id>/promote` - Promote to primary
+- `DELETE /api/agents/<id>/replicas/<replica_id>` - Delete unused replica
+
+---
+
+## 🚀 Production Deployment
+
+### Backend Server
+
+```bash
+# 1. Install dependencies
+pip install -r requirements.txt
+
+# 2. Configure database
+mysql -u root -p < schema.sql
+
+# 3. Run backend (production)
+gunicorn -w 4 -b 0.0.0.0:5000 backend:app
+
+# Or with systemd
+sudo systemctl enable spot-optimizer-backend
+sudo systemctl start spot-optimizer-backend
+```
+
+### Frontend
+
+```bash
+# 1. Build production bundle
+cd frontend
+npm run build
+
+# 2. Serve with nginx or serve built files
+npm run preview
+
+# Or deploy to CDN/static hosting
+```
+
+### Agent on Each EC2 Instance
+
+```bash
+# 1. Install as systemd service (see Agent Backend Setup above)
+# 2. Configure CENTRAL_SERVER_URL and CLIENT_TOKEN
+# 3. Enable and start service
+sudo systemctl enable spot-agent
+sudo systemctl start spot-agent
+```
+
+### Security Checklist
+
+- [ ] MySQL secured with strong passwords
+- [ ] Backend running behind HTTPS (use nginx reverse proxy)
+- [ ] Client tokens rotated regularly
+- [ ] IAM roles for EC2 instances (instead of access keys)
+- [ ] Network security groups configured
+- [ ] Agent logs sent to CloudWatch
+- [ ] Backup database regularly
+- [ ] Monitor failover success rates
+
+### Production Environment Variables
+
+**Backend:**
+```bash
+export DB_HOST="your-rds-endpoint"
+export DB_USER="spot_optimizer"
+export DB_PASSWORD="your-secure-password"
+export DB_NAME="spot_optimizer"
+export PORT="5000"
+```
+
+**Agent:**
+```bash
+export CENTRAL_SERVER_URL="https://your-server.com"
+export CLIENT_TOKEN="your-client-token"
+export HEARTBEAT_INTERVAL="30"
+```
+
+---
+
+## 📞 Support
+
+For issues or questions:
+1. **Agent Issues**: Check `sudo journalctl -u spot-agent -f`
+2. **Backend Issues**: Review backend logs and `spot_interruption_events` table
+3. **Database Issues**: Check `instance_switches` and replica tables
+4. **UI Issues**: Check browser console and network tab
+
+**Logs to Check**:
+- Backend: `backend.log` or stdout
+- Agent: `journalctl -u spot-agent`
+- Database: `SELECT * FROM spot_interruption_events ORDER BY detected_at DESC LIMIT 10;`
+
+---
+
+## 📋 Repository Structure
+
+```
+final-ml/
+├── agent/                      # Complete Python agent (runs on EC2)
+│   ├── spot_agent.py          # Main agent code
+│   ├── requirements.txt       # Agent dependencies
+│   ├── README.md              # Agent documentation
+│   ├── spot-agent.service     # Systemd service template
+│   └── .env.example           # Configuration template
+├── scripts/                    # Setup and maintenance scripts
+│   ├── setup.sh               # Installation script
+│   └── cleanup.sh             # Cleanup script
+├── demo/                       # Demo data
+│   └── demo_data.sql          # Sample data for testing
+├── frontend/                   # React frontend
+│   └── src/                   # Frontend source code
+├── migrations/                 # Database migrations
+├── decision_engines/           # ML decision engine
+├── backend.py                  # Central server (Flask API)
+├── replica_management_api.py   # Replica management endpoints
+├── data_quality_processor.py   # Gap-filling and deduplication
+├── schema.sql                  # Database schema
+└── README.md                   # This file
+```
+
+---
+
+**Version:** 2.0
 **Last Updated:** 2025-11-20
-**Status:** Production Ready
+**Status:** Production Ready with Complete Agent Backend
