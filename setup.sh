@@ -657,11 +657,26 @@ log "Step 9: Setting up Vite React frontend..."
 
 # Copy entire frontend directory from repository
 log "Copying frontend from repository..."
-if [ -d "$REPO_DIR/frontend" ]; then
-    # Copy all frontend files
-    cp -r "$REPO_DIR/frontend"/* "$FRONTEND_DIR/" 2>/dev/null || true
 
-    # Also copy hidden files like .gitignore
+# Ensure frontend target directory exists
+if [ ! -d "$FRONTEND_DIR" ]; then
+    log "Creating frontend directory..."
+    sudo mkdir -p "$FRONTEND_DIR"
+    sudo chown -R ubuntu:ubuntu "$FRONTEND_DIR"
+fi
+
+if [ -d "$REPO_DIR/frontend" ]; then
+    # Remove any existing frontend files first
+    sudo rm -rf "$FRONTEND_DIR"/*
+    sudo rm -rf "$FRONTEND_DIR"/.[!.]* 2>/dev/null || true
+
+    # Copy all frontend files (preserve structure)
+    cp -r "$REPO_DIR/frontend"/* "$FRONTEND_DIR/" 2>&1 || {
+        error "Failed to copy frontend files"
+        exit 1
+    }
+
+    # Copy hidden files like .gitignore
     cp -r "$REPO_DIR/frontend"/.[!.]* "$FRONTEND_DIR/" 2>/dev/null || true
 
     log "✓ Copied frontend files"
@@ -670,7 +685,16 @@ else
     exit 1
 fi
 
-cd "$FRONTEND_DIR"
+# Verify directory exists before cd
+if [ ! -d "$FRONTEND_DIR" ]; then
+    error "Frontend directory does not exist after copy!"
+    exit 1
+fi
+
+cd "$FRONTEND_DIR" || {
+    error "Cannot cd to $FRONTEND_DIR"
+    exit 1
+}
 
 # Update API URL in all possible locations to use the public IP
 log "Updating API URL to http://$PUBLIC_IP:5000..."
