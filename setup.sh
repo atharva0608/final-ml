@@ -557,6 +557,24 @@ else
     exit 1
 fi
 
+# Copy decision_engines module from repository
+log "Copying decision_engines module..."
+if [ -d "$REPO_DIR/decision_engines" ]; then
+    cp -r "$REPO_DIR/decision_engines" "$BACKEND_DIR/"
+    log "✓ Copied decision_engines module"
+else
+    error "decision_engines directory not found in repository!"
+    exit 1
+fi
+
+# Create production directories for model uploads
+log "Creating production model and engine directories..."
+mkdir -p "$MODELS_DIR"
+mkdir -p "$MODELS_DIR/decision_engines"
+chmod 775 "$MODELS_DIR"
+chmod 775 "$MODELS_DIR/decision_engines"
+log "✓ Created $MODELS_DIR and $MODELS_DIR/decision_engines"
+
 # Create requirements.txt with exact dependencies
 cat > "$BACKEND_DIR/requirements.txt" << 'EOF'
 Flask==3.0.0
@@ -593,6 +611,7 @@ DB_POOL_SIZE=10
 DECISION_ENGINE_MODULE=decision_engines.ml_based_engine
 DECISION_ENGINE_CLASS=MLBasedDecisionEngine
 MODEL_DIR=$MODELS_DIR
+DECISION_ENGINE_DIR=$MODELS_DIR/decision_engines
 
 # Server
 HOST=$BACKEND_HOST
@@ -644,6 +663,16 @@ exec gunicorn \
 EOF
 
 chmod +x "$BACKEND_DIR/start_backend.sh"
+
+# Create restart script for backend self-restart
+cat > "$BACKEND_DIR/restart_backend.sh" << 'EOF'
+#!/bin/bash
+# This script allows the backend to restart itself
+echo "$(date): Backend restart requested" >> /home/ubuntu/logs/backend_restart.log
+sudo systemctl restart spot-optimizer-backend
+EOF
+chmod +x "$BACKEND_DIR/restart_backend.sh"
+log "✓ Created restart script for backend self-restart"
 
 deactivate
 
@@ -900,6 +929,18 @@ sudo systemctl daemon-reload
 sudo systemctl enable spot-optimizer-backend
 
 log "Backend systemd service created"
+
+# Configure sudo permissions for backend self-restart
+log "Configuring sudo permissions for backend self-restart..."
+sudo tee /etc/sudoers.d/spot-optimizer-backend << EOF
+# Allow ubuntu user to restart backend service without password
+ubuntu ALL=(ALL) NOPASSWD: /bin/systemctl restart spot-optimizer-backend
+ubuntu ALL=(ALL) NOPASSWD: /bin/systemctl start spot-optimizer-backend
+ubuntu ALL=(ALL) NOPASSWD: /bin/systemctl stop spot-optimizer-backend
+ubuntu ALL=(ALL) NOPASSWD: /bin/systemctl status spot-optimizer-backend
+EOF
+sudo chmod 440 /etc/sudoers.d/spot-optimizer-backend
+log "✓ Sudoers configuration added for backend service management"
 
 # ==============================================================================
 # STEP 12: CREATE HELPER SCRIPTS
