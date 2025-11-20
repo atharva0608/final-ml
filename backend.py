@@ -1648,9 +1648,9 @@ def get_client_agents(client_id: str):
 
 @app.route('/api/client/<client_id>/agents/decisions', methods=['GET'])
 def get_agents_decisions(client_id: str):
-    """Get agent decision history with pricing health status"""
+    """Get agent decision history with comprehensive health status"""
     try:
-        # Get all active agents with last decision
+        # Get all agents (including offline ones for complete view)
         agents_data = execute_query("""
             SELECT
                 a.id,
@@ -1658,6 +1658,7 @@ def get_agents_decisions(client_id: str):
                 a.status,
                 a.current_mode,
                 a.current_pool_id,
+                a.last_heartbeat_at,
 
                 -- Last decision (subquery)
                 (SELECT decision_type FROM agent_decision_history adh
@@ -1669,12 +1670,29 @@ def get_agents_decisions(client_id: str):
                  ORDER BY decision_time DESC LIMIT 1) as last_decision_time
 
             FROM agents a
-            WHERE a.client_id = %s AND a.status = 'online'
-            ORDER BY a.logical_agent_id
+            WHERE a.client_id = %s
+            ORDER BY
+                CASE WHEN a.status = 'online' THEN 0 ELSE 1 END,
+                a.logical_agent_id
         """, (client_id,), fetch=True)
 
         result = []
         for agent in (agents_data or []):
+            # Get last 5 decision history entries
+            decision_history = execute_query("""
+                SELECT
+                    decision_type,
+                    recommended_action,
+                    risk_score,
+                    expected_savings,
+                    current_mode,
+                    decision_time
+                FROM agent_decision_history
+                WHERE agent_id = %s
+                ORDER BY decision_time DESC
+                LIMIT 5
+            """, (agent['id'],), fetch=True)
+
             # Get last 5 pricing reports for health check
             recent_reports = execute_query("""
                 SELECT received_at, ondemand_price, current_spot_price
@@ -1693,8 +1711,32 @@ def get_agents_decisions(client_id: str):
             """, (agent['id'],), fetch_one=True)
             recent_reports_count = recent_count['cnt'] if recent_count else 0
 
-            # Health check: at least 5 reports in last 10 minutes
-            is_healthy = recent_reports_count >= 5
+            # Get last 5 system events for this agent
+            recent_events = execute_query("""
+                SELECT
+                    event_type,
+                    severity,
+                    message,
+                    created_at
+                FROM system_events
+                WHERE agent_id = %s
+                ORDER BY created_at DESC
+                LIMIT 5
+            """, (agent['id'],), fetch=True)
+
+            # Enhanced health check
+            heartbeat_healthy = False
+            if agent.get('last_heartbeat_at'):
+                try:
+                    heartbeat_delta = datetime.utcnow() - agent['last_heartbeat_at']
+                    heartbeat_minutes = int(heartbeat_delta.total_seconds() / 60)
+                    heartbeat_healthy = heartbeat_minutes <= 5  # Healthy if heartbeat within 5 minutes
+                except Exception:
+                    heartbeat_healthy = False
+
+            # Health criteria: heartbeat recent AND has recent activity
+            activity_healthy = recent_reports_count >= 1 or len(decision_history or []) > 0
+            is_healthy = heartbeat_healthy and activity_healthy and agent['status'] == 'online'
 
             # Calculate time elapsed since last decision
             time_elapsed = None
@@ -1702,30 +1744,72 @@ def get_agents_decisions(client_id: str):
                 try:
                     delta = datetime.utcnow() - agent['last_decision_time']
                     minutes_ago = int(delta.total_seconds() / 60)
-                    time_elapsed = {
-                        'minutes': minutes_ago,
-                        'formatted': f"{minutes_ago} minutes ago" if minutes_ago > 0 else "Just now"
-                    }
+                    if minutes_ago < 1:
+                        time_elapsed = {"minutes": 0, "formatted": "Just now"}
+                    elif minutes_ago < 60:
+                        time_elapsed = {"minutes": minutes_ago, "formatted": f"{minutes_ago} min ago"}
+                    else:
+                        hours = minutes_ago // 60
+                        time_elapsed = {"minutes": minutes_ago, "formatted": f"{hours}h ago"}
                 except Exception as e:
                     logger.warning(f"Error calculating time elapsed: {e}")
+
+            # Calculate heartbeat age
+            heartbeat_elapsed = None
+            if agent.get('last_heartbeat_at'):
+                try:
+                    delta = datetime.utcnow() - agent['last_heartbeat_at']
+                    minutes_ago = int(delta.total_seconds() / 60)
+                    if minutes_ago < 1:
+                        heartbeat_elapsed = "< 1 min ago"
+                    elif minutes_ago < 60:
+                        heartbeat_elapsed = f"{minutes_ago} min ago"
+                    else:
+                        hours = minutes_ago // 60
+                        heartbeat_elapsed = f"{hours}h ago"
+                except Exception:
+                    heartbeat_elapsed = "Unknown"
 
             result.append({
                 'agentId': agent['id'],
                 'agentName': agent['logical_agent_id'],
                 'status': agent['status'],
+                'currentMode': agent.get('current_mode'),
+                'currentPoolId': agent.get('current_pool_id'),
+                'isHealthy': is_healthy,
+                'lastHeartbeat': heartbeat_elapsed,
                 'lastDecision': {
                     'type': agent.get('last_decision'),
                     'time': agent['last_decision_time'].isoformat() if agent.get('last_decision_time') else None,
                     'elapsed': time_elapsed
                 },
-                'pricingHealth': {
-                    'status': 'healthy' if is_healthy else 'unhealthy',
-                    'recentReportsCount': recent_reports_count,
-                    'recentReports': [{
+                'decisionHistory': [{
+                    'type': d['decision_type'],
+                    'action': d.get('recommended_action'),
+                    'riskScore': float(d['risk_score']) if d.get('risk_score') else None,
+                    'expectedSavings': float(d['expected_savings']) if d.get('expected_savings') else None,
+                    'currentMode': d.get('current_mode'),
+                    'time': d['decision_time'].isoformat() if d.get('decision_time') else None
+                } for d in (decision_history or [])],
+                'recentActivity': {
+                    'pricingReports': [{
                         'time': r['received_at'].isoformat() if r.get('received_at') else None,
                         'onDemandPrice': float(r['ondemand_price']) if r.get('ondemand_price') else 0,
                         'spotPrice': float(r['current_spot_price']) if r.get('current_spot_price') else 0
-                    } for r in (recent_reports or [])]
+                    } for r in (recent_reports or [])],
+                    'systemEvents': [{
+                        'type': e['event_type'],
+                        'severity': e.get('severity'),
+                        'message': e.get('message'),
+                        'time': e['created_at'].isoformat() if e.get('created_at') else None
+                    } for e in (recent_events or [])],
+                    'healthStatus': {
+                        'overall': 'healthy' if is_healthy else 'unhealthy',
+                        'heartbeat': 'active' if heartbeat_healthy else 'stale',
+                        'activity': 'active' if activity_healthy else 'inactive',
+                        'recentReportsCount': recent_reports_count,
+                        'decisionCount': len(decision_history or [])
+                    }
                 }
             })
 
