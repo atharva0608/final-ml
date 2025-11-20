@@ -68,8 +68,8 @@ class Config:
     # Database
     DB_HOST = os.getenv('DB_HOST', 'localhost')
     DB_PORT = int(os.getenv('DB_PORT', 3306))
-    DB_USER = os.getenv('DB_USER', 'root')
-    DB_PASSWORD = os.getenv('DB_PASSWORD', 'password')
+    DB_USER = os.getenv('DB_USER', 'spotuser')
+    DB_PASSWORD = os.getenv('DB_PASSWORD', 'SpotUser2024!')
     DB_NAME = os.getenv('DB_NAME', 'spot_optimizer')
     DB_POOL_SIZE = int(os.getenv('DB_POOL_SIZE', 10))
     
@@ -115,6 +115,7 @@ def init_db_pool():
     """Initialize database connection pool"""
     global connection_pool
     try:
+        logger.info(f"Connecting to database: {config.DB_USER}@{config.DB_HOST}:{config.DB_PORT}/{config.DB_NAME}")
         connection_pool = pooling.MySQLConnectionPool(
             pool_name="spot_optimizer_pool",
             pool_size=config.DB_POOL_SIZE,
@@ -126,9 +127,16 @@ def init_db_pool():
             database=config.DB_NAME,
             autocommit=False
         )
+
+        # Test the connection
+        test_conn = connection_pool.get_connection()
+        test_conn.close()
+
         logger.info(f"✓ Database connection pool initialized (size: {config.DB_POOL_SIZE})")
     except Error as e:
         logger.error(f"Failed to initialize connection pool: {e}")
+        logger.error(f"Connection details: {config.DB_USER}@{config.DB_HOST}:{config.DB_PORT}/{config.DB_NAME}")
+        logger.error("Please verify database credentials and ensure MySQL is running")
         raise
 
 def get_db_connection():

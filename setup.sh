@@ -435,12 +435,34 @@ else
     warn "Schema import may have issues - check manually"
 fi
 
-# Grant privileges
+# Grant privileges for all connection types
 log "Configuring database user privileges..."
-docker exec spot-mysql mysql -u root -p"$DB_ROOT_PASSWORD" --silent -e "
+
+# Wait a moment for user to be fully created
+sleep 2
+
+# Grant privileges from any host (%), localhost, and docker network
+docker exec spot-mysql mysql -u root -p"$DB_ROOT_PASSWORD" -e "
+    -- Grant to user from any host
     GRANT ALL PRIVILEGES ON $DB_NAME.* TO '$DB_USER'@'%';
+
+    -- Grant to user from localhost
+    GRANT ALL PRIVILEGES ON $DB_NAME.* TO '$DB_USER'@'localhost';
+
+    -- Grant to user from docker network (172.18.0.0/16)
+    GRANT ALL PRIVILEGES ON $DB_NAME.* TO '$DB_USER'@'172.18.%';
+
+    -- Also grant root access from docker network for admin tasks
+    GRANT ALL PRIVILEGES ON *.* TO 'root'@'172.18.%' IDENTIFIED BY '$DB_ROOT_PASSWORD' WITH GRANT OPTION;
+
     FLUSH PRIVILEGES;
-" 2>/dev/null || true
+" 2>/dev/null
+
+# Verify the grants worked
+log "Verifying database connection..."
+docker exec spot-mysql mysql -u "$DB_USER" -p"$DB_PASSWORD" -e "SELECT 1;" "$DB_NAME" > /dev/null 2>&1 &&
+    log "✓ Database user can connect successfully" ||
+    warn "Database user connection test failed - may need manual verification"
 
 log "Database privileges configured"
 
@@ -505,7 +527,8 @@ pip install --quiet -r requirements.txt
 
 log "Python dependencies installed"
 
-# Create .env file for backend
+# Create .env file for backend with explicit values
+log "Creating backend environment configuration..."
 cat > "$BACKEND_DIR/.env" << EOF
 # Database Configuration
 DB_HOST=localhost
@@ -524,6 +547,16 @@ AWS_REGION=$REGION
 AWS_AZ=$AVAILABILITY_ZONE
 AWS_INSTANCE_ID=$INSTANCE_ID
 EOF
+
+# Verify .env was created correctly
+if [ -f "$BACKEND_DIR/.env" ]; then
+    log "✓ Backend .env file created"
+    # Show database config (hide password)
+    log "Database config: $DB_USER@localhost:$DB_PORT/$DB_NAME"
+else
+    error ".env file creation failed!"
+    exit 1
+fi
 
 log "Backend environment configured"
 
