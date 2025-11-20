@@ -2174,27 +2174,54 @@ def update_agent_settings(agent_id: str):
 
 @app.route('/api/client/agents/<agent_id>/config', methods=['POST'])
 def update_agent_config(agent_id: str):
-    """Update agent configuration - simplified to only termination timeout"""
+    """Update agent configuration including switches and replica settings"""
     data = request.json or {}
 
     try:
-        # Only accept terminate_wait_minutes (converted to seconds)
+        updates = []
+        params = []
+
+        # Handle terminate_wait_minutes (for backwards compatibility)
         if 'terminate_wait_minutes' in data:
             terminate_wait_seconds = int(data['terminate_wait_minutes']) * 60
+            updates.append("terminate_wait_seconds = %s")
+            params.append(terminate_wait_seconds)
 
-            execute_query("""
+        # Handle new config object format
+        if 'terminateWaitMinutes' in data:
+            terminate_wait_seconds = int(data['terminateWaitMinutes']) * 60
+            updates.append("terminate_wait_seconds = %s")
+            params.append(terminate_wait_seconds)
+
+        if 'autoSwitchEnabled' in data:
+            updates.append("auto_switch_enabled = %s")
+            params.append(bool(data['autoSwitchEnabled']))
+
+        if 'autoReplicaEnabled' in data:
+            updates.append("auto_replica_enabled = %s")
+            params.append(bool(data['autoReplicaEnabled']))
+
+        if 'manualReplicaEnabled' in data:
+            updates.append("manual_replica_enabled = %s")
+            params.append(bool(data['manualReplicaEnabled']))
+
+        if updates:
+            updates.append("updated_at = CURRENT_TIMESTAMP")
+            params.append(agent_id)
+
+            query = f"""
                 UPDATE agents
-                SET terminate_wait_seconds = %s,
-                    updated_at = CURRENT_TIMESTAMP
+                SET {', '.join(updates)}
                 WHERE id = %s
-            """, (terminate_wait_seconds, agent_id))
+            """
+            execute_query(query, tuple(params))
 
-            logger.info(f"Updated agent {agent_id} termination timeout to {terminate_wait_seconds}s")
+            logger.info(f"Updated agent {agent_id} configuration: {data}")
 
         return jsonify({'success': True})
 
     except Exception as e:
-        logger.error(f"Update agent config error: {e}")
+        logger.error(f"Update agent config error: {e}", exc_info=True)
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/client/<client_id>/instances', methods=['GET'])

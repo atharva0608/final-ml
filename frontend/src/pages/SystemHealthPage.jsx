@@ -241,28 +241,60 @@ const SystemHealthPage = () => {
 
       {/* Action Buttons - Always visible */}
       {!restarting && (
-        <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200 flex flex-wrap gap-3">
-          <Button
-            variant="danger"
-            size="lg"
-            onClick={handleActivate}
-            icon={<RefreshCw size={18} />}
-            className="flex-1 min-w-[200px]"
-            disabled={!lastUploadSessionId && !decisionEngineUploaded}
-          >
-            🔴 RESTART BACKEND
-          </Button>
+        <div className="bg-gradient-to-r from-gray-50 to-white p-6 rounded-2xl shadow-lg border-2 border-gray-200">
+          <div className="flex flex-wrap gap-4">
+            {/* RESTART Button */}
+            <button
+              onClick={handleActivate}
+              disabled={!lastUploadSessionId && !decisionEngineUploaded}
+              className={`flex-1 min-w-[250px] group relative overflow-hidden rounded-xl p-5 transition-all duration-300 ${
+                !lastUploadSessionId && !decisionEngineUploaded
+                  ? 'bg-gray-100 cursor-not-allowed opacity-60'
+                  : 'bg-gradient-to-r from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 shadow-lg hover:shadow-xl hover:scale-105 cursor-pointer'
+              }`}
+            >
+              <div className="relative z-10 flex items-center justify-center space-x-3">
+                <RefreshCw className={`${!lastUploadSessionId && !decisionEngineUploaded ? 'text-gray-400' : 'text-white animate-pulse'}`} size={24} />
+                <div className="text-left">
+                  <div className={`text-lg font-bold ${!lastUploadSessionId && !decisionEngineUploaded ? 'text-gray-600' : 'text-white'}`}>
+                    RESTART BACKEND
+                  </div>
+                  <div className={`text-xs ${!lastUploadSessionId && !decisionEngineUploaded ? 'text-gray-500' : 'text-red-100'}`}>
+                    {!lastUploadSessionId && !decisionEngineUploaded ? 'Upload files first' : 'Activate uploaded files'}
+                  </div>
+                </div>
+              </div>
+              {!(!lastUploadSessionId && !decisionEngineUploaded) && (
+                <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white to-transparent opacity-0 group-hover:opacity-20 transition-opacity duration-300"></div>
+              )}
+            </button>
 
-          <Button
-            variant="warning"
-            size="lg"
-            onClick={handleFallback}
-            icon={<RotateCcw size={18} />}
-            className="flex-1 min-w-[200px]"
-            disabled={!fallbackSession}
-          >
-            ↩️ FALLBACK TO PREVIOUS
-          </Button>
+            {/* FALLBACK Button */}
+            <button
+              onClick={handleFallback}
+              disabled={!fallbackSession}
+              className={`flex-1 min-w-[250px] group relative overflow-hidden rounded-xl p-5 transition-all duration-300 ${
+                !fallbackSession
+                  ? 'bg-gray-100 cursor-not-allowed opacity-60'
+                  : 'bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-600 hover:to-orange-700 shadow-lg hover:shadow-xl hover:scale-105 cursor-pointer'
+              }`}
+            >
+              <div className="relative z-10 flex items-center justify-center space-x-3">
+                <RotateCcw className={`${!fallbackSession ? 'text-gray-400' : 'text-white'}`} size={24} />
+                <div className="text-left">
+                  <div className={`text-lg font-bold ${!fallbackSession ? 'text-gray-600' : 'text-white'}`}>
+                    FALLBACK TO PREVIOUS
+                  </div>
+                  <div className={`text-xs ${!fallbackSession ? 'text-gray-500' : 'text-orange-100'}`}>
+                    {!fallbackSession ? 'No fallback available' : 'Restore previous version'}
+                  </div>
+                </div>
+              </div>
+              {!(!fallbackSession) && (
+                <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white to-transparent opacity-0 group-hover:opacity-20 transition-opacity duration-300"></div>
+              )}
+            </button>
+          </div>
         </div>
       )}
 
