@@ -1,22 +1,36 @@
 #!/bin/bash
 # ==============================================================================
-# AWS Spot Optimizer - Complete EC2 Setup Script
+# AWS Spot Optimizer - Complete Production Setup Script v3.3
 # ==============================================================================
-# Master setup script with all latest features:
-#   ✓ API URL auto-detection (no manual IP configuration needed)
-#   ✓ Dual repository support (backend + frontend)
-#   ✓ Cleaned schema v6.0 with demo data v2.0
-#   ✓ MySQL 8.0 in Docker with proper permissions
-#   ✓ Flask 3.0 backend with all endpoints
-#   ✓ Vite React frontend with auto-detection
-#   ✓ Nginx reverse proxy with CORS support
+# This script performs a complete installation of the AWS Spot Optimizer:
 #
-# Repositories:
-#   - Backend:  https://github.com/atharva0608/final-ml.git
-#   - Frontend: https://github.com/atharva0608/frontend-.git
+# Components Installed:
+#   ✓ MySQL 8.0 Database (Docker container)
+#   ✓ Backend API (Flask 3.0 with 42+ endpoints)
+#   ✓ Frontend UI (Vite + React 18)
+#   ✓ Nginx Reverse Proxy (with CORS)
+#   ✓ Systemd Services
+#   ✓ Demo Data (3 clients, 8 agents)
+#
+# Features:
+#   ✓ Auto-detects AWS instance metadata
+#   ✓ MySQL 8.0 compatible (CREATE USER before GRANT)
+#   ✓ Docker network access (172.18.% grants)
+#   ✓ Model versioning system (keeps last 2 uploads)
+#   ✓ Database migrations (auto-applies)
+#   ✓ CORS support for all API endpoints
+#   ✓ Security hardening (systemd sandboxing)
 #
 # Usage:
 #   sudo bash setup.sh
+#
+# Requirements:
+#   - Ubuntu 24.04 LTS
+#   - Sudo access
+#   - Internet connectivity
+#
+# Documentation: See SETUP_CHANGES.md for details
+# Cleanup: Run cleanup.sh to remove everything
 # ==============================================================================
 
 set -e  # Exit on any error
@@ -79,51 +93,41 @@ log "Starting AWS Spot Optimizer Setup..."
 log "============================================"
 
 # ==============================================================================
-# STEP 0: CLONE OR UPDATE REPOSITORIES
+# STEP 0: CLONE OR UPDATE REPOSITORY
 # ==============================================================================
 
-log "Step 0: Ensuring repositories are available..."
+log "Step 0: Ensuring repository is available..."
 
-# Clone/update backend repository
 if [ -d "$CLONE_DIR/.git" ]; then
-    log "Backend repository already exists at $CLONE_DIR"
+    log "Repository already exists at $CLONE_DIR"
     cd "$CLONE_DIR"
-    log "Pulling latest backend changes..."
-    git pull origin main 2>/dev/null || git pull origin master 2>/dev/null || warn "Could not pull backend changes"
+
+    # Update repository
+    log "Pulling latest changes..."
+    git pull origin main 2>/dev/null || git pull origin master 2>/dev/null || warn "Could not pull latest changes (might be on a branch)"
+
+    # Update submodules
+    log "Updating git submodules..."
+    git submodule update --init --recursive 2>/dev/null || warn "No submodules or submodule update failed"
 else
-    log "Cloning backend repository from $GITHUB_REPO..."
+    log "Cloning repository from $GITHUB_REPO..."
     cd /home/ubuntu
+
+    # Remove any existing directory if not a git repo
     if [ -d "$CLONE_DIR" ]; then
         warn "Directory exists but is not a git repository, removing..."
         sudo rm -rf "$CLONE_DIR"
     fi
-    git clone "$GITHUB_REPO" "$CLONE_DIR"
+
+    # Clone with submodules
+    git clone --recurse-submodules "$GITHUB_REPO" "$CLONE_DIR"
     cd "$CLONE_DIR"
 fi
 
 # Set REPO_DIR to the cloned directory
 REPO_DIR="$CLONE_DIR"
 
-# Clone/update frontend repository separately
-FRONTEND_REPO="https://github.com/atharva0608/frontend-.git"
-FRONTEND_DIR="$REPO_DIR/frontend"
-
-if [ -d "$FRONTEND_DIR/.git" ]; then
-    log "Frontend repository already exists at $FRONTEND_DIR"
-    cd "$FRONTEND_DIR"
-    log "Pulling latest frontend changes..."
-    git pull origin main 2>/dev/null || warn "Could not pull frontend changes"
-    cd "$REPO_DIR"
-else
-    log "Cloning frontend repository from $FRONTEND_REPO..."
-    if [ -d "$FRONTEND_DIR" ]; then
-        warn "Frontend directory exists, removing..."
-        sudo rm -rf "$FRONTEND_DIR"
-    fi
-    git clone "$FRONTEND_REPO" "$FRONTEND_DIR"
-fi
-
-log "✓ Repositories cloned/updated successfully"
+log "Repository available at: $REPO_DIR"
 
 # Verify critical files exist
 if [ ! -f "$REPO_DIR/backend.py" ]; then
@@ -131,20 +135,13 @@ if [ ! -f "$REPO_DIR/backend.py" ]; then
     exit 1
 fi
 
-# Check for schema files (prefer cleaned, fallback to original)
-if [ ! -f "$REPO_DIR/schema_cleaned.sql" ] && [ ! -f "$REPO_DIR/schema.sql" ]; then
-    error "No schema file (schema_cleaned.sql or schema.sql) found in repository!"
+if [ ! -f "$REPO_DIR/schema.sql" ]; then
+    error "schema.sql not found in repository!"
     exit 1
 fi
 
-if [ -f "$REPO_DIR/schema_cleaned.sql" ]; then
-    log "✓ Found cleaned schema v6.0 (optimized)"
-elif [ -f "$REPO_DIR/schema.sql" ]; then
-    log "✓ Found original schema v5.1"
-fi
-
-if [ ! -d "$FRONTEND_DIR/src" ]; then
-    error "frontend/src directory not found!"
+if [ ! -d "$REPO_DIR/frontend" ]; then
+    error "frontend directory not found in repository!"
     exit 1
 fi
 
@@ -426,42 +423,90 @@ log "MySQL is fully ready!"
 
 log "Step 7: Importing database schema..."
 
-# Try cleaned schema first (v6.0), fallback to original schema (v5.1)
-SCHEMA_FILE=""
-if [ -f "$REPO_DIR/schema_cleaned.sql" ]; then
-    SCHEMA_FILE="$REPO_DIR/schema_cleaned.sql"
-    log "Found cleaned schema v6.0: $SCHEMA_FILE"
-elif [ -f "$REPO_DIR/schema.sql" ]; then
-    SCHEMA_FILE="$REPO_DIR/schema.sql"
-    log "Found original schema v5.1: $SCHEMA_FILE"
+# Schema file should be in the repository root
+SCHEMA_FILE="$REPO_DIR/schema.sql"
+
+if [ -f "$SCHEMA_FILE" ]; then
+    log "Found schema file: $SCHEMA_FILE"
+
+    # Import schema
+    set +e
+    docker exec -i spot-mysql mysql -u root -p"$DB_ROOT_PASSWORD" "$DB_NAME" < "$SCHEMA_FILE" 2>&1 | grep -v "Warning" || true
+    set -e
+
+    # Verify tables were created
+    TABLE_COUNT=$(docker exec spot-mysql mysql -u root -p"$DB_ROOT_PASSWORD" -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='$DB_NAME';" 2>/dev/null || echo "0")
+
+    if [ "$TABLE_COUNT" -gt 0 ]; then
+        log "Database schema imported successfully ($TABLE_COUNT tables created)"
+    else
+        warn "Schema import may have issues - check manually"
+    fi
 else
-    error "No schema file found in repository!"
+    error "Schema file not found at $SCHEMA_FILE"
     exit 1
 fi
 
-# Import schema
-set +e
-docker exec -i spot-mysql mysql -u root -p"$DB_ROOT_PASSWORD" "$DB_NAME" < "$SCHEMA_FILE" 2>&1 | grep -v "Warning" || true
-set -e
+# Grant privileges for all connection types
+log "Configuring database user privileges..."
 
-# Verify tables were created
-TABLE_COUNT=$(docker exec spot-mysql mysql -u root -p"$DB_ROOT_PASSWORD" -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='$DB_NAME';" 2>/dev/null || echo "0")
+# Wait a moment for user to be fully created
+sleep 2
 
-if [ "$TABLE_COUNT" -gt 0 ]; then
-    log "Database schema imported successfully ($TABLE_COUNT tables created)"
-    log "Schema version: $(basename $SCHEMA_FILE)"
+# Create users and grant privileges (MySQL 8.0 compatible - separate CREATE from GRANT)
+docker exec spot-mysql mysql -u root -p"$DB_ROOT_PASSWORD" -e "
+    -- Create spotuser for different host patterns if they don't exist
+    CREATE USER IF NOT EXISTS '$DB_USER'@'localhost' IDENTIFIED BY '$DB_PASSWORD';
+    CREATE USER IF NOT EXISTS '$DB_USER'@'172.18.%' IDENTIFIED BY '$DB_PASSWORD';
+
+    -- Grant to user from any host (already created during schema import)
+    GRANT ALL PRIVILEGES ON $DB_NAME.* TO '$DB_USER'@'%';
+
+    -- Grant to user from localhost
+    GRANT ALL PRIVILEGES ON $DB_NAME.* TO '$DB_USER'@'localhost';
+
+    -- Grant to user from docker network (172.18.0.0/16)
+    GRANT ALL PRIVILEGES ON $DB_NAME.* TO '$DB_USER'@'172.18.%';
+
+    -- Create root user for docker network if it doesn't exist (MySQL 8.0 syntax)
+    CREATE USER IF NOT EXISTS 'root'@'172.18.%' IDENTIFIED BY '$DB_ROOT_PASSWORD';
+
+    -- Grant root access from docker network for admin tasks
+    GRANT ALL PRIVILEGES ON *.* TO 'root'@'172.18.%' WITH GRANT OPTION;
+
+    FLUSH PRIVILEGES;
+" 2>/dev/null
+
+# Verify the grants worked
+log "Verifying database connection..."
+if docker exec spot-mysql mysql -u "$DB_USER" -p"$DB_PASSWORD" -e "SELECT 1;" "$DB_NAME" > /dev/null 2>&1; then
+    log "✓ Database user can connect successfully"
 else
-    warn "Schema import may have issues - check manually"
+    warn "Database user connection test failed - may need manual verification"
 fi
 
-# Grant privileges
-log "Configuring database user privileges..."
-docker exec spot-mysql mysql -u root -p"$DB_ROOT_PASSWORD" --silent -e "
-    GRANT ALL PRIVILEGES ON $DB_NAME.* TO '$DB_USER'@'%';
-    FLUSH PRIVILEGES;
-" 2>/dev/null || true
-
 log "Database privileges configured"
+
+# Apply database migrations
+MIGRATION_FILE="$REPO_DIR/migrations/add_model_upload_sessions.sql"
+if [ -f "$MIGRATION_FILE" ]; then
+    log "Applying database migration for model versioning..."
+
+    set +e
+    docker exec -i spot-mysql mysql -u root -p"$DB_ROOT_PASSWORD" < "$MIGRATION_FILE" 2>&1 | grep -v "Warning" || true
+    set -e
+
+    # Verify migration was applied
+    TABLE_CHECK=$(docker exec spot-mysql mysql -u root -p"$DB_ROOT_PASSWORD" -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='spot_optimizer' AND table_name='model_upload_sessions';" 2>/dev/null || echo "0")
+
+    if [ "$TABLE_CHECK" = "1" ]; then
+        log "✅ Migration applied successfully (model_upload_sessions table created)"
+    else
+        warn "Migration may have issues - table not found"
+    fi
+else
+    log "No migration file found, skipping..."
+fi
 
 # Import demo data if available (optional)
 DEMO_DATA_FILE="$REPO_DIR/demo-data.sql"
@@ -512,6 +557,24 @@ else
     exit 1
 fi
 
+# Copy decision_engines module from repository
+log "Copying decision_engines module..."
+if [ -d "$REPO_DIR/decision_engines" ]; then
+    cp -r "$REPO_DIR/decision_engines" "$BACKEND_DIR/"
+    log "✓ Copied decision_engines module"
+else
+    error "decision_engines directory not found in repository!"
+    exit 1
+fi
+
+# Create production directories for model uploads
+log "Creating production model and engine directories..."
+mkdir -p "$MODELS_DIR"
+mkdir -p "$MODELS_DIR/decision_engines"
+chmod 775 "$MODELS_DIR"
+chmod 775 "$MODELS_DIR/decision_engines"
+log "✓ Created $MODELS_DIR and $MODELS_DIR/decision_engines"
+
 # Create requirements.txt with exact dependencies
 cat > "$BACKEND_DIR/requirements.txt" << 'EOF'
 Flask==3.0.0
@@ -534,6 +597,7 @@ pip install -r requirements.txt
 log "Python dependencies installed"
 
 # Create environment configuration file
+log "Creating backend environment configuration..."
 cat > "$BACKEND_DIR/.env" << EOF
 # Database Configuration
 DB_HOST=127.0.0.1
@@ -547,6 +611,7 @@ DB_POOL_SIZE=10
 DECISION_ENGINE_MODULE=decision_engines.ml_based_engine
 DECISION_ENGINE_CLASS=MLBasedDecisionEngine
 MODEL_DIR=$MODELS_DIR
+DECISION_ENGINE_DIR=$MODELS_DIR/decision_engines
 
 # Server
 HOST=$BACKEND_HOST
@@ -559,6 +624,16 @@ ENABLE_BACKGROUND_JOBS=True
 # Agent Communication
 AGENT_HEARTBEAT_TIMEOUT=120
 EOF
+
+# Verify .env was created correctly
+if [ -f "$BACKEND_DIR/.env" ]; then
+    log "✓ Backend .env file created"
+    # Show database config (hide password)
+    log "Database config: $DB_USER@127.0.0.1:$DB_PORT/$DB_NAME"
+else
+    error ".env file creation failed!"
+    exit 1
+fi
 
 log "Backend environment configured"
 
@@ -589,6 +664,16 @@ EOF
 
 chmod +x "$BACKEND_DIR/start_backend.sh"
 
+# Create restart script for backend self-restart
+cat > "$BACKEND_DIR/restart_backend.sh" << 'EOF'
+#!/bin/bash
+# This script allows the backend to restart itself
+echo "$(date): Backend restart requested" >> /home/ubuntu/logs/backend_restart.log
+sudo systemctl restart spot-optimizer-backend
+EOF
+chmod +x "$BACKEND_DIR/restart_backend.sh"
+log "✓ Created restart script for backend self-restart"
+
 deactivate
 
 log "Backend setup complete"
@@ -601,11 +686,26 @@ log "Step 9: Setting up Vite React frontend..."
 
 # Copy entire frontend directory from repository
 log "Copying frontend from repository..."
-if [ -d "$REPO_DIR/frontend" ]; then
-    # Copy all frontend files
-    cp -r "$REPO_DIR/frontend"/* "$FRONTEND_DIR/" 2>/dev/null || true
 
-    # Also copy hidden files like .gitignore
+# Ensure frontend target directory exists
+if [ ! -d "$FRONTEND_DIR" ]; then
+    log "Creating frontend directory..."
+    sudo mkdir -p "$FRONTEND_DIR"
+    sudo chown -R ubuntu:ubuntu "$FRONTEND_DIR"
+fi
+
+if [ -d "$REPO_DIR/frontend" ]; then
+    # Remove any existing frontend files first
+    sudo rm -rf "$FRONTEND_DIR"/*
+    sudo rm -rf "$FRONTEND_DIR"/.[!.]* 2>/dev/null || true
+
+    # Copy all frontend files (preserve structure)
+    cp -r "$REPO_DIR/frontend"/* "$FRONTEND_DIR/" 2>&1 || {
+        error "Failed to copy frontend files"
+        exit 1
+    }
+
+    # Copy hidden files like .gitignore
     cp -r "$REPO_DIR/frontend"/.[!.]* "$FRONTEND_DIR/" 2>/dev/null || true
 
     log "✓ Copied frontend files"
@@ -614,76 +714,64 @@ else
     exit 1
 fi
 
-cd "$FRONTEND_DIR"
+# Verify directory exists before cd
+if [ ! -d "$FRONTEND_DIR" ]; then
+    error "Frontend directory does not exist after copy!"
+    exit 1
+fi
 
-# ==============================================================================
-# IMPROVED API URL CONFIGURATION - AUTO-DETECTION
-# ==============================================================================
-# Instead of using sed to replace URLs, we deploy an auto-detection config
-# that automatically determines the correct backend URL at runtime.
-# ==============================================================================
-
-log "Configuring API auto-detection for http://$PUBLIC_IP:5000..."
-
-# Create the auto-detection config file
-mkdir -p src/config
-cat > src/config/api.jsx << 'APICONFIG_EOF'
-// ==============================================================================
-// API CONFIGURATION - AUTO-DETECTION
-// ==============================================================================
-// This configuration automatically detects the correct backend URL:
-// - In production (EC2): Uses the EC2 instance's public IP
-// - In development: Uses localhost:5000
-// - Can be overridden with VITE_API_URL environment variable during build
-// ==============================================================================
-
-// Method 1: Environment variable set during build (highest priority)
-const ENV_API_URL = import.meta.env.VITE_API_URL;
-
-// Method 2: Auto-detect from current browser location
-const getAutoDetectedURL = () => {
-  // If we're in the browser
-  if (typeof window !== 'undefined') {
-    const { protocol, hostname } = window.location;
-
-    // If running on localhost (development), connect to localhost:5000
-    if (hostname === 'localhost' || hostname === '127.0.0.1') {
-      return 'http://localhost:5000';
-    }
-
-    // Otherwise, use the current hostname with port 5000 (production on EC2)
-    return `${protocol}//${hostname}:5000`;
-  }
-
-  // Fallback for SSR or non-browser environments
-  return 'http://localhost:5000';
-};
-
-// Final configuration with priority:
-// 1. Environment variable (VITE_API_URL) - set during build
-// 2. Auto-detected from window.location
-export const API_CONFIG = {
-  BASE_URL: ENV_API_URL || getAutoDetectedURL(),
-};
-
-// Log the configuration in development
-if (import.meta.env.DEV) {
-  console.log('[API Config] Using BASE_URL:', API_CONFIG.BASE_URL);
-  console.log('[API Config] Source:', ENV_API_URL ? 'Environment Variable' : 'Auto-detected');
+cd "$FRONTEND_DIR" || {
+    error "Cannot cd to $FRONTEND_DIR"
+    exit 1
 }
-APICONFIG_EOF
 
-log "✓ API auto-detection config created"
-log "  → Auto-detection: Frontend will use window.location to find backend"
-log "  → Environment override: VITE_API_URL=http://$PUBLIC_IP:5000"
+# Update API URL in all possible locations to use the public IP
+log "Updating API URL to http://$PUBLIC_IP:5000..."
+
+# Primary location: src/config/api.jsx (most common in Vite projects)
+if [ -f "src/config/api.jsx" ]; then
+    sed -i "s|BASE_URL: '[^']*'|BASE_URL: 'http://$PUBLIC_IP:5000'|g" src/config/api.jsx
+    log "✓ Updated API URL in src/config/api.jsx"
+fi
+
+# Also check src/config/api.js
+if [ -f "src/config/api.js" ]; then
+    sed -i "s|BASE_URL: '[^']*'|BASE_URL: 'http://$PUBLIC_IP:5000'|g" src/config/api.js
+    log "✓ Updated API URL in src/config/api.js"
+fi
+
+# Fallback: Check App.jsx locations
+if [ -f "App.jsx" ]; then
+    sed -i "s|BASE_URL: '[^']*'|BASE_URL: 'http://$PUBLIC_IP:5000'|g" App.jsx
+    log "✓ Updated API URL in App.jsx"
+fi
+
+if [ -f "src/App.jsx" ]; then
+    sed -i "s|BASE_URL: '[^']*'|BASE_URL: 'http://$PUBLIC_IP:5000'|g" src/App.jsx
+    log "✓ Updated API URL in src/App.jsx"
+fi
+
+# Universal fix: Find and replace in all JSX/JS files containing BASE_URL or API endpoint
+log "Scanning all source files for API URL references..."
+find . -type f \( -name "*.jsx" -o -name "*.js" -o -name "*.ts" -o -name "*.tsx" \) -not -path "*/node_modules/*" -not -path "*/dist/*" -not -path "*/build/*" | while read file; do
+    if grep -q "BASE_URL\|http://[0-9.]*:5000" "$file" 2>/dev/null; then
+        # Replace any hardcoded localhost or IP addresses
+        sed -i "s|http://localhost:5000|http://$PUBLIC_IP:5000|g" "$file"
+        sed -i "s|http://127.0.0.1:5000|http://$PUBLIC_IP:5000|g" "$file"
+        sed -i "s|http://[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}:5000|http://$PUBLIC_IP:5000|g" "$file"
+        log "✓ Updated $(basename $file)"
+    fi
+done
+
+log "API URL configuration complete"
 
 # Install npm dependencies
 log "Installing npm dependencies (this may take a few minutes)..."
 npm install --legacy-peer-deps
 
-# Build the frontend with environment variable
-log "Building frontend for production with API URL: http://$PUBLIC_IP:5000..."
-VITE_API_URL="http://$PUBLIC_IP:5000" npm run build
+# Build the frontend
+log "Building frontend for production..."
+npm run build
 
 # Copy build to Nginx root
 sudo rm -rf "$NGINX_ROOT"/*
@@ -841,6 +929,18 @@ sudo systemctl daemon-reload
 sudo systemctl enable spot-optimizer-backend
 
 log "Backend systemd service created"
+
+# Configure sudo permissions for backend self-restart
+log "Configuring sudo permissions for backend self-restart..."
+sudo tee /etc/sudoers.d/spot-optimizer-backend << EOF
+# Allow ubuntu user to restart backend service without password
+ubuntu ALL=(ALL) NOPASSWD: /bin/systemctl restart spot-optimizer-backend
+ubuntu ALL=(ALL) NOPASSWD: /bin/systemctl start spot-optimizer-backend
+ubuntu ALL=(ALL) NOPASSWD: /bin/systemctl stop spot-optimizer-backend
+ubuntu ALL=(ALL) NOPASSWD: /bin/systemctl status spot-optimizer-backend
+EOF
+sudo chmod 440 /etc/sudoers.d/spot-optimizer-backend
+log "✓ Sudoers configuration added for backend service management"
 
 # ==============================================================================
 # STEP 12: CREATE HELPER SCRIPTS
@@ -1062,7 +1162,7 @@ log "Step 16: Creating setup summary..."
 
 cat > /home/ubuntu/SETUP_COMPLETE.txt << EOF
 ================================================================================
-AWS SPOT OPTIMIZER - SETUP COMPLETE (v5.0)
+AWS SPOT OPTIMIZER - SETUP COMPLETE (v3.1)
 ================================================================================
 
 Date: $(date)
@@ -1072,19 +1172,10 @@ Availability Zone: $AZ
 Public IP: $PUBLIC_IP
 
 ================================================================================
-REPOSITORIES
+REPOSITORY
 ================================================================================
-Backend: $CLONE_DIR
-  GitHub: $GITHUB_REPO
-Frontend: $FRONTEND_DIR
-  GitHub: https://github.com/atharva0608/frontend-.git
-
-================================================================================
-DATABASE SCHEMA
-================================================================================
-Version: $(basename ${SCHEMA_FILE:-"Unknown"})
-Tables Created: $TABLE_COUNT
-Note: Using optimized schema v6.0 with reduced complexity
+Location: $CLONE_DIR
+GitHub: $GITHUB_REPO
 
 ================================================================================
 ACCESS URLS

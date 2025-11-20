@@ -1,0 +1,2 @@
+# This directory will contain uploaded ML model files
+# Models are uploaded via the admin UI at /api/admin/ml-models/upload
