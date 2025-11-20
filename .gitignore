@@ -59,9 +59,8 @@ temp/
 *.tmp
 
 # Build outputs
-dist/
+# Note: frontend/dist is tracked for deployment
 build/
-frontend/dist/
 frontend/build/
 
 # Coverage
