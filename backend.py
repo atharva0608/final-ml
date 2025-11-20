@@ -1648,9 +1648,9 @@ def get_client_agents(client_id: str):
 
 @app.route('/api/client/<client_id>/agents/decisions', methods=['GET'])
 def get_agents_decisions(client_id: str):
-    """Get agent decision history with pricing health status"""
+    """Get agent decision history with comprehensive health status"""
     try:
-        # Get all active agents with last decision
+        # Get all agents (including offline ones for complete view)
         agents_data = execute_query("""
             SELECT
                 a.id,
@@ -1658,6 +1658,7 @@ def get_agents_decisions(client_id: str):
                 a.status,
                 a.current_mode,
                 a.current_pool_id,
+                a.last_heartbeat_at,
 
                 -- Last decision (subquery)
                 (SELECT decision_type FROM agent_decision_history adh
@@ -1669,12 +1670,29 @@ def get_agents_decisions(client_id: str):
                  ORDER BY decision_time DESC LIMIT 1) as last_decision_time
 
             FROM agents a
-            WHERE a.client_id = %s AND a.status = 'online'
-            ORDER BY a.logical_agent_id
+            WHERE a.client_id = %s
+            ORDER BY
+                CASE WHEN a.status = 'online' THEN 0 ELSE 1 END,
+                a.logical_agent_id
         """, (client_id,), fetch=True)
 
         result = []
         for agent in (agents_data or []):
+            # Get last 5 decision history entries
+            decision_history = execute_query("""
+                SELECT
+                    decision_type,
+                    recommended_action,
+                    risk_score,
+                    expected_savings,
+                    current_mode,
+                    decision_time
+                FROM agent_decision_history
+                WHERE agent_id = %s
+                ORDER BY decision_time DESC
+                LIMIT 5
+            """, (agent['id'],), fetch=True)
+
             # Get last 5 pricing reports for health check
             recent_reports = execute_query("""
                 SELECT received_at, ondemand_price, current_spot_price
@@ -1693,8 +1711,32 @@ def get_agents_decisions(client_id: str):
             """, (agent['id'],), fetch_one=True)
             recent_reports_count = recent_count['cnt'] if recent_count else 0
 
-            # Health check: at least 5 reports in last 10 minutes
-            is_healthy = recent_reports_count >= 5
+            # Get last 5 system events for this agent
+            recent_events = execute_query("""
+                SELECT
+                    event_type,
+                    severity,
+                    message,
+                    created_at
+                FROM system_events
+                WHERE agent_id = %s
+                ORDER BY created_at DESC
+                LIMIT 5
+            """, (agent['id'],), fetch=True)
+
+            # Enhanced health check
+            heartbeat_healthy = False
+            if agent.get('last_heartbeat_at'):
+                try:
+                    heartbeat_delta = datetime.utcnow() - agent['last_heartbeat_at']
+                    heartbeat_minutes = int(heartbeat_delta.total_seconds() / 60)
+                    heartbeat_healthy = heartbeat_minutes <= 5  # Healthy if heartbeat within 5 minutes
+                except Exception:
+                    heartbeat_healthy = False
+
+            # Health criteria: heartbeat recent AND has recent activity
+            activity_healthy = recent_reports_count >= 1 or len(decision_history or []) > 0
+            is_healthy = heartbeat_healthy and activity_healthy and agent['status'] == 'online'
 
             # Calculate time elapsed since last decision
             time_elapsed = None
@@ -1702,30 +1744,72 @@ def get_agents_decisions(client_id: str):
                 try:
                     delta = datetime.utcnow() - agent['last_decision_time']
                     minutes_ago = int(delta.total_seconds() / 60)
-                    time_elapsed = {
-                        'minutes': minutes_ago,
-                        'formatted': f"{minutes_ago} minutes ago" if minutes_ago > 0 else "Just now"
-                    }
+                    if minutes_ago < 1:
+                        time_elapsed = {"minutes": 0, "formatted": "Just now"}
+                    elif minutes_ago < 60:
+                        time_elapsed = {"minutes": minutes_ago, "formatted": f"{minutes_ago} min ago"}
+                    else:
+                        hours = minutes_ago // 60
+                        time_elapsed = {"minutes": minutes_ago, "formatted": f"{hours}h ago"}
                 except Exception as e:
                     logger.warning(f"Error calculating time elapsed: {e}")
+
+            # Calculate heartbeat age
+            heartbeat_elapsed = None
+            if agent.get('last_heartbeat_at'):
+                try:
+                    delta = datetime.utcnow() - agent['last_heartbeat_at']
+                    minutes_ago = int(delta.total_seconds() / 60)
+                    if minutes_ago < 1:
+                        heartbeat_elapsed = "< 1 min ago"
+                    elif minutes_ago < 60:
+                        heartbeat_elapsed = f"{minutes_ago} min ago"
+                    else:
+                        hours = minutes_ago // 60
+                        heartbeat_elapsed = f"{hours}h ago"
+                except Exception:
+                    heartbeat_elapsed = "Unknown"
 
             result.append({
                 'agentId': agent['id'],
                 'agentName': agent['logical_agent_id'],
                 'status': agent['status'],
+                'currentMode': agent.get('current_mode'),
+                'currentPoolId': agent.get('current_pool_id'),
+                'isHealthy': is_healthy,
+                'lastHeartbeat': heartbeat_elapsed,
                 'lastDecision': {
                     'type': agent.get('last_decision'),
                     'time': agent['last_decision_time'].isoformat() if agent.get('last_decision_time') else None,
                     'elapsed': time_elapsed
                 },
-                'pricingHealth': {
-                    'status': 'healthy' if is_healthy else 'unhealthy',
-                    'recentReportsCount': recent_reports_count,
-                    'recentReports': [{
+                'decisionHistory': [{
+                    'type': d['decision_type'],
+                    'action': d.get('recommended_action'),
+                    'riskScore': float(d['risk_score']) if d.get('risk_score') else None,
+                    'expectedSavings': float(d['expected_savings']) if d.get('expected_savings') else None,
+                    'currentMode': d.get('current_mode'),
+                    'time': d['decision_time'].isoformat() if d.get('decision_time') else None
+                } for d in (decision_history or [])],
+                'recentActivity': {
+                    'pricingReports': [{
                         'time': r['received_at'].isoformat() if r.get('received_at') else None,
                         'onDemandPrice': float(r['ondemand_price']) if r.get('ondemand_price') else 0,
                         'spotPrice': float(r['current_spot_price']) if r.get('current_spot_price') else 0
-                    } for r in (recent_reports or [])]
+                    } for r in (recent_reports or [])],
+                    'systemEvents': [{
+                        'type': e['event_type'],
+                        'severity': e.get('severity'),
+                        'message': e.get('message'),
+                        'time': e['created_at'].isoformat() if e.get('created_at') else None
+                    } for e in (recent_events or [])],
+                    'healthStatus': {
+                        'overall': 'healthy' if is_healthy else 'unhealthy',
+                        'heartbeat': 'active' if heartbeat_healthy else 'stale',
+                        'activity': 'active' if activity_healthy else 'inactive',
+                        'recentReportsCount': recent_reports_count,
+                        'decisionCount': len(decision_history or [])
+                    }
                 }
             })
 
@@ -2555,6 +2639,9 @@ def upload_decision_engine():
         if not files or all(f.filename == '' for f in files):
             return jsonify({'error': 'No files selected'}), 400
 
+        # Ensure decision engine directory exists
+        config.DECISION_ENGINE_DIR.mkdir(parents=True, exist_ok=True)
+
         uploaded_files = []
         for file in files:
             if file and file.filename:
@@ -2607,7 +2694,7 @@ def upload_decision_engine():
 
 @app.route('/api/admin/ml-models/upload', methods=['POST'])
 def upload_ml_models():
-    """Upload ML model files"""
+    """Upload ML model files with versioning (keeps last 2 upload sessions)"""
     try:
         if 'files' not in request.files:
             return jsonify({'error': 'No files provided'}), 400
@@ -2616,7 +2703,21 @@ def upload_ml_models():
         if not files or all(f.filename == '' for f in files):
             return jsonify({'error': 'No files selected'}), 400
 
+        # Ensure model directory exists
+        config.MODEL_DIR.mkdir(parents=True, exist_ok=True)
+
+        # Step 1: Mark current live session as fallback
+        execute_query("""
+            UPDATE model_upload_sessions
+            SET is_live = FALSE, is_fallback = TRUE
+            WHERE is_live = TRUE AND session_type = 'models'
+        """)
+
+        # Step 2: Create new upload session
+        session_id = str(uuid.uuid4())
         uploaded_files = []
+        total_size = 0
+
         for file in files:
             if file and file.filename:
                 filename = secure_filename(file.filename)
@@ -2630,61 +2731,209 @@ def upload_ml_models():
                 # Save file
                 file_path = config.MODEL_DIR / filename
                 file.save(str(file_path))
+
+                # Track file info
+                file_size = file_path.stat().st_size
                 uploaded_files.append(filename)
-                logger.info(f"✓ Uploaded ML model file: {filename}")
+                total_size += file_size
+                logger.info(f"✓ Uploaded ML model file: {filename} ({file_size} bytes)")
+
+        # Step 3: Create upload session record
+        execute_query("""
+            INSERT INTO model_upload_sessions
+            (id, session_type, status, is_live, is_fallback, file_count, file_names, total_size_bytes)
+            VALUES (%s, 'models', 'uploaded', FALSE, FALSE, %s, %s, %s)
+        """, (session_id, len(uploaded_files), json.dumps(uploaded_files), total_size))
+
+        # Step 4: Clean up old sessions (keep only last 2)
+        old_sessions = execute_query("""
+            SELECT id, file_names
+            FROM model_upload_sessions
+            WHERE session_type = 'models'
+              AND is_live = FALSE
+              AND is_fallback = FALSE
+            ORDER BY created_at DESC
+            LIMIT 100 OFFSET 1
+        """, fetch=True)
+
+        if old_sessions:
+            for old_session in old_sessions:
+                # Delete old files
+                try:
+                    old_files = json.loads(old_session['file_names']) if old_session.get('file_names') else []
+                    for old_file in old_files:
+                        old_path = config.MODEL_DIR / old_file
+                        if old_path.exists():
+                            old_path.unlink()
+                            logger.info(f"Deleted old model file: {old_file}")
+                except Exception as e:
+                    logger.warning(f"Error deleting old files: {e}")
+
+                # Delete session record
+                execute_query("DELETE FROM model_upload_sessions WHERE id = %s", (old_session['id'],))
+
+        logger.info(f"✓ Created new upload session: {session_id} with {len(uploaded_files)} files")
+
+        # Return success response (don't auto-reload yet)
+        return jsonify({
+            'success': True,
+            'message': f'Uploaded {len(uploaded_files)} model files. Use the RESTART button to activate.',
+            'files': uploaded_files,
+            'sessionId': session_id,
+            'requiresRestart': True,
+            'model_status': {
+                'filesUploaded': len(uploaded_files),
+                'totalSize': total_size,
+                'sessionType': 'pending_activation'
+            }
+        }), 200
+
+    except Exception as e:
+        logger.error(f"ML models upload error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/admin/ml-models/activate', methods=['POST'])
+def activate_ml_models():
+    """Activate uploaded models and restart backend with new models"""
+    try:
+        data = request.get_json() or {}
+        session_id = data.get('sessionId')
+
+        if not session_id:
+            return jsonify({'error': 'No session ID provided'}), 400
+
+        # Mark session as live
+        execute_query("""
+            UPDATE model_upload_sessions
+            SET is_live = TRUE, status = 'active', activated_at = NOW()
+            WHERE id = %s AND session_type = 'models'
+        """, (session_id,))
 
         # Reload decision engine to pick up new models
-        logger.info("Reloading decision engine to load new ML models...")
+        logger.info("Activating new models and reloading decision engine...")
         success = decision_engine_manager.load_engine()
 
         if success:
-            # Get updated model count
-            model_files_count = len([f for f in config.MODEL_DIR.glob('*') if f.is_file()])
-
-            # Get active models from registry
-            active_models = []
-            try:
-                models = execute_query("""
-                    SELECT model_name, version, is_active
-                    FROM model_registry
-                    WHERE is_active = TRUE
-                    ORDER BY created_at DESC
-                    LIMIT 10
-                """, fetch=True)
-                active_models = [{
-                    'name': m['model_name'],
-                    'version': m['version'],
-                    'active': bool(m['is_active'])
-                } for m in (models or [])]
-            except Exception as e:
-                logger.warning(f"Could not fetch models from registry: {e}")
-
-            log_system_event('ml_models_updated', 'info',
-                           f'ML model files uploaded and loaded: {", ".join(uploaded_files)}')
+            log_system_event('ml_models_activated', 'info',
+                           f'New model session activated: {session_id}')
 
             # Schedule backend restart
             restart_backend(delay_seconds=3)
 
             return jsonify({
                 'success': True,
-                'message': 'ML model files uploaded successfully. Backend will restart in 3 seconds.',
-                'files': uploaded_files,
+                'message': 'Models activated successfully. Backend will restart in 3 seconds.',
+                'sessionId': session_id,
                 'restarting': True,
                 'model_status': {
                     'loaded': decision_engine_manager.models_loaded,
-                    'filesUploaded': model_files_count,
-                    'activeModels': active_models
+                    'type': decision_engine_manager.engine_type
                 }
             }), 200
         else:
             return jsonify({
                 'success': False,
-                'message': 'Files uploaded but failed to reload models',
-                'files': uploaded_files
+                'message': 'Failed to load new models',
+                'sessionId': session_id
             }), 500
 
     except Exception as e:
-        logger.error(f"ML models upload error: {e}", exc_info=True)
+        logger.error(f"Model activation error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/admin/ml-models/fallback', methods=['POST'])
+def fallback_ml_models():
+    """Fallback to previous model version"""
+    try:
+        # Get current live and fallback sessions
+        live_session = execute_query("""
+            SELECT id, file_names FROM model_upload_sessions
+            WHERE is_live = TRUE AND session_type = 'models'
+            LIMIT 1
+        """, fetch_one=True)
+
+        fallback_session = execute_query("""
+            SELECT id, file_names FROM model_upload_sessions
+            WHERE is_fallback = TRUE AND session_type = 'models'
+            ORDER BY created_at DESC LIMIT 1
+        """, fetch_one=True)
+
+        if not fallback_session:
+            return jsonify({'error': 'No fallback version available'}), 404
+
+        # Swap live and fallback
+        if live_session:
+            execute_query("""
+                UPDATE model_upload_sessions
+                SET is_live = FALSE, is_fallback = FALSE, status = 'archived'
+                WHERE id = %s
+            """, (live_session['id'],))
+
+        execute_query("""
+            UPDATE model_upload_sessions
+            SET is_live = TRUE, is_fallback = FALSE, status = 'active', activated_at = NOW()
+            WHERE id = %s
+        """, (fallback_session['id'],))
+
+        logger.info(f"✓ Rolled back to fallback session: {fallback_session['id']}")
+
+        # Reload decision engine
+        success = decision_engine_manager.load_engine()
+
+        if success:
+            log_system_event('ml_models_rollback', 'warning',
+                           f'Rolled back to previous model version: {fallback_session["id"]}')
+
+            # Schedule backend restart
+            restart_backend(delay_seconds=3)
+
+            return jsonify({
+                'success': True,
+                'message': 'Rolled back to previous model version. Backend will restart in 3 seconds.',
+                'fallbackSessionId': fallback_session['id'],
+                'restarting': True
+            }), 200
+        else:
+            return jsonify({
+                'success': False,
+                'message': 'Failed to load fallback models'
+            }), 500
+
+    except Exception as e:
+        logger.error(f"Model fallback error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/admin/ml-models/sessions', methods=['GET'])
+def get_model_sessions():
+    """Get model upload session history"""
+    try:
+        sessions = execute_query("""
+            SELECT
+                id, session_type, status, is_live, is_fallback,
+                file_count, file_names, total_size_bytes,
+                created_at, activated_at
+            FROM model_upload_sessions
+            WHERE session_type = 'models'
+            ORDER BY created_at DESC
+            LIMIT 10
+        """, fetch=True)
+
+        result = [{
+            'id': s['id'],
+            'status': s['status'],
+            'isLive': bool(s['is_live']),
+            'isFallback': bool(s['is_fallback']),
+            'fileCount': s['file_count'],
+            'files': json.loads(s['file_names']) if s.get('file_names') else [],
+            'totalSize': s['total_size_bytes'],
+            'createdAt': s['created_at'].isoformat() if s.get('created_at') else None,
+            'activatedAt': s['activated_at'].isoformat() if s.get('activated_at') else None
+        } for s in (sessions or [])]
+
+        return jsonify(result)
+
+    except Exception as e:
+        logger.error(f"Get model sessions error: {e}")
         return jsonify({'error': str(e)}), 500
 
 # ==============================================================================

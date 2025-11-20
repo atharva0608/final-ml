@@ -519,29 +519,59 @@ CREATE TABLE IF NOT EXISTS model_registry (
     model_name VARCHAR(128) NOT NULL,
     model_type VARCHAR(50) NOT NULL,
     version VARCHAR(32) NOT NULL,
-    
+
     -- Storage
     file_path VARCHAR(512) NOT NULL,
-    
+    upload_session_id CHAR(36),
+
     -- Status
     is_active BOOLEAN DEFAULT FALSE,
-    
+    is_fallback BOOLEAN DEFAULT FALSE,
+
     -- Metadata
     performance_metrics JSON,
     config JSON,
     description TEXT,
-    
+
     -- Timestamps
     loaded_at TIMESTAMP NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    
+
     UNIQUE KEY uk_model_version (model_name, version),
     INDEX idx_model_registry_type_active (model_type, is_active),
     INDEX idx_model_registry_name (model_name),
-    INDEX idx_model_registry_active (is_active)
+    INDEX idx_model_registry_active (is_active),
+    INDEX idx_model_registry_session (upload_session_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
 COMMENT='ML model versions and metadata for decision engines';
+
+CREATE TABLE IF NOT EXISTS model_upload_sessions (
+    id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
+    session_type VARCHAR(20) NOT NULL DEFAULT 'models',
+
+    -- Status
+    status VARCHAR(20) DEFAULT 'active',
+    is_live BOOLEAN DEFAULT FALSE,
+    is_fallback BOOLEAN DEFAULT FALSE,
+
+    -- Files
+    file_count INT DEFAULT 0,
+    file_names JSON,
+    total_size_bytes BIGINT DEFAULT 0,
+
+    -- Metadata
+    uploaded_by VARCHAR(128),
+    notes TEXT,
+
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    activated_at TIMESTAMP NULL,
+
+    INDEX idx_upload_session_type_status (session_type, status),
+    INDEX idx_upload_session_live (is_live),
+    INDEX idx_upload_session_created (created_at DESC)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+COMMENT='Tracks model upload sessions for versioning (keeps last 2 sessions)';
 
 -- ============================================================================
 -- ML MODEL PREDICTIONS & RISK SCORES
@@ -760,6 +790,53 @@ CREATE TABLE IF NOT EXISTS client_savings_monthly (
         REFERENCES clients(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
 COMMENT='Pre-aggregated monthly savings summary by client';
+
+-- ============================================================================
+-- ANALYTICS & TRACKING
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS clients_daily_snapshot (
+    snapshot_date DATE PRIMARY KEY,
+    total_clients INT NOT NULL DEFAULT 0,
+    new_clients_today INT NOT NULL DEFAULT 0,
+    active_clients INT NOT NULL DEFAULT 0,
+
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    INDEX idx_snapshot_date (snapshot_date DESC)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+COMMENT='Daily snapshots of client counts for growth analytics';
+
+CREATE TABLE IF NOT EXISTS agent_decision_history (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    agent_id CHAR(36) NOT NULL,
+    client_id CHAR(36) NOT NULL,
+
+    -- Decision details
+    decision_type VARCHAR(64) NOT NULL,
+    recommended_action VARCHAR(64),
+    recommended_pool_id VARCHAR(128),
+    risk_score DECIMAL(5, 4),
+    expected_savings DECIMAL(15, 4),
+
+    -- Current state at decision time
+    current_mode VARCHAR(20),
+    current_pool_id VARCHAR(128),
+    current_price DECIMAL(10, 6),
+
+    decision_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    INDEX idx_decision_agent (agent_id, decision_time DESC),
+    INDEX idx_decision_client (client_id, decision_time DESC),
+    INDEX idx_decision_time (decision_time DESC),
+    INDEX idx_decision_type (decision_type),
+
+    CONSTRAINT fk_decision_agent FOREIGN KEY (agent_id)
+        REFERENCES agents(id) ON DELETE CASCADE,
+    CONSTRAINT fk_decision_client FOREIGN KEY (client_id)
+        REFERENCES clients(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+COMMENT='History of all agent decision engine recommendations';
 
 -- ============================================================================
 -- SYSTEM EVENTS & LOGGING
