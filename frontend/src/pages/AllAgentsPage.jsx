@@ -15,9 +15,11 @@ const AllAgentsPage = () => {
       setLoading(true);
       try {
         const data = await api.getAllAgentsGlobal();
-        setAgents(data);
+        // Backend returns { agents: [...], total: ..., filters: ... }
+        setAgents(data.agents || []);
       } catch (error) {
         console.error('Failed to load agents:', error);
+        setAgents([]); // Set empty array on error
       } finally {
         setLoading(false);
       }
@@ -25,8 +27,8 @@ const AllAgentsPage = () => {
     loadAgents();
   }, []);
 
-  const filteredAgents = agents.filter(a => {
-    const matchesSearch = a.id.toLowerCase().includes(search.toLowerCase()) ||
+  const filteredAgents = (agents || []).filter(a => {
+    const matchesSearch = a.id?.toLowerCase().includes(search.toLowerCase()) ||
                          (a.hostname && a.hostname.toLowerCase().includes(search.toLowerCase()));
     const matchesStatus = statusFilter === 'all' || a.status === statusFilter;
     return matchesSearch && matchesStatus;
@@ -87,11 +89,11 @@ const AllAgentsPage = () => {
                       </Badge>
                     </td>
                     <td className="py-3 px-4 text-sm text-gray-600">{agent.hostname || 'N/A'}</td>
-                    <td className="py-3 px-4 text-sm text-gray-700">{agent.instanceCount || 0}</td>
+                    <td className="py-3 px-4 text-sm text-gray-700">{agent.instanceId ? 1 : 0}</td>
                     <td className="py-3 px-4 text-sm text-gray-600">
-                      {agent.lastHeartbeat ? new Date(agent.lastHeartbeat).toLocaleString() : 'Never'}
+                      {agent.lastHeartbeatAt ? new Date(agent.lastHeartbeatAt).toLocaleString() : 'Never'}
                     </td>
-                    <td className="py-3 px-4 text-sm text-gray-600">{agent.agentVersion || 'N/A'}</td>
+                    <td className="py-3 px-4 text-sm text-gray-600">{agent.version || 'N/A'}</td>
                   </tr>
                 ))}
               </tbody>
