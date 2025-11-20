@@ -605,53 +605,74 @@ fi
 
 cd "$FRONTEND_DIR"
 
-# Update API URL in all possible locations to use the public IP
-log "Updating API URL to http://$PUBLIC_IP:5000..."
+# ==============================================================================
+# IMPROVED API URL CONFIGURATION - AUTO-DETECTION
+# ==============================================================================
+# Instead of using sed to replace URLs, we deploy an auto-detection config
+# that automatically determines the correct backend URL at runtime.
+# ==============================================================================
 
-# Primary location: src/config/api.jsx (most common in Vite projects)
-if [ -f "src/config/api.jsx" ]; then
-    sed -i "s|BASE_URL: '[^']*'|BASE_URL: 'http://$PUBLIC_IP:5000'|g" src/config/api.jsx
-    log "✓ Updated API URL in src/config/api.jsx"
-fi
+log "Configuring API auto-detection for http://$PUBLIC_IP:5000..."
 
-# Also check src/config/api.js
-if [ -f "src/config/api.js" ]; then
-    sed -i "s|BASE_URL: '[^']*'|BASE_URL: 'http://$PUBLIC_IP:5000'|g" src/config/api.js
-    log "✓ Updated API URL in src/config/api.js"
-fi
+# Create the auto-detection config file
+mkdir -p src/config
+cat > src/config/api.jsx << 'APICONFIG_EOF'
+// ==============================================================================
+// API CONFIGURATION - AUTO-DETECTION
+// ==============================================================================
+// This configuration automatically detects the correct backend URL:
+// - In production (EC2): Uses the EC2 instance's public IP
+// - In development: Uses localhost:5000
+// - Can be overridden with VITE_API_URL environment variable during build
+// ==============================================================================
 
-# Fallback: Check App.jsx locations
-if [ -f "App.jsx" ]; then
-    sed -i "s|BASE_URL: '[^']*'|BASE_URL: 'http://$PUBLIC_IP:5000'|g" App.jsx
-    log "✓ Updated API URL in App.jsx"
-fi
+// Method 1: Environment variable set during build (highest priority)
+const ENV_API_URL = import.meta.env.VITE_API_URL;
 
-if [ -f "src/App.jsx" ]; then
-    sed -i "s|BASE_URL: '[^']*'|BASE_URL: 'http://$PUBLIC_IP:5000'|g" src/App.jsx
-    log "✓ Updated API URL in src/App.jsx"
-fi
+// Method 2: Auto-detect from current browser location
+const getAutoDetectedURL = () => {
+  // If we're in the browser
+  if (typeof window !== 'undefined') {
+    const { protocol, hostname } = window.location;
 
-# Universal fix: Find and replace in all JSX/JS files containing BASE_URL or API endpoint
-log "Scanning all source files for API URL references..."
-find . -type f \( -name "*.jsx" -o -name "*.js" -o -name "*.ts" -o -name "*.tsx" \) -not -path "*/node_modules/*" -not -path "*/dist/*" -not -path "*/build/*" | while read file; do
-    if grep -q "BASE_URL\|http://[0-9.]*:5000" "$file" 2>/dev/null; then
-        # Replace any hardcoded localhost or IP addresses
-        sed -i "s|http://localhost:5000|http://$PUBLIC_IP:5000|g" "$file"
-        sed -i "s|http://127.0.0.1:5000|http://$PUBLIC_IP:5000|g" "$file"
-        sed -i "s|http://[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}:5000|http://$PUBLIC_IP:5000|g" "$file"
-        log "✓ Updated $(basename $file)"
-    fi
-done
+    // If running on localhost (development), connect to localhost:5000
+    if (hostname === 'localhost' || hostname === '127.0.0.1') {
+      return 'http://localhost:5000';
+    }
 
-log "API URL configuration complete"
+    // Otherwise, use the current hostname with port 5000 (production on EC2)
+    return `${protocol}//${hostname}:5000`;
+  }
+
+  // Fallback for SSR or non-browser environments
+  return 'http://localhost:5000';
+};
+
+// Final configuration with priority:
+// 1. Environment variable (VITE_API_URL) - set during build
+// 2. Auto-detected from window.location
+export const API_CONFIG = {
+  BASE_URL: ENV_API_URL || getAutoDetectedURL(),
+};
+
+// Log the configuration in development
+if (import.meta.env.DEV) {
+  console.log('[API Config] Using BASE_URL:', API_CONFIG.BASE_URL);
+  console.log('[API Config] Source:', ENV_API_URL ? 'Environment Variable' : 'Auto-detected');
+}
+APICONFIG_EOF
+
+log "✓ API auto-detection config created"
+log "  → Auto-detection: Frontend will use window.location to find backend"
+log "  → Environment override: VITE_API_URL=http://$PUBLIC_IP:5000"
 
 # Install npm dependencies
 log "Installing npm dependencies (this may take a few minutes)..."
 npm install --legacy-peer-deps
 
-# Build the frontend
-log "Building frontend for production..."
-npm run build
+# Build the frontend with environment variable
+log "Building frontend for production with API URL: http://$PUBLIC_IP:5000..."
+VITE_API_URL="http://$PUBLIC_IP:5000" npm run build
 
 # Copy build to Nginx root
 sudo rm -rf "$NGINX_ROOT"/*
