@@ -488,9 +488,17 @@ def create_emergency_replica(app):
 
             agent = agent[0]
 
-            # Emergency replicas bypass auto_replica_enabled setting
-            # In emergencies (rebalance/termination), we ALWAYS create replica for safety
-            logger.warning(f"Emergency replica creation for agent {agent_id} - bypassing auto_replica_enabled setting")
+            # Emergency replicas are ONLY created if auto_switch_enabled = true
+            # This ties emergency failover to the auto-switch mode
+            if not agent.get('auto_switch_enabled'):
+                logger.warning(f"Emergency replica creation skipped for agent {agent_id} - auto_switch_enabled is OFF")
+                return jsonify({
+                    'error': 'Emergency replica creation disabled',
+                    'reason': 'auto_switch_enabled is OFF. Enable auto-switch mode in agent configuration to allow automatic emergency replicas.',
+                    'hint': 'Turn on Auto-Switch Mode in agent settings to enable emergency failover protection'
+                }), 403
+
+            logger.warning(f"Emergency replica creation for agent {agent_id} - auto_switch_enabled is ON")
 
             # Select best pool for emergency replica
             target_pool_id = _select_safest_pool(

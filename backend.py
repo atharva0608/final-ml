@@ -2174,12 +2174,32 @@ def update_agent_settings(agent_id: str):
 
 @app.route('/api/client/agents/<agent_id>/config', methods=['POST'])
 def update_agent_config(agent_id: str):
-    """Update agent configuration including switches and replica settings"""
+    """
+    Update agent configuration including switches and replica settings.
+
+    IMPORTANT: auto_switch_enabled and manual_replica_enabled are MUTUALLY EXCLUSIVE
+    - When auto_switch_enabled = ON: ML model auto-switches + emergency replicas on interruption
+    - When manual_replica_enabled = ON: Manual replica maintained, no auto-switching
+    """
     data = request.json or {}
 
     try:
         updates = []
         params = []
+
+        # Get current agent state
+        agent = execute_query("""
+            SELECT auto_switch_enabled, manual_replica_enabled, replica_count, instance_id
+            FROM agents WHERE id = %s
+        """, (agent_id,), fetch_one=True)
+
+        if not agent:
+            return jsonify({'error': 'Agent not found'}), 404
+
+        current_auto_switch = agent.get('auto_switch_enabled', False)
+        current_manual_replica = agent.get('manual_replica_enabled', False)
+        replica_count = agent.get('replica_count', 0)
+        instance_id = agent.get('instance_id')
 
         # Handle terminate_wait_minutes (for backwards compatibility)
         if 'terminate_wait_minutes' in data:
@@ -2193,17 +2213,85 @@ def update_agent_config(agent_id: str):
             updates.append("terminate_wait_seconds = %s")
             params.append(terminate_wait_seconds)
 
-        if 'autoSwitchEnabled' in data:
-            updates.append("auto_switch_enabled = %s")
-            params.append(bool(data['autoSwitchEnabled']))
+        # MUTUAL EXCLUSIVITY ENFORCEMENT
+        # Case 1: User enables auto_switch_enabled
+        if 'autoSwitchEnabled' in data and bool(data['autoSwitchEnabled']):
+            updates.append("auto_switch_enabled = TRUE")
+            updates.append("manual_replica_enabled = FALSE")  # Force off
 
-        if 'autoReplicaEnabled' in data:
-            updates.append("auto_replica_enabled = %s")
-            params.append(bool(data['autoReplicaEnabled']))
+            # If manual replicas exist, terminate them
+            if current_manual_replica and replica_count > 0:
+                logger.info(f"Auto-switch enabled for agent {agent_id}, terminating manual replicas")
+                execute_query("""
+                    UPDATE replica_instances
+                    SET is_active = FALSE, status = 'terminated', terminated_at = NOW()
+                    WHERE agent_id = %s AND is_active = TRUE AND replica_type = 'manual'
+                """, (agent_id,))
+                updates.append("replica_count = 0")
+                updates.append("current_replica_id = NULL")
 
-        if 'manualReplicaEnabled' in data:
-            updates.append("manual_replica_enabled = %s")
-            params.append(bool(data['manualReplicaEnabled']))
+        # Case 2: User disables auto_switch_enabled
+        elif 'autoSwitchEnabled' in data and not bool(data['autoSwitchEnabled']):
+            updates.append("auto_switch_enabled = FALSE")
+
+        # Case 3: User enables manual_replica_enabled
+        if 'manualReplicaEnabled' in data and bool(data['manualReplicaEnabled']):
+            updates.append("manual_replica_enabled = TRUE")
+            updates.append("auto_switch_enabled = FALSE")  # Force off
+
+            # Create a manual replica immediately if none exists
+            if not current_manual_replica or replica_count == 0:
+                logger.info(f"Manual replica enabled for agent {agent_id}, creating replica")
+                # Trigger replica creation via internal API call
+                try:
+                    from replica_management_api import _select_cheapest_pool
+
+                    # Get instance details
+                    instance = execute_query("""
+                        SELECT instance_type, region, current_pool_id FROM instances WHERE id = %s
+                    """, (instance_id,), fetch_one=True)
+
+                    if instance:
+                        target_pool_id = _select_cheapest_pool(
+                            instance_type=instance['instance_type'],
+                            region=instance['region'],
+                            current_pool_id=instance['current_pool_id']
+                        )
+
+                        if target_pool_id:
+                            # Create replica record
+                            replica_id = str(uuid.uuid4())
+                            execute_query("""
+                                INSERT INTO replica_instances (
+                                    id, agent_id, instance_id, replica_type, pool_id, status,
+                                    created_by, parent_instance_id, is_active, created_at
+                                ) VALUES (
+                                    %s, %s, %s, 'manual', %s, 'launching', 'system', %s, TRUE, NOW()
+                                )
+                            """, (replica_id, agent_id, f"replica-{replica_id[:8]}", target_pool_id, instance_id))
+
+                            updates.append("replica_count = 1")
+                            updates.append("current_replica_id = %s")
+                            params.insert(0, replica_id)
+
+                            logger.info(f"Created manual replica {replica_id} for agent {agent_id}")
+                except Exception as replica_error:
+                    logger.error(f"Failed to create automatic replica: {replica_error}")
+
+        # Case 4: User disables manual_replica_enabled
+        elif 'manualReplicaEnabled' in data and not bool(data['manualReplicaEnabled']):
+            updates.append("manual_replica_enabled = FALSE")
+
+            # Terminate all manual replicas
+            if current_manual_replica and replica_count > 0:
+                logger.info(f"Manual replica disabled for agent {agent_id}, terminating all replicas")
+                execute_query("""
+                    UPDATE replica_instances
+                    SET is_active = FALSE, status = 'terminated', terminated_at = NOW()
+                    WHERE agent_id = %s AND is_active = TRUE
+                """, (agent_id,))
+                updates.append("replica_count = 0")
+                updates.append("current_replica_id = NULL")
 
         if updates:
             updates.append("updated_at = CURRENT_TIMESTAMP")
@@ -2218,7 +2306,11 @@ def update_agent_config(agent_id: str):
 
             logger.info(f"Updated agent {agent_id} configuration: {data}")
 
-        return jsonify({'success': True})
+        return jsonify({
+            'success': True,
+            'auto_switch_enabled': bool(data.get('autoSwitchEnabled', current_auto_switch)),
+            'manual_replica_enabled': bool(data.get('manualReplicaEnabled', current_manual_replica))
+        })
 
     except Exception as e:
         logger.error(f"Update agent config error: {e}", exc_info=True)
@@ -2267,6 +2359,92 @@ def get_client_instances(client_id: str):
         
     except Exception as e:
         logger.error(f"Get instances error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/client/<client_id>/replicas', methods=['GET'])
+def get_client_replicas(client_id: str):
+    """Get all instances with active replicas for a client"""
+    try:
+        # Get all active replicas with their parent instance and agent info
+        replicas = execute_query("""
+            SELECT
+                ri.id as replica_id,
+                ri.instance_id as replica_instance_id,
+                ri.replica_type,
+                ri.pool_id,
+                ri.status as replica_status,
+                ri.sync_status,
+                ri.sync_latency_ms,
+                ri.state_transfer_progress,
+                ri.hourly_cost,
+                ri.total_cost,
+                ri.created_by,
+                ri.created_at as replica_created_at,
+                ri.ready_at as replica_ready_at,
+                ri.terminated_at as replica_terminated_at,
+                ri.is_active as replica_is_active,
+                sp.pool_name,
+                sp.instance_type as pool_instance_type,
+                sp.region as pool_region,
+                sp.az as pool_az,
+                a.id as agent_id,
+                a.instance_id as primary_instance_id,
+                i.instance_type as primary_instance_type,
+                i.region as primary_region,
+                i.az as primary_az,
+                i.current_mode as primary_mode
+            FROM replica_instances ri
+            LEFT JOIN spot_pools sp ON ri.pool_id = sp.id
+            JOIN agents a ON ri.agent_id = a.id
+            LEFT JOIN instances i ON a.instance_id = i.id
+            WHERE a.client_id = %s
+              AND ri.is_active = TRUE
+              AND ri.status NOT IN ('terminated', 'promoted')
+            ORDER BY ri.created_at DESC
+        """, (client_id,), fetch=True)
+
+        result = []
+        for r in (replicas or []):
+            result.append({
+                'agentId': r['agent_id'],
+                'primary': {
+                    'instanceId': r['primary_instance_id'],
+                    'instanceType': r['primary_instance_type'],
+                    'region': r['primary_region'],
+                    'az': r['primary_az'],
+                    'mode': r['primary_mode']
+                },
+                'replica': {
+                    'id': r['replica_id'],
+                    'instanceId': r['replica_instance_id'],
+                    'type': r['replica_type'],
+                    'status': r['replica_status'],
+                    'sync_status': r['sync_status'],
+                    'sync_latency_ms': r['sync_latency_ms'],
+                    'state_transfer_progress': float(r['state_transfer_progress']) if r['state_transfer_progress'] else 0.0,
+                    'pool': {
+                        'id': r['pool_id'],
+                        'name': r['pool_name'],
+                        'instance_type': r['pool_instance_type'],
+                        'region': r['pool_region'],
+                        'az': r['pool_az']
+                    } if r['pool_id'] else None,
+                    'cost': {
+                        'hourly': float(r['hourly_cost']) if r['hourly_cost'] else None,
+                        'total': float(r['total_cost']) if r['total_cost'] else 0.0
+                    },
+                    'created_by': r['created_by'],
+                    'created_at': r['replica_created_at'].isoformat() if r['replica_created_at'] else None,
+                    'ready_at': r['replica_ready_at'].isoformat() if r['replica_ready_at'] else None,
+                    'terminated_at': r['replica_terminated_at'].isoformat() if r['replica_terminated_at'] else None,
+                    'is_active': bool(r['replica_is_active'])
+                }
+            })
+
+        return jsonify(result)
+
+    except Exception as e:
+        logger.error(f"Get client replicas error: {e}", exc_info=True)
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/client/instances/<instance_id>/pricing', methods=['GET'])
@@ -3525,6 +3703,14 @@ def initialize_app():
     logger.info(f"Models Loaded: {decision_engine_manager.models_loaded}")
     logger.info(f"Listening on {config.HOST}:{config.PORT}")
     logger.info("="*80)
+
+# Register replica management endpoints
+try:
+    from replica_management_api import register_replica_management_endpoints
+    register_replica_management_endpoints(app)
+    logger.info("✓ Replica management endpoints registered")
+except Exception as e:
+    logger.warning(f"Failed to register replica management endpoints: {e}")
 
 # Initialize on import (for gunicorn)
 initialize_app()
