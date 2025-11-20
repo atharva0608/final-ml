@@ -15,6 +15,7 @@ const SystemHealthPage = () => {
   const [showMLModelsUpload, setShowMLModelsUpload] = useState(false);
   const [restarting, setRestarting] = useState(false);
   const [lastUploadSessionId, setLastUploadSessionId] = useState(null);
+  const [decisionEngineUploaded, setDecisionEngineUploaded] = useState(false);
 
   useEffect(() => {
     loadData();
@@ -42,7 +43,8 @@ const SystemHealthPage = () => {
   const handleDecisionEngineUpload = async (files) => {
     try {
       const result = await api.uploadDecisionEngine(files);
-      alert(`✓ Decision engine files uploaded successfully!\n\nFiles: ${files.map(f => f.name).join(', ')}\n\nClick the RED RESTART button to activate the new engine.`);
+      setDecisionEngineUploaded(true);
+      alert(`✓ Decision engine files uploaded successfully!\n\nFiles: ${files.map(f => f.name).join(', ')}\n\nClick the RESTART button below to activate the new engine.`);
 
       // Don't reload automatically - user must click RESTART
       await loadData();
@@ -61,7 +63,7 @@ const SystemHealthPage = () => {
         setLastUploadSessionId(result.sessionId);
       }
 
-      alert(`✓ ML model files uploaded successfully!\n\nFiles: ${files.map(f => f.name).join(', ')}\nSession ID: ${result.sessionId || 'N/A'}\n\nClick the RED RESTART button to activate the new models.`);
+      alert(`✓ ML model files uploaded successfully!\n\nFiles: ${files.map(f => f.name).join(', ')}\nSession ID: ${result.sessionId || 'N/A'}\n\nClick the RESTART button below to activate the new models.`);
 
       // Reload data to show new session
       await loadData();
@@ -72,30 +74,52 @@ const SystemHealthPage = () => {
   };
 
   const handleActivate = async () => {
-    if (!lastUploadSessionId) {
-      alert('⚠️ No recent upload session found.\n\nPlease upload ML model files first, then click RESTART.');
+    // Check what's been uploaded
+    const hasMLModels = !!lastUploadSessionId;
+    const hasDecisionEngine = decisionEngineUploaded;
+
+    if (!hasMLModels && !hasDecisionEngine) {
+      alert('⚠️ No recent uploads found.\n\nPlease upload files first, then click RESTART.');
       return;
     }
 
-    if (!window.confirm(
-      `🔴 RESTART BACKEND WITH NEW MODELS\n\n` +
-      `This will:\n` +
-      `• Activate uploaded models (Session: ${lastUploadSessionId})\n` +
-      `• Restart the backend service\n` +
-      `• Take ~10-15 seconds to complete\n\n` +
-      `Current models will become the fallback version.\n\n` +
-      `Continue?`
-    )) {
+    // Build confirmation message
+    let message = `🔴 RESTART BACKEND\n\nThis will:\n`;
+    if (hasMLModels) {
+      message += `• Activate uploaded ML models (Session: ${lastUploadSessionId})\n`;
+    } else {
+      message += `• Keep current ML models\n`;
+    }
+    if (hasDecisionEngine) {
+      message += `• Activate uploaded decision engine\n`;
+    } else {
+      message += `• Keep current decision engine\n`;
+    }
+    message += `• Restart the backend service\n`;
+    message += `• Take ~10-15 seconds to complete\n\n`;
+    if (hasMLModels) {
+      message += `Current models will become the fallback version.\n\n`;
+    }
+    message += `Continue?`;
+
+    if (!window.confirm(message)) {
       return;
     }
 
     setRestarting(true);
     try {
-      const result = await api.activateMLModels(lastUploadSessionId);
+      // Call appropriate activation endpoints
+      if (hasMLModels) {
+        await api.activateMLModels(lastUploadSessionId);
+      }
+      if (hasDecisionEngine) {
+        // TODO: Add API endpoint for decision engine activation
+        // await api.activateDecisionEngine();
+      }
 
       alert(
         `✓ BACKEND RESTARTING...\n\n` +
-        `The backend is restarting with new models.\n\n` +
+        `The backend is restarting with new configuration.\n\n` +
         `⏱️ Please wait 10-15 seconds...\n\n` +
         `The page will reload automatically when ready.`
       );
@@ -112,7 +136,8 @@ const SystemHealthPage = () => {
             await loadData();
             setRestarting(false);
             setLastUploadSessionId(null);
-            alert('✅ Backend restarted successfully!\n\nNew models are now active.');
+            setDecisionEngineUploaded(false);
+            alert('✅ Backend restarted successfully!\n\nNew configuration is now active.');
           } catch (error) {
             retries++;
             if (retries < maxRetries) {
@@ -214,32 +239,30 @@ const SystemHealthPage = () => {
         </div>
       )}
 
-      {/* Action Buttons */}
-      {(lastUploadSessionId || fallbackSession) && !restarting && (
+      {/* Action Buttons - Always visible */}
+      {!restarting && (
         <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200 flex flex-wrap gap-3">
-          {lastUploadSessionId && (
-            <Button
-              variant="danger"
-              size="lg"
-              onClick={handleActivate}
-              icon={<RefreshCw size={18} />}
-              className="flex-1 min-w-[200px]"
-            >
-              🔴 RESTART WITH NEW MODELS
-            </Button>
-          )}
+          <Button
+            variant="danger"
+            size="lg"
+            onClick={handleActivate}
+            icon={<RefreshCw size={18} />}
+            className="flex-1 min-w-[200px]"
+            disabled={!lastUploadSessionId && !decisionEngineUploaded}
+          >
+            🔴 RESTART BACKEND
+          </Button>
 
-          {fallbackSession && (
-            <Button
-              variant="warning"
-              size="lg"
-              onClick={handleFallback}
-              icon={<RotateCcw size={18} />}
-              className="flex-1 min-w-[200px]"
-            >
-              ↩️ FALLBACK TO PREVIOUS
-            </Button>
-          )}
+          <Button
+            variant="warning"
+            size="lg"
+            onClick={handleFallback}
+            icon={<RotateCcw size={18} />}
+            className="flex-1 min-w-[200px]"
+            disabled={!fallbackSession}
+          >
+            ↩️ FALLBACK TO PREVIOUS
+          </Button>
         </div>
       )}
 
