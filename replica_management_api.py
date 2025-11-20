@@ -77,9 +77,11 @@ def create_manual_replica(app):
             target_pool_id = data.get('pool_id')
             if not target_pool_id:
                 # Auto-select cheapest compatible pool
+                # If current pool is cheapest, select second cheapest
                 target_pool_id = _select_cheapest_pool(
                     instance_type=agent['instance_type'],
                     region=agent['region'],
+                    current_pool_id=agent['current_pool_id'],
                     exclude_zones=data.get('exclude_zones', []),
                     max_cost=data.get('max_hourly_cost')
                 )
@@ -822,10 +824,14 @@ def update_replica_sync_status(app):
 def _select_cheapest_pool(
     instance_type: str,
     region: str,
+    current_pool_id: Optional[int] = None,
     exclude_zones: List[str] = None,
     max_cost: Optional[float] = None
 ) -> Optional[int]:
-    """Select cheapest compatible pool"""
+    """
+    Select cheapest compatible pool.
+    If current instance is already in the cheapest pool, select the second cheapest.
+    """
     exclude_zones = exclude_zones or []
 
     query = """
@@ -850,11 +856,25 @@ def _select_cheapest_pool(
     query += """
         AND psc.time_bucket >= NOW() - INTERVAL 5 MINUTE
         ORDER BY psc.spot_price ASC
-        LIMIT 1
+        LIMIT 2
     """
 
-    result = execute_query(query, tuple(params), fetch=True)
-    return result[0]['id'] if result else None
+    results = execute_query(query, tuple(params), fetch=True)
+
+    if not results:
+        return None
+
+    # If current pool is the cheapest, return second cheapest
+    if current_pool_id and len(results) >= 2 and results[0]['id'] == current_pool_id:
+        logger.info(f"Current pool {current_pool_id} is cheapest, selecting second cheapest: {results[1]['id']}")
+        return results[1]['id']
+
+    # Otherwise return cheapest (that's not current)
+    for result in results:
+        if not current_pool_id or result['id'] != current_pool_id:
+            return result['id']
+
+    return None
 
 
 def _select_safest_pool(
