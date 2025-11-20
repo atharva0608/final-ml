@@ -462,6 +462,27 @@ fi
 
 log "Database privileges configured"
 
+# Apply database migrations
+MIGRATION_FILE="$REPO_DIR/migrations/add_model_upload_sessions.sql"
+if [ -f "$MIGRATION_FILE" ]; then
+    log "Applying database migration for model versioning..."
+
+    set +e
+    docker exec -i spot-mysql mysql -u root -p"$DB_ROOT_PASSWORD" < "$MIGRATION_FILE" 2>&1 | grep -v "Warning" || true
+    set -e
+
+    # Verify migration was applied
+    TABLE_CHECK=$(docker exec spot-mysql mysql -u root -p"$DB_ROOT_PASSWORD" -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='spot_optimizer' AND table_name='model_upload_sessions';" 2>/dev/null || echo "0")
+
+    if [ "$TABLE_CHECK" = "1" ]; then
+        log "✅ Migration applied successfully (model_upload_sessions table created)"
+    else
+        warn "Migration may have issues - table not found"
+    fi
+else
+    log "No migration file found, skipping..."
+fi
+
 # Import demo data if available (optional)
 DEMO_DATA_FILE="$REPO_DIR/demo-data.sql"
 if [ -f "$DEMO_DATA_FILE" ]; then
