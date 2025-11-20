@@ -108,6 +108,26 @@ class APIClient {
     }
   }
 
+  // NEW: Activate ML Models (RED RESTART button)
+  async activateMLModels(sessionId) {
+    return this.request('/api/admin/ml-models/activate', {
+      method: 'POST',
+      body: JSON.stringify({ sessionId }),
+    });
+  }
+
+  // NEW: Fallback to Previous ML Models
+  async fallbackMLModels() {
+    return this.request('/api/admin/ml-models/fallback', {
+      method: 'POST',
+    });
+  }
+
+  // NEW: Get ML Model Sessions
+  async getMLModelSessions() {
+    return this.request('/api/admin/ml-models/sessions');
+  }
+
   // NEW: Get All Instances (Admin Level)
   async getAllInstancesGlobal(filters = {}) {
     const params = new URLSearchParams(
