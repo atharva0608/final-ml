@@ -145,7 +145,7 @@ if [ ! -d "$REPO_DIR/frontend" ]; then
     exit 1
 fi
 
-if [ -f "$REPO_DIR/demo-data.sql" ]; then
+if [ -f "$REPO_DIR/demo/demo_data.sql" ]; then
     log "✓ Demo data file found (will import for testing)"
 fi
 
@@ -509,7 +509,7 @@ else
 fi
 
 # Import demo data if available (optional)
-DEMO_DATA_FILE="$REPO_DIR/demo-data.sql"
+DEMO_DATA_FILE="$REPO_DIR/demo/demo_data.sql"
 if [ -f "$DEMO_DATA_FILE" ]; then
     log "Found demo data file - importing for testing..."
 
