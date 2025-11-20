@@ -15,6 +15,7 @@ const InstanceDetailPanel = ({ instanceId, clientId, onClose }) => {
   const [pricing, setPricing] = useState(null);
   const [metrics, setMetrics] = useState(null);
   const [priceHistory, setPriceHistory] = useState([]);
+  const [priceHistoryPools, setPriceHistoryPools] = useState([]);
   const [availableOptions, setAvailableOptions] = useState(null);
   const [loading, setLoading] = useState(true);
   const [switching, setSwitching] = useState(null);
@@ -47,10 +48,19 @@ const InstanceDetailPanel = ({ instanceId, clientId, onClose }) => {
 
         try {
           const historyData = await api.getPriceHistory(instanceId, 7, 'hour');
-          setPriceHistory(historyData);
+          // New format: { data: [], pools: [], onDemandPrice: number }
+          if (historyData && historyData.data) {
+            setPriceHistory(historyData.data);
+            setPriceHistoryPools(historyData.pools || []);
+          } else {
+            // Fallback for old format
+            setPriceHistory(Array.isArray(historyData) ? historyData : []);
+            setPriceHistoryPools([]);
+          }
         } catch (histError) {
           console.warn('Price history not available:', histError);
           setPriceHistory([]);
+          setPriceHistoryPools([]);
         }
       } catch (err) {
         setError(err.message);
@@ -258,7 +268,7 @@ const InstanceDetailPanel = ({ instanceId, clientId, onClose }) => {
           {/* Price History Chart Column */}
           <div className="bg-white p-4 rounded-lg border border-gray-200">
             <h4 className="text-md font-bold text-gray-900 mb-4">
-              Price History (7 Days)
+              Price History (7 Days) - All Pools
             </h4>
             {priceHistory.length > 0 ? (
               <ResponsiveContainer width="100%" height={350}>
@@ -271,35 +281,55 @@ const InstanceDetailPanel = ({ instanceId, clientId, onClose }) => {
                     textAnchor="end"
                     height={80}
                   />
-                  <YAxis tick={{ fontSize: 10 }} />
-                  <Tooltip />
-                  <Legend />
+                  <YAxis
+                    tick={{ fontSize: 10 }}
+                    label={{ value: 'Price ($/hr)', angle: -90, position: 'insideLeft', fontSize: 11 }}
+                  />
+                  <Tooltip
+                    contentStyle={{ fontSize: 12 }}
+                    formatter={(value) => value ? `$${value.toFixed(4)}` : 'N/A'}
+                  />
+                  <Legend wrapperStyle={{ fontSize: 11 }} />
+
+                  {/* On-Demand Price Line (Red, Dashed) */}
                   <Line
                     type="monotone"
-                    dataKey="avgPrice"
-                    stroke="#3b82f6"
+                    dataKey="onDemand"
+                    stroke="#dc2626"
                     strokeWidth={2}
-                    name="Avg Price"
+                    strokeDasharray="5 5"
+                    name="On-Demand"
                     dot={false}
                   />
-                  <Line
-                    type="monotone"
-                    dataKey="minPrice"
-                    stroke="#10b981"
-                    strokeWidth={1}
-                    strokeDasharray="3 3"
-                    name="Min Price"
-                    dot={false}
-                  />
-                  <Line
-                    type="monotone"
-                    dataKey="maxPrice"
-                    stroke="#ef4444"
-                    strokeWidth={1}
-                    strokeDasharray="3 3"
-                    name="Max Price"
-                    dot={false}
-                  />
+
+                  {/* Dynamic Pool Lines */}
+                  {priceHistoryPools.map((pool, idx) => {
+                    // Color palette for different pools
+                    const colors = [
+                      '#10b981', // green
+                      '#3b82f6', // blue
+                      '#8b5cf6', // purple
+                      '#f59e0b', // amber
+                      '#06b6d4', // cyan
+                      '#ec4899', // pink
+                      '#14b8a6', // teal
+                      '#f97316'  // orange
+                    ];
+                    const color = colors[idx % colors.length];
+
+                    return (
+                      <Line
+                        key={pool.id}
+                        type="monotone"
+                        dataKey={pool.key}
+                        stroke={color}
+                        strokeWidth={2}
+                        name={`${pool.name} (${pool.az})`}
+                        dot={false}
+                        connectNulls
+                      />
+                    );
+                  })}
                 </LineChart>
               </ResponsiveContainer>
             ) : (

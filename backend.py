@@ -2271,50 +2271,69 @@ def get_client_instances(client_id: str):
 
 @app.route('/api/client/instances/<instance_id>/pricing', methods=['GET'])
 def get_instance_pricing(instance_id: str):
-    """Get pricing details for instance"""
+    """Get pricing details for instance with current mode and pool info"""
     try:
+        # Get instance details including current state
         instance = execute_query("""
-            SELECT instance_type, region, ondemand_price, current_pool_id
-            FROM instances
-            WHERE id = %s
+            SELECT i.instance_type, i.region, i.ondemand_price, i.current_pool_id, i.current_mode
+            FROM instances i
+            WHERE i.id = %s
         """, (instance_id,), fetch_one=True)
-        
+
         if not instance:
             return jsonify({'error': 'Instance not found'}), 404
-        
+
+        # Get all available pools for this instance type
         pools = execute_query("""
-            SELECT 
+            SELECT
                 sp.id as pool_id,
+                sp.pool_name,
                 sp.az,
-                sps.price,
-                sps.captured_at
+                psc.spot_price as price,
+                psc.time_bucket as captured_at
             FROM spot_pools sp
-            JOIN (
-                SELECT pool_id, price, captured_at,
-                       ROW_NUMBER() OVER (PARTITION BY pool_id ORDER BY captured_at DESC) as rn
-                FROM spot_price_snapshots
-            ) sps ON sps.pool_id = sp.id AND sps.rn = 1
+            LEFT JOIN (
+                SELECT pool_id, spot_price, time_bucket,
+                       ROW_NUMBER() OVER (PARTITION BY pool_id ORDER BY time_bucket DESC) as rn
+                FROM pricing_snapshots_clean
+            ) psc ON psc.pool_id = sp.id AND psc.rn = 1
             WHERE sp.instance_type = %s AND sp.region = %s
-            ORDER BY sps.price ASC
+            ORDER BY psc.spot_price ASC
         """, (instance['instance_type'], instance['region']), fetch=True)
-        
+
         ondemand_price = float(instance['ondemand_price'] or 0)
-        
+
+        # Get current pool details
+        current_pool = None
+        if instance['current_pool_id']:
+            current_pool_data = execute_query("""
+                SELECT id, pool_name, az FROM spot_pools WHERE id = %s
+            """, (instance['current_pool_id'],), fetch_one=True)
+            if current_pool_data:
+                current_pool = {
+                    'id': current_pool_data['id'],
+                    'name': current_pool_data['pool_name'],
+                    'az': current_pool_data['az']
+                }
+
         return jsonify({
+            'currentMode': instance['current_mode'] or 'ondemand',
+            'currentPool': current_pool,
             'onDemand': {
                 'name': 'On-Demand',
                 'price': ondemand_price
             },
             'pools': [{
                 'id': pool['pool_id'],
+                'name': pool['pool_name'] or f"Pool {pool['pool_id']}",
                 'az': pool['az'],
-                'price': float(pool['price']),
-                'savings': ((ondemand_price - float(pool['price'])) / ondemand_price * 100) if ondemand_price > 0 else 0
+                'price': float(pool['price']) if pool['price'] else 0,
+                'savings': ((ondemand_price - float(pool['price'])) / ondemand_price * 100) if (ondemand_price > 0 and pool['price']) else 0
             } for pool in pools or []]
         })
-        
+
     except Exception as e:
-        logger.error(f"Get instance pricing error: {e}")
+        logger.error(f"Get instance pricing error: {e}", exc_info=True)
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/client/instances/<instance_id>/metrics', methods=['GET'])
@@ -2374,7 +2393,7 @@ def get_instance_metrics(instance_id: str):
 
 @app.route('/api/client/instances/<instance_id>/price-history', methods=['GET'])
 def get_instance_price_history(instance_id: str):
-    """Get historical pricing data for an instance"""
+    """Get historical pricing data for all pools (for multi-line chart)"""
     try:
         days = request.args.get('days', 7, type=int)
         interval = request.args.get('interval', 'hour')  # 'hour' or 'day'
@@ -2384,7 +2403,7 @@ def get_instance_price_history(instance_id: str):
 
         # Get instance info
         instance = execute_query("""
-            SELECT i.id, i.instance_id, i.instance_type, i.region, i.az
+            SELECT i.id, i.instance_id, i.instance_type, i.region, i.ondemand_price
             FROM instances i
             WHERE i.id = %s
         """, (instance_id,), fetch_one=True)
@@ -2392,52 +2411,83 @@ def get_instance_price_history(instance_id: str):
         if not instance:
             return jsonify({'error': 'Instance not found'}), 404
 
-        # Get pricing reports for this agent/instance
-        if interval == 'hour':
-            # Hourly granularity
-            price_data = execute_query("""
-                SELECT
-                    DATE_FORMAT(pr.received_at, '%%Y-%%m-%%d %%H:00:00') as time,
-                    AVG(pr.spot_price) as avgPrice,
-                    MIN(pr.spot_price) as minPrice,
-                    MAX(pr.spot_price) as maxPrice,
-                    AVG(pr.ondemand_price) as avgOnDemand
-                FROM pricing_reports pr
-                JOIN agents a ON pr.agent_id = a.id
-                WHERE a.instance_id = %s
-                  AND pr.received_at >= DATE_SUB(NOW(), INTERVAL %s DAY)
-                GROUP BY DATE_FORMAT(pr.received_at, '%%Y-%%m-%%d %%H:00:00')
-                ORDER BY time ASC
-            """, (instance['instance_id'], days), fetch=True)
-        else:
-            # Daily granularity
-            price_data = execute_query("""
-                SELECT
-                    DATE(pr.received_at) as time,
-                    AVG(pr.spot_price) as avgPrice,
-                    MIN(pr.spot_price) as minPrice,
-                    MAX(pr.spot_price) as maxPrice,
-                    AVG(pr.ondemand_price) as avgOnDemand
-                FROM pricing_reports pr
-                JOIN agents a ON pr.agent_id = a.id
-                WHERE a.instance_id = %s
-                  AND pr.received_at >= DATE_SUB(NOW(), INTERVAL %s DAY)
-                GROUP BY DATE(pr.received_at)
-                ORDER BY time ASC
-            """, (instance['instance_id'], days), fetch=True)
+        # Get all pools for this instance type
+        pools = execute_query("""
+            SELECT id, pool_name, az
+            FROM spot_pools
+            WHERE instance_type = %s AND region = %s
+        """, (instance['instance_type'], instance['region']), fetch=True)
 
-        result = [{
-            'time': str(row['time']),
-            'avgPrice': float(row['avgPrice'] or 0),
-            'minPrice': float(row['minPrice'] or 0),
-            'maxPrice': float(row['maxPrice'] or 0),
-            'avgOnDemand': float(row['avgOnDemand'] or 0)
-        } for row in (price_data or [])]
+        if not pools:
+            return jsonify([])
 
-        return jsonify(result)
+        # Get pricing data for all pools
+        time_format = '%%Y-%%m-%%d %%H:00' if interval == 'hour' else '%%Y-%%m-%%d'
+
+        # Build IN clause with proper parameters
+        pool_ids = [p['id'] for p in pools]
+        placeholders = ','.join(['%s'] * len(pool_ids))
+
+        # Query to get pricing for all pools
+        query = f"""
+            SELECT
+                DATE_FORMAT(psc.time_bucket, %s) as time,
+                psc.pool_id,
+                AVG(psc.spot_price) as price
+            FROM pricing_snapshots_clean psc
+            WHERE psc.pool_id IN ({placeholders})
+              AND psc.time_bucket >= DATE_SUB(NOW(), INTERVAL %s DAY)
+            GROUP BY DATE_FORMAT(psc.time_bucket, %s), psc.pool_id
+            ORDER BY time ASC, psc.pool_id
+        """
+
+        params = [time_format] + pool_ids + [days, time_format]
+        price_data = execute_query(query, tuple(params), fetch=True)
+
+        # Get unique timestamps
+        timestamps = sorted(set(row['time'] for row in (price_data or [])))
+
+        # Build result with each timestamp having prices for all pools
+        pool_map = {p['id']: {'name': p['pool_name'], 'az': p['az']} for p in pools}
+        price_map = {}
+        for row in (price_data or []):
+            key = str(row['time'])
+            if key not in price_map:
+                price_map[key] = {}
+            price_map[key][row['pool_id']] = float(row['price'])
+
+        # Build final result
+        result = []
+        ondemand_price = float(instance['ondemand_price'] or 0)
+
+        for timestamp in timestamps:
+            data_point = {
+                'time': timestamp,
+                'onDemand': ondemand_price
+            }
+            # Add each pool's price
+            for pool in pools:
+                pool_id = pool['id']
+                pool_key = f"pool_{pool_id}"
+                data_point[pool_key] = price_map.get(timestamp, {}).get(pool_id, None)
+            result.append(data_point)
+
+        # Also return pool metadata for the frontend to know which lines to draw
+        pool_metadata = [{
+            'id': p['id'],
+            'name': p['pool_name'] or f"Pool {p['id']}",
+            'az': p['az'],
+            'key': f"pool_{p['id']}"
+        } for p in pools]
+
+        return jsonify({
+            'data': result,
+            'pools': pool_metadata,
+            'onDemandPrice': ondemand_price
+        })
 
     except Exception as e:
-        logger.error(f"Get price history error: {e}")
+        logger.error(f"Get price history error: {e}", exc_info=True)
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/client/instances/<instance_id>/available-options', methods=['GET'])
