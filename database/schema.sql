@@ -534,7 +534,7 @@ CREATE TABLE IF NOT EXISTS replica_instances (
     INDEX idx_replica_parent (parent_instance_id),
     INDEX idx_replica_created (created_at),
     INDEX idx_replica_active (agent_id, is_active)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ===========================================================================
 -- PRICING SNAPSHOTS CLEAN (Time-bucketed for charts)
@@ -598,8 +598,6 @@ CREATE TABLE IF NOT EXISTS spot_interruption_events (
     INDEX idx_interruption_pool (pool_id, detected_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
 COMMENT='Track all spot interruption events and responses';
-
-COMMENT='Replica instances for failover and manual standby';
 
 -- ============================================================================
 -- ML MODEL REGISTRY
@@ -903,8 +901,6 @@ CREATE TABLE IF NOT EXISTS client_savings_daily (
     FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
 COMMENT='Daily savings summary for charts';
-
-COMMENT='Pre-aggregated monthly savings summary by client';
 
 -- ============================================================================
 -- ANALYTICS & TRACKING
