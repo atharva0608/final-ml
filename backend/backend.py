@@ -753,30 +753,30 @@ def get_pending_commands(agent_id: str):
     try:
         # Check both commands table and pending_switch_commands for compatibility
         commands = execute_query("""
-            SELECT 
-                id,
-                instance_id,
-                target_mode,
-                target_pool_id,
+            SELECT
+                CAST(id AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci as id,
+                CAST(instance_id AS CHAR(64) CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci as instance_id,
+                CAST(target_mode AS CHAR(20) CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci as target_mode,
+                CAST(target_pool_id AS CHAR(128) CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci as target_pool_id,
                 priority,
                 terminate_wait_seconds,
                 created_at
             FROM commands
             WHERE agent_id = %s AND status = 'pending'
-            
+
             UNION ALL
-            
-            SELECT 
-                CAST(id AS CHAR) as id,
-                instance_id,
-                target_mode,
-                target_pool_id,
+
+            SELECT
+                CAST(id AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci as id,
+                CAST(instance_id AS CHAR(64) CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci as instance_id,
+                CAST(target_mode AS CHAR(20) CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci as target_mode,
+                CAST(target_pool_id AS CHAR(128) CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci as target_pool_id,
                 priority,
                 terminate_wait_seconds,
                 created_at
             FROM pending_switch_commands
             WHERE agent_id = %s AND executed_at IS NULL
-            
+
             ORDER BY priority DESC, created_at ASC
         """, (agent_id, agent_id), fetch=True)
         
@@ -1061,6 +1061,185 @@ def report_termination(agent_id: str):
         logger.error(f"Termination report error: {e}")
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/agents/<agent_id>/cleanup-report', methods=['POST'])
+@require_client_token
+def receive_cleanup_report(agent_id: str):
+    """Receive and log cleanup operation results from agents"""
+    data = request.json or {}
+
+    try:
+        timestamp = data.get('timestamp')
+        snapshots = data.get('snapshots', {})
+        amis = data.get('amis', {})
+
+        # Count totals
+        deleted_snapshots = len(snapshots.get('deleted', []))
+        deleted_amis = len(amis.get('deleted_amis', []))
+        failed_snapshots = len(snapshots.get('failed', []))
+        failed_amis = len(amis.get('failed', []))
+        total_failed = failed_snapshots + failed_amis
+
+        # Insert into cleanup_logs table
+        execute_query("""
+            INSERT INTO cleanup_logs (
+                agent_id, client_id, cleanup_type,
+                deleted_snapshots_count, deleted_amis_count, failed_count,
+                details, cutoff_date, executed_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """, (
+            agent_id,
+            request.client_id,
+            'full',
+            deleted_snapshots,
+            deleted_amis,
+            total_failed,
+            json.dumps(data),
+            snapshots.get('cutoff_date'),
+            timestamp or datetime.utcnow()
+        ))
+
+        # Update agent's last_cleanup_at
+        execute_query("""
+            UPDATE agents
+            SET last_cleanup_at = NOW()
+            WHERE id = %s AND client_id = %s
+        """, (agent_id, request.client_id))
+
+        # Log system event
+        log_system_event(
+            'cleanup_completed',
+            'info',
+            f"Cleaned {deleted_snapshots} snapshots, {deleted_amis} AMIs. Failed: {total_failed}",
+            request.client_id,
+            agent_id,
+            metadata=data
+        )
+
+        logger.info(f"Cleanup report received from agent {agent_id}: {deleted_snapshots} snapshots, {deleted_amis} AMIs deleted")
+
+        return jsonify({
+            'success': True,
+            'message': 'Cleanup report recorded',
+            'deleted_snapshots': deleted_snapshots,
+            'deleted_amis': deleted_amis,
+            'failed_count': total_failed
+        })
+
+    except Exception as e:
+        logger.error(f"Cleanup report error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/agents/<agent_id>/rebalance-recommendation', methods=['POST'])
+@require_client_token
+def handle_rebalance_recommendation(agent_id: str):
+    """Handle EC2 rebalance recommendations with risk analysis"""
+    data = request.json or {}
+
+    try:
+        instance_id = data.get('instance_id')
+        detected_at = data.get('detected_at')
+
+        # Get agent details
+        agent = execute_query("""
+            SELECT current_pool_id, instance_type, region, az, current_mode
+            FROM agents
+            WHERE id = %s AND client_id = %s
+        """, (agent_id, request.client_id), fetch_one=True)
+
+        if not agent:
+            return jsonify({'error': 'Agent not found'}), 404
+
+        # Update agent rebalance timestamp
+        execute_query("""
+            UPDATE agents
+            SET last_rebalance_recommendation_at = NOW()
+            WHERE id = %s
+        """, (agent_id,))
+
+        # Calculate risk score for current pool
+        # Simple risk calculation based on recent interruptions
+        interruptions = execute_query("""
+            SELECT COUNT(*) as count
+            FROM spot_interruption_events
+            WHERE pool_id = %s
+              AND detected_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
+        """, (agent['current_pool_id'],), fetch_one=True)
+
+        interruption_count = interruptions['count'] if interruptions else 0
+        risk_score = min(interruption_count / 30.0, 1.0)  # Normalize to 0-1
+
+        # Insert into termination_events table
+        execute_query("""
+            INSERT INTO termination_events (
+                agent_id, instance_id, event_type,
+                detected_at, status, metadata
+            ) VALUES (%s, %s, %s, %s, %s, %s)
+        """, (
+            agent_id,
+            instance_id,
+            'rebalance_recommendation',
+            detected_at or datetime.utcnow(),
+            'detected',
+            json.dumps({'risk_score': risk_score, 'current_pool': agent['current_pool_id']})
+        ))
+
+        # Find alternative pools with lower risk
+        alternative_pools = execute_query("""
+            SELECT sp.id, sp.pool_name, sp.instance_type, sp.az,
+                   COALESCE(COUNT(sie.id), 0) as interruption_count
+            FROM spot_pools sp
+            LEFT JOIN spot_interruption_events sie
+                ON sp.id = sie.pool_id
+                AND sie.detected_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
+            WHERE sp.instance_type = %s
+              AND sp.region = %s
+              AND sp.az != %s
+              AND sp.is_active = TRUE
+            GROUP BY sp.id
+            ORDER BY interruption_count ASC
+            LIMIT 1
+        """, (agent['instance_type'], agent['region'], agent['az']), fetch=True)
+
+        # Determine action based on risk
+        if risk_score > 0.30 and alternative_pools:
+            action = 'switch'
+            target_pool = alternative_pools[0]
+            reason = f"Current pool has elevated interruption risk ({risk_score:.2%})"
+        else:
+            action = 'monitor'
+            target_pool = None
+            reason = f"Risk is acceptable ({risk_score:.2%}), continuing to monitor"
+
+        # Log system event
+        log_system_event(
+            'rebalance_recommendation',
+            'warning',
+            f"Rebalance recommendation for {instance_id}. Risk: {risk_score:.2%}. Action: {action}",
+            request.client_id,
+            agent_id,
+            metadata={'risk_score': risk_score, 'action': action}
+        )
+
+        response = {
+            'success': True,
+            'action': action,
+            'risk_score': risk_score,
+            'reason': reason
+        }
+
+        if target_pool:
+            response.update({
+                'target_mode': 'spot',
+                'target_pool_id': target_pool['id'],
+                'target_pool_name': target_pool['pool_name']
+            })
+
+        return jsonify(response)
+
+    except Exception as e:
+        logger.error(f"Rebalance recommendation error: {e}")
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/api/agents/<agent_id>/replica-config', methods=['GET'])
 @require_client_token
 def get_replica_config(agent_id: str):
@@ -1071,15 +1250,15 @@ def get_replica_config(agent_id: str):
             FROM agents
             WHERE id = %s AND client_id = %s
         """, (agent_id, request.client_id), fetch_one=True)
-        
+
         if not config_data:
             return jsonify({'error': 'Agent not found'}), 404
-        
+
         return jsonify({
             'enabled': config_data['replica_enabled'],
             'count': config_data['replica_count']
         })
-        
+
     except Exception as e:
         logger.error(f"Get replica config error: {e}")
         return jsonify({'error': str(e)}), 500
@@ -1807,12 +1986,53 @@ def get_all_agents_global():
         logger.error(f"Get all agents error: {e}")
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/client/validate', methods=['GET'])
+def validate_client_token():
+    """Validate client token for frontend authentication"""
+    try:
+        # Get token from Authorization header
+        auth_header = request.headers.get('Authorization', '')
+        if not auth_header.startswith('Bearer '):
+            return jsonify({'valid': False, 'error': 'Missing or invalid Authorization header'}), 401
+
+        token = auth_header.replace('Bearer ', '').strip()
+
+        if not token:
+            return jsonify({'valid': False, 'error': 'Token is empty'}), 401
+
+        # Validate token against database
+        client = execute_query("""
+            SELECT id, name, email, is_active, status
+            FROM clients
+            WHERE client_token = %s
+        """, (token,), fetch_one=True)
+
+        if not client:
+            return jsonify({'valid': False, 'error': 'Invalid token'}), 401
+
+        if not client['is_active'] or client['status'] != 'active':
+            return jsonify({'valid': False, 'error': 'Client account is not active'}), 403
+
+        # Log validation attempt
+        logger.info(f"Client token validated successfully for client {client['id']}")
+
+        return jsonify({
+            'valid': True,
+            'client_id': client['id'],
+            'name': client['name'],
+            'email': client['email']
+        })
+
+    except Exception as e:
+        logger.error(f"Token validation error: {e}")
+        return jsonify({'valid': False, 'error': 'Internal server error'}), 500
+
 @app.route('/api/client/<client_id>', methods=['GET'])
 def get_client_details(client_id: str):
     """Get client overview"""
     try:
         client = execute_query("""
-            SELECT 
+            SELECT
                 c.*,
                 COUNT(DISTINCT CASE WHEN a.status = 'online' THEN a.id END) as agents_online,
                 COUNT(DISTINCT a.id) as agents_total,
@@ -1823,10 +2043,10 @@ def get_client_details(client_id: str):
             WHERE c.id = %s
             GROUP BY c.id
         """, (client_id,), fetch_one=True)
-        
+
         if not client:
             return jsonify({'error': 'Client not found'}), 404
-        
+
         return jsonify({
             'id': client['id'],
             'name': client['name'],
@@ -1837,7 +2057,7 @@ def get_client_details(client_id: str):
             'totalSavings': float(client['total_savings'] or 0),
             'lastSync': client['last_sync_at'].isoformat() if client['last_sync_at'] else None
         })
-        
+
     except Exception as e:
         logger.error(f"Get client details error: {e}")
         return jsonify({'error': str(e)}), 500
@@ -3604,27 +3824,43 @@ def check_agent_health_job():
     """Check agent health and mark stale agents as offline"""
     try:
         timeout = config.AGENT_HEARTBEAT_TIMEOUT
-        
+
         stale_agents = execute_query(f"""
-            SELECT id, client_id FROM agents
-            WHERE status = 'online' 
+            SELECT id, client_id, instance_id, hostname, last_heartbeat_at
+            FROM agents
+            WHERE status = 'online'
             AND last_heartbeat_at < DATE_SUB(NOW(), INTERVAL {timeout} SECOND)
         """, fetch=True)
-        
+
         for agent in (stale_agents or []):
             execute_query("""
                 UPDATE agents SET status = 'offline' WHERE id = %s
             """, (agent['id'],))
-            
+
+            # Create notification for client
             create_notification(
-                f"Agent {agent['id']} marked offline (heartbeat timeout)",
+                f"Agent {agent['hostname'] or agent['id']} marked offline (heartbeat timeout)",
                 'warning',
                 agent['client_id']
             )
-        
+
+            # Log system event for tracking
+            log_system_event(
+                'agent_marked_offline',
+                'warning',
+                f"Agent {agent['hostname'] or agent['id']} marked offline due to heartbeat timeout ({timeout}s)",
+                agent['client_id'],
+                agent['id'],
+                agent['instance_id'],
+                metadata={
+                    'timeout_seconds': timeout,
+                    'last_heartbeat_at': agent['last_heartbeat_at'].isoformat() if agent['last_heartbeat_at'] else None
+                }
+            )
+
         if stale_agents:
             logger.info(f"Marked {len(stale_agents)} stale agents as offline")
-        
+
     except Exception as e:
         logger.error(f"Agent health check job failed: {e}")
 

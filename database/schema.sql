@@ -1,10 +1,10 @@
 -- ============================================================================
--- AWS Spot Optimizer - Complete Unified MySQL Schema v5.0
+-- AWS Spot Optimizer - Complete Unified MySQL Schema v5.1
 -- ============================================================================
--- 
+--
 -- MySQL 8.0+ Compatible Schema
 -- Combines features from v3.0 and v4.0 schemas
--- 
+--
 -- Features:
 -- - Client and agent management with logical identity preservation
 -- - Priority-based command queue system
@@ -20,9 +20,16 @@
 -- - Automated cleanup events
 -- ============================================================================
 
+-- Ensure database is created with correct collation
+-- CREATE DATABASE IF NOT EXISTS spot_optimizer
+--   CHARACTER SET utf8mb4
+--   COLLATE utf8mb4_unicode_ci;
+-- USE spot_optimizer;
+
 -- Set character set and disable foreign key checks for initial setup
 SET NAMES utf8mb4;
 SET CHARACTER SET utf8mb4;
+SET collation_connection = utf8mb4_unicode_ci;
 SET FOREIGN_KEY_CHECKS = 0;
 
 -- ============================================================================
@@ -125,7 +132,14 @@ CREATE TABLE IF NOT EXISTS agents (
     interruption_handled_count INT DEFAULT 0,
     last_failover_at TIMESTAMP NULL,
     terminated_at TIMESTAMP NULL,
-    
+
+    -- Agent v4.0.0 Enhanced Tracking
+    last_termination_notice_at TIMESTAMP NULL COMMENT 'Last termination notice (2-min warning)',
+    last_rebalance_recommendation_at TIMESTAMP NULL COMMENT 'Last rebalance recommendation received',
+    emergency_replica_count INT DEFAULT 0 COMMENT 'Count of emergency replicas created',
+    cleanup_enabled BOOLEAN DEFAULT TRUE COMMENT 'Enable automatic cleanup of AMIs/snapshots',
+    last_cleanup_at TIMESTAMP NULL COMMENT 'Last successful cleanup operation',
+
     -- Additional metadata
     metadata JSON,
     
@@ -552,6 +566,8 @@ CREATE TABLE IF NOT EXISTS replica_instances (
     -- Cost tracking
     hourly_cost DECIMAL(10,6),
     total_cost DECIMAL(10,4) DEFAULT 0.0000,
+    total_runtime_hours DECIMAL(10, 2) DEFAULT 0 COMMENT 'Total hours replica has been running',
+    accumulated_cost DECIMAL(15, 4) DEFAULT 0 COMMENT 'Accumulated cost for this replica',
 
     -- Interruption handling
     interruption_signal_type ENUM('rebalance-recommendation', 'termination-notice') DEFAULT NULL,
