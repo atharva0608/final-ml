@@ -3689,3 +3689,2580 @@ if __name__ == '__main__':
         port=config.PORT,
         debug=config.DEBUG
     )
+"""
+Data Quality & Deduplication Processor
+Handles pricing data deduplication, gap detection, and price interpolation.
+
+This module implements:
+1. Real-time deduplication pipeline
+2. Gap detection and filling algorithms
+3. Price interpolation with multiple strategies
+4. ML dataset preparation with quality filtering
+"""
+
+import json
+import logging
+from datetime import datetime, timedelta
+from decimal import Decimal
+from typing import Dict, List, Optional, Tuple
+import statistics
+
+from database_utils import execute_query
+
+logger = logging.getLogger(__name__)
+
+# ============================================================================
+# DEDUPLICATION PIPELINE
+# ============================================================================
+
+def process_pricing_submission(
+    submission_id: str,
+    source_instance_id: str,
+    source_agent_id: str,
+    source_type: str,
+    pool_id: int,
+    instance_type: str,
+    region: str,
+    az: str,
+    spot_price: Decimal,
+    ondemand_price: Optional[Decimal],
+    observed_at: datetime,
+    submitted_at: datetime,
+    client_id: str,
+    batch_id: Optional[str] = None
+) -> Dict:
+    """
+    Process a single pricing submission through the deduplication pipeline.
+
+    Returns:
+        dict: {
+            'accepted': bool,
+            'duplicate': bool,
+            'reason': str,
+            'clean_snapshot_id': int | None
+        }
+    """
+    try:
+        # Step 1: Insert into raw table
+        execute_query("""
+            INSERT INTO pricing_submissions_raw (
+                submission_id, source_instance_id, source_agent_id, source_type,
+                pool_id, instance_type, region, az, spot_price, ondemand_price,
+                observed_at, submitted_at, client_id, batch_id
+            ) VALUES (
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+            )
+        """, (
+            submission_id, source_instance_id, source_agent_id, source_type,
+            pool_id, instance_type, region, az, float(spot_price),
+            float(ondemand_price) if ondemand_price else None,
+            observed_at, submitted_at, client_id, batch_id
+        ))
+
+        # Step 2: Check for exact duplicates (same submission_id already exists)
+        existing = execute_query("""
+            SELECT submission_id FROM pricing_submissions_raw
+            WHERE submission_id = %s
+        """, (submission_id,), fetch=True)
+
+        if len(existing) > 1:  # Found duplicate
+            execute_query("""
+                UPDATE pricing_submissions_raw
+                SET is_duplicate = TRUE, duplicate_of = %s
+                WHERE submission_id = %s
+            """, (existing[0]['submission_id'], submission_id))
+
+            logger.debug(f"Duplicate submission detected: {submission_id}")
+            return {'accepted': False, 'duplicate': True, 'reason': 'exact_duplicate'}
+
+        # Step 3: Time-window bucketing (5-minute buckets)
+        time_bucket = _round_to_bucket(observed_at, bucket_minutes=5)
+
+        # Step 4: Check if we already have data for this time bucket
+        existing_snapshot = execute_query("""
+            SELECT id, source_type, confidence_score, spot_price
+            FROM pricing_snapshots_clean
+            WHERE pool_id = %s AND time_bucket = %s
+        """, (pool_id, time_bucket), fetch=True)
+
+        if existing_snapshot:
+            # Determine if this submission should replace existing
+            existing = existing_snapshot[0]
+            should_replace = _should_replace_snapshot(
+                existing_source_type=existing['source_type'],
+                existing_confidence=existing['confidence_score'],
+                new_source_type=source_type,
+                existing_price=existing['spot_price'],
+                new_price=spot_price
+            )
+
+            if not should_replace:
+                # Mark as duplicate but keep in raw table
+                execute_query("""
+                    UPDATE pricing_submissions_raw
+                    SET is_duplicate = TRUE
+                    WHERE submission_id = %s
+                """, (submission_id,))
+
+                logger.debug(f"Lower priority submission for bucket {time_bucket}: {submission_id}")
+                return {'accepted': False, 'duplicate': True, 'reason': 'lower_priority'}
+
+            # Replace existing snapshot
+            execute_query("""
+                UPDATE pricing_snapshots_clean
+                SET spot_price = %s,
+                    ondemand_price = %s,
+                    savings_percent = %s,
+                    source_instance_id = %s,
+                    source_agent_id = %s,
+                    source_type = %s,
+                    source_submission_id = %s,
+                    confidence_score = %s
+                WHERE id = %s
+            """, (
+                float(spot_price),
+                float(ondemand_price) if ondemand_price else None,
+                _calculate_savings(spot_price, ondemand_price) if ondemand_price else None,
+                source_instance_id,
+                source_agent_id,
+                source_type,
+                submission_id,
+                _get_confidence_score(source_type),
+                existing['id']
+            ))
+
+            logger.info(f"Replaced snapshot {existing['id']} with submission {submission_id}")
+            return {'accepted': True, 'duplicate': False, 'reason': 'replaced_existing', 'clean_snapshot_id': existing['id']}
+
+        # Step 5: Create new clean snapshot
+        bucket_start = time_bucket
+        bucket_end = time_bucket + timedelta(minutes=5, seconds=-1)
+
+        result = execute_query("""
+            INSERT INTO pricing_snapshots_clean (
+                pool_id, instance_type, region, az, spot_price, ondemand_price,
+                savings_percent, time_bucket, bucket_start, bucket_end,
+                source_instance_id, source_agent_id, source_type, source_submission_id,
+                confidence_score, data_source
+            ) VALUES (
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'measured'
+            )
+        """, (
+            pool_id, instance_type, region, az,
+            float(spot_price),
+            float(ondemand_price) if ondemand_price else None,
+            _calculate_savings(spot_price, ondemand_price) if ondemand_price else None,
+            time_bucket, bucket_start, bucket_end,
+            source_instance_id, source_agent_id, source_type, submission_id,
+            _get_confidence_score(source_type)
+        ))
+
+        snapshot_id = result  # Last insert ID
+
+        logger.info(f"Created clean snapshot {snapshot_id} from submission {submission_id}")
+        return {'accepted': True, 'duplicate': False, 'reason': 'new_snapshot', 'clean_snapshot_id': snapshot_id}
+
+    except Exception as e:
+        logger.error(f"Error processing submission {submission_id}: {e}", exc_info=True)
+        return {'accepted': False, 'duplicate': False, 'reason': f'error: {str(e)}'}
+
+
+def deduplicate_batch(start_time: datetime, end_time: datetime) -> Dict:
+    """
+    Run deduplication on a batch of raw submissions.
+    Used for batch processing or catching up after downtime.
+    """
+    try:
+        job_id = execute_query("""
+            INSERT INTO data_processing_jobs (job_type, status, start_time, end_time)
+            VALUES ('deduplication', 'running', %s, %s)
+        """, (start_time, end_time))
+
+        # Get all raw submissions in time range that haven't been processed
+        raw_submissions = execute_query("""
+            SELECT *
+            FROM pricing_submissions_raw
+            WHERE received_at BETWEEN %s AND %s
+              AND is_duplicate = FALSE
+            ORDER BY received_at ASC
+        """, (start_time, end_time), fetch=True)
+
+        stats = {
+            'processed': 0,
+            'duplicates_found': 0,
+            'new_snapshots': 0,
+            'replaced': 0,
+            'errors': 0
+        }
+
+        for submission in (raw_submissions or []):
+            result = process_pricing_submission(
+                submission_id=submission['submission_id'],
+                source_instance_id=submission['source_instance_id'],
+                source_agent_id=submission['source_agent_id'],
+                source_type=submission['source_type'],
+                pool_id=submission['pool_id'],
+                instance_type=submission['instance_type'],
+                region=submission['region'],
+                az=submission['az'],
+                spot_price=Decimal(str(submission['spot_price'])),
+                ondemand_price=Decimal(str(submission['ondemand_price'])) if submission['ondemand_price'] else None,
+                observed_at=submission['observed_at'],
+                submitted_at=submission['submitted_at'],
+                client_id=submission['client_id'],
+                batch_id=submission.get('batch_id')
+            )
+
+            stats['processed'] += 1
+
+            if result['duplicate']:
+                stats['duplicates_found'] += 1
+            elif result['accepted']:
+                if result['reason'] == 'new_snapshot':
+                    stats['new_snapshots'] += 1
+                elif result['reason'] == 'replaced_existing':
+                    stats['replaced'] += 1
+            else:
+                stats['errors'] += 1
+
+        # Update job
+        execute_query("""
+            UPDATE data_processing_jobs
+            SET status = 'completed',
+                records_processed = %s,
+                duplicates_found = %s,
+                completed_at = NOW(),
+                result_summary = %s
+            WHERE id = %s
+        """, (stats['processed'], stats['duplicates_found'], json.dumps(stats), job_id))
+
+        logger.info(f"Deduplication batch completed: {stats}")
+        return stats
+
+    except Exception as e:
+        logger.error(f"Error in deduplication batch: {e}", exc_info=True)
+        execute_query("""
+            UPDATE data_processing_jobs
+            SET status = 'failed', error_log = %s, completed_at = NOW()
+            WHERE id = %s
+        """, (str(e), job_id))
+        raise
+
+
+# ============================================================================
+# GAP DETECTION & FILLING
+# ============================================================================
+
+def detect_and_fill_gaps(pool_id: int, start_time: datetime, end_time: datetime) -> Dict:
+    """
+    Detect gaps in pricing data for a specific pool and fill them using interpolation.
+    """
+    try:
+        job_id = execute_query("""
+            INSERT INTO data_processing_jobs (job_type, status, start_time, end_time)
+            VALUES ('gap-filling', 'running', %s, %s)
+        """, (start_time, end_time))
+
+        # Get pool details
+        pool = execute_query("""
+            SELECT * FROM spot_pools WHERE id = %s
+        """, (pool_id,), fetch=True)[0]
+
+        # Get all existing snapshots in time range
+        snapshots = execute_query("""
+            SELECT time_bucket, spot_price, ondemand_price
+            FROM pricing_snapshots_clean
+            WHERE pool_id = %s
+              AND time_bucket BETWEEN %s AND %s
+            ORDER BY time_bucket ASC
+        """, (pool_id, start_time, end_time), fetch=True)
+
+        if not snapshots or len(snapshots) == 0:
+            logger.warning(f"No snapshots found for pool {pool_id} in range {start_time} to {end_time}")
+            return {'gaps_found': 0, 'gaps_filled': 0}
+
+        # Detect gaps
+        gaps = []
+        current_time = _round_to_bucket(start_time, bucket_minutes=5)
+        end_bucket = _round_to_bucket(end_time, bucket_minutes=5)
+
+        snapshot_times = {s['time_bucket']: s for s in snapshots}
+
+        while current_time <= end_bucket:
+            if current_time not in snapshot_times:
+                gaps.append(current_time)
+            current_time += timedelta(minutes=5)
+
+        logger.info(f"Found {len(gaps)} gaps for pool {pool_id}")
+
+        stats = {
+            'gaps_found': len(gaps),
+            'gaps_filled': 0,
+            'interpolations_created': 0
+        }
+
+        # Fill each gap
+        for gap_time in gaps:
+            result = _fill_gap(
+                pool_id=pool_id,
+                pool=pool,
+                gap_time=gap_time,
+                snapshots=snapshot_times
+            )
+
+            if result['success']:
+                stats['gaps_filled'] += 1
+                if result.get('interpolated'):
+                    stats['interpolations_created'] += 1
+
+        # Update job
+        execute_query("""
+            UPDATE data_processing_jobs
+            SET status = 'completed',
+                gaps_filled = %s,
+                interpolations_created = %s,
+                completed_at = NOW(),
+                result_summary = %s
+            WHERE id = %s
+        """, (stats['gaps_filled'], stats['interpolations_created'], json.dumps(stats), job_id))
+
+        logger.info(f"Gap filling completed for pool {pool_id}: {stats}")
+        return stats
+
+    except Exception as e:
+        logger.error(f"Error in gap detection/filling: {e}", exc_info=True)
+        execute_query("""
+            UPDATE data_processing_jobs
+            SET status = 'failed', error_log = %s, completed_at = NOW()
+            WHERE id = %s
+        """, (str(e), job_id))
+        raise
+
+
+def _fill_gap(
+    pool_id: int,
+    pool: Dict,
+    gap_time: datetime,
+    snapshots: Dict[datetime, Dict]
+) -> Dict:
+    """Fill a single gap using appropriate interpolation strategy"""
+    try:
+        # Find nearest snapshots before and after
+        before_price, before_time = _find_nearest_snapshot(gap_time, snapshots, direction='before')
+        after_price, after_time = _find_nearest_snapshot(gap_time, snapshots, direction='after')
+
+        if not before_price or not after_price:
+            logger.warning(f"Cannot interpolate for {gap_time}: missing boundary prices")
+            return {'success': False, 'reason': 'missing_boundaries'}
+
+        # Calculate gap duration in buckets
+        gap_buckets = _calculate_gap_buckets(before_time, after_time)
+
+        # Determine interpolation strategy based on gap size
+        if gap_buckets <= 2:
+            # Short gap: linear interpolation
+            interpolated_price = _linear_interpolation(
+                before_price, after_price, before_time, after_time, gap_time
+            )
+            method = 'linear'
+            confidence = 0.85
+            gap_type = 'short'
+
+        elif gap_buckets <= 6:
+            # Medium gap: weighted average
+            interpolated_price = _weighted_average_interpolation(
+                pool_id, before_price, after_price, before_time, after_time, gap_time
+            )
+            method = 'weighted-average'
+            confidence = 0.75
+            gap_type = 'medium'
+
+        elif gap_buckets <= 24:
+            # Long gap: cross-pool inference
+            interpolated_price = _cross_pool_interpolation(
+                pool, gap_time, before_price, after_price
+            )
+            method = 'cross-pool'
+            confidence = 0.70
+            gap_type = 'long'
+
+        else:
+            # Very long gap: don't interpolate
+            logger.warning(f"Gap too long ({gap_buckets} buckets) for pool {pool_id} at {gap_time}")
+            return {'success': False, 'reason': 'gap_too_long'}
+
+        # Create interpolated snapshot record
+        execute_query("""
+            INSERT INTO pricing_snapshots_interpolated (
+                pool_id, instance_type, region, az, time_bucket,
+                gap_duration_minutes, gap_type, interpolation_method,
+                confidence_score, price_before, price_after,
+                timestamp_before, timestamp_after, interpolated_price
+            ) VALUES (
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+            )
+        """, (
+            pool_id, pool['instance_type'], pool['region'], pool['az'],
+            gap_time, gap_buckets * 5, gap_type, method, confidence,
+            float(before_price), float(after_price), before_time, after_time,
+            float(interpolated_price)
+        ))
+
+        # Insert into clean snapshots table
+        bucket_start = gap_time
+        bucket_end = gap_time + timedelta(minutes=5, seconds=-1)
+
+        execute_query("""
+            INSERT INTO pricing_snapshots_clean (
+                pool_id, instance_type, region, az, spot_price,
+                time_bucket, bucket_start, bucket_end,
+                source_type, confidence_score, data_source,
+                interpolation_method
+            ) VALUES (
+                %s, %s, %s, %s, %s, %s, %s, %s, 'interpolated', %s, 'interpolated', %s
+            )
+        """, (
+            pool_id, pool['instance_type'], pool['region'], pool['az'],
+            float(interpolated_price), gap_time, bucket_start, bucket_end,
+            confidence, method
+        ))
+
+        logger.debug(f"Filled gap at {gap_time} for pool {pool_id} using {method}")
+        return {'success': True, 'interpolated': True, 'method': method, 'confidence': confidence}
+
+    except Exception as e:
+        logger.error(f"Error filling gap: {e}", exc_info=True)
+        return {'success': False, 'reason': f'error: {str(e)}'}
+
+
+# ============================================================================
+# INTERPOLATION ALGORITHMS
+# ============================================================================
+
+def _linear_interpolation(
+    price_before: Decimal,
+    price_after: Decimal,
+    time_before: datetime,
+    time_after: datetime,
+    target_time: datetime
+) -> Decimal:
+    """Linear interpolation between two prices"""
+    total_gap = (time_after - time_before).total_seconds()
+    time_from_before = (target_time - time_before).total_seconds()
+
+    if total_gap == 0:
+        return price_before
+
+    ratio = time_from_before / total_gap
+    interpolated = price_before + (price_after - price_before) * Decimal(str(ratio))
+
+    return round(interpolated, 6)
+
+
+def _weighted_average_interpolation(
+    pool_id: int,
+    price_before: Decimal,
+    price_after: Decimal,
+    time_before: datetime,
+    time_after: datetime,
+    target_time: datetime
+) -> Decimal:
+    """Weighted average with decay factor"""
+    # Get surrounding prices for more context
+    surrounding = execute_query("""
+        SELECT time_bucket, spot_price,
+               ABS(TIMESTAMPDIFF(SECOND, time_bucket, %s)) as time_distance
+        FROM pricing_snapshots_clean
+        WHERE pool_id = %s
+          AND time_bucket BETWEEN %s AND %s
+          AND time_bucket != %s
+        ORDER BY time_distance ASC
+        LIMIT 6
+    """, (target_time, pool_id, time_before - timedelta(hours=1), time_after + timedelta(hours=1), target_time), fetch=True)
+
+    if not surrounding or len(surrounding) == 0:
+        # Fall back to linear
+        return _linear_interpolation(price_before, price_after, time_before, time_after, target_time)
+
+    # Calculate weighted average
+    weighted_sum = Decimal('0')
+    weight_total = Decimal('0')
+
+    for s in surrounding:
+        weight = Decimal('1') / (Decimal(str(s['time_distance'] + 1)))
+        weighted_sum += Decimal(str(s['spot_price'])) * weight
+        weight_total += weight
+
+    if weight_total == 0:
+        return _linear_interpolation(price_before, price_after, time_before, time_after, target_time)
+
+    return round(weighted_sum / weight_total, 6)
+
+
+def _cross_pool_interpolation(
+    pool: Dict,
+    target_time: datetime,
+    price_before: Decimal,
+    price_after: Decimal
+) -> Decimal:
+    """Cross-pool inference using peer pools"""
+    # Find peer pools (same instance type, different AZ)
+    peer_pools = execute_query("""
+        SELECT p.id, p.az,
+               psc_before.spot_price as price_before,
+               psc_after.spot_price as price_after
+        FROM spot_pools p
+        LEFT JOIN pricing_snapshots_clean psc_before
+            ON p.id = psc_before.pool_id
+            AND psc_before.time_bucket = (
+                SELECT MAX(time_bucket)
+                FROM pricing_snapshots_clean
+                WHERE pool_id = p.id AND time_bucket < %s
+            )
+        LEFT JOIN pricing_snapshots_clean psc_after
+            ON p.id = psc_after.pool_id
+            AND psc_after.time_bucket = (
+                SELECT MIN(time_bucket)
+                FROM pricing_snapshots_clean
+                WHERE pool_id = p.id AND time_bucket > %s
+            )
+        WHERE p.instance_type = %s
+          AND p.region = %s
+          AND p.id != %s
+          AND p.is_available = TRUE
+    """, (target_time, target_time, pool['instance_type'], pool['region'], pool['id']), fetch=True)
+
+    if not peer_pools or len(peer_pools) == 0:
+        # Fall back to linear
+        return _linear_interpolation(price_before, price_after, None, None, target_time)
+
+    # Calculate median price change across peers
+    price_changes = []
+    for peer in peer_pools:
+        if peer['price_before'] and peer['price_after']:
+            change_pct = (peer['price_after'] - peer['price_before']) / peer['price_before']
+            price_changes.append(change_pct)
+
+    if not price_changes:
+        return _linear_interpolation(price_before, price_after, None, None, target_time)
+
+    median_change = statistics.median(price_changes)
+
+    # Apply median change to our pool
+    interpolated = price_before * (Decimal('1') + Decimal(str(median_change)))
+
+    return round(interpolated, 6)
+
+
+# ============================================================================
+# HELPER FUNCTIONS
+# ============================================================================
+
+def _round_to_bucket(dt: datetime, bucket_minutes: int = 5) -> datetime:
+    """Round datetime to nearest bucket"""
+    seconds_in_bucket = bucket_minutes * 60
+    timestamp = int(dt.timestamp())
+    rounded_timestamp = (timestamp // seconds_in_bucket) * seconds_in_bucket
+    return datetime.fromtimestamp(rounded_timestamp)
+
+
+def _should_replace_snapshot(
+    existing_source_type: str,
+    existing_confidence: Decimal,
+    new_source_type: str,
+    existing_price: Decimal,
+    new_price: Decimal
+) -> bool:
+    """Determine if new submission should replace existing snapshot"""
+    # Source priority: primary > replica-automatic > replica-manual > interpolated
+    priority = {
+        'primary': 4,
+        'replica-automatic': 3,
+        'replica-manual': 2,
+        'interpolated': 1
+    }
+
+    existing_priority = priority.get(existing_source_type, 0)
+    new_priority = priority.get(new_source_type, 0)
+
+    if new_priority > existing_priority:
+        return True
+
+    if new_priority == existing_priority:
+        # If same priority and prices differ significantly, flag for review
+        if abs(new_price - existing_price) / existing_price > 0.10:  # 10% difference
+            logger.warning(f"Price discrepancy detected: existing={existing_price}, new={new_price}")
+        return False  # Keep first one received
+
+    return False
+
+
+def _get_confidence_score(source_type: str) -> Decimal:
+    """Get confidence score based on source type"""
+    scores = {
+        'primary': Decimal('1.00'),
+        'replica-automatic': Decimal('0.95'),
+        'replica-manual': Decimal('0.95'),
+        'interpolated': Decimal('0.70')
+    }
+    return scores.get(source_type, Decimal('0.50'))
+
+
+def _calculate_savings(spot_price: Decimal, ondemand_price: Optional[Decimal]) -> Optional[Decimal]:
+    """Calculate savings percentage"""
+    if not ondemand_price or ondemand_price == 0:
+        return None
+
+    savings = ((ondemand_price - spot_price) / ondemand_price) * Decimal('100')
+    return round(savings, 2)
+
+
+def _find_nearest_snapshot(
+    target_time: datetime,
+    snapshots: Dict[datetime, Dict],
+    direction: str = 'before'
+) -> Tuple[Optional[Decimal], Optional[datetime]]:
+    """Find nearest snapshot in given direction"""
+    times = sorted(snapshots.keys())
+
+    if direction == 'before':
+        valid_times = [t for t in times if t < target_time]
+        if not valid_times:
+            return None, None
+        nearest_time = max(valid_times)
+    else:  # after
+        valid_times = [t for t in times if t > target_time]
+        if not valid_times:
+            return None, None
+        nearest_time = min(valid_times)
+
+    snapshot = snapshots[nearest_time]
+    return Decimal(str(snapshot['spot_price'])), nearest_time
+
+
+def _calculate_gap_buckets(time_before: datetime, time_after: datetime) -> int:
+    """Calculate number of 5-minute buckets in gap"""
+    gap_seconds = (time_after - time_before).total_seconds()
+    return int(gap_seconds / 300)  # 300 seconds = 5 minutes
+
+
+# ============================================================================
+# ML DATASET PREPARATION
+# ============================================================================
+
+def refresh_ml_dataset() -> Dict:
+    """Refresh the ML training dataset materialized table"""
+    try:
+        job_id = execute_query("""
+            INSERT INTO data_processing_jobs (
+                job_type, status, start_time, end_time
+            ) VALUES (
+                'ml-dataset-refresh', 'running', NOW() - INTERVAL 2 YEAR, NOW()
+            )
+        """)
+
+        # Clear existing data
+        execute_query("TRUNCATE TABLE pricing_snapshots_ml")
+
+        # Insert high-quality data with features
+        execute_query("""
+            INSERT INTO pricing_snapshots_ml (
+                pool_id, instance_type, region, az, spot_price, ondemand_price,
+                savings_percent, time_bucket, hour_of_day, day_of_week,
+                day_of_month, month, year, confidence_score, data_source,
+                price_change_1h, price_change_24h, price_volatility_6h, pool_rank_by_price
+            )
+            SELECT
+                psc.pool_id,
+                psc.instance_type,
+                psc.region,
+                psc.az,
+                psc.spot_price,
+                COALESCE(psc.ondemand_price, od.price) as ondemand_price,
+                psc.savings_percent,
+                psc.time_bucket,
+                HOUR(psc.time_bucket) as hour_of_day,
+                DAYOFWEEK(psc.time_bucket) as day_of_week,
+                DAY(psc.time_bucket) as day_of_month,
+                MONTH(psc.time_bucket) as month,
+                YEAR(psc.time_bucket) as year,
+                psc.confidence_score,
+                psc.data_source,
+
+                -- Price change features
+                psc.spot_price - LAG(psc.spot_price, 12) OVER (
+                    PARTITION BY psc.pool_id ORDER BY psc.time_bucket
+                ) as price_change_1h,
+
+                psc.spot_price - LAG(psc.spot_price, 288) OVER (
+                    PARTITION BY psc.pool_id ORDER BY psc.time_bucket
+                ) as price_change_24h,
+
+                -- Volatility (std dev over 6 hours)
+                STDDEV(psc.spot_price) OVER (
+                    PARTITION BY psc.pool_id
+                    ORDER BY psc.time_bucket
+                    ROWS BETWEEN 71 PRECEDING AND CURRENT ROW
+                ) as price_volatility_6h,
+
+                -- Rank within region
+                RANK() OVER (
+                    PARTITION BY psc.instance_type, psc.region, psc.time_bucket
+                    ORDER BY psc.spot_price ASC
+                ) as pool_rank_by_price
+
+            FROM pricing_snapshots_clean psc
+            LEFT JOIN (
+                SELECT instance_type, region, AVG(ondemand_price) as price
+                FROM pricing_snapshots_clean
+                WHERE ondemand_price IS NOT NULL
+                GROUP BY instance_type, region
+            ) od ON psc.instance_type = od.instance_type AND psc.region = od.region
+
+            WHERE psc.confidence_score >= 0.95  -- Only high-confidence data
+              AND psc.time_bucket >= NOW() - INTERVAL 2 YEAR
+
+            ORDER BY psc.pool_id, psc.time_bucket
+        """)
+
+        rows_inserted = execute_query("SELECT COUNT(*) as cnt FROM pricing_snapshots_ml", fetch=True)[0]['cnt']
+
+        execute_query("""
+            UPDATE data_processing_jobs
+            SET status = 'completed',
+                records_processed = %s,
+                completed_at = NOW(),
+                result_summary = %s
+            WHERE id = %s
+        """, (rows_inserted, json.dumps({'rows_inserted': rows_inserted}), job_id))
+
+        logger.info(f"ML dataset refreshed: {rows_inserted} rows")
+        return {'success': True, 'rows_inserted': rows_inserted}
+
+    except Exception as e:
+        logger.error(f"Error refreshing ML dataset: {e}", exc_info=True)
+        execute_query("""
+            UPDATE data_processing_jobs
+            SET status = 'failed', error_log = %s, completed_at = NOW()
+            WHERE id = %s
+        """, (str(e), job_id))
+        raise
+
+
+# ============================================================================
+# SCHEDULED JOBS
+# ============================================================================
+
+def run_hourly_deduplication():
+    """Run deduplication for the last hour (scheduled job)"""
+    end_time = datetime.now()
+    start_time = end_time - timedelta(hours=1)
+    return deduplicate_batch(start_time, end_time)
+
+
+def run_daily_gap_filling():
+    """Run gap filling for all pools from last 24 hours (scheduled job)"""
+    end_time = datetime.now()
+    start_time = end_time - timedelta(hours=24)
+
+    pools = execute_query("""
+        SELECT id FROM spot_pools WHERE is_available = TRUE
+    """, fetch=True)
+
+    total_stats = {'gaps_found': 0, 'gaps_filled': 0, 'interpolations_created': 0}
+
+    for pool in (pools or []):
+        try:
+            stats = detect_and_fill_gaps(pool['id'], start_time, end_time)
+            total_stats['gaps_found'] += stats.get('gaps_found', 0)
+            total_stats['gaps_filled'] += stats.get('gaps_filled', 0)
+            total_stats['interpolations_created'] += stats.get('interpolations_created', 0)
+        except Exception as e:
+            logger.error(f"Error filling gaps for pool {pool['id']}: {e}")
+
+    logger.info(f"Daily gap filling completed: {total_stats}")
+    return total_stats
+
+
+def run_ml_dataset_refresh():
+    """Refresh ML dataset (scheduled every 6 hours)"""
+    return refresh_ml_dataset()
+"""
+Database utilities for Spot Optimizer backend
+Shared database connection pooling and query execution
+"""
+
+import os
+import logging
+from typing import Any
+import mysql.connector
+from mysql.connector import Error, pooling
+
+logger = logging.getLogger(__name__)
+
+# ==============================================================================
+# DATABASE CONFIGURATION
+# ==============================================================================
+
+class DatabaseConfig:
+    """Database configuration with environment variable support"""
+    DB_HOST = os.getenv('DB_HOST', 'localhost')
+    DB_PORT = int(os.getenv('DB_PORT', 3306))
+    DB_USER = os.getenv('DB_USER', 'spotuser')
+    DB_PASSWORD = os.getenv('DB_PASSWORD', 'SpotUser2024!')
+    DB_NAME = os.getenv('DB_NAME', 'spot_optimizer')
+    DB_POOL_SIZE = int(os.getenv('DB_POOL_SIZE', 10))
+
+db_config = DatabaseConfig()
+
+# ==============================================================================
+# DATABASE CONNECTION POOLING
+# ==============================================================================
+
+connection_pool = None
+
+def init_db_pool():
+    """Initialize database connection pool"""
+    global connection_pool
+    try:
+        logger.info(f"Initializing database pool: {db_config.DB_USER}@{db_config.DB_HOST}:{db_config.DB_PORT}/{db_config.DB_NAME}")
+        connection_pool = pooling.MySQLConnectionPool(
+            pool_name="spot_optimizer_pool",
+            pool_size=db_config.DB_POOL_SIZE,
+            pool_reset_session=True,
+            host=db_config.DB_HOST,
+            port=db_config.DB_PORT,
+            user=db_config.DB_USER,
+            password=db_config.DB_PASSWORD,
+            database=db_config.DB_NAME,
+            autocommit=False
+        )
+
+        # Test the connection
+        test_conn = connection_pool.get_connection()
+        test_conn.close()
+
+        logger.info(f"✓ Database connection pool initialized (size: {db_config.DB_POOL_SIZE})")
+        return True
+    except Error as e:
+        logger.error(f"Failed to initialize connection pool: {e}")
+        logger.error(f"Connection details: {db_config.DB_USER}@{db_config.DB_HOST}:{db_config.DB_PORT}/{db_config.DB_NAME}")
+        return False
+
+def get_db_connection():
+    """Get connection from pool"""
+    global connection_pool
+
+    # Initialize pool if not already done
+    if connection_pool is None:
+        init_db_pool()
+
+    try:
+        return connection_pool.get_connection()
+    except Error as e:
+        logger.error(f"Failed to get connection from pool: {e}")
+        raise
+
+def execute_query(query: str, params: tuple = None, fetch: bool = False,
+                 fetch_one: bool = False, commit: bool = True) -> Any:
+    """
+    Execute database query with error handling
+
+    Args:
+        query: SQL query string
+        params: Query parameters (tuple)
+        fetch: Whether to fetch all results
+        fetch_one: Whether to fetch single result
+        commit: Whether to commit transaction
+
+    Returns:
+        Query results or affected row count
+    """
+    connection = None
+    cursor = None
+    try:
+        connection = get_db_connection()
+        cursor = connection.cursor(dictionary=True)
+        cursor.execute(query, params or ())
+
+        if fetch_one:
+            result = cursor.fetchone()
+        elif fetch:
+            result = cursor.fetchall()
+        else:
+            result = cursor.lastrowid if cursor.lastrowid else cursor.rowcount
+
+        if commit and not fetch and not fetch_one:
+            connection.commit()
+
+        return result
+    except Error as e:
+        if connection:
+            connection.rollback()
+        logger.error(f"Query execution error: {e}")
+        logger.error(f"Query: {query[:200]}")
+        raise
+    finally:
+        if cursor:
+            cursor.close()
+        if connection:
+            connection.close()
+"""
+Replica Coordinator - Central orchestration for replica management and data quality
+
+This component is the BRAIN of replica management:
+1. Emergency replica orchestration (auto-switch mode)
+2. Data gap filling and deduplication from multiple agents
+3. Manual replica lifecycle management
+4. Independence from ML models
+
+Architecture:
+- Runs as background service in backend
+- Monitors agent heartbeats and AWS interruption signals
+- Coordinates replica creation/promotion/termination
+- Ensures data quality and completeness
+- Works independently of ML model availability
+"""
+
+import logging
+import threading
+import time
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional, Tuple
+from collections import defaultdict
+import statistics
+
+from database_utils import execute_query
+
+logger = logging.getLogger(__name__)
+
+class ReplicaCoordinator:
+    """
+    Central coordinator for replica management and data quality.
+
+    This is the single source of truth for:
+    - Emergency replica creation and failover
+    - Manual replica lifecycle management
+    - Data gap filling and deduplication
+    - Agent coordination
+    """
+
+    def __init__(self):
+        self.running = False
+        self.monitor_thread = None
+        self.data_quality_thread = None
+
+        # Tracking state
+        self.agent_states = {}  # agent_id -> state info
+        self.emergency_active = {}  # agent_id -> emergency context
+
+        logger.info("ReplicaCoordinator initialized")
+
+    def start(self):
+        """Start the coordinator background services"""
+        if self.running:
+            logger.warning("ReplicaCoordinator already running")
+            return
+
+        self.running = True
+
+        # Start monitoring thread for emergency handling
+        self.monitor_thread = threading.Thread(
+            target=self._monitor_loop,
+            daemon=True,
+            name="ReplicaCoordinator-Monitor"
+        )
+        self.monitor_thread.start()
+
+        # Start data quality thread
+        self.data_quality_thread = threading.Thread(
+            target=self._data_quality_loop,
+            daemon=True,
+            name="ReplicaCoordinator-DataQuality"
+        )
+        self.data_quality_thread.start()
+
+        logger.info("✓ ReplicaCoordinator started (monitor + data quality)")
+
+    def stop(self):
+        """Stop the coordinator"""
+        self.running = False
+        logger.info("ReplicaCoordinator stopped")
+
+    # =========================================================================
+    # EMERGENCY REPLICA ORCHESTRATION (Auto-Switch Mode)
+    # =========================================================================
+
+    def _monitor_loop(self):
+        """
+        Main monitoring loop for emergency replica orchestration.
+
+        Responsibilities:
+        1. Monitor agents for interruption signals
+        2. Create emergency replicas on rebalance
+        3. Promote replicas on termination
+        4. Hand back control to ML models after emergency
+        5. Maintain manual replicas when enabled
+        """
+        logger.info("Emergency monitor loop started")
+
+        while self.running:
+            try:
+                # Get all active agents
+                agents = execute_query("""
+                    SELECT id, client_id, instance_id, auto_switch_enabled,
+                           manual_replica_enabled, replica_count, current_replica_id,
+                           last_interruption_signal, last_heartbeat_at
+                    FROM agents
+                    WHERE enabled = TRUE AND status = 'online'
+                """, fetch=True)
+
+                for agent in (agents or []):
+                    agent_id = agent['id']
+
+                    # Handle auto-switch mode (emergency)
+                    if agent['auto_switch_enabled']:
+                        self._handle_auto_switch_mode(agent)
+
+                    # Handle manual replica mode
+                    elif agent['manual_replica_enabled']:
+                        self._handle_manual_replica_mode(agent)
+
+                time.sleep(10)  # Check every 10 seconds
+
+            except Exception as e:
+                logger.error(f"Monitor loop error: {e}", exc_info=True)
+                time.sleep(30)
+
+    def _handle_auto_switch_mode(self, agent: Dict):
+        """
+        Handle emergency replica orchestration for auto-switch mode.
+
+        Flow:
+        1. Monitor for interruption signals (via spot_interruption_events)
+        2. On rebalance: Create replica in cheapest pool
+        3. Replica stays until termination notice
+        4. On termination: Promote replica, connect to central server
+        5. Hand back control to ML models
+        """
+        agent_id = agent['id']
+
+        # Check for recent interruption events
+        recent_interruption = execute_query("""
+            SELECT signal_type, detected_at, replica_id, failover_completed
+            FROM spot_interruption_events
+            WHERE agent_id = %s
+            ORDER BY detected_at DESC
+            LIMIT 1
+        """, (agent_id,), fetch_one=True)
+
+        if not recent_interruption:
+            # No interruption - normal operation
+            # ML models have control
+            return
+
+        signal_type = recent_interruption['signal_type']
+        detected_at = recent_interruption['detected_at']
+        replica_id = recent_interruption['replica_id']
+        failover_completed = recent_interruption['failover_completed']
+
+        # Check if this is a recent event (within last 2 hours)
+        if detected_at and (datetime.now() - detected_at).total_seconds() > 7200:
+            # Old event - emergency is over, ML has control
+            return
+
+        # EMERGENCY MODE ACTIVE
+        logger.info(f"Emergency mode active for agent {agent_id}: {signal_type}")
+
+        if signal_type == 'rebalance-recommendation':
+            # Rebalance detected - ensure replica exists
+            if not replica_id or not agent['current_replica_id']:
+                logger.warning(f"Rebalance detected but no replica for agent {agent_id}")
+                # Replica should have been created by endpoint, but double-check
+                self._ensure_replica_exists(agent)
+            else:
+                # Replica exists - monitor its readiness
+                replica = execute_query("""
+                    SELECT status, sync_status, state_transfer_progress
+                    FROM replica_instances
+                    WHERE id = %s AND is_active = TRUE
+                """, (replica_id,), fetch_one=True)
+
+                if replica:
+                    logger.info(f"Replica {replica_id} status: {replica['status']}, "
+                               f"sync: {replica['sync_status']}, "
+                               f"progress: {replica['state_transfer_progress']}%")
+
+        elif signal_type == 'termination-notice':
+            # Termination imminent - failover should have occurred
+            if not failover_completed:
+                logger.critical(f"Termination notice but failover NOT completed for agent {agent_id}!")
+                # Try to complete failover
+                self._complete_emergency_failover(agent, replica_id)
+            else:
+                logger.info(f"Failover completed for agent {agent_id}, handing back to ML models")
+                # Emergency is over - ML models can take over
+                # Mark emergency as complete
+                execute_query("""
+                    UPDATE spot_interruption_events
+                    SET metadata = JSON_SET(COALESCE(metadata, '{}'), '$.emergency_complete', TRUE)
+                    WHERE agent_id = %s AND detected_at = %s
+                """, (agent_id, detected_at))
+
+    def _ensure_replica_exists(self, agent: Dict):
+        """Ensure replica exists for agent during emergency"""
+        agent_id = agent['id']
+
+        # Check if replica already exists
+        existing_replica = execute_query("""
+            SELECT id FROM replica_instances
+            WHERE agent_id = %s AND is_active = TRUE
+            AND status NOT IN ('terminated', 'promoted')
+        """, (agent_id,), fetch_one=True)
+
+        if existing_replica:
+            return existing_replica['id']
+
+        # No replica - need to create one
+        logger.warning(f"Creating emergency replica for agent {agent_id}")
+
+        # Get instance details
+        instance = execute_query("""
+            SELECT instance_type, region, current_pool_id
+            FROM instances
+            WHERE agent_id = %s AND is_active = TRUE
+        """, (agent_id,), fetch_one=True)
+
+        if not instance:
+            logger.error(f"Cannot create replica - no active instance for agent {agent_id}")
+            return None
+
+        # Find cheapest pool
+        cheapest_pool = execute_query("""
+            SELECT sp.id, sp.az, psc.spot_price
+            FROM spot_pools sp
+            LEFT JOIN (
+                SELECT pool_id, spot_price,
+                       ROW_NUMBER() OVER (PARTITION BY pool_id ORDER BY time_bucket DESC) as rn
+                FROM pricing_snapshots_clean
+            ) psc ON psc.pool_id = sp.id AND psc.rn = 1
+            WHERE sp.instance_type = %s
+              AND sp.region = %s
+              AND sp.id != %s
+            ORDER BY psc.spot_price ASC
+            LIMIT 1
+        """, (instance['instance_type'], instance['region'], instance['current_pool_id']), fetch_one=True)
+
+        if not cheapest_pool:
+            logger.error(f"No alternative pool found for agent {agent_id}")
+            return None
+
+        # Create replica record
+        import uuid
+        replica_id = str(uuid.uuid4())
+
+        execute_query("""
+            INSERT INTO replica_instances (
+                id, agent_id, instance_id, replica_type, pool_id,
+                instance_type, region, az, status, created_by,
+                parent_instance_id, hourly_cost, is_active
+            ) VALUES (
+                %s, %s, %s, 'automatic-rebalance', %s,
+                %s, %s, %s, 'launching', 'coordinator',
+                %s, %s, TRUE
+            )
+        """, (
+            replica_id, agent_id, f"emergency-{replica_id[:8]}",
+            cheapest_pool['id'], instance['instance_type'],
+            instance['region'], cheapest_pool['az'],
+            agent['instance_id'], cheapest_pool['spot_price']
+        ))
+
+        # Update agent
+        execute_query("""
+            UPDATE agents
+            SET current_replica_id = %s, replica_count = replica_count + 1
+            WHERE id = %s
+        """, (replica_id, agent_id))
+
+        logger.info(f"✓ Created emergency replica {replica_id} for agent {agent_id}")
+        return replica_id
+
+    def _complete_emergency_failover(self, agent: Dict, replica_id: str):
+        """Complete emergency failover by promoting replica"""
+        agent_id = agent['id']
+
+        if not replica_id:
+            logger.error(f"Cannot complete failover - no replica_id for agent {agent_id}")
+            return False
+
+        # Check replica status
+        replica = execute_query("""
+            SELECT status, sync_status FROM replica_instances
+            WHERE id = %s AND is_active = TRUE
+        """, (replica_id,), fetch_one=True)
+
+        if not replica:
+            logger.error(f"Cannot complete failover - replica {replica_id} not found")
+            return False
+
+        if replica['status'] not in ('ready', 'syncing'):
+            logger.warning(f"Replica {replica_id} not ready (status: {replica['status']}), "
+                          f"but termination imminent - promoting anyway")
+
+        # Promote replica
+        import uuid
+        new_instance_id = str(uuid.uuid4())
+
+        execute_query("""
+            INSERT INTO instances (
+                id, client_id, instance_type, region, az,
+                current_pool_id, current_mode, is_active, installed_at
+            )
+            SELECT
+                %s, a.client_id, ri.instance_type, ri.region, ri.az,
+                ri.pool_id, 'spot', TRUE, NOW()
+            FROM replica_instances ri
+            JOIN agents a ON ri.agent_id = a.id
+            WHERE ri.id = %s
+        """, (new_instance_id, replica_id))
+
+        # Update agent
+        execute_query("""
+            UPDATE agents
+            SET instance_id = %s,
+                current_replica_id = NULL,
+                last_failover_at = NOW(),
+                interruption_handled_count = interruption_handled_count + 1
+            WHERE id = %s
+        """, (new_instance_id, agent_id))
+
+        # Mark replica as promoted
+        execute_query("""
+            UPDATE replica_instances
+            SET status = 'promoted',
+                promoted_at = NOW(),
+                failover_completed_at = NOW()
+            WHERE id = %s
+        """, (replica_id,))
+
+        # Update interruption event
+        execute_query("""
+            UPDATE spot_interruption_events
+            SET failover_completed = TRUE,
+                success = TRUE
+            WHERE agent_id = %s AND replica_id = %s
+            ORDER BY detected_at DESC
+            LIMIT 1
+        """, (agent_id, replica_id))
+
+        logger.info(f"✓ Emergency failover completed for agent {agent_id}")
+        return True
+
+    def _handle_manual_replica_mode(self, agent: Dict):
+        """
+        Handle manual replica mode - continuous replica maintenance.
+
+        Flow:
+        1. Ensure exactly ONE replica exists at all times
+        2. If replica is terminated/promoted, create new one immediately
+        3. Continue loop until manual_replica_enabled = FALSE
+        """
+        agent_id = agent['id']
+        replica_count = agent['replica_count'] or 0
+
+        # Check for active replicas
+        active_replicas = execute_query("""
+            SELECT id, status FROM replica_instances
+            WHERE agent_id = %s
+              AND is_active = TRUE
+              AND status NOT IN ('terminated', 'promoted')
+        """, (agent_id,), fetch=True)
+
+        active_count = len(active_replicas or [])
+
+        if active_count == 0:
+            # No active replica - create one
+            logger.info(f"Manual mode: Creating replica for agent {agent_id}")
+            self._create_manual_replica(agent)
+
+        elif active_count > 1:
+            # Too many replicas - should only be 1
+            logger.warning(f"Manual mode: Agent {agent_id} has {active_count} replicas, should be 1")
+            # Keep the newest, terminate others
+            newest = active_replicas[0]
+            for replica in active_replicas[1:]:
+                execute_query("""
+                    UPDATE replica_instances
+                    SET is_active = FALSE, status = 'terminated', terminated_at = NOW()
+                    WHERE id = %s
+                """, (replica['id'],))
+
+        # Check if user promoted a replica
+        recently_promoted = execute_query("""
+            SELECT id, promoted_at FROM replica_instances
+            WHERE agent_id = %s
+              AND status = 'promoted'
+              AND promoted_at >= DATE_SUB(NOW(), INTERVAL 5 MINUTE)
+        """, (agent_id,), fetch_one=True)
+
+        if recently_promoted:
+            # User just promoted a replica - create new one for the new primary
+            logger.info(f"Manual mode: Replica promoted for agent {agent_id}, creating new replica")
+            time.sleep(2)  # Brief delay to let promotion complete
+            self._create_manual_replica(agent)
+
+    def _create_manual_replica(self, agent: Dict):
+        """Create manual replica in cheapest available pool"""
+        agent_id = agent['id']
+
+        # Get instance details
+        instance = execute_query("""
+            SELECT instance_type, region, current_pool_id
+            FROM instances
+            WHERE agent_id = %s AND is_active = TRUE
+        """, (agent_id,), fetch_one=True)
+
+        if not instance:
+            logger.error(f"Cannot create manual replica - no active instance for agent {agent_id}")
+            return None
+
+        # Find cheapest pool (different from current)
+        pools = execute_query("""
+            SELECT sp.id, sp.az, psc.spot_price
+            FROM spot_pools sp
+            LEFT JOIN (
+                SELECT pool_id, spot_price,
+                       ROW_NUMBER() OVER (PARTITION BY pool_id ORDER BY time_bucket DESC) as rn
+                FROM pricing_snapshots_clean
+            ) psc ON psc.pool_id = sp.id AND psc.rn = 1
+            WHERE sp.instance_type = %s
+              AND sp.region = %s
+            ORDER BY psc.spot_price ASC
+            LIMIT 2
+        """, (instance['instance_type'], instance['region']), fetch=True)
+
+        if not pools:
+            logger.error(f"No pools found for agent {agent_id}")
+            return None
+
+        # Select pool (if current is cheapest, use 2nd cheapest)
+        target_pool = None
+        for pool in pools:
+            if pool['id'] != instance['current_pool_id']:
+                target_pool = pool
+                break
+
+        if not target_pool and len(pools) > 1:
+            target_pool = pools[1]  # Use second cheapest
+        elif not target_pool:
+            target_pool = pools[0]  # Use only available pool
+
+        # Create replica
+        import uuid
+        replica_id = str(uuid.uuid4())
+
+        execute_query("""
+            INSERT INTO replica_instances (
+                id, agent_id, instance_id, replica_type, pool_id,
+                instance_type, region, az, status, created_by,
+                parent_instance_id, hourly_cost, is_active
+            ) VALUES (
+                %s, %s, %s, 'manual', %s,
+                %s, %s, %s, 'launching', 'coordinator',
+                %s, %s, TRUE
+            )
+        """, (
+            replica_id, agent_id, f"manual-{replica_id[:8]}",
+            target_pool['id'], instance['instance_type'],
+            instance['region'], target_pool['az'],
+            agent['instance_id'], target_pool['spot_price']
+        ))
+
+        # Update agent
+        execute_query("""
+            UPDATE agents
+            SET current_replica_id = %s, replica_count = 1
+            WHERE id = %s
+        """, (replica_id, agent_id))
+
+        logger.info(f"✓ Created manual replica {replica_id} for agent {agent_id} in pool {target_pool['id']}")
+        return replica_id
+
+    # =========================================================================
+    # DATA QUALITY MANAGEMENT - Gap Filling & Deduplication
+    # =========================================================================
+
+    def _data_quality_loop(self):
+        """
+        Data quality management loop.
+
+        Responsibilities:
+        1. Compare data from primary and replica agents
+        2. Fill gaps where data is missing
+        3. Deduplicate overlapping data (keep one)
+        4. Interpolate missing data using neighboring values
+        5. Ensure clean, complete database
+        """
+        logger.info("Data quality loop started")
+
+        while self.running:
+            try:
+                # Process pricing data
+                self._process_pricing_data_quality()
+
+                time.sleep(300)  # Run every 5 minutes
+
+            except Exception as e:
+                logger.error(f"Data quality loop error: {e}", exc_info=True)
+                time.sleep(60)
+
+    def _process_pricing_data_quality(self):
+        """
+        Process pricing data for quality assurance.
+
+        Steps:
+        1. Find time buckets with data from multiple sources
+        2. Deduplicate by keeping highest confidence score
+        3. Find gaps (missing time buckets)
+        4. Fill gaps using interpolation
+        """
+        # Get all pools with recent data
+        pools = execute_query("""
+            SELECT DISTINCT pool_id
+            FROM pricing_snapshots_clean
+            WHERE time_bucket >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
+        """, fetch=True)
+
+        for pool in (pools or []):
+            pool_id = pool['pool_id']
+            self._deduplicate_pool_data(pool_id)
+            self._fill_pool_gaps(pool_id)
+
+    def _deduplicate_pool_data(self, pool_id: int):
+        """
+        Remove duplicate entries for same pool+time_bucket.
+        Keep entry with highest confidence score.
+        """
+        # Find duplicates (same pool + time_bucket)
+        duplicates = execute_query("""
+            SELECT time_bucket, COUNT(*) as count
+            FROM pricing_snapshots_clean
+            WHERE pool_id = %s
+              AND time_bucket >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
+            GROUP BY time_bucket
+            HAVING count > 1
+        """, (pool_id,), fetch=True)
+
+        if not duplicates:
+            return
+
+        logger.info(f"Found {len(duplicates)} duplicate time buckets for pool {pool_id}")
+
+        for dup in duplicates:
+            time_bucket = dup['time_bucket']
+
+            # Get all entries for this time bucket
+            entries = execute_query("""
+                SELECT id, confidence_score, data_source, source_type
+                FROM pricing_snapshots_clean
+                WHERE pool_id = %s AND time_bucket = %s
+                ORDER BY confidence_score DESC, id ASC
+            """, (pool_id, time_bucket), fetch=True)
+
+            if len(entries) <= 1:
+                continue
+
+            # Keep first (highest confidence), delete rest
+            keep_id = entries[0]['id']
+            delete_ids = [e['id'] for e in entries[1:]]
+
+            for delete_id in delete_ids:
+                execute_query("""
+                    DELETE FROM pricing_snapshots_clean WHERE id = %s
+                """, (delete_id,))
+
+            logger.debug(f"Deduplicated time_bucket {time_bucket}: kept id={keep_id}, deleted {len(delete_ids)} entries")
+
+    def _fill_pool_gaps(self, pool_id: int):
+        """
+        Fill gaps in pricing data using interpolation.
+
+        Strategy:
+        - For small gaps (1-2 buckets): Linear interpolation
+        - For larger gaps: Average of neighboring values
+        - If no neighboring data: Use last known value
+        """
+        # Get all time buckets for last 24 hours
+        start_time = datetime.now() - timedelta(hours=24)
+
+        # Get existing data points
+        data_points = execute_query("""
+            SELECT time_bucket, spot_price, ondemand_price
+            FROM pricing_snapshots_clean
+            WHERE pool_id = %s
+              AND time_bucket >= %s
+            ORDER BY time_bucket ASC
+        """, (pool_id, start_time), fetch=True)
+
+        if not data_points or len(data_points) < 2:
+            return  # Not enough data to interpolate
+
+        # Generate expected time buckets (every 5 minutes)
+        expected_buckets = []
+        current_bucket = start_time.replace(minute=(start_time.minute // 5) * 5, second=0, microsecond=0)
+        end_time = datetime.now()
+
+        while current_bucket <= end_time:
+            expected_buckets.append(current_bucket)
+            current_bucket += timedelta(minutes=5)
+
+        # Find missing buckets
+        existing_times = {dp['time_bucket'] for dp in data_points}
+        missing_buckets = [b for b in expected_buckets if b not in existing_times]
+
+        if not missing_buckets:
+            return  # No gaps
+
+        logger.info(f"Filling {len(missing_buckets)} gaps for pool {pool_id}")
+
+        # Sort data points by time
+        sorted_data = sorted(data_points, key=lambda x: x['time_bucket'])
+
+        for missing_time in missing_buckets:
+            # Find neighboring data points
+            before = None
+            after = None
+
+            for i, dp in enumerate(sorted_data):
+                if dp['time_bucket'] < missing_time:
+                    before = dp
+                elif dp['time_bucket'] > missing_time and not after:
+                    after = dp
+                    break
+
+            # Interpolate
+            if before and after:
+                # Linear interpolation
+                time_diff = (after['time_bucket'] - before['time_bucket']).total_seconds()
+                time_to_missing = (missing_time - before['time_bucket']).total_seconds()
+                ratio = time_to_missing / time_diff
+
+                spot_price = before['spot_price'] + (after['spot_price'] - before['spot_price']) * ratio
+                ondemand_price = before['ondemand_price'] if before['ondemand_price'] else after['ondemand_price']
+
+                confidence = 0.7  # Interpolated data has lower confidence
+                method = 'linear'
+
+            elif before:
+                # Use last known value
+                spot_price = before['spot_price']
+                ondemand_price = before['ondemand_price']
+                confidence = 0.5
+                method = 'last-known'
+
+            elif after:
+                # Use next known value
+                spot_price = after['spot_price']
+                ondemand_price = after['ondemand_price']
+                confidence = 0.5
+                method = 'next-known'
+            else:
+                continue  # No data to interpolate from
+
+            # Insert interpolated data
+            bucket_start = missing_time
+            bucket_end = missing_time + timedelta(minutes=5)
+
+            # Get pool details
+            pool_info = execute_query("""
+                SELECT instance_type, region, az
+                FROM spot_pools WHERE id = %s
+            """, (pool_id,), fetch_one=True)
+
+            if pool_info:
+                execute_query("""
+                    INSERT INTO pricing_snapshots_clean (
+                        pool_id, instance_type, region, az,
+                        spot_price, ondemand_price,
+                        time_bucket, bucket_start, bucket_end,
+                        source_type, confidence_score, data_source
+                    ) VALUES (
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, 'interpolated', %s, 'interpolated'
+                    )
+                """, (
+                    pool_id, pool_info['instance_type'], pool_info['region'], pool_info['az'],
+                    spot_price, ondemand_price,
+                    missing_time, bucket_start, bucket_end,
+                    confidence
+                ))
+
+                logger.debug(f"Filled gap at {missing_time} using {method} interpolation")
+
+        logger.info(f"✓ Filled {len(missing_buckets)} gaps for pool {pool_id}")
+
+
+# Global coordinator instance
+coordinator = ReplicaCoordinator()
+
+
+def start_replica_coordinator():
+    """Start the replica coordinator (called from backend initialization)"""
+    coordinator.start()
+
+
+def stop_replica_coordinator():
+    """Stop the replica coordinator"""
+    coordinator.stop()
+"""
+Replica Management API
+Handles manual and automatic replica creation, monitoring, and failover operations.
+
+This module provides:
+1. Manual replica management (user-controlled)
+2. Automatic spot interruption defense
+3. State transfer and failover orchestration
+4. Replica monitoring and health checks
+"""
+
+import json
+import uuid
+import time
+from datetime import datetime, timedelta
+from decimal import Decimal
+from typing import Dict, List, Optional, Tuple
+import logging
+
+from flask import jsonify, request
+from database_utils import execute_query
+
+logger = logging.getLogger(__name__)
+
+# ============================================================================
+# MANUAL REPLICA MANAGEMENT ENDPOINTS
+# ============================================================================
+
+def create_manual_replica(app):
+    """POST /api/agents/<agent_id>/replicas - Create manual replica"""
+    @app.route('/api/agents/<agent_id>/replicas', methods=['POST'])
+    def create_replica_endpoint(agent_id):
+        """
+        Create a manual replica for an agent instance.
+
+        Request body:
+        {
+            "pool_id": 123,  # optional - auto-select if not provided
+            "exclude_zones": ["us-east-1a"],  # optional
+            "max_hourly_cost": 0.50,  # optional
+            "tags": {"key": "value"}  # optional
+        }
+        """
+        try:
+            data = request.get_json() or {}
+
+            # Validate agent exists and is active
+            agent = execute_query("""
+                SELECT a.*, i.id as instance_id, i.instance_type, i.region,
+                       i.current_pool_id, i.current_mode
+                FROM agents a
+                JOIN instances i ON a.instance_id = i.id
+                WHERE a.id = %s AND a.status = 'online'
+            """, (agent_id,), fetch=True)
+
+            if not agent or len(agent) == 0:
+                return jsonify({'error': 'Agent not found or offline'}), 404
+
+            agent = agent[0]
+
+            # Check if manual replicas are enabled for this agent
+            if not agent.get('manual_replica_enabled'):
+                return jsonify({
+                    'error': 'Manual replicas not enabled for this agent',
+                    'hint': 'Enable manual_replica_enabled in agent settings'
+                }), 400
+
+            # Check current replica count
+            if agent.get('replica_count', 0) >= 2:
+                return jsonify({
+                    'error': 'Maximum replica limit reached',
+                    'current_count': agent['replica_count'],
+                    'max_allowed': 2
+                }), 400
+
+            # Determine target pool
+            target_pool_id = data.get('pool_id')
+            if not target_pool_id:
+                # Auto-select cheapest compatible pool
+                # If current pool is cheapest, select second cheapest
+                target_pool_id = _select_cheapest_pool(
+                    instance_type=agent['instance_type'],
+                    region=agent['region'],
+                    current_pool_id=agent['current_pool_id'],
+                    exclude_zones=data.get('exclude_zones', []),
+                    max_cost=data.get('max_hourly_cost')
+                )
+
+                if not target_pool_id:
+                    return jsonify({
+                        'error': 'No suitable pool found',
+                        'hint': 'Try adjusting exclude_zones or max_hourly_cost'
+                    }), 400
+
+            # Get pool details
+            pool = execute_query("""
+                SELECT * FROM spot_pools WHERE id = %s
+            """, (target_pool_id,), fetch=True)
+
+            if not pool or len(pool) == 0:
+                return jsonify({'error': 'Pool not found'}), 404
+
+            pool = pool[0]
+
+            # Validate pool compatibility
+            if pool['instance_type'] != agent['instance_type']:
+                return jsonify({
+                    'error': 'Pool instance type mismatch',
+                    'agent_type': agent['instance_type'],
+                    'pool_type': pool['instance_type']
+                }), 400
+
+            # Get current spot price
+            latest_price = execute_query("""
+                SELECT spot_price, ondemand_price
+                FROM pricing_snapshots_clean
+                WHERE pool_id = %s
+                ORDER BY time_bucket DESC
+                LIMIT 1
+            """, (target_pool_id,), fetch=True)
+
+            hourly_cost = latest_price[0]['spot_price'] if latest_price else None
+
+            # Create replica record
+            replica_id = str(uuid.uuid4())
+            replica_instance_id = f"replica-{replica_id[:8]}"  # Placeholder - actual EC2 instance ID comes later
+
+            execute_query("""
+                INSERT INTO replica_instances (
+                    id, agent_id, instance_id, replica_type, pool_id,
+                    instance_type, region, az, status, created_by,
+                    parent_instance_id, hourly_cost, tags
+                ) VALUES (
+                    %s, %s, %s, 'manual', %s, %s, %s, %s, 'launching',
+                    %s, %s, %s, %s
+                )
+            """, (
+                replica_id,
+                agent_id,
+                replica_instance_id,
+                target_pool_id,
+                pool['instance_type'],
+                pool['region'],
+                pool['az'],
+                data.get('created_by', 'unknown'),
+                agent['instance_id'],
+                hourly_cost,
+                json.dumps(data.get('tags', {}))
+            ))
+
+            # Update agent replica count
+            execute_query("""
+                UPDATE agents
+                SET replica_count = replica_count + 1,
+                    current_replica_id = CASE WHEN current_replica_id IS NULL THEN %s ELSE current_replica_id END
+                WHERE id = %s
+            """, (replica_id, agent_id))
+
+            logger.info(f"Created manual replica {replica_id} for agent {agent_id} in pool {target_pool_id}")
+
+            return jsonify({
+                'success': True,
+                'replica_id': replica_id,
+                'instance_id': replica_instance_id,
+                'pool': {
+                    'id': pool['id'],
+                    'name': pool['pool_name'],
+                    'instance_type': pool['instance_type'],
+                    'region': pool['region'],
+                    'az': pool['az']
+                },
+                'hourly_cost': float(hourly_cost) if hourly_cost else None,
+                'status': 'launching',
+                'message': 'Replica is launching. Connect your agent to establish sync.'
+            }), 201
+
+        except Exception as e:
+            logger.error(f"Error creating replica: {e}", exc_info=True)
+            return jsonify({'error': str(e)}), 500
+
+
+def list_replicas(app):
+    """GET /api/agents/<agent_id>/replicas - List all replicas for an agent"""
+    @app.route('/api/agents/<agent_id>/replicas', methods=['GET'])
+    def list_replicas_endpoint(agent_id):
+        """List all replicas (active and terminated) for an agent"""
+        try:
+            include_terminated = request.args.get('include_terminated', 'false').lower() == 'true'
+
+            query = """
+                SELECT
+                    ri.*,
+                    sp.pool_name,
+                    sp.instance_type,
+                    sp.region,
+                    sp.az,
+                    TIMESTAMPDIFF(SECOND, ri.created_at, COALESCE(ri.terminated_at, NOW())) as age_seconds
+                FROM replica_instances ri
+                LEFT JOIN spot_pools sp ON ri.pool_id = sp.id
+                WHERE ri.agent_id = %s
+            """
+
+            if not include_terminated:
+                query += " AND ri.is_active = TRUE"
+
+            query += " ORDER BY ri.created_at DESC"
+
+            replicas = execute_query(query, (agent_id,), fetch=True)
+
+            result = []
+            for r in (replicas or []):
+                result.append({
+                    'id': r['id'],
+                    'instance_id': r['instance_id'],
+                    'type': r['replica_type'],
+                    'status': r['status'],
+                    'sync_status': r['sync_status'],
+                    'sync_latency_ms': r['sync_latency_ms'],
+                    'state_transfer_progress': float(r['state_transfer_progress']) if r['state_transfer_progress'] else 0.0,
+                    'pool': {
+                        'id': r['pool_id'],
+                        'name': r.get('pool_name'),
+                        'instance_type': r.get('instance_type'),
+                        'region': r.get('region'),
+                        'az': r.get('az')
+                    },
+                    'cost': {
+                        'hourly': float(r['hourly_cost']) if r['hourly_cost'] else None,
+                        'total': float(r['total_cost']) if r['total_cost'] else 0.0
+                    },
+                    'created_by': r['created_by'],
+                    'created_at': r['created_at'].isoformat() if r['created_at'] else None,
+                    'ready_at': r['ready_at'].isoformat() if r['ready_at'] else None,
+                    'terminated_at': r['terminated_at'].isoformat() if r['terminated_at'] else None,
+                    'age_seconds': r['age_seconds'],
+                    'is_active': bool(r['is_active']),
+                    'tags': json.loads(r['tags']) if r['tags'] else {}
+                })
+
+            return jsonify({
+                'replicas': result,
+                'total': len(result)
+            }), 200
+
+        except Exception as e:
+            logger.error(f"Error listing replicas: {e}", exc_info=True)
+            return jsonify({'error': str(e)}), 500
+
+
+def promote_replica(app):
+    """POST /api/agents/<agent_id>/replicas/<replica_id>/promote - Promote replica to primary"""
+    @app.route('/api/agents/<agent_id>/replicas/<replica_id>/promote', methods=['POST'])
+    def promote_replica_endpoint(agent_id, replica_id):
+        """
+        Promote replica to primary (manual failover).
+
+        Request body:
+        {
+            "demote_old_primary": true,  # or false to terminate
+            "wait_for_sync": true  # wait for final state sync
+        }
+        """
+        try:
+            data = request.get_json() or {}
+            demote_old_primary = data.get('demote_old_primary', True)
+            wait_for_sync = data.get('wait_for_sync', True)
+
+            # Validate replica exists and is ready
+            replica = execute_query("""
+                SELECT * FROM replica_instances
+                WHERE id = %s AND agent_id = %s AND is_active = TRUE
+            """, (replica_id, agent_id), fetch=True)
+
+            if not replica or len(replica) == 0:
+                return jsonify({'error': 'Replica not found or inactive'}), 404
+
+            replica = replica[0]
+
+            if replica['status'] not in ('ready', 'syncing'):
+                return jsonify({
+                    'error': 'Replica not ready for promotion',
+                    'current_status': replica['status'],
+                    'required_status': 'ready or syncing'
+                }), 400
+
+            # Get current primary instance
+            agent = execute_query("""
+                SELECT a.*, i.id as instance_id
+                FROM agents a
+                JOIN instances i ON a.instance_id = i.id
+                WHERE a.id = %s
+            """, (agent_id,), fetch=True)
+
+            if not agent or len(agent) == 0:
+                return jsonify({'error': 'Agent not found'}), 404
+
+            agent = agent[0]
+            old_instance_id = agent['instance_id']
+
+            # Begin promotion process
+            # Step 1: Update replica status to 'promoted'
+            execute_query("""
+                UPDATE replica_instances
+                SET status = 'promoted',
+                    promoted_at = NOW(),
+                    is_active = TRUE
+                WHERE id = %s
+            """, (replica_id,))
+
+            # Step 2: Create new instance record for the replica
+            new_instance_id = str(uuid.uuid4())
+            execute_query("""
+                INSERT INTO instances (
+                    id, client_id, instance_type, region, az,
+                    current_pool_id, current_mode, spot_price, ondemand_price,
+                    is_active, installed_at
+                )
+                SELECT
+                    %s, a.client_id, ri.instance_type, ri.region, ri.az,
+                    ri.pool_id, 'spot', ri.hourly_cost, NULL,
+                    TRUE, NOW()
+                FROM replica_instances ri
+                JOIN agents a ON ri.agent_id = a.id
+                WHERE ri.id = %s
+            """, (new_instance_id, replica_id))
+
+            # Step 3: Update agent to point to new instance
+            execute_query("""
+                UPDATE agents
+                SET instance_id = %s,
+                    current_replica_id = NULL,
+                    last_failover_at = NOW()
+                WHERE id = %s
+            """, (new_instance_id, agent_id))
+
+            # Step 4: Record the switch
+            execute_query("""
+                INSERT INTO instance_switches (
+                    agent_id, old_instance_id, new_instance_id,
+                    switch_reason, switched_at, success
+                )
+                VALUES (%s, %s, %s, 'manual-replica-promotion', NOW(), TRUE)
+            """, (agent_id, old_instance_id, new_instance_id))
+
+            # Step 5: Handle old primary
+            if demote_old_primary:
+                # Create replica record for old primary
+                demoted_replica_id = str(uuid.uuid4())
+                execute_query("""
+                    INSERT INTO replica_instances (
+                        id, agent_id, instance_id, replica_type, pool_id,
+                        instance_type, region, az, status, created_by,
+                        parent_instance_id
+                    )
+                    SELECT
+                        %s, %s, i.id, 'manual', i.current_pool_id,
+                        i.instance_type, i.region, i.az, 'ready', 'system',
+                        %s
+                    FROM instances i
+                    WHERE i.id = %s
+                """, (demoted_replica_id, agent_id, new_instance_id, old_instance_id))
+            else:
+                # Mark old instance as inactive
+                execute_query("""
+                    UPDATE instances SET is_active = FALSE WHERE id = %s
+                """, (old_instance_id,))
+
+            # Step 6: Decrement replica count (promoted replica no longer counted)
+            execute_query("""
+                UPDATE agents
+                SET replica_count = GREATEST(0, replica_count - 1)
+                WHERE id = %s
+            """, (agent_id,))
+
+            logger.info(f"Promoted replica {replica_id} to primary for agent {agent_id}")
+
+            return jsonify({
+                'success': True,
+                'message': 'Replica promoted to primary',
+                'new_instance_id': new_instance_id,
+                'old_instance_id': old_instance_id,
+                'demoted': demote_old_primary,
+                'switch_time': datetime.now().isoformat()
+            }), 200
+
+        except Exception as e:
+            logger.error(f"Error promoting replica: {e}", exc_info=True)
+            return jsonify({'error': str(e)}), 500
+
+
+def delete_replica(app):
+    """DELETE /api/agents/<agent_id>/replicas/<replica_id> - Delete replica"""
+    @app.route('/api/agents/<agent_id>/replicas/<replica_id>', methods=['DELETE'])
+    def delete_replica_endpoint(agent_id, replica_id):
+        """Gracefully terminate a replica"""
+        try:
+            # Validate replica exists
+            replica = execute_query("""
+                SELECT * FROM replica_instances
+                WHERE id = %s AND agent_id = %s
+            """, (replica_id, agent_id), fetch=True)
+
+            if not replica or len(replica) == 0:
+                return jsonify({'error': 'Replica not found'}), 404
+
+            replica = replica[0]
+
+            if not replica['is_active']:
+                return jsonify({
+                    'error': 'Replica already terminated',
+                    'terminated_at': replica['terminated_at'].isoformat() if replica['terminated_at'] else None
+                }), 400
+
+            # Mark as terminated
+            execute_query("""
+                UPDATE replica_instances
+                SET status = 'terminated',
+                    is_active = FALSE,
+                    terminated_at = NOW()
+                WHERE id = %s
+            """, (replica_id,))
+
+            # Decrement agent replica count
+            execute_query("""
+                UPDATE agents
+                SET replica_count = GREATEST(0, replica_count - 1),
+                    current_replica_id = CASE
+                        WHEN current_replica_id = %s THEN NULL
+                        ELSE current_replica_id
+                    END
+                WHERE id = %s
+            """, (replica_id, agent_id))
+
+            logger.info(f"Deleted replica {replica_id} for agent {agent_id}")
+
+            return jsonify({
+                'success': True,
+                'message': 'Replica terminated',
+                'replica_id': replica_id,
+                'terminated_at': datetime.now().isoformat()
+            }), 200
+
+        except Exception as e:
+            logger.error(f"Error deleting replica: {e}", exc_info=True)
+            return jsonify({'error': str(e)}), 500
+
+
+# ============================================================================
+# AUTOMATIC SPOT INTERRUPTION DEFENSE
+# ============================================================================
+
+def create_emergency_replica(app):
+    """POST /api/agents/<agent_id>/create-emergency-replica - Emergency replica for interruption"""
+    @app.route('/api/agents/<agent_id>/create-emergency-replica', methods=['POST'])
+    def create_emergency_replica_endpoint(agent_id):
+        """
+        Create emergency replica in response to spot interruption signal.
+
+        Request body:
+        {
+            "signal_type": "rebalance-recommendation" | "termination-notice",
+            "termination_time": "2025-01-20T10:45:00Z",  # optional, for termination notice
+            "instance_id": "i-1234567890abcdef0",
+            "pool_id": 123,
+            "preferred_zones": ["us-east-1b", "us-east-1c"],
+            "exclude_zones": ["us-east-1a"],
+            "urgency": "high" | "critical"
+        }
+        """
+        try:
+            data = request.get_json() or {}
+
+            signal_type = data.get('signal_type')
+            if signal_type not in ('rebalance-recommendation', 'termination-notice'):
+                return jsonify({'error': 'Invalid signal_type'}), 400
+
+            # Get agent details
+            agent = execute_query("""
+                SELECT a.*, i.id as instance_id, i.instance_type, i.region,
+                       i.current_pool_id, i.spot_price, i.created_at as instance_created_at
+                FROM agents a
+                JOIN instances i ON a.instance_id = i.id
+                WHERE a.id = %s
+            """, (agent_id,), fetch=True)
+
+            if not agent or len(agent) == 0:
+                return jsonify({'error': 'Agent not found'}), 404
+
+            agent = agent[0]
+
+            # Emergency replicas are ONLY created if auto_switch_enabled = true
+            # This ties emergency failover to the auto-switch mode
+            if not agent.get('auto_switch_enabled'):
+                logger.warning(f"Emergency replica creation skipped for agent {agent_id} - auto_switch_enabled is OFF")
+                return jsonify({
+                    'error': 'Emergency replica creation disabled',
+                    'reason': 'auto_switch_enabled is OFF. Enable auto-switch mode in agent configuration to allow automatic emergency replicas.',
+                    'hint': 'Turn on Auto-Switch Mode in agent settings to enable emergency failover protection'
+                }), 403
+
+            logger.warning(f"Emergency replica creation for agent {agent_id} - auto_switch_enabled is ON")
+
+            # Select best pool for emergency replica
+            target_pool_id = _select_safest_pool(
+                instance_type=agent['instance_type'],
+                region=agent['region'],
+                current_pool_id=agent['current_pool_id'],
+                preferred_zones=data.get('preferred_zones', []),
+                exclude_zones=data.get('exclude_zones', [])
+            )
+
+            if not target_pool_id:
+                return jsonify({
+                    'error': 'No suitable pool found for emergency replica',
+                    'hint': 'All pools may be at risk or unavailable'
+                }), 500
+
+            # Get pool details
+            pool = execute_query("""
+                SELECT * FROM spot_pools WHERE id = %s
+            """, (target_pool_id,), fetch=True)[0]
+
+            # Get current price
+            latest_price = execute_query("""
+                SELECT spot_price FROM pricing_snapshots_clean
+                WHERE pool_id = %s
+                ORDER BY time_bucket DESC
+                LIMIT 1
+            """, (target_pool_id,), fetch=True)
+
+            hourly_cost = latest_price[0]['spot_price'] if latest_price else None
+
+            # Create emergency replica
+            replica_id = str(uuid.uuid4())
+            replica_instance_id = f"emergency-{replica_id[:8]}"
+
+            replica_type = 'automatic-rebalance' if signal_type == 'rebalance-recommendation' else 'automatic-termination'
+
+            execute_query("""
+                INSERT INTO replica_instances (
+                    id, agent_id, instance_id, replica_type, pool_id,
+                    instance_type, region, az, status, created_by,
+                    parent_instance_id, hourly_cost,
+                    interruption_signal_type, interruption_detected_at, termination_time
+                ) VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, %s, 'launching', 'system',
+                    %s, %s, %s, NOW(), %s
+                )
+            """, (
+                replica_id,
+                agent_id,
+                replica_instance_id,
+                replica_type,
+                target_pool_id,
+                pool['instance_type'],
+                pool['region'],
+                pool['az'],
+                agent['instance_id'],
+                hourly_cost,
+                signal_type,
+                data.get('termination_time')
+            ))
+
+            # Update agent
+            execute_query("""
+                UPDATE agents
+                SET replica_count = replica_count + 1,
+                    current_replica_id = %s,
+                    last_interruption_signal = NOW()
+                WHERE id = %s
+            """, (replica_id, agent_id))
+
+            # Log interruption event
+            execute_query("""
+                INSERT INTO spot_interruption_events (
+                    instance_id, agent_id, pool_id, signal_type,
+                    detected_at, termination_time, response_action,
+                    replica_id, instance_age_hours
+                ) VALUES (
+                    %s, %s, %s, %s, NOW(), %s, 'created-replica', %s,
+                    TIMESTAMPDIFF(HOUR, %s, NOW())
+                )
+            """, (
+                data.get('instance_id'),
+                agent_id,
+                agent['current_pool_id'],
+                signal_type,
+                data.get('termination_time'),
+                replica_id,
+                agent['instance_created_at']
+            ))
+
+            logger.warning(f"Created emergency replica {replica_id} for agent {agent_id} due to {signal_type}")
+
+            return jsonify({
+                'success': True,
+                'replica_id': replica_id,
+                'instance_id': replica_instance_id,
+                'pool': {
+                    'id': pool['id'],
+                    'name': pool['pool_name'],
+                    'az': pool['az']
+                },
+                'hourly_cost': float(hourly_cost) if hourly_cost else None,
+                'message': 'Emergency replica created. Connect immediately for state sync.',
+                'urgency': 'critical' if signal_type == 'termination-notice' else 'high'
+            }), 201
+
+        except Exception as e:
+            logger.error(f"Error creating emergency replica: {e}", exc_info=True)
+            return jsonify({'error': str(e)}), 500
+
+
+def handle_termination_imminent(app):
+    """POST /api/agents/<agent_id>/termination-imminent - Handle 2-minute termination notice"""
+    @app.route('/api/agents/<agent_id>/termination-imminent', methods=['POST'])
+    def handle_termination_imminent_endpoint(agent_id):
+        """
+        Handle imminent termination (2-minute warning).
+        Immediately promote replica if available.
+
+        Request body:
+        {
+            "instance_id": "i-1234567890abcdef0",
+            "termination_time": "2025-01-20T10:47:00Z",
+            "replica_id": "uuid-of-ready-replica"  # optional
+        }
+        """
+        try:
+            data = request.get_json() or {}
+
+            # Get current replica
+            replica_id = data.get('replica_id') or execute_query("""
+                SELECT id FROM replica_instances
+                WHERE agent_id = %s AND is_active = TRUE
+                  AND status IN ('ready', 'syncing')
+                ORDER BY
+                    CASE WHEN status = 'ready' THEN 1 ELSE 2 END,
+                    created_at ASC
+                LIMIT 1
+            """, (agent_id,), fetch=True)
+
+            if replica_id and isinstance(replica_id, list):
+                replica_id = replica_id[0]['id'] if len(replica_id) > 0 else None
+
+            if not replica_id:
+                # No replica available - trigger emergency snapshot
+                logger.error(f"CRITICAL: No replica available for agent {agent_id} with 2-minute termination notice!")
+
+                execute_query("""
+                    INSERT INTO spot_interruption_events (
+                        instance_id, agent_id, signal_type, detected_at,
+                        termination_time, response_action, success, error_message
+                    ) VALUES (
+                        %s, %s, 'termination-notice', NOW(), %s,
+                        'emergency-snapshot', FALSE, 'No replica available'
+                    )
+                """, (data.get('instance_id'), agent_id, data.get('termination_time')))
+
+                return jsonify({
+                    'success': False,
+                    'error': 'No replica available',
+                    'action': 'emergency_snapshot_required',
+                    'message': 'Agent should create emergency state snapshot and upload to S3'
+                }), 500
+
+            # Promote replica immediately
+            start_time = time.time()
+
+            # Auto-promote the replica (similar to manual promote but faster)
+            agent = execute_query("""
+                SELECT instance_id FROM agents WHERE id = %s
+            """, (agent_id,), fetch=True)[0]
+
+            old_instance_id = agent['instance_id']
+
+            # Create new instance record for promoted replica
+            new_instance_id = str(uuid.uuid4())
+            execute_query("""
+                INSERT INTO instances (
+                    id, client_id, instance_type, region, az,
+                    current_pool_id, current_mode, is_active, installed_at
+                )
+                SELECT
+                    %s, a.client_id, ri.instance_type, ri.region, ri.az,
+                    ri.pool_id, 'spot', TRUE, NOW()
+                FROM replica_instances ri
+                JOIN agents a ON ri.agent_id = a.id
+                WHERE ri.id = %s
+            """, (new_instance_id, replica_id))
+
+            # Update agent
+            execute_query("""
+                UPDATE agents
+                SET instance_id = %s,
+                    current_replica_id = NULL,
+                    last_failover_at = NOW(),
+                    interruption_handled_count = interruption_handled_count + 1
+                WHERE id = %s
+            """, (new_instance_id, agent_id))
+
+            # Update replica status
+            execute_query("""
+                UPDATE replica_instances
+                SET status = 'promoted',
+                    promoted_at = NOW(),
+                    failover_completed_at = NOW()
+                WHERE id = %s
+            """, (replica_id,))
+
+            # Record switch
+            execute_query("""
+                INSERT INTO instance_switches (
+                    agent_id, old_instance_id, new_instance_id,
+                    switch_reason, switched_at, success
+                )
+                VALUES (%s, %s, %s, 'automatic-interruption-failover', NOW(), TRUE)
+            """, (agent_id, old_instance_id, new_instance_id))
+
+            # Mark old instance as terminated
+            execute_query("""
+                UPDATE instances SET is_active = FALSE WHERE id = %s
+            """, (old_instance_id,))
+
+            # Update interruption event
+            failover_time_ms = int((time.time() - start_time) * 1000)
+
+            execute_query("""
+                UPDATE spot_interruption_events
+                SET replica_ready = TRUE,
+                    failover_completed = TRUE,
+                    failover_time_ms = %s,
+                    success = TRUE
+                WHERE instance_id = %s AND agent_id = %s
+                ORDER BY detected_at DESC
+                LIMIT 1
+            """, (failover_time_ms, data.get('instance_id'), agent_id))
+
+            logger.warning(f"FAILOVER COMPLETED: Agent {agent_id} failed over to replica {replica_id} in {failover_time_ms}ms")
+
+            return jsonify({
+                'success': True,
+                'message': 'Automatic failover completed',
+                'new_instance_id': new_instance_id,
+                'replica_id': replica_id,
+                'failover_time_ms': failover_time_ms,
+                'action': 'replica_promoted'
+            }), 200
+
+        except Exception as e:
+            logger.error(f"Error handling termination: {e}", exc_info=True)
+            return jsonify({'error': str(e)}), 500
+
+
+def update_replica_sync_status(app):
+    """POST /api/agents/<agent_id>/replicas/<replica_id>/sync-status - Update sync status"""
+    @app.route('/api/agents/<agent_id>/replicas/<replica_id>/sync-status', methods=['POST'])
+    def update_replica_sync_status_endpoint(agent_id, replica_id):
+        """
+        Update replica sync status (called by agent).
+
+        Request body:
+        {
+            "sync_status": "syncing" | "synced" | "out-of-sync",
+            "sync_latency_ms": 150,
+            "state_transfer_progress": 85.5,
+            "status": "ready"  # optional - update overall status
+        }
+        """
+        try:
+            data = request.get_json() or {}
+
+            updates = []
+            params = []
+
+            if 'sync_status' in data:
+                updates.append("sync_status = %s")
+                params.append(data['sync_status'])
+
+            if 'sync_latency_ms' in data:
+                updates.append("sync_latency_ms = %s")
+                params.append(data['sync_latency_ms'])
+
+            if 'state_transfer_progress' in data:
+                updates.append("state_transfer_progress = %s")
+                params.append(data['state_transfer_progress'])
+
+                # Auto-update status to ready if 100%
+                if data['state_transfer_progress'] >= 100.0:
+                    updates.append("status = 'ready'")
+                    updates.append("ready_at = NOW()")
+
+            if 'status' in data:
+                updates.append("status = %s")
+                params.append(data['status'])
+
+                if data['status'] == 'ready' and 'ready_at' not in updates:
+                    updates.append("ready_at = NOW()")
+
+            updates.append("last_sync_at = NOW()")
+
+            if not updates:
+                return jsonify({'error': 'No updates provided'}), 400
+
+            params.extend([replica_id, agent_id])
+
+            query = f"""
+                UPDATE replica_instances
+                SET {', '.join(updates)}
+                WHERE id = %s AND agent_id = %s
+            """
+
+            execute_query(query, tuple(params))
+
+            return jsonify({
+                'success': True,
+                'message': 'Sync status updated'
+            }), 200
+
+        except Exception as e:
+            logger.error(f"Error updating sync status: {e}", exc_info=True)
+            return jsonify({'error': str(e)}), 500
+
+
+# ============================================================================
+# HELPER FUNCTIONS
+# ============================================================================
+
+def _select_cheapest_pool(
+    instance_type: str,
+    region: str,
+    current_pool_id: Optional[int] = None,
+    exclude_zones: List[str] = None,
+    max_cost: Optional[float] = None
+) -> Optional[int]:
+    """
+    Select cheapest compatible pool.
+    If current instance is already in the cheapest pool, select the second cheapest.
+    """
+    exclude_zones = exclude_zones or []
+
+    query = """
+        SELECT p.id, p.az, psc.spot_price
+        FROM spot_pools p
+        JOIN pricing_snapshots_clean psc ON p.id = psc.pool_id
+        WHERE p.instance_type = %s
+          AND p.region = %s
+          AND p.is_available = TRUE
+    """
+    params = [instance_type, region]
+
+    if exclude_zones:
+        placeholders = ','.join(['%s'] * len(exclude_zones))
+        query += f" AND p.az NOT IN ({placeholders})"
+        params.extend(exclude_zones)
+
+    if max_cost:
+        query += " AND psc.spot_price <= %s"
+        params.append(max_cost)
+
+    query += """
+        AND psc.time_bucket >= NOW() - INTERVAL 5 MINUTE
+        ORDER BY psc.spot_price ASC
+        LIMIT 2
+    """
+
+    results = execute_query(query, tuple(params), fetch=True)
+
+    if not results:
+        return None
+
+    # If current pool is the cheapest, return second cheapest
+    if current_pool_id and len(results) >= 2 and results[0]['id'] == current_pool_id:
+        logger.info(f"Current pool {current_pool_id} is cheapest, selecting second cheapest: {results[1]['id']}")
+        return results[1]['id']
+
+    # Otherwise return cheapest (that's not current)
+    for result in results:
+        if not current_pool_id or result['id'] != current_pool_id:
+            return result['id']
+
+    return None
+
+
+def _select_safest_pool(
+    instance_type: str,
+    region: str,
+    current_pool_id: int,
+    preferred_zones: List[str] = None,
+    exclude_zones: List[str] = None
+) -> Optional[int]:
+    """Select safest pool (lowest interruption risk)"""
+    exclude_zones = exclude_zones or []
+    preferred_zones = preferred_zones or []
+
+    # Get interruption history for all pools
+    query = """
+        SELECT
+            p.id,
+            p.az,
+            psc.spot_price,
+            COUNT(sie.id) as interruption_count,
+            MAX(sie.detected_at) as last_interruption
+        FROM spot_pools p
+        JOIN pricing_snapshots_clean psc ON p.id = psc.pool_id
+        LEFT JOIN spot_interruption_events sie
+            ON sie.pool_id = p.id
+            AND sie.detected_at >= NOW() - INTERVAL 24 HOUR
+        WHERE p.instance_type = %s
+          AND p.region = %s
+          AND p.id != %s
+          AND p.is_available = TRUE
+    """
+    params = [instance_type, region, current_pool_id]
+
+    if exclude_zones:
+        placeholders = ','.join(['%s'] * len(exclude_zones))
+        query += f" AND p.az NOT IN ({placeholders})"
+        params.extend(exclude_zones)
+
+    query += """
+        AND psc.time_bucket >= NOW() - INTERVAL 5 MINUTE
+        GROUP BY p.id, p.az, psc.spot_price
+        ORDER BY
+            CASE WHEN p.az IN ({}) THEN 0 ELSE 1 END,
+            interruption_count ASC,
+            psc.spot_price ASC
+        LIMIT 1
+    """.format(','.join(['%s'] * len(preferred_zones)) if preferred_zones else 'NULL')
+
+    if preferred_zones:
+        params.extend(preferred_zones)
+
+    result = execute_query(query, tuple(params), fetch=True)
+    return result[0]['id'] if result else None
+
+
+# ============================================================================
+# REGISTER ALL ENDPOINTS
+# ============================================================================
+
+def register_replica_management_endpoints(app):
+    """Register all replica management endpoints with Flask app"""
+    create_manual_replica(app)
+    list_replicas(app)
+    promote_replica(app)
+    delete_replica(app)
+    create_emergency_replica(app)
+    handle_termination_imminent(app)
+    update_replica_sync_status(app)
+
+    logger.info("Replica management endpoints registered")
