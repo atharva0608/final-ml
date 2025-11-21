@@ -15,6 +15,7 @@ const SystemHealthPage = () => {
   const [showMLModelsUpload, setShowMLModelsUpload] = useState(false);
   const [restarting, setRestarting] = useState(false);
   const [lastUploadSessionId, setLastUploadSessionId] = useState(null);
+  const [decisionEngineUploaded, setDecisionEngineUploaded] = useState(false);
 
   useEffect(() => {
     loadData();
@@ -26,11 +27,12 @@ const SystemHealthPage = () => {
     try {
       const [healthData, sessionsData] = await Promise.all([
         api.getSystemHealth(),
-        api.getMLModelSessions().catch(() => ({ sessions: [] }))
+        api.getMLModelSessions().catch(() => [])
       ]);
 
       setHealth(healthData);
-      setSessions(sessionsData.sessions || []);
+      // Backend returns array directly, not wrapped in object
+      setSessions(Array.isArray(sessionsData) ? sessionsData : []);
     } catch (error) {
       console.error('Failed to load data:', error);
     } finally {
@@ -41,7 +43,8 @@ const SystemHealthPage = () => {
   const handleDecisionEngineUpload = async (files) => {
     try {
       const result = await api.uploadDecisionEngine(files);
-      alert(`✓ Decision engine files uploaded successfully!\n\nFiles: ${files.map(f => f.name).join(', ')}\n\nClick the RED RESTART button to activate the new engine.`);
+      setDecisionEngineUploaded(true);
+      alert(`✓ Decision engine files uploaded successfully!\n\nFiles: ${files.map(f => f.name).join(', ')}\n\nClick the RESTART button below to activate the new engine.`);
 
       // Don't reload automatically - user must click RESTART
       await loadData();
@@ -60,7 +63,7 @@ const SystemHealthPage = () => {
         setLastUploadSessionId(result.sessionId);
       }
 
-      alert(`✓ ML model files uploaded successfully!\n\nFiles: ${files.map(f => f.name).join(', ')}\nSession ID: ${result.sessionId || 'N/A'}\n\nClick the RED RESTART button to activate the new models.`);
+      alert(`✓ ML model files uploaded successfully!\n\nFiles: ${files.map(f => f.name).join(', ')}\nSession ID: ${result.sessionId || 'N/A'}\n\nClick the RESTART button below to activate the new models.`);
 
       // Reload data to show new session
       await loadData();
@@ -71,30 +74,52 @@ const SystemHealthPage = () => {
   };
 
   const handleActivate = async () => {
-    if (!lastUploadSessionId) {
-      alert('⚠️ No recent upload session found.\n\nPlease upload ML model files first, then click RESTART.');
+    // Check what's been uploaded
+    const hasMLModels = !!lastUploadSessionId;
+    const hasDecisionEngine = decisionEngineUploaded;
+
+    if (!hasMLModels && !hasDecisionEngine) {
+      alert('⚠️ No recent uploads found.\n\nPlease upload files first, then click RESTART.');
       return;
     }
 
-    if (!window.confirm(
-      `🔴 RESTART BACKEND WITH NEW MODELS\n\n` +
-      `This will:\n` +
-      `• Activate uploaded models (Session: ${lastUploadSessionId})\n` +
-      `• Restart the backend service\n` +
-      `• Take ~10-15 seconds to complete\n\n` +
-      `Current models will become the fallback version.\n\n` +
-      `Continue?`
-    )) {
+    // Build confirmation message
+    let message = `🔴 RESTART BACKEND\n\nThis will:\n`;
+    if (hasMLModels) {
+      message += `• Activate uploaded ML models (Session: ${lastUploadSessionId})\n`;
+    } else {
+      message += `• Keep current ML models\n`;
+    }
+    if (hasDecisionEngine) {
+      message += `• Activate uploaded decision engine\n`;
+    } else {
+      message += `• Keep current decision engine\n`;
+    }
+    message += `• Restart the backend service\n`;
+    message += `• Take ~10-15 seconds to complete\n\n`;
+    if (hasMLModels) {
+      message += `Current models will become the fallback version.\n\n`;
+    }
+    message += `Continue?`;
+
+    if (!window.confirm(message)) {
       return;
     }
 
     setRestarting(true);
     try {
-      const result = await api.activateMLModels(lastUploadSessionId);
+      // Call appropriate activation endpoints
+      if (hasMLModels) {
+        await api.activateMLModels(lastUploadSessionId);
+      }
+      if (hasDecisionEngine) {
+        // TODO: Add API endpoint for decision engine activation
+        // await api.activateDecisionEngine();
+      }
 
       alert(
         `✓ BACKEND RESTARTING...\n\n` +
-        `The backend is restarting with new models.\n\n` +
+        `The backend is restarting with new configuration.\n\n` +
         `⏱️ Please wait 10-15 seconds...\n\n` +
         `The page will reload automatically when ready.`
       );
@@ -111,7 +136,8 @@ const SystemHealthPage = () => {
             await loadData();
             setRestarting(false);
             setLastUploadSessionId(null);
-            alert('✅ Backend restarted successfully!\n\nNew models are now active.');
+            setDecisionEngineUploaded(false);
+            alert('✅ Backend restarted successfully!\n\nNew configuration is now active.');
           } catch (error) {
             retries++;
             if (retries < maxRetries) {
@@ -189,9 +215,10 @@ const SystemHealthPage = () => {
     return <div className="flex justify-center items-center h-64"><LoadingSpinner /></div>;
   }
 
-  const liveSession = sessions.find(s => s.is_live);
-  const fallbackSession = sessions.find(s => s.is_fallback);
-  const pendingSession = sessions.find(s => !s.is_live && !s.is_fallback);
+  // Backend returns camelCase fields: isLive, isFallback
+  const liveSession = sessions.find(s => s.isLive);
+  const fallbackSession = sessions.find(s => s.isFallback);
+  const pendingSession = sessions.find(s => !s.isLive && !s.isFallback);
 
   return (
     <div className="space-y-6">
@@ -212,32 +239,62 @@ const SystemHealthPage = () => {
         </div>
       )}
 
-      {/* Action Buttons */}
-      {(lastUploadSessionId || fallbackSession) && !restarting && (
-        <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200 flex flex-wrap gap-3">
-          {lastUploadSessionId && (
-            <Button
-              variant="danger"
-              size="lg"
+      {/* Action Buttons - Always visible */}
+      {!restarting && (
+        <div className="bg-gradient-to-r from-gray-50 to-white p-6 rounded-2xl shadow-lg border-2 border-gray-200">
+          <div className="flex flex-wrap gap-4">
+            {/* RESTART Button */}
+            <button
               onClick={handleActivate}
-              icon={<RefreshCw size={18} />}
-              className="flex-1 min-w-[200px]"
+              disabled={!lastUploadSessionId && !decisionEngineUploaded}
+              className={`flex-1 min-w-[250px] group relative overflow-hidden rounded-xl p-5 transition-all duration-300 ${
+                !lastUploadSessionId && !decisionEngineUploaded
+                  ? 'bg-gray-100 cursor-not-allowed opacity-60'
+                  : 'bg-gradient-to-r from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 shadow-lg hover:shadow-xl hover:scale-105 cursor-pointer'
+              }`}
             >
-              🔴 RESTART WITH NEW MODELS
-            </Button>
-          )}
+              <div className="relative z-10 flex items-center justify-center space-x-3">
+                <RefreshCw className={`${!lastUploadSessionId && !decisionEngineUploaded ? 'text-gray-400' : 'text-white animate-pulse'}`} size={24} />
+                <div className="text-left">
+                  <div className={`text-lg font-bold ${!lastUploadSessionId && !decisionEngineUploaded ? 'text-gray-600' : 'text-white'}`}>
+                    RESTART BACKEND
+                  </div>
+                  <div className={`text-xs ${!lastUploadSessionId && !decisionEngineUploaded ? 'text-gray-500' : 'text-red-100'}`}>
+                    {!lastUploadSessionId && !decisionEngineUploaded ? 'Upload files first' : 'Activate uploaded files'}
+                  </div>
+                </div>
+              </div>
+              {!(!lastUploadSessionId && !decisionEngineUploaded) && (
+                <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white to-transparent opacity-0 group-hover:opacity-20 transition-opacity duration-300"></div>
+              )}
+            </button>
 
-          {fallbackSession && (
-            <Button
-              variant="warning"
-              size="lg"
+            {/* FALLBACK Button */}
+            <button
               onClick={handleFallback}
-              icon={<RotateCcw size={18} />}
-              className="flex-1 min-w-[200px]"
+              disabled={!fallbackSession}
+              className={`flex-1 min-w-[250px] group relative overflow-hidden rounded-xl p-5 transition-all duration-300 ${
+                !fallbackSession
+                  ? 'bg-gray-100 cursor-not-allowed opacity-60'
+                  : 'bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-600 hover:to-orange-700 shadow-lg hover:shadow-xl hover:scale-105 cursor-pointer'
+              }`}
             >
-              ↩️ FALLBACK TO PREVIOUS
-            </Button>
-          )}
+              <div className="relative z-10 flex items-center justify-center space-x-3">
+                <RotateCcw className={`${!fallbackSession ? 'text-gray-400' : 'text-white'}`} size={24} />
+                <div className="text-left">
+                  <div className={`text-lg font-bold ${!fallbackSession ? 'text-gray-600' : 'text-white'}`}>
+                    FALLBACK TO PREVIOUS
+                  </div>
+                  <div className={`text-xs ${!fallbackSession ? 'text-gray-500' : 'text-orange-100'}`}>
+                    {!fallbackSession ? 'No fallback available' : 'Restore previous version'}
+                  </div>
+                </div>
+              </div>
+              {!(!fallbackSession) && (
+                <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white to-transparent opacity-0 group-hover:opacity-20 transition-opacity duration-300"></div>
+              )}
+            </button>
+          </div>
         </div>
       )}
 
@@ -266,19 +323,26 @@ const SystemHealthPage = () => {
             <div className="flex justify-between items-center">
               <span className="text-sm text-gray-600">Type:</span>
               <span className="text-sm font-semibold text-gray-900">
-                {health?.decisionEngineStatus?.type || 'MLBasedDecisionEngine'}
+                {health?.decisionEngineStatus?.type || 'None'}
               </span>
             </div>
             <div className="flex justify-between items-center">
               <span className="text-sm text-gray-600">Version:</span>
               <span className="text-sm font-semibold text-gray-900">
-                {health?.decisionEngineStatus?.version || '1.0.0'}
+                {health?.decisionEngineStatus?.version || 'N/A'}
               </span>
             </div>
             {health?.decisionEngineStatus?.loaded && (
               <div className="mt-4 p-3 bg-green-50 rounded-lg border border-green-200">
                 <p className="text-xs font-medium text-green-800">
                   ✓ Decision engine loaded and ready
+                </p>
+              </div>
+            )}
+            {!health?.decisionEngineStatus?.loaded && (
+              <div className="mt-4 p-3 bg-red-50 rounded-lg border border-red-200">
+                <p className="text-xs font-medium text-red-800">
+                  ✗ Decision engine not loaded
                 </p>
               </div>
             )}
@@ -324,22 +388,48 @@ const SystemHealthPage = () => {
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center space-x-3">
               <div className={`p-3 rounded-lg ${
-                liveSession ? 'bg-blue-100' : 'bg-gray-100'
+                health?.modelStatus?.loaded ? 'bg-blue-100' : 'bg-gray-100'
               }`}>
                 <Brain size={24} className={
-                  liveSession ? 'text-blue-600' : 'text-gray-600'
+                  health?.modelStatus?.loaded ? 'text-blue-600' : 'text-gray-600'
                 } />
               </div>
               <div>
                 <h3 className="text-lg font-bold text-gray-900">ML Models</h3>
-                <Badge variant={liveSession ? 'success' : 'warning'}>
-                  {liveSession ? 'Active' : 'Not Active'}
+                <Badge variant={health?.modelStatus?.loaded ? 'success' : 'warning'}>
+                  {health?.modelStatus?.loaded ? 'Loaded' : 'Not Loaded'}
                 </Badge>
               </div>
             </div>
           </div>
 
+          {/* System Status Summary */}
           <div className="space-y-3 mt-4">
+            <div className="flex justify-between items-center">
+              <span className="text-sm text-gray-600">Files:</span>
+              <span className="text-sm font-semibold text-gray-900">
+                {health?.modelStatus?.filesUploaded || 0}
+              </span>
+            </div>
+            {health?.modelStatus?.loaded && (
+              <div className="mt-4 p-3 bg-blue-50 rounded-lg border border-blue-200">
+                <p className="text-xs font-medium text-blue-800">
+                  ✓ ML models loaded and ready
+                </p>
+              </div>
+            )}
+            {!health?.modelStatus?.loaded && (
+              <div className="mt-4 p-3 bg-gray-50 rounded-lg border border-gray-200">
+                <p className="text-xs font-medium text-gray-600">
+                  No ML models currently loaded
+                </p>
+              </div>
+            )}
+          </div>
+
+          <div className="mt-4 pt-4 border-t border-gray-200">
+            <p className="text-xs font-semibold text-gray-700 mb-3">📦 Model Sessions:</p>
+
             {/* Live Session */}
             {liveSession && (
               <div className="p-3 bg-blue-50 rounded-lg border border-blue-200">
@@ -350,10 +440,10 @@ const SystemHealthPage = () => {
                 <div className="space-y-1">
                   <div className="flex justify-between text-xs">
                     <span className="text-blue-700">Files:</span>
-                    <span className="font-semibold text-blue-900">{liveSession.file_count || 0}</span>
+                    <span className="font-semibold text-blue-900">{liveSession.fileCount || 0}</span>
                   </div>
                   <div className="text-xs text-blue-600">
-                    {liveSession.file_names ? JSON.parse(liveSession.file_names).join(', ') : 'N/A'}
+                    {liveSession.files && liveSession.files.length > 0 ? liveSession.files.join(', ') : 'N/A'}
                   </div>
                 </div>
               </div>
@@ -369,10 +459,10 @@ const SystemHealthPage = () => {
                 <div className="space-y-1">
                   <div className="flex justify-between text-xs">
                     <span className="text-orange-700">Files:</span>
-                    <span className="font-semibold text-orange-900">{fallbackSession.file_count || 0}</span>
+                    <span className="font-semibold text-orange-900">{fallbackSession.fileCount || 0}</span>
                   </div>
                   <div className="text-xs text-orange-600">
-                    {fallbackSession.file_names ? JSON.parse(fallbackSession.file_names).join(', ') : 'N/A'}
+                    {fallbackSession.files && fallbackSession.files.length > 0 ? fallbackSession.files.join(', ') : 'N/A'}
                   </div>
                 </div>
               </div>
@@ -388,10 +478,10 @@ const SystemHealthPage = () => {
                 <div className="space-y-1">
                   <div className="flex justify-between text-xs">
                     <span className="text-yellow-700">Files:</span>
-                    <span className="font-semibold text-yellow-900">{pendingSession.file_count || 0}</span>
+                    <span className="font-semibold text-yellow-900">{pendingSession.fileCount || 0}</span>
                   </div>
                   <div className="text-xs text-yellow-600">
-                    {pendingSession.file_names ? JSON.parse(pendingSession.file_names).join(', ') : 'N/A'}
+                    {pendingSession.files && pendingSession.files.length > 0 ? pendingSession.files.join(', ') : 'N/A'}
                   </div>
                   <p className="text-xs text-yellow-800 mt-2 font-medium">
                     ⚠️ Click 🔴 RESTART to activate these models
@@ -416,10 +506,10 @@ const SystemHealthPage = () => {
                       <div className="flex items-center justify-between">
                         <span className="text-xs text-blue-700">Files:</span>
                         <span className="text-xs font-semibold text-blue-900">
-                          {liveSession.file_count || 0} file{liveSession.file_count !== 1 ? 's' : ''}
+                          {liveSession.fileCount || 0} file{liveSession.fileCount !== 1 ? 's' : ''}
                         </span>
                       </div>
-                      {liveSession.file_names && JSON.parse(liveSession.file_names).map((filename, idx) => (
+                      {liveSession.files && liveSession.files.map((filename, idx) => (
                         <div key={idx} className="flex items-center space-x-2 mt-2">
                           <CheckCircle size={12} className="text-blue-600 flex-shrink-0" />
                           <code className="text-xs text-blue-800 font-mono break-all">

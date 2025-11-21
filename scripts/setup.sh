@@ -129,14 +129,14 @@ REPO_DIR="$CLONE_DIR"
 
 log "Repository available at: $REPO_DIR"
 
-# Verify critical files exist
-if [ ! -f "$REPO_DIR/backend.py" ]; then
-    error "backend.py not found in repository!"
+# Verify critical files exist (updated for new structure)
+if [ ! -f "$REPO_DIR/backend/backend.py" ]; then
+    error "backend/backend.py not found in repository!"
     exit 1
 fi
 
-if [ ! -f "$REPO_DIR/schema.sql" ]; then
-    error "schema.sql not found in repository!"
+if [ ! -f "$REPO_DIR/database/schema.sql" ]; then
+    error "database/schema.sql not found in repository!"
     exit 1
 fi
 
@@ -145,8 +145,14 @@ if [ ! -d "$REPO_DIR/frontend" ]; then
     exit 1
 fi
 
-if [ -f "$REPO_DIR/demo-data.sql" ]; then
-    log "✓ Demo data file found (will import for testing)"
+if [ ! -d "$REPO_DIR/backend/decision_engines" ]; then
+    error "backend/decision_engines directory not found in repository!"
+    exit 1
+fi
+
+if [ ! -f "$REPO_DIR/backend/requirements.txt" ]; then
+    error "backend/requirements.txt not found in repository!"
+    exit 1
 fi
 
 log "✓ All required files verified"
@@ -348,17 +354,28 @@ log "Step 6: Setting up MySQL database with Docker..."
 docker stop spot-mysql 2>/dev/null || true
 docker rm spot-mysql 2>/dev/null || true
 
-# Remove old mysql-data directory to avoid permission conflicts
-# Docker will create it with proper ownership (mysql user UID 999)
+# Create Docker volume for MySQL data (better than bind mount for permissions)
+# Docker manages volume permissions automatically
+log "Creating Docker volume for MySQL data..."
+docker volume create spot-mysql-data 2>/dev/null || true
+
+# Remove old bind mount directory if it exists (migrate to Docker volume)
 if [ -d "/home/ubuntu/mysql-data" ]; then
-    log "Removing old mysql-data directory to fix permissions..."
-    sudo rm -rf /home/ubuntu/mysql-data
+    log "Found old bind mount directory, will migrate to Docker volume..."
+    # Keep backup of old data
+    if [ "$(ls -A /home/ubuntu/mysql-data 2>/dev/null)" ]; then
+        log "Backing up existing data to /home/ubuntu/mysql-data.backup..."
+        sudo mv /home/ubuntu/mysql-data "/home/ubuntu/mysql-data.backup.$(date +%Y%m%d_%H%M%S)"
+        warn "Old data backed up. You can restore it manually if needed."
+    else
+        sudo rm -rf /home/ubuntu/mysql-data
+    fi
 fi
 
 # Create Docker network for the app
 docker network create spot-network 2>/dev/null || true
 
-# Run MySQL container with enhanced configuration
+# Run MySQL container with Docker volume (automatic permission management)
 docker run -d \
     --name spot-mysql \
     --network spot-network \
@@ -368,7 +385,7 @@ docker run -d \
     -e MYSQL_USER="$DB_USER" \
     -e MYSQL_PASSWORD="$DB_PASSWORD" \
     -p "$DB_PORT:3306" \
-    -v /home/ubuntu/mysql-data:/var/lib/mysql \
+    -v spot-mysql-data:/var/lib/mysql \
     mysql:8.0 \
     --default-authentication-plugin=mysql_native_password \
     --character-set-server=utf8mb4 \
@@ -423,8 +440,8 @@ log "MySQL is fully ready!"
 
 log "Step 7: Importing database schema..."
 
-# Schema file should be in the repository root
-SCHEMA_FILE="$REPO_DIR/schema.sql"
+# Schema file should be in the database directory
+SCHEMA_FILE="$REPO_DIR/database/schema.sql"
 
 if [ -f "$SCHEMA_FILE" ]; then
     log "Found schema file: $SCHEMA_FILE"
@@ -487,16 +504,11 @@ fi
 
 log "Database privileges configured"
 
-# Apply database migrations
-MIGRATION_FILE="$REPO_DIR/migrations/add_model_upload_sessions.sql"
-if [ -f "$MIGRATION_FILE" ]; then
-    log "Applying database migration for model versioning..."
-
-    set +e
-    docker exec -i spot-mysql mysql -u root -p"$DB_ROOT_PASSWORD" < "$MIGRATION_FILE" 2>&1 | grep -v "Warning" || true
-    set -e
-
-    # Verify migration was applied
+# Migrations are now consolidated in schema.sql
+# Keeping this section for reference only
+if [ -f "$REPO_DIR/migrations/add_model_upload_sessions.sql" ]; then
+    log "Note: Migrations are now consolidated in schema.sql"
+    # Old migration files kept in migrations/archive/ for reference
     TABLE_CHECK=$(docker exec spot-mysql mysql -u root -p"$DB_ROOT_PASSWORD" -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='spot_optimizer' AND table_name='model_upload_sessions';" 2>/dev/null || echo "0")
 
     if [ "$TABLE_CHECK" = "1" ]; then
@@ -509,7 +521,7 @@ else
 fi
 
 # Import demo data if available (optional)
-DEMO_DATA_FILE="$REPO_DIR/demo-data.sql"
+DEMO_DATA_FILE="$REPO_DIR/demo/demo_data.sql"
 if [ -f "$DEMO_DATA_FILE" ]; then
     log "Found demo data file - importing for testing..."
 
@@ -547,23 +559,32 @@ python3 -m venv venv
 # Activate virtual environment
 source venv/bin/activate
 
-# Copy backend.py from repository
+# Copy backend files from repository (now in backend/ directory)
 log "Copying backend files from repository..."
-if [ -f "$REPO_DIR/backend.py" ]; then
-    cp "$REPO_DIR/backend.py" "$BACKEND_DIR/"
+if [ -f "$REPO_DIR/backend/backend.py" ]; then
+    cp "$REPO_DIR/backend/backend.py" "$BACKEND_DIR/"
     log "✓ Copied backend.py"
 else
-    error "backend.py not found in repository!"
+    error "backend/backend.py not found in repository!"
     exit 1
 fi
 
 # Copy decision_engines module from repository
 log "Copying decision_engines module..."
-if [ -d "$REPO_DIR/decision_engines" ]; then
-    cp -r "$REPO_DIR/decision_engines" "$BACKEND_DIR/"
+if [ -d "$REPO_DIR/backend/decision_engines" ]; then
+    cp -r "$REPO_DIR/backend/decision_engines" "$BACKEND_DIR/"
     log "✓ Copied decision_engines module"
 else
-    error "decision_engines directory not found in repository!"
+    error "backend/decision_engines directory not found in repository!"
+    exit 1
+fi
+
+# Copy requirements.txt from backend directory
+if [ -f "$REPO_DIR/backend/requirements.txt" ]; then
+    cp "$REPO_DIR/backend/requirements.txt" "$BACKEND_DIR/"
+    log "✓ Copied requirements.txt"
+else
+    error "backend/requirements.txt not found in repository!"
     exit 1
 fi
 
@@ -592,7 +613,7 @@ EOF
 # Install Python dependencies
 log "Installing Python dependencies..."
 pip install --upgrade pip setuptools wheel > /dev/null 2>&1
-pip install -r requirements.txt
+pip install -r "$BACKEND_DIR/requirements.txt"
 
 log "Python dependencies installed"
 
@@ -1111,9 +1132,14 @@ chmod -R 755 "$LOGS_DIR"
 sudo chown -R ubuntu:ubuntu "$SCRIPTS_DIR"
 chmod -R 755 "$SCRIPTS_DIR"
 
-# MySQL data directory permissions
-sudo chown -R ubuntu:ubuntu /home/ubuntu/mysql-data
-chmod -R 755 /home/ubuntu/mysql-data
+# MySQL data directory permissions (only if bind mount exists - migrated to Docker volume)
+if [ -d "/home/ubuntu/mysql-data" ]; then
+    log "Fixing permissions on MySQL bind mount directory..."
+    sudo chown -R ubuntu:ubuntu /home/ubuntu/mysql-data
+    chmod -R 755 /home/ubuntu/mysql-data
+else
+    log "MySQL using Docker volume (no host directory permissions needed)"
+fi
 
 # Nginx directory permissions
 sudo chown -R www-data:www-data "$NGINX_ROOT"

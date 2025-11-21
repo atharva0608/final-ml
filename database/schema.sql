@@ -62,8 +62,7 @@ CREATE TABLE IF NOT EXISTS clients (
     INDEX idx_clients_status (status),
     INDEX idx_clients_active (is_active),
     INDEX idx_clients_created (created_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-COMMENT='Client accounts that group agents and track overall savings';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Client accounts that group agents and track overall savings';
 
 -- ============================================================================
 -- AGENTS
@@ -114,12 +113,17 @@ CREATE TABLE IF NOT EXISTS agents (
     -- Replica Configuration
     replica_enabled BOOLEAN DEFAULT FALSE,
     replica_count INT DEFAULT 0,
+    manual_replica_enabled BOOLEAN DEFAULT FALSE,
+    current_replica_id VARCHAR(255) DEFAULT NULL,
     
     -- Timestamps
     installed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     last_switch_at TIMESTAMP NULL,
+    last_interruption_signal TIMESTAMP NULL,
+    interruption_handled_count INT DEFAULT 0,
+    last_failover_at TIMESTAMP NULL,
     terminated_at TIMESTAMP NULL,
     
     -- Additional metadata
@@ -136,11 +140,11 @@ CREATE TABLE IF NOT EXISTS agents (
     INDEX idx_agents_heartbeat (last_heartbeat_at),
     INDEX idx_agents_mode (current_mode),
     INDEX idx_agents_pool (current_pool_id),
+    INDEX idx_agents_replica (manual_replica_enabled, replica_count),
     
     CONSTRAINT fk_agents_client FOREIGN KEY (client_id) 
         REFERENCES clients(id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-COMMENT='Individual agent instances with persistent logical identity';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Individual agent instances with persistent logical identity';
 
 -- ============================================================================
 -- AGENT CONFIGURATIONS
@@ -169,8 +173,7 @@ CREATE TABLE IF NOT EXISTS agent_configs (
     
     CONSTRAINT fk_agent_configs_agent FOREIGN KEY (agent_id) 
         REFERENCES agents(id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-COMMENT='Per-agent configuration for risk thresholds and switch limits';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Per-agent configuration for risk thresholds and switch limits';
 
 -- ============================================================================
 -- COMMANDS (Priority-based Command Queue)
@@ -225,8 +228,7 @@ CREATE TABLE IF NOT EXISTS commands (
         REFERENCES clients(id) ON DELETE CASCADE,
     CONSTRAINT fk_commands_agent FOREIGN KEY (agent_id) 
         REFERENCES agents(id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-COMMENT='Priority-based command queue for coordinating agent actions';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Priority-based command queue for coordinating agent actions';
 
 -- ============================================================================
 -- SPOT POOLS
@@ -234,23 +236,24 @@ COMMENT='Priority-based command queue for coordinating agent actions';
 
 CREATE TABLE IF NOT EXISTS spot_pools (
     id VARCHAR(128) PRIMARY KEY,
+    pool_name VARCHAR(255),
     instance_type VARCHAR(64) NOT NULL,
     region VARCHAR(32) NOT NULL,
     az VARCHAR(48) NOT NULL,
-    
+
     -- Current Status
     is_active BOOLEAN DEFAULT TRUE,
-    
+
     -- Timestamps
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    
+
     UNIQUE KEY uk_type_region_az (instance_type, region, az),
     INDEX idx_spot_pools_type_region (instance_type, region),
     INDEX idx_spot_pools_az (az),
-    INDEX idx_spot_pools_active (is_active)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-COMMENT='Available spot instance pools with unique instance_type + region + AZ';
+    INDEX idx_spot_pools_active (is_active),
+    INDEX idx_spot_pools_name (pool_name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Available spot instance pools with unique instance_type + region + AZ';
 
 -- ============================================================================
 -- PRICING DATA
@@ -271,8 +274,7 @@ CREATE TABLE IF NOT EXISTS spot_price_snapshots (
     
     CONSTRAINT fk_spot_snapshots_pool FOREIGN KEY (pool_id) 
         REFERENCES spot_pools(id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-COMMENT='Historical spot price data for ML models and trend analysis';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Historical spot price data for ML models and trend analysis';
 
 -- On-Demand Price History
 CREATE TABLE IF NOT EXISTS ondemand_price_snapshots (
@@ -285,8 +287,7 @@ CREATE TABLE IF NOT EXISTS ondemand_price_snapshots (
     
     INDEX idx_ondemand_snapshots_type_region_time (instance_type, region, captured_at DESC),
     INDEX idx_ondemand_snapshots_captured (captured_at DESC)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-COMMENT='Historical on-demand price data for cost calculations';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Historical on-demand price data for cost calculations';
 
 -- Current On-Demand Prices (Materialized for quick access)
 CREATE TABLE IF NOT EXISTS ondemand_prices (
@@ -353,8 +354,7 @@ CREATE TABLE IF NOT EXISTS pricing_reports (
     
     CONSTRAINT fk_pricing_reports_agent FOREIGN KEY (agent_id) 
         REFERENCES agents(id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-COMMENT='Pricing reports submitted by agents with current market data';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Pricing reports submitted by agents with current market data';
 
 -- ============================================================================
 -- INSTANCES
@@ -376,6 +376,9 @@ CREATE TABLE IF NOT EXISTS instances (
     is_active BOOLEAN DEFAULT TRUE,
     installed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     last_switch_at TIMESTAMP NULL,
+    last_interruption_signal TIMESTAMP NULL,
+    interruption_handled_count INT DEFAULT 0,
+    last_failover_at TIMESTAMP NULL,
     terminated_at TIMESTAMP NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -471,44 +474,245 @@ CREATE TABLE IF NOT EXISTS switches (
         REFERENCES clients(id) ON DELETE CASCADE,
     CONSTRAINT fk_switches_agent FOREIGN KEY (agent_id) 
         REFERENCES agents(id) ON DELETE CASCADE,
-    CONSTRAINT fk_switches_command FOREIGN KEY (command_id) 
+    CONSTRAINT fk_switches_command FOREIGN KEY (command_id)
         REFERENCES commands(id) ON DELETE SET NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-COMMENT='Detailed switch history with timing metrics and cost impact';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Detailed switch history with timing metrics and cost impact';
+
+-- Simple instance switch log for quick recording
+CREATE TABLE IF NOT EXISTS instance_switches (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    agent_id VARCHAR(255) NOT NULL,
+    old_instance_id VARCHAR(255),
+    new_instance_id VARCHAR(255),
+    switch_reason VARCHAR(100),
+    switched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    success BOOLEAN DEFAULT TRUE,
+    error_message TEXT,
+    metadata JSON,
+
+    INDEX idx_instance_switches_agent (agent_id, switched_at DESC),
+    INDEX idx_instance_switches_time (switched_at DESC),
+    INDEX idx_instance_switches_old (old_instance_id),
+    INDEX idx_instance_switches_new (new_instance_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Simple switch log for internal tracking and quick queries';
 
 -- ============================================================================
 -- REPLICAS
 -- ============================================================================
 
-CREATE TABLE IF NOT EXISTS replicas (
-    id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
-    agent_id CHAR(36) NOT NULL,
-    
-    -- Instance info
-    instance_id VARCHAR(50) NOT NULL,
+CREATE TABLE IF NOT EXISTS replica_instances (
+    id VARCHAR(255) PRIMARY KEY,
+    agent_id VARCHAR(255) NOT NULL,
+    instance_id VARCHAR(255) NOT NULL,
+    replica_type ENUM('manual', 'automatic-rebalance', 'automatic-termination') NOT NULL,
+    pool_id VARCHAR(128),
     instance_type VARCHAR(50),
     region VARCHAR(50),
     az VARCHAR(50),
-    pool_id VARCHAR(100),
-    ami_id VARCHAR(50),
-    
-    -- Status
-    status VARCHAR(20) DEFAULT 'running',
-    
-    -- Pricing
-    spot_price DECIMAL(10, 6),
-    ondemand_price DECIMAL(10, 6),
-    
+
+    -- Lifecycle tracking
+    status ENUM('launching', 'syncing', 'ready', 'promoted', 'terminated', 'failed') NOT NULL DEFAULT 'launching',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    ready_at TIMESTAMP NULL,
+    promoted_at TIMESTAMP NULL,
     terminated_at TIMESTAMP NULL,
-    
-    INDEX idx_replicas_agent (agent_id),
-    INDEX idx_replicas_status (status),
-    INDEX idx_replicas_instance (instance_id),
-    
-    CONSTRAINT fk_replicas_agent FOREIGN KEY (agent_id) 
-        REFERENCES agents(id) ON DELETE CASCADE
+
+    -- Replica metadata
+    created_by VARCHAR(255),
+    parent_instance_id VARCHAR(255),
+    is_active BOOLEAN DEFAULT TRUE,
+
+    -- State sync tracking
+    sync_status ENUM('initializing', 'syncing', 'synced', 'out-of-sync') DEFAULT 'initializing',
+    sync_latency_ms INT,
+    last_sync_at TIMESTAMP NULL,
+    state_transfer_progress DECIMAL(5,2) DEFAULT 0.00,
+
+    -- Cost tracking
+    hourly_cost DECIMAL(10,6),
+    total_cost DECIMAL(10,4) DEFAULT 0.0000,
+
+    -- Interruption handling
+    interruption_signal_type ENUM('rebalance-recommendation', 'termination-notice') DEFAULT NULL,
+    interruption_detected_at TIMESTAMP NULL,
+    termination_time TIMESTAMP NULL,
+    failover_completed_at TIMESTAMP NULL,
+
+    -- Tags and metadata
+    tags JSON,
+
+    INDEX idx_replica_agent_status (agent_id, status),
+    INDEX idx_replica_parent (parent_instance_id),
+    INDEX idx_replica_created (created_at),
+    INDEX idx_replica_active (agent_id, is_active)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ===========================================================================
+-- PRICING SNAPSHOTS CLEAN (Time-bucketed for charts)
+-- ===========================================================================
+
+CREATE TABLE IF NOT EXISTS pricing_snapshots_clean (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    pool_id VARCHAR(128) NOT NULL,
+    instance_type VARCHAR(50) NOT NULL,
+    region VARCHAR(50) NOT NULL,
+    az VARCHAR(50) NOT NULL,
+    spot_price DECIMAL(10,6) NOT NULL,
+    ondemand_price DECIMAL(10,6),
+    savings_percent DECIMAL(5,2),
+    time_bucket TIMESTAMP NOT NULL,
+    bucket_start TIMESTAMP NOT NULL,
+    bucket_end TIMESTAMP NOT NULL,
+    source_instance_id VARCHAR(255),
+    source_agent_id VARCHAR(255),
+    source_type ENUM('primary', 'replica-manual', 'replica-automatic', 'interpolated') NOT NULL,
+    confidence_score DECIMAL(3,2) NOT NULL DEFAULT 1.00,
+    data_source ENUM('measured', 'interpolated') NOT NULL DEFAULT 'measured',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY unique_pool_bucket (pool_id, time_bucket),
+    INDEX idx_pool_time (pool_id, time_bucket),
+    INDEX idx_time_bucket (time_bucket),
+    INDEX idx_instance_type_time (instance_type, region, time_bucket)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Clean time-bucketed pricing data for multi-pool charts';
+
+-- ===========================================================================
+-- RAW PRICING SUBMISSIONS (Before Deduplication)
+-- ===========================================================================
+
+CREATE TABLE IF NOT EXISTS pricing_submissions_raw (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    submission_id CHAR(36) NOT NULL UNIQUE,
+    source_instance_id VARCHAR(255) NOT NULL,
+    source_agent_id VARCHAR(255) NOT NULL,
+    source_type ENUM('primary', 'replica-manual', 'replica-automatic') NOT NULL,
+    pool_id VARCHAR(128) NOT NULL,
+    instance_type VARCHAR(50) NOT NULL,
+    region VARCHAR(50) NOT NULL,
+    az VARCHAR(50) NOT NULL,
+    spot_price DECIMAL(10,6) NOT NULL,
+    ondemand_price DECIMAL(10,6),
+    observed_at TIMESTAMP NOT NULL,
+    submitted_at TIMESTAMP NOT NULL,
+    received_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    client_id CHAR(36),
+    batch_id VARCHAR(100),
+    is_duplicate BOOLEAN DEFAULT FALSE,
+    duplicate_of CHAR(36),
+    processed BOOLEAN DEFAULT FALSE,
+    processed_at TIMESTAMP NULL,
+
+    INDEX idx_submission_id (submission_id),
+    INDEX idx_pool_observed (pool_id, observed_at),
+    INDEX idx_received (received_at),
+    INDEX idx_duplicate (is_duplicate, processed),
+    INDEX idx_agent_submitted (source_agent_id, submitted_at),
+    FOREIGN KEY (pool_id) REFERENCES spot_pools(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Raw pricing submissions before deduplication and quality checks';
+
+-- ===========================================================================
+-- DATA PROCESSING JOBS
+-- ===========================================================================
+
+CREATE TABLE IF NOT EXISTS data_processing_jobs (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    job_type ENUM('deduplication', 'interpolation', 'gap-filling', 'cleanup') NOT NULL,
+    status ENUM('pending', 'running', 'completed', 'failed') NOT NULL DEFAULT 'pending',
+    start_time TIMESTAMP NOT NULL,
+    end_time TIMESTAMP NULL,
+    records_processed INT DEFAULT 0,
+    records_inserted INT DEFAULT 0,
+    records_updated INT DEFAULT 0,
+    records_deleted INT DEFAULT 0,
+    error_message TEXT,
+    metadata JSON,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    completed_at TIMESTAMP NULL,
+
+    INDEX idx_job_type_status (job_type, status),
+    INDEX idx_created (created_at),
+    INDEX idx_status (status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Track batch data processing jobs for monitoring and debugging';
+
+-- ===========================================================================
+-- PRICING SNAPSHOTS (ML and Interpolated)
+-- ===========================================================================
+
+CREATE TABLE IF NOT EXISTS pricing_snapshots_interpolated (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    pool_id VARCHAR(128) NOT NULL,
+    instance_type VARCHAR(50) NOT NULL,
+    region VARCHAR(50) NOT NULL,
+    az VARCHAR(50) NOT NULL,
+    spot_price DECIMAL(10,6) NOT NULL,
+    time_bucket TIMESTAMP NOT NULL,
+    interpolated_from_before BIGINT,
+    interpolated_from_after BIGINT,
+    confidence_score DECIMAL(3,2) NOT NULL DEFAULT 0.80,
+    gap_duration_minutes INT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE KEY unique_pool_bucket (pool_id, time_bucket),
+    INDEX idx_pool_time (pool_id, time_bucket),
+    INDEX idx_confidence (confidence_score),
+    FOREIGN KEY (pool_id) REFERENCES spot_pools(id) ON DELETE CASCADE,
+    FOREIGN KEY (interpolated_from_before) REFERENCES pricing_snapshots_clean(id) ON DELETE SET NULL,
+    FOREIGN KEY (interpolated_from_after) REFERENCES pricing_snapshots_clean(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Interpolated pricing data for filling gaps in time series';
+
+CREATE TABLE IF NOT EXISTS pricing_snapshots_ml (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    pool_id VARCHAR(128) NOT NULL,
+    instance_type VARCHAR(50) NOT NULL,
+    region VARCHAR(50) NOT NULL,
+    az VARCHAR(50) NOT NULL,
+    predicted_price DECIMAL(10,6) NOT NULL,
+    time_bucket TIMESTAMP NOT NULL,
+    model_id VARCHAR(100),
+    model_version VARCHAR(50),
+    prediction_confidence DECIMAL(3,2),
+    based_on_measurements INT,
+    features_used JSON,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE KEY unique_pool_bucket (pool_id, time_bucket),
+    INDEX idx_pool_time (pool_id, time_bucket),
+    INDEX idx_model (model_id, model_version),
+    INDEX idx_confidence (prediction_confidence),
+    FOREIGN KEY (pool_id) REFERENCES spot_pools(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='ML-predicted pricing data for forecasting and optimization';
+
+
+-- ===========================================================================
+-- SPOT INTERRUPTION EVENTS
+-- ===========================================================================
+
+CREATE TABLE IF NOT EXISTS spot_interruption_events (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    instance_id VARCHAR(255) NOT NULL,
+    agent_id VARCHAR(255) NOT NULL,
+    pool_id VARCHAR(128),
+    signal_type ENUM('rebalance-recommendation', 'termination-notice') NOT NULL,
+    detected_at TIMESTAMP NOT NULL,
+    termination_time TIMESTAMP,
+    response_action ENUM('created-replica', 'promoted-existing-replica', 'emergency-snapshot', 'no-action') NOT NULL,
+    response_time_ms INT,
+    replica_id VARCHAR(255),
+    replica_ready BOOLEAN DEFAULT FALSE,
+    replica_ready_time_ms INT,
+    failover_completed BOOLEAN DEFAULT FALSE,
+    failover_time_ms INT,
+    data_loss_seconds INT DEFAULT 0,
+    success BOOLEAN DEFAULT TRUE,
+    error_message TEXT,
+    instance_age_hours DECIMAL(10,2),
+    pool_interruption_probability DECIMAL(5,4),
+    metadata JSON,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_interruption_agent (agent_id, detected_at),
+    INDEX idx_interruption_signal (signal_type),
+    INDEX idx_interruption_success (success),
+    INDEX idx_interruption_pool (pool_id, detected_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Track all spot interruption events and responses';
 
 -- ============================================================================
 -- ML MODEL REGISTRY
@@ -543,8 +747,7 @@ CREATE TABLE IF NOT EXISTS model_registry (
     INDEX idx_model_registry_name (model_name),
     INDEX idx_model_registry_active (is_active),
     INDEX idx_model_registry_session (upload_session_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-COMMENT='ML model versions and metadata for decision engines';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='ML model versions and metadata for decision engines';
 
 CREATE TABLE IF NOT EXISTS model_upload_sessions (
     id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
@@ -570,8 +773,7 @@ CREATE TABLE IF NOT EXISTS model_upload_sessions (
     INDEX idx_upload_session_type_status (session_type, status),
     INDEX idx_upload_session_live (is_live),
     INDEX idx_upload_session_created (created_at DESC)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-COMMENT='Tracks model upload sessions for versioning (keeps last 2 sessions)';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Tracks model upload sessions for versioning (keeps last 2 sessions)';
 
 -- ============================================================================
 -- ML MODEL PREDICTIONS & RISK SCORES
@@ -632,8 +834,7 @@ CREATE TABLE IF NOT EXISTS model_predictions (
         REFERENCES agents(id) ON DELETE CASCADE,
     CONSTRAINT fk_predictions_command FOREIGN KEY (command_id) 
         REFERENCES commands(id) ON DELETE SET NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-COMMENT='ML model predictions and risk assessments for agent decisions';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='ML model predictions and risk assessments for agent decisions';
 
 -- ============================================================================
 -- RISK SCORES (Compatibility with v3.0)
@@ -717,8 +918,7 @@ CREATE TABLE IF NOT EXISTS decision_engine_log (
     INDEX idx_decision_log_instance_time (instance_id, created_at DESC),
     INDEX idx_decision_log_created (created_at DESC),
     INDEX idx_decision_log_engine (engine_type)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-COMMENT='Audit log of decision engine executions with input/output data';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Audit log of decision engine executions with input/output data';
 
 -- ============================================================================
 -- COST TRACKING
@@ -756,12 +956,11 @@ CREATE TABLE IF NOT EXISTS cost_records (
     INDEX idx_cost_period (period_start, period_end),
     INDEX idx_cost_mode (mode),
     
-    CONSTRAINT fk_cost_client FOREIGN KEY (client_id) 
+    CONSTRAINT fk_cost_client FOREIGN KEY (client_id)
         REFERENCES clients(id) ON DELETE CASCADE,
-    CONSTRAINT fk_cost_agent FOREIGN KEY (agent_id) 
+    CONSTRAINT fk_cost_agent FOREIGN KEY (agent_id)
         REFERENCES agents(id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-COMMENT='Cost tracking records for savings calculations and reporting';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Cost tracking records for savings calculations and reporting';
 
 -- Monthly Savings Summary
 CREATE TABLE IF NOT EXISTS client_savings_monthly (
@@ -788,8 +987,29 @@ CREATE TABLE IF NOT EXISTS client_savings_monthly (
     
     CONSTRAINT fk_savings_client FOREIGN KEY (client_id) 
         REFERENCES clients(id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-COMMENT='Pre-aggregated monthly savings summary by client';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ===========================================================================
+-- CLIENT SAVINGS DAILY
+-- ===========================================================================
+
+CREATE TABLE IF NOT EXISTS client_savings_daily (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    client_id CHAR(36) NOT NULL,
+    date DATE NOT NULL,
+    baseline_cost DECIMAL(15, 4) DEFAULT 0.0000,
+    actual_cost DECIMAL(15, 4) DEFAULT 0.0000,
+    savings DECIMAL(15, 4) DEFAULT 0.0000,
+    savings_percentage DECIMAL(5, 2),
+    switch_count INT DEFAULT 0,
+    instance_count INT DEFAULT 0,
+    online_agent_count INT DEFAULT 0,
+    computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_client_date (client_id, date),
+    INDEX idx_savings_daily_client (client_id),
+    INDEX idx_savings_daily_date (date),
+    FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Daily savings summary for charts';
 
 -- ============================================================================
 -- ANALYTICS & TRACKING
@@ -804,8 +1024,7 @@ CREATE TABLE IF NOT EXISTS clients_daily_snapshot (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
     INDEX idx_snapshot_date (snapshot_date DESC)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-COMMENT='Daily snapshots of client counts for growth analytics';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Daily snapshots of client counts for growth analytics';
 
 CREATE TABLE IF NOT EXISTS agent_decision_history (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -835,8 +1054,7 @@ CREATE TABLE IF NOT EXISTS agent_decision_history (
         REFERENCES agents(id) ON DELETE CASCADE,
     CONSTRAINT fk_decision_client FOREIGN KEY (client_id)
         REFERENCES clients(id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-COMMENT='History of all agent decision engine recommendations';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='History of all agent decision engine recommendations';
 
 -- ============================================================================
 -- SYSTEM EVENTS & LOGGING
@@ -901,12 +1119,39 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     INDEX idx_audit_action (action),
     INDEX idx_audit_actor (actor_type, actor_id),
     INDEX idx_audit_time (created_at DESC)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-COMMENT='Comprehensive audit trail of all system actions';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Comprehensive audit trail of all system actions';
 
 -- ============================================================================
 -- NOTIFICATIONS
 -- ============================================================================
+
+
+-- ===========================================================================
+-- POOL RELIABILITY METRICS
+-- ===========================================================================
+
+CREATE TABLE IF NOT EXISTS pool_reliability_metrics (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    pool_id VARCHAR(128) NOT NULL,
+    period_start TIMESTAMP NOT NULL,
+    period_end TIMESTAMP NOT NULL,
+    interruption_count INT DEFAULT 0,
+    rebalance_count INT DEFAULT 0,
+    termination_count INT DEFAULT 0,
+    total_instance_hours DECIMAL(10, 2) DEFAULT 0,
+    interrupted_instance_hours DECIMAL(10, 2) DEFAULT 0,
+    uptime_percentage DECIMAL(5, 2),
+    reliability_score DECIMAL(5, 2) DEFAULT 100.00,
+    price_volatility DECIMAL(10, 6),
+    avg_price DECIMAL(10, 6),
+    min_price DECIMAL(10, 6),
+    max_price DECIMAL(10, 6),
+    computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_pool_period (pool_id, period_start),
+    INDEX idx_reliability_pool (pool_id),
+    INDEX idx_reliability_period (period_start, period_end),
+    INDEX idx_reliability_score (reliability_score DESC)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Pool reliability and interruption tracking';
 
 CREATE TABLE IF NOT EXISTS notifications (
     id CHAR(36) PRIMARY KEY DEFAULT (UUID()),

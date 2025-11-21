@@ -255,11 +255,50 @@ class APIClient {
     });
   }
 
-  // UPDATED: Simplified Agent Config (Task 6)
-  async updateAgentConfig(agentId, terminateWaitMinutes) {
+  // UPDATED: Agent Config with Replica Settings
+  async updateAgentConfig(agentId, config) {
     return this.request(`/api/client/agents/${agentId}/config`, {
       method: 'POST',
-      body: JSON.stringify({ terminate_wait_minutes: terminateWaitMinutes }),
+      body: JSON.stringify(config),
+    });
+  }
+
+  // ==============================================================================
+  // REPLICA MANAGEMENT APIs
+  // ==============================================================================
+
+  async getClientReplicas(clientId) {
+    return this.request(`/api/client/${clientId}/replicas`);
+  }
+
+  async getAgentReplicas(agentId) {
+    return this.request(`/api/agents/${agentId}/replicas`);
+  }
+
+  async createReplica(agentId, options = {}) {
+    return this.request(`/api/agents/${agentId}/replicas`, {
+      method: 'POST',
+      body: JSON.stringify(options),
+    });
+  }
+
+  async promoteReplica(agentId, replicaId, options = {}) {
+    return this.request(`/api/agents/${agentId}/replicas/${replicaId}/promote`, {
+      method: 'POST',
+      body: JSON.stringify(options),
+    });
+  }
+
+  async deleteReplica(agentId, replicaId) {
+    return this.request(`/api/agents/${agentId}/replicas/${replicaId}`, {
+      method: 'DELETE',
+    });
+  }
+
+  async updateReplicaSyncStatus(agentId, replicaId, status) {
+    return this.request(`/api/agents/${agentId}/replicas/${replicaId}/sync-status`, {
+      method: 'POST',
+      body: JSON.stringify(status),
     });
   }
 

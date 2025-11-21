@@ -15,9 +15,11 @@ const AllInstancesPage = () => {
       setLoading(true);
       try {
         const data = await api.getAllInstancesGlobal(filters);
-        setInstances(data);
+        // Backend returns { instances: [...], total: ..., filters: ... }
+        setInstances(data.instances || []);
       } catch (error) {
         console.error('Failed to load instances:', error);
+        setInstances([]); // Set empty array on error
       } finally {
         setLoading(false);
       }
@@ -98,18 +100,20 @@ const AllInstancesPage = () => {
                   <tr key={inst.id} className="hover:bg-gray-50">
                     <td className="py-3 px-4 text-sm font-mono text-gray-700">{inst.id}</td>
                     <td className="py-3 px-4 text-sm text-gray-700">{inst.clientName}</td>
-                    <td className="py-3 px-4 text-sm text-gray-700">{inst.type}</td>
+                    <td className="py-3 px-4 text-sm text-gray-700">{inst.instanceType}</td>
                     <td className="py-3 px-4 text-sm text-gray-600">{inst.region}</td>
                     <td className="py-3 px-4">
-                      <Badge variant={inst.mode === 'ondemand' ? 'danger' : 'success'}>
-                        {inst.mode}
+                      <Badge variant={inst.currentMode === 'ondemand' ? 'danger' : 'success'}>
+                        {inst.currentMode}
                       </Badge>
                     </td>
                     <td className="py-3 px-4 text-sm font-semibold text-gray-900">
-                      ${inst.spotPrice.toFixed(4)}
+                      ${inst.spotPrice?.toFixed(4) || 'N/A'}
                     </td>
                     <td className="py-3 px-4 text-sm font-bold text-green-600">
-                      {(((inst.onDemandPrice - inst.spotPrice) / inst.onDemandPrice) * 100).toFixed(1)}%
+                      {inst.spotPrice && inst.ondemandPrice ?
+                        (((inst.ondemandPrice - inst.spotPrice) / inst.ondemandPrice) * 100).toFixed(1) + '%' :
+                        'N/A'}
                     </td>
                   </tr>
                 ))

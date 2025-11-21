@@ -15,6 +15,7 @@ const InstanceDetailPanel = ({ instanceId, clientId, onClose }) => {
   const [pricing, setPricing] = useState(null);
   const [metrics, setMetrics] = useState(null);
   const [priceHistory, setPriceHistory] = useState([]);
+  const [priceHistoryPools, setPriceHistoryPools] = useState([]);
   const [availableOptions, setAvailableOptions] = useState(null);
   const [loading, setLoading] = useState(true);
   const [switching, setSwitching] = useState(null);
@@ -47,10 +48,19 @@ const InstanceDetailPanel = ({ instanceId, clientId, onClose }) => {
 
         try {
           const historyData = await api.getPriceHistory(instanceId, 7, 'hour');
-          setPriceHistory(historyData);
+          // New format: { data: [], pools: [], onDemandPrice: number }
+          if (historyData && historyData.data) {
+            setPriceHistory(historyData.data);
+            setPriceHistoryPools(historyData.pools || []);
+          } else {
+            // Fallback for old format
+            setPriceHistory(Array.isArray(historyData) ? historyData : []);
+            setPriceHistoryPools([]);
+          }
         } catch (histError) {
           console.warn('Price history not available:', histError);
           setPriceHistory([]);
+          setPriceHistoryPools([]);
         }
       } catch (err) {
         setError(err.message);
@@ -159,123 +169,72 @@ const InstanceDetailPanel = ({ instanceId, clientId, onClose }) => {
 
           {/* Available Options Column */}
           <div className="space-y-4">
-            <div className="flex items-center justify-between">
-              <h4 className="text-md font-bold text-gray-900">Available Options</h4>
-              <button
-                onClick={() => setShowFallback(!showFallback)}
-                className="text-xs text-blue-600 hover:text-blue-800 font-medium"
-              >
-                {showFallback ? 'Hide' : 'Show'} Fallback
-              </button>
-            </div>
+            <h4 className="text-md font-bold text-gray-900">Switch to Pool</h4>
 
-            {/* Advanced Switching - Pool and Type Selection */}
-            {availableOptions && (
-              <div className="bg-blue-50 p-4 rounded-lg border-2 border-blue-200">
-                <h5 className="text-sm font-bold text-blue-900 mb-3">Advanced Switching</h5>
-
-                {/* Pool Selection */}
-                <div className="mb-3">
-                  <label className="block text-xs font-semibold text-gray-700 mb-2">
-                    Select Pool
-                  </label>
-                  <select
-                    value={selectedPool}
-                    onChange={(e) => setSelectedPool(e.target.value)}
-                    className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                  >
-                    {availableOptions.pools?.map((pool) => (
-                      <option key={pool.id} value={pool.id}>
-                        {pool.id} - ${pool.price.toFixed(4)}/hr ({pool.savings.toFixed(1)}% savings)
-                      </option>
-                    ))}
-                  </select>
+            {pricing && (
+              <div className="space-y-2 max-h-96 overflow-y-auto pr-1">
+                {/* On-Demand - Always at top with red button */}
+                <div className={`p-4 rounded-lg border-2 transition-all ${
+                  pricing.currentMode === 'ondemand'
+                    ? 'bg-gray-100 border-gray-300 opacity-60 cursor-not-allowed'
+                    : 'bg-white border-red-200 shadow-sm hover:border-red-300'
+                }`}>
+                  <div className="flex justify-between items-center">
+                    <div className="flex-1">
+                      <div className="flex items-center space-x-2 mb-2">
+                        <p className="text-sm font-semibold text-red-700">On-Demand</p>
+                        {pricing.currentMode === 'ondemand' && (
+                          <Badge variant="secondary">Current</Badge>
+                        )}
+                      </div>
+                      <p className="text-2xl font-bold text-gray-900">
+                        ${pricing.onDemand.price.toFixed(4)}
+                      </p>
+                      <p className="text-xs text-gray-500 mt-1">Guaranteed availability</p>
+                    </div>
+                    <Button
+                      variant="danger"
+                      size="sm"
+                      onClick={() => handleForceSwitch({ target: 'ondemand' })}
+                      loading={switching === 'ondemand'}
+                      disabled={pricing.currentMode === 'ondemand'}
+                    >
+                      {pricing.currentMode === 'ondemand' ? 'Current' : 'Switch'}
+                    </Button>
+                  </div>
                 </div>
 
-                {/* Instance Type Selection */}
-                {availableOptions.instanceTypes && availableOptions.instanceTypes.length > 0 && (
-                  <div className="mb-3">
-                    <label className="block text-xs font-semibold text-gray-700 mb-2">
-                      Change Instance Type
-                    </label>
-                    <select
-                      value={selectedInstanceType}
-                      onChange={(e) => setSelectedInstanceType(e.target.value)}
-                      className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                    >
-                      {availableOptions.instanceTypes.map((type) => (
-                        <option key={type} value={type}>
-                          {type}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                )}
+                {/* Spot Pools - Sorted by price */}
+                <p className="text-xs font-semibold text-gray-600 uppercase mt-4 mb-2">
+                  Spot Pools ({pricing.pools.length})
+                </p>
+                {pricing.pools.map((pool, idx) => {
+                  const isCurrentPool = pricing.currentMode === 'spot' && pricing.currentPool?.id === pool.id;
+                  const isCheapest = idx === 0;
 
-                {/* Switch Button */}
-                <Button
-                  variant="primary"
-                  size="sm"
-                  onClick={() => {
-                    const body = {
-                      target: 'pool',
-                      pool_id: selectedPool
-                    };
-                    if (selectedInstanceType && selectedInstanceType !== availableOptions.currentInstanceType) {
-                      body.instance_type = selectedInstanceType;
-                    }
-                    handleForceSwitch(body);
-                  }}
-                  loading={switching}
-                  className="w-full"
-                >
-                  Apply Switch
-                </Button>
-              </div>
-            )}
-            {pricing && (
-              <>
-                {showFallback && (
-                  <div className="bg-white p-4 rounded-lg border-2 border-red-200 shadow-sm">
-                    <div className="flex justify-between items-center mb-3">
-                      <div>
-                        <p className="text-sm font-semibold text-red-700">On-Demand (Fallback)</p>
-                        <p className="text-2xl font-bold text-gray-900 mt-1">
-                          ${pricing.onDemand.price.toFixed(4)}
-                        </p>
-                        <p className="text-xs text-gray-500 mt-1">Guaranteed availability</p>
-                      </div>
-                      <Button
-                        variant="danger"
-                        size="sm"
-                        onClick={() => handleForceSwitch({ target: 'ondemand' })}
-                        loading={switching === 'ondemand'}
-                      >
-                        Switch
-                      </Button>
-                    </div>
-                  </div>
-                )}
-
-                <div className="space-y-2 max-h-96 overflow-y-auto pr-1">
-                  <p className="text-xs font-semibold text-gray-600 uppercase mb-2">
-                    Spot Pools ({pricing.pools.length})
-                  </p>
-                  {pricing.pools.map((pool, idx) => (
+                  return (
                     <div
                       key={pool.id}
-                      className={`bg-white p-4 rounded-lg border-2 transition-all ${idx === 0
-                          ? 'border-blue-300 shadow-md'
-                          : 'border-gray-200 hover:border-blue-200'
-                        }`}
+                      className={`p-4 rounded-lg border-2 transition-all ${
+                        isCurrentPool
+                          ? 'bg-gray-100 border-gray-300 opacity-60 cursor-not-allowed'
+                          : isCheapest
+                          ? 'bg-white border-green-300 shadow-md hover:border-green-400'
+                          : 'bg-white border-gray-200 hover:border-blue-200'
+                      }`}
                     >
                       <div className="flex justify-between items-center">
                         <div className="flex-1 min-w-0">
-                          {idx === 0 && (
-                            <Badge variant="success" className="mb-2">Best Price</Badge>
-                          )}
+                          <div className="flex items-center space-x-2 mb-2">
+                            {isCheapest && !isCurrentPool && (
+                              <Badge variant="success">Cheapest</Badge>
+                            )}
+                            {isCurrentPool && (
+                              <Badge variant="secondary">Current Pool</Badge>
+                            )}
+                          </div>
                           <p className="text-xs font-mono text-blue-600 mb-1 truncate">
-                            {pool.id}
+                            Pool: {pool.id}
                           </p>
                           <p className="text-xl font-bold text-gray-900">
                             ${pool.price.toFixed(4)}
@@ -285,30 +244,31 @@ const InstanceDetailPanel = ({ instanceId, clientId, onClose }) => {
                               {pool.savings.toFixed(1)}% savings
                             </p>
                             <p className="text-xs text-gray-500">
-                              ${(pricing.onDemand.price - pool.price).toFixed(4)}/hr
+                              ${(pricing.onDemand.price - pool.price).toFixed(4)}/hr saved
                             </p>
                           </div>
                         </div>
                         <Button
-                          variant={idx === 0 ? 'success' : 'primary'}
+                          variant={isCheapest && !isCurrentPool ? 'success' : 'primary'}
                           size="sm"
                           onClick={() => handleForceSwitch({ target: 'pool', pool_id: pool.id })}
                           loading={switching === pool.id}
+                          disabled={isCurrentPool}
                         >
-                          Switch
+                          {isCurrentPool ? 'Current' : 'Switch'}
                         </Button>
                       </div>
                     </div>
-                  ))}
-                </div>
-              </>
+                  );
+                })}
+              </div>
             )}
           </div>
 
           {/* Price History Chart Column */}
           <div className="bg-white p-4 rounded-lg border border-gray-200">
             <h4 className="text-md font-bold text-gray-900 mb-4">
-              Price History (7 Days)
+              Price History (7 Days) - All Pools
             </h4>
             {priceHistory.length > 0 ? (
               <ResponsiveContainer width="100%" height={350}>
@@ -321,35 +281,55 @@ const InstanceDetailPanel = ({ instanceId, clientId, onClose }) => {
                     textAnchor="end"
                     height={80}
                   />
-                  <YAxis tick={{ fontSize: 10 }} />
-                  <Tooltip />
-                  <Legend />
+                  <YAxis
+                    tick={{ fontSize: 10 }}
+                    label={{ value: 'Price ($/hr)', angle: -90, position: 'insideLeft', fontSize: 11 }}
+                  />
+                  <Tooltip
+                    contentStyle={{ fontSize: 12 }}
+                    formatter={(value) => value ? `$${value.toFixed(4)}` : 'N/A'}
+                  />
+                  <Legend wrapperStyle={{ fontSize: 11 }} />
+
+                  {/* On-Demand Price Line (Red, Dashed) */}
                   <Line
                     type="monotone"
-                    dataKey="avgPrice"
-                    stroke="#3b82f6"
+                    dataKey="onDemand"
+                    stroke="#dc2626"
                     strokeWidth={2}
-                    name="Avg Price"
+                    strokeDasharray="5 5"
+                    name="On-Demand"
                     dot={false}
                   />
-                  <Line
-                    type="monotone"
-                    dataKey="minPrice"
-                    stroke="#10b981"
-                    strokeWidth={1}
-                    strokeDasharray="3 3"
-                    name="Min Price"
-                    dot={false}
-                  />
-                  <Line
-                    type="monotone"
-                    dataKey="maxPrice"
-                    stroke="#ef4444"
-                    strokeWidth={1}
-                    strokeDasharray="3 3"
-                    name="Max Price"
-                    dot={false}
-                  />
+
+                  {/* Dynamic Pool Lines */}
+                  {priceHistoryPools.map((pool, idx) => {
+                    // Color palette for different pools
+                    const colors = [
+                      '#10b981', // green
+                      '#3b82f6', // blue
+                      '#8b5cf6', // purple
+                      '#f59e0b', // amber
+                      '#06b6d4', // cyan
+                      '#ec4899', // pink
+                      '#14b8a6', // teal
+                      '#f97316'  // orange
+                    ];
+                    const color = colors[idx % colors.length];
+
+                    return (
+                      <Line
+                        key={pool.id}
+                        type="monotone"
+                        dataKey={pool.key}
+                        stroke={color}
+                        strokeWidth={2}
+                        name={`${pool.name} (${pool.az})`}
+                        dot={false}
+                        connectNulls
+                      />
+                    );
+                  })}
                 </LineChart>
               </ResponsiveContainer>
             ) : (
