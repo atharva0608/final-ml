@@ -3021,11 +3021,33 @@ def get_system_health():
 
         # Count model files in MODEL_DIR
         model_files_count = 0
+        model_files = []
         try:
             if config.MODEL_DIR.exists():
-                model_files_count = len([f for f in config.MODEL_DIR.glob('*') if f.is_file()])
+                files = [f for f in config.MODEL_DIR.glob('*') if f.is_file()]
+                model_files_count = len(files)
+                model_files = [{
+                    'name': f.name,
+                    'size': f.stat().st_size,
+                    'modified': datetime.fromtimestamp(f.stat().st_mtime).isoformat()
+                } for f in files[:10]]  # Limit to 10 most recent
         except Exception as e:
             logger.warning(f"Could not count model files: {e}")
+
+        # Count decision engine files
+        engine_files_count = 0
+        engine_files = []
+        try:
+            if config.DECISION_ENGINE_DIR.exists():
+                files = [f for f in config.DECISION_ENGINE_DIR.glob('*.py') if f.is_file()]
+                engine_files_count = len(files)
+                engine_files = [{
+                    'name': f.name,
+                    'size': f.stat().st_size,
+                    'modified': datetime.fromtimestamp(f.stat().st_mtime).isoformat()
+                } for f in sorted(files, key=lambda x: x.stat().st_mtime, reverse=True)[:10]]
+        except Exception as e:
+            logger.warning(f"Could not count decision engine files: {e}")
 
         # Get active models from registry
         active_models = []
@@ -3056,12 +3078,15 @@ def get_system_health():
                 'name': decision_engine_manager.engine_type or 'None',
                 'version': decision_engine_manager.engine_version or 'N/A',
                 'filesUploaded': model_files_count,
-                'activeModels': active_models
+                'activeModels': active_models,
+                'files': model_files
             },
             'decisionEngineStatus': {
                 'loaded': decision_engine_manager.models_loaded,
                 'type': decision_engine_manager.engine_type or 'None',
-                'version': decision_engine_manager.engine_version or 'N/A'
+                'version': decision_engine_manager.engine_version or 'N/A',
+                'filesUploaded': engine_files_count,
+                'files': engine_files
             }
         })
     except Exception as e:
@@ -5883,15 +5908,25 @@ def create_emergency_replica(app):
                 WHERE id = %s
             """, (replica_id, agent_id))
 
-            # Log interruption event
+            # Collect ML training features
+            now = datetime.utcnow()
+            ml_features = _collect_interruption_ml_features(agent['current_pool_id'], agent_id, now)
+
+            # Log interruption event with ML features
             execute_query("""
                 INSERT INTO spot_interruption_events (
                     instance_id, agent_id, pool_id, signal_type,
                     detected_at, termination_time, response_action,
-                    replica_id, instance_age_hours
+                    replica_id, instance_age_hours,
+                    spot_price_at_interruption, price_trend_before, price_change_percent,
+                    time_since_price_change_minutes, day_of_week, hour_of_day,
+                    pool_historical_interruption_rate, region_interruption_rate,
+                    competing_instances_count, previous_interruptions_count,
+                    time_since_last_interruption_hours
                 ) VALUES (
                     %s, %s, %s, %s, NOW(), %s, 'created-replica', %s,
-                    TIMESTAMPDIFF(HOUR, %s, NOW())
+                    TIMESTAMPDIFF(HOUR, %s, NOW()),
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
                 )
             """, (
                 data.get('instance_id'),
@@ -5900,7 +5935,18 @@ def create_emergency_replica(app):
                 signal_type,
                 data.get('termination_time'),
                 replica_id,
-                agent['instance_created_at']
+                agent['instance_created_at'],
+                ml_features.get('spot_price'),
+                ml_features.get('price_trend'),
+                ml_features.get('price_change_percent'),
+                ml_features.get('time_since_price_change'),
+                now.weekday(),  # 0=Monday in Python, convert if needed
+                now.hour,
+                ml_features.get('pool_interruption_rate'),
+                ml_features.get('region_interruption_rate'),
+                ml_features.get('competing_instances'),
+                ml_features.get('previous_interruptions'),
+                ml_features.get('hours_since_last_interruption')
             ))
 
             logger.warning(f"Created emergency replica {replica_id} for agent {agent_id} due to {signal_type}")
@@ -6246,6 +6292,126 @@ def _select_safest_pool(
 
     result = execute_query(query, tuple(params), fetch=True)
     return result[0]['id'] if result else None
+
+
+def _collect_interruption_ml_features(pool_id: str, agent_id: str, now: datetime) -> dict:
+    """
+    Collect ML training features when an interruption occurs.
+    These features help the model learn interruption patterns.
+    """
+    features = {}
+
+    try:
+        # Get current spot price
+        current_price = execute_query("""
+            SELECT spot_price, time_bucket
+            FROM pricing_snapshots_clean
+            WHERE pool_id = %s
+            ORDER BY time_bucket DESC
+            LIMIT 1
+        """, (pool_id,), fetch=True)
+
+        if current_price:
+            features['spot_price'] = float(current_price[0]['spot_price'])
+
+            # Get price history for trend analysis
+            price_history = execute_query("""
+                SELECT spot_price, time_bucket
+                FROM pricing_snapshots_clean
+                WHERE pool_id = %s
+                AND time_bucket >= NOW() - INTERVAL 1 HOUR
+                ORDER BY time_bucket ASC
+            """, (pool_id,), fetch=True)
+
+            if price_history and len(price_history) >= 2:
+                prices = [float(p['spot_price']) for p in price_history]
+                first_price = prices[0]
+                last_price = prices[-1]
+
+                # Calculate trend
+                if last_price > first_price * 1.05:
+                    features['price_trend'] = 'rising'
+                elif last_price < first_price * 0.95:
+                    features['price_trend'] = 'falling'
+                else:
+                    features['price_trend'] = 'stable'
+
+                # Price change percentage
+                if first_price > 0:
+                    features['price_change_percent'] = ((last_price - first_price) / first_price) * 100
+
+                # Time since last price change
+                for i in range(len(prices) - 1, 0, -1):
+                    if abs(prices[i] - prices[i-1]) / prices[i-1] > 0.01:  # 1% change
+                        time_diff = now - price_history[i]['time_bucket']
+                        features['time_since_price_change'] = int(time_diff.total_seconds() / 60)
+                        break
+
+        # Get pool historical interruption rate
+        pool_stats = execute_query("""
+            SELECT
+                COUNT(*) as interruption_count,
+                DATEDIFF(NOW(), MIN(detected_at)) as days_tracked
+            FROM spot_interruption_events
+            WHERE pool_id = %s
+        """, (pool_id,), fetch=True)
+
+        if pool_stats and pool_stats[0]['days_tracked'] > 0:
+            count = pool_stats[0]['interruption_count']
+            days = pool_stats[0]['days_tracked']
+            features['pool_interruption_rate'] = count / max(days, 1)
+
+        # Get region interruption rate
+        region_stats = execute_query("""
+            SELECT p.region, COUNT(sie.id) as interruptions
+            FROM spot_pools p
+            LEFT JOIN spot_interruption_events sie ON p.id = sie.pool_id
+            WHERE p.id = %s
+            GROUP BY p.region
+        """, (pool_id,), fetch=True)
+
+        if region_stats:
+            features['region_interruption_rate'] = region_stats[0]['interruptions'] / 30.0  # Normalize to per-month
+
+        # Count competing instances in same pool
+        competing = execute_query("""
+            SELECT COUNT(*) as count
+            FROM agents
+            WHERE current_pool_id = %s
+            AND is_active = TRUE
+        """, (pool_id,), fetch=True)
+
+        if competing:
+            features['competing_instances'] = competing[0]['count']
+
+        # Get agent's previous interruption count
+        prev_interruptions = execute_query("""
+            SELECT COUNT(*) as count
+            FROM spot_interruption_events
+            WHERE agent_id = %s
+        """, (agent_id,), fetch=True)
+
+        if prev_interruptions:
+            features['previous_interruptions'] = prev_interruptions[0]['count']
+
+        # Time since last interruption for this agent
+        last_interruption = execute_query("""
+            SELECT detected_at
+            FROM spot_interruption_events
+            WHERE agent_id = %s
+            ORDER BY detected_at DESC
+            LIMIT 1
+        """, (agent_id,), fetch=True)
+
+        if last_interruption:
+            time_diff = now - last_interruption[0]['detected_at']
+            features['hours_since_last_interruption'] = time_diff.total_seconds() / 3600
+
+    except Exception as e:
+        logger.warning(f"Error collecting ML features for interruption: {e}")
+        # Return partial features if some calculations failed
+
+    return features
 
 
 # ============================================================================
