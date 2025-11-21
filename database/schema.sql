@@ -236,21 +236,23 @@ CREATE TABLE IF NOT EXISTS commands (
 
 CREATE TABLE IF NOT EXISTS spot_pools (
     id VARCHAR(128) PRIMARY KEY,
+    pool_name VARCHAR(255),
     instance_type VARCHAR(64) NOT NULL,
     region VARCHAR(32) NOT NULL,
     az VARCHAR(48) NOT NULL,
-    
+
     -- Current Status
     is_active BOOLEAN DEFAULT TRUE,
-    
+
     -- Timestamps
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    
+
     UNIQUE KEY uk_type_region_az (instance_type, region, az),
     INDEX idx_spot_pools_type_region (instance_type, region),
     INDEX idx_spot_pools_az (az),
-    INDEX idx_spot_pools_active (is_active)
+    INDEX idx_spot_pools_active (is_active),
+    INDEX idx_spot_pools_name (pool_name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Available spot instance pools with unique instance_type + region + AZ';
 
 -- ============================================================================
