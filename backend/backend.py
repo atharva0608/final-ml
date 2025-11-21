@@ -3673,11 +3673,8 @@ def initialize_app():
     logger.info(f"Listening on {config.HOST}:{config.PORT}")
     logger.info("="*80)
 
-# Replica management endpoints will be registered after this section
-# Function register_replica_management_endpoints is defined at line 6264
-
-# Initialize on import (for gunicorn)
-initialize_app()
+# Replica management endpoints and app initialization happen at end of file
+# after all functions are defined (see bottom of file)
 
 # ==============================================================================
 # MAIN ENTRY POINT
@@ -6276,3 +6273,11 @@ def register_replica_management_endpoints(app):
 register_replica_management_endpoints(app)
 logger.info("✓ All replica management endpoints registered")
 
+
+# ============================================================================
+# INITIALIZE APPLICATION
+# ============================================================================
+
+# Initialize app after all functions are defined
+# This ensures init_db_pool(), ReplicaCoordinator, etc. are available
+initialize_app()
