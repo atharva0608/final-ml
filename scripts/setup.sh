@@ -354,17 +354,28 @@ log "Step 6: Setting up MySQL database with Docker..."
 docker stop spot-mysql 2>/dev/null || true
 docker rm spot-mysql 2>/dev/null || true
 
-# Remove old mysql-data directory to avoid permission conflicts
-# Docker will create it with proper ownership (mysql user UID 999)
+# Create Docker volume for MySQL data (better than bind mount for permissions)
+# Docker manages volume permissions automatically
+log "Creating Docker volume for MySQL data..."
+docker volume create spot-mysql-data 2>/dev/null || true
+
+# Remove old bind mount directory if it exists (migrate to Docker volume)
 if [ -d "/home/ubuntu/mysql-data" ]; then
-    log "Removing old mysql-data directory to fix permissions..."
-    sudo rm -rf /home/ubuntu/mysql-data
+    log "Found old bind mount directory, will migrate to Docker volume..."
+    # Keep backup of old data
+    if [ "$(ls -A /home/ubuntu/mysql-data 2>/dev/null)" ]; then
+        log "Backing up existing data to /home/ubuntu/mysql-data.backup..."
+        sudo mv /home/ubuntu/mysql-data "/home/ubuntu/mysql-data.backup.$(date +%Y%m%d_%H%M%S)"
+        warn "Old data backed up. You can restore it manually if needed."
+    else
+        sudo rm -rf /home/ubuntu/mysql-data
+    fi
 fi
 
 # Create Docker network for the app
 docker network create spot-network 2>/dev/null || true
 
-# Run MySQL container with enhanced configuration
+# Run MySQL container with Docker volume (automatic permission management)
 docker run -d \
     --name spot-mysql \
     --network spot-network \
@@ -374,7 +385,7 @@ docker run -d \
     -e MYSQL_USER="$DB_USER" \
     -e MYSQL_PASSWORD="$DB_PASSWORD" \
     -p "$DB_PORT:3306" \
-    -v /home/ubuntu/mysql-data:/var/lib/mysql \
+    -v spot-mysql-data:/var/lib/mysql \
     mysql:8.0 \
     --default-authentication-plugin=mysql_native_password \
     --character-set-server=utf8mb4 \

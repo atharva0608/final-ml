@@ -125,16 +125,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 # Database utilities are defined later in this file (lines 4524-4566)
 # No need to import - functions are in same file after consolidation
 
-# Import replica coordinator
-try:
-    from replica_coordinator import ReplicaCoordinator
-    replica_coordinator = ReplicaCoordinator()
-    logger.info("✓ Replica coordinator imported successfully")
-except Exception as e:
-    logger.warning(f"Failed to import replica coordinator: {e}")
-    replica_coordinator = None
-
-# Configure logging
+# Configure logging FIRST (before using logger)
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -144,6 +135,11 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+# Replica coordinator is defined later in this file (line 4639)
+# Will be initialized after Flask app is created (line 3680)
+# Cannot import or initialize here because class is defined later
+replica_coordinator = None
 
 # ==============================================================================
 # CONFIGURATION
@@ -3625,9 +3621,18 @@ def initialize_app():
     # Initialize database
     init_db_pool()
 
+    # Initialize replica coordinator (defined later in file at line 4639)
+    global replica_coordinator
+    try:
+        replica_coordinator = ReplicaCoordinator()
+        logger.info("✓ Replica coordinator initialized")
+    except Exception as e:
+        logger.error(f"Failed to initialize replica coordinator: {e}")
+        replica_coordinator = None
+
     # Load decision engine
     decision_engine_manager.load_engine()
-    
+
     # Start background jobs
     if config.ENABLE_BACKGROUND_JOBS:
         scheduler = BackgroundScheduler()
@@ -3668,13 +3673,8 @@ def initialize_app():
     logger.info(f"Listening on {config.HOST}:{config.PORT}")
     logger.info("="*80)
 
-# Register replica management endpoints
-try:
-    from replica_management_api import register_replica_management_endpoints
-    register_replica_management_endpoints(app)
-    logger.info("✓ Replica management endpoints registered")
-except Exception as e:
-    logger.warning(f"Failed to register replica management endpoints: {e}")
+# Replica management endpoints will be registered after this section
+# Function register_replica_management_endpoints is defined at line 6264
 
 # Initialize on import (for gunicorn)
 initialize_app()
@@ -6266,3 +6266,13 @@ def register_replica_management_endpoints(app):
     update_replica_sync_status(app)
 
     logger.info("Replica management endpoints registered")
+
+
+# ============================================================================
+# INITIALIZE REPLICA MANAGEMENT ENDPOINTS
+# ============================================================================
+
+# Call after all functions are defined
+register_replica_management_endpoints(app)
+logger.info("✓ All replica management endpoints registered")
+
