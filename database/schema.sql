@@ -503,7 +503,7 @@ CREATE TABLE IF NOT EXISTS replica_instances (
     agent_id VARCHAR(255) NOT NULL,
     instance_id VARCHAR(255) NOT NULL,
     replica_type ENUM('manual', 'automatic-rebalance', 'automatic-termination') NOT NULL,
-    pool_id INT,
+    pool_id VARCHAR(128),
     instance_type VARCHAR(50),
     region VARCHAR(50),
     az VARCHAR(50),
@@ -551,7 +551,7 @@ CREATE TABLE IF NOT EXISTS replica_instances (
 
 CREATE TABLE IF NOT EXISTS pricing_snapshots_clean (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
-    pool_id INT NOT NULL,
+    pool_id VARCHAR(128) NOT NULL,
     instance_type VARCHAR(50) NOT NULL,
     region VARCHAR(50) NOT NULL,
     az VARCHAR(50) NOT NULL,
@@ -583,7 +583,7 @@ CREATE TABLE IF NOT EXISTS pricing_submissions_raw (
     source_instance_id VARCHAR(255) NOT NULL,
     source_agent_id VARCHAR(255) NOT NULL,
     source_type ENUM('primary', 'replica-manual', 'replica-automatic') NOT NULL,
-    pool_id INT NOT NULL,
+    pool_id VARCHAR(128) NOT NULL,
     instance_type VARCHAR(50) NOT NULL,
     region VARCHAR(50) NOT NULL,
     az VARCHAR(50) NOT NULL,
@@ -637,7 +637,7 @@ CREATE TABLE IF NOT EXISTS data_processing_jobs (
 
 CREATE TABLE IF NOT EXISTS pricing_snapshots_interpolated (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
-    pool_id INT NOT NULL,
+    pool_id VARCHAR(128) NOT NULL,
     instance_type VARCHAR(50) NOT NULL,
     region VARCHAR(50) NOT NULL,
     az VARCHAR(50) NOT NULL,
@@ -659,7 +659,7 @@ CREATE TABLE IF NOT EXISTS pricing_snapshots_interpolated (
 
 CREATE TABLE IF NOT EXISTS pricing_snapshots_ml (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
-    pool_id INT NOT NULL,
+    pool_id VARCHAR(128) NOT NULL,
     instance_type VARCHAR(50) NOT NULL,
     region VARCHAR(50) NOT NULL,
     az VARCHAR(50) NOT NULL,
@@ -688,7 +688,7 @@ CREATE TABLE IF NOT EXISTS spot_interruption_events (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     instance_id VARCHAR(255) NOT NULL,
     agent_id VARCHAR(255) NOT NULL,
-    pool_id INT,
+    pool_id VARCHAR(128),
     signal_type ENUM('rebalance-recommendation', 'termination-notice') NOT NULL,
     detected_at TIMESTAMP NOT NULL,
     termination_time TIMESTAMP,
@@ -1130,7 +1130,7 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 
 CREATE TABLE IF NOT EXISTS pool_reliability_metrics (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
-    pool_id INT NOT NULL,
+    pool_id VARCHAR(128) NOT NULL,
     period_start TIMESTAMP NOT NULL,
     period_end TIMESTAMP NOT NULL,
     interruption_count INT DEFAULT 0,
