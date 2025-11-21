@@ -728,12 +728,29 @@ CREATE TABLE IF NOT EXISTS spot_interruption_events (
     instance_age_hours DECIMAL(10,2),
     pool_interruption_probability DECIMAL(5,4),
     metadata JSON,
+
+    -- ML Training Features
+    spot_price_at_interruption DECIMAL(10,6) COMMENT 'Spot price when interrupted',
+    price_trend_before VARCHAR(20) COMMENT 'rising/falling/stable in last hour',
+    price_change_percent DECIMAL(5,2) COMMENT 'Price change % in last hour',
+    time_since_price_change_minutes INT COMMENT 'Minutes since last price change',
+    day_of_week TINYINT COMMENT '0=Sunday, 6=Saturday',
+    hour_of_day TINYINT COMMENT '0-23 UTC',
+    pool_historical_interruption_rate DECIMAL(5,4) COMMENT 'Historical interruption rate for pool',
+    region_interruption_rate DECIMAL(5,4) COMMENT 'Historical rate for region',
+    competing_instances_count INT COMMENT 'Other instances in same pool',
+    previous_interruptions_count INT DEFAULT 0 COMMENT 'Times this agent was interrupted before',
+    time_since_last_interruption_hours DECIMAL(10,2) COMMENT 'Hours since last interruption',
+
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_interruption_agent (agent_id, detected_at),
     INDEX idx_interruption_signal (signal_type),
     INDEX idx_interruption_success (success),
-    INDEX idx_interruption_pool (pool_id, detected_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Track all spot interruption events and responses';
+    INDEX idx_interruption_pool (pool_id, detected_at),
+    INDEX idx_interruption_ml_features (pool_id, day_of_week, hour_of_day, spot_price_at_interruption),
+    INDEX idx_interruption_time_patterns (day_of_week, hour_of_day, signal_type),
+    INDEX idx_interruption_price_trend (price_trend_before, price_change_percent)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Track all spot interruption events and responses for ML training';
 
 -- ============================================================================
 -- ML MODEL REGISTRY
