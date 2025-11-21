@@ -129,14 +129,14 @@ REPO_DIR="$CLONE_DIR"
 
 log "Repository available at: $REPO_DIR"
 
-# Verify critical files exist
-if [ ! -f "$REPO_DIR/backend.py" ]; then
-    error "backend.py not found in repository!"
+# Verify critical files exist (updated for new structure)
+if [ ! -f "$REPO_DIR/backend/backend.py" ]; then
+    error "backend/backend.py not found in repository!"
     exit 1
 fi
 
-if [ ! -f "$REPO_DIR/schema.sql" ]; then
-    error "schema.sql not found in repository!"
+if [ ! -f "$REPO_DIR/database/schema.sql" ]; then
+    error "database/schema.sql not found in repository!"
     exit 1
 fi
 
@@ -145,8 +145,14 @@ if [ ! -d "$REPO_DIR/frontend" ]; then
     exit 1
 fi
 
-if [ -f "$REPO_DIR/demo/demo_data.sql" ]; then
-    log "✓ Demo data file found (will import for testing)"
+if [ ! -d "$REPO_DIR/backend/decision_engines" ]; then
+    error "backend/decision_engines directory not found in repository!"
+    exit 1
+fi
+
+if [ ! -f "$REPO_DIR/backend/requirements.txt" ]; then
+    error "backend/requirements.txt not found in repository!"
+    exit 1
 fi
 
 log "✓ All required files verified"
