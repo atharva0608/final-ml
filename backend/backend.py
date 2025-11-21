@@ -122,8 +122,8 @@ from mysql.connector import Error, pooling
 from marshmallow import Schema, fields, validate, ValidationError
 from apscheduler.schedulers.background import BackgroundScheduler
 
-# Import database utilities (must be before replica coordinator)
-from database_utils import init_db_pool, get_db_connection, execute_query
+# Database utilities are defined later in this file (lines 4524-4566)
+# No need to import - functions are in same file after consolidation
 
 # Import replica coordinator
 try:
@@ -3707,7 +3707,7 @@ from decimal import Decimal
 from typing import Dict, List, Optional, Tuple
 import statistics
 
-from database_utils import execute_query
+# execute_query is defined in this file at line 4566
 
 logger = logging.getLogger(__name__)
 
@@ -4632,7 +4632,7 @@ from typing import Dict, List, Optional, Tuple
 from collections import defaultdict
 import statistics
 
-from database_utils import execute_query
+# execute_query is defined in this file at line 4566
 
 logger = logging.getLogger(__name__)
 
@@ -5334,7 +5334,7 @@ from typing import Dict, List, Optional, Tuple
 import logging
 
 from flask import jsonify, request
-from database_utils import execute_query
+# execute_query is defined in this file at line 4566
 
 logger = logging.getLogger(__name__)
 
