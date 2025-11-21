@@ -255,6 +255,27 @@ CREATE TABLE IF NOT EXISTS spot_pools (
     INDEX idx_spot_pools_name (pool_name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Available spot instance pools with unique instance_type + region + AZ';
 
+-- Trigger to auto-generate pool_name if not provided
+DELIMITER //
+CREATE TRIGGER before_spot_pools_insert
+BEFORE INSERT ON spot_pools
+FOR EACH ROW
+BEGIN
+    IF NEW.pool_name IS NULL THEN
+        SET NEW.pool_name = CONCAT(NEW.instance_type, ' (', NEW.az, ')');
+    END IF;
+END//
+
+CREATE TRIGGER before_spot_pools_update
+BEFORE UPDATE ON spot_pools
+FOR EACH ROW
+BEGIN
+    IF NEW.pool_name IS NULL THEN
+        SET NEW.pool_name = CONCAT(NEW.instance_type, ' (', NEW.az, ')');
+    END IF;
+END//
+DELIMITER ;
+
 -- ============================================================================
 -- PRICING DATA
 -- ============================================================================

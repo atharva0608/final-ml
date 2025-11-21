@@ -3021,11 +3021,33 @@ def get_system_health():
 
         # Count model files in MODEL_DIR
         model_files_count = 0
+        model_files = []
         try:
             if config.MODEL_DIR.exists():
-                model_files_count = len([f for f in config.MODEL_DIR.glob('*') if f.is_file()])
+                files = [f for f in config.MODEL_DIR.glob('*') if f.is_file()]
+                model_files_count = len(files)
+                model_files = [{
+                    'name': f.name,
+                    'size': f.stat().st_size,
+                    'modified': datetime.fromtimestamp(f.stat().st_mtime).isoformat()
+                } for f in files[:10]]  # Limit to 10 most recent
         except Exception as e:
             logger.warning(f"Could not count model files: {e}")
+
+        # Count decision engine files
+        engine_files_count = 0
+        engine_files = []
+        try:
+            if config.DECISION_ENGINE_DIR.exists():
+                files = [f for f in config.DECISION_ENGINE_DIR.glob('*.py') if f.is_file()]
+                engine_files_count = len(files)
+                engine_files = [{
+                    'name': f.name,
+                    'size': f.stat().st_size,
+                    'modified': datetime.fromtimestamp(f.stat().st_mtime).isoformat()
+                } for f in sorted(files, key=lambda x: x.stat().st_mtime, reverse=True)[:10]]
+        except Exception as e:
+            logger.warning(f"Could not count decision engine files: {e}")
 
         # Get active models from registry
         active_models = []
@@ -3056,12 +3078,15 @@ def get_system_health():
                 'name': decision_engine_manager.engine_type or 'None',
                 'version': decision_engine_manager.engine_version or 'N/A',
                 'filesUploaded': model_files_count,
-                'activeModels': active_models
+                'activeModels': active_models,
+                'files': model_files
             },
             'decisionEngineStatus': {
                 'loaded': decision_engine_manager.models_loaded,
                 'type': decision_engine_manager.engine_type or 'None',
-                'version': decision_engine_manager.engine_version or 'N/A'
+                'version': decision_engine_manager.engine_version or 'N/A',
+                'filesUploaded': engine_files_count,
+                'files': engine_files
             }
         })
     except Exception as e:
