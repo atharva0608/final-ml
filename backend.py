@@ -122,6 +122,9 @@ from mysql.connector import Error, pooling
 from marshmallow import Schema, fields, validate, ValidationError
 from apscheduler.schedulers.background import BackgroundScheduler
 
+# Import database utilities (must be before replica coordinator)
+from database_utils import init_db_pool, get_db_connection, execute_query
+
 # Import replica coordinator
 try:
     from replica_coordinator import ReplicaCoordinator
@@ -192,78 +195,8 @@ CORS(app)
 # ==============================================================================
 # DATABASE CONNECTION POOLING
 # ==============================================================================
-
-connection_pool = None
-
-def init_db_pool():
-    """Initialize database connection pool"""
-    global connection_pool
-    try:
-        logger.info(f"Connecting to database: {config.DB_USER}@{config.DB_HOST}:{config.DB_PORT}/{config.DB_NAME}")
-        connection_pool = pooling.MySQLConnectionPool(
-            pool_name="spot_optimizer_pool",
-            pool_size=config.DB_POOL_SIZE,
-            pool_reset_session=True,
-            host=config.DB_HOST,
-            port=config.DB_PORT,
-            user=config.DB_USER,
-            password=config.DB_PASSWORD,
-            database=config.DB_NAME,
-            autocommit=False
-        )
-
-        # Test the connection
-        test_conn = connection_pool.get_connection()
-        test_conn.close()
-
-        logger.info(f"✓ Database connection pool initialized (size: {config.DB_POOL_SIZE})")
-    except Error as e:
-        logger.error(f"Failed to initialize connection pool: {e}")
-        logger.error(f"Connection details: {config.DB_USER}@{config.DB_HOST}:{config.DB_PORT}/{config.DB_NAME}")
-        logger.error("Please verify database credentials and ensure MySQL is running")
-        raise
-
-def get_db_connection():
-    """Get connection from pool"""
-    try:
-        return connection_pool.get_connection()
-    except Error as e:
-        logger.error(f"Failed to get connection from pool: {e}")
-        raise
-
-def execute_query(query: str, params: tuple = None, fetch: bool = False, 
-                 fetch_one: bool = False, commit: bool = True) -> Any:
-    """Execute database query with error handling"""
-    connection = None
-    cursor = None
-    try:
-        connection = get_db_connection()
-        cursor = connection.cursor(dictionary=True)
-        cursor.execute(query, params or ())
-        
-        if fetch_one:
-            result = cursor.fetchone()
-        elif fetch:
-            result = cursor.fetchall()
-        else:
-            result = cursor.lastrowid if cursor.lastrowid else cursor.rowcount
-            
-        if commit and not fetch and not fetch_one:
-            connection.commit()
-            
-        return result
-    except Error as e:
-        if connection:
-            connection.rollback()
-        logger.error(f"Query execution error: {e}")
-        logger.error(f"Query: {query[:200]}")
-        log_system_event('database_error', 'error', str(e), metadata={'query': query[:200]})
-        raise
-    finally:
-        if cursor:
-            cursor.close()
-        if connection:
-            connection.close()
+# NOTE: Database functions (init_db_pool, get_db_connection, execute_query) are
+# now imported from database_utils.py to enable sharing with replica_coordinator
 
 # ==============================================================================
 # UTILITY FUNCTIONS
