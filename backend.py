@@ -122,6 +122,15 @@ from mysql.connector import Error, pooling
 from marshmallow import Schema, fields, validate, ValidationError
 from apscheduler.schedulers.background import BackgroundScheduler
 
+# Import replica coordinator
+try:
+    from replica_coordinator import ReplicaCoordinator
+    replica_coordinator = ReplicaCoordinator()
+    logger.info("✓ Replica coordinator imported successfully")
+except Exception as e:
+    logger.warning(f"Failed to import replica coordinator: {e}")
+    replica_coordinator = None
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -3708,7 +3717,17 @@ def initialize_app():
 
         scheduler.start()
         logger.info("✓ Background jobs started")
-    
+
+    # Start replica coordinator
+    if replica_coordinator is not None:
+        try:
+            replica_coordinator.start()
+            logger.info("✓ Replica coordinator started (monitoring emergency & manual replicas)")
+        except Exception as e:
+            logger.error(f"Failed to start replica coordinator: {e}")
+    else:
+        logger.warning("⚠ Replica coordinator not available")
+
     logger.info("="*80)
     logger.info(f"Server initialized successfully")
     logger.info(f"Decision Engine: {decision_engine_manager.engine_type or 'None'}")
