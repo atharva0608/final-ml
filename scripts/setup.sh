@@ -1132,9 +1132,14 @@ chmod -R 755 "$LOGS_DIR"
 sudo chown -R ubuntu:ubuntu "$SCRIPTS_DIR"
 chmod -R 755 "$SCRIPTS_DIR"
 
-# MySQL data directory permissions
-sudo chown -R ubuntu:ubuntu /home/ubuntu/mysql-data
-chmod -R 755 /home/ubuntu/mysql-data
+# MySQL data directory permissions (only if bind mount exists - migrated to Docker volume)
+if [ -d "/home/ubuntu/mysql-data" ]; then
+    log "Fixing permissions on MySQL bind mount directory..."
+    sudo chown -R ubuntu:ubuntu /home/ubuntu/mysql-data
+    chmod -R 755 /home/ubuntu/mysql-data
+else
+    log "MySQL using Docker volume (no host directory permissions needed)"
+fi
 
 # Nginx directory permissions
 sudo chown -R www-data:www-data "$NGINX_ROOT"
