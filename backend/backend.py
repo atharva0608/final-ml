@@ -251,7 +251,7 @@ class AgentRegistrationSchema(Schema):
     region = fields.Str(required=True)
     az = fields.Str(required=True)
     ami_id = fields.Str(required=False)
-    mode = fields.Str(required=True, validate=validate.OneOf(['spot', 'ondemand', 'unknown']))
+    mode = fields.Str(required=False, missing='unknown', validate=validate.OneOf(['spot', 'ondemand', 'unknown']))
     agent_version = fields.Str(required=False, validate=validate.Length(max=32))
     private_ip = fields.Str(required=False, validate=validate.Length(max=45))
     public_ip = fields.Str(required=False, validate=validate.Length(max=45))
@@ -476,17 +476,26 @@ decision_engine_manager = DecisionEngineManager()
 def register_agent():
     """Register new agent with validation"""
     data = request.json
-    
+
+    # Log registration attempt for debugging
+    logger.info(f"Agent registration attempt from client {request.client_id}")
+    logger.debug(f"Registration data: {data}")
+
     schema = AgentRegistrationSchema()
     try:
         validated_data = schema.load(data)
     except ValidationError as e:
-        log_system_event('validation_error', 'warning', 
-                        f"Agent registration validation failed: {e.messages}")
+        logger.warning(f"Agent registration validation failed: {e.messages}")
+        log_system_event('validation_error', 'warning',
+                        f"Agent registration validation failed: {e.messages}",
+                        request.client_id)
         return jsonify({'error': 'Validation failed', 'details': e.messages}), 400
-    
+
     try:
         logical_agent_id = validated_data['logical_agent_id']
+
+        # Log successful validation
+        logger.info(f"Agent registration validated: logical_id={logical_agent_id}, instance_id={validated_data['instance_id']}, mode={validated_data['mode']}")
         
         # Check if agent exists
         existing = execute_query(
@@ -497,9 +506,10 @@ def register_agent():
         
         if existing:
             agent_id = existing['id']
+            logger.info(f"Updating existing agent: agent_id={agent_id}, logical_id={logical_agent_id}")
             # Update existing agent
             execute_query("""
-                UPDATE agents 
+                UPDATE agents
                 SET status = 'online',
                     hostname = %s,
                     instance_id = %s,
@@ -532,6 +542,7 @@ def register_agent():
         else:
             # Insert new agent
             agent_id = generate_uuid()
+            logger.info(f"Creating new agent: agent_id={agent_id}, logical_id={logical_agent_id}")
             execute_query("""
                 INSERT INTO agents 
                 (id, client_id, logical_agent_id, hostname, instance_id, instance_type,
@@ -620,10 +631,12 @@ def register_agent():
             WHERE a.id = %s
         """, (agent_id,), fetch_one=True)
         
-        log_system_event('agent_registered', 'info', 
-                        f"Agent {agent_id} registered successfully",
+        log_system_event('agent_registered', 'info',
+                        f"Agent {logical_agent_id} registered successfully",
                         request.client_id, agent_id, validated_data['instance_id'])
-        
+
+        logger.info(f"✓ Agent registered successfully: agent_id={agent_id}, logical_id={logical_agent_id}, instance_id={validated_data['instance_id']}, mode={validated_data['mode']}")
+
         return jsonify({
             'agent_id': agent_id,
             'client_id': request.client_id,
