@@ -114,12 +114,17 @@ CREATE TABLE IF NOT EXISTS agents (
     -- Replica Configuration
     replica_enabled BOOLEAN DEFAULT FALSE,
     replica_count INT DEFAULT 0,
+    manual_replica_enabled BOOLEAN DEFAULT FALSE,
+    current_replica_id VARCHAR(255) DEFAULT NULL,
     
     -- Timestamps
     installed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     last_switch_at TIMESTAMP NULL,
+    last_interruption_signal TIMESTAMP NULL,
+    interruption_handled_count INT DEFAULT 0,
+    last_failover_at TIMESTAMP NULL,
     terminated_at TIMESTAMP NULL,
     
     -- Additional metadata
@@ -136,6 +141,7 @@ CREATE TABLE IF NOT EXISTS agents (
     INDEX idx_agents_heartbeat (last_heartbeat_at),
     INDEX idx_agents_mode (current_mode),
     INDEX idx_agents_pool (current_pool_id),
+    INDEX idx_agents_replica (manual_replica_enabled, replica_count),
     
     CONSTRAINT fk_agents_client FOREIGN KEY (client_id) 
         REFERENCES clients(id) ON DELETE CASCADE
@@ -376,6 +382,9 @@ CREATE TABLE IF NOT EXISTS instances (
     is_active BOOLEAN DEFAULT TRUE,
     installed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     last_switch_at TIMESTAMP NULL,
+    last_interruption_signal TIMESTAMP NULL,
+    interruption_handled_count INT DEFAULT 0,
+    last_failover_at TIMESTAMP NULL,
     terminated_at TIMESTAMP NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -480,35 +489,117 @@ COMMENT='Detailed switch history with timing metrics and cost impact';
 -- REPLICAS
 -- ============================================================================
 
-CREATE TABLE IF NOT EXISTS replicas (
-    id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
-    agent_id CHAR(36) NOT NULL,
-    
-    -- Instance info
-    instance_id VARCHAR(50) NOT NULL,
+CREATE TABLE IF NOT EXISTS replica_instances (
+    id VARCHAR(255) PRIMARY KEY,
+    agent_id VARCHAR(255) NOT NULL,
+    instance_id VARCHAR(255) NOT NULL,
+    replica_type ENUM('manual', 'automatic-rebalance', 'automatic-termination') NOT NULL,
+    pool_id INT,
     instance_type VARCHAR(50),
     region VARCHAR(50),
     az VARCHAR(50),
-    pool_id VARCHAR(100),
-    ami_id VARCHAR(50),
-    
-    -- Status
-    status VARCHAR(20) DEFAULT 'running',
-    
-    -- Pricing
-    spot_price DECIMAL(10, 6),
-    ondemand_price DECIMAL(10, 6),
-    
+
+    -- Lifecycle tracking
+    status ENUM('launching', 'syncing', 'ready', 'promoted', 'terminated', 'failed') NOT NULL DEFAULT 'launching',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    ready_at TIMESTAMP NULL,
+    promoted_at TIMESTAMP NULL,
     terminated_at TIMESTAMP NULL,
-    
-    INDEX idx_replicas_agent (agent_id),
-    INDEX idx_replicas_status (status),
-    INDEX idx_replicas_instance (instance_id),
-    
-    CONSTRAINT fk_replicas_agent FOREIGN KEY (agent_id) 
-        REFERENCES agents(id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+    -- Replica metadata
+    created_by VARCHAR(255),
+    parent_instance_id VARCHAR(255),
+    is_active BOOLEAN DEFAULT TRUE,
+
+    -- State sync tracking
+    sync_status ENUM('initializing', 'syncing', 'synced', 'out-of-sync') DEFAULT 'initializing',
+    sync_latency_ms INT,
+    last_sync_at TIMESTAMP NULL,
+    state_transfer_progress DECIMAL(5,2) DEFAULT 0.00,
+
+    -- Cost tracking
+    hourly_cost DECIMAL(10,6),
+    total_cost DECIMAL(10,4) DEFAULT 0.0000,
+
+    -- Interruption handling
+    interruption_signal_type ENUM('rebalance-recommendation', 'termination-notice') DEFAULT NULL,
+    interruption_detected_at TIMESTAMP NULL,
+    termination_time TIMESTAMP NULL,
+    failover_completed_at TIMESTAMP NULL,
+
+    -- Tags and metadata
+    tags JSON,
+
+    INDEX idx_replica_agent_status (agent_id, status),
+    INDEX idx_replica_parent (parent_instance_id),
+    INDEX idx_replica_created (created_at),
+    INDEX idx_replica_active (agent_id, is_active)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+
+-- ===========================================================================
+-- PRICING SNAPSHOTS CLEAN (Time-bucketed for charts)
+-- ===========================================================================
+
+CREATE TABLE IF NOT EXISTS pricing_snapshots_clean (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    pool_id INT NOT NULL,
+    instance_type VARCHAR(50) NOT NULL,
+    region VARCHAR(50) NOT NULL,
+    az VARCHAR(50) NOT NULL,
+    spot_price DECIMAL(10,6) NOT NULL,
+    ondemand_price DECIMAL(10,6),
+    savings_percent DECIMAL(5,2),
+    time_bucket TIMESTAMP NOT NULL,
+    bucket_start TIMESTAMP NOT NULL,
+    bucket_end TIMESTAMP NOT NULL,
+    source_instance_id VARCHAR(255),
+    source_agent_id VARCHAR(255),
+    source_type ENUM('primary', 'replica-manual', 'replica-automatic', 'interpolated') NOT NULL,
+    confidence_score DECIMAL(3,2) NOT NULL DEFAULT 1.00,
+    data_source ENUM('measured', 'interpolated') NOT NULL DEFAULT 'measured',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY unique_pool_bucket (pool_id, time_bucket),
+    INDEX idx_pool_time (pool_id, time_bucket),
+    INDEX idx_time_bucket (time_bucket),
+    INDEX idx_instance_type_time (instance_type, region, time_bucket)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+COMMENT='Clean time-bucketed pricing data for multi-pool charts';
+
+
+-- ===========================================================================
+-- SPOT INTERRUPTION EVENTS
+-- ===========================================================================
+
+CREATE TABLE IF NOT EXISTS spot_interruption_events (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    instance_id VARCHAR(255) NOT NULL,
+    agent_id VARCHAR(255) NOT NULL,
+    pool_id INT,
+    signal_type ENUM('rebalance-recommendation', 'termination-notice') NOT NULL,
+    detected_at TIMESTAMP NOT NULL,
+    termination_time TIMESTAMP,
+    response_action ENUM('created-replica', 'promoted-existing-replica', 'emergency-snapshot', 'no-action') NOT NULL,
+    response_time_ms INT,
+    replica_id VARCHAR(255),
+    replica_ready BOOLEAN DEFAULT FALSE,
+    replica_ready_time_ms INT,
+    failover_completed BOOLEAN DEFAULT FALSE,
+    failover_time_ms INT,
+    data_loss_seconds INT DEFAULT 0,
+    success BOOLEAN DEFAULT TRUE,
+    error_message TEXT,
+    instance_age_hours DECIMAL(10,2),
+    pool_interruption_probability DECIMAL(5,4),
+    metadata JSON,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_interruption_agent (agent_id, detected_at),
+    INDEX idx_interruption_signal (signal_type),
+    INDEX idx_interruption_success (success),
+    INDEX idx_interruption_pool (pool_id, detected_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+COMMENT='Track all spot interruption events and responses';
+
+COMMENT='Replica instances for failover and manual standby';
 
 -- ============================================================================
 -- ML MODEL REGISTRY
@@ -789,6 +880,30 @@ CREATE TABLE IF NOT EXISTS client_savings_monthly (
     CONSTRAINT fk_savings_client FOREIGN KEY (client_id) 
         REFERENCES clients(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+
+-- ===========================================================================
+-- CLIENT SAVINGS DAILY
+-- ===========================================================================
+
+CREATE TABLE IF NOT EXISTS client_savings_daily (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    client_id CHAR(36) NOT NULL,
+    date DATE NOT NULL,
+    baseline_cost DECIMAL(15, 4) DEFAULT 0.0000,
+    actual_cost DECIMAL(15, 4) DEFAULT 0.0000,
+    savings DECIMAL(15, 4) DEFAULT 0.0000,
+    savings_percentage DECIMAL(5, 2),
+    switch_count INT DEFAULT 0,
+    instance_count INT DEFAULT 0,
+    online_agent_count INT DEFAULT 0,
+    computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_client_date (client_id, date),
+    INDEX idx_savings_daily_client (client_id),
+    INDEX idx_savings_daily_date (date),
+    FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+COMMENT='Daily savings summary for charts';
+
 COMMENT='Pre-aggregated monthly savings summary by client';
 
 -- ============================================================================
@@ -907,6 +1022,35 @@ COMMENT='Comprehensive audit trail of all system actions';
 -- ============================================================================
 -- NOTIFICATIONS
 -- ============================================================================
+
+
+-- ===========================================================================
+-- POOL RELIABILITY METRICS
+-- ===========================================================================
+
+CREATE TABLE IF NOT EXISTS pool_reliability_metrics (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    pool_id INT NOT NULL,
+    period_start TIMESTAMP NOT NULL,
+    period_end TIMESTAMP NOT NULL,
+    interruption_count INT DEFAULT 0,
+    rebalance_count INT DEFAULT 0,
+    termination_count INT DEFAULT 0,
+    total_instance_hours DECIMAL(10, 2) DEFAULT 0,
+    interrupted_instance_hours DECIMAL(10, 2) DEFAULT 0,
+    uptime_percentage DECIMAL(5, 2),
+    reliability_score DECIMAL(5, 2) DEFAULT 100.00,
+    price_volatility DECIMAL(10, 6),
+    avg_price DECIMAL(10, 6),
+    min_price DECIMAL(10, 6),
+    max_price DECIMAL(10, 6),
+    computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_pool_period (pool_id, period_start),
+    INDEX idx_reliability_pool (pool_id),
+    INDEX idx_reliability_period (period_start, period_end),
+    INDEX idx_reliability_score (reliability_score DESC)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+COMMENT='Pool reliability and interruption tracking';
 
 CREATE TABLE IF NOT EXISTS notifications (
     id CHAR(36) PRIMARY KEY DEFAULT (UUID()),

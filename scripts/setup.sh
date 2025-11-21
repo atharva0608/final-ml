@@ -423,8 +423,8 @@ log "MySQL is fully ready!"
 
 log "Step 7: Importing database schema..."
 
-# Schema file should be in the repository root
-SCHEMA_FILE="$REPO_DIR/schema.sql"
+# Schema file should be in the database directory
+SCHEMA_FILE="$REPO_DIR/database/schema.sql"
 
 if [ -f "$SCHEMA_FILE" ]; then
     log "Found schema file: $SCHEMA_FILE"
@@ -487,16 +487,11 @@ fi
 
 log "Database privileges configured"
 
-# Apply database migrations
-MIGRATION_FILE="$REPO_DIR/migrations/add_model_upload_sessions.sql"
-if [ -f "$MIGRATION_FILE" ]; then
-    log "Applying database migration for model versioning..."
-
-    set +e
-    docker exec -i spot-mysql mysql -u root -p"$DB_ROOT_PASSWORD" < "$MIGRATION_FILE" 2>&1 | grep -v "Warning" || true
-    set -e
-
-    # Verify migration was applied
+# Migrations are now consolidated in schema.sql
+# Keeping this section for reference only
+if [ -f "$REPO_DIR/migrations/add_model_upload_sessions.sql" ]; then
+    log "Note: Migrations are now consolidated in schema.sql"
+    # Old migration files kept in migrations/archive/ for reference
     TABLE_CHECK=$(docker exec spot-mysql mysql -u root -p"$DB_ROOT_PASSWORD" -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='spot_optimizer' AND table_name='model_upload_sessions';" 2>/dev/null || echo "0")
 
     if [ "$TABLE_CHECK" = "1" ]; then
@@ -547,23 +542,32 @@ python3 -m venv venv
 # Activate virtual environment
 source venv/bin/activate
 
-# Copy backend.py from repository
+# Copy backend files from repository (now in backend/ directory)
 log "Copying backend files from repository..."
-if [ -f "$REPO_DIR/backend.py" ]; then
-    cp "$REPO_DIR/backend.py" "$BACKEND_DIR/"
+if [ -f "$REPO_DIR/backend/backend.py" ]; then
+    cp "$REPO_DIR/backend/backend.py" "$BACKEND_DIR/"
     log "✓ Copied backend.py"
 else
-    error "backend.py not found in repository!"
+    error "backend/backend.py not found in repository!"
     exit 1
 fi
 
 # Copy decision_engines module from repository
 log "Copying decision_engines module..."
-if [ -d "$REPO_DIR/decision_engines" ]; then
-    cp -r "$REPO_DIR/decision_engines" "$BACKEND_DIR/"
+if [ -d "$REPO_DIR/backend/decision_engines" ]; then
+    cp -r "$REPO_DIR/backend/decision_engines" "$BACKEND_DIR/"
     log "✓ Copied decision_engines module"
 else
-    error "decision_engines directory not found in repository!"
+    error "backend/decision_engines directory not found in repository!"
+    exit 1
+fi
+
+# Copy requirements.txt from backend directory
+if [ -f "$REPO_DIR/backend/requirements.txt" ]; then
+    cp "$REPO_DIR/backend/requirements.txt" "$BACKEND_DIR/"
+    log "✓ Copied requirements.txt"
+else
+    error "backend/requirements.txt not found in repository!"
     exit 1
 fi
 
@@ -592,7 +596,7 @@ EOF
 # Install Python dependencies
 log "Installing Python dependencies..."
 pip install --upgrade pip setuptools wheel > /dev/null 2>&1
-pip install -r requirements.txt
+pip install -r "$BACKEND_DIR/requirements.txt"
 
 log "Python dependencies installed"
 
