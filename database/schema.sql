@@ -62,7 +62,7 @@ CREATE TABLE IF NOT EXISTS clients (
     INDEX idx_clients_status (status),
     INDEX idx_clients_active (is_active),
     INDEX idx_clients_created (created_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 COMMENT='Client accounts that group agents and track overall savings';
 
 -- ============================================================================
@@ -145,7 +145,7 @@ CREATE TABLE IF NOT EXISTS agents (
     
     CONSTRAINT fk_agents_client FOREIGN KEY (client_id) 
         REFERENCES clients(id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 COMMENT='Individual agent instances with persistent logical identity';
 
 -- ============================================================================
@@ -175,7 +175,7 @@ CREATE TABLE IF NOT EXISTS agent_configs (
     
     CONSTRAINT fk_agent_configs_agent FOREIGN KEY (agent_id) 
         REFERENCES agents(id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 COMMENT='Per-agent configuration for risk thresholds and switch limits';
 
 -- ============================================================================
@@ -231,7 +231,7 @@ CREATE TABLE IF NOT EXISTS commands (
         REFERENCES clients(id) ON DELETE CASCADE,
     CONSTRAINT fk_commands_agent FOREIGN KEY (agent_id) 
         REFERENCES agents(id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 COMMENT='Priority-based command queue for coordinating agent actions';
 
 -- ============================================================================
@@ -255,7 +255,7 @@ CREATE TABLE IF NOT EXISTS spot_pools (
     INDEX idx_spot_pools_type_region (instance_type, region),
     INDEX idx_spot_pools_az (az),
     INDEX idx_spot_pools_active (is_active)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 COMMENT='Available spot instance pools with unique instance_type + region + AZ';
 
 -- ============================================================================
@@ -277,7 +277,7 @@ CREATE TABLE IF NOT EXISTS spot_price_snapshots (
     
     CONSTRAINT fk_spot_snapshots_pool FOREIGN KEY (pool_id) 
         REFERENCES spot_pools(id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 COMMENT='Historical spot price data for ML models and trend analysis';
 
 -- On-Demand Price History
@@ -291,7 +291,7 @@ CREATE TABLE IF NOT EXISTS ondemand_price_snapshots (
     
     INDEX idx_ondemand_snapshots_type_region_time (instance_type, region, captured_at DESC),
     INDEX idx_ondemand_snapshots_captured (captured_at DESC)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 COMMENT='Historical on-demand price data for cost calculations';
 
 -- Current On-Demand Prices (Materialized for quick access)
@@ -359,7 +359,7 @@ CREATE TABLE IF NOT EXISTS pricing_reports (
     
     CONSTRAINT fk_pricing_reports_agent FOREIGN KEY (agent_id) 
         REFERENCES agents(id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 COMMENT='Pricing reports submitted by agents with current market data';
 
 -- ============================================================================
@@ -482,7 +482,7 @@ CREATE TABLE IF NOT EXISTS switches (
         REFERENCES agents(id) ON DELETE CASCADE,
     CONSTRAINT fk_switches_command FOREIGN KEY (command_id) 
         REFERENCES commands(id) ON DELETE SET NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 COMMENT='Detailed switch history with timing metrics and cost impact';
 
 -- ============================================================================
@@ -562,7 +562,7 @@ CREATE TABLE IF NOT EXISTS pricing_snapshots_clean (
     INDEX idx_pool_time (pool_id, time_bucket),
     INDEX idx_time_bucket (time_bucket),
     INDEX idx_instance_type_time (instance_type, region, time_bucket)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 COMMENT='Clean time-bucketed pricing data for multi-pool charts';
 
 
@@ -596,7 +596,7 @@ CREATE TABLE IF NOT EXISTS spot_interruption_events (
     INDEX idx_interruption_signal (signal_type),
     INDEX idx_interruption_success (success),
     INDEX idx_interruption_pool (pool_id, detected_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 COMMENT='Track all spot interruption events and responses';
 
 -- ============================================================================
@@ -632,7 +632,7 @@ CREATE TABLE IF NOT EXISTS model_registry (
     INDEX idx_model_registry_name (model_name),
     INDEX idx_model_registry_active (is_active),
     INDEX idx_model_registry_session (upload_session_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 COMMENT='ML model versions and metadata for decision engines';
 
 CREATE TABLE IF NOT EXISTS model_upload_sessions (
@@ -659,7 +659,7 @@ CREATE TABLE IF NOT EXISTS model_upload_sessions (
     INDEX idx_upload_session_type_status (session_type, status),
     INDEX idx_upload_session_live (is_live),
     INDEX idx_upload_session_created (created_at DESC)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 COMMENT='Tracks model upload sessions for versioning (keeps last 2 sessions)';
 
 -- ============================================================================
@@ -721,7 +721,7 @@ CREATE TABLE IF NOT EXISTS model_predictions (
         REFERENCES agents(id) ON DELETE CASCADE,
     CONSTRAINT fk_predictions_command FOREIGN KEY (command_id) 
         REFERENCES commands(id) ON DELETE SET NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 COMMENT='ML model predictions and risk assessments for agent decisions';
 
 -- ============================================================================
@@ -806,7 +806,7 @@ CREATE TABLE IF NOT EXISTS decision_engine_log (
     INDEX idx_decision_log_instance_time (instance_id, created_at DESC),
     INDEX idx_decision_log_created (created_at DESC),
     INDEX idx_decision_log_engine (engine_type)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 COMMENT='Audit log of decision engine executions with input/output data';
 
 -- ============================================================================
@@ -845,11 +845,11 @@ CREATE TABLE IF NOT EXISTS cost_records (
     INDEX idx_cost_period (period_start, period_end),
     INDEX idx_cost_mode (mode),
     
-    CONSTRAINT fk_cost_client FOREIGN KEY (client_id) 
+    CONSTRAINT fk_cost_client FOREIGN KEY (client_id)
         REFERENCES clients(id) ON DELETE CASCADE,
-    CONSTRAINT fk_cost_agent FOREIGN KEY (agent_id) 
+    CONSTRAINT fk_cost_agent FOREIGN KEY (agent_id)
         REFERENCES agents(id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 COMMENT='Cost tracking records for savings calculations and reporting';
 
 -- Monthly Savings Summary
@@ -877,7 +877,7 @@ CREATE TABLE IF NOT EXISTS client_savings_monthly (
     
     CONSTRAINT fk_savings_client FOREIGN KEY (client_id) 
         REFERENCES clients(id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ===========================================================================
 -- CLIENT SAVINGS DAILY
@@ -899,7 +899,7 @@ CREATE TABLE IF NOT EXISTS client_savings_daily (
     INDEX idx_savings_daily_client (client_id),
     INDEX idx_savings_daily_date (date),
     FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 COMMENT='Daily savings summary for charts';
 
 -- ============================================================================
@@ -915,7 +915,7 @@ CREATE TABLE IF NOT EXISTS clients_daily_snapshot (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
     INDEX idx_snapshot_date (snapshot_date DESC)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 COMMENT='Daily snapshots of client counts for growth analytics';
 
 CREATE TABLE IF NOT EXISTS agent_decision_history (
@@ -946,7 +946,7 @@ CREATE TABLE IF NOT EXISTS agent_decision_history (
         REFERENCES agents(id) ON DELETE CASCADE,
     CONSTRAINT fk_decision_client FOREIGN KEY (client_id)
         REFERENCES clients(id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 COMMENT='History of all agent decision engine recommendations';
 
 -- ============================================================================
@@ -1012,7 +1012,7 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     INDEX idx_audit_action (action),
     INDEX idx_audit_actor (actor_type, actor_id),
     INDEX idx_audit_time (created_at DESC)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 COMMENT='Comprehensive audit trail of all system actions';
 
 -- ============================================================================
@@ -1045,7 +1045,7 @@ CREATE TABLE IF NOT EXISTS pool_reliability_metrics (
     INDEX idx_reliability_pool (pool_id),
     INDEX idx_reliability_period (period_start, period_end),
     INDEX idx_reliability_score (reliability_score DESC)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 COMMENT='Pool reliability and interruption tracking';
 
 CREATE TABLE IF NOT EXISTS notifications (
