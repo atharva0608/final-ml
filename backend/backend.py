@@ -2148,7 +2148,9 @@ def get_client_agents(client_id: str):
             'instanceCount': agent['instance_count'] or 0,
             'enabled': agent['enabled'],
             'autoSwitchEnabled': agent['auto_switch_enabled'],
+            'manualReplicaEnabled': agent['manual_replica_enabled'],
             'autoTerminateEnabled': agent['auto_terminate_enabled'],
+            'terminateWaitMinutes': (agent['terminate_wait_seconds'] or 1800) // 60,
             'agentVersion': agent['agent_version']
         } for agent in agents or []])
         
@@ -2826,22 +2828,23 @@ def get_instance_pricing(instance_id: str):
         if not instance:
             return jsonify({'error': 'Instance not found'}), 404
 
-        # Get all available pools for this instance type
+        # Get all available pools for this instance type with latest prices
         pools = execute_query("""
             SELECT
                 sp.id as pool_id,
                 sp.pool_name,
                 sp.az,
-                psc.spot_price as price,
-                psc.time_bucket as captured_at
+                sps.price as price,
+                sps.captured_at as captured_at
             FROM spot_pools sp
             LEFT JOIN (
-                SELECT pool_id, spot_price, time_bucket,
-                       ROW_NUMBER() OVER (PARTITION BY pool_id ORDER BY time_bucket DESC) as rn
-                FROM pricing_snapshots_clean
-            ) psc ON psc.pool_id = sp.id AND psc.rn = 1
+                SELECT pool_id, price, captured_at,
+                       ROW_NUMBER() OVER (PARTITION BY pool_id ORDER BY captured_at DESC) as rn
+                FROM spot_price_snapshots
+                WHERE captured_at >= DATE_SUB(NOW(), INTERVAL 1 HOUR)
+            ) sps ON sps.pool_id = sp.id AND sps.rn = 1
             WHERE sp.instance_type = %s AND sp.region = %s
-            ORDER BY psc.spot_price ASC
+            ORDER BY COALESCE(sps.price, 999999) ASC
         """, (instance['instance_type'], instance['region']), fetch=True)
 
         ondemand_price = float(instance['ondemand_price'] or 0)
