@@ -1673,8 +1673,8 @@ def create_client():
         email = data.get('email', f"{client_name.lower().replace(' ', '_')}@example.com")
         
         execute_query("""
-            INSERT INTO clients (id, name, email, client_token, is_active, total_savings)
-            VALUES (%s, %s, %s, %s, TRUE, 0.0000)
+            INSERT INTO clients (id, name, email, client_token, is_active, status, total_savings)
+            VALUES (%s, %s, %s, %s, TRUE, 'active', 0.0000)
         """, (client_id, client_name, email, client_token))
         
         create_notification(f"New client created: {client_name}", 'info', client_id)
