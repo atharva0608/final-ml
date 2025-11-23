@@ -2433,6 +2433,13 @@ def update_agent_config(agent_id: str):
             updates.append("terminate_wait_seconds = %s")
             params.append(terminate_wait_seconds)
 
+        # Handle auto_terminate_enabled
+        if 'autoTerminateEnabled' in data:
+            auto_terminate = bool(data['autoTerminateEnabled'])
+            updates.append("auto_terminate_enabled = %s")
+            params.append(auto_terminate)
+            logger.info(f"Setting auto_terminate_enabled = {auto_terminate} for agent {agent_id}")
+
         # MUTUAL EXCLUSIVITY ENFORCEMENT
         # Case 1: User enables auto_switch_enabled
         if 'autoSwitchEnabled' in data and bool(data['autoSwitchEnabled']):
@@ -2974,17 +2981,17 @@ def get_instance_price_history(instance_id: str):
         pool_ids = [p['id'] for p in pools]
         placeholders = ','.join(['%s'] * len(pool_ids))
 
-        # Query to get pricing for all pools
+        # Query to get pricing for all pools from real-time snapshots
         query = f"""
             SELECT
-                DATE_FORMAT(psc.time_bucket, %s) as time,
-                psc.pool_id,
-                AVG(psc.spot_price) as price
-            FROM pricing_snapshots_clean psc
-            WHERE psc.pool_id IN ({placeholders})
-              AND psc.time_bucket >= DATE_SUB(NOW(), INTERVAL %s DAY)
-            GROUP BY DATE_FORMAT(psc.time_bucket, %s), psc.pool_id
-            ORDER BY time ASC, psc.pool_id
+                DATE_FORMAT(sps.captured_at, %s) as time,
+                sps.pool_id,
+                AVG(sps.price) as price
+            FROM spot_price_snapshots sps
+            WHERE sps.pool_id IN ({placeholders})
+              AND sps.captured_at >= DATE_SUB(NOW(), INTERVAL %s DAY)
+            GROUP BY DATE_FORMAT(sps.captured_at, %s), sps.pool_id
+            ORDER BY time ASC, sps.pool_id
         """
 
         params = [time_format] + pool_ids + [days, time_format]
