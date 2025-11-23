@@ -255,12 +255,29 @@ class APIClient {
     });
   }
 
-  // UPDATED: Agent Config with Replica Settings
+  // UPDATED: Agent Config with Replica Settings and Auto-Terminate
   async updateAgentConfig(agentId, config) {
     return this.request(`/api/client/agents/${agentId}/config`, {
       method: 'POST',
-      body: JSON.stringify(config),
+      body: JSON.stringify({
+        terminateWaitMinutes: config.terminateWaitMinutes,
+        autoSwitchEnabled: config.autoSwitchEnabled,
+        manualReplicaEnabled: config.manualReplicaEnabled,
+        autoTerminateEnabled: config.autoTerminateEnabled,
+      }),
     });
+  }
+
+  // NEW: Delete Agent
+  async deleteAgent(agentId) {
+    return this.request(`/api/client/agents/${agentId}`, {
+      method: 'DELETE',
+    });
+  }
+
+  // NEW: Get Agent History (including deleted agents)
+  async getAgentHistory(clientId) {
+    return this.request(`/api/client/${clientId}/agents/history`);
   }
 
   // ==============================================================================

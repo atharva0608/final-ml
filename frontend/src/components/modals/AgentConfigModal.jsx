@@ -7,6 +7,7 @@ const AgentConfigModal = ({ agent, onClose, onSave }) => {
   const [terminateWaitMinutes, setTerminateWaitMinutes] = useState(agent.terminateWaitMinutes || 30);
   const [autoSwitchEnabled, setAutoSwitchEnabled] = useState(agent.autoSwitchEnabled ?? true);
   const [manualReplicaEnabled, setManualReplicaEnabled] = useState(agent.manualReplicaEnabled ?? false);
+  const [autoTerminateEnabled, setAutoTerminateEnabled] = useState(agent.autoTerminateEnabled ?? true);
   const [saving, setSaving] = useState(false);
 
   // Handle mutual exclusivity
@@ -30,7 +31,8 @@ const AgentConfigModal = ({ agent, onClose, onSave }) => {
       await api.updateAgentConfig(agent.id, {
         terminateWaitMinutes,
         autoSwitchEnabled,
-        manualReplicaEnabled
+        manualReplicaEnabled,
+        autoTerminateEnabled
       });
       onSave();
       onClose();
@@ -121,6 +123,40 @@ const AgentConfigModal = ({ agent, onClose, onSave }) => {
             {manualReplicaEnabled && (
               <p className="text-xs text-green-600">
                 ✅ Enabled: Manual replica active, auto-switching disabled
+              </p>
+            )}
+          </div>
+
+          {/* Auto-Terminate Toggle */}
+          <div className="pb-4 border-b border-gray-200">
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex-1 mr-4">
+                <label className="block text-sm font-medium text-gray-900">
+                  Auto-Terminate Old Instances
+                </label>
+                <p className="text-xs text-gray-500 mt-1">
+                  Automatically terminate old instances after switching to new ones.
+                  When disabled, old instances remain running for manual cleanup.
+                </p>
+              </div>
+              <label className="relative inline-flex items-center cursor-pointer flex-shrink-0">
+                <input
+                  type="checkbox"
+                  checked={autoTerminateEnabled}
+                  onChange={(e) => setAutoTerminateEnabled(e.target.checked)}
+                  className="sr-only peer"
+                />
+                <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-red-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-red-600"></div>
+              </label>
+            </div>
+            {!autoTerminateEnabled && (
+              <p className="text-xs text-amber-600 mt-2">
+                ⚠️ Old instances will remain running. You must manually terminate them to avoid extra costs.
+              </p>
+            )}
+            {autoTerminateEnabled && (
+              <p className="text-xs text-red-600">
+                ✅ Enabled: Old instances will be terminated automatically after switch
               </p>
             )}
           </div>
