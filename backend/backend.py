@@ -3168,14 +3168,17 @@ def get_client_pricing_history():
         logger.error(f"Get client pricing history error: {e}", exc_info=True)
         return jsonify({'error': str(e)}), 500
 
+@require_client_token
 @app.route('/api/client/instances/<instance_id>/available-options', methods=['GET'])
 def get_instance_available_options(instance_id: str):
     """Get available pools and instance types for switching"""
     try:
+        client_id = request.client_id
+
         # Get current instance information
         agent = execute_query("""
-            SELECT instance_type, region, az FROM agents WHERE instance_id = %s
-        """, (instance_id,), fetch_one=True)
+            SELECT instance_type, region, az FROM agents WHERE instance_id = %s AND client_id = %s
+        """, (instance_id, client_id), fetch_one=True)
 
         if not agent:
             return jsonify({'error': 'Instance not found'}), 404
