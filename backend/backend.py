@@ -3034,6 +3034,140 @@ def get_instance_price_history(instance_id: str):
         logger.error(f"Get price history error: {e}", exc_info=True)
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/client/pricing-history', methods=['GET'])
+@require_client_token
+def get_client_pricing_history():
+    """
+    Get pricing history for client (optionally filtered by agent_id)
+
+    Query params:
+    - days: Number of days (default 7, max 30)
+    - agent_id: Optional agent ID to filter data
+    - interval: 'hour' or 'day' (default 'hour')
+    """
+    try:
+        client_id = request.client_id
+        days = int(request.args.get('days', 7))
+        agent_id = request.args.get('agent_id')
+        interval = request.args.get('interval', 'hour')
+
+        # Limit to reasonable range
+        days = min(max(days, 1), 30)
+
+        # Get agent's instance details
+        if agent_id:
+            agent = execute_query("""
+                SELECT a.instance_id, a.instance_type, a.region
+                FROM agents a
+                WHERE a.id = %s AND a.client_id = %s
+            """, (agent_id, client_id), fetch_one=True)
+
+            if not agent:
+                return jsonify({'error': 'Agent not found'}), 404
+
+            instance_id = agent['instance_id']
+            instance_type = agent['instance_type']
+            region = agent['region']
+        else:
+            # Get first active agent for this client
+            agent = execute_query("""
+                SELECT a.instance_id, a.instance_type, a.region
+                FROM agents a
+                WHERE a.client_id = %s AND a.status = 'online'
+                ORDER BY a.last_heartbeat_at DESC
+                LIMIT 1
+            """, (client_id,), fetch_one=True)
+
+            if not agent:
+                return jsonify({'error': 'No active agents found'}), 404
+
+            instance_id = agent['instance_id']
+            instance_type = agent['instance_type']
+            region = agent['region']
+
+        # Get all pools for this instance type
+        pools = execute_query("""
+            SELECT id, pool_name, az
+            FROM spot_pools
+            WHERE instance_type = %s AND region = %s
+        """, (instance_type, region), fetch=True)
+
+        if not pools:
+            return jsonify({
+                'history': [],
+                'days': days,
+                'data_points': 0
+            })
+
+        # Get pricing data
+        time_format = '%%Y-%%m-%%d %%H:00:00' if interval == 'hour' else '%%Y-%%m-%%d'
+        pool_ids = [p['id'] for p in pools]
+        placeholders = ','.join(['%s'] * len(pool_ids))
+
+        query = f"""
+            SELECT
+                DATE_FORMAT(sps.captured_at, %s) as timestamp,
+                sps.pool_id,
+                AVG(sps.price) as price
+            FROM spot_price_snapshots sps
+            WHERE sps.pool_id IN ({placeholders})
+              AND sps.captured_at >= DATE_SUB(NOW(), INTERVAL %s DAY)
+            GROUP BY DATE_FORMAT(sps.captured_at, %s), sps.pool_id
+            ORDER BY timestamp ASC
+        """
+
+        params = [time_format] + pool_ids + [days, time_format]
+        price_data = execute_query(query, tuple(params), fetch=True)
+
+        # Get on-demand price
+        ondemand_query = """
+            SELECT AVG(price) as avg_price
+            FROM ondemand_price_snapshots
+            WHERE instance_type = %s AND region = %s
+              AND captured_at >= DATE_SUB(NOW(), INTERVAL %s DAY)
+        """
+        ondemand_result = execute_query(ondemand_query, (instance_type, region, days), fetch_one=True)
+        ondemand_price = float(ondemand_result['avg_price']) if ondemand_result and ondemand_result['avg_price'] else 0.0416
+
+        # Transform into time series format expected by frontend
+        time_buckets = {}
+        for row in (price_data or []):
+            timestamp = str(row['timestamp'])
+            pool_id = row['pool_id']
+            price = float(row['price'])
+
+            if timestamp not in time_buckets:
+                time_buckets[timestamp] = {
+                    'timestamp': timestamp,
+                    'ondemand_price': ondemand_price,
+                    'spot_pools': []
+                }
+
+            # Extract AZ from pool_id
+            az = pool_id.split('.')[-1] if '.' in pool_id else 'unknown'
+
+            time_buckets[timestamp]['spot_pools'].append({
+                'pool_id': pool_id,
+                'az': az,
+                'price': price
+            })
+
+        # Convert to array and sort by time
+        history = sorted(time_buckets.values(), key=lambda x: x['timestamp'])
+
+        return jsonify({
+            'history': history,
+            'days': days,
+            'data_points': len(history),
+            'agent_id': agent_id,
+            'instance_type': instance_type,
+            'region': region
+        }), 200
+
+    except Exception as e:
+        logger.error(f"Get client pricing history error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/api/client/instances/<instance_id>/available-options', methods=['GET'])
 def get_instance_available_options(instance_id: str):
     """Get available pools and instance types for switching"""
