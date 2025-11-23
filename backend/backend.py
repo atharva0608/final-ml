@@ -610,19 +610,40 @@ def register_agent():
         if not instance_exists:
             # Get latest on-demand price
             latest_od_price = execute_query("""
-                SELECT price FROM ondemand_price_snapshots
+                SELECT price FROM ondemand_prices
                 WHERE region = %s AND instance_type = %s
-                ORDER BY captured_at DESC
                 LIMIT 1
             """, (validated_data['region'], validated_data['instance_type']), fetch_one=True)
-            
-            baseline_price = latest_od_price['price'] if latest_od_price else 0.1
-            
+
+            if not latest_od_price:
+                # Fallback to snapshots if ondemand_prices table is empty
+                latest_od_price = execute_query("""
+                    SELECT price FROM ondemand_price_snapshots
+                    WHERE region = %s AND instance_type = %s
+                    ORDER BY captured_at DESC
+                    LIMIT 1
+                """, (validated_data['region'], validated_data['instance_type']), fetch_one=True)
+
+            baseline_price = latest_od_price['price'] if latest_od_price else 0.0416  # Default t3.medium price
+
+            # Get spot price if in spot mode
+            spot_price = 0
+            if validated_data['mode'] == 'spot':
+                pool_id = validated_data.get('pool_id', f"{validated_data['instance_type']}.{validated_data['az']}")
+                latest_spot = execute_query("""
+                    SELECT price FROM spot_price_snapshots
+                    WHERE pool_id = %s
+                    ORDER BY captured_at DESC
+                    LIMIT 1
+                """, (pool_id,), fetch_one=True)
+                spot_price = latest_spot['price'] if latest_spot else baseline_price * 0.3  # Estimate 70% savings
+
             execute_query("""
-                INSERT INTO instances 
+                INSERT INTO instances
                 (id, client_id, agent_id, instance_type, region, az, ami_id,
-                 current_mode, is_active, baseline_ondemand_price, installed_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, TRUE, %s, NOW())
+                 current_mode, current_pool_id, spot_price, ondemand_price, baseline_ondemand_price,
+                 is_active, installed_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, TRUE, NOW())
             """, (
                 validated_data['instance_id'],
                 request.client_id,
@@ -632,6 +653,9 @@ def register_agent():
                 validated_data['az'],
                 validated_data.get('ami_id'),
                 validated_data['mode'],
+                validated_data.get('pool_id') if validated_data['mode'] == 'spot' else None,
+                spot_price if validated_data['mode'] == 'spot' else 0,
+                baseline_price,
                 baseline_price
             ))
         
@@ -5406,22 +5430,47 @@ class ReplicaCoordinator:
             logger.warning(f"Replica {replica_id} not ready (status: {replica['status']}), "
                           f"but termination imminent - promoting anyway")
 
-        # Promote replica
-        import uuid
-        new_instance_id = str(uuid.uuid4())
+        # Promote replica using its actual EC2 instance_id
+        # Get replica's actual instance_id
+        replica_instance = execute_query("""
+            SELECT instance_id, instance_type, region, hourly_cost
+            FROM replica_instances
+            WHERE id = %s
+        """, (replica_id,), fetch_one=True)
+
+        if not replica_instance or not replica_instance['instance_id']:
+            logger.error(f"Replica {replica_id} missing instance_id - cannot complete failover")
+            return False
+
+        new_instance_id = replica_instance['instance_id']  # Use actual EC2 instance ID
+
+        # Get on-demand price
+        ondemand_price_result = execute_query("""
+            SELECT price FROM ondemand_prices
+            WHERE instance_type = %s AND region = %s
+            LIMIT 1
+        """, (replica_instance['instance_type'], replica_instance['region']), fetch_one=True)
+
+        ondemand_price = ondemand_price_result['price'] if ondemand_price_result else 0.0416
 
         execute_query("""
             INSERT INTO instances (
                 id, client_id, instance_type, region, az,
-                current_pool_id, current_mode, is_active, installed_at
+                current_pool_id, current_mode, spot_price, ondemand_price, baseline_ondemand_price,
+                is_active, installed_at
             )
             SELECT
                 %s, a.client_id, ri.instance_type, ri.region, ri.az,
-                ri.pool_id, 'spot', TRUE, NOW()
+                ri.pool_id, 'spot', ri.hourly_cost, %s, %s, TRUE, NOW()
             FROM replica_instances ri
             JOIN agents a ON ri.agent_id = a.id
             WHERE ri.id = %s
-        """, (new_instance_id, replica_id))
+            ON DUPLICATE KEY UPDATE
+                is_active = TRUE,
+                current_mode = 'spot',
+                current_pool_id = VALUES(current_pool_id),
+                spot_price = VALUES(spot_price)
+        """, (new_instance_id, ondemand_price, ondemand_price, replica_id))
 
         # Update agent
         execute_query("""
@@ -6121,22 +6170,47 @@ def promote_replica(app):
                 WHERE id = %s
             """, (replica_id,))
 
-            # Step 2: Create new instance record for the replica
-            new_instance_id = str(uuid.uuid4())
+            # Step 2: Create new instance record for the replica using its actual EC2 instance_id
+            # Get replica's actual instance_id first
+            replica_instance = execute_query("""
+                SELECT instance_id, instance_type, region, hourly_cost
+                FROM replica_instances
+                WHERE id = %s
+            """, (replica_id,), fetch_one=True)
+
+            if not replica_instance or not replica_instance['instance_id']:
+                return jsonify({'error': 'Replica instance_id not found'}), 404
+
+            new_instance_id = replica_instance['instance_id']  # Use actual EC2 instance ID
+
+            # Get on-demand price for this instance type
+            ondemand_price_result = execute_query("""
+                SELECT price FROM ondemand_prices
+                WHERE instance_type = %s AND region = %s
+                LIMIT 1
+            """, (replica_instance['instance_type'], replica_instance['region']), fetch_one=True)
+
+            ondemand_price = ondemand_price_result['price'] if ondemand_price_result else 0.0416
+
             execute_query("""
                 INSERT INTO instances (
                     id, client_id, instance_type, region, az,
-                    current_pool_id, current_mode, spot_price, ondemand_price,
+                    current_pool_id, current_mode, spot_price, ondemand_price, baseline_ondemand_price,
                     is_active, installed_at
                 )
                 SELECT
                     %s, a.client_id, ri.instance_type, ri.region, ri.az,
-                    ri.pool_id, 'spot', ri.hourly_cost, NULL,
+                    ri.pool_id, 'spot', ri.hourly_cost, %s, %s,
                     TRUE, NOW()
                 FROM replica_instances ri
                 JOIN agents a ON ri.agent_id = a.id
                 WHERE ri.id = %s
-            """, (new_instance_id, replica_id))
+                ON DUPLICATE KEY UPDATE
+                    is_active = TRUE,
+                    current_mode = 'spot',
+                    current_pool_id = VALUES(current_pool_id),
+                    spot_price = VALUES(spot_price)
+            """, (new_instance_id, ondemand_price, ondemand_price, replica_id))
 
             # Step 3: Update agent to point to new instance
             execute_query("""
@@ -6641,20 +6715,47 @@ def handle_termination_imminent(app):
 
             old_instance_id = agent['instance_id']
 
-            # Create new instance record for promoted replica
-            new_instance_id = str(uuid.uuid4())
+            # Create new instance record for promoted replica using its actual EC2 instance_id
+            # Get replica's actual instance_id
+            replica_instance = execute_query("""
+                SELECT instance_id, instance_type, region, hourly_cost
+                FROM replica_instances
+                WHERE id = %s
+            """, (replica_id,), fetch_one=True)
+
+            if not replica_instance or not replica_instance['instance_id']:
+                logger.error(f"Replica {replica_id} missing instance_id - cannot complete failover")
+                return jsonify({'error': 'Replica instance_id not found'}), 404
+
+            new_instance_id = replica_instance['instance_id']  # Use actual EC2 instance ID
+
+            # Get on-demand price
+            ondemand_price_result = execute_query("""
+                SELECT price FROM ondemand_prices
+                WHERE instance_type = %s AND region = %s
+                LIMIT 1
+            """, (replica_instance['instance_type'], replica_instance['region']), fetch_one=True)
+
+            ondemand_price = ondemand_price_result['price'] if ondemand_price_result else 0.0416
+
             execute_query("""
                 INSERT INTO instances (
                     id, client_id, instance_type, region, az,
-                    current_pool_id, current_mode, is_active, installed_at
+                    current_pool_id, current_mode, spot_price, ondemand_price, baseline_ondemand_price,
+                    is_active, installed_at
                 )
                 SELECT
                     %s, a.client_id, ri.instance_type, ri.region, ri.az,
-                    ri.pool_id, 'spot', TRUE, NOW()
+                    ri.pool_id, 'spot', ri.hourly_cost, %s, %s, TRUE, NOW()
                 FROM replica_instances ri
                 JOIN agents a ON ri.agent_id = a.id
                 WHERE ri.id = %s
-            """, (new_instance_id, replica_id))
+                ON DUPLICATE KEY UPDATE
+                    is_active = TRUE,
+                    current_mode = 'spot',
+                    current_pool_id = VALUES(current_pool_id),
+                    spot_price = VALUES(spot_price)
+            """, (new_instance_id, ondemand_price, ondemand_price, replica_id))
 
             # Update agent
             execute_query("""
