@@ -12,7 +12,7 @@ const ClientInstancesTab = ({ clientId }) => {
   const [instances, setInstances] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selectedInstanceId, setSelectedInstanceId] = useState(null);
-  const [filters, setFilters] = useState({ status: 'all', mode: 'all', search: '' });
+  const [filters, setFilters] = useState({ status: 'active', mode: 'all', search: '' });
   const [error, setError] = useState(null);
 
   const loadInstances = useCallback(async () => {
