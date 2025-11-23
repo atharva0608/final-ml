@@ -745,13 +745,14 @@ def get_agent_config(agent_id: str):
     """Get agent configuration"""
     try:
         config_data = execute_query("""
-            SELECT 
+            SELECT
                 a.enabled,
                 a.auto_switch_enabled,
                 a.auto_terminate_enabled,
                 a.terminate_wait_seconds,
                 a.replica_enabled,
                 a.replica_count,
+                a.manual_replica_enabled,
                 COALESCE(ac.min_savings_percent, 15.00) as min_savings_percent,
                 COALESCE(ac.risk_threshold, 0.30) as risk_threshold,
                 COALESCE(ac.max_switches_per_week, 10) as max_switches_per_week,
@@ -771,6 +772,7 @@ def get_agent_config(agent_id: str):
             'terminate_wait_seconds': config_data['terminate_wait_seconds'],
             'replica_enabled': config_data['replica_enabled'],
             'replica_count': config_data['replica_count'],
+            'manual_replica_enabled': config_data['manual_replica_enabled'],
             'min_savings_percent': float(config_data['min_savings_percent']),
             'risk_threshold': float(config_data['risk_threshold']),
             'max_switches_per_week': config_data['max_switches_per_week'],
@@ -2786,7 +2788,7 @@ def get_instance_price_history(instance_id: str):
 
         # Get instance info
         instance = execute_query("""
-            SELECT i.id, i.instance_id, i.instance_type, i.region, i.ondemand_price
+            SELECT i.id, i.instance_type, i.region, i.ondemand_price
             FROM instances i
             WHERE i.id = %s
         """, (instance_id,), fetch_one=True)
