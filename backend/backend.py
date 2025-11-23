@@ -610,19 +610,40 @@ def register_agent():
         if not instance_exists:
             # Get latest on-demand price
             latest_od_price = execute_query("""
-                SELECT price FROM ondemand_price_snapshots
+                SELECT price FROM ondemand_prices
                 WHERE region = %s AND instance_type = %s
-                ORDER BY captured_at DESC
                 LIMIT 1
             """, (validated_data['region'], validated_data['instance_type']), fetch_one=True)
-            
-            baseline_price = latest_od_price['price'] if latest_od_price else 0.1
-            
+
+            if not latest_od_price:
+                # Fallback to snapshots if ondemand_prices table is empty
+                latest_od_price = execute_query("""
+                    SELECT price FROM ondemand_price_snapshots
+                    WHERE region = %s AND instance_type = %s
+                    ORDER BY captured_at DESC
+                    LIMIT 1
+                """, (validated_data['region'], validated_data['instance_type']), fetch_one=True)
+
+            baseline_price = latest_od_price['price'] if latest_od_price else 0.0416  # Default t3.medium price
+
+            # Get spot price if in spot mode
+            spot_price = 0
+            if validated_data['mode'] == 'spot':
+                pool_id = validated_data.get('pool_id', f"{validated_data['instance_type']}.{validated_data['az']}")
+                latest_spot = execute_query("""
+                    SELECT price FROM spot_price_snapshots
+                    WHERE pool_id = %s
+                    ORDER BY captured_at DESC
+                    LIMIT 1
+                """, (pool_id,), fetch_one=True)
+                spot_price = latest_spot['price'] if latest_spot else baseline_price * 0.3  # Estimate 70% savings
+
             execute_query("""
-                INSERT INTO instances 
+                INSERT INTO instances
                 (id, client_id, agent_id, instance_type, region, az, ami_id,
-                 current_mode, is_active, baseline_ondemand_price, installed_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, TRUE, %s, NOW())
+                 current_mode, current_pool_id, spot_price, ondemand_price, baseline_ondemand_price,
+                 is_active, installed_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, TRUE, NOW())
             """, (
                 validated_data['instance_id'],
                 request.client_id,
@@ -632,6 +653,9 @@ def register_agent():
                 validated_data['az'],
                 validated_data.get('ami_id'),
                 validated_data['mode'],
+                validated_data.get('pool_id') if validated_data['mode'] == 'spot' else None,
+                spot_price if validated_data['mode'] == 'spot' else 0,
+                baseline_price,
                 baseline_price
             ))
         
@@ -3008,6 +3032,140 @@ def get_instance_price_history(instance_id: str):
 
     except Exception as e:
         logger.error(f"Get price history error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/client/pricing-history', methods=['GET'])
+@require_client_token
+def get_client_pricing_history():
+    """
+    Get pricing history for client (optionally filtered by agent_id)
+
+    Query params:
+    - days: Number of days (default 7, max 30)
+    - agent_id: Optional agent ID to filter data
+    - interval: 'hour' or 'day' (default 'hour')
+    """
+    try:
+        client_id = request.client_id
+        days = int(request.args.get('days', 7))
+        agent_id = request.args.get('agent_id')
+        interval = request.args.get('interval', 'hour')
+
+        # Limit to reasonable range
+        days = min(max(days, 1), 30)
+
+        # Get agent's instance details
+        if agent_id:
+            agent = execute_query("""
+                SELECT a.instance_id, a.instance_type, a.region
+                FROM agents a
+                WHERE a.id = %s AND a.client_id = %s
+            """, (agent_id, client_id), fetch_one=True)
+
+            if not agent:
+                return jsonify({'error': 'Agent not found'}), 404
+
+            instance_id = agent['instance_id']
+            instance_type = agent['instance_type']
+            region = agent['region']
+        else:
+            # Get first active agent for this client
+            agent = execute_query("""
+                SELECT a.instance_id, a.instance_type, a.region
+                FROM agents a
+                WHERE a.client_id = %s AND a.status = 'online'
+                ORDER BY a.last_heartbeat_at DESC
+                LIMIT 1
+            """, (client_id,), fetch_one=True)
+
+            if not agent:
+                return jsonify({'error': 'No active agents found'}), 404
+
+            instance_id = agent['instance_id']
+            instance_type = agent['instance_type']
+            region = agent['region']
+
+        # Get all pools for this instance type
+        pools = execute_query("""
+            SELECT id, pool_name, az
+            FROM spot_pools
+            WHERE instance_type = %s AND region = %s
+        """, (instance_type, region), fetch=True)
+
+        if not pools:
+            return jsonify({
+                'history': [],
+                'days': days,
+                'data_points': 0
+            })
+
+        # Get pricing data
+        time_format = '%%Y-%%m-%%d %%H:00:00' if interval == 'hour' else '%%Y-%%m-%%d'
+        pool_ids = [p['id'] for p in pools]
+        placeholders = ','.join(['%s'] * len(pool_ids))
+
+        query = f"""
+            SELECT
+                DATE_FORMAT(sps.captured_at, %s) as timestamp,
+                sps.pool_id,
+                AVG(sps.price) as price
+            FROM spot_price_snapshots sps
+            WHERE sps.pool_id IN ({placeholders})
+              AND sps.captured_at >= DATE_SUB(NOW(), INTERVAL %s DAY)
+            GROUP BY DATE_FORMAT(sps.captured_at, %s), sps.pool_id
+            ORDER BY timestamp ASC
+        """
+
+        params = [time_format] + pool_ids + [days, time_format]
+        price_data = execute_query(query, tuple(params), fetch=True)
+
+        # Get on-demand price
+        ondemand_query = """
+            SELECT AVG(price) as avg_price
+            FROM ondemand_price_snapshots
+            WHERE instance_type = %s AND region = %s
+              AND captured_at >= DATE_SUB(NOW(), INTERVAL %s DAY)
+        """
+        ondemand_result = execute_query(ondemand_query, (instance_type, region, days), fetch_one=True)
+        ondemand_price = float(ondemand_result['avg_price']) if ondemand_result and ondemand_result['avg_price'] else 0.0416
+
+        # Transform into time series format expected by frontend
+        time_buckets = {}
+        for row in (price_data or []):
+            timestamp = str(row['timestamp'])
+            pool_id = row['pool_id']
+            price = float(row['price'])
+
+            if timestamp not in time_buckets:
+                time_buckets[timestamp] = {
+                    'timestamp': timestamp,
+                    'ondemand_price': ondemand_price,
+                    'spot_pools': []
+                }
+
+            # Extract AZ from pool_id
+            az = pool_id.split('.')[-1] if '.' in pool_id else 'unknown'
+
+            time_buckets[timestamp]['spot_pools'].append({
+                'pool_id': pool_id,
+                'az': az,
+                'price': price
+            })
+
+        # Convert to array and sort by time
+        history = sorted(time_buckets.values(), key=lambda x: x['timestamp'])
+
+        return jsonify({
+            'history': history,
+            'days': days,
+            'data_points': len(history),
+            'agent_id': agent_id,
+            'instance_type': instance_type,
+            'region': region
+        }), 200
+
+    except Exception as e:
+        logger.error(f"Get client pricing history error: {e}", exc_info=True)
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/client/instances/<instance_id>/available-options', methods=['GET'])
@@ -5406,22 +5564,47 @@ class ReplicaCoordinator:
             logger.warning(f"Replica {replica_id} not ready (status: {replica['status']}), "
                           f"but termination imminent - promoting anyway")
 
-        # Promote replica
-        import uuid
-        new_instance_id = str(uuid.uuid4())
+        # Promote replica using its actual EC2 instance_id
+        # Get replica's actual instance_id
+        replica_instance = execute_query("""
+            SELECT instance_id, instance_type, region, hourly_cost
+            FROM replica_instances
+            WHERE id = %s
+        """, (replica_id,), fetch_one=True)
+
+        if not replica_instance or not replica_instance['instance_id']:
+            logger.error(f"Replica {replica_id} missing instance_id - cannot complete failover")
+            return False
+
+        new_instance_id = replica_instance['instance_id']  # Use actual EC2 instance ID
+
+        # Get on-demand price
+        ondemand_price_result = execute_query("""
+            SELECT price FROM ondemand_prices
+            WHERE instance_type = %s AND region = %s
+            LIMIT 1
+        """, (replica_instance['instance_type'], replica_instance['region']), fetch_one=True)
+
+        ondemand_price = ondemand_price_result['price'] if ondemand_price_result else 0.0416
 
         execute_query("""
             INSERT INTO instances (
                 id, client_id, instance_type, region, az,
-                current_pool_id, current_mode, is_active, installed_at
+                current_pool_id, current_mode, spot_price, ondemand_price, baseline_ondemand_price,
+                is_active, installed_at
             )
             SELECT
                 %s, a.client_id, ri.instance_type, ri.region, ri.az,
-                ri.pool_id, 'spot', TRUE, NOW()
+                ri.pool_id, 'spot', ri.hourly_cost, %s, %s, TRUE, NOW()
             FROM replica_instances ri
             JOIN agents a ON ri.agent_id = a.id
             WHERE ri.id = %s
-        """, (new_instance_id, replica_id))
+            ON DUPLICATE KEY UPDATE
+                is_active = TRUE,
+                current_mode = 'spot',
+                current_pool_id = VALUES(current_pool_id),
+                spot_price = VALUES(spot_price)
+        """, (new_instance_id, ondemand_price, ondemand_price, replica_id))
 
         # Update agent
         execute_query("""
@@ -5878,12 +6061,13 @@ def create_manual_replica(app):
                     'hint': 'Enable manual_replica_enabled in agent settings'
                 }), 400
 
-            # Check current replica count
-            if agent.get('replica_count', 0) >= 2:
+            # Check current replica count - manual mode maintains exactly 1 replica
+            if agent.get('replica_count', 0) >= 1:
                 return jsonify({
-                    'error': 'Maximum replica limit reached',
+                    'error': 'Replica already exists for this agent',
                     'current_count': agent['replica_count'],
-                    'max_allowed': 2
+                    'max_allowed': 1,
+                    'note': 'Manual replica mode maintains exactly 1 replica. Delete existing replica first.'
                 }), 400
 
             # Determine target pool
@@ -6120,22 +6304,47 @@ def promote_replica(app):
                 WHERE id = %s
             """, (replica_id,))
 
-            # Step 2: Create new instance record for the replica
-            new_instance_id = str(uuid.uuid4())
+            # Step 2: Create new instance record for the replica using its actual EC2 instance_id
+            # Get replica's actual instance_id first
+            replica_instance = execute_query("""
+                SELECT instance_id, instance_type, region, hourly_cost
+                FROM replica_instances
+                WHERE id = %s
+            """, (replica_id,), fetch_one=True)
+
+            if not replica_instance or not replica_instance['instance_id']:
+                return jsonify({'error': 'Replica instance_id not found'}), 404
+
+            new_instance_id = replica_instance['instance_id']  # Use actual EC2 instance ID
+
+            # Get on-demand price for this instance type
+            ondemand_price_result = execute_query("""
+                SELECT price FROM ondemand_prices
+                WHERE instance_type = %s AND region = %s
+                LIMIT 1
+            """, (replica_instance['instance_type'], replica_instance['region']), fetch_one=True)
+
+            ondemand_price = ondemand_price_result['price'] if ondemand_price_result else 0.0416
+
             execute_query("""
                 INSERT INTO instances (
                     id, client_id, instance_type, region, az,
-                    current_pool_id, current_mode, spot_price, ondemand_price,
+                    current_pool_id, current_mode, spot_price, ondemand_price, baseline_ondemand_price,
                     is_active, installed_at
                 )
                 SELECT
                     %s, a.client_id, ri.instance_type, ri.region, ri.az,
-                    ri.pool_id, 'spot', ri.hourly_cost, NULL,
+                    ri.pool_id, 'spot', ri.hourly_cost, %s, %s,
                     TRUE, NOW()
                 FROM replica_instances ri
                 JOIN agents a ON ri.agent_id = a.id
                 WHERE ri.id = %s
-            """, (new_instance_id, replica_id))
+                ON DUPLICATE KEY UPDATE
+                    is_active = TRUE,
+                    current_mode = 'spot',
+                    current_pool_id = VALUES(current_pool_id),
+                    spot_price = VALUES(spot_price)
+            """, (new_instance_id, ondemand_price, ondemand_price, replica_id))
 
             # Step 3: Update agent to point to new instance
             execute_query("""
@@ -6640,20 +6849,47 @@ def handle_termination_imminent(app):
 
             old_instance_id = agent['instance_id']
 
-            # Create new instance record for promoted replica
-            new_instance_id = str(uuid.uuid4())
+            # Create new instance record for promoted replica using its actual EC2 instance_id
+            # Get replica's actual instance_id
+            replica_instance = execute_query("""
+                SELECT instance_id, instance_type, region, hourly_cost
+                FROM replica_instances
+                WHERE id = %s
+            """, (replica_id,), fetch_one=True)
+
+            if not replica_instance or not replica_instance['instance_id']:
+                logger.error(f"Replica {replica_id} missing instance_id - cannot complete failover")
+                return jsonify({'error': 'Replica instance_id not found'}), 404
+
+            new_instance_id = replica_instance['instance_id']  # Use actual EC2 instance ID
+
+            # Get on-demand price
+            ondemand_price_result = execute_query("""
+                SELECT price FROM ondemand_prices
+                WHERE instance_type = %s AND region = %s
+                LIMIT 1
+            """, (replica_instance['instance_type'], replica_instance['region']), fetch_one=True)
+
+            ondemand_price = ondemand_price_result['price'] if ondemand_price_result else 0.0416
+
             execute_query("""
                 INSERT INTO instances (
                     id, client_id, instance_type, region, az,
-                    current_pool_id, current_mode, is_active, installed_at
+                    current_pool_id, current_mode, spot_price, ondemand_price, baseline_ondemand_price,
+                    is_active, installed_at
                 )
                 SELECT
                     %s, a.client_id, ri.instance_type, ri.region, ri.az,
-                    ri.pool_id, 'spot', TRUE, NOW()
+                    ri.pool_id, 'spot', ri.hourly_cost, %s, %s, TRUE, NOW()
                 FROM replica_instances ri
                 JOIN agents a ON ri.agent_id = a.id
                 WHERE ri.id = %s
-            """, (new_instance_id, replica_id))
+                ON DUPLICATE KEY UPDATE
+                    is_active = TRUE,
+                    current_mode = 'spot',
+                    current_pool_id = VALUES(current_pool_id),
+                    spot_price = VALUES(spot_price)
+            """, (new_instance_id, ondemand_price, ondemand_price, replica_id))
 
             # Update agent
             execute_query("""
