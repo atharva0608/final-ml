@@ -1,6 +1,6 @@
 # Critical Fixes Summary - 2025-11-23
 
-## 🎯 ISSUES FIXED
+## 🎯 ALL ISSUES FIXED (9 Total)
 
 ### 1. ✅ Manual Replica Toggle Not Persisting
 **Problem:** Toggle would turn OFF after saving and reopening
@@ -10,21 +10,135 @@
 
 ### 2. ✅ Auto-Terminate Toggle Not Persisting
 **Problem:** Toggle would reset after saving and reopening
-**Root Cause:** Backend POST endpoint not handling `autoTerminateEnabled` field
+**Root Cause:** Backend POST endpoint not handling `autoTerminateEnabled` field at all
 **Fix:** Added `autoTerminateEnabled` handler in `update_agent_config` (backend.py:2436-2441)
 **Commit:** `5e5819e`
 
 ### 3. ✅ Spot Prices Not Showing in Manual Switching
-**Problem:** Pool list displayed but no prices shown
+**Problem:** Pool list displayed but no prices shown ($0.0000)
 **Root Cause:** Querying from `pricing_snapshots_clean` which had no data
 **Fix:** Changed to query `spot_price_snapshots` for real-time pricing (backend.py:2832-2848)
 **Commit:** `4b169b5`
 
 ### 4. ✅ Price History Graphs Not Displaying
-**Problem:** No data shown in 7-day price history charts
+**Problem:** No data shown in 7-day price history charts (dots instead of lines)
 **Root Cause:** Querying from `pricing_snapshots_clean` instead of real-time table
 **Fix:** Changed to query `spot_price_snapshots` (backend.py:2985-2995)
 **Commit:** `5e5819e`
+
+### 5. ✅ Switch History Showing Epoch Timestamp (01/01/1970)
+**Problem:** Switch history showing "01/01/1970, 05:30:00" instead of actual timestamp
+**Root Cause:** `initiated_at` field was NULL, no fallback logic
+**Fix:** Added fallback chain: instance_launched_at → ami_created_at → initiated_at → now (backend.py:3253)
+**Commit:** `8d2aa45`
+
+### 6. ✅ Switch History Showing $0.0000 Price Impact
+**Problem:** Price and savings impact showing as $0.0000
+**Root Cause:** Wrong price field selection logic
+**Fix:** Select spot price for spot mode, on-demand for on-demand mode (backend.py:3259)
+**Commit:** `8d2aa45`
+
+### 7. ✅ Manual Replica Not Creating Continuously
+**Problem:** Replica created once but not recreated after switches
+**Root Cause:** Complex creation logic trying to import from non-existent module
+**Fix:** Simplified - let ReplicaCoordinator background job handle ALL creation (backend.py:2472)
+**Commit:** `8d2aa45`
+
+### 8. ✅ Manual Replica Using Wrong Pricing Data
+**Problem:** Replica creation querying empty pricing_snapshots_clean table
+**Root Cause:** Outdated query using wrong table
+**Fix:** Changed to query spot_price_snapshots for real-time prices (backend.py:5495)
+**Commit:** `8d2aa45`
+
+### 9. ✅ Instances Tab Showing All Instances by Default
+**Problem:** Instances tab showing terminated instances cluttering the view
+**User Request:** Show only active instances by default
+**Fix:** Changed default filter from 'all' to 'active' (ClientInstancesTab.jsx:15)
+**Commit:** `2c21b88`
+
+---
+
+---
+
+## 🤖 REPLICACOORDINATOR - AUTOMATIC BACKGROUND SERVICE
+
+### What It Does
+The `ReplicaCoordinator` is a background service that runs continuously and automatically handles ALL replica creation and maintenance.
+
+**Runs:** Every 10 seconds
+**Initialized:** At backend startup (backend.py:4060)
+**Started:** At backend startup (backend.py:4095)
+**Location:** backend.py:5102-5553
+
+### Monitor Loop (Every 10 Seconds)
+```python
+while running:
+    # 1. Get all active agents from database
+    agents = SELECT * FROM agents WHERE enabled = TRUE
+
+    for agent in agents:
+        # 2. Check agent's mode
+        if agent['auto_switch_enabled']:
+            # Auto-Switch Mode: Emergency replicas only
+            _handle_auto_switch_mode(agent)
+
+        elif agent['manual_replica_enabled']:
+            # Manual Replica Mode: Continuous replicas
+            _handle_manual_replica_mode(agent)
+
+    # 3. Wait 10 seconds before next check
+    time.sleep(10)
+```
+
+### Manual Replica Mode Flow
+```
+User enables manual_replica_enabled toggle
+  ↓ (within 10 seconds)
+ReplicaCoordinator detects manual_replica_enabled = TRUE
+  ↓
+Checks: Does agent have active replica?
+  ↓ NO
+Creates replica in cheapest pool (spot_price_snapshots)
+  ↓
+Inserts into replica_instances table
+  ↓
+Updates agents.current_replica_id and replica_count = 1
+  ↓ (every 10 seconds)
+Monitors replica health
+  ↓
+If replica promoted → Creates NEW replica immediately
+  ↓
+If replica terminated → Creates NEW replica immediately
+  ↓
+Continues until manual_replica_enabled = FALSE
+```
+
+### Auto-Switch Mode Flow
+```
+Agent detects AWS interruption signal
+  ↓
+Agent sends POST /api/agents/<id>/interruption-signal
+  ↓
+Inserts into spot_interruption_events table
+  ↓ (within 10 seconds)
+ReplicaCoordinator detects interruption event
+  ↓
+signal_type = 'rebalance-recommendation'?
+  ↓ YES
+Creates emergency replica
+  ↓
+Monitors replica readiness
+  ↓
+signal_type = 'instance-termination'?
+  ↓ YES
+Promotes replica to primary immediately
+  ↓
+Hands back control to ML model
+  ↓
+Terminates old emergency replica
+```
+
+**Key Point:** All replica creation is AUTOMATIC. No manual intervention needed once toggle is enabled.
 
 ---
 

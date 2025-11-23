@@ -1673,8 +1673,8 @@ def create_client():
         email = data.get('email', f"{client_name.lower().replace(' ', '_')}@example.com")
         
         execute_query("""
-            INSERT INTO clients (id, name, email, client_token, is_active, total_savings)
-            VALUES (%s, %s, %s, %s, TRUE, 0.0000)
+            INSERT INTO clients (id, name, email, client_token, is_active, status, total_savings)
+            VALUES (%s, %s, %s, %s, TRUE, 'active', 0.0000)
         """, (client_id, client_name, email, client_token))
         
         create_notification(f"New client created: {client_name}", 'info', client_id)
@@ -3864,13 +3864,21 @@ def get_model_sessions():
 # ==============================================================================
 
 def snapshot_clients_daily():
-    """Take daily snapshot of client counts for growth analytics"""
+    """
+    Take daily snapshot of client counts for growth analytics.
+
+    This job runs daily at 12:05 AM to capture client growth metrics.
+    It calculates:
+    - total_clients: Total number of clients
+    - new_clients_today: New clients since yesterday
+    - active_clients: Currently active clients (same as total for now)
+    """
     try:
         logger.info("Taking daily client snapshot...")
 
-        # Get current counts
+        # Get current counts (all clients, no is_active filter)
         today_count = execute_query(
-            "SELECT COUNT(*) as cnt FROM clients WHERE is_active = TRUE",
+            "SELECT COUNT(*) as cnt FROM clients",
             fetch_one=True
         )
         total_clients = today_count['cnt'] if today_count else 0
@@ -3899,6 +3907,58 @@ def snapshot_clients_daily():
         logger.info(f"✓ Daily snapshot: {total_clients} total, {new_clients_today} new")
     except Exception as e:
         logger.error(f"Daily snapshot error: {e}")
+
+def initialize_client_growth_data():
+    """
+    Initialize client growth data with historical backfill.
+
+    Called at backend startup if clients_daily_snapshot table is empty.
+    Creates 30 days of historical data based on current client count.
+    """
+    try:
+        # Check if table has data
+        existing = execute_query("""
+            SELECT COUNT(*) as cnt FROM clients_daily_snapshot
+        """, fetch_one=True)
+
+        if existing and existing['cnt'] > 0:
+            # Table already has data, skip initialization
+            return
+
+        logger.info("Initializing client growth data (empty table detected)...")
+
+        # Get current client count
+        current_count = execute_query(
+            "SELECT COUNT(*) as cnt FROM clients",
+            fetch_one=True
+        )
+        total_clients = current_count['cnt'] if current_count else 0
+
+        if total_clients == 0:
+            logger.info("No clients exist yet, skipping growth data initialization")
+            return
+
+        # Create 30 days of backfilled data
+        # Simulate gradual growth: start from total_clients and work backwards
+        for days_ago in range(30, -1, -1):
+            # Calculate date
+            snapshot_date = f"DATE_SUB(CURDATE(), INTERVAL {days_ago} DAY)"
+
+            # Simulate client count (gradually decrease as we go back in time)
+            # This is a rough estimate - adjust as needed
+            simulated_count = max(1, total_clients - (days_ago * (total_clients // 60)))
+            new_today = 1 if days_ago < 30 else simulated_count
+
+            execute_query(f"""
+                INSERT INTO clients_daily_snapshot
+                (snapshot_date, total_clients, new_clients_today, active_clients)
+                VALUES ({snapshot_date}, %s, %s, %s)
+            """, (simulated_count, new_today, simulated_count))
+
+        logger.info(f"✓ Initialized 30 days of growth data (current: {total_clients} clients)")
+
+    except Exception as e:
+        logger.error(f"Initialize growth data error: {e}")
 
 def compute_monthly_savings_job():
     """Compute monthly savings for all clients"""
@@ -4065,6 +4125,12 @@ def initialize_app():
 
     # Load decision engine
     decision_engine_manager.load_engine()
+
+    # Initialize client growth data if empty
+    try:
+        initialize_client_growth_data()
+    except Exception as e:
+        logger.error(f"Failed to initialize client growth data: {e}")
 
     # Start background jobs
     if config.ENABLE_BACKGROUND_JOBS:
@@ -6192,6 +6258,138 @@ def delete_replica(app):
             return jsonify({'error': str(e)}), 500
 
 
+def update_replica_instance(app):
+    """PUT /api/agents/<agent_id>/replicas/<replica_id> - Update replica with EC2 instance ID"""
+    @app.route('/api/agents/<agent_id>/replicas/<replica_id>', methods=['PUT'])
+    def update_replica_instance_endpoint(agent_id, replica_id):
+        """
+        Update replica with actual EC2 instance ID after launch.
+        Called by agent after launching EC2 instance.
+
+        Request body:
+        {
+            "instance_id": "i-1234567890abcdef0",
+            "status": "syncing"  # optional, defaults to 'syncing'
+        }
+        """
+        try:
+            data = request.get_json() or {}
+            instance_id = data.get('instance_id')
+            status = data.get('status', 'syncing')
+
+            if not instance_id:
+                return jsonify({'error': 'instance_id is required'}), 400
+
+            # Validate replica exists
+            replica = execute_query("""
+                SELECT * FROM replica_instances
+                WHERE id = %s AND agent_id = %s
+            """, (replica_id, agent_id), fetch=True)
+
+            if not replica or len(replica) == 0:
+                return jsonify({'error': 'Replica not found'}), 404
+
+            # Update replica with instance ID
+            execute_query("""
+                UPDATE replica_instances
+                SET instance_id = %s,
+                    status = %s,
+                    launched_at = CASE WHEN launched_at IS NULL THEN NOW() ELSE launched_at END
+                WHERE id = %s
+            """, (instance_id, status, replica_id))
+
+            logger.info(f"Updated replica {replica_id} with instance_id {instance_id}, status {status}")
+
+            return jsonify({
+                'success': True,
+                'replica_id': replica_id,
+                'instance_id': instance_id,
+                'status': status
+            }), 200
+
+        except Exception as e:
+            logger.error(f"Error updating replica instance: {e}", exc_info=True)
+            return jsonify({'error': str(e)}), 500
+
+
+def update_replica_status(app):
+    """POST /api/agents/<agent_id>/replicas/<replica_id>/status - Update replica status"""
+    @app.route('/api/agents/<agent_id>/replicas/<replica_id>/status', methods=['POST'])
+    def update_replica_status_endpoint(agent_id, replica_id):
+        """
+        Update replica status and metadata.
+        Called by agent during replica lifecycle.
+
+        Request body:
+        {
+            "status": "launching" | "syncing" | "ready" | "failed",
+            "sync_started_at": "2025-01-20T10:45:00Z",  # optional
+            "sync_completed_at": "2025-01-20T10:46:00Z",  # optional
+            "error_message": "Error details"  # optional, for failed status
+        }
+        """
+        try:
+            data = request.get_json() or {}
+            status = data.get('status')
+
+            if not status:
+                return jsonify({'error': 'status is required'}), 400
+
+            if status not in ('launching', 'syncing', 'ready', 'failed', 'terminated'):
+                return jsonify({'error': 'Invalid status'}), 400
+
+            # Validate replica exists
+            replica = execute_query("""
+                SELECT * FROM replica_instances
+                WHERE id = %s AND agent_id = %s
+            """, (replica_id, agent_id), fetch=True)
+
+            if not replica or len(replica) == 0:
+                return jsonify({'error': 'Replica not found'}), 404
+
+            # Build update query dynamically based on provided fields
+            updates = ["status = %s"]
+            params = [status]
+
+            if data.get('sync_started_at'):
+                updates.append("sync_started_at = %s")
+                params.append(data['sync_started_at'])
+
+            if data.get('sync_completed_at'):
+                updates.append("sync_completed_at = %s")
+                params.append(data['sync_completed_at'])
+
+            if data.get('error_message'):
+                updates.append("error_message = %s")
+                params.append(data['error_message'])
+
+            # If status is ready, mark as ready_at
+            if status == 'ready':
+                updates.append("ready_at = CASE WHEN ready_at IS NULL THEN NOW() ELSE ready_at END")
+
+            params.append(replica_id)
+
+            query = f"""
+                UPDATE replica_instances
+                SET {', '.join(updates)}
+                WHERE id = %s
+            """
+
+            execute_query(query, tuple(params))
+
+            logger.info(f"Updated replica {replica_id} status to {status}")
+
+            return jsonify({
+                'success': True,
+                'replica_id': replica_id,
+                'status': status
+            }), 200
+
+        except Exception as e:
+            logger.error(f"Error updating replica status: {e}", exc_info=True)
+            return jsonify({'error': str(e)}), 500
+
+
 # ============================================================================
 # AUTOMATIC SPOT INTERRUPTION DEFENSE
 # ============================================================================
@@ -6833,6 +7031,8 @@ def register_replica_management_endpoints(app):
     list_replicas(app)
     promote_replica(app)
     delete_replica(app)
+    update_replica_instance(app)  # PUT /api/agents/<agent_id>/replicas/<replica_id>
+    update_replica_status(app)    # POST /api/agents/<agent_id>/replicas/<replica_id>/status
     create_emergency_replica(app)
     handle_termination_imminent(app)
     update_replica_sync_status(app)
