@@ -955,18 +955,25 @@ def pricing_report(agent_id: str):
 def switch_report(agent_id: str):
     """Record switch event"""
     data = request.json
-    
+
     try:
         old_inst = data.get('old_instance', {})
         new_inst = data.get('new_instance', {})
         timing = data.get('timing', {})
         prices = data.get('pricing', {})
-        
+
+        # Get agent's auto_terminate setting
+        agent = execute_query("""
+            SELECT auto_terminate_enabled FROM agents WHERE id = %s
+        """, (agent_id,), fetch_one=True)
+
+        auto_terminate_enabled = agent.get('auto_terminate_enabled', True) if agent else True
+
         # Calculate savings impact
         old_price = prices.get('old_spot') or prices.get('on_demand', 0)
         new_price = prices.get('new_spot') or prices.get('on_demand', 0)
         savings_impact = old_price - new_price
-        
+
         # Insert switch record
         switch_id = generate_uuid()
         execute_query("""
@@ -997,13 +1004,19 @@ def switch_report(agent_id: str):
             timing.get('instance_launched_at'), timing.get('instance_ready_at'),
             timing.get('old_terminated_at')
         ))
-        
-        # Deactivate old instance
-        execute_query("""
-            UPDATE instances
-            SET is_active = FALSE, terminated_at = %s
-            WHERE id = %s AND client_id = %s
-        """, (timing.get('old_terminated_at'), old_inst.get('instance_id'), request.client_id))
+
+        # ONLY mark old instance as terminated if auto_terminate is enabled
+        # This prevents unwanted termination when user has disabled it
+        if auto_terminate_enabled and timing.get('old_terminated_at'):
+            execute_query("""
+                UPDATE instances
+                SET is_active = FALSE, terminated_at = %s
+                WHERE id = %s AND client_id = %s
+            """, (timing.get('old_terminated_at'), old_inst.get('instance_id'), request.client_id))
+            logger.info(f"Old instance {old_inst.get('instance_id')} marked as terminated (auto_terminate=ON)")
+        else:
+            # Keep old instance as active if auto_terminate is disabled
+            logger.info(f"Old instance {old_inst.get('instance_id')} kept active (auto_terminate=OFF)")
         
         # Register new instance
         execute_query("""
@@ -1539,9 +1552,10 @@ def issue_switch_command(agent_id: str):
     try:
         data = request.json or {}
 
-        # Get agent configuration
+        # Get agent configuration including terminate settings
         agent = execute_query("""
-            SELECT id, hostname, auto_switch_enabled, enabled, instance_id, current_mode, current_pool_id
+            SELECT id, hostname, auto_switch_enabled, auto_terminate_enabled,
+                   terminate_wait_seconds, enabled, instance_id, current_mode, current_pool_id
             FROM agents
             WHERE id = %s AND client_id = %s
         """, (agent_id, request.client_id), fetch_one=True)
@@ -1581,6 +1595,13 @@ def issue_switch_command(agent_id: str):
                 'current_pool_id': agent['current_pool_id']
             }), 200
 
+        # Determine terminate_wait_seconds based on auto_terminate setting
+        # If auto_terminate is disabled, set to 0 to signal agent NOT to terminate old instance
+        if agent['auto_terminate_enabled']:
+            terminate_wait = agent['terminate_wait_seconds'] or 300
+        else:
+            terminate_wait = 0  # Signal: DO NOT terminate old instance
+
         # Create switch command
         command_id = generate_uuid()
         execute_query("""
@@ -1588,7 +1609,7 @@ def issue_switch_command(agent_id: str):
                 id, agent_id, client_id, instance_id,
                 target_mode, target_pool_id, priority,
                 terminate_wait_seconds, status, created_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, 300, 'pending', NOW())
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'pending', NOW())
         """, (
             command_id,
             agent_id,
@@ -1596,10 +1617,11 @@ def issue_switch_command(agent_id: str):
             agent['instance_id'],
             target_mode,
             target_pool_id,
-            data.get('priority', 5)
+            data.get('priority', 5),
+            terminate_wait
         ))
 
-        logger.info(f"✓ Switch command issued for agent {agent_id}: {target_mode} (pool: {target_pool_id})")
+        logger.info(f"✓ Switch command issued for agent {agent_id}: {target_mode} (pool: {target_pool_id}), auto_terminate={agent['auto_terminate_enabled']}, terminate_wait={terminate_wait}s")
 
         create_notification(
             f"Switch command issued to {agent.get('hostname', agent_id)}: {target_mode}",

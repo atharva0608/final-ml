@@ -587,6 +587,231 @@ cat /opt/spot-agent/data/agent_state.json
 
 ---
 
+## ⚠️ CRITICAL: Auto-Termination Fix
+
+### Problem
+Even when `auto_terminate_enabled = FALSE`, the old instance was being terminated during switches. This is now FIXED on the server side, but agents need to be updated to respect this setting.
+
+### Server-Side Fixes (COMPLETED ✅)
+
+1. **switch_report endpoint** - Now checks `auto_terminate_enabled` before marking old instance as terminated
+2. **issue_switch_command endpoint** - Now sets `terminate_wait_seconds = 0` when auto_terminate is disabled
+
+### Required Agent-Side Changes
+
+#### Update Switch Command Handler
+
+**Current (BROKEN) Behavior:**
+```python
+def execute_switch_command(command):
+    """Execute switch command"""
+    # Create AMI from current instance
+    ami_id = create_ami()
+
+    # Launch new instance
+    new_instance = launch_instance(ami_id, command['target_pool_id'])
+
+    # Wait for new instance to be ready
+    wait_for_ready(new_instance)
+
+    # ALWAYS terminates old instance - THIS IS THE BUG
+    time.sleep(command['terminate_wait_seconds'])
+    terminate_old_instance()
+```
+
+**Fixed (CORRECT) Behavior:**
+```python
+def execute_switch_command(command):
+    """Execute switch command with proper auto-terminate handling"""
+    # Create AMI from current instance
+    ami_id = create_ami()
+
+    # Launch new instance
+    new_instance = launch_instance(ami_id, command['target_pool_id'])
+
+    # Wait for new instance to be ready
+    wait_for_ready(new_instance)
+
+    # CRITICAL: Check terminate_wait_seconds before terminating
+    # If 0, it means auto_terminate is DISABLED - do NOT terminate
+    terminate_wait = command.get('terminate_wait_seconds', 0)
+
+    if terminate_wait > 0:
+        logger.info(f"Auto-terminate enabled: waiting {terminate_wait}s before terminating old instance")
+        time.sleep(terminate_wait)
+        terminate_old_instance()
+        logger.info("Old instance terminated")
+    else:
+        logger.info("Auto-terminate disabled: keeping old instance running")
+        # Old instance stays alive - user can manually terminate it later
+```
+
+#### Update Switch Report
+
+**Send correct termination timestamp:**
+```python
+def report_switch_to_server(old_instance, new_instance, command):
+    """Report switch completion to server"""
+
+    timing = {
+        'initiated_at': switch_start_time,
+        'ami_created_at': ami_creation_time,
+        'instance_launched_at': instance_launch_time,
+        'instance_ready_at': instance_ready_time,
+    }
+
+    # ONLY include old_terminated_at if we actually terminated it
+    if command.get('terminate_wait_seconds', 0) > 0:
+        timing['old_terminated_at'] = datetime.utcnow().isoformat()
+    # If terminate_wait_seconds is 0, don't include old_terminated_at
+    # This tells server: old instance is still running
+
+    response = requests.post(
+        f"{SERVER_URL}/api/agents/{AGENT_ID}/switch-report",
+        json={
+            'old_instance': old_instance,
+            'new_instance': new_instance,
+            'timing': timing,
+            'pricing': pricing_data,
+            'trigger': 'auto_switch',
+            'command_id': command['id']
+        }
+    )
+```
+
+### How It Works Now
+
+**When `auto_terminate_enabled = TRUE`:**
+1. Server creates command with `terminate_wait_seconds = 300` (or configured value)
+2. Agent switches to new instance
+3. Agent waits 300 seconds
+4. Agent terminates old instance
+5. Agent reports switch with `old_terminated_at` timestamp
+6. Server marks old instance as inactive
+
+**When `auto_terminate_enabled = FALSE`:**
+1. Server creates command with `terminate_wait_seconds = 0`
+2. Agent switches to new instance
+3. Agent sees `terminate_wait_seconds = 0`
+4. Agent **DOES NOT** terminate old instance
+5. Agent reports switch **WITHOUT** `old_terminated_at` timestamp
+6. Server keeps old instance as active
+7. User can manually terminate old instance when ready
+
+### Implementation Checklist
+
+- [ ] Update switch command handler to check `terminate_wait_seconds`
+- [ ] Add logging for auto-terminate status
+- [ ] Only call `terminate_old_instance()` if `terminate_wait_seconds > 0`
+- [ ] Only include `old_terminated_at` in switch report if actually terminated
+- [ ] Test with `auto_terminate_enabled = FALSE`
+- [ ] Verify old instance stays running after switch
+
+### Testing
+
+```bash
+# Test 1: Auto-terminate ENABLED
+# 1. Set auto_terminate_enabled = TRUE on dashboard
+# 2. Set terminate_wait_seconds = 60
+# 3. Trigger switch
+# 4. Verify old instance terminated after 60 seconds
+# 5. Verify old instance marked as inactive in database
+
+# Test 2: Auto-terminate DISABLED
+# 1. Set auto_terminate_enabled = FALSE on dashboard
+# 2. Trigger switch
+# 3. Verify old instance stays running
+# 4. Verify old instance still marked as active in database
+# 5. Can still access old instance (SSH, etc.)
+```
+
+### Example Code
+
+**Complete switch handler with auto-terminate support:**
+
+```python
+def handle_switch_command(command):
+    """
+    Execute instance switch with proper auto-terminate handling.
+
+    Args:
+        command: Switch command from server containing:
+            - target_mode: 'spot' or 'ondemand'
+            - target_pool_id: Pool to switch to
+            - terminate_wait_seconds: 0 = don't terminate, >0 = wait then terminate
+    """
+    try:
+        logger.info(f"Starting switch: {command['target_mode']}, pool={command.get('target_pool_id')}")
+
+        # Get current instance details
+        old_instance = get_current_instance_metadata()
+
+        # Step 1: Create AMI from current instance
+        logger.info("Creating AMI from current instance...")
+        ami_id = create_ami(
+            instance_id=old_instance['instance_id'],
+            name=f"auto-switch-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}"
+        )
+        ami_created_at = datetime.utcnow()
+        logger.info(f"AMI created: {ami_id}")
+
+        # Step 2: Launch new instance
+        logger.info(f"Launching new instance in pool {command['target_pool_id']}...")
+        new_instance = launch_instance(
+            ami_id=ami_id,
+            instance_type=old_instance['instance_type'],
+            pool_id=command['target_pool_id'],
+            target_mode=command['target_mode']
+        )
+        instance_launched_at = datetime.utcnow()
+        logger.info(f"New instance launched: {new_instance['instance_id']}")
+
+        # Step 3: Wait for new instance to be ready
+        logger.info("Waiting for new instance to be ready...")
+        wait_for_instance_ready(new_instance['instance_id'])
+        instance_ready_at = datetime.utcnow()
+        logger.info("New instance is ready")
+
+        # Step 4: Handle old instance termination based on auto_terminate setting
+        terminate_wait = command.get('terminate_wait_seconds', 0)
+        old_terminated_at = None
+
+        if terminate_wait > 0:
+            logger.info(f"Auto-terminate ENABLED: waiting {terminate_wait}s before terminating old instance {old_instance['instance_id']}")
+            time.sleep(terminate_wait)
+
+            logger.info(f"Terminating old instance {old_instance['instance_id']}...")
+            terminate_instance(old_instance['instance_id'])
+            old_terminated_at = datetime.utcnow()
+            logger.info(f"Old instance {old_instance['instance_id']} terminated")
+        else:
+            logger.info(f"Auto-terminate DISABLED: keeping old instance {old_instance['instance_id']} running")
+            logger.info("User can manually terminate the old instance when ready")
+
+        # Step 5: Report switch to server
+        timing = {
+            'initiated_at': switch_start_time.isoformat(),
+            'ami_created_at': ami_created_at.isoformat(),
+            'instance_launched_at': instance_launched_at.isoformat(),
+            'instance_ready_at': instance_ready_at.isoformat()
+        }
+
+        # Only include old_terminated_at if we actually terminated it
+        if old_terminated_at:
+            timing['old_terminated_at'] = old_terminated_at.isoformat()
+
+        report_switch_to_server(old_instance, new_instance, timing, command['id'])
+
+        logger.info("✓ Switch completed successfully")
+        return {'success': True, 'new_instance_id': new_instance['instance_id']}
+
+    except Exception as e:
+        logger.error(f"Switch failed: {e}", exc_info=True)
+        return {'success': False, 'error': str(e)}
+```
+
+---
+
 ## 📚 Additional Resources
 
 - [Server API Documentation](./API_REFERENCE.md)
