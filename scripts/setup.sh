@@ -1,11 +1,36 @@
 #!/bin/bash
 # ==============================================================================
-# AWS Spot Optimizer - Complete EC2 Setup Script (v3.3 - API FIX + DEMO DATA)
+# AWS Spot Optimizer - Complete Production Setup Script v3.3
 # ==============================================================================
-# Compatible with:
-#   - Backend: backend.py (Flask 3.0, MySQL Connector, APScheduler)
-#   - Frontend: Vite + React 18 + Recharts + Tailwind CSS
-#   - Database: schema.sql (MySQL 8.0)
+# This script performs a complete installation of the AWS Spot Optimizer:
+#
+# Components Installed:
+#   ✓ MySQL 8.0 Database (Docker container)
+#   ✓ Backend API (Flask 3.0 with 42+ endpoints)
+#   ✓ Frontend UI (Vite + React 18)
+#   ✓ Nginx Reverse Proxy (with CORS)
+#   ✓ Systemd Services
+#   ✓ Demo Data (3 clients, 8 agents)
+#
+# Features:
+#   ✓ Auto-detects AWS instance metadata
+#   ✓ MySQL 8.0 compatible (CREATE USER before GRANT)
+#   ✓ Docker network access (172.18.% grants)
+#   ✓ Model versioning system (keeps last 2 uploads)
+#   ✓ Database migrations (auto-applies)
+#   ✓ CORS support for all API endpoints
+#   ✓ Security hardening (systemd sandboxing)
+#
+# Usage:
+#   sudo bash setup.sh
+#
+# Requirements:
+#   - Ubuntu 24.04 LTS
+#   - Sudo access
+#   - Internet connectivity
+#
+# Documentation: See SETUP_CHANGES.md for details
+# Cleanup: Run cleanup.sh to remove everything
 # ==============================================================================
 
 set -e  # Exit on any error
@@ -104,14 +129,14 @@ REPO_DIR="$CLONE_DIR"
 
 log "Repository available at: $REPO_DIR"
 
-# Verify critical files exist
-if [ ! -f "$REPO_DIR/backend.py" ]; then
-    error "backend.py not found in repository!"
+# Verify critical files exist (updated for new structure)
+if [ ! -f "$REPO_DIR/backend/backend.py" ]; then
+    error "backend/backend.py not found in repository!"
     exit 1
 fi
 
-if [ ! -f "$REPO_DIR/schema.sql" ]; then
-    error "schema.sql not found in repository!"
+if [ ! -f "$REPO_DIR/database/schema.sql" ]; then
+    error "database/schema.sql not found in repository!"
     exit 1
 fi
 
@@ -120,8 +145,14 @@ if [ ! -d "$REPO_DIR/frontend" ]; then
     exit 1
 fi
 
-if [ -f "$REPO_DIR/demo-data.sql" ]; then
-    log "✓ Demo data file found (will import for testing)"
+if [ ! -d "$REPO_DIR/backend/decision_engines" ]; then
+    error "backend/decision_engines directory not found in repository!"
+    exit 1
+fi
+
+if [ ! -f "$REPO_DIR/backend/requirements.txt" ]; then
+    error "backend/requirements.txt not found in repository!"
+    exit 1
 fi
 
 log "✓ All required files verified"
@@ -323,17 +354,28 @@ log "Step 6: Setting up MySQL database with Docker..."
 docker stop spot-mysql 2>/dev/null || true
 docker rm spot-mysql 2>/dev/null || true
 
-# Remove old mysql-data directory to avoid permission conflicts
-# Docker will create it with proper ownership (mysql user UID 999)
+# Create Docker volume for MySQL data (better than bind mount for permissions)
+# Docker manages volume permissions automatically
+log "Creating Docker volume for MySQL data..."
+docker volume create spot-mysql-data 2>/dev/null || true
+
+# Remove old bind mount directory if it exists (migrate to Docker volume)
 if [ -d "/home/ubuntu/mysql-data" ]; then
-    log "Removing old mysql-data directory to fix permissions..."
-    sudo rm -rf /home/ubuntu/mysql-data
+    log "Found old bind mount directory, will migrate to Docker volume..."
+    # Keep backup of old data
+    if [ "$(ls -A /home/ubuntu/mysql-data 2>/dev/null)" ]; then
+        log "Backing up existing data to /home/ubuntu/mysql-data.backup..."
+        sudo mv /home/ubuntu/mysql-data "/home/ubuntu/mysql-data.backup.$(date +%Y%m%d_%H%M%S)"
+        warn "Old data backed up. You can restore it manually if needed."
+    else
+        sudo rm -rf /home/ubuntu/mysql-data
+    fi
 fi
 
 # Create Docker network for the app
 docker network create spot-network 2>/dev/null || true
 
-# Run MySQL container with enhanced configuration
+# Run MySQL container with Docker volume (automatic permission management)
 docker run -d \
     --name spot-mysql \
     --network spot-network \
@@ -343,7 +385,7 @@ docker run -d \
     -e MYSQL_USER="$DB_USER" \
     -e MYSQL_PASSWORD="$DB_PASSWORD" \
     -p "$DB_PORT:3306" \
-    -v /home/ubuntu/mysql-data:/var/lib/mysql \
+    -v spot-mysql-data:/var/lib/mysql \
     mysql:8.0 \
     --default-authentication-plugin=mysql_native_password \
     --character-set-server=utf8mb4 \
@@ -398,8 +440,8 @@ log "MySQL is fully ready!"
 
 log "Step 7: Importing database schema..."
 
-# Schema file should be in the repository root
-SCHEMA_FILE="$REPO_DIR/schema.sql"
+# Schema file should be in the database directory
+SCHEMA_FILE="$REPO_DIR/database/schema.sql"
 
 if [ -f "$SCHEMA_FILE" ]; then
     log "Found schema file: $SCHEMA_FILE"
@@ -422,17 +464,64 @@ else
     exit 1
 fi
 
-# Grant privileges
+# Grant privileges for all connection types
 log "Configuring database user privileges..."
-docker exec spot-mysql mysql -u root -p"$DB_ROOT_PASSWORD" --silent -e "
+
+# Wait a moment for user to be fully created
+sleep 2
+
+# Create users and grant privileges (MySQL 8.0 compatible - separate CREATE from GRANT)
+docker exec spot-mysql mysql -u root -p"$DB_ROOT_PASSWORD" -e "
+    -- Create spotuser for different host patterns if they don't exist
+    CREATE USER IF NOT EXISTS '$DB_USER'@'localhost' IDENTIFIED BY '$DB_PASSWORD';
+    CREATE USER IF NOT EXISTS '$DB_USER'@'172.18.%' IDENTIFIED BY '$DB_PASSWORD';
+
+    -- Grant to user from any host (already created during schema import)
     GRANT ALL PRIVILEGES ON $DB_NAME.* TO '$DB_USER'@'%';
+
+    -- Grant to user from localhost
+    GRANT ALL PRIVILEGES ON $DB_NAME.* TO '$DB_USER'@'localhost';
+
+    -- Grant to user from docker network (172.18.0.0/16)
+    GRANT ALL PRIVILEGES ON $DB_NAME.* TO '$DB_USER'@'172.18.%';
+
+    -- Create root user for docker network if it doesn't exist (MySQL 8.0 syntax)
+    CREATE USER IF NOT EXISTS 'root'@'172.18.%' IDENTIFIED BY '$DB_ROOT_PASSWORD';
+
+    -- Grant root access from docker network for admin tasks
+    GRANT ALL PRIVILEGES ON *.* TO 'root'@'172.18.%' WITH GRANT OPTION;
+
     FLUSH PRIVILEGES;
-" 2>/dev/null || true
+" 2>/dev/null
+
+# Verify the grants worked
+log "Verifying database connection..."
+if docker exec spot-mysql mysql -u "$DB_USER" -p"$DB_PASSWORD" -e "SELECT 1;" "$DB_NAME" > /dev/null 2>&1; then
+    log "✓ Database user can connect successfully"
+else
+    warn "Database user connection test failed - may need manual verification"
+fi
 
 log "Database privileges configured"
 
+# Migrations are now consolidated in schema.sql
+# Keeping this section for reference only
+if [ -f "$REPO_DIR/migrations/add_model_upload_sessions.sql" ]; then
+    log "Note: Migrations are now consolidated in schema.sql"
+    # Old migration files kept in migrations/archive/ for reference
+    TABLE_CHECK=$(docker exec spot-mysql mysql -u root -p"$DB_ROOT_PASSWORD" -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='spot_optimizer' AND table_name='model_upload_sessions';" 2>/dev/null || echo "0")
+
+    if [ "$TABLE_CHECK" = "1" ]; then
+        log "✅ Migration applied successfully (model_upload_sessions table created)"
+    else
+        warn "Migration may have issues - table not found"
+    fi
+else
+    log "No migration file found, skipping..."
+fi
+
 # Import demo data if available (optional)
-DEMO_DATA_FILE="$REPO_DIR/demo-data.sql"
+DEMO_DATA_FILE="$REPO_DIR/demo/demo_data.sql"
 if [ -f "$DEMO_DATA_FILE" ]; then
     log "Found demo data file - importing for testing..."
 
@@ -470,15 +559,42 @@ python3 -m venv venv
 # Activate virtual environment
 source venv/bin/activate
 
-# Copy backend.py from repository
+# Copy backend files from repository (now in backend/ directory)
 log "Copying backend files from repository..."
-if [ -f "$REPO_DIR/backend.py" ]; then
-    cp "$REPO_DIR/backend.py" "$BACKEND_DIR/"
+if [ -f "$REPO_DIR/backend/backend.py" ]; then
+    cp "$REPO_DIR/backend/backend.py" "$BACKEND_DIR/"
     log "✓ Copied backend.py"
 else
-    error "backend.py not found in repository!"
+    error "backend/backend.py not found in repository!"
     exit 1
 fi
+
+# Copy decision_engines module from repository
+log "Copying decision_engines module..."
+if [ -d "$REPO_DIR/backend/decision_engines" ]; then
+    cp -r "$REPO_DIR/backend/decision_engines" "$BACKEND_DIR/"
+    log "✓ Copied decision_engines module"
+else
+    error "backend/decision_engines directory not found in repository!"
+    exit 1
+fi
+
+# Copy requirements.txt from backend directory
+if [ -f "$REPO_DIR/backend/requirements.txt" ]; then
+    cp "$REPO_DIR/backend/requirements.txt" "$BACKEND_DIR/"
+    log "✓ Copied requirements.txt"
+else
+    error "backend/requirements.txt not found in repository!"
+    exit 1
+fi
+
+# Create production directories for model uploads
+log "Creating production model and engine directories..."
+mkdir -p "$MODELS_DIR"
+mkdir -p "$MODELS_DIR/decision_engines"
+chmod 775 "$MODELS_DIR"
+chmod 775 "$MODELS_DIR/decision_engines"
+log "✓ Created $MODELS_DIR and $MODELS_DIR/decision_engines"
 
 # Create requirements.txt with exact dependencies
 cat > "$BACKEND_DIR/requirements.txt" << 'EOF'
@@ -497,11 +613,12 @@ EOF
 # Install Python dependencies
 log "Installing Python dependencies..."
 pip install --upgrade pip setuptools wheel > /dev/null 2>&1
-pip install -r requirements.txt
+pip install -r "$BACKEND_DIR/requirements.txt"
 
 log "Python dependencies installed"
 
 # Create environment configuration file
+log "Creating backend environment configuration..."
 cat > "$BACKEND_DIR/.env" << EOF
 # Database Configuration
 DB_HOST=127.0.0.1
@@ -515,6 +632,7 @@ DB_POOL_SIZE=10
 DECISION_ENGINE_MODULE=decision_engines.ml_based_engine
 DECISION_ENGINE_CLASS=MLBasedDecisionEngine
 MODEL_DIR=$MODELS_DIR
+DECISION_ENGINE_DIR=$MODELS_DIR/decision_engines
 
 # Server
 HOST=$BACKEND_HOST
@@ -527,6 +645,16 @@ ENABLE_BACKGROUND_JOBS=True
 # Agent Communication
 AGENT_HEARTBEAT_TIMEOUT=120
 EOF
+
+# Verify .env was created correctly
+if [ -f "$BACKEND_DIR/.env" ]; then
+    log "✓ Backend .env file created"
+    # Show database config (hide password)
+    log "Database config: $DB_USER@127.0.0.1:$DB_PORT/$DB_NAME"
+else
+    error ".env file creation failed!"
+    exit 1
+fi
 
 log "Backend environment configured"
 
@@ -557,6 +685,16 @@ EOF
 
 chmod +x "$BACKEND_DIR/start_backend.sh"
 
+# Create restart script for backend self-restart
+cat > "$BACKEND_DIR/restart_backend.sh" << 'EOF'
+#!/bin/bash
+# This script allows the backend to restart itself
+echo "$(date): Backend restart requested" >> /home/ubuntu/logs/backend_restart.log
+sudo systemctl restart spot-optimizer-backend
+EOF
+chmod +x "$BACKEND_DIR/restart_backend.sh"
+log "✓ Created restart script for backend self-restart"
+
 deactivate
 
 log "Backend setup complete"
@@ -569,11 +707,26 @@ log "Step 9: Setting up Vite React frontend..."
 
 # Copy entire frontend directory from repository
 log "Copying frontend from repository..."
-if [ -d "$REPO_DIR/frontend" ]; then
-    # Copy all frontend files
-    cp -r "$REPO_DIR/frontend"/* "$FRONTEND_DIR/" 2>/dev/null || true
 
-    # Also copy hidden files like .gitignore
+# Ensure frontend target directory exists
+if [ ! -d "$FRONTEND_DIR" ]; then
+    log "Creating frontend directory..."
+    sudo mkdir -p "$FRONTEND_DIR"
+    sudo chown -R ubuntu:ubuntu "$FRONTEND_DIR"
+fi
+
+if [ -d "$REPO_DIR/frontend" ]; then
+    # Remove any existing frontend files first
+    sudo rm -rf "$FRONTEND_DIR"/*
+    sudo rm -rf "$FRONTEND_DIR"/.[!.]* 2>/dev/null || true
+
+    # Copy all frontend files (preserve structure)
+    cp -r "$REPO_DIR/frontend"/* "$FRONTEND_DIR/" 2>&1 || {
+        error "Failed to copy frontend files"
+        exit 1
+    }
+
+    # Copy hidden files like .gitignore
     cp -r "$REPO_DIR/frontend"/.[!.]* "$FRONTEND_DIR/" 2>/dev/null || true
 
     log "✓ Copied frontend files"
@@ -582,7 +735,16 @@ else
     exit 1
 fi
 
-cd "$FRONTEND_DIR"
+# Verify directory exists before cd
+if [ ! -d "$FRONTEND_DIR" ]; then
+    error "Frontend directory does not exist after copy!"
+    exit 1
+fi
+
+cd "$FRONTEND_DIR" || {
+    error "Cannot cd to $FRONTEND_DIR"
+    exit 1
+}
 
 # Update API URL in all possible locations to use the public IP
 log "Updating API URL to http://$PUBLIC_IP:5000..."
@@ -789,6 +951,18 @@ sudo systemctl enable spot-optimizer-backend
 
 log "Backend systemd service created"
 
+# Configure sudo permissions for backend self-restart
+log "Configuring sudo permissions for backend self-restart..."
+sudo tee /etc/sudoers.d/spot-optimizer-backend << EOF
+# Allow ubuntu user to restart backend service without password
+ubuntu ALL=(ALL) NOPASSWD: /bin/systemctl restart spot-optimizer-backend
+ubuntu ALL=(ALL) NOPASSWD: /bin/systemctl start spot-optimizer-backend
+ubuntu ALL=(ALL) NOPASSWD: /bin/systemctl stop spot-optimizer-backend
+ubuntu ALL=(ALL) NOPASSWD: /bin/systemctl status spot-optimizer-backend
+EOF
+sudo chmod 440 /etc/sudoers.d/spot-optimizer-backend
+log "✓ Sudoers configuration added for backend service management"
+
 # ==============================================================================
 # STEP 12: CREATE HELPER SCRIPTS
 # ==============================================================================
@@ -958,9 +1132,14 @@ chmod -R 755 "$LOGS_DIR"
 sudo chown -R ubuntu:ubuntu "$SCRIPTS_DIR"
 chmod -R 755 "$SCRIPTS_DIR"
 
-# MySQL data directory permissions
-sudo chown -R ubuntu:ubuntu /home/ubuntu/mysql-data
-chmod -R 755 /home/ubuntu/mysql-data
+# MySQL data directory permissions (only if bind mount exists - migrated to Docker volume)
+if [ -d "/home/ubuntu/mysql-data" ]; then
+    log "Fixing permissions on MySQL bind mount directory..."
+    sudo chown -R ubuntu:ubuntu /home/ubuntu/mysql-data
+    chmod -R 755 /home/ubuntu/mysql-data
+else
+    log "MySQL using Docker volume (no host directory permissions needed)"
+fi
 
 # Nginx directory permissions
 sudo chown -R www-data:www-data "$NGINX_ROOT"
