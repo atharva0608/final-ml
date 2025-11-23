@@ -2467,43 +2467,10 @@ def update_agent_config(agent_id: str):
             updates.append("auto_switch_enabled = FALSE")  # Force off
 
             # Create a manual replica immediately if none exists
-            if not current_manual_replica or replica_count == 0:
-                logger.info(f"Manual replica enabled for agent {agent_id}, creating replica")
-                # Trigger replica creation via internal API call
-                try:
-                    from replica_management_api import _select_cheapest_pool
-
-                    # Get instance details
-                    instance = execute_query("""
-                        SELECT instance_type, region, current_pool_id FROM instances WHERE id = %s
-                    """, (instance_id,), fetch_one=True)
-
-                    if instance:
-                        target_pool_id = _select_cheapest_pool(
-                            instance_type=instance['instance_type'],
-                            region=instance['region'],
-                            current_pool_id=instance['current_pool_id']
-                        )
-
-                        if target_pool_id:
-                            # Create replica record
-                            replica_id = str(uuid.uuid4())
-                            execute_query("""
-                                INSERT INTO replica_instances (
-                                    id, agent_id, instance_id, replica_type, pool_id, status,
-                                    created_by, parent_instance_id, is_active, created_at
-                                ) VALUES (
-                                    %s, %s, %s, 'manual', %s, 'launching', 'system', %s, TRUE, NOW()
-                                )
-                            """, (replica_id, agent_id, f"replica-{replica_id[:8]}", target_pool_id, instance_id))
-
-                            updates.append("replica_count = 1")
-                            updates.append("current_replica_id = %s")
-                            params.insert(0, replica_id)
-
-                            logger.info(f"Created manual replica {replica_id} for agent {agent_id}")
-                except Exception as replica_error:
-                    logger.error(f"Failed to create automatic replica: {replica_error}")
+            # Note: ReplicaCoordinator will handle continuous replica maintenance
+            # We just mark it enabled here and let the coordinator create the replica
+            logger.info(f"Manual replica enabled for agent {agent_id}")
+            logger.info(f"ReplicaCoordinator will create and maintain replica automatically")
 
         # Case 4: User disables manual_replica_enabled
         elif 'manualReplicaEnabled' in data and not bool(data['manualReplicaEnabled']):
@@ -3250,13 +3217,13 @@ def get_switch_history(client_id: str):
             'id': h['id'],
             'oldInstanceId': h['old_instance_id'],
             'newInstanceId': h['new_instance_id'],
-            'timestamp': h['initiated_at'].isoformat() if h['initiated_at'] else None,
+            'timestamp': (h['instance_launched_at'] or h['ami_created_at'] or h['initiated_at']).isoformat() if (h.get('instance_launched_at') or h.get('ami_created_at') or h.get('initiated_at')) else datetime.now().isoformat(),
             'fromMode': h['old_mode'],
             'toMode': h['new_mode'],
             'fromPool': h['old_pool_id'] or 'n/a',
             'toPool': h['new_pool_id'] or 'n/a',
-            'trigger': h['event_trigger'],
-            'price': float(h['new_spot_price'] or h['on_demand_price'] or 0),
+            'trigger': h['event_trigger'] or 'manual',
+            'price': float(h['new_spot_price'] or 0) if h['new_mode'] == 'spot' else float(h['on_demand_price'] or 0),
             'savingsImpact': float(h['savings_impact'] or 0)
         } for h in history or []])
         
@@ -5490,18 +5457,19 @@ class ReplicaCoordinator:
             logger.error(f"Cannot create manual replica - no active instance for agent {agent_id}")
             return None
 
-        # Find cheapest pool (different from current)
+        # Find cheapest pool (different from current) using real-time pricing
         pools = execute_query("""
-            SELECT sp.id, sp.az, psc.spot_price
+            SELECT sp.id, sp.az, COALESCE(sps.price, 0.05) as spot_price
             FROM spot_pools sp
             LEFT JOIN (
-                SELECT pool_id, spot_price,
-                       ROW_NUMBER() OVER (PARTITION BY pool_id ORDER BY time_bucket DESC) as rn
-                FROM pricing_snapshots_clean
-            ) psc ON psc.pool_id = sp.id AND psc.rn = 1
+                SELECT pool_id, price,
+                       ROW_NUMBER() OVER (PARTITION BY pool_id ORDER BY captured_at DESC) as rn
+                FROM spot_price_snapshots
+                WHERE captured_at >= DATE_SUB(NOW(), INTERVAL 1 HOUR)
+            ) sps ON sps.pool_id = sp.id AND sps.rn = 1
             WHERE sp.instance_type = %s
               AND sp.region = %s
-            ORDER BY psc.spot_price ASC
+            ORDER BY COALESCE(sps.price, 999999) ASC
             LIMIT 2
         """, (instance['instance_type'], instance['region']), fetch=True)
 
