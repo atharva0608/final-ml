@@ -5878,12 +5878,13 @@ def create_manual_replica(app):
                     'hint': 'Enable manual_replica_enabled in agent settings'
                 }), 400
 
-            # Check current replica count
-            if agent.get('replica_count', 0) >= 2:
+            # Check current replica count - manual mode maintains exactly 1 replica
+            if agent.get('replica_count', 0) >= 1:
                 return jsonify({
-                    'error': 'Maximum replica limit reached',
+                    'error': 'Replica already exists for this agent',
                     'current_count': agent['replica_count'],
-                    'max_allowed': 2
+                    'max_allowed': 1,
+                    'note': 'Manual replica mode maintains exactly 1 replica. Delete existing replica first.'
                 }), 400
 
             # Determine target pool

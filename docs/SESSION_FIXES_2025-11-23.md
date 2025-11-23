@@ -1,6 +1,6 @@
 # Session Fixes Summary - November 23, 2025
 
-## 🎯 All Issues Fixed This Session (11 Total)
+## 🎯 All Issues Fixed This Session (12 Total)
 
 ### 1. ✅ Manual Replica Toggle Not Persisting
 **Commit:** `0e75599`
@@ -230,6 +230,60 @@ ALTER TABLE replica_instances ADD COLUMN launched_at TIMESTAMP NULL AFTER create
 ```
 
 **Result:** Replica instances can now be created and updated without database errors
+
+---
+
+### 12. ✅ Enforced 1 Replica Limit for Manual Replica Mode
+**Commit:** [Pending]
+
+**Clarification:** Manual replica mode should maintain **exactly 1 replica** (not more)
+**Total Instances:** 1 primary + 1 replica = **2 instances maximum**
+**Behavior:** If either instance terminates, a replacement is created automatically
+
+**Changes Made:**
+1. Updated API validation to enforce 1 replica limit (backend.py:5882)
+```python
+# OLD: Allowed up to 2 replicas
+if agent.get('replica_count', 0) >= 2:
+    return 400 'Maximum replica limit reached', max_allowed=2
+
+# NEW: Enforce exactly 1 replica
+if agent.get('replica_count', 0) >= 1:
+    return 400 {
+        'error': 'Replica already exists for this agent',
+        'max_allowed': 1,
+        'note': 'Manual replica mode maintains exactly 1 replica.'
+    }
+```
+
+2. ReplicaCoordinator already implements this correctly (backend.py:5458-5509):
+```python
+def _handle_manual_replica_mode(self, agent: Dict):
+    """
+    Flow:
+    1. Ensure exactly ONE replica exists at all times  ✓
+    2. If replica is terminated/promoted, create new one immediately  ✓
+    3. Continue loop until manual_replica_enabled = FALSE  ✓
+    """
+    active_count = count_active_replicas(agent_id)
+
+    if active_count == 0:
+        create_manual_replica(agent)  # Create 1
+    elif active_count > 1:
+        keep_newest_replica()         # Keep only 1
+        terminate_others()            # Remove extras
+```
+
+**Documentation Created:**
+- `docs/MANUAL_REPLICA_BEHAVIOR.md` - Complete behavior guide with examples
+
+**Result:**
+- ✅ Manual replica mode maintains exactly 1 replica at all times
+- ✅ Total instances: 1 primary + 1 replica = 2 instances
+- ✅ If primary dies → Replica promoted → New replica created = Still 2 instances
+- ✅ If replica dies → New replica created = Still 2 instances
+- ✅ API enforces 1 replica limit
+- ✅ ReplicaCoordinator auto-corrects if >1 replicas exist
 
 ---
 
