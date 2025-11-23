@@ -6258,6 +6258,138 @@ def delete_replica(app):
             return jsonify({'error': str(e)}), 500
 
 
+def update_replica_instance(app):
+    """PUT /api/agents/<agent_id>/replicas/<replica_id> - Update replica with EC2 instance ID"""
+    @app.route('/api/agents/<agent_id>/replicas/<replica_id>', methods=['PUT'])
+    def update_replica_instance_endpoint(agent_id, replica_id):
+        """
+        Update replica with actual EC2 instance ID after launch.
+        Called by agent after launching EC2 instance.
+
+        Request body:
+        {
+            "instance_id": "i-1234567890abcdef0",
+            "status": "syncing"  # optional, defaults to 'syncing'
+        }
+        """
+        try:
+            data = request.get_json() or {}
+            instance_id = data.get('instance_id')
+            status = data.get('status', 'syncing')
+
+            if not instance_id:
+                return jsonify({'error': 'instance_id is required'}), 400
+
+            # Validate replica exists
+            replica = execute_query("""
+                SELECT * FROM replica_instances
+                WHERE id = %s AND agent_id = %s
+            """, (replica_id, agent_id), fetch=True)
+
+            if not replica or len(replica) == 0:
+                return jsonify({'error': 'Replica not found'}), 404
+
+            # Update replica with instance ID
+            execute_query("""
+                UPDATE replica_instances
+                SET instance_id = %s,
+                    status = %s,
+                    launched_at = CASE WHEN launched_at IS NULL THEN NOW() ELSE launched_at END
+                WHERE id = %s
+            """, (instance_id, status, replica_id))
+
+            logger.info(f"Updated replica {replica_id} with instance_id {instance_id}, status {status}")
+
+            return jsonify({
+                'success': True,
+                'replica_id': replica_id,
+                'instance_id': instance_id,
+                'status': status
+            }), 200
+
+        except Exception as e:
+            logger.error(f"Error updating replica instance: {e}", exc_info=True)
+            return jsonify({'error': str(e)}), 500
+
+
+def update_replica_status(app):
+    """POST /api/agents/<agent_id>/replicas/<replica_id>/status - Update replica status"""
+    @app.route('/api/agents/<agent_id>/replicas/<replica_id>/status', methods=['POST'])
+    def update_replica_status_endpoint(agent_id, replica_id):
+        """
+        Update replica status and metadata.
+        Called by agent during replica lifecycle.
+
+        Request body:
+        {
+            "status": "launching" | "syncing" | "ready" | "failed",
+            "sync_started_at": "2025-01-20T10:45:00Z",  # optional
+            "sync_completed_at": "2025-01-20T10:46:00Z",  # optional
+            "error_message": "Error details"  # optional, for failed status
+        }
+        """
+        try:
+            data = request.get_json() or {}
+            status = data.get('status')
+
+            if not status:
+                return jsonify({'error': 'status is required'}), 400
+
+            if status not in ('launching', 'syncing', 'ready', 'failed', 'terminated'):
+                return jsonify({'error': 'Invalid status'}), 400
+
+            # Validate replica exists
+            replica = execute_query("""
+                SELECT * FROM replica_instances
+                WHERE id = %s AND agent_id = %s
+            """, (replica_id, agent_id), fetch=True)
+
+            if not replica or len(replica) == 0:
+                return jsonify({'error': 'Replica not found'}), 404
+
+            # Build update query dynamically based on provided fields
+            updates = ["status = %s"]
+            params = [status]
+
+            if data.get('sync_started_at'):
+                updates.append("sync_started_at = %s")
+                params.append(data['sync_started_at'])
+
+            if data.get('sync_completed_at'):
+                updates.append("sync_completed_at = %s")
+                params.append(data['sync_completed_at'])
+
+            if data.get('error_message'):
+                updates.append("error_message = %s")
+                params.append(data['error_message'])
+
+            # If status is ready, mark as ready_at
+            if status == 'ready':
+                updates.append("ready_at = CASE WHEN ready_at IS NULL THEN NOW() ELSE ready_at END")
+
+            params.append(replica_id)
+
+            query = f"""
+                UPDATE replica_instances
+                SET {', '.join(updates)}
+                WHERE id = %s
+            """
+
+            execute_query(query, tuple(params))
+
+            logger.info(f"Updated replica {replica_id} status to {status}")
+
+            return jsonify({
+                'success': True,
+                'replica_id': replica_id,
+                'status': status
+            }), 200
+
+        except Exception as e:
+            logger.error(f"Error updating replica status: {e}", exc_info=True)
+            return jsonify({'error': str(e)}), 500
+
+
 # ============================================================================
 # AUTOMATIC SPOT INTERRUPTION DEFENSE
 # ============================================================================
@@ -6899,6 +7031,8 @@ def register_replica_management_endpoints(app):
     list_replicas(app)
     promote_replica(app)
     delete_replica(app)
+    update_replica_instance(app)  # PUT /api/agents/<agent_id>/replicas/<replica_id>
+    update_replica_status(app)    # POST /api/agents/<agent_id>/replicas/<replica_id>/status
     create_emergency_replica(app)
     handle_termination_imminent(app)
     update_replica_sync_status(app)
