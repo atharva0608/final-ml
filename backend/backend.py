@@ -258,7 +258,7 @@ class AgentRegistrationSchema(Schema):
 
 class HeartbeatSchema(Schema):
     """Validation schema for heartbeat"""
-    status = fields.Str(required=True, validate=validate.OneOf(['online', 'offline', 'disabled', 'switching', 'error']))
+    status = fields.Str(required=True, validate=validate.OneOf(['online', 'offline', 'disabled', 'switching', 'error', 'deleted']))
     instance_id = fields.Str(required=False)
     instance_type = fields.Str(required=False)
     mode = fields.Str(required=False)
@@ -955,18 +955,25 @@ def pricing_report(agent_id: str):
 def switch_report(agent_id: str):
     """Record switch event"""
     data = request.json
-    
+
     try:
         old_inst = data.get('old_instance', {})
         new_inst = data.get('new_instance', {})
         timing = data.get('timing', {})
         prices = data.get('pricing', {})
-        
+
+        # Get agent's auto_terminate setting
+        agent = execute_query("""
+            SELECT auto_terminate_enabled FROM agents WHERE id = %s
+        """, (agent_id,), fetch_one=True)
+
+        auto_terminate_enabled = agent.get('auto_terminate_enabled', True) if agent else True
+
         # Calculate savings impact
         old_price = prices.get('old_spot') or prices.get('on_demand', 0)
         new_price = prices.get('new_spot') or prices.get('on_demand', 0)
         savings_impact = old_price - new_price
-        
+
         # Insert switch record
         switch_id = generate_uuid()
         execute_query("""
@@ -997,13 +1004,19 @@ def switch_report(agent_id: str):
             timing.get('instance_launched_at'), timing.get('instance_ready_at'),
             timing.get('old_terminated_at')
         ))
-        
-        # Deactivate old instance
-        execute_query("""
-            UPDATE instances
-            SET is_active = FALSE, terminated_at = %s
-            WHERE id = %s AND client_id = %s
-        """, (timing.get('old_terminated_at'), old_inst.get('instance_id'), request.client_id))
+
+        # ONLY mark old instance as terminated if auto_terminate is enabled
+        # This prevents unwanted termination when user has disabled it
+        if auto_terminate_enabled and timing.get('old_terminated_at'):
+            execute_query("""
+                UPDATE instances
+                SET is_active = FALSE, terminated_at = %s
+                WHERE id = %s AND client_id = %s
+            """, (timing.get('old_terminated_at'), old_inst.get('instance_id'), request.client_id))
+            logger.info(f"Old instance {old_inst.get('instance_id')} marked as terminated (auto_terminate=ON)")
+        else:
+            # Keep old instance as active if auto_terminate is disabled
+            logger.info(f"Old instance {old_inst.get('instance_id')} kept active (auto_terminate=OFF)")
         
         # Register new instance
         execute_query("""
@@ -1539,9 +1552,10 @@ def issue_switch_command(agent_id: str):
     try:
         data = request.json or {}
 
-        # Get agent configuration
+        # Get agent configuration including terminate settings
         agent = execute_query("""
-            SELECT id, hostname, auto_switch_enabled, enabled, instance_id, current_mode, current_pool_id
+            SELECT id, hostname, auto_switch_enabled, auto_terminate_enabled,
+                   terminate_wait_seconds, enabled, instance_id, current_mode, current_pool_id
             FROM agents
             WHERE id = %s AND client_id = %s
         """, (agent_id, request.client_id), fetch_one=True)
@@ -1581,6 +1595,13 @@ def issue_switch_command(agent_id: str):
                 'current_pool_id': agent['current_pool_id']
             }), 200
 
+        # Determine terminate_wait_seconds based on auto_terminate setting
+        # If auto_terminate is disabled, set to 0 to signal agent NOT to terminate old instance
+        if agent['auto_terminate_enabled']:
+            terminate_wait = agent['terminate_wait_seconds'] or 300
+        else:
+            terminate_wait = 0  # Signal: DO NOT terminate old instance
+
         # Create switch command
         command_id = generate_uuid()
         execute_query("""
@@ -1588,7 +1609,7 @@ def issue_switch_command(agent_id: str):
                 id, agent_id, client_id, instance_id,
                 target_mode, target_pool_id, priority,
                 terminate_wait_seconds, status, created_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, 300, 'pending', NOW())
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'pending', NOW())
         """, (
             command_id,
             agent_id,
@@ -1596,10 +1617,11 @@ def issue_switch_command(agent_id: str):
             agent['instance_id'],
             target_mode,
             target_pool_id,
-            data.get('priority', 5)
+            data.get('priority', 5),
+            terminate_wait
         ))
 
-        logger.info(f"✓ Switch command issued for agent {agent_id}: {target_mode} (pool: {target_pool_id})")
+        logger.info(f"✓ Switch command issued for agent {agent_id}: {target_mode} (pool: {target_pool_id}), auto_terminate={agent['auto_terminate_enabled']}, terminate_wait={terminate_wait}s")
 
         create_notification(
             f"Switch command issued to {agent.get('hostname', agent_id)}: {target_mode}",
@@ -2101,14 +2123,15 @@ def get_client_details(client_id: str):
 
 @app.route('/api/client/<client_id>/agents', methods=['GET'])
 def get_client_agents(client_id: str):
-    """Get all agents for client"""
+    """Get all active agents for client (excludes deleted agents)"""
     try:
+        # Exclude deleted agents by default
         agents = execute_query("""
             SELECT a.*, ac.min_savings_percent, ac.risk_threshold,
                    ac.max_switches_per_week, ac.min_pool_duration_hours
             FROM agents a
             LEFT JOIN agent_configs ac ON ac.agent_id = a.id
-            WHERE a.client_id = %s
+            WHERE a.client_id = %s AND a.status != 'deleted'
             ORDER BY a.last_heartbeat_at DESC
         """, (client_id,), fetch=True)
         
@@ -2509,6 +2532,141 @@ def update_agent_config(agent_id: str):
 
     except Exception as e:
         logger.error(f"Update agent config error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/client/agents/<agent_id>', methods=['DELETE'])
+def delete_agent(agent_id: str):
+    """
+    Delete agent and clean up all associated resources.
+
+    This endpoint:
+    1. Terminates all active replicas
+    2. Marks agent as 'deleted' (soft delete)
+    3. Marks agent instance as inactive
+    4. Creates command for client to uninstall agent
+    5. Preserves all history for analytics
+    """
+    try:
+        # Verify agent exists and get details
+        agent = execute_query("""
+            SELECT id, client_id, instance_id, status, manual_replica_enabled, auto_switch_enabled
+            FROM agents
+            WHERE id = %s
+        """, (agent_id,), fetch_one=True)
+
+        if not agent:
+            return jsonify({'error': 'Agent not found'}), 404
+
+        # Terminate all active replicas for this agent
+        execute_query("""
+            UPDATE replica_instances
+            SET is_active = FALSE, status = 'terminated', terminated_at = NOW()
+            WHERE agent_id = %s AND is_active = TRUE
+        """, (agent_id,))
+
+        # Mark agent as deleted (soft delete - preserve history)
+        execute_query("""
+            UPDATE agents
+            SET status = 'deleted',
+                enabled = FALSE,
+                auto_switch_enabled = FALSE,
+                manual_replica_enabled = FALSE,
+                replica_count = 0,
+                current_replica_id = NULL,
+                updated_at = NOW()
+            WHERE id = %s
+        """, (agent_id,))
+
+        # Mark associated instance as inactive
+        if agent['instance_id']:
+            execute_query("""
+                UPDATE instances
+                SET is_active = FALSE, terminated_at = NOW()
+                WHERE id = %s
+            """, (agent['instance_id'],))
+
+        # Log deletion event
+        log_system_event(
+            'agent_deleted',
+            'info',
+            f"Agent {agent_id} deleted by user",
+            agent['client_id']
+        )
+
+        create_notification(
+            f"Agent {agent_id} has been deleted",
+            'info',
+            agent['client_id']
+        )
+
+        logger.info(f"Agent {agent_id} deleted successfully")
+
+        return jsonify({
+            'success': True,
+            'message': 'Agent deleted successfully',
+            'agent_id': agent_id
+        })
+
+    except Exception as e:
+        logger.error(f"Delete agent error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/client/<client_id>/agents/history', methods=['GET'])
+def get_client_agent_history(client_id: str):
+    """Get all agents including deleted ones for history view"""
+    try:
+        agents = execute_query("""
+            SELECT
+                a.id,
+                a.logical_agent_id,
+                a.instance_id,
+                a.instance_type,
+                a.region,
+                a.az,
+                a.current_mode,
+                a.status,
+                a.enabled,
+                a.auto_switch_enabled,
+                a.manual_replica_enabled,
+                a.created_at,
+                a.updated_at,
+                a.last_heartbeat_at,
+                i.installed_at,
+                i.terminated_at as instance_terminated_at
+            FROM agents a
+            LEFT JOIN instances i ON a.instance_id = i.id
+            WHERE a.client_id = %s
+            ORDER BY
+                CASE a.status
+                    WHEN 'online' THEN 1
+                    WHEN 'offline' THEN 2
+                    WHEN 'deleted' THEN 3
+                    ELSE 4
+                END,
+                a.last_heartbeat_at DESC
+        """, (client_id,), fetch=True)
+
+        return jsonify([{
+            'id': agent['id'],
+            'logicalAgentId': agent['logical_agent_id'],
+            'instanceId': agent['instance_id'],
+            'instanceType': agent['instance_type'],
+            'region': agent['region'],
+            'az': agent['az'],
+            'currentMode': agent['current_mode'],
+            'status': agent['status'],
+            'enabled': agent['enabled'],
+            'autoSwitchEnabled': agent['auto_switch_enabled'],
+            'manualReplicaEnabled': agent['manual_replica_enabled'],
+            'createdAt': agent['created_at'].isoformat() if agent['created_at'] else None,
+            'updatedAt': agent['updated_at'].isoformat() if agent['updated_at'] else None,
+            'lastHeartbeat': agent['last_heartbeat_at'].isoformat() if agent['last_heartbeat_at'] else None,
+            'installedAt': agent['installed_at'].isoformat() if agent.get('installed_at') else None,
+            'terminatedAt': agent['instance_terminated_at'].isoformat() if agent.get('instance_terminated_at') else None
+        } for agent in agents or []])
+
+    except Exception as e:
+        logger.error(f"Get agent history error: {e}", exc_info=True)
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/client/<client_id>/instances', methods=['GET'])
@@ -5003,13 +5161,13 @@ class ReplicaCoordinator:
 
         while self.running:
             try:
-                # Get all active agents
+                # Get all active agents (exclude deleted)
                 agents = execute_query("""
                     SELECT id, client_id, instance_id, auto_switch_enabled,
                            manual_replica_enabled, replica_count, current_replica_id,
                            last_interruption_signal, last_heartbeat_at
                     FROM agents
-                    WHERE enabled = TRUE AND status = 'online'
+                    WHERE enabled = TRUE AND status = 'online' AND status != 'deleted'
                 """, fetch=True)
 
                 for agent in (agents or []):
