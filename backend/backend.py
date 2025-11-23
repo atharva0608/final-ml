@@ -2148,7 +2148,9 @@ def get_client_agents(client_id: str):
             'instanceCount': agent['instance_count'] or 0,
             'enabled': agent['enabled'],
             'autoSwitchEnabled': agent['auto_switch_enabled'],
+            'manualReplicaEnabled': agent['manual_replica_enabled'],
             'autoTerminateEnabled': agent['auto_terminate_enabled'],
+            'terminateWaitMinutes': (agent['terminate_wait_seconds'] or 1800) // 60,
             'agentVersion': agent['agent_version']
         } for agent in agents or []])
         
