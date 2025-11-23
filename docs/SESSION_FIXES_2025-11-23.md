@@ -1,6 +1,6 @@
 # Session Fixes Summary - November 23, 2025
 
-## 🎯 All Issues Fixed This Session (10 Total)
+## 🎯 All Issues Fixed This Session (11 Total)
 
 ### 1. ✅ Manual Replica Toggle Not Persisting
 **Commit:** `0e75599`
@@ -176,6 +176,60 @@ Daily job at 12:05 AM continues with real data
 ```
 
 **Result:** Client growth chart now shows data immediately after backend restart
+
+---
+
+### 11. ✅ Missing launched_at Column in replica_instances Table
+**Commit:** [Pending]
+
+**Problem:** Replica creation failing with HTTP 500 error: "Unknown column 'launched_at' in 'field list'"
+**Root Cause:** Backend code (backend.py:6297) references `launched_at` column but it doesn't exist in `replica_instances` table
+**Error Details:**
+```
+2025-11-23 14:32:02,156 - main - ERROR - HTTP error 500: /api/agents/<agent_id>/replicas/<replica_id>
+{"error":"1054 (42S22): Unknown column 'launched_at' in 'field list'"}
+```
+
+**Fix:** Added missing `launched_at TIMESTAMP NULL` column to `replica_instances` table
+
+**Files Changed:**
+1. `database/schema.sql:551` - Added column definition
+```sql
+-- Lifecycle tracking
+status ENUM('launching', 'syncing', 'ready', 'promoted', 'terminated', 'failed') NOT NULL DEFAULT 'launching',
+created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+launched_at TIMESTAMP NULL,  -- ← ADDED
+ready_at TIMESTAMP NULL,
+promoted_at TIMESTAMP NULL,
+terminated_at TIMESTAMP NULL,
+```
+
+2. `migrations/add_launched_at_to_replica_instances.sql` - Created migration file
+```sql
+ALTER TABLE replica_instances
+ADD COLUMN launched_at TIMESTAMP NULL
+AFTER created_at;
+```
+
+**Backend Code Reference (backend.py:6294-6299):**
+```python
+UPDATE replica_instances
+SET instance_id = %s,
+    status = %s,
+    launched_at = CASE WHEN launched_at IS NULL THEN NOW() ELSE launched_at END
+WHERE id = %s
+```
+
+**Migration Instructions:**
+```bash
+# For existing databases, run the migration:
+mysql -u your_user -p spot_optimizer < migrations/add_launched_at_to_replica_instances.sql
+
+# Or manually:
+ALTER TABLE replica_instances ADD COLUMN launched_at TIMESTAMP NULL AFTER created_at;
+```
+
+**Result:** Replica instances can now be created and updated without database errors
 
 ---
 

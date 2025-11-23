@@ -200,6 +200,13 @@ CREATE TABLE replica_instances (
     region VARCHAR(32),                                 -- AWS region
     az VARCHAR(32),                                     -- Availability zone
 
+    -- Lifecycle Timestamps
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,     -- When replica record was created
+    launched_at TIMESTAMP NULL,                         -- When instance was actually launched in AWS
+    ready_at TIMESTAMP NULL,                            -- When replica became ready for promotion
+    promoted_at TIMESTAMP NULL,                         -- When replica was promoted to primary
+    terminated_at TIMESTAMP NULL,                       -- When replica was terminated
+
     -- Status
     status VARCHAR(50) DEFAULT 'launching',             -- 'launching', 'syncing', 'ready', 'promoted', 'terminated', 'failed'
     sync_status VARCHAR(50),                            -- 'initializing', 'syncing', 'synced', 'out-of-sync'
