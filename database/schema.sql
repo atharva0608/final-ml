@@ -548,6 +548,7 @@ CREATE TABLE IF NOT EXISTS replica_instances (
     -- Lifecycle tracking
     status ENUM('launching', 'syncing', 'ready', 'promoted', 'terminated', 'failed') NOT NULL DEFAULT 'launching',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    launched_at TIMESTAMP NULL,
     ready_at TIMESTAMP NULL,
     promoted_at TIMESTAMP NULL,
     terminated_at TIMESTAMP NULL,
