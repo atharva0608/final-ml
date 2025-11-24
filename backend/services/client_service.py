@@ -379,3 +379,94 @@ def get_chart_stats(client_id: str, days: int = 30) -> Dict[str, Any]:
         'agent_distribution': agent_distribution or [],
         'switch_triggers': switch_triggers or []
     }
+
+
+def export_client_savings(client_id: str):
+    """Export client savings as CSV"""
+    import csv
+    from io import StringIO
+
+    savings = execute_query("""
+        SELECT
+            CONCAT(year, '-', LPAD(month, 2, '0')) as period,
+            baseline_cost, actual_cost, savings, savings_percentage,
+            switch_count, instance_count
+        FROM client_savings_monthly
+        WHERE client_id = %s
+        ORDER BY year DESC, month DESC
+        LIMIT 24
+    """, (client_id,), fetch=True)
+
+    output = StringIO()
+    writer = csv.writer(output)
+
+    # Write headers
+    writer.writerow(['Period', 'Baseline Cost', 'Actual Cost', 'Savings',
+                    'Savings %', 'Switches', 'Instances'])
+
+    # Write data
+    for row in (savings or []):
+        writer.writerow([
+            row['period'],
+            float(row['baseline_cost'] or 0),
+            float(row['actual_cost'] or 0),
+            float(row['savings'] or 0),
+            float(row['savings_percentage'] or 0),
+            row['switch_count'], row['instance_count']
+        ])
+
+    output.seek(0)
+    return output.getvalue(), 200, {
+        'Content-Type': 'text/csv',
+        'Content-Disposition': f'attachment; filename=savings_{client_id}.csv'
+    }
+
+
+def export_switch_history(client_id: str):
+    """Export switch history as CSV"""
+    import csv
+    from io import StringIO
+
+    history = execute_query("""
+        SELECT
+            s.initiated_at, s.old_instance_id, s.new_instance_id,
+            s.old_mode, s.new_mode, s.old_pool_id, s.new_pool_id,
+            s.event_trigger, s.on_demand_price, s.old_spot_price,
+            s.new_spot_price, s.savings_impact, s.total_duration_seconds,
+            s.downtime_seconds, s.success
+        FROM switches s
+        WHERE s.client_id = %s
+        ORDER BY s.initiated_at DESC
+        LIMIT 1000
+    """, (client_id,), fetch=True)
+
+    output = StringIO()
+    writer = csv.writer(output)
+
+    # Write headers
+    writer.writerow(['Timestamp', 'Old Instance', 'New Instance', 'From Mode', 'To Mode',
+                    'From Pool', 'To Pool', 'Trigger', 'On-Demand Price', 'Old Spot Price',
+                    'New Spot Price', 'Savings Impact', 'Duration (s)', 'Downtime (s)', 'Success'])
+
+    # Write data
+    for row in (history or []):
+        writer.writerow([
+            row['initiated_at'].isoformat() if row['initiated_at'] else '',
+            row['old_instance_id'], row['new_instance_id'],
+            row['old_mode'], row['new_mode'],
+            row['old_pool_id'] or 'n/a', row['new_pool_id'] or 'n/a',
+            row['event_trigger'],
+            float(row['on_demand_price'] or 0),
+            float(row['old_spot_price'] or 0),
+            float(row['new_spot_price'] or 0),
+            float(row['savings_impact'] or 0),
+            row['total_duration_seconds'] or 0,
+            row['downtime_seconds'] or 0,
+            'Yes' if row['success'] else 'No'
+        ])
+
+    output.seek(0)
+    return output.getvalue(), 200, {
+        'Content-Type': 'text/csv',
+        'Content-Disposition': f'attachment; filename=switch_history_{client_id}.csv'
+    }
