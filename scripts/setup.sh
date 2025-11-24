@@ -1,18 +1,19 @@
 #!/bin/bash
 # ==============================================================================
-# AWS Spot Optimizer - Complete Production Setup Script v3.3
+# AWS Spot Optimizer - Complete Production Setup Script v5.0
 # ==============================================================================
 # This script performs a complete installation of the AWS Spot Optimizer:
 #
 # Components Installed:
 #   ✓ MySQL 8.0 Database (Docker container)
-#   ✓ Backend API (Flask 3.0 with 42+ endpoints)
+#   ✓ Backend API (Flask 3.0 - Modular Architecture with 67+ endpoints)
 #   ✓ Frontend UI (Vite + React 18)
 #   ✓ Nginx Reverse Proxy (with CORS)
 #   ✓ Systemd Services
 #   ✓ Demo Data (3 clients, 8 agents)
 #
 # Features:
+#   ✓ Modular backend architecture (api/, services/, components/, jobs/)
 #   ✓ Auto-detects AWS instance metadata
 #   ✓ MySQL 8.0 compatible (CREATE USER before GRANT)
 #   ✓ Docker network access (172.18.% grants)
@@ -20,6 +21,7 @@
 #   ✓ Database migrations (auto-applies)
 #   ✓ CORS support for all API endpoints
 #   ✓ Security hardening (systemd sandboxing)
+#   ✓ Background jobs with APScheduler
 #
 # Usage:
 #   sudo bash setup.sh
@@ -29,7 +31,7 @@
 #   - Sudo access
 #   - Internet connectivity
 #
-# Documentation: See SETUP_CHANGES.md for details
+# Documentation: See README.md and DEPLOYMENT.md in backend/ for details
 # Cleanup: Run cleanup.sh to remove everything
 # ==============================================================================
 
@@ -129,9 +131,19 @@ REPO_DIR="$CLONE_DIR"
 
 log "Repository available at: $REPO_DIR"
 
-# Verify critical files exist (updated for new structure)
-if [ ! -f "$REPO_DIR/backend/backend.py" ]; then
-    error "backend/backend.py not found in repository!"
+# Verify critical files exist (updated for modular structure v5.0)
+if [ ! -f "$REPO_DIR/backend/app.py" ]; then
+    error "backend/app.py not found in repository! (Modular backend entry point)"
+    exit 1
+fi
+
+if [ ! -d "$REPO_DIR/backend/api" ]; then
+    error "backend/api/ directory not found! (Modular route blueprints)"
+    exit 1
+fi
+
+if [ ! -d "$REPO_DIR/backend/services" ]; then
+    error "backend/services/ directory not found! (Business logic layer)"
     exit 1
 fi
 
@@ -149,6 +161,8 @@ if [ ! -d "$REPO_DIR/backend/decision_engines" ]; then
     error "backend/decision_engines directory not found in repository!"
     exit 1
 fi
+
+log "✓ All modular architecture directories verified"
 
 if [ ! -f "$REPO_DIR/backend/requirements.txt" ]; then
     error "backend/requirements.txt not found in repository!"
@@ -669,7 +683,7 @@ if [ -f .env ]; then
     export $(grep -v '^#' .env | xargs)
 fi
 
-# Start with gunicorn
+# Start with gunicorn (modular architecture - app.py entry point)
 exec gunicorn \
     --bind 0.0.0.0:5000 \
     --workers 4 \
@@ -680,7 +694,7 @@ exec gunicorn \
     --error-logfile /home/ubuntu/logs/backend_error.log \
     --capture-output \
     --log-level info \
-    backend:app
+    app:app
 EOF
 
 chmod +x "$BACKEND_DIR/start_backend.sh"

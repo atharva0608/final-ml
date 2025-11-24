@@ -1,13 +1,17 @@
 #!/bin/bash
 # ==============================================================================
-# AWS Spot Optimizer - Complete Cleanup Script
+# AWS Spot Optimizer - Complete Cleanup Script v5.0
 # ==============================================================================
 # This script removes ALL components installed by setup.sh:
-# - Systemd services
+# - Systemd services (modular backend service)
 # - Docker containers, volumes, networks, images
-# - Application directories and files
+# - Application directories and files (including modular backend structure)
 # - Configuration files
 # - Helper scripts
+# - Nginx configuration
+# - Frontend files
+#
+# Compatible with both monolithic and modular backend architectures
 # ==============================================================================
 
 set -e
@@ -42,16 +46,17 @@ info() {
 
 echo ""
 echo "======================================================================"
-echo "  AWS SPOT OPTIMIZER - COMPLETE CLEANUP"
+echo "  AWS SPOT OPTIMIZER - COMPLETE CLEANUP v5.0"
 echo "======================================================================"
 echo ""
 warn "This script will REMOVE ALL components of the Spot Optimizer:"
-echo "  - Systemd services (backend)"
+echo "  - Systemd services (modular backend service)"
 echo "  - Docker containers (MySQL)"
 echo "  - Docker volumes (mysql-data)"
 echo "  - Docker networks (spot-network)"
 echo "  - Docker images (mysql, python, node)"
 echo "  - Application directories (/home/ubuntu/spot-optimizer)"
+echo "    • Modular backend (api/, services/, components/, jobs/)"
 echo "  - Model files (/home/ubuntu/production_models)"
 echo "  - Log files (/home/ubuntu/logs)"
 echo "  - Helper scripts (/home/ubuntu/scripts)"
