@@ -1,23 +1,63 @@
 """
-AWS Spot Optimizer - Central Server Backend v4.3
-==============================================================
-Fully compatible with Agent v4.0 and MySQL Schema v5.1
+================================================================================
+AWS Spot Optimizer - Central Server Backend v5.0 (Modular Architecture)
+================================================================================
 
-Features:
-- All v4.0 features preserved
-- File upload for Decision Engine and ML Models
-- Automatic backend restart after upload (dev & production)
-- Automatic model reloading after upload
-- Enhanced system health endpoint
-- Pluggable decision engine architecture
-- Model registry and management
-- Agent connection management
-- Comprehensive logging and monitoring
-- RESTful API for frontend and agents
-- Replica configuration support
-- Full dashboard endpoints
-- Notification system
-- Background jobs
+MODULAR ARCHITECTURE DIAGRAM:
+-----------------------------
+
+┌──────────────────────────────────────────────────────────────────────────┐
+│                         MODULAR COMPONENT LAYER                           │
+│                                                                           │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐                  │
+│  │   Sentinel   │  │   Decision   │  │ Calculation  │                  │
+│  │ (Monitoring) │  │    Engine    │  │    Engine    │                  │
+│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘                  │
+│         │                 │                 │                            │
+│  ┌──────┴───────┐  ┌──────┴───────┐  ┌──────┴───────┐                  │
+│  │  Data Valve  │  │   Command    │  │    Agent     │                  │
+│  │ (Data Gate)  │  │   Tracker    │  │   Identity   │                  │
+│  └──────────────┘  └──────────────┘  └──────────────┘                  │
+│                                                                           │
+│  All components imported from: backend.components.*                      │
+└──────────────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│                          SERVICE LAYER                                    │
+│                                                                           │
+│  AgentService → InstanceService → PricingService → SwitchService         │
+│  ReplicaService → DecisionService → ClientService → NotificationService  │
+│                                                                           │
+│  All services use components for core operations                         │
+└──────────────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│                            API LAYER                                      │
+│                                                                           │
+│  /api/agents/* → /api/client/* → /api/admin/* → /api/replicas/*         │
+│                                                                           │
+│  All routes defined in this file, delegate to services/components        │
+└──────────────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│                         DATABASE LAYER                                    │
+│                                                                           │
+│  MySQL 8.0 - Accessed ONLY through Data Valve component                 │
+└──────────────────────────────────────────────────────────────────────────┘
+
+COMPONENT DESCRIPTIONS:
+-----------------------
+1. Data Valve: Single point of database access with deduplication, caching,
+   gap filling, and data quality assurance
+2. Sentinel: Continuous monitoring, interruption detection, rate limiting,
+   SEF triggering
+3. Decision Engine: Hot-reloadable ML models with strict I/O contracts
+4. Calculation Engine: Pure financial computations (savings, costs, ROI)
+5. Command Tracker: Priority-based command lifecycle management
+6. Agent Identity: Agent minting, identity preservation across switches
 
 SWITCHING WORKFLOW ARCHITECTURE:
 ==============================================================
@@ -121,6 +161,25 @@ import mysql.connector
 from mysql.connector import Error, pooling
 from marshmallow import Schema, fields, validate, ValidationError
 from apscheduler.schedulers.background import BackgroundScheduler
+
+# ============================================================================
+# COMPONENT IMPORTS (NEW v5.0 - Modular Architecture)
+# ============================================================================
+from backend.components import (
+    data_valve,              # Data quality gate & database access
+    calculation_engine,      # Financial calculations
+    command_tracker,         # Command lifecycle management
+    sentinel,                # Monitoring & interruption detection
+    engine_manager,          # Decision engine loading
+    agent_identity_manager,  # Agent lifecycle management
+    CommandPriority,         # Priority constants
+    CommandStatus,           # Status constants
+    CommandType,             # Type constants
+    InterruptionSignalType   # Interruption signal types
+)
+
+logger_components = logging.getLogger(__name__ + ".components")
+logger_components.info("✅ All modular components imported successfully")
 
 # Database utilities are defined later in this file (lines 4524-4566)
 # No need to import - functions are in same file after consolidation
