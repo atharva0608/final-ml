@@ -2203,6 +2203,22 @@ STARTS (TIMESTAMP(CURRENT_DATE) + INTERVAL 1 WEEK)
 DO CALL sp_cleanup_old_metrics(30);
 
 -- ============================================================================
+
+
+-- ============================================================================
+-- REPLICA QUERY OPTIMIZATION (Added by cleanup script)
+-- ============================================================================
+
+-- Add composite index for common replica lookups
+-- This index speeds up queries that filter by agent_id, is_active, and status
+CREATE INDEX IF NOT EXISTS idx_replica_agent_active_status
+ON replica_instances(agent_id, is_active, status, created_at DESC);
+
+-- Add index for promotable replica queries
+CREATE INDEX IF NOT EXISTS idx_replica_promotable
+ON replica_instances(agent_id, status, created_at DESC)
+WHERE is_active = TRUE AND status IN ('ready', 'syncing');
+
 -- END OF SCHEMA
 -- ============================================================================
 

@@ -189,16 +189,185 @@ app.config['MAX_CONTENT_LENGTH'] = config.MAX_CONTENT_LENGTH
 CORS(app)
 
 # ==============================================================================
+# ==============================================================================
 # DATABASE CONNECTION POOLING
 # ==============================================================================
-# NOTE: Database functions (init_db_pool, get_db_connection, execute_query) are
-# now imported from database_utils.py to enable sharing with replica_coordinator
+
+connection_pool = None
+
+def init_db_pool():
+    """Initialize database connection pool"""
+    global connection_pool
+    try:
+        logger.info(f"Initializing database pool: {config.DB_USER}@{config.DB_HOST}:{config.DB_PORT}/{config.DB_NAME}")
+        connection_pool = pooling.MySQLConnectionPool(
+            pool_name="spot_optimizer_pool",
+            pool_size=config.DB_POOL_SIZE,
+            pool_reset_session=True,
+            host=config.DB_HOST,
+            port=config.DB_PORT,
+            user=config.DB_USER,
+            password=config.DB_PASSWORD,
+            database=config.DB_NAME,
+            autocommit=False
+        )
+
+        # Test the connection
+        test_conn = connection_pool.get_connection()
+        test_conn.close()
+
+        logger.info(f"✓ Database connection pool initialized (size: {config.DB_POOL_SIZE})")
+        return True
+    except Error as e:
+        logger.error(f"Failed to initialize connection pool: {e}")
+        logger.error(f"Connection details: {config.DB_USER}@{config.DB_HOST}:{config.DB_PORT}/{config.DB_NAME}")
+        return False
+
+def get_db_connection():
+    """Get connection from pool"""
+    global connection_pool
+
+    # Initialize pool if not already done
+    if connection_pool is None:
+        init_db_pool()
+
+    try:
+        return connection_pool.get_connection()
+    except Error as e:
+        logger.error(f"Failed to get connection from pool: {e}")
+        raise
+
+def execute_query(query: str, params: tuple = None, fetch: bool = False,
+                 fetch_one: bool = False, commit: bool = True) -> Any:
+    """
+    Execute database query with error handling
+
+    Args:
+        query: SQL query string
+        params: Query parameters (tuple)
+        fetch: Whether to fetch all results
+        fetch_one: Whether to fetch single result
+        commit: Whether to commit transaction
+
+    Returns:
+        Query results or affected row count
+    """
+    connection = None
+    cursor = None
+    try:
+        connection = get_db_connection()
+        cursor = connection.cursor(dictionary=True)
+        cursor.execute(query, params or ())
+
+        if fetch_one:
+            result = cursor.fetchone()
+        elif fetch:
+            result = cursor.fetchall()
+        else:
+            result = cursor.lastrowid if cursor.lastrowid else cursor.rowcount
+
+        if commit and not fetch and not fetch_one:
+            connection.commit()
+
+        return result
+    except Error as e:
+        if connection:
+            connection.rollback()
+        logger.error(f"Query execution error: {e}")
+        logger.error(f"Query: {query[:200]}")
+        raise
+    finally:
+        if cursor:
+            cursor.close()
+        if connection:
+            connection.close()
 
 # ==============================================================================
-# UTILITY FUNCTIONS
+# REPLICA QUERY HELPERS
 # ==============================================================================
 
-def generate_uuid() -> str:
+def get_active_replicas(agent_id: str, status_filter: list = None) -> list:
+    """
+    Get active replicas for an agent with consistent filtering.
+
+    This is the standardized way to fetch replicas across the backend.
+    It ensures consistent status filtering and proper indexing.
+
+    Args:
+        agent_id: The agent ID to fetch replicas for
+        status_filter: Optional list of statuses to filter by
+                      (e.g., ['ready', 'syncing', 'launching'])
+                      If None, returns all active replicas except terminated/failed
+
+    Returns:
+        List of replica dictionaries with all fields
+
+    Example:
+        # Get all active replicas
+        replicas = get_active_replicas(agent_id)
+
+        # Get only ready replicas
+        ready_replicas = get_active_replicas(agent_id, ['ready'])
+
+        # Get replicas that can be promoted
+        promotable = get_active_replicas(agent_id, ['ready', 'syncing'])
+    """
+    query = """
+        SELECT
+            id, agent_id, instance_id, replica_type, pool_id,
+            instance_type, region, az, status, created_at, ready_at,
+            promoted_at, terminated_at, created_by, parent_instance_id,
+            is_active, sync_status, sync_latency_ms, last_sync_at,
+            state_transfer_progress, hourly_cost, total_cost,
+            total_runtime_hours, accumulated_cost,
+            interruption_signal_type, interruption_detected_at,
+            termination_time, failover_completed_at, tags
+        FROM replica_instances
+        WHERE agent_id = %s
+          AND is_active = TRUE
+    """
+
+    params = [agent_id]
+
+    if status_filter:
+        placeholders = ','.join(['%s'] * len(status_filter))
+        query += f" AND status IN ({placeholders})"
+        params.extend(status_filter)
+    else:
+        # Default: exclude terminated and failed
+        query += " AND status NOT IN ('terminated', 'failed')"
+
+    query += " ORDER BY created_at DESC"
+
+    return execute_query(query, tuple(params), fetch=True) or []
+
+def get_promotable_replica(agent_id: str) -> dict:
+    """
+    Get the best replica available for promotion.
+
+    Prioritizes:
+    1. 'ready' status replicas (fully synced)
+    2. 'syncing' status replicas (partially synced, better than nothing)
+    3. Newest replica if multiple available
+
+    Args:
+        agent_id: The agent ID
+
+    Returns:
+        Single replica dictionary or None if no promotable replica exists
+    """
+    # Try to get a ready replica first
+    replicas = get_active_replicas(agent_id, ['ready'])
+    if replicas:
+        return replicas[0]  # Newest ready replica
+
+    # Fall back to syncing replica
+    replicas = get_active_replicas(agent_id, ['syncing'])
+    if replicas:
+        return replicas[0]  # Newest syncing replica
+
+    return None
+
     """Generate UUID"""
     return str(uuid.uuid4())
 
@@ -492,6 +661,28 @@ decision_engine_manager = DecisionEngineManager()
 # ==============================================================================
 # AGENT-FACING API ENDPOINTS
 # ==============================================================================
+
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# AGENT-FACING API ENDPOINTS
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# These endpoints are called by agents running on EC2 instances.
+# They handle:
+#   - Agent registration and heartbeat
+#   - Configuration retrieval
+#   - Command polling and execution reporting
+#   - Pricing data submission
+#   - Switch completion reporting
+#   - AWS interruption signal handling
+#   - Cleanup operation reporting
+#
+# Security: All endpoints require valid client_token authentication
+# Rate limiting: Heartbeat endpoint should be called every 30-60 seconds
+# Error handling: Agents should retry failed requests with exponential backoff
+#
+# ═══════════════════════════════════════════════════════════════════════════
 
 @app.route('/api/agents/register', methods=['POST'])
 @require_client_token
@@ -1647,6 +1838,26 @@ def issue_switch_command(agent_id: str):
 # ==============================================================================
 # CLIENT/ADMIN MANAGEMENT ENDPOINTS
 # ==============================================================================
+
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ADMIN API ENDPOINTS
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# These endpoints provide administrative functions:
+#   - Client account management (create, delete, regenerate tokens)
+#   - System statistics and monitoring
+#   - Client growth analytics
+#   - Global instance and agent views
+#   - Activity logging
+#   - System health checks
+#   - ML model and decision engine uploads
+#
+# Security: Should be protected by admin authentication (not implemented yet)
+# TODO: Add admin authentication middleware
+#
+# ═══════════════════════════════════════════════════════════════════════════
 
 @app.route('/api/admin/clients/create', methods=['POST'])
 def create_client():
@@ -3863,6 +4074,25 @@ def get_model_sessions():
 # BACKGROUND JOBS
 # ==============================================================================
 
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# BACKGROUND JOBS
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Scheduled background tasks that run periodically:
+#   - Daily client snapshots (tracks growth metrics)
+#   - Monthly savings computation (aggregates cost data)
+#   - Old data cleanup (retention policy enforcement)
+#   - Agent health monitoring (detects stale agents)
+#
+# Scheduler: APScheduler (configured at startup)
+# Timing: Jobs are carefully scheduled to avoid overlap
+# Error handling: Failed jobs are logged but don't crash the server
+# Database impact: Jobs use connection pooling and batch operations
+#
+# ═══════════════════════════════════════════════════════════════════════════
+
 def snapshot_clients_daily():
     """
     Take daily snapshot of client counts for growth analytics.
@@ -4210,6 +4440,42 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 # DEDUPLICATION PIPELINE
 # ============================================================================
+
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# DATA QUALITY PIPELINE
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Multi-stage pipeline for ensuring high-quality pricing data:
+#
+# Stage 1: DEDUPLICATION
+#   - Receives pricing submissions from multiple agents/replicas
+#   - Detects and removes duplicate data points
+#   - Maintains raw submissions for auditing
+#   - Uses time-bucketing to group near-simultaneous submissions
+#
+# Stage 2: GAP DETECTION & FILLING
+#   - Identifies missing data points in time series
+#   - Calculates confidence scores for interpolated data
+#   - Uses multiple interpolation strategies (linear, weighted, cross-pool)
+#
+# Stage 3: QUALITY SCORING
+#   - Assigns confidence scores based on data source
+#   - Primary instances: 1.00 (highest confidence)
+#   - Manual replicas: 0.95
+#   - Automatic replicas: 0.90
+#   - Interpolated data: 0.60-0.85 (depends on gap size)
+#
+# Output: Clean, time-bucketed pricing data for:
+#   - Multi-pool price comparison charts
+#   - ML model training datasets
+#   - Historical analysis and reporting
+#
+# Performance: Batch processing with configurable intervals
+# Accuracy: Handles clock skew and network delays between agents
+#
+# ═══════════════════════════════════════════════════════════════════════════
 
 def process_pricing_submission(
     submission_id: str,
@@ -4985,124 +5251,6 @@ def run_ml_dataset_refresh():
     return refresh_ml_dataset()
 """
 Database utilities for Spot Optimizer backend
-Shared database connection pooling and query execution
-"""
-
-import os
-import logging
-from typing import Any
-import mysql.connector
-from mysql.connector import Error, pooling
-
-logger = logging.getLogger(__name__)
-
-# ==============================================================================
-# DATABASE CONFIGURATION
-# ==============================================================================
-
-class DatabaseConfig:
-    """Database configuration with environment variable support"""
-    DB_HOST = os.getenv('DB_HOST', 'localhost')
-    DB_PORT = int(os.getenv('DB_PORT', 3306))
-    DB_USER = os.getenv('DB_USER', 'spotuser')
-    DB_PASSWORD = os.getenv('DB_PASSWORD', 'SpotUser2024!')
-    DB_NAME = os.getenv('DB_NAME', 'spot_optimizer')
-    DB_POOL_SIZE = int(os.getenv('DB_POOL_SIZE', 10))
-
-db_config = DatabaseConfig()
-
-# ==============================================================================
-# DATABASE CONNECTION POOLING
-# ==============================================================================
-
-connection_pool = None
-
-def init_db_pool():
-    """Initialize database connection pool"""
-    global connection_pool
-    try:
-        logger.info(f"Initializing database pool: {db_config.DB_USER}@{db_config.DB_HOST}:{db_config.DB_PORT}/{db_config.DB_NAME}")
-        connection_pool = pooling.MySQLConnectionPool(
-            pool_name="spot_optimizer_pool",
-            pool_size=db_config.DB_POOL_SIZE,
-            pool_reset_session=True,
-            host=db_config.DB_HOST,
-            port=db_config.DB_PORT,
-            user=db_config.DB_USER,
-            password=db_config.DB_PASSWORD,
-            database=db_config.DB_NAME,
-            autocommit=False
-        )
-
-        # Test the connection
-        test_conn = connection_pool.get_connection()
-        test_conn.close()
-
-        logger.info(f"✓ Database connection pool initialized (size: {db_config.DB_POOL_SIZE})")
-        return True
-    except Error as e:
-        logger.error(f"Failed to initialize connection pool: {e}")
-        logger.error(f"Connection details: {db_config.DB_USER}@{db_config.DB_HOST}:{db_config.DB_PORT}/{db_config.DB_NAME}")
-        return False
-
-def get_db_connection():
-    """Get connection from pool"""
-    global connection_pool
-
-    # Initialize pool if not already done
-    if connection_pool is None:
-        init_db_pool()
-
-    try:
-        return connection_pool.get_connection()
-    except Error as e:
-        logger.error(f"Failed to get connection from pool: {e}")
-        raise
-
-def execute_query(query: str, params: tuple = None, fetch: bool = False,
-                 fetch_one: bool = False, commit: bool = True) -> Any:
-    """
-    Execute database query with error handling
-
-    Args:
-        query: SQL query string
-        params: Query parameters (tuple)
-        fetch: Whether to fetch all results
-        fetch_one: Whether to fetch single result
-        commit: Whether to commit transaction
-
-    Returns:
-        Query results or affected row count
-    """
-    connection = None
-    cursor = None
-    try:
-        connection = get_db_connection()
-        cursor = connection.cursor(dictionary=True)
-        cursor.execute(query, params or ())
-
-        if fetch_one:
-            result = cursor.fetchone()
-        elif fetch:
-            result = cursor.fetchall()
-        else:
-            result = cursor.lastrowid if cursor.lastrowid else cursor.rowcount
-
-        if commit and not fetch and not fetch_one:
-            connection.commit()
-
-        return result
-    except Error as e:
-        if connection:
-            connection.rollback()
-        logger.error(f"Query execution error: {e}")
-        logger.error(f"Query: {query[:200]}")
-        raise
-    finally:
-        if cursor:
-            cursor.close()
-        if connection:
-            connection.close()
 """
 Replica Coordinator - Central orchestration for replica management and data quality
 
@@ -5131,6 +5279,57 @@ import statistics
 # execute_query is defined in this file at line 4566
 
 logger = logging.getLogger(__name__)
+
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# REPLICA MANAGEMENT SYSTEM
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# The ReplicaCoordinator is the BRAIN of the replica management system.
+# It orchestrates all replica operations independently of the ML models.
+#
+# KEY RESPONSIBILITIES:
+#
+# 1. EMERGENCY ORCHESTRATION (Auto-Switch Mode)
+#    - Monitors AWS interruption signals 24/7
+#    - Creates emergency replicas on rebalance recommendations
+#    - Promotes replicas to primary on termination notices
+#    - Completes failover in <15 seconds typically
+#    - Works even if ML models are unavailable
+#
+# 2. MANUAL REPLICA LIFECYCLE (User-Controlled Mode)
+#    - Ensures exactly one replica exists when manual_replica_enabled=TRUE
+#    - Creates new replica after user promotes existing one
+#    - Provides zero-downtime switching for planned maintenance
+#    - Costs 2x single instance but eliminates downtime risk
+#
+# 3. DATA QUALITY COORDINATION
+#    - Deduplicates pricing data from primary + replica instances
+#    - Fills gaps using intelligent interpolation
+#    - Maintains data quality scores for ML training
+#
+# ARCHITECTURE:
+#   - Runs as background thread in the backend process
+#   - Polling interval: 10 seconds for emergency checks
+#   - Database-driven coordination (no direct agent communication)
+#   - Stateless: All state stored in MySQL for reliability
+#
+# AWS TERMINATION TIMELINE (Critical Path):
+#   T+0s:   AWS posts termination notice
+#   T+5s:   Agent detects notice, calls /termination-imminent
+#   T+7s:   ReplicaCoordinator promotes existing replica
+#   T+10s:  Traffic switches to replica
+#   T+12s:  Failover complete (<5s potential downtime)
+#   T+120s: AWS terminates original instance
+#
+# FAILURE MODES HANDLED:
+#   - No replica available: Create emergency snapshot + launch new instance
+#   - Replica not ready: Promote anyway if >50% synced
+#   - Database connection lost: Retry with exponential backoff
+#   - Multiple replicas: Keep newest, terminate others
+#
+# ═══════════════════════════════════════════════════════════════════════════
 
 class ReplicaCoordinator:
     """
