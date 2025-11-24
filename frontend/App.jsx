@@ -14,12 +14,10 @@ import {
 } from 'lucide-react';
 
 // ==============================================================================
-// API CONFIGURATION
+// API CONFIGURATION - Import from config file for auto-detection
 // ==============================================================================
 
-const API_CONFIG = {
-  BASE_URL: 'http://13.203.97.250:5000',
-};
+import { API_CONFIG } from './src/config/api.jsx';
 
 // ==============================================================================
 // COMPLETE API CLIENT - Updated with new client management methods

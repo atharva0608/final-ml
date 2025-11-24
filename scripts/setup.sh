@@ -1,27 +1,28 @@
 #!/bin/bash
 # ==============================================================================
-# AWS Spot Optimizer - Complete Production Setup Script v5.0
+# AWS Spot Optimizer - Complete Production Setup Script v5.1
 # ==============================================================================
 # This script performs a complete installation of the AWS Spot Optimizer:
 #
 # Components Installed:
 #   ✓ MySQL 8.0 Database (Docker container)
-#   ✓ Backend API (Flask 3.0 - Modular Architecture with 67+ endpoints)
-#   ✓ Frontend UI (Vite + React 18)
+#   ✓ Backend API (Flask 3.0 - Modular Architecture with 63 endpoints)
+#   ✓ Frontend UI (Vite + React 18 with auto-detection)
 #   ✓ Nginx Reverse Proxy (with CORS)
 #   ✓ Systemd Services
-#   ✓ Demo Data (3 clients, 8 agents)
+#   ✓ Demo Data (optional)
 #
 # Features:
 #   ✓ Modular backend architecture (api/, services/, components/, jobs/)
-#   ✓ Auto-detects AWS instance metadata
-#   ✓ MySQL 8.0 compatible (CREATE USER before GRANT)
+#   ✓ Auto-detects AWS instance metadata (IMDSv2)
+#   ✓ MySQL 8.0 compatible schema v5.1
+#   ✓ Docker volumes for data persistence
 #   ✓ Docker network access (172.18.% grants)
-#   ✓ Model versioning system (keeps last 2 uploads)
-#   ✓ Database migrations (auto-applies)
+#   ✓ Model versioning system
 #   ✓ CORS support for all API endpoints
 #   ✓ Security hardening (systemd sandboxing)
-#   ✓ Background jobs with APScheduler
+#   ✓ Background jobs with APScheduler (4 scheduled jobs)
+#   ✓ Frontend auto-detects backend URL
 #
 # Usage:
 #   sudo bash setup.sh
@@ -520,21 +521,8 @@ fi
 
 log "Database privileges configured"
 
-# Migrations are now consolidated in schema.sql
-# Keeping this section for reference only
-if [ -f "$REPO_DIR/migrations/add_model_upload_sessions.sql" ]; then
-    log "Note: Migrations are now consolidated in schema.sql"
-    # Old migration files kept in migrations/archive/ for reference
-    TABLE_CHECK=$(docker exec spot-mysql mysql -u root -p"$DB_ROOT_PASSWORD" -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='spot_optimizer' AND table_name='model_upload_sessions';" 2>/dev/null || echo "0")
-
-    if [ "$TABLE_CHECK" = "1" ]; then
-        log "✅ Migration applied successfully (model_upload_sessions table created)"
-    else
-        warn "Migration may have issues - table not found"
-    fi
-else
-    log "No migration file found, skipping..."
-fi
+# Schema v5.1 contains all tables - no separate migrations needed
+log "Schema v5.1 contains all modern features (no migrations required)"
 
 # Import demo data if available (optional)
 DEMO_DATA_FILE="$REPO_DIR/demo/demo_data.sql"
@@ -619,19 +607,13 @@ chmod 775 "$MODELS_DIR"
 chmod 775 "$MODELS_DIR/decision_engines"
 log "✓ Created $MODELS_DIR and $MODELS_DIR/decision_engines"
 
-# Create requirements.txt with exact dependencies
-cat > "$BACKEND_DIR/requirements.txt" << 'EOF'
-Flask==3.0.0
-flask-cors==4.0.0
-mysql-connector-python==8.2.0
-APScheduler==3.10.4
-marshmallow==3.20.1
-numpy>=1.26.0
-scikit-learn>=1.3.0
-gunicorn==21.2.0
-python-dotenv==1.0.0
-pandas>=2.0.0
-EOF
+# Verify requirements.txt exists (should be copied from repo)
+if [ ! -f "$BACKEND_DIR/requirements.txt" ]; then
+    error "requirements.txt not found after copy! This should not happen."
+    exit 1
+fi
+
+log "Using requirements.txt from repository"
 
 # Install Python dependencies
 log "Installing Python dependencies..."
@@ -772,45 +754,18 @@ cd "$FRONTEND_DIR" || {
     exit 1
 }
 
-# Update API URL in all possible locations to use the public IP
-log "Updating API URL to http://$PUBLIC_IP:5000..."
+# Frontend automatically detects API URL via src/config/api.jsx
+# No manual configuration needed - it uses window.location to detect the hostname
+log "Frontend configured with auto-detection (src/config/api.jsx)"
+log "  - Frontend will automatically use: http://$PUBLIC_IP:5000"
+log "  - Auto-detection uses window.location.hostname"
 
-# Primary location: src/config/api.jsx (most common in Vite projects)
-if [ -f "src/config/api.jsx" ]; then
-    sed -i "s|BASE_URL: '[^']*'|BASE_URL: 'http://$PUBLIC_IP:5000'|g" src/config/api.jsx
-    log "✓ Updated API URL in src/config/api.jsx"
+# Optionally set environment variable for build-time override
+if [ ! -z "$PUBLIC_IP" ] && [ "$PUBLIC_IP" != "UNKNOWN" ]; then
+    log "Setting VITE_API_URL for build-time override..."
+    export VITE_API_URL="http://$PUBLIC_IP:5000"
+    log "✓ VITE_API_URL set to http://$PUBLIC_IP:5000"
 fi
-
-# Also check src/config/api.js
-if [ -f "src/config/api.js" ]; then
-    sed -i "s|BASE_URL: '[^']*'|BASE_URL: 'http://$PUBLIC_IP:5000'|g" src/config/api.js
-    log "✓ Updated API URL in src/config/api.js"
-fi
-
-# Fallback: Check App.jsx locations
-if [ -f "App.jsx" ]; then
-    sed -i "s|BASE_URL: '[^']*'|BASE_URL: 'http://$PUBLIC_IP:5000'|g" App.jsx
-    log "✓ Updated API URL in App.jsx"
-fi
-
-if [ -f "src/App.jsx" ]; then
-    sed -i "s|BASE_URL: '[^']*'|BASE_URL: 'http://$PUBLIC_IP:5000'|g" src/App.jsx
-    log "✓ Updated API URL in src/App.jsx"
-fi
-
-# Universal fix: Find and replace in all JSX/JS files containing BASE_URL or API endpoint
-log "Scanning all source files for API URL references..."
-find . -type f \( -name "*.jsx" -o -name "*.js" -o -name "*.ts" -o -name "*.tsx" \) -not -path "*/node_modules/*" -not -path "*/dist/*" -not -path "*/build/*" | while read file; do
-    if grep -q "BASE_URL\|http://[0-9.]*:5000" "$file" 2>/dev/null; then
-        # Replace any hardcoded localhost or IP addresses
-        sed -i "s|http://localhost:5000|http://$PUBLIC_IP:5000|g" "$file"
-        sed -i "s|http://127.0.0.1:5000|http://$PUBLIC_IP:5000|g" "$file"
-        sed -i "s|http://[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}:5000|http://$PUBLIC_IP:5000|g" "$file"
-        log "✓ Updated $(basename $file)"
-    fi
-done
-
-log "API URL configuration complete"
 
 # Install npm dependencies
 log "Installing npm dependencies (this may take a few minutes)..."
@@ -1224,7 +1179,7 @@ log "Step 16: Creating setup summary..."
 
 cat > /home/ubuntu/SETUP_COMPLETE.txt << EOF
 ================================================================================
-AWS SPOT OPTIMIZER - SETUP COMPLETE (v3.1)
+AWS SPOT OPTIMIZER - SETUP COMPLETE (v5.1)
 ================================================================================
 
 Date: $(date)
