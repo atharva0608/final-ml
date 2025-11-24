@@ -3362,29 +3362,46 @@ def get_instance_available_options(instance_id: str):
 def force_instance_switch(instance_id: str):
     """Manually force instance switch"""
     data = request.json or {}
-    
+
     schema = ForceSwitchSchema()
     try:
         validated_data = schema.load(data)
     except ValidationError as e:
         return jsonify({'error': 'Validation failed', 'details': e.messages}), 400
-    
+
     try:
+        # Check if instance exists and is active
         instance = execute_query("""
-            SELECT agent_id, client_id FROM instances WHERE id = %s
+            SELECT agent_id, client_id, is_active, terminated_at
+            FROM instances WHERE id = %s
         """, (instance_id,), fetch_one=True)
-        
+
         if not instance:
             # Try to find agent by instance_id
             agent = execute_query("""
-                SELECT id, client_id FROM agents WHERE instance_id = %s
+                SELECT a.id, a.client_id, a.terminated_at, a.status
+                FROM agents a WHERE a.instance_id = %s
             """, (instance_id,), fetch_one=True)
-            
+
             if not agent:
                 return jsonify({'error': 'Instance or agent not found'}), 404
-            
-            instance = {'agent_id': agent['id'], 'client_id': agent['client_id']}
-        
+
+            # Check if agent is terminated
+            if agent.get('terminated_at'):
+                return jsonify({
+                    'error': 'Cannot switch terminated instance',
+                    'message': 'This instance has been terminated and cannot be switched. Only active instances can be switched to new pools.'
+                }), 403
+
+            instance = {'agent_id': agent['id'], 'client_id': agent['client_id'], 'is_active': True}
+
+        # Check if instance is active
+        if not instance.get('is_active') or instance.get('terminated_at'):
+            return jsonify({
+                'error': 'Cannot switch terminated instance',
+                'message': 'This instance has been terminated and cannot be switched. Only active, primary instances have switching capabilities.'
+            }), 403
+
         if not instance.get('agent_id'):
             return jsonify({'error': 'No agent assigned to instance'}), 404
         
@@ -3784,6 +3801,224 @@ def health_check():
             'status': 'unhealthy',
             'error': str(e)
         }), 500
+
+# ==============================================================================
+# SEARCH AND EXPORT APIs
+# ==============================================================================
+
+@app.route('/api/admin/search', methods=['GET'])
+def global_search():
+    """Global search across clients, agents, and instances"""
+    try:
+        query = request.args.get('q', '').strip()
+
+        if len(query) < 2:
+            return jsonify({
+                'clients': [],
+                'agents': [],
+                'instances': []
+            })
+
+        search_pattern = f'%{query}%'
+
+        # Search clients
+        clients = execute_query("""
+            SELECT id, name, email, status, is_active
+            FROM clients
+            WHERE name LIKE %s OR email LIKE %s OR id LIKE %s
+            LIMIT 10
+        """, (search_pattern, search_pattern, search_pattern), fetch=True)
+
+        # Search agents
+        agents = execute_query("""
+            SELECT a.id, a.logical_agent_id, a.hostname, a.instance_id,
+                   a.status, c.name as client_name
+            FROM agents a
+            LEFT JOIN clients c ON a.client_id = c.id
+            WHERE a.logical_agent_id LIKE %s
+               OR a.hostname LIKE %s
+               OR a.instance_id LIKE %s
+            LIMIT 10
+        """, (search_pattern, search_pattern, search_pattern), fetch=True)
+
+        # Search instances
+        instances = execute_query("""
+            SELECT i.id, i.instance_type, i.region, i.current_mode,
+                   c.name as client_name
+            FROM instances i
+            LEFT JOIN clients c ON i.client_id = c.id
+            WHERE i.id LIKE %s
+               OR i.instance_type LIKE %s
+               OR i.region LIKE %s
+            LIMIT 10
+        """, (search_pattern, search_pattern, search_pattern), fetch=True)
+
+        return jsonify({
+            'clients': [{
+                'id': c['id'],
+                'name': c['name'],
+                'email': c['email'],
+                'status': 'active' if c['is_active'] else 'inactive'
+            } for c in (clients or [])],
+            'agents': [{
+                'id': a['id'],
+                'name': a['logical_agent_id'] or a['hostname'],
+                'client': a['client_name'],
+                'status': a['status']
+            } for a in (agents or [])],
+            'instances': [{
+                'id': i['id'],
+                'name': f"{i['instance_type']} ({i['region']})",
+                'client': i['client_name']
+            } for i in (instances or [])]
+        })
+
+    except Exception as e:
+        logger.error(f"Search error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/admin/export/stats', methods=['GET'])
+def export_global_stats():
+    """Export global stats as CSV"""
+    try:
+        import csv
+        from io import StringIO
+
+        stats = execute_query("""
+            SELECT
+                c.id, c.name, c.email, c.status, c.total_savings,
+                COUNT(DISTINCT a.id) as agent_count,
+                COUNT(DISTINCT CASE WHEN a.status = 'online' THEN a.id END) as online_agents
+            FROM clients c
+            LEFT JOIN agents a ON a.client_id = c.id
+            GROUP BY c.id, c.name, c.email, c.status, c.total_savings
+        """, fetch=True)
+
+        output = StringIO()
+        writer = csv.writer(output)
+
+        # Write headers
+        writer.writerow(['Client ID', 'Name', 'Email', 'Status', 'Total Savings',
+                        'Total Agents', 'Online Agents'])
+
+        # Write data
+        for row in (stats or []):
+            writer.writerow([
+                row['id'], row['name'], row['email'], row['status'],
+                float(row['total_savings'] or 0),
+                row['agent_count'], row['online_agents']
+            ])
+
+        output.seek(0)
+        return output.getvalue(), 200, {
+            'Content-Type': 'text/csv',
+            'Content-Disposition': 'attachment; filename=global_stats.csv'
+        }
+
+    except Exception as e:
+        logger.error(f"Export stats error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/client/<client_id>/export/savings', methods=['GET'])
+def export_client_savings(client_id: str):
+    """Export client savings as CSV"""
+    try:
+        import csv
+        from io import StringIO
+
+        savings = execute_query("""
+            SELECT
+                CONCAT(year, '-', LPAD(month, 2, '0')) as period,
+                baseline_cost, actual_cost, savings, savings_percentage,
+                switch_count, instance_count
+            FROM client_savings_monthly
+            WHERE client_id = %s
+            ORDER BY year DESC, month DESC
+            LIMIT 24
+        """, (client_id,), fetch=True)
+
+        output = StringIO()
+        writer = csv.writer(output)
+
+        # Write headers
+        writer.writerow(['Period', 'Baseline Cost', 'Actual Cost', 'Savings',
+                        'Savings %', 'Switches', 'Instances'])
+
+        # Write data
+        for row in (savings or []):
+            writer.writerow([
+                row['period'],
+                float(row['baseline_cost'] or 0),
+                float(row['actual_cost'] or 0),
+                float(row['savings'] or 0),
+                float(row['savings_percentage'] or 0),
+                row['switch_count'], row['instance_count']
+            ])
+
+        output.seek(0)
+        return output.getvalue(), 200, {
+            'Content-Type': 'text/csv',
+            'Content-Disposition': f'attachment; filename=savings_{client_id}.csv'
+        }
+
+    except Exception as e:
+        logger.error(f"Export savings error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/client/<client_id>/export/history', methods=['GET'])
+def export_switch_history(client_id: str):
+    """Export switch history as CSV"""
+    try:
+        import csv
+        from io import StringIO
+
+        history = execute_query("""
+            SELECT
+                s.initiated_at, s.old_instance_id, s.new_instance_id,
+                s.old_mode, s.new_mode, s.old_pool_id, s.new_pool_id,
+                s.event_trigger, s.on_demand_price, s.old_spot_price,
+                s.new_spot_price, s.savings_impact, s.total_duration_seconds,
+                s.downtime_seconds, s.success
+            FROM switches s
+            WHERE s.client_id = %s
+            ORDER BY s.initiated_at DESC
+            LIMIT 1000
+        """, (client_id,), fetch=True)
+
+        output = StringIO()
+        writer = csv.writer(output)
+
+        # Write headers
+        writer.writerow(['Timestamp', 'Old Instance', 'New Instance', 'From Mode', 'To Mode',
+                        'From Pool', 'To Pool', 'Trigger', 'On-Demand Price', 'Old Spot Price',
+                        'New Spot Price', 'Savings Impact', 'Duration (s)', 'Downtime (s)', 'Success'])
+
+        # Write data
+        for row in (history or []):
+            writer.writerow([
+                row['initiated_at'].isoformat() if row['initiated_at'] else '',
+                row['old_instance_id'], row['new_instance_id'],
+                row['old_mode'], row['new_mode'],
+                row['old_pool_id'] or 'n/a', row['new_pool_id'] or 'n/a',
+                row['event_trigger'],
+                float(row['on_demand_price'] or 0),
+                float(row['old_spot_price'] or 0),
+                float(row['new_spot_price'] or 0),
+                float(row['savings_impact'] or 0),
+                row['total_duration_seconds'] or 0,
+                row['downtime_seconds'] or 0,
+                'Yes' if row['success'] else 'No'
+            ])
+
+        output.seek(0)
+        return output.getvalue(), 200, {
+            'Content-Type': 'text/csv',
+            'Content-Disposition': f'attachment; filename=switch_history_{client_id}.csv'
+        }
+
+    except Exception as e:
+        logger.error(f"Export history error: {e}")
+        return jsonify({'error': str(e)}), 500
 
 # ==============================================================================
 # FILE UPLOAD ENDPOINTS
