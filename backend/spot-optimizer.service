@@ -1,0 +1,31 @@
+[Unit]
+Description=AWS Spot Optimizer Backend v5.0
+After=network.target mysql.service
+
+[Service]
+Type=simple
+User=spotuser
+Group=spotuser
+WorkingDirectory=/opt/spot-optimizer/backend
+Environment="PYTHONUNBUFFERED=1"
+Environment="DB_HOST=localhost"
+Environment="DB_PORT=3306"
+Environment="DB_USER=spotuser"
+Environment="DB_PASSWORD=SpotUser2024!"
+Environment="DB_NAME=spot_optimizer"
+Environment="HOST=0.0.0.0"
+Environment="PORT=5000"
+Environment="DEBUG=False"
+Environment="ENABLE_BACKGROUND_JOBS=True"
+
+ExecStart=/usr/bin/python3 /opt/spot-optimizer/backend/app.py
+Restart=always
+RestartSec=10
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=spot-optimizer
+
+[Install]
+WantedBy=multi-user.target
