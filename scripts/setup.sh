@@ -285,11 +285,13 @@ sudo usermod -aG docker ubuntu 2>/dev/null || true
 # Note: This allows the script to continue without logout/login
 if groups ubuntu | grep -q docker; then
     log "Docker group membership confirmed"
-    # Use sg to run remaining docker commands with docker group
-    export DOCKER_GROUP_ACTIVE=1
 else
-    warn "Docker group added but requires shell restart to take effect"
+    warn "Docker group added - activating for current session..."
 fi
+
+# Change docker socket permissions to ensure ubuntu user can access it
+sudo chmod 666 /var/run/docker.sock 2>/dev/null || true
+log "Docker socket permissions configured"
 
 log "Docker configured"
 
@@ -690,6 +692,9 @@ if [ -f .env ]; then
     export $(grep -v '^#' .env | xargs)
 fi
 
+# Add parent directory to PYTHONPATH so backend.* imports work
+export PYTHONPATH=/home/ubuntu/spot-optimizer:$PYTHONPATH
+
 # Start with gunicorn (modular architecture - app.py entry point)
 exec gunicorn \
     --bind 0.0.0.0:5000 \
@@ -957,6 +962,7 @@ SyslogIdentifier=spot-optimizer-backend
 # Environment
 Environment=PATH=$BACKEND_DIR/venv/bin:/usr/local/bin:/usr/bin:/bin
 Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPATH=/home/ubuntu/spot-optimizer
 
 # Security
 NoNewPrivileges=true
@@ -1102,6 +1108,15 @@ case $choice in
 esac
 SCRIPT_EOF
 chmod +x "$SCRIPTS_DIR/logs.sh"
+
+# 6. VERIFY script (copy from repository)
+if [ -f "$REPO_DIR/scripts/verify_setup.sh" ]; then
+    cp "$REPO_DIR/scripts/verify_setup.sh" "$SCRIPTS_DIR/verify.sh"
+    chmod +x "$SCRIPTS_DIR/verify.sh"
+    log "✓ Copied verification script"
+else
+    warn "Verification script not found in repository"
+fi
 
 log "Helper scripts created"
 
@@ -1260,11 +1275,13 @@ stop.sh     - Stop services
 status.sh   - Check service status
 restart.sh  - Restart all services
 logs.sh     - View logs
+verify.sh   - Verify setup and diagnose issues
 
 Usage:
-  ~/scripts/status.sh
-  ~/scripts/restart.sh
-  ~/scripts/logs.sh
+  ~/scripts/status.sh     # Quick status check
+  ~/scripts/verify.sh     # Comprehensive verification
+  ~/scripts/restart.sh    # Restart services
+  ~/scripts/logs.sh       # View logs
 
 ================================================================================
 SECURITY & CORS
@@ -1336,5 +1353,16 @@ log "Dashboard URL: http://$PUBLIC_IP/"
 log ""
 log "View status: ~/scripts/status.sh"
 log "View logs: ~/scripts/logs.sh"
+log "Verify setup: ~/scripts/verify.sh"
 log "View details: cat ~/SETUP_COMPLETE.txt"
 log "============================================"
+echo ""
+log "Running setup verification..."
+echo ""
+
+# Run verification script if available
+if [ -x "$SCRIPTS_DIR/verify.sh" ]; then
+    "$SCRIPTS_DIR/verify.sh" || warn "Some verification checks failed - review output above"
+else
+    warn "Verification script not available"
+fi
