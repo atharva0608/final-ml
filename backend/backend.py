@@ -2183,6 +2183,7 @@ def get_client_agents(client_id: str):
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/client/<client_id>/agents/decisions', methods=['GET'])
+@require_client_token
 def get_agents_decisions(client_id: str):
     """Get agent decision history with comprehensive health status"""
     try:
@@ -2231,7 +2232,7 @@ def get_agents_decisions(client_id: str):
 
             # Get last 5 pricing reports for health check
             recent_reports = execute_query("""
-                SELECT received_at, ondemand_price, current_spot_price
+                SELECT received_at, on_demand_price, current_spot_price
                 FROM pricing_reports
                 WHERE agent_id = %s
                 ORDER BY received_at DESC
@@ -2330,7 +2331,7 @@ def get_agents_decisions(client_id: str):
                 'recentActivity': {
                     'pricingReports': [{
                         'time': r['received_at'].isoformat() if r.get('received_at') else None,
-                        'onDemandPrice': float(r['ondemand_price']) if r.get('ondemand_price') else 0,
+                        'onDemandPrice': float(r['on_demand_price']) if r.get('on_demand_price') else 0,
                         'spotPrice': float(r['current_spot_price']) if r.get('current_spot_price') else 0
                     } for r in (recent_reports or [])],
                     'systemEvents': [{
