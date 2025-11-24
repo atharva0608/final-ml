@@ -361,13 +361,28 @@ class APIClient {
   }
 
   // ==============================================================================
-  // LEGACY/MOCK METHODS - Kept for compatibility
+  // SEARCH AND EXPORT APIs
   // ==============================================================================
 
   async globalSearch(query) {
-    console.warn('globalSearch: Backend endpoint not implemented, returning mock data');
-    return { clients: [], instances: [], agents: [] };
+    return this.request(`/api/admin/search?q=${encodeURIComponent(query)}`);
   }
+
+  async exportSavings(clientId) {
+    window.open(`${this.baseUrl}/api/client/${clientId}/export/savings`, '_blank');
+  }
+
+  async exportSwitchHistory(clientId) {
+    window.open(`${this.baseUrl}/api/client/${clientId}/export/history`, '_blank');
+  }
+
+  async exportGlobalStats() {
+    window.open(`${this.baseUrl}/api/admin/export/stats`, '_blank');
+  }
+
+  // ==============================================================================
+  // LEGACY/MOCK METHODS - Not yet implemented in backend
+  // ==============================================================================
 
   async getAgentStatistics(agentId) {
     console.warn('getAgentStatistics: Backend endpoint not implemented, returning mock data');
@@ -377,21 +392,6 @@ class APIClient {
   async getInstanceLogs(instanceId, limit = 50) {
     console.warn('getInstanceLogs: Backend endpoint not implemented, returning empty array');
     return [];
-  }
-
-  async exportSavings(clientId) {
-    console.warn('exportSavings: Backend endpoint not implemented');
-    alert('Export functionality not yet available in backend');
-  }
-
-  async exportSwitchHistory(clientId) {
-    console.warn('exportSwitchHistory: Backend endpoint not implemented');
-    alert('Export functionality not yet available in backend');
-  }
-
-  async exportGlobalStats() {
-    console.warn('exportGlobalStats: Backend endpoint not implemented');
-    alert('Export functionality not yet available in backend');
   }
 
   async getPoolStatistics() {

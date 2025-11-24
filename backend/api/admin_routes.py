@@ -148,3 +148,34 @@ def get_health():
     except Exception as e:
         logger.error(f"Get health error: {e}", exc_info=True)
         return jsonify({'error': str(e)}), 500
+
+
+# ==============================================================================
+# SEARCH
+# ==============================================================================
+
+@admin_bp.route('/search', methods=['GET'])
+def global_search():
+    """Global search across clients, agents, and instances"""
+    try:
+        query = request.args.get('q', '').strip()
+        result = admin_service.search_global(query)
+        return jsonify(result), 200
+    except Exception as e:
+        logger.error(f"Search error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+# ==============================================================================
+# EXPORTS
+# ==============================================================================
+
+@admin_bp.route('/export/stats', methods=['GET'])
+def export_stats():
+    """Export global statistics as CSV"""
+    try:
+        result = admin_service.export_global_stats()
+        return result
+    except Exception as e:
+        logger.error(f"Export stats error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500

@@ -276,3 +276,104 @@ def get_system_health() -> Dict[str, Any]:
         'recent_errors': recent_errors['count'] if recent_errors else 0,
         'timestamp': datetime.utcnow().isoformat()
     }
+
+
+def search_global(query: str) -> Dict[str, Any]:
+    """Global search across clients, agents, and instances"""
+    if len(query) < 2:
+        return {
+            'clients': [],
+            'agents': [],
+            'instances': []
+        }
+
+    search_pattern = f'%{query}%'
+
+    # Search clients
+    clients = execute_query("""
+        SELECT id, name, email, status, is_active
+        FROM clients
+        WHERE name LIKE %s OR email LIKE %s OR id LIKE %s
+        LIMIT 10
+    """, (search_pattern, search_pattern, search_pattern), fetch=True)
+
+    # Search agents
+    agents = execute_query("""
+        SELECT a.id, a.logical_agent_id, a.hostname, a.instance_id,
+               a.status, c.name as client_name
+        FROM agents a
+        LEFT JOIN clients c ON a.client_id = c.id
+        WHERE a.logical_agent_id LIKE %s
+           OR a.hostname LIKE %s
+           OR a.instance_id LIKE %s
+        LIMIT 10
+    """, (search_pattern, search_pattern, search_pattern), fetch=True)
+
+    # Search instances
+    instances = execute_query("""
+        SELECT i.id, i.instance_type, i.region, i.current_mode,
+               c.name as client_name
+        FROM instances i
+        LEFT JOIN clients c ON i.client_id = c.id
+        WHERE i.id LIKE %s
+           OR i.instance_type LIKE %s
+           OR i.region LIKE %s
+        LIMIT 10
+    """, (search_pattern, search_pattern, search_pattern), fetch=True)
+
+    return {
+        'clients': [{
+            'id': c['id'],
+            'name': c['name'],
+            'email': c['email'],
+            'status': 'active' if c['is_active'] else 'inactive'
+        } for c in (clients or [])],
+        'agents': [{
+            'id': a['id'],
+            'name': a['logical_agent_id'] or a['hostname'],
+            'client': a['client_name'],
+            'status': a['status']
+        } for a in (agents or [])],
+        'instances': [{
+            'id': i['id'],
+            'name': f"{i['instance_type']} ({i['region']})",
+            'client': i['client_name']
+        } for i in (instances or [])]
+    }
+
+
+def export_global_stats():
+    """Export global statistics as CSV"""
+    import csv
+    from io import StringIO
+
+    stats = execute_query("""
+        SELECT
+            c.id, c.name, c.email, c.status, c.total_savings,
+            COUNT(DISTINCT a.id) as agent_count,
+            COUNT(DISTINCT CASE WHEN a.status = 'online' THEN a.id END) as online_agents
+        FROM clients c
+        LEFT JOIN agents a ON a.client_id = c.id
+        GROUP BY c.id, c.name, c.email, c.status, c.total_savings
+    """, fetch=True)
+
+    output = StringIO()
+    writer = csv.writer(output)
+
+    # Write headers
+    writer.writerow(['Client ID', 'Name', 'Email', 'Status', 'Total Savings',
+                    'Total Agents', 'Online Agents'])
+
+    # Write data
+    for row in (stats or []):
+        writer.writerow([
+            row['id'], row['name'], row['email'], row['status'],
+            float(row['total_savings'] or 0),
+            row['agent_count'], row['online_agents']
+        ])
+
+    output.seek(0)
+    return output.getvalue(), 200, {
+        'Content-Type': 'text/csv',
+        'Content-Disposition': 'attachment; filename=global_stats.csv'
+    }

@@ -306,3 +306,31 @@ def get_chart_stats(client_id: str):
     except Exception as e:
         logger.error(f"Get chart stats error: {e}", exc_info=True)
         return jsonify({'error': str(e)}), 500
+
+
+# ==============================================================================
+# EXPORTS
+# ==============================================================================
+
+@client_bp.route('/<client_id>/export/savings', methods=['GET'])
+@require_client_token
+def export_savings(client_id: str):
+    """Export client savings as CSV"""
+    try:
+        result = client_service.export_client_savings(client_id)
+        return result
+    except Exception as e:
+        logger.error(f"Export savings error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@client_bp.route('/<client_id>/export/history', methods=['GET'])
+@require_client_token
+def export_history(client_id: str):
+    """Export switch history as CSV"""
+    try:
+        result = client_service.export_switch_history(client_id)
+        return result
+    except Exception as e:
+        logger.error(f"Export history error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
