@@ -181,6 +181,59 @@ from backend.components import (
 logger_components = logging.getLogger(__name__ + ".components")
 logger_components.info("✅ All modular components imported successfully")
 
+# ============================================================================
+# V5.0 REFACTORING SUMMARY - Modular Component Integration
+# ============================================================================
+"""
+KEY REFACTORINGS COMPLETED:
+===========================
+
+1. SAVINGS CALCULATIONS → calculation_engine
+   - _calculate_savings() now uses calculation_engine.calculate_hourly_savings()
+   - Provides consistent financial calculations across platform
+   - Location: ~line 5028
+
+2. COMMAND CREATION → command_tracker
+   - ML-triggered switch commands use command_tracker.create_command()
+   - Manual UI switch commands use command_tracker.create_command()
+   - Consistent priority management with CommandPriority constants
+   - Locations: ~lines 1689, 3338
+
+3. INTERRUPTION HANDLING → sentinel
+   - handle_rebalance_recommendation() uses sentinel.process_interruption_signal()
+   - Handles: deduplication, rate limiting, SEF triggering, notifications
+   - Business logic (risk analysis, pool selection) stays in endpoint
+   - Location: ~line 1265
+
+4. PRICING DATA STORAGE → data_valve
+   - pricing_report() uses data_valve.store_price_snapshot()
+   - Automatic quality assurance: deduplication, gap filling, caching
+   - Handles primary + replica agent reports intelligently
+   - Location: ~line 961
+
+BENEFITS:
+=========
+✅ Consistent behavior across platform
+✅ Built-in quality assurance (dedup, validation, caching)
+✅ Easier testing (components are standalone)
+✅ Better maintainability (changes in one place)
+✅ Production-ready monitoring and stats
+
+COMPATIBILITY:
+==============
+✅ Zero breaking changes for agents
+✅ All existing APIs unchanged
+✅ Database schema unchanged
+✅ Frontend requires no modifications
+
+FUTURE REFACTORING OPPORTUNITIES:
+==================================
+- create_emergency_replica() ML feature collection → sentinel
+- More pricing endpoints → data_valve
+- Instance health monitoring → sentinel
+- Additional financial reports → calculation_engine
+"""
+
 # Database utilities are defined later in this file (lines 4524-4566)
 # No need to import - functions are in same file after consolidation
 
@@ -1003,22 +1056,30 @@ def pricing_report(agent_id: str):
             pricing.get('collected_at')
         ))
         
-        # Store spot pool prices
+        # Store spot pool prices (REFACTORED v5.0: Uses data_valve for quality assurance)
+        collected_timestamp = datetime.fromisoformat(pricing['collected_at']) if pricing.get('collected_at') else datetime.utcnow()
+
         for pool in pricing.get('spot_pools', []):
             pool_id = pool['pool_id']
-            
-            # Ensure pool exists
+
+            # Ensure pool exists (data_valve doesn't handle pool management)
             execute_query("""
                 INSERT INTO spot_pools (id, instance_type, region, az)
                 VALUES (%s, %s, %s, %s)
                 ON DUPLICATE KEY UPDATE updated_at = NOW()
             """, (pool_id, instance.get('instance_type'), instance.get('region'), pool['az']))
-            
-            # Store price snapshot
-            execute_query("""
-                INSERT INTO spot_price_snapshots (pool_id, price)
-                VALUES (%s, %s)
-            """, (pool_id, pool['price']))
+
+            # Store price snapshot via data_valve (handles deduplication, gap filling, caching)
+            try:
+                data_valve.store_price_snapshot(
+                    pool_id=pool_id,
+                    price=Decimal(str(pool['price'])),
+                    timestamp=collected_timestamp,
+                    source_agent_id=agent_id,
+                    is_replica=False  # Primary agent reporting
+                )
+            except ValueError as e:
+                logger.warning(f"Invalid price from agent {agent_id}: {e}")
         
         # Store on-demand price snapshot
         if pricing.get('on_demand_price'):
@@ -1265,12 +1326,18 @@ def receive_cleanup_report(agent_id: str):
 @app.route('/api/agents/<agent_id>/rebalance-recommendation', methods=['POST'])
 @require_client_token
 def handle_rebalance_recommendation(agent_id: str):
-    """Handle EC2 rebalance recommendations with risk analysis"""
+    """
+    Handle EC2 rebalance recommendations with risk analysis
+
+    REFACTORED v5.0: Uses sentinel component for signal processing,
+    deduplication, rate limiting, and SEF triggering
+    """
     data = request.json or {}
 
     try:
         instance_id = data.get('instance_id')
-        detected_at = data.get('detected_at')
+        detected_at_str = data.get('detected_at')
+        detected_at = datetime.fromisoformat(detected_at_str) if detected_at_str else datetime.utcnow()
 
         # Get agent details
         agent = execute_query("""
@@ -1282,15 +1349,7 @@ def handle_rebalance_recommendation(agent_id: str):
         if not agent:
             return jsonify({'error': 'Agent not found'}), 404
 
-        # Update agent rebalance timestamp
-        execute_query("""
-            UPDATE agents
-            SET last_rebalance_recommendation_at = NOW()
-            WHERE id = %s
-        """, (agent_id,))
-
-        # Calculate risk score for current pool
-        # Simple risk calculation based on recent interruptions
+        # Calculate risk score for current pool (business logic - stays in endpoint)
         interruptions = execute_query("""
             SELECT COUNT(*) as count
             FROM spot_interruption_events
@@ -1301,20 +1360,29 @@ def handle_rebalance_recommendation(agent_id: str):
         interruption_count = interruptions['count'] if interruptions else 0
         risk_score = min(interruption_count / 30.0, 1.0)  # Normalize to 0-1
 
-        # Insert into termination_events table
-        execute_query("""
-            INSERT INTO termination_events (
-                agent_id, instance_id, event_type,
-                detected_at, status, metadata
-            ) VALUES (%s, %s, %s, %s, %s, %s)
-        """, (
-            agent_id,
-            instance_id,
-            'rebalance_recommendation',
-            detected_at or datetime.utcnow(),
-            'detected',
-            json.dumps({'risk_score': risk_score, 'current_pool': agent['current_pool_id']})
-        ))
+        # Process interruption signal via sentinel component
+        # This handles: deduplication, rate limiting, logging, notifications, SEF trigger
+        signal_result = sentinel.process_interruption_signal(
+            agent_id=agent_id,
+            instance_id=instance_id,
+            signal_type=InterruptionSignalType.REBALANCE_RECOMMENDATION,
+            detected_at=detected_at,
+            metadata={
+                'risk_score': risk_score,
+                'current_pool': agent['current_pool_id'],
+                'instance_type': agent['instance_type'],
+                'region': agent['region'],
+                'az': agent['az']
+            }
+        )
+
+        # If signal was rejected as duplicate, return early
+        if not signal_result['accepted']:
+            return jsonify({
+                'success': True,
+                'action': 'duplicate',
+                'message': 'Duplicate signal already processed'
+            })
 
         # Find alternative pools with lower risk
         alternative_pools = execute_query("""
@@ -1685,24 +1753,19 @@ def issue_switch_command(agent_id: str):
         else:
             terminate_wait = 0  # Signal: DO NOT terminate old instance
 
-        # Create switch command
-        command_id = generate_uuid()
-        execute_query("""
-            INSERT INTO commands (
-                id, agent_id, client_id, instance_id,
-                target_mode, target_pool_id, priority,
-                terminate_wait_seconds, status, created_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'pending', NOW())
-        """, (
-            command_id,
-            agent_id,
-            request.client_id,
-            agent['instance_id'],
-            target_mode,
-            target_pool_id,
-            data.get('priority', 5),
-            terminate_wait
-        ))
+        # Create switch command (REFACTORED v5.0: Uses command_tracker component)
+        command_id = command_tracker.create_command(
+            agent_id=agent_id,
+            client_id=request.client_id,
+            command_type='switch',
+            instance_id=agent['instance_id'],
+            target_mode=target_mode,
+            target_pool_id=target_pool_id,
+            priority=data.get('priority', CommandPriority.ML_NORMAL),
+            terminate_wait_seconds=terminate_wait,
+            trigger_type='ml_recommendation',
+            created_by='ml_engine'
+        )
 
         logger.info(f"✓ Switch command issued for agent {agent_id}: {target_mode} (pool: {target_pool_id}), auto_terminate={agent['auto_terminate_enabled']}, terminate_wait={terminate_wait}s")
 
@@ -3339,20 +3402,18 @@ def force_instance_switch(instance_id: str):
             # Note: Instance type changes require agent-side support
             logger.info(f"Instance type change requested: {new_instance_type}")
 
-        # Insert pending command with manual priority (75)
-        command_id = generate_uuid()
-        execute_query("""
-            INSERT INTO commands
-            (id, client_id, agent_id, instance_id, command_type, target_mode, target_pool_id, priority, status, created_by)
-            VALUES (%s, %s, %s, %s, 'switch', %s, %s, 75, 'pending', 'manual')
-        """, (
-            command_id,
-            instance['client_id'],
-            instance['agent_id'],
-            instance_id,
-            target_mode if target_mode != 'pool' else 'spot',
-            target_pool_id
-        ))
+        # Insert pending command with manual priority (REFACTORED v5.0: Uses command_tracker)
+        command_id = command_tracker.create_command(
+            agent_id=instance['agent_id'],
+            client_id=instance['client_id'],
+            command_type='switch',
+            instance_id=instance_id,
+            target_mode=target_mode if target_mode != 'pool' else 'spot',
+            target_pool_id=target_pool_id,
+            priority=CommandPriority.MANUAL,  # 75
+            trigger_type='manual_ui',
+            created_by='manual'
+        )
 
         notification_msg = f"Manual switch queued for {instance_id}"
         if new_instance_type:
@@ -5026,12 +5087,21 @@ def _get_confidence_score(source_type: str) -> Decimal:
 
 
 def _calculate_savings(spot_price: Decimal, ondemand_price: Optional[Decimal]) -> Optional[Decimal]:
-    """Calculate savings percentage"""
+    """
+    Calculate savings percentage
+
+    REFACTORED v5.0: Now uses calculation_engine component for consistent
+    financial calculations across the platform
+    """
     if not ondemand_price or ondemand_price == 0:
         return None
 
-    savings = ((ondemand_price - spot_price) / ondemand_price) * Decimal('100')
-    return round(savings, 2)
+    # Use calculation_engine for consistent savings calculations
+    result = calculation_engine.calculate_hourly_savings(
+        ondemand_price=ondemand_price,
+        spot_price=spot_price
+    )
+    return result['savings_percent']
 
 
 def _find_nearest_snapshot(
@@ -6792,6 +6862,8 @@ def create_emergency_replica(app):
             ml_features = _collect_interruption_ml_features(agent['current_pool_id'], agent_id, now)
 
             # Log interruption event with ML features
+            # NOTE v5.0: Consider refactoring to use sentinel component in future
+            # Currently kept as-is due to complex ML feature collection
             execute_query("""
                 INSERT INTO spot_interruption_events (
                     instance_id, agent_id, pool_id, signal_type,
