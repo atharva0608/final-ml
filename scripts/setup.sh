@@ -573,25 +573,26 @@ python3 -m venv venv
 # Activate virtual environment
 source venv/bin/activate
 
-# Copy backend files from repository (now in backend/ directory)
-log "Copying backend files from repository..."
-if [ -f "$REPO_DIR/backend/backend.py" ]; then
-    cp "$REPO_DIR/backend/backend.py" "$BACKEND_DIR/"
-    log "✓ Copied backend.py"
-else
-    error "backend/backend.py not found in repository!"
-    exit 1
-fi
+# Copy entire modular backend from repository
+log "Copying modular backend structure from repository..."
 
-# Copy decision_engines module from repository
-log "Copying decision_engines module..."
-if [ -d "$REPO_DIR/backend/decision_engines" ]; then
-    cp -r "$REPO_DIR/backend/decision_engines" "$BACKEND_DIR/"
-    log "✓ Copied decision_engines module"
-else
-    error "backend/decision_engines directory not found in repository!"
-    exit 1
-fi
+# Copy all Python files in backend root
+for file in app.py auth.py config.py database_manager.py decision_engine_manager.py schemas.py utils.py smart_emergency_fallback.py; do
+    if [ -f "$REPO_DIR/backend/$file" ]; then
+        cp "$REPO_DIR/backend/$file" "$BACKEND_DIR/"
+        log "✓ Copied $file"
+    fi
+done
+
+# Copy modular directories
+for dir in api services jobs decision_engines components; do
+    if [ -d "$REPO_DIR/backend/$dir" ]; then
+        cp -r "$REPO_DIR/backend/$dir" "$BACKEND_DIR/"
+        log "✓ Copied $dir/ module"
+    else
+        warn "backend/$dir directory not found - skipping"
+    fi
+done
 
 # Copy requirements.txt from backend directory
 if [ -f "$REPO_DIR/backend/requirements.txt" ]; then
@@ -600,6 +601,12 @@ if [ -f "$REPO_DIR/backend/requirements.txt" ]; then
 else
     error "backend/requirements.txt not found in repository!"
     exit 1
+fi
+
+# Copy .env.example if it exists
+if [ -f "$REPO_DIR/backend/.env.example" ]; then
+    cp "$REPO_DIR/backend/.env.example" "$BACKEND_DIR/"
+    log "✓ Copied .env.example"
 fi
 
 # Create production directories for model uploads
