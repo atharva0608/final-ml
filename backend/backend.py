@@ -154,7 +154,7 @@ class Config:
     DB_USER = os.getenv('DB_USER', 'spotuser')
     DB_PASSWORD = os.getenv('DB_PASSWORD', 'SpotUser2024!')
     DB_NAME = os.getenv('DB_NAME', 'spot_optimizer')
-    DB_POOL_SIZE = int(os.getenv('DB_POOL_SIZE', 30))  # Increased from 10 to 30 for better concurrency
+    DB_POOL_SIZE = int(os.getenv('DB_POOL_SIZE', 50))  # Increased from 30 to 50 for better concurrency
     
     # Decision Engine
     DECISION_ENGINE_MODULE = os.getenv('DECISION_ENGINE_MODULE', 'decision_engines.ml_based_engine')
@@ -529,7 +529,41 @@ def register_agent():
         if existing:
             agent_id = existing['id']
             logger.info(f"Updating existing agent: agent_id={agent_id}, logical_id={logical_agent_id}")
-            # Update existing agent
+
+            # Check if this instance is a zombie or terminated - if so, don't let it update the agent
+            instance_status_check = execute_query("""
+                SELECT instance_status, is_primary
+                FROM instances
+                WHERE id = %s
+            """, (validated_data['instance_id'],), fetch_one=True)
+
+            # If this is a zombie or terminated instance, or not primary, reject the registration update
+            if instance_status_check:
+                status = instance_status_check.get('instance_status')
+                is_primary = instance_status_check.get('is_primary')
+
+                if status in ('zombie', 'terminated') or not is_primary:
+                    logger.warning(f"Rejecting registration from non-primary/zombie instance {validated_data['instance_id']} (status={status}, is_primary={is_primary})")
+                    # Return success but don't update agent - zombie should not become primary again
+                    return jsonify({
+                        'agent_id': agent_id,
+                        'client_id': request.client_id,
+                        'message': 'Instance is not primary, registration ignored',
+                        'config': {
+                            'enabled': False,
+                            'auto_switch_enabled': False,
+                            'auto_terminate_enabled': False,
+                            'terminate_wait_seconds': 0,
+                            'replica_enabled': False,
+                            'replica_count': 0,
+                            'min_savings_percent': 0,
+                            'risk_threshold': 0,
+                            'max_switches_per_week': 0,
+                            'min_pool_duration_hours': 0
+                        }
+                    })
+
+            # Update existing agent (only if instance is primary or doesn't exist in instances table yet)
             execute_query("""
                 UPDATE agents
                 SET status = 'online',
@@ -710,24 +744,43 @@ def register_agent():
 def agent_heartbeat(agent_id: str):
     """Update agent heartbeat"""
     data = request.json or {}
-    
+
     try:
         new_status = data.get('status', 'online')
-        
-        # Get previous status
+
+        # Get previous status and current instance
         prev = execute_query(
-            "SELECT status FROM agents WHERE id = %s AND client_id = %s",
+            "SELECT status, instance_id FROM agents WHERE id = %s AND client_id = %s",
             (agent_id, request.client_id),
             fetch_one=True
         )
-        
+
         if not prev:
             return jsonify({'error': 'Agent not found'}), 404
-        
+
+        # If instance_id is being updated, check if it's from a zombie/terminated instance
+        new_instance_id = data.get('instance_id')
+        if new_instance_id and new_instance_id != prev.get('instance_id'):
+            # Check if the new instance is a zombie or terminated
+            instance_check = execute_query("""
+                SELECT instance_status, is_primary
+                FROM instances
+                WHERE id = %s
+            """, (new_instance_id,), fetch_one=True)
+
+            if instance_check:
+                status = instance_check.get('instance_status')
+                is_primary = instance_check.get('is_primary')
+
+                if status in ('zombie', 'terminated') or not is_primary:
+                    logger.warning(f"Rejecting heartbeat instance_id update from zombie/non-primary {new_instance_id}")
+                    # Don't allow zombie instances to update the agent's instance_id
+                    new_instance_id = None  # Prevent the update
+
         # Update heartbeat
         execute_query("""
-            UPDATE agents 
-            SET status = %s, 
+            UPDATE agents
+            SET status = %s,
                 last_heartbeat_at = NOW(),
                 instance_id = COALESCE(%s, instance_id),
                 instance_type = COALESCE(%s, instance_type),
@@ -736,7 +789,7 @@ def agent_heartbeat(agent_id: str):
             WHERE id = %s AND client_id = %s
         """, (
             new_status,
-            data.get('instance_id'),
+            new_instance_id,
             data.get('instance_type'),
             data.get('mode'),
             data.get('az'),
@@ -2507,20 +2560,57 @@ def update_agent_config(agent_id: str):
             updates.append("auto_switch_enabled = FALSE")  # Force off
             updates.append("config_version = config_version + 1")  # Force config refresh
 
-            # Create a manual replica immediately if none exists
-            # Note: ReplicaCoordinator will handle continuous replica maintenance
-            # We just mark it enabled here and let the coordinator create the replica
-            logger.info(f"Manual replica enabled for agent {agent_id}")
-            logger.info(f"ReplicaCoordinator will create and maintain replica automatically")
+            logger.info(f"Manual replica enabled for agent {agent_id} - creating replica immediately")
+
+            # Check if replica already exists
+            existing_replicas = execute_query("""
+                SELECT COUNT(*) as count FROM replica_instances
+                WHERE agent_id = %s AND is_active = TRUE AND status NOT IN ('terminated', 'promoted', 'failed')
+            """, (agent_id,), fetch_one=True)
+
+            # Trigger immediate replica creation if coordinator is available and no replica exists
+            if existing_replicas and existing_replicas['count'] == 0:
+                global replica_coordinator
+                if replica_coordinator:
+                    try:
+                        # Get agent data for replica creation
+                        agent_data = execute_query("""
+                            SELECT id, instance_id FROM agents WHERE id = %s
+                        """, (agent_id,), fetch_one=True)
+
+                        if agent_data:
+                            # Call coordinator's method to create replica immediately
+                            import threading
+                            threading.Thread(
+                                target=replica_coordinator._create_manual_replica,
+                                args=(agent_data,),
+                                daemon=True
+                            ).start()
+                            logger.info(f"✓ Triggered immediate manual replica creation for agent {agent_id}")
+                    except Exception as e:
+                        logger.error(f"Failed to trigger immediate replica creation: {e}")
+                        logger.info(f"ReplicaCoordinator will create replica in next monitoring cycle (2s)")
+                else:
+                    logger.info(f"ReplicaCoordinator not initialized - replica will be created in next cycle")
+            else:
+                logger.info(f"Manual replica already exists for agent {agent_id} - skipping creation")
 
         # Case 4: User disables manual_replica_enabled
         elif 'manualReplicaEnabled' in data and not bool(data['manualReplicaEnabled']):
             updates.append("manual_replica_enabled = FALSE")
             updates.append("config_version = config_version + 1")  # Force config refresh
 
+            logger.info(f"Manual replica DISABLED for agent {agent_id} - terminating all active replicas IMMEDIATELY")
+
             # Terminate all active replicas (promoted ones are already converted to primary instances)
-            if current_manual_replica:
-                logger.info(f"Manual replica disabled for agent {agent_id}, terminating all active replicas")
+            if current_manual_replica or replica_count > 0:
+                # Get replica IDs before terminating for logging
+                replica_ids = execute_query("""
+                    SELECT id, instance_id, status FROM replica_instances
+                    WHERE agent_id = %s
+                      AND is_active = TRUE
+                      AND status != 'promoted'
+                """, (agent_id,), fetch=True)
 
                 # Terminate all active replicas for this agent
                 terminated_count = execute_query("""
@@ -2531,9 +2621,31 @@ def update_agent_config(agent_id: str):
                       AND status != 'promoted'
                 """, (agent_id,))
 
-                logger.info(f"Terminated {terminated_count} active replicas for agent {agent_id}")
+                logger.info(f"✓ TERMINATED {terminated_count} active replicas for agent {agent_id}")
+
+                # Also terminate in instances table
+                if replica_ids:
+                    for rep in replica_ids:
+                        if rep.get('instance_id'):
+                            execute_query("""
+                                UPDATE instances
+                                SET instance_status = 'terminated', is_active = FALSE, terminated_at = NOW()
+                                WHERE id = %s
+                            """, (rep['instance_id'],))
+                            logger.info(f"✓ Marked instance {rep['instance_id']} as TERMINATED")
+
+                    # Log to system_events
+                    execute_query("""
+                        INSERT INTO system_events (event_type, severity, agent_id, message, metadata)
+                        VALUES ('replicas_disabled', 'info', %s, %s, %s)
+                    """, (agent_id,
+                          f"Manual replica mode disabled - terminated {terminated_count} replicas",
+                          json.dumps({'terminated_count': terminated_count, 'replica_ids': [r['id'] for r in replica_ids]})))
+
                 updates.append("replica_count = 0")
                 updates.append("current_replica_id = NULL")
+            else:
+                logger.info(f"Manual replica disabled for agent {agent_id} - no active replicas to terminate")
 
         if updates:
             updates.append("updated_at = CURRENT_TIMESTAMP")
@@ -5372,7 +5484,9 @@ class DatabaseConfig:
     DB_USER = os.getenv('DB_USER', 'spotuser')
     DB_PASSWORD = os.getenv('DB_PASSWORD', 'SpotUser2024!')
     DB_NAME = os.getenv('DB_NAME', 'spot_optimizer')
-    DB_POOL_SIZE = int(os.getenv('DB_POOL_SIZE', 30))  # Increased from 10 to 30 for better concurrency
+    DB_POOL_SIZE = int(os.getenv('DB_POOL_SIZE', 50))  # Increased from 30 to 50 for better concurrency
+    DB_MAX_OVERFLOW = int(os.getenv('DB_MAX_OVERFLOW', 20))  # Allow 20 additional connections beyond pool_size
+    DB_POOL_RECYCLE = int(os.getenv('DB_POOL_RECYCLE', 3600))  # Recycle connections after 1 hour
 
 db_config = DatabaseConfig()
 
@@ -5383,10 +5497,11 @@ db_config = DatabaseConfig()
 connection_pool = None
 
 def init_db_pool():
-    """Initialize database connection pool"""
+    """Initialize database connection pool with overflow support"""
     global connection_pool
     try:
         logger.info(f"Initializing database pool: {db_config.DB_USER}@{db_config.DB_HOST}:{db_config.DB_PORT}/{db_config.DB_NAME}")
+        logger.info(f"Pool config: size={db_config.DB_POOL_SIZE}, max_overflow={db_config.DB_MAX_OVERFLOW}, recycle={db_config.DB_POOL_RECYCLE}s")
         connection_pool = pooling.MySQLConnectionPool(
             pool_name="spot_optimizer_pool",
             pool_size=db_config.DB_POOL_SIZE,
@@ -5589,11 +5704,11 @@ class ReplicaCoordinator:
                     elif agent['manual_replica_enabled']:
                         self._handle_manual_replica_mode(agent)
 
-                time.sleep(10)  # Check every 10 seconds
+                time.sleep(2)  # Check every 2 seconds for more reactive behavior
 
             except Exception as e:
                 logger.error(f"Monitor loop error: {e}", exc_info=True)
-                time.sleep(30)
+                time.sleep(5)  # Shorter retry delay for faster recovery
 
     def _handle_auto_switch_mode(self, agent: Dict):
         """
@@ -6486,7 +6601,7 @@ def promote_replica(app):
         """
         try:
             data = request.get_json() or {}
-            demote_old_primary = data.get('demote_old_primary', True)
+            demote_old_primary = data.get('demote_old_primary', False)  # Default to FALSE - mark as zombie
             wait_for_sync = data.get('wait_for_sync', True)
 
             # Validate replica exists and is ready
@@ -6617,6 +6732,7 @@ def promote_replica(app):
                         is_primary = FALSE
                     WHERE id = %s
                 """, (old_instance_id,))
+                logger.info(f"✓ Old primary {old_instance_id} demoted to replica for agent {agent_id}")
             else:
                 # Mark old instance as zombie (will be terminated)
                 execute_query("""
@@ -6626,6 +6742,15 @@ def promote_replica(app):
                         is_active = FALSE
                     WHERE id = %s
                 """, (old_instance_id,))
+                logger.info(f"✓ Old primary {old_instance_id} marked as ZOMBIE for agent {agent_id}")
+
+            # Log to system_events table
+            execute_query("""
+                INSERT INTO system_events (event_type, severity, agent_id, instance_id, message, metadata)
+                VALUES ('replica_promoted', 'info', %s, %s, %s, %s)
+            """, (agent_id, new_instance_id,
+                  f"Replica {replica_id} promoted to primary, old primary {'demoted to replica' if demote_old_primary else 'marked as zombie'}",
+                  json.dumps({'replica_id': replica_id, 'old_instance_id': old_instance_id, 'demoted': demote_old_primary})))
 
             # Step 6: Decrement replica count (promoted replica no longer counted)
             execute_query("""
@@ -6681,6 +6806,7 @@ def delete_replica(app):
                     terminated_at = NOW()
                 WHERE id = %s
             """, (replica_id,))
+            logger.info(f"✓ Marked replica {replica_id} as TERMINATED in replica_instances table")
 
             # Also mark in instances table if exists
             if replica.get('instance_id'):
@@ -6691,6 +6817,7 @@ def delete_replica(app):
                         terminated_at = NOW()
                     WHERE id = %s
                 """, (replica['instance_id'],))
+                logger.info(f"✓ Marked instance {replica['instance_id']} as TERMINATED in instances table")
 
             # Decrement agent replica count
             execute_query("""
@@ -6702,8 +6829,17 @@ def delete_replica(app):
                     END
                 WHERE id = %s
             """, (replica_id, agent_id))
+            logger.info(f"✓ Decremented replica count for agent {agent_id}")
 
-            logger.info(f"Deleted replica {replica_id} for agent {agent_id}")
+            # Log to system_events table
+            execute_query("""
+                INSERT INTO system_events (event_type, severity, agent_id, message, metadata)
+                VALUES ('replica_terminated', 'info', %s, %s, %s)
+            """, (agent_id,
+                  f"Manual replica {replica_id} terminated",
+                  json.dumps({'replica_id': replica_id, 'instance_id': replica.get('instance_id'), 'status': replica.get('status')})))
+
+            logger.info(f"✓ Deleted replica {replica_id} for agent {agent_id}")
 
             return jsonify({
                 'success': True,
