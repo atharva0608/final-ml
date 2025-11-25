@@ -562,7 +562,10 @@ CREATE TABLE IF NOT EXISTS replica_instances (
     sync_status ENUM('initializing', 'syncing', 'synced', 'out-of-sync') DEFAULT 'initializing',
     sync_latency_ms INT,
     last_sync_at TIMESTAMP NULL,
+    sync_started_at TIMESTAMP NULL COMMENT 'Timestamp when state synchronization started',
+    sync_completed_at TIMESTAMP NULL COMMENT 'Timestamp when state synchronization completed successfully',
     state_transfer_progress DECIMAL(5,2) DEFAULT 0.00,
+    error_message TEXT NULL COMMENT 'Error message details for failed replica status',
 
     -- Cost tracking
     hourly_cost DECIMAL(10,6),
@@ -582,7 +585,8 @@ CREATE TABLE IF NOT EXISTS replica_instances (
     INDEX idx_replica_agent_status (agent_id, status),
     INDEX idx_replica_parent (parent_instance_id),
     INDEX idx_replica_created (created_at),
-    INDEX idx_replica_active (agent_id, is_active)
+    INDEX idx_replica_active (agent_id, is_active),
+    INDEX idx_replica_sync_completed (sync_completed_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ===========================================================================
