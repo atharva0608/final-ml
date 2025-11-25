@@ -860,6 +860,188 @@ def get_agent_config(agent_id: str):
         logger.error(f"Get config error: {e}")
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/agents/<agent_id>/instances-to-terminate', methods=['GET'])
+@require_client_token
+def get_instances_to_terminate(agent_id: str):
+    """
+    Get list of instances that should be terminated by the agent.
+
+    Returns instances that are:
+    1. Marked as 'zombie' and past their terminate_wait_seconds
+    2. Marked as 'terminated' in replica_instances but not yet terminated in AWS
+
+    The agent's Cleanup worker should poll this endpoint and terminate instances via AWS EC2 API.
+    """
+    try:
+        # Get agent's auto_terminate setting and terminate_wait_seconds
+        agent = execute_query("""
+            SELECT auto_terminate_enabled, terminate_wait_seconds, region
+            FROM agents
+            WHERE id = %s AND client_id = %s
+        """, (agent_id, request.client_id), fetch_one=True)
+
+        if not agent:
+            return jsonify({'error': 'Agent not found'}), 404
+
+        instances_to_terminate = []
+
+        # Only proceed if auto_terminate is enabled
+        if agent['auto_terminate_enabled']:
+            terminate_wait_seconds = agent['terminate_wait_seconds'] or 300
+
+            # Get zombie instances past their termination wait period
+            zombie_instances = execute_query("""
+                SELECT
+                    i.id as instance_id,
+                    i.instance_type,
+                    i.az,
+                    i.instance_status,
+                    i.terminated_at,
+                    TIMESTAMPDIFF(SECOND, i.updated_at, NOW()) as seconds_since_zombie
+                FROM instances i
+                WHERE i.instance_status = 'zombie'
+                  AND i.is_active = FALSE
+                  AND i.region = %s
+                  AND TIMESTAMPDIFF(SECOND, i.updated_at, NOW()) >= %s
+                  AND (i.termination_attempted_at IS NULL OR i.termination_attempted_at < DATE_SUB(NOW(), INTERVAL 5 MINUTE))
+            """, (agent['region'], terminate_wait_seconds), fetch=True)
+
+            for inst in zombie_instances or []:
+                instances_to_terminate.append({
+                    'instance_id': inst['instance_id'],
+                    'instance_type': inst['instance_type'],
+                    'az': inst['az'],
+                    'reason': 'zombie_timeout',
+                    'seconds_waiting': inst['seconds_since_zombie']
+                })
+
+            # Get replica instances marked as terminated but not yet terminated in AWS
+            terminated_replicas = execute_query("""
+                SELECT
+                    ri.instance_id,
+                    ri.instance_type,
+                    ri.az,
+                    ri.status,
+                    TIMESTAMPDIFF(SECOND, ri.terminated_at, NOW()) as seconds_since_marked
+                FROM replica_instances ri
+                WHERE ri.agent_id = %s
+                  AND ri.status = 'terminated'
+                  AND ri.instance_id IS NOT NULL
+                  AND ri.instance_id != ''
+                  AND (ri.termination_attempted_at IS NULL OR ri.termination_attempted_at < DATE_SUB(NOW(), INTERVAL 5 MINUTE))
+            """, (agent_id,), fetch=True)
+
+            for rep in terminated_replicas or []:
+                instances_to_terminate.append({
+                    'instance_id': rep['instance_id'],
+                    'instance_type': rep['instance_type'],
+                    'az': rep['az'],
+                    'reason': 'replica_terminated',
+                    'seconds_since_marked': rep['seconds_since_marked']
+                })
+
+        logger.info(f"Agent {agent_id} fetched {len(instances_to_terminate)} instances to terminate")
+
+        return jsonify({
+            'instances': instances_to_terminate,
+            'auto_terminate_enabled': agent['auto_terminate_enabled'],
+            'terminate_wait_seconds': agent.get('terminate_wait_seconds', 300)
+        })
+
+    except Exception as e:
+        logger.error(f"Get instances to terminate error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/agents/<agent_id>/termination-report', methods=['POST'])
+@require_client_token
+def receive_termination_report(agent_id: str):
+    """
+    Receive termination report from agent after terminating instances.
+
+    Request body:
+    {
+        "instance_id": "i-1234567890abcdef0",
+        "success": true/false,
+        "error": "error message if failed",
+        "terminated_at": "2025-11-25T12:00:00"
+    }
+    """
+    try:
+        data = request.json or {}
+        instance_id = data.get('instance_id')
+        success = data.get('success', False)
+        error_message = data.get('error')
+        terminated_at = data.get('terminated_at')
+
+        if not instance_id:
+            return jsonify({'error': 'instance_id required'}), 400
+
+        if success:
+            # Mark instance as actually terminated in AWS
+            execute_query("""
+                UPDATE instances
+                SET
+                    instance_status = 'terminated',
+                    is_active = FALSE,
+                    terminated_at = %s,
+                    termination_attempted_at = NOW(),
+                    termination_confirmed = TRUE
+                WHERE id = %s
+            """, (terminated_at or datetime.utcnow(), instance_id))
+
+            # Also mark in replica_instances if it exists
+            execute_query("""
+                UPDATE replica_instances
+                SET
+                    status = 'terminated',
+                    terminated_at = %s,
+                    termination_attempted_at = NOW(),
+                    termination_confirmed = TRUE
+                WHERE instance_id = %s
+            """, (terminated_at or datetime.utcnow(), instance_id))
+
+            logger.info(f"✓ Instance {instance_id} confirmed terminated by agent {agent_id}")
+
+            # Log system event
+            execute_query("""
+                INSERT INTO system_events (event_type, severity, agent_id, message, metadata)
+                VALUES ('instance_terminated', 'info', %s, %s, %s)
+            """, (agent_id,
+                  f"Instance {instance_id} terminated in AWS",
+                  json.dumps({'instance_id': instance_id, 'terminated_at': terminated_at})))
+        else:
+            # Mark termination attempt but note it failed
+            execute_query("""
+                UPDATE instances
+                SET termination_attempted_at = NOW()
+                WHERE id = %s
+            """, (instance_id,))
+
+            execute_query("""
+                UPDATE replica_instances
+                SET termination_attempted_at = NOW()
+                WHERE instance_id = %s
+            """, (instance_id,))
+
+            logger.error(f"✗ Failed to terminate instance {instance_id}: {error_message}")
+
+            # Log system event
+            execute_query("""
+                INSERT INTO system_events (event_type, severity, agent_id, message, metadata)
+                VALUES ('instance_termination_failed', 'warning', %s, %s, %s)
+            """, (agent_id,
+                  f"Failed to terminate instance {instance_id}: {error_message}",
+                  json.dumps({'instance_id': instance_id, 'error': error_message})))
+
+        return jsonify({
+            'success': True,
+            'message': 'Termination report recorded'
+        })
+
+    except Exception as e:
+        logger.error(f"Termination report error: {e}")
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/api/agents/<agent_id>/pending-commands', methods=['GET'])
 @require_client_token
 def get_pending_commands(agent_id: str):
@@ -5802,16 +5984,23 @@ class ReplicaCoordinator:
         # No replica - need to create one
         logger.warning(f"Creating emergency replica for agent {agent_id}")
 
-        # Get instance details
+        # Get instance details from PRIMARY instance only
         instance = execute_query("""
-            SELECT instance_type, region, current_pool_id
+            SELECT instance_type, region, current_pool_id, id as instance_id
             FROM instances
-            WHERE agent_id = %s AND is_active = TRUE
+            WHERE agent_id = %s
+              AND is_active = TRUE
+              AND is_primary = TRUE
+              AND instance_status = 'running_primary'
+            ORDER BY created_at DESC
+            LIMIT 1
         """, (agent_id,), fetch_one=True)
 
         if not instance:
-            logger.error(f"Cannot create replica - no active instance for agent {agent_id}")
+            logger.error(f"Cannot create replica - no active primary instance for agent {agent_id}")
             return None
+
+        logger.info(f"Creating emergency replica for agent {agent_id}: instance_type={instance['instance_type']}, region={instance['region']}")
 
         # Find cheapest pool
         cheapest_pool = execute_query("""
@@ -6030,16 +6219,23 @@ class ReplicaCoordinator:
             logger.info(f"Manual replica disabled for agent {agent_id} - skipping creation")
             return None
 
-        # Get instance details
+        # Get instance details from PRIMARY instance only
         instance = execute_query("""
-            SELECT instance_type, region, current_pool_id
+            SELECT instance_type, region, current_pool_id, id as instance_id
             FROM instances
-            WHERE agent_id = %s AND is_active = TRUE
+            WHERE agent_id = %s
+              AND is_active = TRUE
+              AND is_primary = TRUE
+              AND instance_status = 'running_primary'
+            ORDER BY created_at DESC
+            LIMIT 1
         """, (agent_id,), fetch_one=True)
 
         if not instance:
-            logger.error(f"Cannot create manual replica - no active instance for agent {agent_id}")
+            logger.error(f"Cannot create manual replica - no active primary instance for agent {agent_id}")
             return None
+
+        logger.info(f"Creating manual replica for agent {agent_id}: instance_type={instance['instance_type']}, region={instance['region']}, instance_id={instance['instance_id']}")
 
         # Find cheapest pool (different from current) using real-time pricing
         pools = execute_query("""

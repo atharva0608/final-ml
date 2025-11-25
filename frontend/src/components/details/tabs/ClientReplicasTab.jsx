@@ -78,15 +78,20 @@ const ClientReplicasTab = ({ clientId }) => {
 
   const getStatusBadge = (status) => {
     const statusMap = {
-      'launching': { variant: 'warning', label: 'Launching' },
-      'syncing': { variant: 'info', label: 'Syncing' },
-      'ready': { variant: 'success', label: 'Ready' },
-      'promoted': { variant: 'secondary', label: 'Promoted' },
-      'terminated': { variant: 'danger', label: 'Terminated' },
-      'failed': { variant: 'danger', label: 'Failed' }
+      'launching': { variant: 'warning', label: 'Launching', icon: <RefreshCw size={12} className="animate-spin" /> },
+      'syncing': { variant: 'info', label: 'Syncing', icon: <RefreshCw size={12} className="animate-spin" /> },
+      'ready': { variant: 'success', label: '✓ Done', icon: <CheckCircle size={12} /> },
+      'promoted': { variant: 'secondary', label: 'Promoted', icon: null },
+      'terminated': { variant: 'danger', label: 'Terminated', icon: <XCircle size={12} /> },
+      'failed': { variant: 'danger', label: 'Failed', icon: <XCircle size={12} /> }
     };
-    const config = statusMap[status] || { variant: 'secondary', label: status };
-    return <Badge variant={config.variant}>{config.label}</Badge>;
+    const config = statusMap[status] || { variant: 'secondary', label: status, icon: null };
+    return (
+      <Badge variant={config.variant}>
+        {config.icon && <span className="inline-flex items-center mr-1">{config.icon}</span>}
+        {config.label}
+      </Badge>
+    );
   };
 
   const getSyncStatusIcon = (syncStatus) => {
@@ -247,9 +252,9 @@ const ClientReplicasTab = ({ clientId }) => {
                     icon={<ArrowRight size={16} />}
                     onClick={() => handleSwitchToReplica(item.agentId, item.replica.id)}
                     loading={actionLoading === `switch-${item.replica.id}`}
-                    disabled={item.replica.status !== 'ready' && item.replica.status !== 'syncing'}
+                    disabled={item.replica.status !== 'ready'}
                   >
-                    Switch to Replica
+                    {item.replica.status === 'ready' ? 'Switch to Replica' : 'Waiting for Ready...'}
                   </Button>
                   <Button
                     variant="danger"
