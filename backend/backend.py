@@ -2500,13 +2500,18 @@ def update_agent_config(agent_id: str):
         elif 'manualReplicaEnabled' in data and not bool(data['manualReplicaEnabled']):
             updates.append("manual_replica_enabled = FALSE")
 
-            # Terminate all manual replicas
+            # Terminate ONLY non-promoted replicas (promoted replicas are now primaries)
             if current_manual_replica and replica_count > 0:
-                logger.info(f"Manual replica disabled for agent {agent_id}, terminating all replicas")
+                logger.info(f"Manual replica disabled for agent {agent_id}, terminating non-promoted replicas")
+                # Only terminate replicas that were NOT promoted (status != 'promoted')
+                # Promoted replicas become the primary instance and should be preserved
                 execute_query("""
                     UPDATE replica_instances
                     SET is_active = FALSE, status = 'terminated', terminated_at = NOW()
-                    WHERE agent_id = %s AND is_active = TRUE
+                    WHERE agent_id = %s
+                      AND is_active = TRUE
+                      AND status != 'promoted'
+                      AND replica_type = 'manual'
                 """, (agent_id,))
                 updates.append("replica_count = 0")
                 updates.append("current_replica_id = NULL")
@@ -2675,28 +2680,56 @@ def get_client_instances(client_id: str):
     status = request.args.get('status', 'all')
     mode = request.args.get('mode', 'all')
     search = request.args.get('search', '')
-    
+
     try:
-        query = "SELECT * FROM instances WHERE client_id = %s"
+        # Check if instance_role column exists
+        has_role_column = execute_query("""
+            SELECT COUNT(*) as count
+            FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME = 'instances'
+            AND COLUMN_NAME = 'instance_role'
+        """, fetch_one=True)
+
+        # Build query with or without instance_role
+        if has_role_column and has_role_column.get('count', 0) > 0:
+            query = """
+                SELECT i.*, a.id as agent_id, a.logical_agent_id, a.status as agent_status
+                FROM instances i
+                LEFT JOIN agents a ON i.id = a.instance_id
+                WHERE i.client_id = %s
+            """
+        else:
+            query = """
+                SELECT i.*, a.id as agent_id, a.logical_agent_id, a.status as agent_status,
+                       CASE
+                           WHEN a.instance_id = i.id THEN 'primary'
+                           ELSE 'zombie'
+                       END as instance_role
+                FROM instances i
+                LEFT JOIN agents a ON i.id = a.instance_id
+                WHERE i.client_id = %s
+            """
+
         params = [client_id]
-        
+
         if status == 'active':
-            query += " AND is_active = TRUE"
+            query += " AND i.is_active = TRUE AND (i.instance_role IS NULL OR i.instance_role = 'primary')"
         elif status == 'terminated':
-            query += " AND is_active = FALSE"
-        
+            query += " AND (i.is_active = FALSE OR i.instance_role = 'zombie')"
+
         if mode != 'all':
-            query += " AND current_mode = %s"
+            query += " AND i.current_mode = %s"
             params.append(mode)
-        
+
         if search:
-            query += " AND (id LIKE %s OR instance_type LIKE %s)"
+            query += " AND (i.id LIKE %s OR i.instance_type LIKE %s)"
             params.extend([f'%{search}%', f'%{search}%'])
-        
-        query += " ORDER BY created_at DESC"
-        
+
+        query += " ORDER BY i.created_at DESC"
+
         instances = execute_query(query, tuple(params), fetch=True)
-        
+
         return jsonify([{
             'id': inst['id'],
             'type': inst['instance_type'],
@@ -2707,9 +2740,13 @@ def get_client_instances(client_id: str):
             'spotPrice': float(inst['spot_price'] or 0),
             'onDemandPrice': float(inst['ondemand_price'] or 0),
             'isActive': inst['is_active'],
+            'instanceRole': inst.get('instance_role', 'primary' if inst.get('agent_id') else 'zombie'),
+            'agentId': inst.get('agent_id'),
+            'agentStatus': inst.get('agent_status'),
+            'logicalAgentId': inst.get('logical_agent_id'),
             'lastSwitch': inst['last_switch_at'].isoformat() if inst['last_switch_at'] else None
         } for inst in instances or []])
-        
+
     except Exception as e:
         logger.error(f"Get instances error: {e}")
         return jsonify({'error': str(e)}), 500
@@ -3175,13 +3212,34 @@ def get_instance_available_options(instance_id: str):
     try:
         client_id = request.client_id
 
+        # Check if instance_role column exists
+        has_role_column = execute_query("""
+            SELECT COUNT(*) as count
+            FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME = 'instances'
+            AND COLUMN_NAME = 'instance_role'
+        """, fetch_one=True)
+
+        # Check instance role if column exists
+        if has_role_column and has_role_column.get('count', 0) > 0:
+            instance_check = execute_query("""
+                SELECT instance_role FROM instances WHERE id = %s AND client_id = %s
+            """, (instance_id, client_id), fetch_one=True)
+
+            if instance_check and instance_check.get('instance_role') == 'zombie':
+                return jsonify({
+                    'error': 'This instance is in zombie state and cannot be switched',
+                    'isZombie': True
+                }), 403
+
         # Get current instance information
         agent = execute_query("""
             SELECT instance_type, region, az FROM agents WHERE instance_id = %s AND client_id = %s
         """, (instance_id, client_id), fetch_one=True)
 
         if not agent:
-            return jsonify({'error': 'Instance not found'}), 404
+            return jsonify({'error': 'Instance not found or no longer active'}), 404
 
         current_type = agent['instance_type']
         region = agent['region']
@@ -3239,14 +3297,34 @@ def get_instance_available_options(instance_id: str):
 def force_instance_switch(instance_id: str):
     """Manually force instance switch"""
     data = request.json or {}
-    
+
     schema = ForceSwitchSchema()
     try:
         validated_data = schema.load(data)
     except ValidationError as e:
         return jsonify({'error': 'Validation failed', 'details': e.messages}), 400
-    
+
     try:
+        # Check if instance_role column exists and check for zombie state
+        has_role_column = execute_query("""
+            SELECT COUNT(*) as count
+            FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME = 'instances'
+            AND COLUMN_NAME = 'instance_role'
+        """, fetch_one=True)
+
+        if has_role_column and has_role_column.get('count', 0) > 0:
+            instance_check = execute_query("""
+                SELECT instance_role, client_id FROM instances WHERE id = %s
+            """, (instance_id,), fetch_one=True)
+
+            if instance_check and instance_check.get('instance_role') == 'zombie':
+                return jsonify({
+                    'error': 'Cannot switch zombie instance - this instance is no longer active',
+                    'isZombie': True
+                }), 403
+
         instance = execute_query("""
             SELECT agent_id, client_id FROM instances WHERE id = %s
         """, (instance_id,), fetch_one=True)
@@ -6397,6 +6475,23 @@ def promote_replica(app):
                 WHERE id = %s
             """, (agent_id,))
 
+            # Step 7: If manual replica mode is enabled, automatically create a new replica for the new primary
+            agent_config = execute_query("""
+                SELECT manual_replica_enabled, replica_count FROM agents WHERE id = %s
+            """, (agent_id,), fetch_one=True)
+
+            new_replica_id = None
+            if agent_config and agent_config.get('manual_replica_enabled'):
+                logger.info(f"Manual replica mode enabled - creating new replica for promoted primary {new_instance_id}")
+                # The ReplicaCoordinator will handle creating the replica on its next cycle
+                # We just need to ensure replica_count is set correctly
+                execute_query("""
+                    UPDATE agents
+                    SET replica_count = 0
+                    WHERE id = %s
+                """, (agent_id,))
+                logger.info(f"ReplicaCoordinator will create new replica for agent {agent_id} on next cycle")
+
             logger.info(f"Promoted replica {replica_id} to primary for agent {agent_id}")
 
             return jsonify({
@@ -6405,7 +6500,8 @@ def promote_replica(app):
                 'new_instance_id': new_instance_id,
                 'old_instance_id': old_instance_id,
                 'demoted': demote_old_primary,
-                'switch_time': datetime.now().isoformat()
+                'switch_time': datetime.now().isoformat(),
+                'new_replica_queued': agent_config.get('manual_replica_enabled', False) if agent_config else False
             }), 200
 
         except Exception as e:

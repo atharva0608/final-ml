@@ -92,6 +92,7 @@ const ClientInstancesTab = ({ clientId }) => {
                 <th className="py-3 px-4 text-left text-xs font-semibold text-gray-600 uppercase">Instance ID</th>
                 <th className="py-3 px-4 text-left text-xs font-semibold text-gray-600 uppercase">Type</th>
                 <th className="py-3 px-4 text-left text-xs font-semibold text-gray-600 uppercase">AZ</th>
+                <th className="py-3 px-4 text-left text-xs font-semibold text-gray-600 uppercase">Status</th>
                 <th className="py-3 px-4 text-left text-xs font-semibold text-gray-600 uppercase">Mode</th>
                 <th className="py-3 px-4 text-left text-xs font-semibold text-gray-600 uppercase">Pool</th>
                 <th className="py-3 px-4 text-left text-xs font-semibold text-gray-600 uppercase">Current Price</th>
@@ -103,13 +104,13 @@ const ClientInstancesTab = ({ clientId }) => {
             <tbody className="divide-y divide-gray-100">
               {loading ? (
                 <tr>
-                  <td colSpan="10" className="text-center py-8">
+                  <td colSpan="11" className="text-center py-8">
                     <LoadingSpinner />
                   </td>
                 </tr>
               ) : instances.length === 0 ? (
                 <tr>
-                  <td colSpan="10" className="text-center py-8">
+                  <td colSpan="11" className="text-center py-8">
                     <EmptyState
                       icon={<Zap size={48} />}
                       title="No Instances Found"
@@ -118,56 +119,75 @@ const ClientInstancesTab = ({ clientId }) => {
                   </td>
                 </tr>
               ) : (
-                instances.map(inst => (
-                  <React.Fragment key={inst.id}>
-                    <tr className="hover:bg-gray-50 transition-colors">
-                      <td className="py-4 px-4">
-                        <button onClick={() => toggleInstanceDetail(inst.id)}>
-                          {selectedInstanceId === inst.id ? (
-                            <ChevronDown size={18} className="text-gray-400" />
-                          ) : (
-                            <ChevronRight size={18} className="text-gray-400" />
+                instances.map(inst => {
+                  const isZombie = inst.instanceRole === 'zombie';
+                  const isPrimary = inst.instanceRole === 'primary';
+                  const savings = inst.onDemandPrice > 0
+                    ? (((inst.onDemandPrice - inst.spotPrice) / inst.onDemandPrice) * 100).toFixed(1)
+                    : '0.0';
+
+                  return (
+                    <React.Fragment key={inst.id}>
+                      <tr className={`hover:bg-gray-50 transition-colors ${isZombie ? 'opacity-60' : ''}`}>
+                        <td className="py-4 px-4">
+                          {!isZombie && (
+                            <button onClick={() => toggleInstanceDetail(inst.id)}>
+                              {selectedInstanceId === inst.id ? (
+                                <ChevronDown size={18} className="text-gray-400" />
+                              ) : (
+                                <ChevronRight size={18} className="text-gray-400" />
+                              )}
+                            </button>
                           )}
-                        </button>
-                      </td>
-                      <td className="py-4 px-4">
-                        <span className="text-sm font-mono text-gray-700">{inst.id}</span>
-                      </td>
-                      <td className="py-4 px-4 text-sm text-gray-700">{inst.type}</td>
-                      <td className="py-4 px-4 text-sm text-gray-500">{inst.az}</td>
-                      <td className="py-4 px-4">
-                        <Badge variant={inst.mode === 'ondemand' ? 'danger' : 'success'}>
-                          {inst.mode}
-                        </Badge>
-                      </td>
-                      <td className="py-4 px-4 text-sm font-mono text-gray-500">{inst.poolId}</td>
-                      <td className="py-4 px-4 text-sm font-semibold text-gray-900">
-                        ${inst.spotPrice.toFixed(4)}
-                      </td>
-                      <td className="py-4 px-4 text-sm font-bold text-green-600">
-                        {(((inst.onDemandPrice - inst.spotPrice) / inst.onDemandPrice) * 100).toFixed(1)}%
-                      </td>
-                      <td className="py-4 px-4 text-sm text-gray-500">
-                        {inst.lastSwitch ? new Date(inst.lastSwitch).toLocaleString() : 'Never'}
-                      </td>
-                      <td className="py-4 px-4">
-                        <button
-                          onClick={() => toggleInstanceDetail(inst.id)}
-                          className="text-blue-600 hover:text-blue-800 text-sm font-medium"
-                        >
-                          {selectedInstanceId === inst.id ? 'Hide' : 'Manage'}
-                        </button>
-                      </td>
-                    </tr>
-                    {selectedInstanceId === inst.id && (
-                      <InstanceDetailPanel 
-                        instanceId={inst.id} 
-                        clientId={clientId}
-                        onClose={() => setSelectedInstanceId(null)}
-                      />
-                    )}
-                  </React.Fragment>
-                ))
+                        </td>
+                        <td className="py-4 px-4">
+                          <span className="text-sm font-mono text-gray-700">{inst.id}</span>
+                        </td>
+                        <td className="py-4 px-4 text-sm text-gray-700">{inst.type}</td>
+                        <td className="py-4 px-4 text-sm text-gray-500">{inst.az}</td>
+                        <td className="py-4 px-4">
+                          <Badge variant={isPrimary ? 'success' : 'secondary'}>
+                            {isPrimary ? 'Primary' : isZombie ? 'Zombie' : 'Unknown'}
+                          </Badge>
+                        </td>
+                        <td className="py-4 px-4">
+                          <Badge variant={inst.mode === 'ondemand' ? 'danger' : 'success'}>
+                            {inst.mode}
+                          </Badge>
+                        </td>
+                        <td className="py-4 px-4 text-sm font-mono text-gray-500">{inst.poolId}</td>
+                        <td className="py-4 px-4 text-sm font-semibold text-gray-900">
+                          ${inst.spotPrice.toFixed(4)}
+                        </td>
+                        <td className="py-4 px-4 text-sm font-bold text-green-600">
+                          {savings}%
+                        </td>
+                        <td className="py-4 px-4 text-sm text-gray-500">
+                          {inst.lastSwitch ? new Date(inst.lastSwitch).toLocaleString() : 'Never'}
+                        </td>
+                        <td className="py-4 px-4">
+                          {!isZombie ? (
+                            <button
+                              onClick={() => toggleInstanceDetail(inst.id)}
+                              className="text-blue-600 hover:text-blue-800 text-sm font-medium"
+                            >
+                              {selectedInstanceId === inst.id ? 'Hide' : 'Manage'}
+                            </button>
+                          ) : (
+                            <span className="text-gray-400 text-sm">—</span>
+                          )}
+                        </td>
+                      </tr>
+                      {selectedInstanceId === inst.id && !isZombie && (
+                        <InstanceDetailPanel
+                          instanceId={inst.id}
+                          clientId={clientId}
+                          onClose={() => setSelectedInstanceId(null)}
+                        />
+                      )}
+                    </React.Fragment>
+                  );
+                })
               )}
             </tbody>
           </table>
