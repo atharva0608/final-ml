@@ -105,6 +105,7 @@ CREATE TABLE IF NOT EXISTS agents (
     
     -- Agent Metadata
     agent_version VARCHAR(32),
+    config_version INT DEFAULT 0 COMMENT 'Configuration version counter for forcing agent config refresh',
     instance_count INT DEFAULT 0,
     
     -- Status
