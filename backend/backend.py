@@ -154,7 +154,7 @@ class Config:
     DB_USER = os.getenv('DB_USER', 'spotuser')
     DB_PASSWORD = os.getenv('DB_PASSWORD', 'SpotUser2024!')
     DB_NAME = os.getenv('DB_NAME', 'spot_optimizer')
-    DB_POOL_SIZE = int(os.getenv('DB_POOL_SIZE', 10))
+    DB_POOL_SIZE = int(os.getenv('DB_POOL_SIZE', 30))  # Increased from 10 to 30 for better concurrency
     
     # Decision Engine
     DECISION_ENGINE_MODULE = os.getenv('DECISION_ENGINE_MODULE', 'decision_engines.ml_based_engine')
@@ -3293,10 +3293,23 @@ def force_instance_switch(instance_id: str):
 
         if not instance.get('agent_id'):
             return jsonify({'error': 'No agent assigned to instance'}), 404
-        
+
         target_mode = validated_data['target']
         target_pool_id = validated_data.get('pool_id')
         new_instance_type = validated_data.get('new_instance_type')
+
+        # Get agent's auto-terminate configuration
+        agent_config = execute_query("""
+            SELECT auto_terminate_enabled, terminate_wait_seconds
+            FROM agents
+            WHERE id = %s
+        """, (instance['agent_id'],), fetch_one=True)
+
+        # Determine terminate_wait_seconds based on auto_terminate setting
+        if agent_config and agent_config['auto_terminate_enabled']:
+            terminate_wait = agent_config['terminate_wait_seconds'] or 300
+        else:
+            terminate_wait = 0  # Signal: DO NOT terminate old instance
 
         # Build metadata for logging
         metadata = {
@@ -3308,19 +3321,20 @@ def force_instance_switch(instance_id: str):
             # Note: Instance type changes require agent-side support
             logger.info(f"Instance type change requested: {new_instance_type}")
 
-        # Insert pending command with manual priority (75)
+        # Insert pending command with manual priority (75) and terminate_wait_seconds
         command_id = generate_uuid()
         execute_query("""
             INSERT INTO commands
-            (id, client_id, agent_id, instance_id, command_type, target_mode, target_pool_id, priority, status, created_by)
-            VALUES (%s, %s, %s, %s, 'switch', %s, %s, 75, 'pending', 'manual')
+            (id, client_id, agent_id, instance_id, command_type, target_mode, target_pool_id, priority, terminate_wait_seconds, status, created_by)
+            VALUES (%s, %s, %s, %s, 'switch', %s, %s, 75, %s, 'pending', 'manual')
         """, (
             command_id,
             instance['client_id'],
             instance['agent_id'],
             instance_id,
             target_mode if target_mode != 'pool' else 'spot',
-            target_pool_id
+            target_pool_id,
+            terminate_wait
         ))
 
         notification_msg = f"Manual switch queued for {instance_id}"
@@ -5358,7 +5372,7 @@ class DatabaseConfig:
     DB_USER = os.getenv('DB_USER', 'spotuser')
     DB_PASSWORD = os.getenv('DB_PASSWORD', 'SpotUser2024!')
     DB_NAME = os.getenv('DB_NAME', 'spot_optimizer')
-    DB_POOL_SIZE = int(os.getenv('DB_POOL_SIZE', 10))
+    DB_POOL_SIZE = int(os.getenv('DB_POOL_SIZE', 30))  # Increased from 10 to 30 for better concurrency
 
 db_config = DatabaseConfig()
 

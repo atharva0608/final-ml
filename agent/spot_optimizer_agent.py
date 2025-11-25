@@ -1346,6 +1346,7 @@ class SpotOptimizerAgent:
             (self._heartbeat_worker, "Heartbeat"),
             (self._pending_commands_worker, "PendingCommands"),
             (self._replica_polling_worker, "ReplicaPolling"),
+            (self._replica_termination_worker, "ReplicaTermination"),
             (self._config_refresh_worker, "ConfigRefresh"),
             (self._pricing_report_worker, "PricingReport"),
             (self._termination_check_worker, "TerminationCheck"),
@@ -1575,6 +1576,79 @@ class SpotOptimizerAgent:
 
             except Exception as e:
                 logger.error(f"Replica polling error: {e}")
+
+            # Poll every 30 seconds
+            self.shutdown_event.wait(30)
+
+    def _replica_termination_worker(self):
+        """Poll for replicas that need to be terminated and terminate their EC2 instances"""
+        terminated_replica_ids = set()  # Track replicas we've already terminated
+
+        while self.is_running and not self.shutdown_event.is_set():
+            try:
+                # Get replicas marked as 'terminated' in database
+                terminated_replicas = self.server_api.get_pending_replicas(self.agent_id)
+
+                # Filter for status='terminated' by making a specific request
+                result = self.server_api._make_request(
+                    'GET',
+                    f'/api/agents/{self.agent_id}/replicas?status=terminated'
+                )
+
+                if result and isinstance(result, dict):
+                    terminated_replicas = result.get('replicas', [])
+                elif isinstance(result, list):
+                    terminated_replicas = result
+                else:
+                    terminated_replicas = []
+
+                for replica in terminated_replicas:
+                    replica_id = replica.get('id')
+                    instance_id = replica.get('instance_id')
+                    is_active = replica.get('is_active', False)
+
+                    if not all([replica_id, instance_id]):
+                        continue
+
+                    # Skip if we've already terminated this replica in this session
+                    if replica_id in terminated_replica_ids:
+                        continue
+
+                    # Skip if replica is not active (already terminated)
+                    if not is_active:
+                        continue
+
+                    # Skip placeholder instance IDs (not real EC2 instances)
+                    if instance_id.startswith('manual-') or instance_id.startswith('replica-'):
+                        logger.debug(f"Skipping placeholder instance {instance_id} for replica {replica_id}")
+                        terminated_replica_ids.add(replica_id)
+                        continue
+
+                    logger.info(f"Terminating EC2 instance {instance_id} for replica {replica_id}")
+                    terminated_replica_ids.add(replica_id)
+
+                    try:
+                        # Terminate the EC2 instance
+                        self.instance_switcher.ec2.terminate_instances(InstanceIds=[instance_id])
+                        logger.info(f"Successfully terminated EC2 instance {instance_id} for replica {replica_id}")
+
+                        # Update replica status to confirm termination
+                        self.server_api.update_replica_status(
+                            self.agent_id,
+                            replica_id,
+                            {
+                                'status': 'terminated',
+                                'is_active': False,
+                                'terminated_at': datetime.now(timezone.utc).isoformat()
+                            }
+                        )
+
+                    except Exception as e:
+                        logger.error(f"Failed to terminate EC2 instance {instance_id} for replica {replica_id}: {e}")
+                        # Don't retry immediately - will try again on next poll
+
+            except Exception as e:
+                logger.error(f"Replica termination polling error: {e}")
 
             # Poll every 30 seconds
             self.shutdown_event.wait(30)
