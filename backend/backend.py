@@ -529,7 +529,41 @@ def register_agent():
         if existing:
             agent_id = existing['id']
             logger.info(f"Updating existing agent: agent_id={agent_id}, logical_id={logical_agent_id}")
-            # Update existing agent
+
+            # Check if this instance is a zombie or terminated - if so, don't let it update the agent
+            instance_status_check = execute_query("""
+                SELECT instance_status, is_primary
+                FROM instances
+                WHERE id = %s
+            """, (validated_data['instance_id'],), fetch_one=True)
+
+            # If this is a zombie or terminated instance, or not primary, reject the registration update
+            if instance_status_check:
+                status = instance_status_check.get('instance_status')
+                is_primary = instance_status_check.get('is_primary')
+
+                if status in ('zombie', 'terminated') or not is_primary:
+                    logger.warning(f"Rejecting registration from non-primary/zombie instance {validated_data['instance_id']} (status={status}, is_primary={is_primary})")
+                    # Return success but don't update agent - zombie should not become primary again
+                    return jsonify({
+                        'agent_id': agent_id,
+                        'client_id': request.client_id,
+                        'message': 'Instance is not primary, registration ignored',
+                        'config': {
+                            'enabled': False,
+                            'auto_switch_enabled': False,
+                            'auto_terminate_enabled': False,
+                            'terminate_wait_seconds': 0,
+                            'replica_enabled': False,
+                            'replica_count': 0,
+                            'min_savings_percent': 0,
+                            'risk_threshold': 0,
+                            'max_switches_per_week': 0,
+                            'min_pool_duration_hours': 0
+                        }
+                    })
+
+            # Update existing agent (only if instance is primary or doesn't exist in instances table yet)
             execute_query("""
                 UPDATE agents
                 SET status = 'online',
@@ -710,24 +744,43 @@ def register_agent():
 def agent_heartbeat(agent_id: str):
     """Update agent heartbeat"""
     data = request.json or {}
-    
+
     try:
         new_status = data.get('status', 'online')
-        
-        # Get previous status
+
+        # Get previous status and current instance
         prev = execute_query(
-            "SELECT status FROM agents WHERE id = %s AND client_id = %s",
+            "SELECT status, instance_id FROM agents WHERE id = %s AND client_id = %s",
             (agent_id, request.client_id),
             fetch_one=True
         )
-        
+
         if not prev:
             return jsonify({'error': 'Agent not found'}), 404
-        
+
+        # If instance_id is being updated, check if it's from a zombie/terminated instance
+        new_instance_id = data.get('instance_id')
+        if new_instance_id and new_instance_id != prev.get('instance_id'):
+            # Check if the new instance is a zombie or terminated
+            instance_check = execute_query("""
+                SELECT instance_status, is_primary
+                FROM instances
+                WHERE id = %s
+            """, (new_instance_id,), fetch_one=True)
+
+            if instance_check:
+                status = instance_check.get('instance_status')
+                is_primary = instance_check.get('is_primary')
+
+                if status in ('zombie', 'terminated') or not is_primary:
+                    logger.warning(f"Rejecting heartbeat instance_id update from zombie/non-primary {new_instance_id}")
+                    # Don't allow zombie instances to update the agent's instance_id
+                    new_instance_id = None  # Prevent the update
+
         # Update heartbeat
         execute_query("""
-            UPDATE agents 
-            SET status = %s, 
+            UPDATE agents
+            SET status = %s,
                 last_heartbeat_at = NOW(),
                 instance_id = COALESCE(%s, instance_id),
                 instance_type = COALESCE(%s, instance_type),
@@ -736,7 +789,7 @@ def agent_heartbeat(agent_id: str):
             WHERE id = %s AND client_id = %s
         """, (
             new_status,
-            data.get('instance_id'),
+            new_instance_id,
             data.get('instance_type'),
             data.get('mode'),
             data.get('az'),
