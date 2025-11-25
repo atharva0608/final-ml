@@ -11,7 +11,7 @@ import Badge from '../common/Badge';
 import EmptyState from '../common/EmptyState';
 import api from '../../services/api';
 
-const InstanceDetailPanel = ({ instanceId, clientId, onClose }) => {
+const InstanceDetailPanel = ({ instanceId, clientId, isPrimary = true, instanceStatus = 'running_primary', onClose, onSwitchComplete }) => {
   const [pricing, setPricing] = useState(null);
   const [metrics, setMetrics] = useState(null);
   const [priceHistory, setPriceHistory] = useState([]);
@@ -107,6 +107,12 @@ const InstanceDetailPanel = ({ instanceId, clientId, onClose }) => {
     try {
       await api.forceSwitch(instanceId, body);
       alert(`✓ Switch command queued successfully!\n\nTarget: ${target}\n\nThe agent will execute this switch within ~1 minute.`);
+
+      // Refresh the instances list after successful switch
+      if (onSwitchComplete) {
+        onSwitchComplete();
+      }
+
       if (onClose) onClose();
     } catch (err) {
       alert(`✗ Failed to queue switch: ${err.message}\n\nPlease ensure the agent is online and try again.`);
@@ -138,7 +144,26 @@ const InstanceDetailPanel = ({ instanceId, clientId, onClose }) => {
   return (
     <tr className="bg-gray-50">
       <td colSpan="10" className="p-4 md:p-6">
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 md:gap-6">
+        {/* Warning for non-primary instances */}
+        {!isPrimary && (
+          <div className="mb-4 p-4 bg-yellow-50 border-l-4 border-yellow-400 rounded-r-lg">
+            <div className="flex items-start">
+              <div className="flex-shrink-0">
+                <svg className="h-5 w-5 text-yellow-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+                  <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                </svg>
+              </div>
+              <div className="ml-3">
+                <p className="text-sm text-yellow-700">
+                  <span className="font-semibold">Replica/Non-Primary Instance: </span>
+                  Switching options are only available for primary instances. This instance is a {instanceStatus === 'running_replica' ? 'replica' : 'non-primary'} instance.
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        <div className={`grid grid-cols-1 ${isPrimary ? 'lg:grid-cols-3' : 'lg:grid-cols-2'} gap-4 md:gap-6`}>
           {/* Metrics Column */}
           <div className="space-y-4">
             <div className="flex items-center justify-between mb-2">
@@ -192,11 +217,12 @@ const InstanceDetailPanel = ({ instanceId, clientId, onClose }) => {
             )}
           </div>
 
-          {/* Available Options Column */}
-          <div className="space-y-4">
-            <h4 className="text-md font-bold text-gray-900">Switch to Pool</h4>
+          {/* Available Options Column - Only show for primary instances */}
+          {isPrimary && (
+            <div className="space-y-4">
+              <h4 className="text-md font-bold text-gray-900">Switch to Pool</h4>
 
-            {pricing && (
+              {pricing && (
               <div className="space-y-2 max-h-96 overflow-y-auto pr-1">
                 {/* On-Demand - Always at top with red button */}
                 <div className={`p-4 rounded-lg border-2 transition-all ${
@@ -288,7 +314,8 @@ const InstanceDetailPanel = ({ instanceId, clientId, onClose }) => {
                 })}
               </div>
             )}
-          </div>
+            </div>
+          )}
 
           {/* Price History Chart Column */}
           <div className="bg-white p-4 rounded-lg border border-gray-200">

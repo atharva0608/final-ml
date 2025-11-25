@@ -191,7 +191,7 @@ const ClientInstancesTab = ({ clientId }) => {
                         {inst.lastSwitch ? new Date(inst.lastSwitch).toLocaleString() : 'Never'}
                       </td>
                       <td className="py-4 px-4">
-                        {inst.instanceStatus !== 'zombie' ? (
+                        {inst.isPrimary && inst.instanceStatus !== 'zombie' && inst.instanceStatus !== 'terminated' ? (
                           <button
                             onClick={() => toggleInstanceDetail(inst.id)}
                             className="text-blue-600 hover:text-blue-800 text-sm font-medium"
@@ -207,7 +207,10 @@ const ClientInstancesTab = ({ clientId }) => {
                       <InstanceDetailPanel
                         instanceId={inst.id}
                         clientId={clientId}
+                        isPrimary={inst.isPrimary}
+                        instanceStatus={inst.instanceStatus}
                         onClose={() => setSelectedInstanceId(null)}
+                        onSwitchComplete={loadInstances}
                       />
                     )}
                   </React.Fragment>
