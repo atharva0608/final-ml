@@ -1046,7 +1046,8 @@ def switch_report(agent_id: str):
             execute_query("""
                 UPDATE instances
                 SET instance_status = 'zombie',
-                    is_primary = FALSE
+                    is_primary = FALSE,
+                    is_active = FALSE
                 WHERE id = %s AND client_id = %s
             """, (old_inst.get('instance_id'), request.client_id))
             logger.info(f"Old instance {old_inst.get('instance_id')} marked as zombie (auto_terminate=OFF)")
@@ -2473,6 +2474,8 @@ def update_agent_config(agent_id: str):
             auto_terminate = bool(data['autoTerminateEnabled'])
             updates.append("auto_terminate_enabled = %s")
             params.append(auto_terminate)
+            # Force config refresh on next heartbeat
+            updates.append("config_version = config_version + 1")
             logger.info(f"Setting auto_terminate_enabled = {auto_terminate} for agent {agent_id}")
 
         # MUTUAL EXCLUSIVITY ENFORCEMENT
@@ -2480,6 +2483,7 @@ def update_agent_config(agent_id: str):
         if 'autoSwitchEnabled' in data and bool(data['autoSwitchEnabled']):
             updates.append("auto_switch_enabled = TRUE")
             updates.append("manual_replica_enabled = FALSE")  # Force off
+            updates.append("config_version = config_version + 1")  # Force config refresh
 
             # If manual replicas exist, terminate them
             if current_manual_replica and replica_count > 0:
@@ -2495,11 +2499,13 @@ def update_agent_config(agent_id: str):
         # Case 2: User disables auto_switch_enabled
         elif 'autoSwitchEnabled' in data and not bool(data['autoSwitchEnabled']):
             updates.append("auto_switch_enabled = FALSE")
+            updates.append("config_version = config_version + 1")  # Force config refresh
 
         # Case 3: User enables manual_replica_enabled
         if 'manualReplicaEnabled' in data and bool(data['manualReplicaEnabled']):
             updates.append("manual_replica_enabled = TRUE")
             updates.append("auto_switch_enabled = FALSE")  # Force off
+            updates.append("config_version = config_version + 1")  # Force config refresh
 
             # Create a manual replica immediately if none exists
             # Note: ReplicaCoordinator will handle continuous replica maintenance
@@ -2510,19 +2516,22 @@ def update_agent_config(agent_id: str):
         # Case 4: User disables manual_replica_enabled
         elif 'manualReplicaEnabled' in data and not bool(data['manualReplicaEnabled']):
             updates.append("manual_replica_enabled = FALSE")
+            updates.append("config_version = config_version + 1")  # Force config refresh
 
-            # Terminate replicas that were NOT promoted (promoted replicas are now primary instances)
-            if current_manual_replica and replica_count > 0:
-                logger.info(f"Manual replica disabled for agent {agent_id}, terminating non-promoted replicas")
+            # Terminate all active replicas (promoted ones are already converted to primary instances)
+            if current_manual_replica:
+                logger.info(f"Manual replica disabled for agent {agent_id}, terminating all active replicas")
 
-                # Only terminate replicas that are NOT promoted (promoted ones are now primary)
-                execute_query("""
+                # Terminate all active replicas for this agent
+                terminated_count = execute_query("""
                     UPDATE replica_instances
                     SET is_active = FALSE, status = 'terminated', terminated_at = NOW()
                     WHERE agent_id = %s
                       AND is_active = TRUE
                       AND status != 'promoted'
                 """, (agent_id,))
+
+                logger.info(f"Terminated {terminated_count} active replicas for agent {agent_id}")
                 updates.append("replica_count = 0")
                 updates.append("current_replica_id = NULL")
 
@@ -5876,6 +5885,15 @@ class ReplicaCoordinator:
     def _create_manual_replica(self, agent: Dict):
         """Create manual replica in cheapest available pool"""
         agent_id = agent['id']
+
+        # Double-check manual replica is still enabled (prevent race conditions)
+        agent_check = execute_query("""
+            SELECT manual_replica_enabled FROM agents WHERE id = %s
+        """, (agent_id,), fetch_one=True)
+
+        if not agent_check or not agent_check['manual_replica_enabled']:
+            logger.info(f"Manual replica disabled for agent {agent_id} - skipping creation")
+            return None
 
         # Get instance details
         instance = execute_query("""
