@@ -3198,10 +3198,16 @@ def get_client_pricing_history():
 def get_instance_available_options(instance_id: str):
     """Get available pools and instance types for switching"""
     try:
-        # Get current instance information
+        # Get current instance information from agents table (primary source)
         agent = execute_query("""
             SELECT instance_type, region, az FROM agents WHERE instance_id = %s
         """, (instance_id,), fetch_one=True)
+
+        # Fallback: Check instances table if agent hasn't sent heartbeat yet
+        if not agent:
+            agent = execute_query("""
+                SELECT instance_type, region, az FROM instances WHERE id = %s
+            """, (instance_id,), fetch_one=True)
 
         if not agent:
             return jsonify({'error': 'Instance not found'}), 404

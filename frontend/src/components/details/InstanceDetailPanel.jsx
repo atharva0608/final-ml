@@ -29,31 +29,38 @@ const InstanceDetailPanel = ({ instanceId, clientId, onClose }) => {
       setLoading(true);
       setError(null);
       try {
+        // Load all data in parallel - backend now checks instances table for immediate availability
         const [pricingData, metricsData, optionsData] = await Promise.all([
           api.getInstancePricing(instanceId),
           api.getInstanceMetrics(instanceId),
-          api.getInstanceAvailableOptions(instanceId)
+          // Backend fallback ensures this works immediately after switch
+          api.getInstanceAvailableOptions(instanceId).catch(err => {
+            console.warn('Available options loading delayed:', err);
+            return null; // Non-blocking - will retry in background
+          })
         ]);
+
         setPricing(pricingData);
         setMetrics(metricsData);
-        setAvailableOptions(optionsData);
 
-        // Set initial dropdown values
-        if (optionsData?.pools?.length > 0) {
-          setSelectedPool(optionsData.pools[0].id);
-        }
-        if (optionsData?.instanceTypes?.length > 0) {
-          setSelectedInstanceType(optionsData.instanceTypes[0]);
+        // Set available options if loaded
+        if (optionsData) {
+          setAvailableOptions(optionsData);
+          if (optionsData?.pools?.length > 0) {
+            setSelectedPool(optionsData.pools[0].id);
+          }
+          if (optionsData?.instanceTypes?.length > 0) {
+            setSelectedInstanceType(optionsData.instanceTypes[0]);
+          }
         }
 
+        // Load price history (non-critical, can fail gracefully)
         try {
           const historyData = await api.getPriceHistory(instanceId, 7, 'hour');
-          // New format: { data: [], pools: [], onDemandPrice: number }
           if (historyData && historyData.data) {
             setPriceHistory(historyData.data);
             setPriceHistoryPools(historyData.pools || []);
           } else {
-            // Fallback for old format
             setPriceHistory(Array.isArray(historyData) ? historyData : []);
             setPriceHistoryPools([]);
           }
@@ -61,6 +68,24 @@ const InstanceDetailPanel = ({ instanceId, clientId, onClose }) => {
           console.warn('Price history not available:', histError);
           setPriceHistory([]);
           setPriceHistoryPools([]);
+        }
+
+        // Background retry for options if initial load failed
+        if (!optionsData) {
+          setTimeout(async () => {
+            try {
+              const retryOptions = await api.getInstanceAvailableOptions(instanceId);
+              setAvailableOptions(retryOptions);
+              if (retryOptions?.pools?.length > 0 && !selectedPool) {
+                setSelectedPool(retryOptions.pools[0].id);
+              }
+              if (retryOptions?.instanceTypes?.length > 0 && !selectedInstanceType) {
+                setSelectedInstanceType(retryOptions.instanceTypes[0]);
+              }
+            } catch (retryErr) {
+              console.warn('Background retry for options failed:', retryErr);
+            }
+          }, 2000);
         }
       } catch (err) {
         setError(err.message);
