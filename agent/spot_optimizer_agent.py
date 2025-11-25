@@ -1465,6 +1465,8 @@ class SpotOptimizerAgent:
 
     def _replica_polling_worker(self):
         """Poll for replicas that need to be launched"""
+        launched_replicas = set()  # Track replicas we've already started launching
+
         while self.is_running and not self.shutdown_event.is_set():
             try:
                 # Poll for replicas with status='launching' that need EC2 instances
@@ -1474,12 +1476,24 @@ class SpotOptimizerAgent:
                     replica_id = replica.get('id')
                     pool_id = replica.get('pool_id')
                     target_az = replica.get('az')
+                    instance_id = replica.get('instance_id')
 
                     if not all([replica_id, pool_id, target_az]):
                         logger.warning(f"Invalid replica data: {replica}")
                         continue
 
+                    # Skip if we've already started launching this replica in this session
+                    if replica_id in launched_replicas:
+                        logger.debug(f"Skipping replica {replica_id} - already launched in this session")
+                        continue
+
+                    # Skip if replica already has a real EC2 instance ID (not placeholder)
+                    if instance_id and not instance_id.startswith('manual-'):
+                        logger.debug(f"Skipping replica {replica_id} - already has instance {instance_id}")
+                        continue
+
                     logger.info(f"Launching EC2 instance for replica {replica_id} in AZ {target_az}")
+                    launched_replicas.add(replica_id)  # Mark as being launched
 
                     try:
                         # Get current instance details to copy configuration

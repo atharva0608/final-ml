@@ -2511,13 +2511,17 @@ def update_agent_config(agent_id: str):
         elif 'manualReplicaEnabled' in data and not bool(data['manualReplicaEnabled']):
             updates.append("manual_replica_enabled = FALSE")
 
-            # Terminate all manual replicas
+            # Terminate replicas that were NOT promoted (promoted replicas are now primary instances)
             if current_manual_replica and replica_count > 0:
-                logger.info(f"Manual replica disabled for agent {agent_id}, terminating all replicas")
+                logger.info(f"Manual replica disabled for agent {agent_id}, terminating non-promoted replicas")
+
+                # Only terminate replicas that are NOT promoted (promoted ones are now primary)
                 execute_query("""
                     UPDATE replica_instances
                     SET is_active = FALSE, status = 'terminated', terminated_at = NOW()
-                    WHERE agent_id = %s AND is_active = TRUE
+                    WHERE agent_id = %s
+                      AND is_active = TRUE
+                      AND status != 'promoted'
                 """, (agent_id,))
                 updates.append("replica_count = 0")
                 updates.append("current_replica_id = NULL")
@@ -5863,8 +5867,8 @@ class ReplicaCoordinator:
               AND promoted_at >= DATE_SUB(NOW(), INTERVAL 5 MINUTE)
         """, (agent_id,), fetch_one=True)
 
-        if recently_promoted:
-            # User just promoted a replica - create new one for the new primary
+        if recently_promoted and active_count == 0:
+            # User just promoted a replica AND there's no replacement yet - create new one
             logger.info(f"Manual mode: Replica promoted for agent {agent_id}, creating new replica")
             time.sleep(2)  # Brief delay to let promotion complete
             self._create_manual_replica(agent)
@@ -6361,6 +6365,7 @@ def list_replicas(app):
         """List all replicas (active and terminated) for an agent"""
         try:
             include_terminated = request.args.get('include_terminated', 'false').lower() == 'true'
+            status_filter = request.args.get('status')  # Filter by status if provided
 
             query = """
                 SELECT
@@ -6374,13 +6379,19 @@ def list_replicas(app):
                 LEFT JOIN spot_pools sp ON ri.pool_id = sp.id
                 WHERE ri.agent_id = %s
             """
+            params = [agent_id]
 
             if not include_terminated:
                 query += " AND ri.is_active = TRUE"
 
+            # Filter by status if provided (used by agent to get pending replicas)
+            if status_filter:
+                query += " AND ri.status = %s"
+                params.append(status_filter)
+
             query += " ORDER BY ri.created_at DESC"
 
-            replicas = execute_query(query, (agent_id,), fetch=True)
+            replicas = execute_query(query, tuple(params), fetch=True)
 
             result = []
             for r in (replicas or []):
