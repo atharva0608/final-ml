@@ -409,6 +409,8 @@ CREATE TABLE IF NOT EXISTS instances (
     ondemand_price DECIMAL(10, 6),
     baseline_ondemand_price DECIMAL(10, 6),
     is_active BOOLEAN DEFAULT TRUE,
+    instance_status VARCHAR(20) DEFAULT 'running_primary' COMMENT 'running_primary, running_replica, zombie, terminated',
+    is_primary BOOLEAN DEFAULT TRUE COMMENT 'TRUE if primary instance, FALSE if replica',
     installed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     last_switch_at TIMESTAMP NULL,
     last_interruption_signal TIMESTAMP NULL,
@@ -418,13 +420,14 @@ CREATE TABLE IF NOT EXISTS instances (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     metadata JSON,
-    
+
     INDEX idx_instances_client (client_id),
     INDEX idx_instances_agent (agent_id),
     INDEX idx_instances_type_region (instance_type, region),
     INDEX idx_instances_mode (current_mode),
     INDEX idx_instances_active (is_active),
     INDEX idx_instances_pool (current_pool_id),
+    INDEX idx_instances_status (instance_status),
     
     CONSTRAINT fk_instances_client FOREIGN KEY (client_id) 
         REFERENCES clients(id) ON DELETE CASCADE,

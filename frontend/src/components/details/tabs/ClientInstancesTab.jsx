@@ -15,6 +15,40 @@ const ClientInstancesTab = ({ clientId }) => {
   const [filters, setFilters] = useState({ status: 'active', mode: 'all', search: '' });
   const [error, setError] = useState(null);
 
+  const getStatusBadge = (status, isPrimary) => {
+    if (status === 'running_primary' || (status === 'running_replica' && isPrimary)) {
+      return (
+        <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
+          Running (Primary)
+        </span>
+      );
+    } else if (status === 'running_replica') {
+      return (
+        <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
+          Running (Replica)
+        </span>
+      );
+    } else if (status === 'zombie') {
+      return (
+        <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800">
+          Zombie
+        </span>
+      );
+    } else if (status === 'terminated') {
+      return (
+        <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-800">
+          Terminated
+        </span>
+      );
+    } else {
+      return (
+        <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-600">
+          {status || 'Unknown'}
+        </span>
+      );
+    }
+  };
+
   const loadInstances = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -92,6 +126,7 @@ const ClientInstancesTab = ({ clientId }) => {
                 <th className="py-3 px-4 text-left text-xs font-semibold text-gray-600 uppercase">Instance ID</th>
                 <th className="py-3 px-4 text-left text-xs font-semibold text-gray-600 uppercase">Type</th>
                 <th className="py-3 px-4 text-left text-xs font-semibold text-gray-600 uppercase">AZ</th>
+                <th className="py-3 px-4 text-left text-xs font-semibold text-gray-600 uppercase">Status</th>
                 <th className="py-3 px-4 text-left text-xs font-semibold text-gray-600 uppercase">Mode</th>
                 <th className="py-3 px-4 text-left text-xs font-semibold text-gray-600 uppercase">Pool</th>
                 <th className="py-3 px-4 text-left text-xs font-semibold text-gray-600 uppercase">Current Price</th>
@@ -103,13 +138,13 @@ const ClientInstancesTab = ({ clientId }) => {
             <tbody className="divide-y divide-gray-100">
               {loading ? (
                 <tr>
-                  <td colSpan="10" className="text-center py-8">
+                  <td colSpan="11" className="text-center py-8">
                     <LoadingSpinner />
                   </td>
                 </tr>
               ) : instances.length === 0 ? (
                 <tr>
-                  <td colSpan="10" className="text-center py-8">
+                  <td colSpan="11" className="text-center py-8">
                     <EmptyState
                       icon={<Zap size={48} />}
                       title="No Instances Found"
@@ -135,6 +170,9 @@ const ClientInstancesTab = ({ clientId }) => {
                       </td>
                       <td className="py-4 px-4 text-sm text-gray-700">{inst.type}</td>
                       <td className="py-4 px-4 text-sm text-gray-500">{inst.az}</td>
+                      <td className="py-4 px-4">
+                        {getStatusBadge(inst.instanceStatus, inst.isPrimary)}
+                      </td>
                       <td className="py-4 px-4">
                         <Badge variant={inst.mode === 'ondemand' ? 'danger' : 'success'}>
                           {inst.mode}
