@@ -15,6 +15,40 @@ const ClientInstancesTab = ({ clientId }) => {
   const [filters, setFilters] = useState({ status: 'active', mode: 'all', search: '' });
   const [error, setError] = useState(null);
 
+  const getStatusBadge = (status, isPrimary) => {
+    if (status === 'running_primary' || (status === 'running_replica' && isPrimary)) {
+      return (
+        <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
+          Running (Primary)
+        </span>
+      );
+    } else if (status === 'running_replica') {
+      return (
+        <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
+          Running (Replica)
+        </span>
+      );
+    } else if (status === 'zombie') {
+      return (
+        <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800">
+          Zombie
+        </span>
+      );
+    } else if (status === 'terminated') {
+      return (
+        <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-800">
+          Terminated
+        </span>
+      );
+    } else {
+      return (
+        <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-600">
+          {status || 'Unknown'}
+        </span>
+      );
+    }
+  };
+
   const loadInstances = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -176,18 +210,49 @@ const ClientInstancesTab = ({ clientId }) => {
                           ) : (
                             <span className="text-gray-400 text-sm">—</span>
                           )}
-                        </td>
-                      </tr>
-                      {selectedInstanceId === inst.id && !isZombie && (
-                        <InstanceDetailPanel
-                          instanceId={inst.id}
-                          clientId={clientId}
-                          onClose={() => setSelectedInstanceId(null)}
-                        />
-                      )}
-                    </React.Fragment>
-                  );
-                })
+                        </button>
+                      </td>
+                      <td className="py-4 px-4">
+                        <span className="text-sm font-mono text-gray-700">{inst.id}</span>
+                      </td>
+                      <td className="py-4 px-4 text-sm text-gray-700">{inst.type}</td>
+                      <td className="py-4 px-4 text-sm text-gray-500">{inst.az}</td>
+                      <td className="py-4 px-4">
+                        {getStatusBadge(inst.instanceStatus, inst.isPrimary)}
+                      </td>
+                      <td className="py-4 px-4">
+                        <Badge variant={inst.mode === 'ondemand' ? 'danger' : 'success'}>
+                          {inst.mode}
+                        </Badge>
+                      </td>
+                      <td className="py-4 px-4 text-sm font-mono text-gray-500">{inst.poolId}</td>
+                      <td className="py-4 px-4 text-sm font-semibold text-gray-900">
+                        ${inst.spotPrice.toFixed(4)}
+                      </td>
+                      <td className="py-4 px-4 text-sm font-bold text-green-600">
+                        {(((inst.onDemandPrice - inst.spotPrice) / inst.onDemandPrice) * 100).toFixed(1)}%
+                      </td>
+                      <td className="py-4 px-4 text-sm text-gray-500">
+                        {inst.lastSwitch ? new Date(inst.lastSwitch).toLocaleString() : 'Never'}
+                      </td>
+                      <td className="py-4 px-4">
+                        <button
+                          onClick={() => toggleInstanceDetail(inst.id)}
+                          className="text-blue-600 hover:text-blue-800 text-sm font-medium"
+                        >
+                          {selectedInstanceId === inst.id ? 'Hide' : 'Manage'}
+                        </button>
+                      </td>
+                    </tr>
+                    {selectedInstanceId === inst.id && (
+                      <InstanceDetailPanel 
+                        instanceId={inst.id} 
+                        clientId={clientId}
+                        onClose={() => setSelectedInstanceId(null)}
+                      />
+                    )}
+                  </React.Fragment>
+                ))
               )}
             </tbody>
           </table>

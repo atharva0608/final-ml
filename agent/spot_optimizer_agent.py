@@ -297,25 +297,48 @@ class ServerAPI:
             'Content-Type': 'application/json'
         })
 
-    def _make_request(self, method: str, endpoint: str, **kwargs) -> Optional[Dict]:
-        """Make HTTP request with error handling"""
+    def _make_request(self, method: str, endpoint: str, max_retries: int = 3, **kwargs) -> Optional[Dict]:
+        """Make HTTP request with error handling and retry logic"""
         url = urljoin(self.base_url, endpoint)
-        try:
-            response = self.session.request(method, url, timeout=30, **kwargs)
-            response.raise_for_status()
-            return response.json() if response.text else {}
-        except requests.exceptions.Timeout:
-            logger.error(f"Request timeout: {endpoint}")
-            return None
-        except requests.exceptions.ConnectionError:
-            logger.error(f"Connection error: {endpoint}")
-            return None
-        except requests.exceptions.HTTPError as e:
-            logger.error(f"HTTP error {response.status_code}: {endpoint} - {response.text}")
-            return None
-        except Exception as e:
-            logger.error(f"Request failed: {endpoint} - {e}")
-            return None
+        response = None
+
+        for attempt in range(max_retries):
+            try:
+                response = self.session.request(method, url, timeout=30, **kwargs)
+                response.raise_for_status()
+                return response.json() if response.text else {}
+            except requests.exceptions.Timeout as e:
+                if attempt < max_retries - 1:
+                    wait_time = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s
+                    logger.warning(f"Request timeout (attempt {attempt + 1}/{max_retries}): {method} {url} - retrying in {wait_time}s")
+                    time.sleep(wait_time)
+                    continue
+                logger.error(f"Request timeout after {max_retries} attempts: {method} {url} - {str(e)}")
+                return None
+            except requests.exceptions.ConnectionError as e:
+                if attempt < max_retries - 1:
+                    wait_time = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s
+                    logger.warning(f"Connection error (attempt {attempt + 1}/{max_retries}): {method} {url} - retrying in {wait_time}s")
+                    time.sleep(wait_time)
+                    continue
+                logger.error(f"Connection error after {max_retries} attempts: {method} {url} - {str(e)}")
+                logger.error(f"Server URL configured as: {self.base_url}")
+                logger.error(f"Verify server is running and CLIENT_TOKEN is valid")
+                return None
+            except requests.exceptions.HTTPError as e:
+                status_code = response.status_code if response else 'unknown'
+                response_text = response.text if response else 'no response'
+                logger.error(f"HTTP error {status_code}: {method} {url}")
+                logger.error(f"Response: {response_text}")
+                if response and response.status_code in [401, 403]:
+                    logger.error(f"Authentication failed - check CLIENT_TOKEN configuration")
+                    logger.error(f"Current token: {config.CLIENT_TOKEN[:8]}...{config.CLIENT_TOKEN[-4:] if len(config.CLIENT_TOKEN) > 12 else ''}")
+                return None
+            except Exception as e:
+                logger.error(f"Request failed: {method} {url} - {type(e).__name__}: {str(e)}")
+                return None
+
+        return None
 
     def register_agent(self, instance_info: Dict) -> Optional[Dict]:
         """Register agent with server"""
@@ -447,6 +470,36 @@ class ServerAPI:
         """Report cleanup operations"""
         result = self._make_request('POST', f'/api/agents/{agent_id}/cleanup-report', json=cleanup_data)
         return result is not None
+
+    def check_server_connectivity(self) -> bool:
+        """Verify server connectivity and authentication at startup"""
+        logger.info("="*60)
+        logger.info("AGENT STARTUP - SERVER CONNECTIVITY CHECK")
+        logger.info("="*60)
+        logger.info(f"Server URL: {self.base_url}")
+        logger.info(f"Client Token: {config.CLIENT_TOKEN[:8]}...{config.CLIENT_TOKEN[-4:] if len(config.CLIENT_TOKEN) > 12 else '***'}")
+
+        # Try a simple health check endpoint
+        try:
+            url = urljoin(self.base_url, '/health')
+            response = self.session.get(url, timeout=10)
+            if response.status_code == 200:
+                logger.info("✓ Server is reachable (health check passed)")
+            else:
+                logger.warning(f"⚠ Server responded with status {response.status_code}")
+        except requests.exceptions.ConnectionError as e:
+            logger.error(f"✗ Cannot reach server: {str(e)}")
+            logger.error("  Possible causes:")
+            logger.error("  1. Server is not running")
+            logger.error("  2. Wrong SERVER_URL configuration")
+            logger.error("  3. Network/firewall blocking connection")
+            logger.error("  4. DNS resolution failure")
+            return False
+        except Exception as e:
+            logger.warning(f"Health check failed: {type(e).__name__}: {str(e)}")
+
+        logger.info("="*60)
+        return True
 
 # ============================================================================
 # SPOT PRICING COLLECTOR
@@ -1208,6 +1261,11 @@ class SpotOptimizerAgent:
             signal.signal(signal.SIGINT, self._signal_handler)
             signal.signal(signal.SIGTERM, self._signal_handler)
 
+            # Check server connectivity before starting
+            if not self.server_api.check_server_connectivity():
+                logger.error("Server connectivity check failed. Exiting.")
+                sys.exit(1)
+
             if not self._register():
                 logger.error("Failed to register agent. Exiting.")
                 return
@@ -1407,6 +1465,8 @@ class SpotOptimizerAgent:
 
     def _replica_polling_worker(self):
         """Poll for replicas that need to be launched"""
+        launched_replicas = set()  # Track replicas we've already started launching
+
         while self.is_running and not self.shutdown_event.is_set():
             try:
                 # Poll for replicas with status='launching' that need EC2 instances
@@ -1416,12 +1476,24 @@ class SpotOptimizerAgent:
                     replica_id = replica.get('id')
                     pool_id = replica.get('pool_id')
                     target_az = replica.get('az')
+                    instance_id = replica.get('instance_id')
 
                     if not all([replica_id, pool_id, target_az]):
                         logger.warning(f"Invalid replica data: {replica}")
                         continue
 
+                    # Skip if we've already started launching this replica in this session
+                    if replica_id in launched_replicas:
+                        logger.debug(f"Skipping replica {replica_id} - already launched in this session")
+                        continue
+
+                    # Skip if replica already has a real EC2 instance ID (not placeholder)
+                    if instance_id and not instance_id.startswith('manual-'):
+                        logger.debug(f"Skipping replica {replica_id} - already has instance {instance_id}")
+                        continue
+
                     logger.info(f"Launching EC2 instance for replica {replica_id} in AZ {target_az}")
+                    launched_replicas.add(replica_id)  # Mark as being launched
 
                     try:
                         # Get current instance details to copy configuration

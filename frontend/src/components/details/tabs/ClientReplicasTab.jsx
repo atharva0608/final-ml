@@ -12,6 +12,7 @@ const ClientReplicasTab = ({ clientId }) => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [actionLoading, setActionLoading] = useState(null);
+  const [copiedId, setCopiedId] = useState(null);
 
   const loadReplicas = useCallback(async () => {
     setLoading(true);
@@ -29,6 +30,17 @@ const ClientReplicasTab = ({ clientId }) => {
   useEffect(() => {
     loadReplicas();
   }, [loadReplicas]);
+
+  const handleCopyInstanceId = async (instanceId) => {
+    try {
+      await navigator.clipboard.writeText(instanceId);
+      setCopiedId(instanceId);
+      setTimeout(() => setCopiedId(null), 2000);
+    } catch (err) {
+      console.error('Failed to copy:', err);
+      alert('Failed to copy to clipboard');
+    }
+  };
 
   const handleSwitchToReplica = async (agentId, replicaId) => {
     if (!window.confirm('Switch to this replica? This will promote the replica to become the primary instance.')) {
@@ -140,7 +152,16 @@ const ClientReplicasTab = ({ clientId }) => {
                       <h4 className="text-sm font-semibold text-gray-700 uppercase">Primary Instance</h4>
                       <Badge variant="primary">Active</Badge>
                     </div>
-                    <p className="text-sm font-mono text-gray-900 mb-1">{item.primary.instanceId}</p>
+                    <div className="flex items-center space-x-2 mb-1">
+                      <p className="text-sm font-mono text-gray-900">{item.primary.instanceId}</p>
+                      <button
+                        onClick={() => handleCopyInstanceId(item.primary.instanceId)}
+                        className="p-1 hover:bg-gray-200 rounded transition-colors"
+                        title="Copy instance ID"
+                      >
+                        <Copy size={14} className={copiedId === item.primary.instanceId ? 'text-green-600' : 'text-gray-500'} />
+                      </button>
+                    </div>
                     <div className="flex flex-wrap items-center gap-3 text-xs text-gray-600">
                       <span>Type: <span className="font-semibold">{item.primary.instanceType}</span></span>
                       <span>•</span>
@@ -168,7 +189,16 @@ const ClientReplicasTab = ({ clientId }) => {
                       {getStatusBadge(item.replica.status)}
                       <Badge variant="secondary" size="sm">{getReplicaTypeLabel(item.replica.type)}</Badge>
                     </div>
-                    <p className="text-sm font-mono text-gray-900 mb-1">{item.replica.instanceId}</p>
+                    <div className="flex items-center space-x-2 mb-1">
+                      <p className="text-sm font-mono text-gray-900">{item.replica.instanceId}</p>
+                      <button
+                        onClick={() => handleCopyInstanceId(item.replica.instanceId)}
+                        className="p-1 hover:bg-gray-200 rounded transition-colors"
+                        title="Copy instance ID"
+                      >
+                        <Copy size={14} className={copiedId === item.replica.instanceId ? 'text-green-600' : 'text-gray-500'} />
+                      </button>
+                    </div>
                     <div className="flex flex-wrap items-center gap-3 text-xs text-gray-600">
                       <span>Pool: <span className="font-semibold">{item.replica.pool?.name || 'N/A'}</span></span>
                       <span>•</span>

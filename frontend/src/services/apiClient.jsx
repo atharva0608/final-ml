@@ -380,18 +380,15 @@ class APIClient {
   }
 
   async exportSavings(clientId) {
-    console.warn('exportSavings: Backend endpoint not implemented');
-    alert('Export functionality not yet available in backend');
+    window.open(`${this.baseUrl}/api/client/${clientId}/export/savings`, '_blank');
   }
 
   async exportSwitchHistory(clientId) {
-    console.warn('exportSwitchHistory: Backend endpoint not implemented');
-    alert('Export functionality not yet available in backend');
+    window.open(`${this.baseUrl}/api/client/${clientId}/export/switch-history`, '_blank');
   }
 
   async exportGlobalStats() {
-    console.warn('exportGlobalStats: Backend endpoint not implemented');
-    alert('Export functionality not yet available in backend');
+    window.open(`${this.baseUrl}/api/admin/export/global-stats`, '_blank');
   }
 
   async getPoolStatistics() {

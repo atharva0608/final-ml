@@ -1029,31 +1029,42 @@ def switch_report(agent_id: str):
             timing.get('old_terminated_at')
         ))
 
-        # ONLY mark old instance as terminated if auto_terminate is enabled
-        # This prevents unwanted termination when user has disabled it
+        # Handle old instance based on auto_terminate setting
         if auto_terminate_enabled and timing.get('old_terminated_at'):
+            # Mark old instance as terminated
             execute_query("""
                 UPDATE instances
-                SET is_active = FALSE, terminated_at = %s
+                SET is_active = FALSE,
+                    terminated_at = %s,
+                    instance_status = 'terminated',
+                    is_primary = FALSE
                 WHERE id = %s AND client_id = %s
             """, (timing.get('old_terminated_at'), old_inst.get('instance_id'), request.client_id))
             logger.info(f"Old instance {old_inst.get('instance_id')} marked as terminated (auto_terminate=ON)")
         else:
-            # Keep old instance as active if auto_terminate is disabled
-            logger.info(f"Old instance {old_inst.get('instance_id')} kept active (auto_terminate=OFF)")
-        
-        # Register new instance
+            # Mark old instance as zombie (still running but not primary)
+            execute_query("""
+                UPDATE instances
+                SET instance_status = 'zombie',
+                    is_primary = FALSE
+                WHERE id = %s AND client_id = %s
+            """, (old_inst.get('instance_id'), request.client_id))
+            logger.info(f"Old instance {old_inst.get('instance_id')} marked as zombie (auto_terminate=OFF)")
+
+        # Register new instance as primary
         execute_query("""
             INSERT INTO instances (
                 id, client_id, agent_id, instance_type, region, az, ami_id,
                 current_mode, current_pool_id, spot_price, ondemand_price,
-                is_active, installed_at, last_switch_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, TRUE, %s, %s)
+                is_active, instance_status, is_primary, installed_at, last_switch_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, TRUE, 'running_primary', TRUE, %s, %s)
             ON DUPLICATE KEY UPDATE
                 current_mode = VALUES(current_mode),
                 current_pool_id = VALUES(current_pool_id),
                 spot_price = VALUES(spot_price),
                 is_active = TRUE,
+                instance_status = 'running_primary',
+                is_primary = TRUE,
                 last_switch_at = VALUES(last_switch_at)
         """, (
             new_inst.get('instance_id'), request.client_id, agent_id,
@@ -2500,18 +2511,17 @@ def update_agent_config(agent_id: str):
         elif 'manualReplicaEnabled' in data and not bool(data['manualReplicaEnabled']):
             updates.append("manual_replica_enabled = FALSE")
 
-            # Terminate ONLY non-promoted replicas (promoted replicas are now primaries)
+            # Terminate replicas that were NOT promoted (promoted replicas are now primary instances)
             if current_manual_replica and replica_count > 0:
                 logger.info(f"Manual replica disabled for agent {agent_id}, terminating non-promoted replicas")
-                # Only terminate replicas that were NOT promoted (status != 'promoted')
-                # Promoted replicas become the primary instance and should be preserved
+
+                # Only terminate replicas that are NOT promoted (promoted ones are now primary)
                 execute_query("""
                     UPDATE replica_instances
                     SET is_active = FALSE, status = 'terminated', terminated_at = NOW()
                     WHERE agent_id = %s
                       AND is_active = TRUE
                       AND status != 'promoted'
-                      AND replica_type = 'manual'
                 """, (agent_id,))
                 updates.append("replica_count = 0")
                 updates.append("current_replica_id = NULL")
@@ -2740,10 +2750,8 @@ def get_client_instances(client_id: str):
             'spotPrice': float(inst['spot_price'] or 0),
             'onDemandPrice': float(inst['ondemand_price'] or 0),
             'isActive': inst['is_active'],
-            'instanceRole': inst.get('instance_role', 'primary' if inst.get('agent_id') else 'zombie'),
-            'agentId': inst.get('agent_id'),
-            'agentStatus': inst.get('agent_status'),
-            'logicalAgentId': inst.get('logical_agent_id'),
+            'instanceStatus': inst.get('instance_status', 'running_primary'),
+            'isPrimary': inst.get('is_primary', True),
             'lastSwitch': inst['last_switch_at'].isoformat() if inst['last_switch_at'] else None
         } for inst in instances or []])
 
@@ -2855,7 +2863,7 @@ def get_instance_pricing(instance_id: str):
     try:
         # Get instance details including current state
         instance = execute_query("""
-            SELECT i.instance_type, i.region, i.ondemand_price, i.current_pool_id, i.current_mode
+            SELECT i.instance_type, i.region, i.ondemand_price, i.current_pool_id, i.current_mode, i.client_id
             FROM instances i
             WHERE i.id = %s
         """, (instance_id,), fetch_one=True)
@@ -2922,7 +2930,7 @@ def get_instance_metrics(instance_id: str):
     """Get comprehensive instance metrics"""
     try:
         metrics = execute_query("""
-            SELECT 
+            SELECT
                 i.id,
                 i.instance_type,
                 i.current_mode,
@@ -2933,16 +2941,16 @@ def get_instance_metrics(instance_id: str):
                 TIMESTAMPDIFF(HOUR, i.installed_at, NOW()) as uptime_hours,
                 TIMESTAMPDIFF(HOUR, i.last_switch_at, NOW()) as hours_since_last_switch,
                 (SELECT COUNT(*) FROM switches WHERE new_instance_id = i.id) as total_switches,
-                (SELECT COUNT(*) FROM switches 
-                 WHERE new_instance_id = i.id 
+                (SELECT COUNT(*) FROM switches
+                 WHERE new_instance_id = i.id
                  AND initiated_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)) as switches_last_7_days,
-                (SELECT COUNT(*) FROM switches 
-                 WHERE new_instance_id = i.id 
+                (SELECT COUNT(*) FROM switches
+                 WHERE new_instance_id = i.id
                  AND initiated_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)) as switches_last_30_days,
-                (SELECT SUM(savings_impact * 24) FROM switches 
-                 WHERE new_instance_id = i.id 
+                (SELECT SUM(savings_impact * 24) FROM switches
+                 WHERE new_instance_id = i.id
                  AND initiated_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)) as savings_last_30_days,
-                (SELECT SUM(savings_impact * 24) FROM switches 
+                (SELECT SUM(savings_impact * 24) FROM switches
                  WHERE new_instance_id = i.id) as total_savings
             FROM instances i
             WHERE i.id = %s
@@ -3205,38 +3213,14 @@ def get_client_pricing_history():
         logger.error(f"Get client pricing history error: {e}", exc_info=True)
         return jsonify({'error': str(e)}), 500
 
-@require_client_token
 @app.route('/api/client/instances/<instance_id>/available-options', methods=['GET'])
 def get_instance_available_options(instance_id: str):
     """Get available pools and instance types for switching"""
     try:
-        client_id = request.client_id
-
-        # Check if instance_role column exists
-        has_role_column = execute_query("""
-            SELECT COUNT(*) as count
-            FROM information_schema.COLUMNS
-            WHERE TABLE_SCHEMA = DATABASE()
-            AND TABLE_NAME = 'instances'
-            AND COLUMN_NAME = 'instance_role'
-        """, fetch_one=True)
-
-        # Check instance role if column exists
-        if has_role_column and has_role_column.get('count', 0) > 0:
-            instance_check = execute_query("""
-                SELECT instance_role FROM instances WHERE id = %s AND client_id = %s
-            """, (instance_id, client_id), fetch_one=True)
-
-            if instance_check and instance_check.get('instance_role') == 'zombie':
-                return jsonify({
-                    'error': 'This instance is in zombie state and cannot be switched',
-                    'isZombie': True
-                }), 403
-
         # Get current instance information
         agent = execute_query("""
-            SELECT instance_type, region, az FROM agents WHERE instance_id = %s AND client_id = %s
-        """, (instance_id, client_id), fetch_one=True)
+            SELECT instance_type, region, az FROM agents WHERE instance_id = %s
+        """, (instance_id,), fetch_one=True)
 
         if not agent:
             return jsonify({'error': 'Instance not found or no longer active'}), 404
@@ -3328,18 +3312,18 @@ def force_instance_switch(instance_id: str):
         instance = execute_query("""
             SELECT agent_id, client_id FROM instances WHERE id = %s
         """, (instance_id,), fetch_one=True)
-        
+
         if not instance:
             # Try to find agent by instance_id
             agent = execute_query("""
                 SELECT id, client_id FROM agents WHERE instance_id = %s
             """, (instance_id,), fetch_one=True)
-            
+
             if not agent:
                 return jsonify({'error': 'Instance or agent not found'}), 404
-            
+
             instance = {'agent_id': agent['id'], 'client_id': agent['client_id']}
-        
+
         if not instance.get('agent_id'):
             return jsonify({'error': 'No agent assigned to instance'}), 404
         
@@ -3470,12 +3454,173 @@ def get_switch_history(client_id: str):
         logger.error(f"Get switch history error: {e}")
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/client/<client_id>/export/savings', methods=['GET'])
+def export_client_savings(client_id: str):
+    """Export savings data as CSV"""
+    try:
+        import io
+        import csv
+
+        # Get savings data
+        savings = execute_query("""
+            SELECT
+                year,
+                month,
+                MONTHNAME(CONCAT(year, '-', LPAD(month, 2, '0'), '-01')) as month_name,
+                baseline_cost,
+                actual_cost,
+                savings
+            FROM client_savings_monthly
+            WHERE client_id = %s
+            ORDER BY year DESC, month DESC
+        """, (client_id,), fetch=True)
+
+        # Create CSV in memory
+        output = io.StringIO()
+        writer = csv.writer(output)
+
+        # Write header
+        writer.writerow(['Year', 'Month', 'Month Name', 'On-Demand Cost ($)', 'Actual Cost ($)', 'Savings ($)'])
+
+        # Write data
+        for s in (savings or []):
+            writer.writerow([
+                s['year'],
+                s['month'],
+                s['month_name'],
+                f"{float(s['baseline_cost'] or 0):.2f}",
+                f"{float(s['actual_cost'] or 0):.2f}",
+                f"{float(s['savings'] or 0):.2f}"
+            ])
+
+        # Prepare response
+        output.seek(0)
+        return Response(
+            output.getvalue(),
+            mimetype='text/csv',
+            headers={'Content-Disposition': f'attachment; filename=client_{client_id}_savings.csv'}
+        )
+
+    except Exception as e:
+        logger.error(f"Export savings error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/client/<client_id>/export/switch-history', methods=['GET'])
+def export_switch_history(client_id: str):
+    """Export switch history as CSV"""
+    try:
+        import io
+        import csv
+
+        # Get switch history
+        history = execute_query("""
+            SELECT *
+            FROM switches
+            WHERE client_id = %s
+            ORDER BY initiated_at DESC
+        """, (client_id,), fetch=True)
+
+        # Create CSV in memory
+        output = io.StringIO()
+        writer = csv.writer(output)
+
+        # Write header
+        writer.writerow(['Timestamp', 'Old Instance ID', 'New Instance ID', 'From Mode', 'To Mode',
+                        'From Pool', 'To Pool', 'Trigger', 'Price ($)', 'Savings Impact ($/hr)'])
+
+        # Write data
+        for h in (history or []):
+            timestamp = (h.get('instance_launched_at') or h.get('ami_created_at') or h.get('initiated_at')).isoformat() if (h.get('instance_launched_at') or h.get('ami_created_at') or h.get('initiated_at')) else ''
+            price = float(h['new_spot_price'] or 0) if h['new_mode'] == 'spot' else float(h['on_demand_price'] or 0)
+
+            writer.writerow([
+                timestamp,
+                h['old_instance_id'] or 'N/A',
+                h['new_instance_id'] or 'N/A',
+                h['old_mode'] or 'N/A',
+                h['new_mode'] or 'N/A',
+                h['old_pool_id'] or 'N/A',
+                h['new_pool_id'] or 'N/A',
+                h['event_trigger'] or 'manual',
+                f"{price:.6f}",
+                f"{float(h['savings_impact'] or 0):.6f}"
+            ])
+
+        # Prepare response
+        output.seek(0)
+        return Response(
+            output.getvalue(),
+            mimetype='text/csv',
+            headers={'Content-Disposition': f'attachment; filename=client_{client_id}_switch_history.csv'}
+        )
+
+    except Exception as e:
+        logger.error(f"Export switch history error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/admin/export/global-stats', methods=['GET'])
+def export_global_stats():
+    """Export global statistics as CSV"""
+    try:
+        import io
+        import csv
+
+        # Get top clients by savings
+        clients = execute_query("""
+            SELECT
+                c.id,
+                c.name,
+                c.email,
+                c.total_savings,
+                c.created_at,
+                COUNT(DISTINCT i.id) as instance_count,
+                COUNT(DISTINCT a.id) as agent_count
+            FROM clients c
+            LEFT JOIN instances i ON i.client_id = c.id AND i.is_active = TRUE
+            LEFT JOIN agents a ON a.client_id = c.id AND a.enabled = TRUE
+            WHERE c.is_active = TRUE
+            GROUP BY c.id, c.name, c.email, c.total_savings, c.created_at
+            ORDER BY c.total_savings DESC
+        """, fetch=True)
+
+        # Create CSV in memory
+        output = io.StringIO()
+        writer = csv.writer(output)
+
+        # Write header
+        writer.writerow(['Client ID', 'Name', 'Email', 'Total Savings ($)', 'Active Instances',
+                        'Active Agents', 'Created At'])
+
+        # Write data
+        for client in (clients or []):
+            writer.writerow([
+                client['id'],
+                client['name'],
+                client['email'],
+                f"{float(client['total_savings'] or 0):.2f}",
+                client['instance_count'] or 0,
+                client['agent_count'] or 0,
+                client['created_at'].isoformat() if client.get('created_at') else ''
+            ])
+
+        # Prepare response
+        output.seek(0)
+        return Response(
+            output.getvalue(),
+            mimetype='text/csv',
+            headers={'Content-Disposition': 'attachment; filename=global_stats.csv'}
+        )
+
+    except Exception as e:
+        logger.error(f"Export global stats error: {e}")
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/api/client/<client_id>/stats/charts', methods=['GET'])
 def get_client_chart_data(client_id: str):
     """Get comprehensive chart data for client dashboard"""
     try:
         savings_trend = execute_query("""
-            SELECT 
+            SELECT
                 MONTHNAME(CONCAT(year, '-', LPAD(month, 2, '0'), '-01')) as month,
                 savings,
                 baseline_cost,
@@ -5731,12 +5876,12 @@ class ReplicaCoordinator:
         agent_id = agent['id']
         replica_count = agent['replica_count'] or 0
 
-        # Check for active replicas
+        # Check for active replicas (including launching status to prevent duplicates)
         active_replicas = execute_query("""
             SELECT id, status FROM replica_instances
             WHERE agent_id = %s
               AND is_active = TRUE
-              AND status NOT IN ('terminated', 'promoted')
+              AND status NOT IN ('terminated', 'promoted', 'failed')
         """, (agent_id,), fetch=True)
 
         active_count = len(active_replicas or [])
@@ -5745,6 +5890,10 @@ class ReplicaCoordinator:
             # No active replica - create one
             logger.info(f"Manual mode: Creating replica for agent {agent_id}")
             self._create_manual_replica(agent)
+        elif active_count == 1:
+            # Exactly one replica - this is correct, do nothing
+            replica = active_replicas[0]
+            logger.debug(f"Manual mode: Agent {agent_id} has 1 replica (status: {replica['status']})")
 
         elif active_count > 1:
             # Too many replicas - should only be 1
@@ -5766,8 +5915,8 @@ class ReplicaCoordinator:
               AND promoted_at >= DATE_SUB(NOW(), INTERVAL 5 MINUTE)
         """, (agent_id,), fetch_one=True)
 
-        if recently_promoted:
-            # User just promoted a replica - create new one for the new primary
+        if recently_promoted and active_count == 0:
+            # User just promoted a replica AND there's no replacement yet - create new one
             logger.info(f"Manual mode: Replica promoted for agent {agent_id}, creating new replica")
             time.sleep(2)  # Brief delay to let promotion complete
             self._create_manual_replica(agent)
@@ -6264,6 +6413,7 @@ def list_replicas(app):
         """List all replicas (active and terminated) for an agent"""
         try:
             include_terminated = request.args.get('include_terminated', 'false').lower() == 'true'
+            status_filter = request.args.get('status')  # Filter by status if provided
 
             query = """
                 SELECT
@@ -6277,13 +6427,19 @@ def list_replicas(app):
                 LEFT JOIN spot_pools sp ON ri.pool_id = sp.id
                 WHERE ri.agent_id = %s
             """
+            params = [agent_id]
 
             if not include_terminated:
                 query += " AND ri.is_active = TRUE"
 
+            # Filter by status if provided (used by agent to get pending replicas)
+            if status_filter:
+                query += " AND ri.status = %s"
+                params.append(status_filter)
+
             query += " ORDER BY ri.created_at DESC"
 
-            replicas = execute_query(query, (agent_id,), fetch=True)
+            replicas = execute_query(query, tuple(params), fetch=True)
 
             result = []
             for r in (replicas or []):
@@ -6411,12 +6567,12 @@ def promote_replica(app):
                 INSERT INTO instances (
                     id, client_id, instance_type, region, az,
                     current_pool_id, current_mode, spot_price, ondemand_price, baseline_ondemand_price,
-                    is_active, installed_at
+                    is_active, instance_status, is_primary, installed_at
                 )
                 SELECT
                     %s, a.client_id, ri.instance_type, ri.region, ri.az,
                     ri.pool_id, 'spot', ri.hourly_cost, %s, %s,
-                    TRUE, NOW()
+                    TRUE, 'running_primary', TRUE, NOW()
                 FROM replica_instances ri
                 JOIN agents a ON ri.agent_id = a.id
                 WHERE ri.id = %s
@@ -6424,7 +6580,9 @@ def promote_replica(app):
                     is_active = TRUE,
                     current_mode = 'spot',
                     current_pool_id = VALUES(current_pool_id),
-                    spot_price = VALUES(spot_price)
+                    spot_price = VALUES(spot_price),
+                    instance_status = 'running_primary',
+                    is_primary = TRUE
             """, (new_instance_id, ondemand_price, ondemand_price, replica_id))
 
             # Step 3: Update agent to point to new instance
@@ -6462,10 +6620,21 @@ def promote_replica(app):
                     FROM instances i
                     WHERE i.id = %s
                 """, (demoted_replica_id, agent_id, new_instance_id, old_instance_id))
-            else:
-                # Mark old instance as inactive
+                # Mark old primary as replica
                 execute_query("""
-                    UPDATE instances SET is_active = FALSE WHERE id = %s
+                    UPDATE instances
+                    SET instance_status = 'running_replica',
+                        is_primary = FALSE
+                    WHERE id = %s
+                """, (old_instance_id,))
+            else:
+                # Mark old instance as zombie (will be terminated)
+                execute_query("""
+                    UPDATE instances
+                    SET instance_status = 'zombie',
+                        is_primary = FALSE,
+                        is_active = FALSE
+                    WHERE id = %s
                 """, (old_instance_id,))
 
             # Step 6: Decrement replica count (promoted replica no longer counted)
@@ -6532,7 +6701,7 @@ def delete_replica(app):
                     'terminated_at': replica['terminated_at'].isoformat() if replica['terminated_at'] else None
                 }), 400
 
-            # Mark as terminated
+            # Mark as terminated in replica_instances table
             execute_query("""
                 UPDATE replica_instances
                 SET status = 'terminated',
@@ -6540,6 +6709,16 @@ def delete_replica(app):
                     terminated_at = NOW()
                 WHERE id = %s
             """, (replica_id,))
+
+            # Also mark in instances table if exists
+            if replica.get('instance_id'):
+                execute_query("""
+                    UPDATE instances
+                    SET instance_status = 'terminated',
+                        is_active = FALSE,
+                        terminated_at = NOW()
+                    WHERE id = %s
+                """, (replica['instance_id'],))
 
             # Decrement agent replica count
             execute_query("""
@@ -6605,6 +6784,24 @@ def update_replica_instance(app):
                     launched_at = CASE WHEN launched_at IS NULL THEN NOW() ELSE launched_at END
                 WHERE id = %s
             """, (instance_id, status, replica_id))
+
+            # Also register replica in instances table
+            replica_data = replica[0] if replica else {}
+            execute_query("""
+                INSERT INTO instances (
+                    id, client_id, agent_id, instance_type, region, az,
+                    current_mode, current_pool_id, is_active, instance_status, is_primary,
+                    installed_at
+                ) VALUES (%s, (SELECT client_id FROM agents WHERE id = %s), %s, %s, %s, %s, 'spot', %s, TRUE, 'running_replica', FALSE, NOW())
+                ON DUPLICATE KEY UPDATE
+                    instance_status = 'running_replica',
+                    is_primary = FALSE,
+                    is_active = TRUE
+            """, (
+                instance_id, agent_id, agent_id,
+                replica_data.get('instance_type'), replica_data.get('region'), replica_data.get('az'),
+                replica_data.get('pool_id')
+            ))
 
             logger.info(f"Updated replica {replica_id} with instance_id {instance_id}, status {status}")
 
