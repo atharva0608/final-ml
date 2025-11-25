@@ -2813,15 +2813,18 @@ def get_client_replicas(client_id: str):
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/client/instances/<instance_id>/pricing', methods=['GET'])
+@require_client_token
 def get_instance_pricing(instance_id: str):
     """Get pricing details for instance with current mode and pool info"""
     try:
+        client_id = request.client_id
+
         # Get instance details including current state
         instance = execute_query("""
             SELECT i.instance_type, i.region, i.ondemand_price, i.current_pool_id, i.current_mode
             FROM instances i
-            WHERE i.id = %s
-        """, (instance_id,), fetch_one=True)
+            WHERE i.id = %s AND i.client_id = %s
+        """, (instance_id, client_id), fetch_one=True)
 
         if not instance:
             return jsonify({'error': 'Instance not found'}), 404
@@ -2881,11 +2884,14 @@ def get_instance_pricing(instance_id: str):
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/client/instances/<instance_id>/metrics', methods=['GET'])
+@require_client_token
 def get_instance_metrics(instance_id: str):
     """Get comprehensive instance metrics"""
     try:
+        client_id = request.client_id
+
         metrics = execute_query("""
-            SELECT 
+            SELECT
                 i.id,
                 i.instance_type,
                 i.current_mode,
@@ -2896,20 +2902,20 @@ def get_instance_metrics(instance_id: str):
                 TIMESTAMPDIFF(HOUR, i.installed_at, NOW()) as uptime_hours,
                 TIMESTAMPDIFF(HOUR, i.last_switch_at, NOW()) as hours_since_last_switch,
                 (SELECT COUNT(*) FROM switches WHERE new_instance_id = i.id) as total_switches,
-                (SELECT COUNT(*) FROM switches 
-                 WHERE new_instance_id = i.id 
+                (SELECT COUNT(*) FROM switches
+                 WHERE new_instance_id = i.id
                  AND initiated_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)) as switches_last_7_days,
-                (SELECT COUNT(*) FROM switches 
-                 WHERE new_instance_id = i.id 
+                (SELECT COUNT(*) FROM switches
+                 WHERE new_instance_id = i.id
                  AND initiated_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)) as switches_last_30_days,
-                (SELECT SUM(savings_impact * 24) FROM switches 
-                 WHERE new_instance_id = i.id 
+                (SELECT SUM(savings_impact * 24) FROM switches
+                 WHERE new_instance_id = i.id
                  AND initiated_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)) as savings_last_30_days,
-                (SELECT SUM(savings_impact * 24) FROM switches 
+                (SELECT SUM(savings_impact * 24) FROM switches
                  WHERE new_instance_id = i.id) as total_savings
             FROM instances i
-            WHERE i.id = %s
-        """, (instance_id,), fetch_one=True)
+            WHERE i.id = %s AND i.client_id = %s
+        """, (instance_id, client_id), fetch_one=True)
         
         if not metrics:
             return jsonify({'error': 'Instance not found'}), 404
@@ -2936,9 +2942,11 @@ def get_instance_metrics(instance_id: str):
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/client/instances/<instance_id>/price-history', methods=['GET'])
+@require_client_token
 def get_instance_price_history(instance_id: str):
     """Get historical pricing data for all pools (for multi-line chart)"""
     try:
+        client_id = request.client_id
         days = request.args.get('days', 7, type=int)
         interval = request.args.get('interval', 'hour')  # 'hour' or 'day'
 
@@ -2949,8 +2957,8 @@ def get_instance_price_history(instance_id: str):
         instance = execute_query("""
             SELECT i.id, i.instance_type, i.region, i.ondemand_price
             FROM instances i
-            WHERE i.id = %s
-        """, (instance_id,), fetch_one=True)
+            WHERE i.id = %s AND i.client_id = %s
+        """, (instance_id, client_id), fetch_one=True)
 
         if not instance:
             return jsonify({'error': 'Instance not found'}), 404
@@ -3168,8 +3176,8 @@ def get_client_pricing_history():
         logger.error(f"Get client pricing history error: {e}", exc_info=True)
         return jsonify({'error': str(e)}), 500
 
-@require_client_token
 @app.route('/api/client/instances/<instance_id>/available-options', methods=['GET'])
+@require_client_token
 def get_instance_available_options(instance_id: str):
     """Get available pools and instance types for switching"""
     try:
@@ -3236,32 +3244,35 @@ def get_instance_available_options(instance_id: str):
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/client/instances/<instance_id>/force-switch', methods=['POST'])
+@require_client_token
 def force_instance_switch(instance_id: str):
     """Manually force instance switch"""
     data = request.json or {}
-    
+
     schema = ForceSwitchSchema()
     try:
         validated_data = schema.load(data)
     except ValidationError as e:
         return jsonify({'error': 'Validation failed', 'details': e.messages}), 400
-    
+
     try:
+        client_id = request.client_id
+
         instance = execute_query("""
-            SELECT agent_id, client_id FROM instances WHERE id = %s
-        """, (instance_id,), fetch_one=True)
-        
+            SELECT agent_id, client_id FROM instances WHERE id = %s AND client_id = %s
+        """, (instance_id, client_id), fetch_one=True)
+
         if not instance:
             # Try to find agent by instance_id
             agent = execute_query("""
-                SELECT id, client_id FROM agents WHERE instance_id = %s
-            """, (instance_id,), fetch_one=True)
-            
+                SELECT id, client_id FROM agents WHERE instance_id = %s AND client_id = %s
+            """, (instance_id, client_id), fetch_one=True)
+
             if not agent:
                 return jsonify({'error': 'Instance or agent not found'}), 404
-            
+
             instance = {'agent_id': agent['id'], 'client_id': agent['client_id']}
-        
+
         if not instance.get('agent_id'):
             return jsonify({'error': 'No agent assigned to instance'}), 404
         
@@ -3392,12 +3403,173 @@ def get_switch_history(client_id: str):
         logger.error(f"Get switch history error: {e}")
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/client/<client_id>/export/savings', methods=['GET'])
+def export_client_savings(client_id: str):
+    """Export savings data as CSV"""
+    try:
+        import io
+        import csv
+
+        # Get savings data
+        savings = execute_query("""
+            SELECT
+                year,
+                month,
+                MONTHNAME(CONCAT(year, '-', LPAD(month, 2, '0'), '-01')) as month_name,
+                baseline_cost,
+                actual_cost,
+                savings
+            FROM client_savings_monthly
+            WHERE client_id = %s
+            ORDER BY year DESC, month DESC
+        """, (client_id,), fetch=True)
+
+        # Create CSV in memory
+        output = io.StringIO()
+        writer = csv.writer(output)
+
+        # Write header
+        writer.writerow(['Year', 'Month', 'Month Name', 'On-Demand Cost ($)', 'Actual Cost ($)', 'Savings ($)'])
+
+        # Write data
+        for s in (savings or []):
+            writer.writerow([
+                s['year'],
+                s['month'],
+                s['month_name'],
+                f"{float(s['baseline_cost'] or 0):.2f}",
+                f"{float(s['actual_cost'] or 0):.2f}",
+                f"{float(s['savings'] or 0):.2f}"
+            ])
+
+        # Prepare response
+        output.seek(0)
+        return Response(
+            output.getvalue(),
+            mimetype='text/csv',
+            headers={'Content-Disposition': f'attachment; filename=client_{client_id}_savings.csv'}
+        )
+
+    except Exception as e:
+        logger.error(f"Export savings error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/client/<client_id>/export/switch-history', methods=['GET'])
+def export_switch_history(client_id: str):
+    """Export switch history as CSV"""
+    try:
+        import io
+        import csv
+
+        # Get switch history
+        history = execute_query("""
+            SELECT *
+            FROM switches
+            WHERE client_id = %s
+            ORDER BY initiated_at DESC
+        """, (client_id,), fetch=True)
+
+        # Create CSV in memory
+        output = io.StringIO()
+        writer = csv.writer(output)
+
+        # Write header
+        writer.writerow(['Timestamp', 'Old Instance ID', 'New Instance ID', 'From Mode', 'To Mode',
+                        'From Pool', 'To Pool', 'Trigger', 'Price ($)', 'Savings Impact ($/hr)'])
+
+        # Write data
+        for h in (history or []):
+            timestamp = (h.get('instance_launched_at') or h.get('ami_created_at') or h.get('initiated_at')).isoformat() if (h.get('instance_launched_at') or h.get('ami_created_at') or h.get('initiated_at')) else ''
+            price = float(h['new_spot_price'] or 0) if h['new_mode'] == 'spot' else float(h['on_demand_price'] or 0)
+
+            writer.writerow([
+                timestamp,
+                h['old_instance_id'] or 'N/A',
+                h['new_instance_id'] or 'N/A',
+                h['old_mode'] or 'N/A',
+                h['new_mode'] or 'N/A',
+                h['old_pool_id'] or 'N/A',
+                h['new_pool_id'] or 'N/A',
+                h['event_trigger'] or 'manual',
+                f"{price:.6f}",
+                f"{float(h['savings_impact'] or 0):.6f}"
+            ])
+
+        # Prepare response
+        output.seek(0)
+        return Response(
+            output.getvalue(),
+            mimetype='text/csv',
+            headers={'Content-Disposition': f'attachment; filename=client_{client_id}_switch_history.csv'}
+        )
+
+    except Exception as e:
+        logger.error(f"Export switch history error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/admin/export/global-stats', methods=['GET'])
+def export_global_stats():
+    """Export global statistics as CSV"""
+    try:
+        import io
+        import csv
+
+        # Get top clients by savings
+        clients = execute_query("""
+            SELECT
+                c.id,
+                c.name,
+                c.email,
+                c.total_savings,
+                c.created_at,
+                COUNT(DISTINCT i.id) as instance_count,
+                COUNT(DISTINCT a.id) as agent_count
+            FROM clients c
+            LEFT JOIN instances i ON i.client_id = c.id AND i.is_active = TRUE
+            LEFT JOIN agents a ON a.client_id = c.id AND a.enabled = TRUE
+            WHERE c.is_active = TRUE
+            GROUP BY c.id, c.name, c.email, c.total_savings, c.created_at
+            ORDER BY c.total_savings DESC
+        """, fetch=True)
+
+        # Create CSV in memory
+        output = io.StringIO()
+        writer = csv.writer(output)
+
+        # Write header
+        writer.writerow(['Client ID', 'Name', 'Email', 'Total Savings ($)', 'Active Instances',
+                        'Active Agents', 'Created At'])
+
+        # Write data
+        for client in (clients or []):
+            writer.writerow([
+                client['id'],
+                client['name'],
+                client['email'],
+                f"{float(client['total_savings'] or 0):.2f}",
+                client['instance_count'] or 0,
+                client['agent_count'] or 0,
+                client['created_at'].isoformat() if client.get('created_at') else ''
+            ])
+
+        # Prepare response
+        output.seek(0)
+        return Response(
+            output.getvalue(),
+            mimetype='text/csv',
+            headers={'Content-Disposition': 'attachment; filename=global_stats.csv'}
+        )
+
+    except Exception as e:
+        logger.error(f"Export global stats error: {e}")
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/api/client/<client_id>/stats/charts', methods=['GET'])
 def get_client_chart_data(client_id: str):
     """Get comprehensive chart data for client dashboard"""
     try:
         savings_trend = execute_query("""
-            SELECT 
+            SELECT
                 MONTHNAME(CONCAT(year, '-', LPAD(month, 2, '0'), '-01')) as month,
                 savings,
                 baseline_cost,
