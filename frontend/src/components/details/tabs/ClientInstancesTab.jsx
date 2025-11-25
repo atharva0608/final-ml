@@ -180,26 +180,32 @@ const ClientInstancesTab = ({ clientId }) => {
                       </td>
                       <td className="py-4 px-4 text-sm font-mono text-gray-500">{inst.poolId}</td>
                       <td className="py-4 px-4 text-sm font-semibold text-gray-900">
-                        ${inst.spotPrice.toFixed(4)}
+                        ${(inst.spotPrice || 0).toFixed(4)}
                       </td>
                       <td className="py-4 px-4 text-sm font-bold text-green-600">
-                        {(((inst.onDemandPrice - inst.spotPrice) / inst.onDemandPrice) * 100).toFixed(1)}%
+                        {inst.onDemandPrice && inst.onDemandPrice > 0
+                          ? (((inst.onDemandPrice - (inst.spotPrice || 0)) / inst.onDemandPrice) * 100).toFixed(1) + '%'
+                          : 'N/A'}
                       </td>
                       <td className="py-4 px-4 text-sm text-gray-500">
                         {inst.lastSwitch ? new Date(inst.lastSwitch).toLocaleString() : 'Never'}
                       </td>
                       <td className="py-4 px-4">
-                        <button
-                          onClick={() => toggleInstanceDetail(inst.id)}
-                          className="text-blue-600 hover:text-blue-800 text-sm font-medium"
-                        >
-                          {selectedInstanceId === inst.id ? 'Hide' : 'Manage'}
-                        </button>
+                        {inst.instanceStatus !== 'zombie' ? (
+                          <button
+                            onClick={() => toggleInstanceDetail(inst.id)}
+                            className="text-blue-600 hover:text-blue-800 text-sm font-medium"
+                          >
+                            {selectedInstanceId === inst.id ? 'Hide' : 'Manage'}
+                          </button>
+                        ) : (
+                          <span className="text-gray-400 text-sm">N/A</span>
+                        )}
                       </td>
                     </tr>
-                    {selectedInstanceId === inst.id && (
-                      <InstanceDetailPanel 
-                        instanceId={inst.id} 
+                    {selectedInstanceId === inst.id && inst.instanceStatus !== 'zombie' && (
+                      <InstanceDetailPanel
+                        instanceId={inst.id}
                         clientId={clientId}
                         onClose={() => setSelectedInstanceId(null)}
                       />
