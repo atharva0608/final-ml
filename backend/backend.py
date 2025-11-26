@@ -1042,6 +1042,131 @@ def receive_termination_report(agent_id: str):
         logger.error(f"Termination report error: {e}")
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/agents/<agent_id>/register-instance', methods=['POST'])
+@require_client_token
+def register_instance(agent_id: str):
+    """
+    Manually register an instance with the backend.
+    Useful when instances are launched outside of the agent's control.
+
+    Request body:
+    {
+        "instance_id": "i-1234567890abcdef0",
+        "instance_type": "t3.medium",
+        "region": "us-east-1",
+        "az": "us-east-1a",
+        "mode": "spot|ondemand",
+        "pool_id": "t3.medium.us-east-1a",
+        "ami_id": "ami-12345678",
+        "is_primary": true,
+        "spot_price": 0.0416,
+        "ondemand_price": 0.0832
+    }
+    """
+    try:
+        data = request.json or {}
+
+        # Validate required fields
+        required_fields = ['instance_id', 'instance_type', 'region', 'az', 'mode']
+        missing_fields = [f for f in required_fields if not data.get(f)]
+        if missing_fields:
+            return jsonify({'error': f'Missing required fields: {", ".join(missing_fields)}'}), 400
+
+        # Get agent details
+        agent = execute_query("""
+            SELECT client_id FROM agents WHERE id = %s AND client_id = %s
+        """, (agent_id, request.client_id), fetch_one=True)
+
+        if not agent:
+            return jsonify({'error': 'Agent not found'}), 404
+
+        instance_id = data['instance_id']
+        instance_type = data['instance_type']
+        region = data['region']
+        az = data['az']
+        mode = data['mode']
+        pool_id = data.get('pool_id')
+        ami_id = data.get('ami_id')
+        is_primary = data.get('is_primary', True)
+        spot_price = data.get('spot_price', 0)
+        ondemand_price = data.get('ondemand_price', 0)
+
+        # Determine instance status
+        instance_status = 'running_primary' if is_primary else 'running_replica'
+
+        # If registering as primary, demote any existing primary instances
+        if is_primary:
+            execute_query("""
+                UPDATE instances
+                SET is_primary = FALSE,
+                    instance_status = CASE
+                        WHEN instance_status = 'running_primary' THEN 'zombie'
+                        ELSE instance_status
+                    END
+                WHERE agent_id = %s AND is_primary = TRUE
+            """, (agent_id,))
+
+            logger.info(f"Demoted existing primary instances for agent {agent_id}")
+
+        # Register the instance
+        execute_query("""
+            INSERT INTO instances (
+                id, client_id, agent_id, instance_type, region, az, ami_id,
+                current_mode, current_pool_id, spot_price, ondemand_price,
+                is_active, instance_status, is_primary, installed_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, TRUE, %s, %s, NOW())
+            ON DUPLICATE KEY UPDATE
+                agent_id = VALUES(agent_id),
+                current_mode = VALUES(current_mode),
+                current_pool_id = VALUES(current_pool_id),
+                spot_price = VALUES(spot_price),
+                is_active = TRUE,
+                instance_status = VALUES(instance_status),
+                is_primary = VALUES(is_primary),
+                updated_at = NOW()
+        """, (
+            instance_id, request.client_id, agent_id, instance_type, region, az, ami_id,
+            mode, pool_id, spot_price, ondemand_price, instance_status, is_primary
+        ))
+
+        # Update agent's instance_id if this is the primary
+        if is_primary:
+            execute_query("""
+                UPDATE agents
+                SET instance_id = %s,
+                    instance_type = %s,
+                    current_mode = %s,
+                    current_pool_id = %s,
+                    az = %s
+                WHERE id = %s
+            """, (instance_id, instance_type, mode, pool_id, az, agent_id))
+
+        logger.info(f"✓ Registered instance {instance_id} for agent {agent_id} (primary={is_primary})")
+
+        # Log system event
+        execute_query("""
+            INSERT INTO system_events (event_type, severity, agent_id, message, metadata)
+            VALUES ('instance_registered', 'info', %s, %s, %s)
+        """, (agent_id,
+              f"Instance {instance_id} manually registered",
+              json.dumps({
+                  'instance_id': instance_id,
+                  'instance_type': instance_type,
+                  'mode': mode,
+                  'is_primary': is_primary
+              })))
+
+        return jsonify({
+            'success': True,
+            'message': 'Instance registered successfully',
+            'instance_id': instance_id,
+            'is_primary': is_primary
+        })
+
+    except Exception as e:
+        logger.error(f"Register instance error: {e}")
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/api/agents/<agent_id>/pending-commands', methods=['GET'])
 @require_client_token
 def get_pending_commands(agent_id: str):

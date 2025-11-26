@@ -418,6 +418,8 @@ CREATE TABLE IF NOT EXISTS instances (
     interruption_handled_count INT DEFAULT 0,
     last_failover_at TIMESTAMP NULL,
     terminated_at TIMESTAMP NULL,
+    termination_attempted_at TIMESTAMP NULL COMMENT 'When agent last attempted to terminate this instance',
+    termination_confirmed BOOLEAN DEFAULT FALSE COMMENT 'TRUE if AWS confirmed termination',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     metadata JSON,
@@ -429,6 +431,7 @@ CREATE TABLE IF NOT EXISTS instances (
     INDEX idx_instances_active (is_active),
     INDEX idx_instances_pool (current_pool_id),
     INDEX idx_instances_status (instance_status),
+    INDEX idx_instances_zombie_termination (instance_status, termination_attempted_at, region),
     
     CONSTRAINT fk_instances_client FOREIGN KEY (client_id) 
         REFERENCES clients(id) ON DELETE CASCADE,
@@ -556,6 +559,8 @@ CREATE TABLE IF NOT EXISTS replica_instances (
     ready_at TIMESTAMP NULL,
     promoted_at TIMESTAMP NULL,
     terminated_at TIMESTAMP NULL,
+    termination_attempted_at TIMESTAMP NULL COMMENT 'When agent last attempted to terminate this instance',
+    termination_confirmed BOOLEAN DEFAULT FALSE COMMENT 'TRUE if AWS confirmed termination',
 
     -- Replica metadata
     created_by VARCHAR(255),
@@ -590,7 +595,8 @@ CREATE TABLE IF NOT EXISTS replica_instances (
     INDEX idx_replica_parent (parent_instance_id),
     INDEX idx_replica_created (created_at),
     INDEX idx_replica_active (agent_id, is_active),
-    INDEX idx_replica_sync_completed (sync_completed_at)
+    INDEX idx_replica_sync_completed (sync_completed_at),
+    INDEX idx_replicas_termination (status, termination_attempted_at, agent_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ===========================================================================
