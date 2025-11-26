@@ -148,13 +148,21 @@ replica_coordinator = None
 class Config:
     """Server configuration with environment variable support"""
     
-    # Database
+    # Database Configuration
+    # IMPORTANT: Set DB_PASSWORD environment variable in production!
     DB_HOST = os.getenv('DB_HOST', 'localhost')
     DB_PORT = int(os.getenv('DB_PORT', 3306))
     DB_USER = os.getenv('DB_USER', 'spotuser')
-    DB_PASSWORD = os.getenv('DB_PASSWORD', 'SpotUser2024!')
+    DB_PASSWORD = os.getenv('DB_PASSWORD', 'SpotUser2024!')  # Default for dev only - SET IN PRODUCTION!
     DB_NAME = os.getenv('DB_NAME', 'spot_optimizer')
     DB_POOL_SIZE = int(os.getenv('DB_POOL_SIZE', 50))  # Increased from 30 to 50 for better concurrency
+
+    # Log warning if using default password
+    @staticmethod
+    def validate_config():
+        """Validate configuration and warn about security issues"""
+        if Config.DB_PASSWORD == 'SpotUser2024!' and not os.getenv('DB_PASSWORD'):
+            logger.warning("⚠️  WARNING: Using default database password! Set DB_PASSWORD environment variable in production!")
     
     # Decision Engine
     DECISION_ENGINE_MODULE = os.getenv('DECISION_ENGINE_MODULE', 'decision_engines.ml_based_engine')
