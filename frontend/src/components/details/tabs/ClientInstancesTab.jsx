@@ -14,6 +14,7 @@ const ClientInstancesTab = ({ clientId }) => {
   const [selectedInstanceId, setSelectedInstanceId] = useState(null);
   const [filters, setFilters] = useState({ status: 'active', mode: 'all', search: '' });
   const [error, setError] = useState(null);
+  const [isInitialLoad, setIsInitialLoad] = useState(true);
 
   const getStatusBadge = (status, isPrimary) => {
     if (status === 'running_primary' || (status === 'running_replica' && isPrimary)) {
@@ -49,21 +50,29 @@ const ClientInstancesTab = ({ clientId }) => {
     }
   };
 
-  const loadInstances = useCallback(async () => {
-    setLoading(true);
+  const loadInstances = useCallback(async (showLoadingSpinner = true) => {
+    if (showLoadingSpinner) {
+      setLoading(true);
+    }
     setError(null);
     try {
       const data = await api.getInstances(clientId, filters);
       setInstances(data);
+      setIsInitialLoad(false);
     } catch (err) {
       setError(err.message);
     } finally {
-      setLoading(false);
+      if (showLoadingSpinner) {
+        setLoading(false);
+      }
     }
   }, [clientId, filters]);
 
   useEffect(() => {
-    loadInstances();
+    loadInstances(true); // Initial load with spinner
+    // Auto-refresh every 5 seconds for live updates (without spinner)
+    const interval = setInterval(() => loadInstances(false), 5000);
+    return () => clearInterval(interval);
   }, [loadInstances]);
 
   const toggleInstanceDetail = (instanceId) => {
@@ -71,7 +80,7 @@ const ClientInstancesTab = ({ clientId }) => {
   };
 
   if (error) {
-    return <ErrorMessage message={error} onRetry={loadInstances} />;
+    return <ErrorMessage message={error} onRetry={() => loadInstances(true)} />;
   }
 
   return (
@@ -110,7 +119,7 @@ const ClientInstancesTab = ({ clientId }) => {
             />
           </div>
           
-          <Button variant="outline" size="sm" icon={<RefreshCw size={16} />} onClick={loadInstances}>
+          <Button variant="outline" size="sm" icon={<RefreshCw size={16} />} onClick={() => loadInstances(true)}>
             Refresh
           </Button>
         </div>
@@ -210,7 +219,7 @@ const ClientInstancesTab = ({ clientId }) => {
                         isPrimary={inst.isPrimary}
                         instanceStatus={inst.instanceStatus}
                         onClose={() => setSelectedInstanceId(null)}
-                        onSwitchComplete={loadInstances}
+                        onSwitchComplete={() => loadInstances(false)}
                       />
                     )}
                   </React.Fragment>

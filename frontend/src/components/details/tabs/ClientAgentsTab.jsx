@@ -15,8 +15,10 @@ const ClientAgentsTab = ({ clientId }) => {
   const [showConfigModal, setShowConfigModal] = useState(false);
   const [error, setError] = useState(null);
 
-  const loadAgents = useCallback(async () => {
-    setLoading(true);
+  const loadAgents = useCallback(async (showLoadingSpinner = true) => {
+    if (showLoadingSpinner) {
+      setLoading(true);
+    }
     setError(null);
     try {
       const data = await api.getAgents(clientId);
@@ -24,18 +26,23 @@ const ClientAgentsTab = ({ clientId }) => {
     } catch (err) {
       setError(err.message);
     } finally {
-      setLoading(false);
+      if (showLoadingSpinner) {
+        setLoading(false);
+      }
     }
   }, [clientId]);
 
   useEffect(() => {
-    loadAgents();
+    loadAgents(true); // Initial load with spinner
+    // Auto-refresh every 5 seconds for live updates (without spinner)
+    const interval = setInterval(() => loadAgents(false), 5000);
+    return () => clearInterval(interval);
   }, [loadAgents]);
 
   const handleToggle = async (agentId, currentEnabled) => {
     try {
       await api.toggleAgent(agentId, !currentEnabled);
-      await loadAgents();
+      await loadAgents(false); // Refresh without spinner
     } catch (error) {
       alert('Failed to toggle agent: ' + error.message);
     }
@@ -48,7 +55,7 @@ const ClientAgentsTab = ({ clientId }) => {
 
     try {
       await api.deleteAgent(agentId);
-      await loadAgents();
+      await loadAgents(false); // Refresh without spinner
       alert('Agent deleted successfully');
     } catch (error) {
       alert('Failed to delete agent: ' + error.message);
@@ -80,7 +87,7 @@ const ClientAgentsTab = ({ clientId }) => {
   }
 
   if (error) {
-    return <ErrorMessage message={error} onRetry={loadAgents} />;
+    return <ErrorMessage message={error} onRetry={() => loadAgents(true)} />;
   }
 
   return (
@@ -180,7 +187,7 @@ const ClientAgentsTab = ({ clientId }) => {
         <AgentConfigModal
           agent={selectedAgent}
           onClose={() => setShowConfigModal(false)}
-          onSave={loadAgents}
+          onSave={() => loadAgents(false)}
         />
       )}
     </>

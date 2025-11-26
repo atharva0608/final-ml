@@ -14,8 +14,10 @@ const ClientReplicasTab = ({ clientId }) => {
   const [actionLoading, setActionLoading] = useState(null);
   const [copiedId, setCopiedId] = useState(null);
 
-  const loadReplicas = useCallback(async () => {
-    setLoading(true);
+  const loadReplicas = useCallback(async (showLoadingSpinner = true) => {
+    if (showLoadingSpinner) {
+      setLoading(true);
+    }
     setError(null);
     try {
       const data = await api.getClientReplicas(clientId);
@@ -23,12 +25,17 @@ const ClientReplicasTab = ({ clientId }) => {
     } catch (err) {
       setError(err.message);
     } finally {
-      setLoading(false);
+      if (showLoadingSpinner) {
+        setLoading(false);
+      }
     }
   }, [clientId]);
 
   useEffect(() => {
-    loadReplicas();
+    loadReplicas(true); // Initial load with spinner
+    // Auto-refresh every 10 seconds for live replica status updates (without spinner)
+    const interval = setInterval(() => loadReplicas(false), 10000);
+    return () => clearInterval(interval);
   }, [loadReplicas]);
 
   const handleCopyInstanceId = async (instanceId) => {
@@ -51,7 +58,7 @@ const ClientReplicasTab = ({ clientId }) => {
     try {
       await api.promoteReplica(agentId, replicaId);
       alert('✓ Successfully switched to replica! The replica is now your primary instance.');
-      await loadReplicas();
+      await loadReplicas(false); // Refresh without spinner
     } catch (error) {
       alert(`✗ Failed to switch to replica: ${error.message}`);
     } finally {
@@ -68,7 +75,7 @@ const ClientReplicasTab = ({ clientId }) => {
     try {
       await api.deleteReplica(agentId, replicaId);
       alert('✓ Replica terminated successfully');
-      await loadReplicas();
+      await loadReplicas(false); // Refresh without spinner
     } catch (error) {
       alert(`✗ Failed to terminate replica: ${error.message}`);
     } finally {
@@ -114,7 +121,7 @@ const ClientReplicasTab = ({ clientId }) => {
   };
 
   if (error) {
-    return <ErrorMessage message={error} onRetry={loadReplicas} />;
+    return <ErrorMessage message={error} onRetry={() => loadReplicas(true)} />;
   }
 
   return (
@@ -128,7 +135,7 @@ const ClientReplicasTab = ({ clientId }) => {
               Standby instances that can be promoted to primary in case of interruption
             </p>
           </div>
-          <Button variant="outline" size="sm" icon={<RefreshCw size={16} />} onClick={loadReplicas}>
+          <Button variant="outline" size="sm" icon={<RefreshCw size={16} />} onClick={() => loadReplicas(true)}>
             Refresh
           </Button>
         </div>

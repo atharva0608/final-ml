@@ -11,8 +11,10 @@ const AllInstancesPage = () => {
   const [filters, setFilters] = useState({ status: 'all', mode: 'all', search: '' });
 
   useEffect(() => {
-    const loadInstances = async () => {
-      setLoading(true);
+    const loadInstances = async (showLoadingSpinner = true) => {
+      if (showLoadingSpinner) {
+        setLoading(true);
+      }
       try {
         const data = await api.getAllInstancesGlobal(filters);
         // Backend returns { instances: [...], total: ..., filters: ... }
@@ -21,10 +23,16 @@ const AllInstancesPage = () => {
         console.error('Failed to load instances:', error);
         setInstances([]); // Set empty array on error
       } finally {
-        setLoading(false);
+        if (showLoadingSpinner) {
+          setLoading(false);
+        }
       }
     };
-    loadInstances();
+
+    loadInstances(true); // Initial load with spinner
+    // Auto-refresh every 5 seconds for live updates (without spinner)
+    const interval = setInterval(() => loadInstances(false), 5000);
+    return () => clearInterval(interval);
   }, [filters]);
 
   return (

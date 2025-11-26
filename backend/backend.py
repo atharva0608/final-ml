@@ -2201,11 +2201,14 @@ def get_all_instances_global():
         """
         params = []
 
+        # Filter by instance_status for proper active/terminated separation
         if status:
             if status == 'active':
-                query += " AND i.is_active = TRUE"
+                # Active space: primary + replica instances only
+                query += " AND i.instance_status IN ('running_primary', 'running_replica')"
             elif status == 'terminated':
-                query += " AND i.is_active = FALSE"
+                # Terminated space: zombie + terminated instances only
+                query += " AND i.instance_status IN ('zombie', 'terminated')"
 
         if mode:
             query += " AND i.current_mode = %s"
@@ -2993,26 +2996,29 @@ def get_client_instances(client_id: str):
     status = request.args.get('status', 'all')
     mode = request.args.get('mode', 'all')
     search = request.args.get('search', '')
-    
+
     try:
         query = "SELECT * FROM instances WHERE client_id = %s"
         params = [client_id]
-        
+
+        # Filter by instance_status for proper active/terminated separation
         if status == 'active':
-            query += " AND is_active = TRUE"
+            # Active space: primary + replica instances only
+            query += " AND instance_status IN ('running_primary', 'running_replica')"
         elif status == 'terminated':
-            query += " AND is_active = FALSE"
-        
+            # Terminated space: zombie + terminated instances only
+            query += " AND instance_status IN ('zombie', 'terminated')"
+
         if mode != 'all':
             query += " AND current_mode = %s"
             params.append(mode)
-        
+
         if search:
             query += " AND (id LIKE %s OR instance_type LIKE %s)"
             params.extend([f'%{search}%', f'%{search}%'])
-        
+
         query += " ORDER BY created_at DESC"
-        
+
         instances = execute_query(query, tuple(params), fetch=True)
         
         return jsonify([{
