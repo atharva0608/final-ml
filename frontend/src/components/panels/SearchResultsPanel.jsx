@@ -82,10 +82,10 @@ const SearchResultsPanel = ({ isOpen, onClose, query, onSelectResult }) => {
                         <div>
                           <p className="text-sm font-medium text-gray-900">{item.name}</p>
                           <p className="text-xs text-gray-500">{item.id}</p>
+                          {item.createdAt && (
+                            <p className="text-xs text-gray-400">Created: {new Date(item.createdAt).toLocaleDateString()}</p>
+                          )}
                         </div>
-                        <Badge variant={item.status === 'active' ? 'success' : 'danger'}>
-                          {item.status}
-                        </Badge>
                       </div>
                     </div>
                   ))}
@@ -97,15 +97,23 @@ const SearchResultsPanel = ({ isOpen, onClose, query, onSelectResult }) => {
                   <h4 className="text-sm font-semibold text-gray-700 mb-2">Instances</h4>
                   {results.instances.map(item => (
                     <div
-                      key={item.id}
+                      key={item.instanceId}
                       onClick={() => {
-                        onSelectResult('instance', item.id);
+                        onSelectResult('instance', item.instanceId);
                         onClose();
                       }}
                       className="p-3 hover:bg-gray-50 rounded-lg cursor-pointer mb-2"
                     >
-                      <p className="text-sm font-medium text-gray-900">{item.name}</p>
-                      <p className="text-xs text-gray-500">{item.client}</p>
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <p className="text-sm font-medium text-gray-900">{item.instanceId}</p>
+                          <p className="text-xs text-gray-500">{item.instanceType} • {item.availabilityZone}</p>
+                          <p className="text-xs text-gray-400">{item.clientName}</p>
+                        </div>
+                        <Badge variant={item.status === 'running' ? 'success' : 'secondary'}>
+                          {item.status}
+                        </Badge>
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -126,10 +134,13 @@ const SearchResultsPanel = ({ isOpen, onClose, query, onSelectResult }) => {
                       <div className="flex items-center justify-between">
                         <div>
                           <p className="text-sm font-medium text-gray-900">{item.name}</p>
-                          <p className="text-xs text-gray-500">{item.client}</p>
+                          <p className="text-xs text-gray-500">{item.clientName}</p>
+                          {item.lastHeartbeat && (
+                            <p className="text-xs text-gray-400">Last seen: {new Date(item.lastHeartbeat).toLocaleString()}</p>
+                          )}
                         </div>
-                        <Badge variant={item.status === 'online' ? 'success' : 'danger'}>
-                          {item.status}
+                        <Badge variant={item.isActive ? 'success' : 'danger'}>
+                          {item.isActive ? 'Active' : 'Inactive'}
                         </Badge>
                       </div>
                     </div>

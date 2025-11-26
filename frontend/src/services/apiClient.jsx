@@ -361,23 +361,41 @@ class APIClient {
   }
 
   // ==============================================================================
-  // LEGACY/MOCK METHODS - Kept for compatibility
+  // SEARCH & STATISTICS APIs
   // ==============================================================================
 
   async globalSearch(query) {
-    console.warn('globalSearch: Backend endpoint not implemented, returning mock data');
-    return { clients: [], instances: [], agents: [] };
+    if (!query || query.trim().length < 2) {
+      return { clients: [], instances: [], agents: [] };
+    }
+    return this.request(`/api/admin/search?q=${encodeURIComponent(query)}`);
   }
 
   async getAgentStatistics(agentId) {
-    console.warn('getAgentStatistics: Backend endpoint not implemented, returning mock data');
-    return { totalDecisions: 0, successRate: 0 };
+    return this.request(`/api/agents/${agentId}/statistics`);
   }
 
-  async getInstanceLogs(instanceId, limit = 50) {
-    console.warn('getInstanceLogs: Backend endpoint not implemented, returning empty array');
-    return [];
+  async getInstanceLogs(instanceId, limit = 100) {
+    return this.request(`/api/client/instances/${instanceId}/logs`);
   }
+
+  async getPoolStatistics() {
+    return this.request('/api/admin/pools/statistics');
+  }
+
+  async getAgentHealthSummary() {
+    return this.request('/api/admin/agents/health-summary');
+  }
+
+  // Deprecated: Use getAgentHealthSummary instead
+  async getAgentHealth() {
+    console.warn('getAgentHealth is deprecated, use getAgentHealthSummary instead');
+    return this.getAgentHealthSummary();
+  }
+
+  // ==============================================================================
+  // EXPORT APIs
+  // ==============================================================================
 
   async exportSavings(clientId) {
     window.open(`${this.baseUrl}/api/client/${clientId}/export/savings`, '_blank');
@@ -389,16 +407,6 @@ class APIClient {
 
   async exportGlobalStats() {
     window.open(`${this.baseUrl}/api/admin/export/global-stats`, '_blank');
-  }
-
-  async getPoolStatistics() {
-    console.warn('getPoolStatistics: Backend endpoint not implemented, returning mock data');
-    return { total: 0, active: 0, regions: [] };
-  }
-
-  async getAgentHealth() {
-    console.warn('getAgentHealth: Backend endpoint not implemented, returning mock data');
-    return { online: 0, offline: 0, total: 0 };
   }
 }
 

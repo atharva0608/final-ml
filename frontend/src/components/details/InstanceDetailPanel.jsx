@@ -3,7 +3,7 @@ import {
   CartesianGrid, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer,
   LineChart, Line
 } from 'recharts';
-import { X, Clock, BarChart3 } from 'lucide-react';
+import { X, Clock, BarChart3, FileText } from 'lucide-react';
 import LoadingSpinner from '../common/LoadingSpinner';
 import ErrorMessage from '../common/ErrorMessage';
 import Button from '../common/Button';
@@ -17,12 +17,15 @@ const InstanceDetailPanel = ({ instanceId, clientId, isPrimary = true, instanceS
   const [priceHistory, setPriceHistory] = useState([]);
   const [priceHistoryPools, setPriceHistoryPools] = useState([]);
   const [availableOptions, setAvailableOptions] = useState(null);
+  const [logs, setLogs] = useState([]);
+  const [logsLoading, setLogsLoading] = useState(false);
   const [loading, setLoading] = useState(true);
   const [switching, setSwitching] = useState(null);
   const [error, setError] = useState(null);
   const [showFallback, setShowFallback] = useState(false);
   const [selectedPool, setSelectedPool] = useState('');
   const [selectedInstanceType, setSelectedInstanceType] = useState('');
+  const [showLogs, setShowLogs] = useState(false);
 
   useEffect(() => {
     const loadData = async () => {
@@ -121,6 +124,29 @@ const InstanceDetailPanel = ({ instanceId, clientId, isPrimary = true, instanceS
     }
   };
 
+  const loadInstanceLogs = async () => {
+    setLogsLoading(true);
+    try {
+      const logsData = await api.getInstanceLogs(instanceId);
+      setLogs(logsData || []);
+      setShowLogs(true);
+    } catch (err) {
+      console.error('Failed to load logs:', err);
+      setLogs([]);
+    } finally {
+      setLogsLoading(false);
+    }
+  };
+
+  const getEventBadgeVariant = (eventType, status) => {
+    if (eventType === 'switch') {
+      return status === 'success' ? 'success' : 'danger';
+    }
+    if (eventType === 'termination') return 'danger';
+    if (eventType === 'pricing_update') return 'secondary';
+    return 'secondary';
+  };
+
   if (loading) {
     return (
       <tr className="bg-gray-50">
@@ -168,9 +194,20 @@ const InstanceDetailPanel = ({ instanceId, clientId, isPrimary = true, instanceS
           <div className="space-y-4">
             <div className="flex items-center justify-between mb-2">
               <h4 className="text-md font-bold text-gray-900">Instance Metrics</h4>
-              <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
-                <X size={18} />
-              </button>
+              <div className="flex items-center space-x-2">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={loadInstanceLogs}
+                  loading={logsLoading}
+                >
+                  <FileText size={14} className="mr-1" />
+                  {showLogs ? 'Refresh Logs' : 'View Logs'}
+                </Button>
+                <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
+                  <X size={18} />
+                </button>
+              </div>
             </div>
             {metrics && (
               <div className="space-y-3">
@@ -393,6 +430,71 @@ const InstanceDetailPanel = ({ instanceId, clientId, isPrimary = true, instanceS
             )}
           </div>
         </div>
+
+        {/* Logs Section */}
+        {showLogs && (
+          <div className="mt-6">
+            <h4 className="text-md font-bold text-gray-900 mb-4">Instance Lifecycle Logs</h4>
+            {logs.length > 0 ? (
+              <div className="bg-white rounded-lg border border-gray-200 max-h-96 overflow-y-auto">
+                <div className="divide-y divide-gray-100">
+                  {logs.map((log, idx) => (
+                    <div key={idx} className="p-4 hover:bg-gray-50">
+                      <div className="flex items-start justify-between">
+                        <div className="flex-1">
+                          <div className="flex items-center space-x-2 mb-2">
+                            <Badge variant={getEventBadgeVariant(log.eventType, log.status)}>
+                              {log.eventType}
+                            </Badge>
+                            <Badge variant="secondary">{log.status}</Badge>
+                            {log.timestamp && (
+                              <span className="text-xs text-gray-500">
+                                {new Date(log.timestamp).toLocaleString()}
+                              </span>
+                            )}
+                          </div>
+                          {log.eventType === 'switch' && (
+                            <div className="text-sm text-gray-700">
+                              <p><strong>From:</strong> {log.fromValue} → <strong>To:</strong> {log.toValue}</p>
+                              {log.savings > 0 && (
+                                <p className="text-green-600 mt-1">
+                                  <strong>Savings:</strong> ${log.savings.toFixed(4)}
+                                </p>
+                              )}
+                              {log.reason && (
+                                <p className="text-gray-600 mt-1 text-xs">
+                                  {log.reason}
+                                </p>
+                              )}
+                            </div>
+                          )}
+                          {log.eventType === 'pricing_update' && (
+                            <div className="text-sm text-gray-700">
+                              <p><strong>Instance Type:</strong> {log.instanceType}</p>
+                              <p><strong>Price:</strong> ${log.price?.toFixed(4) || 'N/A'}</p>
+                            </div>
+                          )}
+                          {log.eventType === 'termination' && (
+                            <div className="text-sm text-gray-700">
+                              <p><strong>Instance Type:</strong> {log.instanceType}</p>
+                              <p className="text-red-600 mt-1">{log.reason}</p>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <EmptyState
+                icon={<FileText size={48} />}
+                title="No Logs Available"
+                description="No lifecycle events found for this instance"
+              />
+            )}
+          </div>
+        )}
       </td>
     </tr>
   );
