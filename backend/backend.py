@@ -1493,12 +1493,14 @@ def switch_report(agent_id: str):
             timing.get('instance_launched_at'), timing.get('instance_launched_at')
         ))
         
-        # Update agent with new instance info
+        # Update agent with new instance info and set status to online
         execute_query("""
             UPDATE agents
             SET instance_id = %s,
                 current_mode = %s,
                 current_pool_id = %s,
+                status = 'online',
+                last_heartbeat_at = NOW(),
                 last_switch_at = NOW()
             WHERE id = %s
         """, (
@@ -7630,11 +7632,13 @@ def promote_replica(app):
                     is_primary = TRUE
             """, (new_instance_id, ondemand_price, ondemand_price, replica_id))
 
-            # Step 3: Update agent to point to new instance
+            # Step 3: Update agent to point to new instance and set status to online
             execute_query("""
                 UPDATE agents
                 SET instance_id = %s,
                     current_replica_id = NULL,
+                    status = 'online',
+                    last_heartbeat_at = NOW(),
                     last_failover_at = NOW()
                 WHERE id = %s
             """, (new_instance_id, agent_id))
