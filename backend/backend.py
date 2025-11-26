@@ -796,6 +796,20 @@ def agent_heartbeat(agent_id: str):
             agent_id,
             request.client_id
         ))
+
+        # If instance_status is provided, update the instance record
+        instance_status = data.get('instance_status')
+        if instance_status and new_instance_id:
+            # Valid statuses: running_primary, running_replica, zombie, terminated
+            valid_statuses = ['running_primary', 'running_replica', 'zombie', 'terminated']
+            if instance_status in valid_statuses:
+                execute_query("""
+                    UPDATE instances
+                    SET instance_status = %s,
+                        last_heartbeat_at = NOW()
+                    WHERE id = %s
+                """, (instance_status, new_instance_id))
+                logger.info(f"Updated instance {new_instance_id} status to {instance_status} via heartbeat")
         
         # Check for status change
         if prev['status'] != new_status:
@@ -6433,6 +6447,7 @@ class ReplicaCoordinator:
         # Tracking state
         self.agent_states = {}  # agent_id -> state info
         self.emergency_active = {}  # agent_id -> emergency context
+        self.manual_replica_states = {}  # agent_id -> previous manual_replica_enabled state
 
         logger.info("ReplicaCoordinator initialized")
 
@@ -6497,6 +6512,28 @@ class ReplicaCoordinator:
 
                 for agent in (agents or []):
                     agent_id = agent['id']
+
+                    # Track manual replica mode state changes
+                    current_manual_state = agent['manual_replica_enabled']
+                    previous_manual_state = self.manual_replica_states.get(agent_id)
+
+                    # Detect manual replica mode OFF -> need to terminate all replicas
+                    if previous_manual_state and not current_manual_state:
+                        logger.warning(f"══════════════════════════════════════════════════════════════════════")
+                        logger.warning(f"👥 MANUAL REPLICA MODE DISABLED for agent {agent_id}")
+                        logger.warning(f"   Terminating ALL replicas immediately...")
+                        logger.warning(f"══════════════════════════════════════════════════════════════════════")
+                        self._terminate_all_replicas(agent_id)
+
+                    # Detect manual replica mode ON -> create replicas for all primary instances
+                    elif not previous_manual_state and current_manual_state:
+                        logger.warning(f"══════════════════════════════════════════════════════════════════════")
+                        logger.warning(f"👥 MANUAL REPLICA MODE ENABLED for agent {agent_id}")
+                        logger.warning(f"   Creating replicas for ALL primary instances...")
+                        logger.warning(f"══════════════════════════════════════════════════════════════════════")
+
+                    # Update state tracker
+                    self.manual_replica_states[agent_id] = current_manual_state
 
                     # Handle auto-switch mode (emergency)
                     if agent['auto_switch_enabled']:
@@ -6771,64 +6808,99 @@ class ReplicaCoordinator:
 
     def _handle_manual_replica_mode(self, agent: Dict):
         """
-        Handle manual replica mode - continuous replica maintenance.
+        Handle manual replica mode - continuous replica maintenance for ALL primary instances.
 
         Flow:
-        1. Ensure exactly ONE replica exists at all times
+        1. For each primary instance of this agent, ensure exactly ONE replica exists
         2. If replica is terminated/promoted, create new one immediately
         3. Continue loop until manual_replica_enabled = FALSE
         """
         agent_id = agent['id']
-        replica_count = agent['replica_count'] or 0
 
-        # Check for active replicas (including launching status to prevent duplicates)
-        active_replicas = execute_query("""
-            SELECT id, status FROM replica_instances
+        # Get all primary instances for this agent (there should typically be 1, but handle multiple)
+        primary_instances = execute_query("""
+            SELECT id, instance_type, region, current_pool_id, az
+            FROM instances
             WHERE agent_id = %s
               AND is_active = TRUE
-              AND status NOT IN ('terminated', 'promoted', 'failed')
+              AND is_primary = TRUE
+              AND instance_status = 'running_primary'
         """, (agent_id,), fetch=True)
 
-        active_count = len(active_replicas or [])
+        if not primary_instances:
+            logger.debug(f"Manual mode: No primary instances found for agent {agent_id}")
+            return
 
-        if active_count == 0:
-            # No active replica - create one
-            logger.info(f"Manual mode: Creating replica for agent {agent_id}")
-            self._create_manual_replica(agent)
-        elif active_count == 1:
-            # Exactly one replica - this is correct, do nothing
-            replica = active_replicas[0]
-            logger.debug(f"Manual mode: Agent {agent_id} has 1 replica (status: {replica['status']})")
+        # For each primary instance, ensure it has exactly one active replica
+        for primary_instance in primary_instances:
+            instance_id = primary_instance['id']
 
-        elif active_count > 1:
-            # Too many replicas - should only be 1
-            logger.warning(f"Manual mode: Agent {agent_id} has {active_count} replicas, should be 1")
-            # Keep the newest, terminate others
-            newest = active_replicas[0]
-            for replica in active_replicas[1:]:
-                execute_query("""
-                    UPDATE replica_instances
-                    SET is_active = FALSE, status = 'terminated', terminated_at = NOW()
-                    WHERE id = %s
-                """, (replica['id'],))
+            # Check for active replicas for this primary instance
+            active_replicas = execute_query("""
+                SELECT id, status FROM replica_instances
+                WHERE agent_id = %s
+                  AND parent_instance_id = %s
+                  AND is_active = TRUE
+                  AND status NOT IN ('terminated', 'promoted', 'failed')
+            """, (agent_id, instance_id), fetch=True)
 
-        # Check if user promoted a replica
+            active_count = len(active_replicas or [])
+
+            if active_count == 0:
+                # No active replica - create one
+                logger.info(f"Manual mode: Creating replica for agent {agent_id}, instance {instance_id}")
+                self._create_manual_replica_for_instance(agent, primary_instance)
+            elif active_count == 1:
+                # Exactly one replica - this is correct, do nothing
+                replica = active_replicas[0]
+                logger.debug(f"Manual mode: Instance {instance_id} has 1 replica (status: {replica['status']})")
+            elif active_count > 1:
+                # Too many replicas - should only be 1
+                logger.warning(f"Manual mode: Instance {instance_id} has {active_count} replicas, should be 1")
+                # Keep the newest, terminate others
+                for replica in active_replicas[1:]:
+                    execute_query("""
+                        UPDATE replica_instances
+                        SET is_active = FALSE, status = 'terminated', terminated_at = NOW()
+                        WHERE id = %s
+                    """, (replica['id'],))
+                    logger.info(f"✓ Terminated extra replica {replica['id']} for instance {instance_id}")
+
+        # Check if user promoted a replica - if so, ensure new replica is created
         recently_promoted = execute_query("""
-            SELECT id, promoted_at FROM replica_instances
+            SELECT id, promoted_at, parent_instance_id FROM replica_instances
             WHERE agent_id = %s
               AND status = 'promoted'
               AND promoted_at >= DATE_SUB(NOW(), INTERVAL 5 MINUTE)
-        """, (agent_id,), fetch_one=True)
+        """, (agent_id,), fetch=True)
 
-        if recently_promoted and active_count == 0:
-            # User just promoted a replica AND there's no replacement yet - create new one
-            logger.info(f"Manual mode: Replica promoted for agent {agent_id}, creating new replica")
-            time.sleep(2)  # Brief delay to let promotion complete
-            self._create_manual_replica(agent)
+        for promoted_replica in (recently_promoted or []):
+            # Get the new primary instance (the promoted replica)
+            new_primary = execute_query("""
+                SELECT id, instance_type, region, current_pool_id, az
+                FROM instances
+                WHERE id = %s AND is_primary = TRUE
+            """, (promoted_replica['id'],), fetch_one=True)
 
-    def _create_manual_replica(self, agent: Dict):
-        """Create manual replica in cheapest available pool"""
+            if new_primary:
+                # Check if new primary already has a replica
+                existing_replica = execute_query("""
+                    SELECT id FROM replica_instances
+                    WHERE agent_id = %s
+                      AND parent_instance_id = %s
+                      AND is_active = TRUE
+                      AND status NOT IN ('terminated', 'promoted', 'failed')
+                """, (agent_id, new_primary['id']), fetch_one=True)
+
+                if not existing_replica:
+                    logger.info(f"Manual mode: Replica promoted for agent {agent_id}, creating new replica for new primary {new_primary['id']}")
+                    time.sleep(2)  # Brief delay to let promotion complete
+                    self._create_manual_replica_for_instance(agent, new_primary)
+
+    def _create_manual_replica_for_instance(self, agent: Dict, primary_instance: Dict):
+        """Create manual replica in cheapest available pool for a specific primary instance"""
         agent_id = agent['id']
+        instance_id = primary_instance['id']
 
         # Double-check manual replica is still enabled (prevent race conditions)
         agent_check = execute_query("""
@@ -6839,23 +6911,7 @@ class ReplicaCoordinator:
             logger.info(f"Manual replica disabled for agent {agent_id} - skipping creation")
             return None
 
-        # Get instance details from PRIMARY instance only
-        instance = execute_query("""
-            SELECT instance_type, region, current_pool_id, id as instance_id
-            FROM instances
-            WHERE agent_id = %s
-              AND is_active = TRUE
-              AND is_primary = TRUE
-              AND instance_status = 'running_primary'
-            ORDER BY created_at DESC
-            LIMIT 1
-        """, (agent_id,), fetch_one=True)
-
-        if not instance:
-            logger.error(f"Cannot create manual replica - no active primary instance for agent {agent_id}")
-            return None
-
-        logger.info(f"Creating manual replica for agent {agent_id}: instance_type={instance['instance_type']}, region={instance['region']}, instance_id={instance['instance_id']}")
+        logger.info(f"Creating manual replica for agent {agent_id}, instance {instance_id}: instance_type={primary_instance['instance_type']}, region={primary_instance['region']}")
 
         # Find cheapest pool (different from current) using real-time pricing
         pools = execute_query("""
@@ -6871,16 +6927,16 @@ class ReplicaCoordinator:
               AND sp.region = %s
             ORDER BY COALESCE(sps.price, 999999) ASC
             LIMIT 2
-        """, (instance['instance_type'], instance['region']), fetch=True)
+        """, (primary_instance['instance_type'], primary_instance['region']), fetch=True)
 
         if not pools:
-            logger.error(f"No pools found for agent {agent_id}")
+            logger.error(f"No pools found for agent {agent_id}, instance {instance_id}")
             return None
 
         # Select pool (if current is cheapest, use 2nd cheapest)
         target_pool = None
         for pool in pools:
-            if pool['id'] != instance['current_pool_id']:
+            if pool['id'] != primary_instance['current_pool_id']:
                 target_pool = pool
                 break
 
@@ -6905,20 +6961,80 @@ class ReplicaCoordinator:
             )
         """, (
             replica_id, agent_id, f"manual-{replica_id[:8]}",
-            target_pool['id'], instance['instance_type'],
-            instance['region'], target_pool['az'],
-            agent['instance_id'], target_pool['spot_price']
+            target_pool['id'], primary_instance['instance_type'],
+            primary_instance['region'], target_pool['az'],
+            instance_id, target_pool['spot_price']
         ))
 
-        # Update agent
+        # Update agent replica count
         execute_query("""
             UPDATE agents
-            SET current_replica_id = %s, replica_count = 1
+            SET replica_count = (
+                SELECT COUNT(*) FROM replica_instances
+                WHERE agent_id = %s AND is_active = TRUE
+                AND status NOT IN ('terminated', 'promoted', 'failed')
+            )
             WHERE id = %s
-        """, (replica_id, agent_id))
+        """, (agent_id, agent_id))
 
-        logger.info(f"✓ Created manual replica {replica_id} for agent {agent_id} in pool {target_pool['id']}")
+        logger.info(f"✓ Created manual replica {replica_id} for agent {agent_id}, instance {instance_id} in pool {target_pool['id']}")
         return replica_id
+
+    def _terminate_all_replicas(self, agent_id: str):
+        """Terminate ALL replicas for an agent immediately"""
+        try:
+            # Get all active replicas for this agent
+            replicas = execute_query("""
+                SELECT id, instance_id, status
+                FROM replica_instances
+                WHERE agent_id = %s
+                  AND is_active = TRUE
+                  AND status NOT IN ('terminated', 'promoted')
+            """, (agent_id,), fetch=True)
+
+            if not replicas:
+                logger.info(f"No active replicas to terminate for agent {agent_id}")
+                return
+
+            terminated_count = 0
+            for replica in replicas:
+                replica_id = replica['id']
+                instance_id = replica['instance_id']
+
+                # Mark replica as terminated
+                execute_query("""
+                    UPDATE replica_instances
+                    SET status = 'terminated',
+                        is_active = FALSE,
+                        terminated_at = NOW()
+                    WHERE id = %s
+                """, (replica_id,))
+
+                # Also mark in instances table if exists
+                if instance_id:
+                    execute_query("""
+                        UPDATE instances
+                        SET instance_status = 'terminated',
+                            is_active = FALSE,
+                            terminated_at = NOW()
+                        WHERE id = %s
+                    """, (instance_id,))
+
+                logger.warning(f"✓ Terminated replica {replica_id} (instance: {instance_id})")
+                terminated_count += 1
+
+            # Reset agent replica count
+            execute_query("""
+                UPDATE agents
+                SET replica_count = 0,
+                    current_replica_id = NULL
+                WHERE id = %s
+            """, (agent_id,))
+
+            logger.warning(f"✅ Terminated {terminated_count} replica(s) for agent {agent_id}")
+
+        except Exception as e:
+            logger.error(f"Error terminating replicas for agent {agent_id}: {e}", exc_info=True)
 
     # =========================================================================
     # DATA QUALITY MANAGEMENT - Gap Filling & Deduplication
@@ -7577,13 +7693,89 @@ def promote_replica(app):
 
             logger.info(f"Promoted replica {replica_id} to primary for agent {agent_id}")
 
+            # Step 7: If manual replica mode is enabled, create a new replica for the new primary
+            agent_config = execute_query("""
+                SELECT manual_replica_enabled FROM agents WHERE id = %s
+            """, (agent_id,), fetch_one=True)
+
+            new_replica_id = None
+            if agent_config and agent_config['manual_replica_enabled']:
+                logger.info(f"Manual replica mode enabled - creating new replica for new primary {new_instance_id}")
+
+                # Get new primary instance details
+                new_primary_instance = execute_query("""
+                    SELECT id, instance_type, region, current_pool_id, az
+                    FROM instances
+                    WHERE id = %s
+                """, (new_instance_id,), fetch_one=True)
+
+                if new_primary_instance:
+                    # Find cheapest pool for new replica
+                    pools = execute_query("""
+                        SELECT sp.id, sp.az, COALESCE(sps.price, 0.05) as spot_price
+                        FROM spot_pools sp
+                        LEFT JOIN (
+                            SELECT pool_id, price,
+                                   ROW_NUMBER() OVER (PARTITION BY pool_id ORDER BY captured_at DESC) as rn
+                            FROM spot_price_snapshots
+                            WHERE captured_at >= DATE_SUB(NOW(), INTERVAL 1 HOUR)
+                        ) sps ON sps.pool_id = sp.id AND sps.rn = 1
+                        WHERE sp.instance_type = %s
+                          AND sp.region = %s
+                        ORDER BY COALESCE(sps.price, 999999) ASC
+                        LIMIT 2
+                    """, (new_primary_instance['instance_type'], new_primary_instance['region']), fetch=True)
+
+                    if pools:
+                        # Select different pool from current
+                        target_pool = None
+                        for pool in pools:
+                            if pool['id'] != new_primary_instance['current_pool_id']:
+                                target_pool = pool
+                                break
+                        if not target_pool:
+                            target_pool = pools[0]
+
+                        # Create new replica
+                        new_replica_id = str(uuid.uuid4())
+                        execute_query("""
+                            INSERT INTO replica_instances (
+                                id, agent_id, instance_id, replica_type, pool_id,
+                                instance_type, region, az, status, created_by,
+                                parent_instance_id, hourly_cost, is_active
+                            ) VALUES (
+                                %s, %s, %s, 'manual', %s,
+                                %s, %s, %s, 'launching', 'promote-endpoint',
+                                %s, %s, TRUE
+                            )
+                        """, (
+                            new_replica_id, agent_id, f"manual-{new_replica_id[:8]}",
+                            target_pool['id'], new_primary_instance['instance_type'],
+                            new_primary_instance['region'], target_pool['az'],
+                            new_instance_id, target_pool['spot_price']
+                        ))
+
+                        # Update agent replica count
+                        execute_query("""
+                            UPDATE agents
+                            SET replica_count = (
+                                SELECT COUNT(*) FROM replica_instances
+                                WHERE agent_id = %s AND is_active = TRUE
+                                AND status NOT IN ('terminated', 'promoted', 'failed')
+                            )
+                            WHERE id = %s
+                        """, (agent_id, agent_id))
+
+                        logger.info(f"✓ Created new replica {new_replica_id} for new primary {new_instance_id}")
+
             return jsonify({
                 'success': True,
                 'message': 'Replica promoted to primary',
                 'new_instance_id': new_instance_id,
                 'old_instance_id': old_instance_id,
                 'demoted': demote_old_primary,
-                'switch_time': datetime.now().isoformat()
+                'switch_time': datetime.now().isoformat(),
+                'new_replica_id': new_replica_id
             }), 200
 
         except Exception as e:
@@ -7657,11 +7849,89 @@ def delete_replica(app):
 
             logger.info(f"✓ Deleted replica {replica_id} for agent {agent_id}")
 
+            # If manual replica mode is enabled, create a new replica to replace the deleted one
+            agent_config = execute_query("""
+                SELECT manual_replica_enabled FROM agents WHERE id = %s
+            """, (agent_id,), fetch_one=True)
+
+            new_replica_id = None
+            if agent_config and agent_config['manual_replica_enabled']:
+                logger.info(f"Manual replica mode enabled - creating new replica to replace deleted replica")
+
+                # Get the parent instance (the primary that this replica belonged to)
+                parent_instance_id = replica.get('parent_instance_id')
+                if parent_instance_id:
+                    parent_instance = execute_query("""
+                        SELECT id, instance_type, region, current_pool_id, az
+                        FROM instances
+                        WHERE id = %s AND is_primary = TRUE
+                    """, (parent_instance_id,), fetch_one=True)
+
+                    if parent_instance:
+                        # Find cheapest pool for new replica
+                        pools = execute_query("""
+                            SELECT sp.id, sp.az, COALESCE(sps.price, 0.05) as spot_price
+                            FROM spot_pools sp
+                            LEFT JOIN (
+                                SELECT pool_id, price,
+                                       ROW_NUMBER() OVER (PARTITION BY pool_id ORDER BY captured_at DESC) as rn
+                                FROM spot_price_snapshots
+                                WHERE captured_at >= DATE_SUB(NOW(), INTERVAL 1 HOUR)
+                            ) sps ON sps.pool_id = sp.id AND sps.rn = 1
+                            WHERE sp.instance_type = %s
+                              AND sp.region = %s
+                            ORDER BY COALESCE(sps.price, 999999) ASC
+                            LIMIT 2
+                        """, (parent_instance['instance_type'], parent_instance['region']), fetch=True)
+
+                        if pools:
+                            # Select different pool from current
+                            target_pool = None
+                            for pool in pools:
+                                if pool['id'] != parent_instance['current_pool_id']:
+                                    target_pool = pool
+                                    break
+                            if not target_pool:
+                                target_pool = pools[0]
+
+                            # Create new replica
+                            new_replica_id = str(uuid.uuid4())
+                            execute_query("""
+                                INSERT INTO replica_instances (
+                                    id, agent_id, instance_id, replica_type, pool_id,
+                                    instance_type, region, az, status, created_by,
+                                    parent_instance_id, hourly_cost, is_active
+                                ) VALUES (
+                                    %s, %s, %s, 'manual', %s,
+                                    %s, %s, %s, 'launching', 'delete-endpoint',
+                                    %s, %s, TRUE
+                                )
+                            """, (
+                                new_replica_id, agent_id, f"manual-{new_replica_id[:8]}",
+                                target_pool['id'], parent_instance['instance_type'],
+                                parent_instance['region'], target_pool['az'],
+                                parent_instance_id, target_pool['spot_price']
+                            ))
+
+                            # Update agent replica count
+                            execute_query("""
+                                UPDATE agents
+                                SET replica_count = (
+                                    SELECT COUNT(*) FROM replica_instances
+                                    WHERE agent_id = %s AND is_active = TRUE
+                                    AND status NOT IN ('terminated', 'promoted', 'failed')
+                                )
+                                WHERE id = %s
+                            """, (agent_id, agent_id))
+
+                            logger.info(f"✓ Created new replica {new_replica_id} to replace deleted replica")
+
             return jsonify({
                 'success': True,
                 'message': 'Replica terminated',
                 'replica_id': replica_id,
-                'terminated_at': datetime.now().isoformat()
+                'terminated_at': datetime.now().isoformat(),
+                'new_replica_id': new_replica_id
             }), 200
 
         except Exception as e:
