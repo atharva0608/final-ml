@@ -1233,6 +1233,39 @@ def switch_report(agent_id: str):
         new_price = prices.get('new_spot') or prices.get('on_demand', 0)
         savings_impact = old_price - new_price
 
+        # Calculate downtime and duration
+        downtime_seconds = None
+        total_duration_seconds = None
+
+        try:
+            # Parse timestamps
+            initiated_at = datetime.fromisoformat(timing.get('initiated_at').replace('Z', '+00:00')) if timing.get('initiated_at') else None
+            instance_ready_at = datetime.fromisoformat(timing.get('instance_ready_at').replace('Z', '+00:00')) if timing.get('instance_ready_at') else None
+            old_terminated_at = datetime.fromisoformat(timing.get('old_terminated_at').replace('Z', '+00:00')) if timing.get('old_terminated_at') else None
+
+            # Calculate downtime: time when old instance stopped to when new instance became ready
+            if old_terminated_at and instance_ready_at:
+                downtime_seconds = int((instance_ready_at - old_terminated_at).total_seconds())
+                # Ensure non-negative downtime
+                if downtime_seconds < 0:
+                    downtime_seconds = 0
+            elif initiated_at and instance_ready_at:
+                # Fallback: if old termination time not recorded, use initiated time
+                downtime_seconds = int((instance_ready_at - initiated_at).total_seconds())
+                if downtime_seconds < 0:
+                    downtime_seconds = 0
+
+            # Calculate total duration: from initiation to completion
+            if initiated_at and instance_ready_at:
+                total_duration_seconds = int((instance_ready_at - initiated_at).total_seconds())
+                if total_duration_seconds < 0:
+                    total_duration_seconds = 0
+
+        except (ValueError, AttributeError) as e:
+            logger.warning(f"Could not calculate downtime/duration for switch {switch_id}: {e}")
+            downtime_seconds = None
+            total_duration_seconds = None
+
         # Insert switch record
         switch_id = generate_uuid()
         execute_query("""
@@ -1242,14 +1275,16 @@ def switch_report(agent_id: str):
                 new_instance_id, new_instance_type, new_region, new_az, new_mode, new_pool_id, new_ami_id,
                 on_demand_price, old_spot_price, new_spot_price, savings_impact,
                 event_trigger, trigger_type, timing_data,
-                initiated_at, ami_created_at, instance_launched_at, instance_ready_at, old_terminated_at
+                initiated_at, ami_created_at, instance_launched_at, instance_ready_at, old_terminated_at,
+                downtime_seconds, total_duration_seconds
             ) VALUES (
                 %s, %s, %s, %s,
                 %s, %s, %s, %s, %s, %s, %s,
                 %s, %s, %s, %s, %s, %s, %s,
                 %s, %s, %s, %s,
                 %s, %s, %s,
-                %s, %s, %s, %s, %s
+                %s, %s, %s, %s, %s,
+                %s, %s
             )
         """, (
             switch_id, request.client_id, agent_id, data.get('command_id'),
@@ -1261,7 +1296,8 @@ def switch_report(agent_id: str):
             data.get('trigger'), data.get('trigger'), json.dumps(timing),
             timing.get('initiated_at'), timing.get('ami_created_at'),
             timing.get('instance_launched_at'), timing.get('instance_ready_at'),
-            timing.get('old_terminated_at')
+            timing.get('old_terminated_at'),
+            downtime_seconds, total_duration_seconds
         ))
 
         # Handle old instance based on auto_terminate setting
@@ -2071,7 +2107,7 @@ def get_global_stats():
     """Get global statistics"""
     try:
         stats = execute_query("""
-            SELECT 
+            SELECT
                 COUNT(DISTINCT c.id) as total_accounts,
                 COUNT(DISTINCT CASE WHEN a.status = 'online' THEN a.id END) as agents_online,
                 COUNT(DISTINCT a.id) as agents_total,
@@ -2079,24 +2115,25 @@ def get_global_stats():
             FROM clients c
             LEFT JOIN agents a ON a.client_id = c.id
         """, fetch_one=True)
-        
+
         switch_stats = execute_query("""
-            SELECT 
+            SELECT
                 COUNT(*) as total_switches,
                 COUNT(CASE WHEN event_trigger = 'manual' THEN 1 END) as manual_switches,
-                COUNT(CASE WHEN event_trigger = 'model' THEN 1 END) as model_switches
+                COUNT(CASE WHEN event_trigger = 'model' THEN 1 END) as model_switches,
+                COALESCE(SUM(downtime_seconds), 0) as total_downtime_seconds
             FROM switches
         """, fetch_one=True)
-        
+
         pool_count = execute_query(
             "SELECT COUNT(*) as count FROM spot_pools WHERE is_active = TRUE",
             fetch_one=True
         )
-        
+
         backend_health = 'Healthy'
         if not decision_engine_manager.models_loaded:
             backend_health = 'Decision Engine Not Loaded'
-        
+
         return jsonify({
             'totalAccounts': stats['total_accounts'] or 0,
             'agentsOnline': stats['agents_online'] or 0,
@@ -2104,13 +2141,14 @@ def get_global_stats():
             'poolsCovered': pool_count['count'] if pool_count else 0,
             'totalSavings': float(stats['total_savings'] or 0),
             'totalSwitches': switch_stats['total_switches'] if switch_stats else 0,
+            'totalDowntimeSeconds': int(switch_stats['total_downtime_seconds']) if switch_stats else 0,
             'manualSwitches': switch_stats['manual_switches'] if switch_stats else 0,
             'modelSwitches': switch_stats['model_switches'] if switch_stats else 0,
             'backendHealth': backend_health,
             'decisionEngineLoaded': decision_engine_manager.models_loaded,
             'mlModelsLoaded': decision_engine_manager.models_loaded
         })
-        
+
     except Exception as e:
         logger.error(f"Get global stats error: {e}")
         return jsonify({'error': str(e)}), 500
@@ -2380,6 +2418,21 @@ def get_client_details(client_id: str):
         if not client:
             return jsonify({'error': 'Client not found'}), 404
 
+        # Calculate total downtime across all switches
+        downtime_data = execute_query("""
+            SELECT
+                COALESCE(SUM(downtime_seconds), 0) as total_downtime_seconds,
+                COUNT(*) as total_switches,
+                AVG(downtime_seconds) as avg_downtime_seconds
+            FROM switches
+            WHERE client_id = %s
+              AND downtime_seconds IS NOT NULL
+        """, (client_id,), fetch_one=True)
+
+        total_downtime = downtime_data['total_downtime_seconds'] if downtime_data else 0
+        total_switches = downtime_data['total_switches'] if downtime_data else 0
+        avg_downtime = downtime_data['avg_downtime_seconds'] if downtime_data else 0
+
         return jsonify({
             'id': client['id'],
             'name': client['name'],
@@ -2388,6 +2441,9 @@ def get_client_details(client_id: str):
             'agentsTotal': client['agents_total'] or 0,
             'instances': client['instances'] or 0,
             'totalSavings': float(client['total_savings'] or 0),
+            'totalDowntimeSeconds': int(total_downtime),
+            'totalSwitches': int(total_switches),
+            'averageDowntimeSeconds': float(avg_downtime) if avg_downtime else 0,
             'lastSync': client['last_sync_at'].isoformat() if client['last_sync_at'] else None
         })
 
