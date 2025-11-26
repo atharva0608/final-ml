@@ -4525,6 +4525,439 @@ def get_model_sessions():
         return jsonify({'error': str(e)}), 500
 
 # ==============================================================================
+# MISSING ENDPOINTS - Added from Central Reports Analysis
+# ==============================================================================
+
+@app.route('/api/admin/search', methods=['GET'])
+def global_search():
+    """
+    Global search across clients, instances, and agents.
+    Query parameter: q (search query string)
+    """
+    try:
+        query = request.args.get('q', '').strip()
+
+        if not query or len(query) < 2:
+            return jsonify({
+                'clients': [],
+                'instances': [],
+                'agents': []
+            })
+
+        search_pattern = f"%{query}%"
+
+        # Search clients by name or ID
+        clients = execute_query("""
+            SELECT id, name, created_at
+            FROM clients
+            WHERE id LIKE %s OR name LIKE %s
+            ORDER BY created_at DESC
+            LIMIT 10
+        """, (search_pattern, search_pattern), fetch=True) or []
+
+        # Search instances by ID or type
+        instances = execute_query("""
+            SELECT
+                i.instance_id,
+                i.instance_type,
+                i.availability_zone,
+                i.status,
+                i.region,
+                a.client_id,
+                c.name as client_name
+            FROM instances i
+            JOIN agents a ON i.agent_id = a.id
+            JOIN clients c ON a.client_id = c.id
+            WHERE i.instance_id LIKE %s OR i.instance_type LIKE %s
+            ORDER BY i.created_at DESC
+            LIMIT 10
+        """, (search_pattern, search_pattern), fetch=True) or []
+
+        # Search agents by ID or name
+        agents = execute_query("""
+            SELECT
+                a.id,
+                a.name,
+                a.is_active,
+                a.last_heartbeat,
+                a.client_id,
+                c.name as client_name
+            FROM agents a
+            JOIN clients c ON a.client_id = c.id
+            WHERE a.id LIKE %s OR a.name LIKE %s
+            ORDER BY a.created_at DESC
+            LIMIT 10
+        """, (search_pattern, search_pattern), fetch=True) or []
+
+        return jsonify({
+            'clients': [{
+                'id': c['id'],
+                'name': c['name'],
+                'createdAt': c['created_at'].isoformat() if c.get('created_at') else None
+            } for c in clients],
+            'instances': [{
+                'instanceId': i['instance_id'],
+                'instanceType': i['instance_type'],
+                'availabilityZone': i['availability_zone'],
+                'status': i['status'],
+                'region': i['region'],
+                'clientId': i['client_id'],
+                'clientName': i['client_name']
+            } for i in instances],
+            'agents': [{
+                'id': a['id'],
+                'name': a['name'],
+                'isActive': bool(a['is_active']),
+                'lastHeartbeat': a['last_heartbeat'].isoformat() if a.get('last_heartbeat') else None,
+                'clientId': a['client_id'],
+                'clientName': a['client_name']
+            } for a in agents]
+        })
+
+    except Exception as e:
+        logger.error(f"Global search error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/agents/<agent_id>/statistics', methods=['GET'])
+def get_agent_statistics(agent_id):
+    """
+    Get decision engine statistics for a specific agent.
+    Returns total decisions made and success rate.
+    """
+    try:
+        # Verify agent exists
+        agent = execute_query(
+            "SELECT id, client_id FROM agents WHERE id = %s",
+            (agent_id,),
+            fetch=True
+        )
+
+        if not agent:
+            return jsonify({'error': 'Agent not found'}), 404
+
+        # Get decision statistics from switch history
+        stats = execute_query("""
+            SELECT
+                COUNT(*) as total_decisions,
+                SUM(CASE WHEN switch_result = 'success' THEN 1 ELSE 0 END) as successful_switches,
+                SUM(CASE WHEN switch_result = 'failed' THEN 1 ELSE 0 END) as failed_switches
+            FROM switch_history
+            WHERE agent_id = %s
+        """, (agent_id,), fetch=True)
+
+        if stats and len(stats) > 0:
+            total = stats[0]['total_decisions'] or 0
+            successful = stats[0]['successful_switches'] or 0
+            failed = stats[0]['failed_switches'] or 0
+            success_rate = (successful / total * 100) if total > 0 else 0
+        else:
+            total = 0
+            successful = 0
+            failed = 0
+            success_rate = 0
+
+        # Get recommendation statistics
+        recommendation_stats = execute_query("""
+            SELECT
+                COUNT(*) as total_recommendations,
+                AVG(CAST(confidence_score AS DECIMAL(5,2))) as avg_confidence
+            FROM switch_history
+            WHERE agent_id = %s AND confidence_score IS NOT NULL
+        """, (agent_id,), fetch=True)
+
+        avg_confidence = 0
+        if recommendation_stats and len(recommendation_stats) > 0:
+            avg_confidence = float(recommendation_stats[0]['avg_confidence'] or 0)
+
+        return jsonify({
+            'totalDecisions': total,
+            'successfulSwitches': successful,
+            'failedSwitches': failed,
+            'successRate': round(success_rate, 2),
+            'averageConfidence': round(avg_confidence, 2)
+        })
+
+    except Exception as e:
+        logger.error(f"Agent statistics error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/client/instances/<instance_id>/logs', methods=['GET'])
+def get_instance_logs(instance_id):
+    """
+    Get lifecycle event logs for a specific instance.
+    Returns events like creation, switches, termination, etc.
+    """
+    try:
+        # Get instance to verify it exists
+        instance = execute_query(
+            "SELECT instance_id, agent_id FROM instances WHERE instance_id = %s",
+            (instance_id,),
+            fetch=True
+        )
+
+        if not instance:
+            return jsonify({'error': 'Instance not found'}), 404
+
+        agent_id = instance[0]['agent_id']
+
+        # Collect logs from multiple sources
+        logs = []
+
+        # 1. Switch history events
+        switch_events = execute_query("""
+            SELECT
+                'switch' as event_type,
+                old_instance_type as from_value,
+                new_instance_type as to_value,
+                switch_result as status,
+                actual_savings,
+                timestamp,
+                switch_reason as reason
+            FROM switch_history
+            WHERE (old_instance_id = %s OR new_instance_id = %s)
+            ORDER BY timestamp DESC
+            LIMIT 50
+        """, (instance_id, instance_id), fetch=True) or []
+
+        for event in switch_events:
+            logs.append({
+                'eventType': event['event_type'],
+                'timestamp': event['timestamp'].isoformat() if event.get('timestamp') else None,
+                'status': event['status'],
+                'fromValue': event['from_value'],
+                'toValue': event['to_value'],
+                'savings': float(event['actual_savings']) if event.get('actual_savings') else 0,
+                'reason': event['reason']
+            })
+
+        # 2. Pricing updates
+        pricing_events = execute_query("""
+            SELECT
+                'pricing_update' as event_type,
+                instance_type,
+                current_price,
+                timestamp
+            FROM pricing_reports
+            WHERE instance_id = %s
+            ORDER BY timestamp DESC
+            LIMIT 20
+        """, (instance_id,), fetch=True) or []
+
+        for event in pricing_events:
+            logs.append({
+                'eventType': event['event_type'],
+                'timestamp': event['timestamp'].isoformat() if event.get('timestamp') else None,
+                'status': 'success',
+                'instanceType': event['instance_type'],
+                'price': float(event['current_price']) if event.get('current_price') else 0,
+                'reason': 'Price update received'
+            })
+
+        # 3. Termination events
+        termination_events = execute_query("""
+            SELECT
+                'termination' as event_type,
+                instance_type,
+                termination_time,
+                created_at as timestamp
+            FROM termination_reports
+            WHERE instance_id = %s
+            ORDER BY created_at DESC
+            LIMIT 10
+        """, (instance_id,), fetch=True) or []
+
+        for event in termination_events:
+            logs.append({
+                'eventType': event['event_type'],
+                'timestamp': event['timestamp'].isoformat() if event.get('timestamp') else None,
+                'status': 'terminated',
+                'instanceType': event['instance_type'],
+                'reason': 'Instance terminated'
+            })
+
+        # Sort all logs by timestamp
+        logs.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
+
+        return jsonify(logs[:100])  # Return max 100 most recent logs
+
+    except Exception as e:
+        logger.error(f"Instance logs error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/admin/pools/statistics', methods=['GET'])
+def get_pool_statistics():
+    """
+    Get statistics about spot instance pools including regional and instance-type breakdowns.
+    """
+    try:
+        # Get regional statistics
+        regional_stats = execute_query("""
+            SELECT
+                region,
+                availability_zone,
+                COUNT(DISTINCT instance_id) as instance_count,
+                COUNT(DISTINCT instance_type) as type_variety,
+                AVG(CAST(current_price AS DECIMAL(10,4))) as avg_price
+            FROM instances
+            WHERE status = 'running'
+            GROUP BY region, availability_zone
+            ORDER BY instance_count DESC
+        """, fetch=True) or []
+
+        # Get instance type statistics
+        type_stats = execute_query("""
+            SELECT
+                instance_type,
+                COUNT(DISTINCT instance_id) as instance_count,
+                AVG(CAST(current_price AS DECIMAL(10,4))) as avg_price,
+                region
+            FROM instances
+            WHERE status = 'running'
+            GROUP BY instance_type, region
+            ORDER BY instance_count DESC
+            LIMIT 20
+        """, fetch=True) or []
+
+        # Get interruption statistics (from termination reports)
+        interruption_stats = execute_query("""
+            SELECT
+                DATE(created_at) as date,
+                COUNT(*) as interruption_count,
+                instance_type
+            FROM termination_reports
+            WHERE created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
+            GROUP BY DATE(created_at), instance_type
+            ORDER BY date DESC
+        """, fetch=True) or []
+
+        # Calculate overall statistics
+        overall = execute_query("""
+            SELECT
+                COUNT(DISTINCT instance_id) as total_instances,
+                COUNT(DISTINCT region) as total_regions,
+                COUNT(DISTINCT availability_zone) as total_zones,
+                COUNT(DISTINCT instance_type) as total_types
+            FROM instances
+            WHERE status = 'running'
+        """, fetch=True)
+
+        overall_stats = {
+            'totalInstances': overall[0]['total_instances'] if overall else 0,
+            'totalRegions': overall[0]['total_regions'] if overall else 0,
+            'totalZones': overall[0]['total_zones'] if overall else 0,
+            'totalTypes': overall[0]['total_types'] if overall else 0
+        }
+
+        return jsonify({
+            'overall': overall_stats,
+            'byRegion': [{
+                'region': r['region'],
+                'availabilityZone': r['availability_zone'],
+                'instanceCount': r['instance_count'],
+                'typeVariety': r['type_variety'],
+                'averagePrice': float(r['avg_price']) if r.get('avg_price') else 0
+            } for r in regional_stats],
+            'byInstanceType': [{
+                'instanceType': t['instance_type'],
+                'instanceCount': t['instance_count'],
+                'averagePrice': float(t['avg_price']) if t.get('avg_price') else 0,
+                'region': t['region']
+            } for t in type_stats],
+            'interruptions': [{
+                'date': i['date'].isoformat() if i.get('date') else None,
+                'count': i['interruption_count'],
+                'instanceType': i['instance_type']
+            } for i in interruption_stats]
+        })
+
+    except Exception as e:
+        logger.error(f"Pool statistics error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/admin/agents/health-summary', methods=['GET'])
+def get_agent_health_summary():
+    """
+    Get aggregated agent health statistics across all clients.
+    Returns connectivity status and health metrics.
+    """
+    try:
+        # Get overall agent statistics
+        overall_stats = execute_query("""
+            SELECT
+                COUNT(*) as total_agents,
+                SUM(CASE WHEN is_active = 1 THEN 1 ELSE 0 END) as active_agents,
+                SUM(CASE WHEN
+                    last_heartbeat >= DATE_SUB(NOW(), INTERVAL 5 MINUTE)
+                    THEN 1 ELSE 0 END) as healthy_agents,
+                SUM(CASE WHEN
+                    last_heartbeat < DATE_SUB(NOW(), INTERVAL 5 MINUTE)
+                    AND last_heartbeat >= DATE_SUB(NOW(), INTERVAL 15 MINUTE)
+                    THEN 1 ELSE 0 END) as warning_agents,
+                SUM(CASE WHEN
+                    last_heartbeat < DATE_SUB(NOW(), INTERVAL 15 MINUTE)
+                    OR last_heartbeat IS NULL
+                    THEN 1 ELSE 0 END) as critical_agents
+            FROM agents
+        """, fetch=True)
+
+        # Get per-client breakdown
+        client_breakdown = execute_query("""
+            SELECT
+                c.id as client_id,
+                c.name as client_name,
+                COUNT(a.id) as total_agents,
+                SUM(CASE WHEN a.is_active = 1 THEN 1 ELSE 0 END) as active_agents,
+                SUM(CASE WHEN
+                    a.last_heartbeat >= DATE_SUB(NOW(), INTERVAL 5 MINUTE)
+                    THEN 1 ELSE 0 END) as healthy_agents
+            FROM clients c
+            LEFT JOIN agents a ON c.id = a.client_id
+            GROUP BY c.id, c.name
+            HAVING total_agents > 0
+            ORDER BY total_agents DESC
+        """, fetch=True) or []
+
+        # Get recent heartbeat statistics
+        heartbeat_stats = execute_query("""
+            SELECT
+                AVG(TIMESTAMPDIFF(SECOND, last_heartbeat, NOW())) as avg_time_since_heartbeat,
+                MAX(TIMESTAMPDIFF(SECOND, last_heartbeat, NOW())) as max_time_since_heartbeat,
+                MIN(TIMESTAMPDIFF(SECOND, last_heartbeat, NOW())) as min_time_since_heartbeat
+            FROM agents
+            WHERE last_heartbeat IS NOT NULL
+        """, fetch=True)
+
+        if overall_stats and len(overall_stats) > 0:
+            stats = overall_stats[0]
+            total = stats['total_agents'] or 0
+            healthy_pct = (stats['healthy_agents'] / total * 100) if total > 0 else 0
+        else:
+            stats = {}
+            total = 0
+            healthy_pct = 0
+
+        return jsonify({
+            'totalAgents': stats.get('total_agents', 0),
+            'activeAgents': stats.get('active_agents', 0),
+            'healthyAgents': stats.get('healthy_agents', 0),
+            'warningAgents': stats.get('warning_agents', 0),
+            'criticalAgents': stats.get('critical_agents', 0),
+            'healthPercentage': round(healthy_pct, 2),
+            'averageHeartbeatDelay': heartbeat_stats[0]['avg_time_since_heartbeat'] if heartbeat_stats else 0,
+            'clientBreakdown': [{
+                'clientId': c['client_id'],
+                'clientName': c['client_name'],
+                'totalAgents': c['total_agents'],
+                'activeAgents': c['active_agents'],
+                'healthyAgents': c['healthy_agents']
+            } for c in client_breakdown]
+        })
+
+    except Exception as e:
+        logger.error(f"Agent health summary error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+# ==============================================================================
 # BACKGROUND JOBS
 # ==============================================================================
 
