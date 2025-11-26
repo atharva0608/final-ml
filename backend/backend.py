@@ -1198,6 +1198,7 @@ def get_pending_commands(agent_id: str):
         commands = execute_query("""
             SELECT
                 CAST(id AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci as id,
+                CAST(agent_id AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci as agent_id,
                 CAST(instance_id AS CHAR(64) CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci as instance_id,
                 CAST(target_mode AS CHAR(20) CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci as target_mode,
                 CAST(target_pool_id AS CHAR(128) CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci as target_pool_id,
@@ -1211,6 +1212,7 @@ def get_pending_commands(agent_id: str):
 
             SELECT
                 CAST(id AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci as id,
+                CAST(agent_id AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci as agent_id,
                 CAST(instance_id AS CHAR(64) CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci as instance_id,
                 CAST(target_mode AS CHAR(20) CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci as target_mode,
                 CAST(target_pool_id AS CHAR(128) CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci as target_pool_id,
@@ -1222,9 +1224,10 @@ def get_pending_commands(agent_id: str):
 
             ORDER BY priority DESC, created_at ASC
         """, (agent_id, agent_id), fetch=True)
-        
+
         return jsonify([{
             'id': str(cmd['id']),
+            'agent_id': cmd['agent_id'],
             'instance_id': cmd['instance_id'],
             'target_mode': cmd['target_mode'],
             'target_pool_id': cmd['target_pool_id'],
@@ -1232,7 +1235,7 @@ def get_pending_commands(agent_id: str):
             'terminate_wait_seconds': cmd['terminate_wait_seconds'],
             'created_at': cmd['created_at'].isoformat() if cmd['created_at'] else None
         } for cmd in commands or []])
-        
+
     except Exception as e:
         logger.error(f"Get pending commands error: {e}")
         return jsonify({'error': str(e)}), 500
