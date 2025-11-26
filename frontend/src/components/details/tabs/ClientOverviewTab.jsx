@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, AreaChart, Area, LineChart, Line, PieChart, Pie, Cell } from 'recharts';
-import { Zap, Server, BarChart3, TrendingUp, History } from 'lucide-react';
+import { Zap, Server, BarChart3, TrendingUp, History, Clock } from 'lucide-react';
 import StatCard from '../../common/StatCard';
 import LoadingSpinner from '../../common/LoadingSpinner';
 import ErrorMessage from '../../common/ErrorMessage';
@@ -51,30 +51,48 @@ const ClientOverviewTab = ({ clientId }) => {
 
   const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899'];
 
+  // Format downtime display
+  const formatDowntime = (seconds) => {
+    if (!seconds || seconds === 0) return '0s';
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const secs = seconds % 60;
+
+    if (hours > 0) return `${hours}h ${minutes}m`;
+    if (minutes > 0) return `${minutes}m ${secs}s`;
+    return `${secs}s`;
+  };
+
   return (
     <div className="space-y-6">
       {/* Stats Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 md:gap-6">
-        <StatCard 
-          title="Instances" 
-          value={client.instances} 
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 md:gap-6">
+        <StatCard
+          title="Instances"
+          value={client.instances}
           icon={<Zap size={24} />}
           subtitle="Active monitoring"
         />
-        <StatCard 
-          title="Agents" 
-          value={`${client.agentsOnline}/${client.agentsTotal}`} 
+        <StatCard
+          title="Agents"
+          value={`${client.agentsOnline}/${client.agentsTotal}`}
           icon={<Server size={24} />}
           subtitle="Online/Total"
         />
-        <StatCard 
-          title="Monthly Savings" 
+        <StatCard
+          title="Total Downtime"
+          value={formatDowntime(client.totalDowntimeSeconds || 0)}
+          icon={<Clock size={24} />}
+          subtitle={`${client.totalSwitches || 0} switches`}
+        />
+        <StatCard
+          title="Monthly Savings"
           value={`${(client.totalSavings / 12 / 1000).toFixed(1)}k`}
           icon={<BarChart3 size={24} />}
           subtitle="Average per month"
         />
-        <StatCard 
-          title="Lifetime Savings" 
+        <StatCard
+          title="Lifetime Savings"
           value={`${(client.totalSavings / 1000).toFixed(1)}k`}
           icon={<TrendingUp size={24} />}
           subtitle="Total accumulated"
