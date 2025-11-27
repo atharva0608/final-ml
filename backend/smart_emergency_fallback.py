@@ -135,28 +135,49 @@ class SmartEmergencyFallback:
         """
         Validate incoming data structure and values.
 
+        Performs comprehensive validation including:
+        - Required field presence checks
+        - Value range validation
+        - Type checking for critical fields
+
+        Args:
+            data_type: Type of data being validated (pricing, heartbeat, interruption)
+            payload: Data payload to validate
+
         Returns:
             True if data is valid, False otherwise
         """
+        # Define required fields for each data type
         required_fields = {
             'pricing': ['timestamp', 'spot_price', 'pool_id'],
             'heartbeat': ['timestamp', 'status'],
             'interruption': ['signal_type', 'timestamp']
         }
 
+        # Unknown data types are allowed (for extensibility)
         if data_type not in required_fields:
-            return True  # Unknown type, let it pass
+            logger.debug(f"Unknown data type '{data_type}' - allowing through")
+            return True
 
         # Check all required fields are present
         for field in required_fields[data_type]:
             if field not in payload:
-                logger.error(f"Missing required field '{field}' in {data_type} data")
+                logger.error(f"Validation failed: Missing required field '{field}' in {data_type} data")
                 return False
 
         # Additional validation for pricing data
         if data_type == 'pricing':
-            if payload['spot_price'] <= 0 or payload['spot_price'] > 100:
-                logger.error(f"Invalid spot price: {payload['spot_price']}")
+            spot_price = payload.get('spot_price')
+
+            # Validate spot price is numeric and in reasonable range
+            # AWS spot prices typically range from $0.001 to $100/hour
+            try:
+                price_float = float(spot_price)
+                if price_float <= 0 or price_float > 100:
+                    logger.error(f"Validation failed: Spot price {price_float} out of valid range (0, 100]")
+                    return False
+            except (ValueError, TypeError):
+                logger.error(f"Validation failed: Spot price '{spot_price}' is not a valid number")
                 return False
 
         return True
@@ -211,12 +232,17 @@ class SmartEmergencyFallback:
         3. If one is clearly better (more complete) -> use that one
         4. Always prefer primary unless replica has better data quality
 
+        This method ensures data consistency when both primary and replica
+        instances are reporting simultaneously, preventing duplicate records
+        and providing more accurate data through averaging when discrepancies occur.
+
         Args:
-            primary_data: Data from primary agent
-            replica_data: Data from replica agent
+            primary_data: Data from primary agent instance
+            replica_data: Data from replica agent instance
 
         Returns:
-            Single deduplicated data record
+            Single deduplicated data record with metadata about source
+            and any averaging that was performed
         """
         logger.debug("SEF: Comparing data from primary and replica")
 
@@ -326,16 +352,25 @@ class SmartEmergencyFallback:
         price and the current price, creating artificial data points at
         regular intervals (e.g., every 5 minutes).
 
+        This ensures continuous pricing data for accurate cost calculations
+        and trend analysis, even when temporary connectivity issues occur.
+
+        Note: All interpolated data points are flagged with
+        'data_quality_flag' = 'interpolated' for transparency.
+
         Args:
             agent_id: Agent identifier
-            start_data: Last known data point before gap
-            end_data: First data point after gap
+            start_data: Last known data point before gap (contains timestamp and spot_price)
+            end_data: First data point after gap (contains timestamp and spot_price)
             gap_duration: Size of gap in seconds
+
+        Raises:
+            Exception: If database insertion fails (logged but not raised)
         """
         logger.info(f"SEF: Filling {gap_duration:.0f}s gap with interpolation for agent {agent_id}")
 
-        # Configuration
-        interpolation_interval = 300  # Insert point every 5 minutes
+        # Configuration: Insert interpolated point every 5 minutes
+        interpolation_interval = 300  # seconds (5 minutes)
         num_points = int(gap_duration / interpolation_interval)
 
         if num_points <= 0:

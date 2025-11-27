@@ -1731,6 +1731,13 @@ const ClientOverviewTab = ({ clientId }) => {
       }
     };
     loadData();
+
+    // Auto-refresh every 10 seconds for live tracking
+    const interval = setInterval(() => {
+      loadData();
+    }, 10000);
+
+    return () => clearInterval(interval);
   }, [clientId]);
 
   if (loading) {
@@ -1873,7 +1880,13 @@ const ClientOverviewTab = ({ clientId }) => {
                     <td className="py-3 px-4 text-sm text-gray-600">
                       {new Date(sw.timestamp).toLocaleString()}
                     </td>
-                    <td className="py-3 px-4 text-sm font-mono text-gray-500">{sw.instanceId}</td>
+                    <td className="py-3 px-4">
+                      <div className="text-xs font-mono text-gray-500">
+                        <div className="truncate">{sw.oldInstanceId}</div>
+                        <div className="text-gray-400">↓</div>
+                        <div className="truncate">{sw.newInstanceId}</div>
+                      </div>
+                    </td>
                     <td className="py-3 px-4 text-sm">
                       <div className="flex items-center space-x-2">
                         <Badge variant={sw.fromMode === 'ondemand' ? 'danger' : 'success'}>
@@ -1928,6 +1941,13 @@ const ClientAgentsTab = ({ clientId }) => {
 
   useEffect(() => {
     loadAgents();
+
+    // Auto-refresh every 5 seconds for live tracking
+    const interval = setInterval(() => {
+      loadAgents();
+    }, 5000);
+
+    return () => clearInterval(interval);
   }, [loadAgents]);
 
   const handleToggle = async (agentId, currentEnabled) => {
@@ -2085,6 +2105,13 @@ const ClientInstancesTab = ({ clientId }) => {
 
   useEffect(() => {
     loadInstances();
+
+    // Auto-refresh every 5 seconds for live tracking
+    const interval = setInterval(() => {
+      loadInstances();
+    }, 5000);
+
+    return () => clearInterval(interval);
   }, [loadInstances]);
 
   const toggleInstanceDetail = (instanceId) => {
@@ -2145,6 +2172,7 @@ const ClientInstancesTab = ({ clientId }) => {
               <tr>
                 <th className="py-3 px-4 text-left text-xs font-semibold text-gray-600 uppercase w-10"></th>
                 <th className="py-3 px-4 text-left text-xs font-semibold text-gray-600 uppercase">Instance ID</th>
+                <th className="py-3 px-4 text-left text-xs font-semibold text-gray-600 uppercase">Status</th>
                 <th className="py-3 px-4 text-left text-xs font-semibold text-gray-600 uppercase">Type</th>
                 <th className="py-3 px-4 text-left text-xs font-semibold text-gray-600 uppercase">AZ</th>
                 <th className="py-3 px-4 text-left text-xs font-semibold text-gray-600 uppercase">Mode</th>
@@ -2158,13 +2186,13 @@ const ClientInstancesTab = ({ clientId }) => {
             <tbody className="divide-y divide-gray-100">
               {loading ? (
                 <tr>
-                  <td colSpan="10" className="text-center py-8">
+                  <td colSpan="11" className="text-center py-8">
                     <LoadingSpinner />
                   </td>
                 </tr>
               ) : instances.length === 0 ? (
                 <tr>
-                  <td colSpan="10" className="text-center py-8">
+                  <td colSpan="11" className="text-center py-8">
                     <EmptyState
                       icon={<Zap size={48} />}
                       title="No Instances Found"
@@ -2187,6 +2215,19 @@ const ClientInstancesTab = ({ clientId }) => {
                       </td>
                       <td className="py-4 px-4">
                         <span className="text-sm font-mono text-gray-700">{inst.id}</span>
+                      </td>
+                      <td className="py-4 px-4">
+                        <Badge variant={
+                          inst.instanceStatus === 'running_primary' ? 'success' :
+                          inst.instanceStatus === 'running_replica' ? 'info' :
+                          inst.instanceStatus === 'zombie' ? 'warning' :
+                          'danger'
+                        }>
+                          {inst.instanceStatus === 'running_primary' ? 'Running (Primary)' :
+                           inst.instanceStatus === 'running_replica' ? 'Running (Replica)' :
+                           inst.instanceStatus === 'zombie' ? 'Zombie' :
+                           'Terminated'}
+                        </Badge>
                       </td>
                       <td className="py-4 px-4 text-sm text-gray-700">{inst.type}</td>
                       <td className="py-4 px-4 text-sm text-gray-500">{inst.az}</td>

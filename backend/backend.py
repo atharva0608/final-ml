@@ -148,13 +148,21 @@ replica_coordinator = None
 class Config:
     """Server configuration with environment variable support"""
     
-    # Database
+    # Database Configuration
+    # IMPORTANT: Set DB_PASSWORD environment variable in production!
     DB_HOST = os.getenv('DB_HOST', 'localhost')
     DB_PORT = int(os.getenv('DB_PORT', 3306))
     DB_USER = os.getenv('DB_USER', 'spotuser')
-    DB_PASSWORD = os.getenv('DB_PASSWORD', 'SpotUser2024!')
+    DB_PASSWORD = os.getenv('DB_PASSWORD', 'SpotUser2024!')  # Default for dev only - SET IN PRODUCTION!
     DB_NAME = os.getenv('DB_NAME', 'spot_optimizer')
     DB_POOL_SIZE = int(os.getenv('DB_POOL_SIZE', 50))  # Increased from 30 to 50 for better concurrency
+
+    # Log warning if using default password
+    @staticmethod
+    def validate_config():
+        """Validate configuration and warn about security issues"""
+        if Config.DB_PASSWORD == 'SpotUser2024!' and not os.getenv('DB_PASSWORD'):
+            logger.warning("⚠️  WARNING: Using default database password! Set DB_PASSWORD environment variable in production!")
     
     # Decision Engine
     DECISION_ENGINE_MODULE = os.getenv('DECISION_ENGINE_MODULE', 'decision_engines.ml_based_engine')
@@ -1190,6 +1198,7 @@ def get_pending_commands(agent_id: str):
         commands = execute_query("""
             SELECT
                 CAST(id AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci as id,
+                CAST(agent_id AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci as agent_id,
                 CAST(instance_id AS CHAR(64) CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci as instance_id,
                 CAST(target_mode AS CHAR(20) CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci as target_mode,
                 CAST(target_pool_id AS CHAR(128) CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci as target_pool_id,
@@ -1203,6 +1212,7 @@ def get_pending_commands(agent_id: str):
 
             SELECT
                 CAST(id AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci as id,
+                CAST(agent_id AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci as agent_id,
                 CAST(instance_id AS CHAR(64) CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci as instance_id,
                 CAST(target_mode AS CHAR(20) CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci as target_mode,
                 CAST(target_pool_id AS CHAR(128) CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci as target_pool_id,
@@ -1214,9 +1224,10 @@ def get_pending_commands(agent_id: str):
 
             ORDER BY priority DESC, created_at ASC
         """, (agent_id, agent_id), fetch=True)
-        
+
         return jsonify([{
             'id': str(cmd['id']),
+            'agent_id': cmd['agent_id'],
             'instance_id': cmd['instance_id'],
             'target_mode': cmd['target_mode'],
             'target_pool_id': cmd['target_pool_id'],
@@ -1224,7 +1235,7 @@ def get_pending_commands(agent_id: str):
             'terminate_wait_seconds': cmd['terminate_wait_seconds'],
             'created_at': cmd['created_at'].isoformat() if cmd['created_at'] else None
         } for cmd in commands or []])
-        
+
     except Exception as e:
         logger.error(f"Get pending commands error: {e}")
         return jsonify({'error': str(e)}), 500
@@ -1485,12 +1496,14 @@ def switch_report(agent_id: str):
             timing.get('instance_launched_at'), timing.get('instance_launched_at')
         ))
         
-        # Update agent with new instance info
+        # Update agent with new instance info and set status to online
         execute_query("""
             UPDATE agents
             SET instance_id = %s,
                 current_mode = %s,
                 current_pool_id = %s,
+                status = 'online',
+                last_heartbeat_at = NOW(),
                 last_switch_at = NOW()
             WHERE id = %s
         """, (
@@ -7622,11 +7635,13 @@ def promote_replica(app):
                     is_primary = TRUE
             """, (new_instance_id, ondemand_price, ondemand_price, replica_id))
 
-            # Step 3: Update agent to point to new instance
+            # Step 3: Update agent to point to new instance and set status to online
             execute_query("""
                 UPDATE agents
                 SET instance_id = %s,
                     current_replica_id = NULL,
+                    status = 'online',
+                    last_heartbeat_at = NOW(),
                     last_failover_at = NOW()
                 WHERE id = %s
             """, (new_instance_id, agent_id))
