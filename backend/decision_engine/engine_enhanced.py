@@ -101,7 +101,61 @@ class EnhancedDecisionEngine:
         self.min_savings_threshold = 5.0  # 5% minimum savings to justify migration
         self.cooldown_minutes = 30
 
+        # Priority: Stability > Cost
+        self.stability_weight = 0.70  # 70% weight on stability
+        self.cost_weight = 0.30  # 30% weight on cost
+
+        # Dynamic baseline (calculated from pool data)
+        self.use_dynamic_baseline = True
+        self.dynamic_baseline = None
+
         logger.info("EnhancedDecisionEngine initialized with all components")
+        logger.info(f"Priority: Stability ({self.stability_weight*100}%) > Cost ({self.cost_weight*100}%)")
+        logger.info(f"Dynamic baseline: {self.use_dynamic_baseline}")
+
+    def calculate_dynamic_baseline(self, pools: List[Dict[str, Any]]) -> Dict[str, float]:
+        """
+        Calculate dynamic baseline from current pool data.
+
+        Baseline = average discount and volatility across all pools.
+
+        Args:
+            pools: List of pools with current pricing
+
+        Returns:
+            Dict with baseline_discount and baseline_volatility
+        """
+        if not pools:
+            return {'baseline_discount': 60.0, 'baseline_volatility': 0.10}
+
+        # Calculate average discount
+        discounts = []
+        volatilities = []
+
+        for pool in pools:
+            # Get discount (might be pre-calculated or need to calculate)
+            if 'discount_percent' in pool:
+                discount = pool['discount_percent']
+            elif 'spot_price' in pool and 'on_demand_price' in pool:
+                discount = (1 - pool['spot_price'] / pool['on_demand_price']) * 100
+            else:
+                continue
+
+            discounts.append(discount)
+
+            # Volatility (if available)
+            if 'price_volatility' in pool:
+                volatilities.append(pool['price_volatility'])
+
+        baseline_discount = sum(discounts) / len(discounts) if discounts else 60.0
+        baseline_volatility = sum(volatilities) / len(volatilities) if volatilities else 0.10
+
+        logger.info(f"Dynamic baseline calculated: discount={baseline_discount:.1f}%, volatility={baseline_volatility:.4f}")
+
+        return {
+            'baseline_discount': baseline_discount,
+            'baseline_volatility': baseline_volatility
+        }
 
     def decide(
         self,
@@ -151,6 +205,11 @@ class EnhancedDecisionEngine:
                 "No suitable pools found after applying safety filters",
                 decision_id
             )
+
+        # Calculate dynamic baseline from filtered pools
+        if self.use_dynamic_baseline:
+            self.dynamic_baseline = self.calculate_dynamic_baseline(filtered_pools)
+            logger.info(f"Using dynamic baseline: {self.dynamic_baseline}")
 
         # Stage 2: Rank by stability (ML model)
         logger.info(f"Stage 2: Ranking {len(filtered_pools)} pools by stability...")
