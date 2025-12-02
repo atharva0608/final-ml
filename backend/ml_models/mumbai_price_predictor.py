@@ -1,16 +1,24 @@
 """
-CloudOptim ML Training & Backtesting - Mumbai Region
-=====================================================
+CAST-AI Mini - ML Training & Backtesting (SOURCE OF TRUTH)
+===========================================================
 
-Complete implementation of the CloudOptim ML strategy:
-- Price forecasting (1 hour ahead)
+This is the SINGLE SOURCE OF TRUTH for ML model training in CAST-AI Mini.
+
+Complete implementation of the agentless ML strategy:
+- Price forecasting (1 hour ahead) using XGBoost
 - Risk & stability scoring (relative, cross-sectional)
-- Capability grouping
-- Backtesting on 2025 Mumbai data
-- Extensive visualizations
+- Capability grouping (4 instance types × 3 AZs = 12 pools)
+- Backtesting on Mumbai 2025 data
+- Comprehensive visualizations and analysis
 
-Hardware: MacBook M4 Air 16GB RAM
-Data: Mumbai region, 2023-2025, 10-minute intervals, 4 instance types
+Architecture: Agentless (no agents on instances, direct AWS SDK)
+Region: ap-south-1 (Mumbai)
+Instance Types: t3.medium, t4g.medium, c5.large, t4g.small
+Availability Zones: ap-south-1a, ap-south-1b, ap-south-1c
+Total Pools: 12 (4 instance types × 3 AZs)
+
+Decision Priority: Stability (70%) > Cost (30%)
+Dynamic Baseline: Calculated from pool averages (not fixed)
 """
 
 # ============================================================================
@@ -51,20 +59,36 @@ print("="*80)
 # CONFIGURATION
 # ============================================================================
 
+import os
+
+# Get project root (2 levels up from this file: backend/ml_models/ -> backend/ -> root/)
+PROJECT_ROOT = Path(__file__).parent.parent.parent
+DATA_DIR = PROJECT_ROOT / 'data' / 'training'
+MODELS_DIR = PROJECT_ROOT / 'models'
+OUTPUTS_DIR = PROJECT_ROOT / 'training' / 'outputs'
+
 CONFIG = {
-    # Data paths - YOUR ACTUAL FILE PATHS
-    'training_data': '/Users/atharvapudale/Downloads/aws_2023_2024_complete_24months.csv',
-    'test_q1': '/Users/atharvapudale/Downloads/mumbai_spot_data_sorted_asc(1-2-3-25).csv',
-    'test_q2': '/Users/atharvapudale/Downloads/mumbai_spot_data_sorted_asc(4-5-6-25).csv',
-    'test_q3': '/Users/atharvapudale/Downloads/mumbai_spot_data_sorted_asc(7-8-9-25).csv',
-    'event_data': '/Users/atharvapudale/Downloads/aws_stress_events_2023_2025.csv',
+    # Data paths - Use environment variables or default to data/ directory
+    'training_data': os.getenv('TRAINING_DATA', str(DATA_DIR / 'aws_2023_2024_complete_24months.csv')),
+    'test_q1': os.getenv('TEST_Q1_DATA', str(DATA_DIR / 'mumbai_spot_data_sorted_asc_q1.csv')),
+    'test_q2': os.getenv('TEST_Q2_DATA', str(DATA_DIR / 'mumbai_spot_data_sorted_asc_q2.csv')),
+    'test_q3': os.getenv('TEST_Q3_DATA', str(DATA_DIR / 'mumbai_spot_data_sorted_asc_q3.csv')),
+    'event_data': os.getenv('EVENT_DATA', str(DATA_DIR / 'aws_stress_events_2023_2025.csv')),
 
-    'output_dir': './training/outputs',
-    'models_dir': './models/uploaded',
+    'output_dir': str(OUTPUTS_DIR),
+    'models_dir': str(MODELS_DIR),
 
-    # Data parameters
+    # Data parameters - AGENTLESS ARCHITECTURE
     'region': 'ap-south-1',  # Mumbai
-    'instance_types': ['t3.medium', 't4g.medium', 'c5.large', 't4g.small'],  # Your 4 instances
+    'instance_types': ['t3.medium', 't4g.medium', 'c5.large', 't4g.small'],  # 4 instance types
+    'availability_zones': ['ap-south-1a', 'ap-south-1b', 'ap-south-1c'],  # 3 AZs
+    # Total pools: 4 instance types × 3 AZs = 12 pools (NOT 32)
+
+    # Ranking Strategy - STABILITY-FIRST (70/30)
+    'stability_weight': 0.70,  # 70% weight for stability
+    'cost_weight': 0.30,       # 30% weight for cost savings
+    # Dynamic Baseline: Calculated from pool averages (not hardcoded)
+    # Migration triggered only if: stability improvement > 10 OR (stability > 5 AND cost > 5%)
 
     # Training parameters
     'train_end_date': '2024-12-31',  # Train on 2023-2024 data
@@ -1351,8 +1375,8 @@ final_recommendations = pool_risk_scores.merge(
     on=['instance_type', 'availability_zone']
 )
 
-# Calculate combined score (balance of stability and savings)
-# Normalize scores
+# Calculate combined score (STABILITY-FIRST RANKING)
+# Normalize scores to 0-1 range
 final_recommendations['stability_norm'] = (
     final_recommendations['stability_score'] - final_recommendations['stability_score'].min()
 ) / (final_recommendations['stability_score'].max() - final_recommendations['stability_score'].min())
@@ -1361,16 +1385,17 @@ final_recommendations['savings_norm'] = (
     final_recommendations['annual_savings'] - final_recommendations['annual_savings'].min()
 ) / (final_recommendations['annual_savings'].max() - final_recommendations['annual_savings'].min())
 
-# Combined score: 60% stability, 40% savings
+# Combined score: 70% STABILITY, 30% COST (Agentless Architecture Priority)
+# This ensures stability is prioritized over cost savings to prevent interruptions
 final_recommendations['combined_score'] = (
-    0.60 * final_recommendations['stability_norm'] +
-    0.40 * final_recommendations['savings_norm']
+    CONFIG['stability_weight'] * final_recommendations['stability_norm'] +
+    CONFIG['cost_weight'] * final_recommendations['savings_norm']
 )
 
 # Sort by combined score
 final_recommendations = final_recommendations.sort_values('combined_score', ascending=False)
 
-print("\n🏆 TOP RECOMMENDATIONS (Ranked by Stability + Savings):")
+print("\n🏆 TOP RECOMMENDATIONS (Ranked 70% Stability + 30% Cost):")
 print("="*80)
 
 for idx, row in final_recommendations.iterrows():

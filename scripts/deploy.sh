@@ -44,7 +44,7 @@ fi
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BACKEND_DIR="$PROJECT_ROOT/backend"
 
-print_header "Deploying Simplified Agentless Backend v3.0.0"
+print_header "Deploying Agentless Backend v3.0.0"
 
 # Step 1: Backup old database
 print_info "Step 1: Backing up old database..."
@@ -52,8 +52,8 @@ docker exec spot-mysql mysqldump -u spotuser -pcast_ai_spot_2025 spot_optimizer 
 print_success "Database backed up"
 
 # Step 2: Drop and recreate database
-print_info "Step 2: Creating new simplified schema..."
-docker exec -i spot-mysql mysql -u root -pcast_ai_root_2025 < "$PROJECT_ROOT/database/schema_simple.sql"
+print_info "Step 2: Creating new schema..."
+docker exec -i spot-mysql mysql -u root -pcast_ai_root_2025 < "$PROJECT_ROOT/database/schema.sql"
 print_success "New schema created"
 
 # Step 3: Stop old backend
@@ -65,7 +65,7 @@ print_success "Old backend stopped"
 print_info "Step 4: Updating systemd service..."
 cat > /etc/systemd/system/spot-optimizer-backend.service <<EOF
 [Unit]
-Description=CAST-AI Mini Simplified Backend
+Description=CAST-AI Mini Agentless Backend
 After=network.target docker.service
 Requires=docker.service
 
@@ -74,7 +74,7 @@ Type=simple
 User=root
 WorkingDirectory=$BACKEND_DIR
 Environment="PATH=$BACKEND_DIR/venv/bin:/usr/local/bin:/usr/bin:/bin"
-ExecStart=$BACKEND_DIR/venv/bin/python $BACKEND_DIR/backend_simple.py
+ExecStart=$BACKEND_DIR/venv/bin/python $BACKEND_DIR/backend.py
 Restart=always
 RestartSec=10
 StandardOutput=journal
@@ -137,7 +137,7 @@ echo "  4. Access dashboard:"
 echo "     http://$(hostname -I | awk '{print $1}')/"
 echo ""
 
-print_info "Simplified Backend Features:"
+print_info "Backend Features:"
 echo "  ✓ Auto-switch ON/OFF per instance"
 echo "  ✓ Auto-terminate ON/OFF per instance"
 echo "  ✓ Reset cooldown functionality"
