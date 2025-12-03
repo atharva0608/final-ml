@@ -9,11 +9,18 @@ This script:
 
 Architecture: Agentless (no agents on instances, direct AWS SDK)
 Region: ap-south-1 (Mumbai)
-Instance Types: t3.medium, t4g.medium, c5.large, t4g.small
-Pools: Discovered from data (instance_type × availability_zone)
+Instance Types: t3.medium, t4g.medium, c5.large, t4g.small (SAFE instance types)
+Pools: 12 pools (4 instance types × 3 AZs discovered from data)
 
 ML Models: Train for EACH pool to predict next-hour prices
-Decision Logic: Switch if ML predicts baseline breach + significant improvement
+
+Decision Logic (CAST-AI style):
+- interruption_rate used ONLY as binary safety gate (safe vs unsafe pools)
+- Ranking and switching decisions based PURELY on price/discount/ML predictions
+- Switch when: ML predicts baseline breach + sufficient cost improvement
+- All decisions operate ONLY on pools that pass the safety threshold
+
+Key: interruption_rate is NOT used for scoring or switching - only for filtering
 """
 
 # ============================================================================
@@ -47,7 +54,7 @@ import xgboost as xgb
 # ============================================================================
 
 HYPERPARAMETERS = {
-    # Safety Thresholds
+    # Safety Thresholds (ONLY USE: Rule-based safety gate)
     'SAFE_INTERRUPT_RATE_THRESHOLD': 0.05,  # 5% max interruption rate for safe pools
 
     # Baseline Windows (days)
@@ -59,7 +66,7 @@ HYPERPARAMETERS = {
     'PRICE_PREDICTION_HORIZON_HOURS': 1,    # Predict 1 hour ahead
     'ML_BASELINE_BREACH_THRESHOLD': 0.10,   # 10% predicted price increase triggers consideration
 
-    # Switching Thresholds (z-scores)
+    # Switching Thresholds (z-scores) - Price/Discount based ONLY
     'DISCOUNT_ZSCORE_SWITCH_THRESHOLD': 1.5,    # Z-score threshold for discount deviation
     'VOLATILITY_ZSCORE_SWITCH_THRESHOLD': 1.5,  # Z-score threshold for volatility deviation
 
@@ -71,20 +78,25 @@ HYPERPARAMETERS = {
     'MAX_SWITCHES_PER_DAY': 3,           # Maximum pool switches allowed per day
     'SWITCH_COST_PENALTY': 0.001,        # Cost penalty per switch (as fraction of hourly cost)
 
-    # Cost/Penalty Multipliers
-    'INTERRUPTION_PENALTY_MULTIPLIER': 5.0,  # Multiply interruption rate by this in scoring
-    'STABILITY_WEIGHT': 0.70,            # 70% weight for stability in ranking
-    'COST_WEIGHT': 0.30,                 # 30% weight for cost in ranking
-
-    # Minimum Improvement Thresholds
+    # Minimum Improvement Thresholds (Price-based ONLY)
     'MIN_COST_IMPROVEMENT_PCT': 0.05,    # 5% min cost improvement to justify switch
-    'MIN_STABILITY_IMPROVEMENT': 0.10,   # 10% min stability improvement to justify switch
 
     # Random Seed
     'RANDOM_SEED': 42,
 
     # Data Sampling (for faster development/testing)
     'SAMPLE_BACKTEST_HOURS': None,  # None = use all data, or int = sample N hours
+
+    # ===== REMOVED PARAMETERS (No longer used in decision logic) =====
+    # interruption_rate is now ONLY used for:
+    # 1. Safety gate filtering (SAFE_INTERRUPT_RATE_THRESHOLD above)
+    # 2. Interruption simulation for reporting
+    # It is NOT used for ranking pools or switching decisions
+    #
+    # REMOVED: 'INTERRUPTION_PENALTY_MULTIPLIER' - no longer penalize in scoring
+    # REMOVED: 'STABILITY_WEIGHT' - ranking is purely price/discount based
+    # REMOVED: 'COST_WEIGHT' - no longer needed (we use effective_discount directly)
+    # REMOVED: 'MIN_STABILITY_IMPROVEMENT' - no stability-based switching
 }
 
 print("="*80)
@@ -495,12 +507,23 @@ if len(pools) == 0:
 print("\n" + "="*80)
 print("4. ML-ENHANCED BLIND BACKTESTING ENGINE")
 print("="*80)
-print("Using ML price predictions to forecast baseline breaches")
+print("Decision logic:")
+print("  • interruption_rate: Safety gate ONLY (filters unsafe pools)")
+print("  • Ranking: Pure price/discount optimization among safe pools")
+print("  • Switching: ML baseline breach detection + cost improvement")
+print("  • NO stability scoring - price-based decisions only")
 
 class MLEnhancedBacktester:
     """
     Blind backtesting engine with ML price prediction
-    Uses trained models to predict future prices and decide switches
+
+    Decision Architecture (CAST-AI style):
+    1. Safety Gate: interruption_rate filters out unsafe pools (binary threshold)
+    2. Ranking: Pure price/discount optimization among safe pools only
+    3. Switching: ML baseline breach + cost improvement (NO stability scoring)
+    4. Simulation: interruption_rate used only for metrics/reporting
+
+    Key principle: interruption_rate does NOT influence ranking or switching
     """
 
     def __init__(self, pools, pool_models, hyperparameters):
@@ -585,7 +608,13 @@ class MLEnhancedBacktester:
             return None, 0.0
 
     def get_safe_pools(self, timestamp):
-        """Filter safe pools"""
+        """
+        Safety Gate: Filter pools by interruption_rate threshold
+
+        This is the ONLY place where interruption_rate affects decision logic.
+        Returns only pools that meet the safety threshold.
+        All subsequent ranking and switching operates ONLY on these safe pools.
+        """
         pool_data = self.pool_data_by_time.get(timestamp, {})
         safe_pools = []
 
@@ -672,7 +701,11 @@ class MLEnhancedBacktester:
 
     def rank_pools_with_ml(self, safe_pools, timestamp, baseline):
         """
-        Rank pools using current prices + ML predictions
+        Rank pools PURELY by price/discount among SAFE pools
+
+        IMPORTANT: safe_pools have already been filtered by interruption_rate threshold.
+        This function ranks ONLY on price/discount + ML predictions.
+        interruption_rate is NOT used in scoring.
         """
         pool_scores = []
         pool_data = self.pool_data_by_time.get(timestamp, {})
@@ -690,31 +723,34 @@ class MLEnhancedBacktester:
                 predicted_discount = (data['on_demand_price'] - predicted_price) / data['on_demand_price']
                 predicted_discount = max(0, min(1, predicted_discount))
 
-                # Weight current and predicted discount
+                # Weight current and predicted discount (50/50)
                 effective_discount = data['discount'] * 0.5 + predicted_discount * 0.5
             else:
                 effective_discount = data['discount']
 
-            # Objective score
-            interruption_penalty = data['interruption_rate'] * self.hp['INTERRUPTION_PENALTY_MULTIPLIER']
+            # Price-based score ONLY (higher discount = better)
+            # Small penalty for switching to avoid unnecessary churn
             switch_penalty = self.hp['SWITCH_COST_PENALTY'] if pool_id != self.current_pool else 0.0
 
-            score = (
-                effective_discount * self.hp['COST_WEIGHT']
-                - interruption_penalty * self.hp['STABILITY_WEIGHT']
-                - switch_penalty
-            )
+            # Score is purely based on effective_discount (price/cost optimization)
+            # Higher discount = lower cost = higher score
+            score = effective_discount - switch_penalty
 
             pool_scores.append((pool_id, score, data, predicted_price, confidence))
 
-        # Sort by score descending
+        # Sort by score descending (higher discount = better)
         pool_scores.sort(key=lambda x: x[1], reverse=True)
 
         return pool_scores
 
     def should_switch_with_ml(self, current_pool, candidate_pool, timestamp, baseline, global_trend):
         """
-        Decide if we should switch using ML prediction
+        Decide if we should switch using ML prediction and PRICE-based factors ONLY
+
+        IMPORTANT: Does NOT use interruption_rate for switching decisions.
+        Only switches based on:
+        1. ML prediction of baseline breach (price increase)
+        2. Cost/discount improvement between pools
         """
         if current_pool is None:
             return True, "Initial pool selection"
@@ -738,42 +774,38 @@ class MLEnhancedBacktester:
         # ML prediction for current pool - will it breach baseline?
         current_predicted, current_conf = self.predict_future_price(current_pool, timestamp)
 
-        # Check baseline breach using ML prediction
+        # Check baseline breach using PRICE/DISCOUNT/ML signals ONLY
         baseline_breach = False
         if baseline:
             current_discount_global = np.mean([d['discount'] for d in pool_data.values()])
             discount_zscore = (current_discount_global - baseline['discount_mean']) / baseline['discount_std']
 
-            # Also check if ML predicts price increase
+            # Check if ML predicts price increase (baseline breach)
             ml_breach = False
             if current_predicted is not None and current_conf > 0.5:
                 price_increase_pct = (current_predicted - current_data['spot_price']) / current_data['spot_price']
                 if price_increase_pct > self.hp['ML_BASELINE_BREACH_THRESHOLD']:
                     ml_breach = True
 
+            # Baseline breach detection - PRICE-BASED ONLY
             baseline_breach = (
                 abs(discount_zscore) > self.hp['DISCOUNT_ZSCORE_SWITCH_THRESHOLD'] or
                 abs(global_trend) > self.hp['GLOBAL_TREND_SWITCH_THRESHOLD'] or
                 ml_breach
             )
         else:
-            baseline_breach = True
+            baseline_breach = True  # No baseline yet, allow switching
 
-        # Calculate improvements
+        # Calculate COST improvement ONLY (no stability improvement)
         cost_improvement = candidate_data['discount'] - current_data['discount']
-        stability_improvement = current_data['interruption_rate'] - candidate_data['interruption_rate']
-
         cost_improvement_pct = cost_improvement / (current_data['discount'] + 0.01)
-        stability_improvement_pct = stability_improvement / (current_data['interruption_rate'] + 0.01)
 
-        # Switch if baseline breach + significant improvement
+        # Switch decision: baseline breach + sufficient cost improvement
         if baseline_breach:
             if cost_improvement_pct > self.hp['MIN_COST_IMPROVEMENT_PCT']:
-                return True, f"ML/Cost improvement: {cost_improvement_pct*100:.1f}%"
-            if stability_improvement_pct > self.hp['MIN_STABILITY_IMPROVEMENT']:
-                return True, f"Stability improvement: {stability_improvement_pct*100:.1f}%"
+                return True, f"Price/Cost improvement: {cost_improvement_pct*100:.1f}%"
 
-        return False, "No significant improvement"
+        return False, "No significant cost improvement"
 
     def run_backtest(self, strategy_name="ML-Enhanced Dynamic Switching"):
         """Run ML-enhanced backtest"""
@@ -854,7 +886,8 @@ class MLEnhancedBacktester:
             total_cost += spot_cost
             total_on_demand_cost += on_demand_cost
 
-            # Track interruptions
+            # Simulate interruptions for REPORTING ONLY (does NOT affect decisions)
+            # interruption_rate is used here only to count expected interruptions for metrics
             if np.random.random() < current_data['interruption_rate'] * interval_hours:
                 interruption_count += 1
 
