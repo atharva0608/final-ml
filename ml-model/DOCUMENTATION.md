@@ -71,17 +71,17 @@ HYPERPARAMETERS = {
 
 ### Input Files
 
-The script uses existing dataset paths referenced in the current configuration:
+The script uses the same local file paths as the original mumbai_price_predictor.py:
 
 ```python
-# Default paths (can override with environment variables)
-DATA_DIR = PROJECT_ROOT / 'data' / 'training'
-
-- TRAINING_DATA: aws_2023_2024_complete_24months.csv
-- TEST_Q1_DATA: mumbai_spot_data_sorted_asc_q1.csv (Q1 2025)
-- TEST_Q2_DATA: mumbai_spot_data_sorted_asc_q2.csv (Q2 2025)
-- TEST_Q3_DATA: mumbai_spot_data_sorted_asc_q3.csv (Q3 2025)
-- EVENT_DATA: aws_stress_events_2023_2025.csv
+# Local file paths (update these to your actual paths)
+'training_data': '/Users/atharvapudale/Downloads/aws_2023_2024_complete_24months.csv'
+'test_q1': '/Users/atharvapudale/Downloads/mumbai_spot_data_sorted_asc(1-2-3-25).csv'
+'test_q2': '/Users/atharvapudale/Downloads/mumbai_spot_data_sorted_asc(4-5-6-25).csv'
+'test_q3': '/Users/atharvapudale/Downloads/mumbai_spot_data_sorted_asc(7-8-9-25).csv'
+'event_data': '/Users/atharvapudale/Downloads/aws_stress_events_2023_2025.csv'
+'output_dir': './training/outputs'
+'models_dir': './models/uploaded'
 ```
 
 ### Required Columns
@@ -94,18 +94,23 @@ Each CSV must contain:
 - `availability_zone`: AWS AZ (e.g., ap-south-1a)
 - `interruption_rate`: Interruption rate (0.0-1.0) **[Optional - will generate synthetic if missing]**
 
-### Environment Variables
+### Updating File Paths
 
-Override default paths using environment variables:
+To use your own data files, edit the `CONFIG` dictionary at the top of model-tarining.py (around line 100):
 
-```bash
-export TRAINING_DATA=/path/to/training.csv
-export TEST_Q1_DATA=/path/to/test_q1.csv
-export TEST_Q2_DATA=/path/to/test_q2.csv
-export TEST_Q3_DATA=/path/to/test_q3.csv
-export EVENT_DATA=/path/to/events.csv
+```python
+CONFIG = {
+    # Update these paths to your actual local file paths
+    'training_data': '/your/path/to/aws_2023_2024_complete_24months.csv',
+    'test_q1': '/your/path/to/mumbai_spot_data_sorted_asc(1-2-3-25).csv',
+    'test_q2': '/your/path/to/mumbai_spot_data_sorted_asc(4-5-6-25).csv',
+    'test_q3': '/your/path/to/mumbai_spot_data_sorted_asc(7-8-9-25).csv',
+    'event_data': '/your/path/to/aws_stress_events_2023_2025.csv',
 
-python model-tarining.py
+    'output_dir': './training/outputs',  # Or your preferred output directory
+    'models_dir': './models/uploaded',   # Or your preferred models directory
+    # ...
+}
 ```
 
 ## Backtesting Strategy
@@ -278,13 +283,7 @@ cd /home/user/final-ml/ml-model
 python model-tarining.py
 ```
 
-### With Custom Data Paths
-
-```bash
-export TRAINING_DATA=/custom/path/training.csv
-export TEST_Q1_DATA=/custom/path/q1.csv
-python model-tarining.py
-```
+**Note:** Make sure to update the file paths in the `CONFIG` dictionary (line 100) to point to your actual local data files before running.
 
 ### Sampling (Faster Testing)
 
@@ -394,7 +393,7 @@ def fetch_real_interruption_rates(region, instance_types, azs):
 ## Troubleshooting
 
 ### Issue: "No 2025 data files found"
-**Solution**: Ensure Q1/Q2/Q3 CSV files exist in `data/training/` or set environment variables
+**Solution**: Update the file paths in the `CONFIG` dictionary (line 100) to point to your actual local CSV files with the correct filenames
 
 ### Issue: "Expected 12 pools but got N"
 **Solution**: Check that all 4 instance types have data in all 3 AZs. Some pools may be missing data.

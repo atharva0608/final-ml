@@ -97,22 +97,16 @@ for key, value in HYPERPARAMETERS.items():
 # CONFIGURATION
 # ============================================================================
 
-# Get project root (2 levels up from ml-model/)
-PROJECT_ROOT = Path(__file__).parent.parent
-DATA_DIR = PROJECT_ROOT / 'data' / 'training'
-MODELS_DIR = PROJECT_ROOT / 'models'
-OUTPUTS_DIR = PROJECT_ROOT / 'training' / 'outputs'
-
 CONFIG = {
-    # Data paths - Use environment variables or defaults
-    'training_data': os.getenv('TRAINING_DATA', str(DATA_DIR / 'aws_2023_2024_complete_24months.csv')),
-    'test_q1': os.getenv('TEST_Q1_DATA', str(DATA_DIR / 'mumbai_spot_data_sorted_asc_q1.csv')),
-    'test_q2': os.getenv('TEST_Q2_DATA', str(DATA_DIR / 'mumbai_spot_data_sorted_asc_q2.csv')),
-    'test_q3': os.getenv('TEST_Q3_DATA', str(DATA_DIR / 'mumbai_spot_data_sorted_asc_q3.csv')),
-    'event_data': os.getenv('EVENT_DATA', str(DATA_DIR / 'aws_stress_events_2023_2025.csv')),
+    # Data paths - YOUR ACTUAL LOCAL FILE PATHS (same as original script)
+    'training_data': '/Users/atharvapudale/Downloads/aws_2023_2024_complete_24months.csv',
+    'test_q1': '/Users/atharvapudale/Downloads/mumbai_spot_data_sorted_asc(1-2-3-25).csv',
+    'test_q2': '/Users/atharvapudale/Downloads/mumbai_spot_data_sorted_asc(4-5-6-25).csv',
+    'test_q3': '/Users/atharvapudale/Downloads/mumbai_spot_data_sorted_asc(7-8-9-25).csv',
+    'event_data': '/Users/atharvapudale/Downloads/aws_stress_events_2023_2025.csv',
 
-    'output_dir': str(OUTPUTS_DIR),
-    'models_dir': str(MODELS_DIR),
+    'output_dir': './training/outputs',
+    'models_dir': './models/uploaded',
 
     # Data parameters - AGENTLESS ARCHITECTURE
     'region': 'ap-south-1',  # Mumbai
