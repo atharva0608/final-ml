@@ -9,18 +9,22 @@ This script:
 
 Architecture: Agentless (no agents on instances, direct AWS SDK)
 Region: ap-south-1 (Mumbai)
-Instance Types: t3.medium, t4g.medium, c5.large, t4g.small (SAFE instance types)
-Pools: 12 pools (4 instance types × 3 AZs discovered from data)
+Instance Types: t3.medium, t4g.medium, c5.large, t4g.small (ALL SAFE - pre-vetted)
+Pools: 12 pools (4 safe instance types × 3 AZs discovered from data)
 
-ML Models: Train for EACH pool to predict next-hour prices
+ML Models:
+- Train ONE model per pool to predict next-hour spot prices
+- Features: PURELY price-based + temporal (NO interruption_rate)
+- Independent of interruption_rate - purely price prediction
 
-Decision Logic (CAST-AI style):
-- interruption_rate used ONLY as binary safety gate (safe vs unsafe pools)
-- Ranking and switching decisions based PURELY on price/discount/ML predictions
-- Switch when: ML predicts baseline breach + sufficient cost improvement
-- All decisions operate ONLY on pools that pass the safety threshold
+Decision Logic:
+- ALL 4 instance types are assumed SAFE (no filtering needed)
+- ALL 12 pools eligible for ranking and switching
+- Ranking: PURELY price/discount optimization (ML predicts future prices)
+- Switching: ML baseline breach detection + cost improvement threshold
+- interruption_rate: ONLY used for post-hoc interruption simulation (metrics)
 
-Key: interruption_rate is NOT used for scoring or switching - only for filtering
+Key: interruption_rate has ZERO influence on ML training, ranking, or switching
 """
 
 # ============================================================================
@@ -54,15 +58,12 @@ import xgboost as xgb
 # ============================================================================
 
 HYPERPARAMETERS = {
-    # Safety Thresholds (ONLY USE: Rule-based safety gate)
-    'SAFE_INTERRUPT_RATE_THRESHOLD': 0.05,  # 5% max interruption rate for safe pools
-
     # Baseline Windows (days)
     'MIN_LOOKBACK_DAYS_FOR_BASELINE': 14,  # Minimum history needed to compute baseline
     'BASELINE_DISCOUNT_WINDOW_DAYS': 30,   # Rolling window for discount baseline
     'BASELINE_VOLATILITY_WINDOW_DAYS': 30, # Rolling window for volatility baseline
 
-    # ML Price Prediction
+    # ML Price Prediction (INDEPENDENT of interruption_rate)
     'PRICE_PREDICTION_HORIZON_HOURS': 1,    # Predict 1 hour ahead
     'ML_BASELINE_BREACH_THRESHOLD': 0.10,   # 10% predicted price increase triggers consideration
 
@@ -87,12 +88,19 @@ HYPERPARAMETERS = {
     # Data Sampling (for faster development/testing)
     'SAMPLE_BACKTEST_HOURS': None,  # None = use all data, or int = sample N hours
 
-    # ===== REMOVED PARAMETERS (No longer used in decision logic) =====
-    # interruption_rate is now ONLY used for:
-    # 1. Safety gate filtering (SAFE_INTERRUPT_RATE_THRESHOLD above)
-    # 2. Interruption simulation for reporting
-    # It is NOT used for ranking pools or switching decisions
+    # ===== IMPORTANT: SAFE INSTANCE TYPES =====
+    # We assume these 4 instance types are SAFE (pre-filtered):
+    # - t3.medium, t4g.medium, c5.large, t4g.small
+    # All 12 pools (4 instance types × 3 AZs) are considered safe for optimization.
     #
+    # interruption_rate is now ONLY used for:
+    # 1. Interruption simulation for reporting metrics
+    # It is NOT used in:
+    # - ML model training (features are purely price/temporal)
+    # - Pool ranking (purely price/discount optimization)
+    # - Switching decisions (purely price/ML prediction based)
+    #
+    # REMOVED: 'SAFE_INTERRUPT_RATE_THRESHOLD' - not needed, all 4 types are safe
     # REMOVED: 'INTERRUPTION_PENALTY_MULTIPLIER' - no longer penalize in scoring
     # REMOVED: 'STABILITY_WEIGHT' - ranking is purely price/discount based
     # REMOVED: 'COST_WEIGHT' - no longer needed (we use effective_discount directly)
@@ -307,26 +315,38 @@ df_train, df_test = load_all_data()
 print("\n" + "="*80)
 print("2. ML MODEL TRAINING (Per-Pool Price Prediction)")
 print("="*80)
+print("ML Features: PURELY price-based + temporal")
+print("  • Lag features: spot_price history (1h, 6h, 12h, 24h, 48h, 168h)")
+print("  • Rolling stats: mean, std over multiple windows")
+print("  • Rate of change: price momentum indicators")
+print("  • Temporal: hour, day_of_week, month, weekend, business_hours")
+print("  • NO interruption_rate - ML models are independent of stability metrics")
 
 def engineer_features(df):
-    """Engineer features for price prediction"""
+    """
+    Engineer features for ML price prediction
+
+    IMPORTANT: Features are PURELY price-based + temporal.
+    NO interruption_rate or stability metrics are used.
+    ML models are completely independent of interruption data.
+    """
     df = df.copy()
 
-    # Lag features
+    # Lag features (price history)
     for lag in [1, 6, 12, 24, 48, 168]:
         df[f'spot_lag_{lag}h'] = df['spot_price'].shift(lag)
         df[f'ratio_lag_{lag}h'] = df['price_ratio'].shift(lag) if 'price_ratio' in df.columns else 0
 
-    # Rolling statistics
+    # Rolling statistics (price patterns)
     for window in [6, 12, 24, 168]:
         df[f'spot_mean_{window}h'] = df['spot_price'].rolling(window, min_periods=1).mean()
         df[f'spot_std_{window}h'] = df['spot_price'].rolling(window, min_periods=1).std()
 
-    # Rate of change
+    # Rate of change (price momentum)
     for period in [1, 6, 24]:
         df[f'price_change_{period}h'] = df['spot_price'].pct_change(period) * 100
 
-    # Temporal features
+    # Temporal features (time patterns)
     df['hour'] = df['timestamp'].dt.hour
     df['day_of_week'] = df['timestamp'].dt.dayofweek
     df['month'] = df['timestamp'].dt.month
@@ -507,23 +527,28 @@ if len(pools) == 0:
 print("\n" + "="*80)
 print("4. ML-ENHANCED BLIND BACKTESTING ENGINE")
 print("="*80)
-print("Decision logic:")
-print("  • interruption_rate: Safety gate ONLY (filters unsafe pools)")
-print("  • Ranking: Pure price/discount optimization among safe pools")
+print("Decision logic for 12 safe pools (4 instance types × 3 AZs):")
+print("  • ALL pools are safe (pre-vetted instance types)")
+print("  • Ranking: Pure price/discount optimization using ML predictions")
 print("  • Switching: ML baseline breach detection + cost improvement")
-print("  • NO stability scoring - price-based decisions only")
+print("  • interruption_rate: ONLY for post-hoc metrics (NOT in decisions)")
+print("  • ML models: Independent of interruption_rate (price features only)")
 
 class MLEnhancedBacktester:
     """
     Blind backtesting engine with ML price prediction
 
-    Decision Architecture (CAST-AI style):
-    1. Safety Gate: interruption_rate filters out unsafe pools (binary threshold)
-    2. Ranking: Pure price/discount optimization among safe pools only
-    3. Switching: ML baseline breach + cost improvement (NO stability scoring)
-    4. Simulation: interruption_rate used only for metrics/reporting
+    Working with 4 SAFE instance types (t3.medium, t4g.medium, c5.large, t4g.small)
+    across 3 AZs = 12 total pools. ALL pools are eligible for optimization.
 
-    Key principle: interruption_rate does NOT influence ranking or switching
+    Decision Architecture:
+    1. All Pools Safe: No filtering - all 4 instance types pre-vetted
+    2. ML Models: Trained on price/temporal features (NO interruption_rate)
+    3. Ranking: Pure price/discount optimization using ML price predictions
+    4. Switching: ML baseline breach + cost improvement threshold
+    5. Metrics: interruption_rate used ONLY for post-hoc simulation counts
+
+    Key: interruption_rate has ZERO influence on ML, ranking, or switching
     """
 
     def __init__(self, pools, pool_models, hyperparameters):
@@ -609,18 +634,16 @@ class MLEnhancedBacktester:
 
     def get_safe_pools(self, timestamp):
         """
-        Safety Gate: Filter pools by interruption_rate threshold
+        Safety Gate: Return all pools (all 4 instance types are pre-vetted as SAFE)
 
-        This is the ONLY place where interruption_rate affects decision logic.
-        Returns only pools that meet the safety threshold.
-        All subsequent ranking and switching operates ONLY on these safe pools.
+        Since we're working with 4 safe instance types (t3.medium, t4g.medium,
+        c5.large, t4g.small), ALL 12 pools (4 types × 3 AZs) are considered safe.
+
+        interruption_rate is NOT used here or anywhere in decision logic.
+        All pools are eligible for ranking and switching based purely on price/discount.
         """
         pool_data = self.pool_data_by_time.get(timestamp, {})
-        safe_pools = []
-
-        for pool_id, data in pool_data.items():
-            if data['interruption_rate'] <= self.hp['SAFE_INTERRUPT_RATE_THRESHOLD']:
-                safe_pools.append(pool_id)
+        safe_pools = list(pool_data.keys())  # All pools are safe
 
         return safe_pools
 
@@ -701,11 +724,15 @@ class MLEnhancedBacktester:
 
     def rank_pools_with_ml(self, safe_pools, timestamp, baseline):
         """
-        Rank pools PURELY by price/discount among SAFE pools
+        Rank pools PURELY by price/discount optimization
 
-        IMPORTANT: safe_pools have already been filtered by interruption_rate threshold.
-        This function ranks ONLY on price/discount + ML predictions.
-        interruption_rate is NOT used in scoring.
+        All 12 pools (4 safe instance types × 3 AZs) are eligible.
+        Ranking is based ONLY on:
+        - Current discount (spot vs on-demand)
+        - ML-predicted future discount (next hour)
+        - Small switching penalty (to avoid churn)
+
+        interruption_rate is NOT used in scoring at all.
         """
         pool_scores = []
         pool_data = self.pool_data_by_time.get(timestamp, {})
