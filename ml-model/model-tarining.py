@@ -111,8 +111,8 @@ CONFIG = {
     # Data parameters - AGENTLESS ARCHITECTURE
     'region': 'ap-south-1',  # Mumbai
     'instance_types': ['t3.medium', 't4g.medium', 'c5.large', 't4g.small'],  # 4 instance types
-    'availability_zones': ['ap-south-1a', 'ap-south-1b', 'ap-south-1c'],  # 3 AZs
-    # Total pools: 4 instance types × 3 AZs = 12 pools
+    # Note: availability_zones are auto-discovered from the data
+    # Pools are determined by unique (instance_type, availability_zone) combinations in the data
 
     # Training parameters
     'train_end_date': '2024-12-31',  # Train on 2023-2024 data
@@ -205,10 +205,11 @@ def standardize_columns(df):
 def load_mumbai_2025_data():
     """
     Load Mumbai 2025 spot price data for backtesting
+    (Matches the original mumbai_price_predictor.py data loading approach)
     """
-    print("\n📂 Loading 2025 Mumbai Spot price data for backtesting...")
+    print("\n📂 Loading Mumbai Spot price data for backtesting...")
 
-    # Load Q1, Q2, Q3 2025 data
+    # Load Q1, Q2, Q3 2025 data (these are for backtesting the decision engine)
     dataframes = []
     for quarter, path in [('Q1', CONFIG['test_q1']), ('Q2', CONFIG['test_q2']), ('Q3', CONFIG['test_q3'])]:
         if Path(path).exists():
@@ -231,17 +232,30 @@ def load_mumbai_2025_data():
     df_2025 = pd.concat(dataframes, ignore_index=True)
     df_2025 = df_2025.sort_values('timestamp').reset_index(drop=True)
 
-    # Filter to configured region, instance types, and AZs
-    df_2025 = df_2025[
-        (df_2025['region'] == CONFIG['region']) &
-        (df_2025['instance_type'].isin(CONFIG['instance_types'])) &
-        (df_2025['availability_zone'].isin(CONFIG['availability_zones']))
-    ]
-
-    print(f"\n✓ Loaded {len(df_2025):,} records from 2025")
+    print(f"\n✓ Loaded {len(df_2025):,} total records")
     print(f"  Date range: {df_2025['timestamp'].min()} to {df_2025['timestamp'].max()}")
+
+    # Show what's in the raw data before filtering
+    print(f"\n📊 Raw data summary:")
+    if 'region' in df_2025.columns:
+        print(f"  Regions: {sorted(df_2025['region'].unique())}")
+    if 'instance_type' in df_2025.columns:
+        print(f"  Instance types: {sorted(df_2025['instance_type'].unique())}")
+    if 'availability_zone' in df_2025.columns:
+        print(f"  Availability zones: {sorted(df_2025['availability_zone'].unique())}")
+
+    # Filter to configured region and instance types (DON'T filter by AZ - discover from data)
+    if 'region' in df_2025.columns:
+        df_2025 = df_2025[df_2025['region'] == CONFIG['region']]
+    if 'instance_type' in df_2025.columns:
+        df_2025 = df_2025[df_2025['instance_type'].isin(CONFIG['instance_types'])]
+
+    print(f"\n✓ After filtering: {len(df_2025):,} records")
     print(f"  Instance types: {sorted(df_2025['instance_type'].unique())}")
-    print(f"  Availability zones: {sorted(df_2025['availability_zone'].unique())}")
+    if 'availability_zone' in df_2025.columns:
+        print(f"  Availability zones: {sorted(df_2025['availability_zone'].unique())}")
+        pools_count = df_2025.groupby(['instance_type', 'availability_zone']).ngroups
+        print(f"  Pools (instance × AZ): {pools_count}")
 
     # Check for interruption_rate column
     if 'interruption_rate' not in df_2025.columns:
@@ -261,12 +275,13 @@ df_2025 = load_mumbai_2025_data()
 # ============================================================================
 
 print("\n" + "="*80)
-print("2. POOL REPRESENTATION (12 Pools = 4 Instance Types × 3 AZs)")
+print("2. POOL REPRESENTATION (Discover Pools from Data)")
 print("="*80)
 
 def build_pool_timeseries(df):
     """
     Build per-pool time series for each (instance_type, availability_zone) combination
+    discovered from the actual data (matches original mumbai_price_predictor.py approach)
 
     Returns: Dictionary with pool_id as key, containing:
       - instance_type
@@ -275,22 +290,33 @@ def build_pool_timeseries(df):
     """
     pools = {}
 
-    for instance_type in CONFIG['instance_types']:
-        for az in CONFIG['availability_zones']:
-            pool_id = f"{instance_type}_{az}"
+    # Discover unique (instance_type, availability_zone) combinations from the data
+    if 'availability_zone' not in df.columns:
+        print("  ⚠️  WARNING: No availability_zone column found in data!")
+        print("  Creating pools by instance_type only...")
 
-            # Filter data for this pool
-            pool_data = df[
-                (df['instance_type'] == instance_type) &
-                (df['availability_zone'] == az)
-            ].copy()
+        for instance_type in df['instance_type'].unique():
+            pool_id = f"{instance_type}"
+            pool_data = df[df['instance_type'] == instance_type].copy()
 
             if len(pool_data) == 0:
-                print(f"  ⚠️  No data for pool {pool_id}")
                 continue
 
-            # Sort by timestamp
             pool_data = pool_data.sort_values('timestamp').reset_index(drop=True)
+            pools[pool_id] = {
+                'instance_type': instance_type,
+                'availability_zone': None,
+                'timeseries': pool_data[['timestamp', 'spot_price', 'on_demand_price', 'interruption_rate', 'discount']].copy()
+            }
+    else:
+        # Group by (instance_type, availability_zone) to discover pools
+        pool_groups = df.groupby(['instance_type', 'availability_zone'])
+
+        for (instance_type, az), group_df in pool_groups:
+            pool_id = f"{instance_type}_{az}"
+
+            # Sort by timestamp
+            pool_data = group_df.sort_values('timestamp').reset_index(drop=True)
 
             pools[pool_id] = {
                 'instance_type': instance_type,
@@ -312,8 +338,13 @@ for pool_id, pool in pools.items():
     avg_interrupt = pool['timeseries']['interruption_rate'].mean() * 100
     print(f"  {pool_id}: {ts_len:,} records, {avg_discount:.1f}% avg discount, {avg_interrupt:.1f}% avg interrupt rate")
 
-if len(pools) != 12:
-    print(f"\n⚠️  WARNING: Expected 12 pools but got {len(pools)}")
+if len(pools) == 0:
+    print(f"\n❌ ERROR: No pools were discovered from the data!")
+    print("  This usually means:")
+    print("  1. Data filtering removed all records (check instance_types config)")
+    print("  2. Missing required columns (timestamp, spot_price, instance_type)")
+    print("  3. Data files are empty or malformed")
+    sys.exit(1)
 
 # ============================================================================
 # BLIND BACKTESTING ENGINE
@@ -350,6 +381,11 @@ class BlindBacktester:
 
         # Metrics tracking
         self.history = []
+
+        if len(self.timeline) == 0:
+            print(f"\n❌ ERROR: No timestamps found in any pool!")
+            print("  Cannot run backtest without data.")
+            raise ValueError("Empty timeline - no data to backtest")
 
         print(f"\n📅 Backtest timeline: {len(self.timeline):,} unique timestamps")
         print(f"   Start: {self.timeline[0]}")
