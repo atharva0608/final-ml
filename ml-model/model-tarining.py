@@ -296,12 +296,11 @@ def load_all_data():
         test_pools = df_test.groupby(['instance_type', 'availability_zone']).ngroups
         print(f"  Test pools: {test_pools}")
 
-    # Check for interruption_rate
-    if 'interruption_rate' not in df_test.columns:
-        print("\n⚠️  WARNING: interruption_rate column not found in test data!")
-        print("  Generating synthetic interruption rates for demonstration...")
-        np.random.seed(HYPERPARAMETERS['RANDOM_SEED'])
-        df_test['interruption_rate'] = np.random.uniform(0.01, 0.15, size=len(df_test))
+    # interruption_rate is OPTIONAL - only used for post-hoc metrics if present
+    if 'interruption_rate' in df_test.columns:
+        print(f"  ✓ interruption_rate column found (will be used for metrics only)")
+    else:
+        print(f"  ℹ️  interruption_rate column not found (will skip interruption metrics)")
 
     return df_train, df_test
 
@@ -460,8 +459,15 @@ print("="*80)
 def build_pool_timeseries(df, pool_models):
     """
     Build per-pool time series with ML prediction capability
+
+    interruption_rate is OPTIONAL - only included if present in data
     """
     pools = {}
+
+    # Determine which columns to include in timeseries
+    timeseries_cols = ['timestamp', 'spot_price', 'on_demand_price', 'discount']
+    if 'interruption_rate' in df.columns:
+        timeseries_cols.append('interruption_rate')
 
     # Discover pools from test data
     if 'availability_zone' not in df.columns:
@@ -480,7 +486,7 @@ def build_pool_timeseries(df, pool_models):
             pools[pool_id] = {
                 'instance_type': instance_type,
                 'availability_zone': None,
-                'timeseries': pool_data[['timestamp', 'spot_price', 'on_demand_price', 'interruption_rate', 'discount']].copy(),
+                'timeseries': pool_data[timeseries_cols].copy(),
                 'full_data': pool_data,  # Keep full data with features for predictions
                 'has_model': pool_id in pool_models
             }
@@ -498,7 +504,7 @@ def build_pool_timeseries(df, pool_models):
             pools[pool_id] = {
                 'instance_type': instance_type,
                 'availability_zone': az,
-                'timeseries': pool_data[['timestamp', 'spot_price', 'on_demand_price', 'interruption_rate', 'discount']].copy(),
+                'timeseries': pool_data[timeseries_cols].copy(),
                 'full_data': pool_data,  # Keep full data with features for predictions
                 'has_model': pool_id in pool_models
             }
@@ -512,9 +518,14 @@ print(f"\n✓ Built timeseries for {len(pools)} pools:")
 for pool_id, pool in pools.items():
     ts_len = len(pool['timeseries'])
     avg_discount = pool['timeseries']['discount'].mean() * 100
-    avg_interrupt = pool['timeseries']['interruption_rate'].mean() * 100
     has_model = "✓" if pool['has_model'] else "✗"
-    print(f"  {pool_id}: {ts_len:,} records, {avg_discount:.1f}% avg discount, {avg_interrupt:.1f}% interrupt, ML model: {has_model}")
+
+    # interruption_rate is optional
+    if 'interruption_rate' in pool['timeseries'].columns:
+        avg_interrupt = pool['timeseries']['interruption_rate'].mean() * 100
+        print(f"  {pool_id}: {ts_len:,} records, {avg_discount:.1f}% avg discount, {avg_interrupt:.1f}% interrupt, ML model: {has_model}")
+    else:
+        print(f"  {pool_id}: {ts_len:,} records, {avg_discount:.1f}% avg discount, ML model: {has_model}")
 
 if len(pools) == 0:
     print(f"\n❌ ERROR: No pools discovered!")
@@ -582,18 +593,28 @@ class MLEnhancedBacktester:
         print(f"   ML models available: {len(self.pool_models)}")
 
     def _build_pool_lookup(self):
-        """Build timestamp lookup"""
+        """
+        Build timestamp lookup
+
+        interruption_rate is OPTIONAL - only included if present in data
+        """
         lookup = defaultdict(dict)
 
         for pool_id, pool in self.pools.items():
             for _, row in pool['timeseries'].iterrows():
                 ts = row['timestamp']
-                lookup[ts][pool_id] = {
+                data_dict = {
                     'spot_price': row['spot_price'],
                     'on_demand_price': row['on_demand_price'],
-                    'interruption_rate': row['interruption_rate'],
                     'discount': row['discount']
                 }
+                # Add interruption_rate only if present
+                if 'interruption_rate' in row.index:
+                    data_dict['interruption_rate'] = row['interruption_rate']
+                else:
+                    data_dict['interruption_rate'] = 0.0  # Default for metrics
+
+                lookup[ts][pool_id] = data_dict
 
         return lookup
 
@@ -914,8 +935,9 @@ class MLEnhancedBacktester:
             total_on_demand_cost += on_demand_cost
 
             # Simulate interruptions for REPORTING ONLY (does NOT affect decisions)
-            # interruption_rate is used here only to count expected interruptions for metrics
-            if np.random.random() < current_data['interruption_rate'] * interval_hours:
+            # interruption_rate is OPTIONAL - used only to count expected interruptions for metrics
+            # If not present in data, defaults to 0 and no interruptions are counted
+            if np.random.random() < current_data.get('interruption_rate', 0.0) * interval_hours:
                 interruption_count += 1
 
             # Record history
@@ -924,7 +946,7 @@ class MLEnhancedBacktester:
                 'pool_id': self.current_pool,
                 'spot_price': current_data['spot_price'],
                 'on_demand_price': current_data['on_demand_price'],
-                'interruption_rate': current_data['interruption_rate'],
+                'interruption_rate': current_data.get('interruption_rate', 0.0),  # Optional
                 'discount': current_data['discount'],
                 'cost_incurred': spot_cost,
                 'baseline_discount': baseline['discount_mean'] if baseline else None,
@@ -1012,7 +1034,9 @@ def run_all_strategies(pools, pool_models, hyperparameters):
         interval_hours = 1/6
         total_cost_fixed += row['spot_price'] * interval_hours
         total_on_demand_fixed += row['on_demand_price'] * interval_hours
-        if np.random.random() < row['interruption_rate'] * interval_hours:
+        # interruption_rate is optional - defaults to 0 if not present
+        interruption_rate = row.get('interruption_rate', 0.0) if hasattr(row, 'get') else (row['interruption_rate'] if 'interruption_rate' in row.index else 0.0)
+        if np.random.random() < interruption_rate * interval_hours:
             interruptions_fixed += 1
 
     strategies.append({
