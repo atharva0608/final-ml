@@ -873,12 +873,26 @@ def engineer_features_with_cache(df, dataset_name):
             ]
             missing_cols = [col for col in required_cols if col not in df_cached.columns]
 
-            if len(missing_cols) == 0:
-                print(f"  ✓ Cache validation passed (all features present)")
-                return df_cached
-            else:
+            if len(missing_cols) > 0:
                 print(f"  ⚠️  Cache missing {len(missing_cols)} columns: {missing_cols[:3]}...")
                 print(f"  ⚠️  Cache was created before data leakage fixes, recomputing...")
+            else:
+                # CRITICAL: Validate stability_score has proper variance (not buggy calculation)
+                std_stability = df_cached['stability_score'].std()
+                mean_stability = df_cached['stability_score'].mean()
+
+                if std_stability < 5.0:
+                    print(f"  ⚠️  Cache has buggy stability_score (std={std_stability:.2f}, mean={mean_stability:.1f})")
+                    print(f"  ⚠️  Stability score has no variance - using old rolling+shift calculation")
+                    print(f"  ⚠️  Recomputing with fixed future-based calculation...")
+                elif mean_stability > 95:
+                    print(f"  ⚠️  Cache has buggy stability_score (mean={mean_stability:.1f} - too high)")
+                    print(f"  ⚠️  All scores near 100 = no variance - using old calculation")
+                    print(f"  ⚠️  Recomputing with fixed future-based calculation...")
+                else:
+                    print(f"  ✓ Cache validation passed (all features present, stability variance OK)")
+                    print(f"  ✓ Stability score: mean={mean_stability:.1f}, std={std_stability:.1f}")
+                    return df_cached
         except Exception as e:
             print(f"  ⚠️  Error loading cache: {e}")
             print(f"  Recomputing features...")
