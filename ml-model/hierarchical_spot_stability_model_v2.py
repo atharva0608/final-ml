@@ -41,6 +41,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
+from tqdm import tqdm
 
 from lightgbm import LGBMRegressor
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
@@ -247,7 +248,8 @@ def calculate_absolute_features(df):
     df['discount_pct'] = df['discount_pct'].clip(0, 100)
 
     # Group by pool for time-series features
-    for (inst_type, az), group_df in df.groupby(['instance_type', 'availability_zone']):
+    pool_groups = list(df.groupby(['instance_type', 'availability_zone']))
+    for (inst_type, az), group_df in tqdm(pool_groups, desc="  Processing pools", unit="pool"):
         mask = (df['instance_type'] == inst_type) & (df['availability_zone'] == az)
 
         # Volatility (24-hour rolling std)
@@ -389,13 +391,10 @@ def calculate_hierarchical_features(df):
         df[feat] = 0.0
 
     # Calculate per timestamp (this is the key to avoiding lookahead bias!)
-    print(f"  Processing {df['timestamp'].nunique():,} unique timestamps...")
-
     timestamps = df['timestamp'].unique()
-    for i, ts in enumerate(timestamps):
-        if i % 10000 == 0 and i > 0:
-            print(f"    Progress: {i:,}/{len(timestamps):,} ({i/len(timestamps)*100:.1f}%)")
+    print(f"  Processing {len(timestamps):,} unique timestamps...")
 
+    for ts in tqdm(timestamps, desc="  Hierarchical Features", unit="timestamp"):
         ts_mask = df['timestamp'] == ts
         ts_data = df[ts_mask].copy()
 
@@ -487,7 +486,8 @@ def add_pool_history_features(df):
 
     df = df.copy().sort_values(['instance_type', 'availability_zone', 'timestamp'])
 
-    for (inst_type, az), group_df in df.groupby(['instance_type', 'availability_zone']):
+    pool_groups = list(df.groupby(['instance_type', 'availability_zone']))
+    for (inst_type, az), group_df in tqdm(pool_groups, desc="  Pool history", unit="pool"):
         mask = (df['instance_type'] == inst_type) & (df['availability_zone'] == az)
 
         # Historical stress rate (expanding window)
