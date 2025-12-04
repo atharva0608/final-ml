@@ -472,43 +472,181 @@ def calculate_stability_score_future_based(df, lookahead_hours=6):
             future_interruption = int((future_price_changes > 1.0).any())
 
             # Calculate stability score from future events
-            # CRITICAL: Use aggressive penalties to create variance in stable data
+            # CRITICAL: Aggressive 9-category penalty system to create variance in stable data
+            # NO individual caps - penalties stack additively, only final score clipped to [0,100]
             stability = 100.0
+            penalties_applied = []  # For debugging
 
-            # Penalty 1: Future volatility (MUCH more aggressive)
-            # Even small volatility should significantly reduce stability
-            if future_vol_ratio > 0:
-                volatility_penalty = min(50, future_vol_ratio * 1000)  # Cap at 50
-                stability -= volatility_penalty
-
-            # Penalty 2: Future spikes (more aggressive)
-            spike_penalty = future_spikes * 25  # Increased from 15 to 25
-            stability -= spike_penalty
-
-            # Penalty 3: Discount drop (MUCH more aggressive)
-            # Any discount drop is a red flag
-            if future_discount_drop > 0:
-                discount_penalty = min(40, future_discount_drop * 5)  # Cap at 40
-                stability -= discount_penalty
-
-            # Penalty 4: Major interruption (keep at 50)
-            if future_interruption:
+            # ═══════════════════════════════════════════════════════════════
+            # PRIORITY 1: Discount proximity to on-demand (STRONGEST signal)
+            # ═══════════════════════════════════════════════════════════════
+            # Discount < 20% is extremely dangerous - AWS reclaiming capacity
+            if future_min_discount < 5:
+                stability -= 80
+                penalties_applied.append(('P1_discount<5%', 80))
+            elif future_min_discount < 10:
+                stability -= 70
+                penalties_applied.append(('P1_discount<10%', 70))
+            elif future_min_discount < 15:
+                stability -= 60
+                penalties_applied.append(('P1_discount<15%', 60))
+            elif future_min_discount < 20:
                 stability -= 50
+                penalties_applied.append(('P1_discount<20%', 50))
+            elif future_min_discount < 30:
+                stability -= 40
+                penalties_applied.append(('P1_discount<30%', 40))
 
-            # Penalty 5: NEW - Relative volatility compared to current
-            # If future is more volatile than past, that's instability
-            current_vol = df.loc[idx, 'volatility_24h']
-            if current_vol > 0 and future_vol > current_vol * 1.5:
-                stability -= 20  # Future is 50%+ more volatile
+            # ═══════════════════════════════════════════════════════════════
+            # PRIORITY 2: Volatility normalized by on-demand price
+            # ═══════════════════════════════════════════════════════════════
+            # High volatility indicates market instability
+            if future_vol_ratio > 0.15:  # >15%
+                stability -= 70
+                penalties_applied.append(('P2_vol>15%', 70))
+            elif future_vol_ratio > 0.10:  # >10%
+                stability -= 60
+                penalties_applied.append(('P2_vol>10%', 60))
+            elif future_vol_ratio > 0.07:  # >7%
+                stability -= 50
+                penalties_applied.append(('P2_vol>7%', 50))
+            elif future_vol_ratio > 0.05:  # >5%
+                stability -= 40
+                penalties_applied.append(('P2_vol>5%', 40))
+            elif future_vol_ratio > 0.03:  # >3%
+                stability -= 30
+                penalties_applied.append(('P2_vol>3%', 30))
 
-            # Penalty 6: NEW - Price trend direction
-            # If prices are rising in future = potential interruption risk
+            # ═══════════════════════════════════════════════════════════════
+            # PRIORITY 3: Price spikes (>50% sudden jumps)
+            # ═══════════════════════════════════════════════════════════════
+            # Multiple spikes = chaotic market
+            if future_spikes >= 3:
+                stability -= 60
+                penalties_applied.append(('P3_spikes>=3', 60))
+            elif future_spikes >= 2:
+                stability -= 45
+                penalties_applied.append(('P3_spikes>=2', 45))
+            elif future_spikes >= 1:
+                stability -= 30
+                penalties_applied.append(('P3_spikes>=1', 30))
+
+            # ═══════════════════════════════════════════════════════════════
+            # PRIORITY 4: Discount collapse (current → future)
+            # ═══════════════════════════════════════════════════════════════
+            # Losing discount means approaching interruption
+            if future_discount_drop > 50:
+                stability -= 70
+                penalties_applied.append(('P4_drop>50%', 70))
+            elif future_discount_drop > 30:
+                stability -= 55
+                penalties_applied.append(('P4_drop>30%', 55))
+            elif future_discount_drop > 20:
+                stability -= 45
+                penalties_applied.append(('P4_drop>20%', 45))
+            elif future_discount_drop > 10:
+                stability -= 35
+                penalties_applied.append(('P4_drop>10%', 35))
+            elif future_discount_drop > 5:
+                stability -= 25
+                penalties_applied.append(('P4_drop>5%', 25))
+
+            # ═══════════════════════════════════════════════════════════════
+            # PRIORITY 5: Price trend rising
+            # ═══════════════════════════════════════════════════════════════
+            # Rising prices = capacity crunch
             future_mean_price = future_data['spot_price'].mean()
             current_price = df.loc[idx, 'spot_price']
-            if future_mean_price > current_price * 1.1:  # 10%+ increase
-                stability -= 15
+            if future_mean_price > current_price * 1.5:
+                stability -= 60
+                penalties_applied.append(('P5_price+50%', 60))
+            elif future_mean_price > current_price * 1.3:
+                stability -= 50
+                penalties_applied.append(('P5_price+30%', 50))
+            elif future_mean_price > current_price * 1.2:
+                stability -= 40
+                penalties_applied.append(('P5_price+20%', 40))
+            elif future_mean_price > current_price * 1.1:
+                stability -= 30
+                penalties_applied.append(('P5_price+10%', 30))
+            elif future_mean_price > current_price * 1.05:
+                stability -= 20
+                penalties_applied.append(('P5_price+5%', 20))
 
-            stability = max(0, min(100, stability))  # Clip to [0, 100]
+            # ═══════════════════════════════════════════════════════════════
+            # PRIORITY 6: Sustained high prices (NEW)
+            # ═══════════════════════════════════════════════════════════════
+            # Many hours near on-demand = prolonged capacity pressure
+            on_demand = df.loc[idx, 'on_demand_price']
+            high_price_hours = (future_data['spot_price'] > on_demand * 0.8).sum()
+            if high_price_hours >= 5:
+                stability -= 50
+                penalties_applied.append(('P6_high_price_5h+', 50))
+            elif high_price_hours >= 4:
+                stability -= 40
+                penalties_applied.append(('P6_high_price_4h', 40))
+            elif high_price_hours >= 3:
+                stability -= 30
+                penalties_applied.append(('P6_high_price_3h', 30))
+
+            # ═══════════════════════════════════════════════════════════════
+            # PRIORITY 7: Relative volatility increase
+            # ═══════════════════════════════════════════════════════════════
+            # Future more volatile than past = market destabilizing
+            current_vol = df.loc[idx, 'volatility_24h']
+            if current_vol > 0 and future_vol > current_vol * 3.0:
+                stability -= 50
+                penalties_applied.append(('P7_vol_3x', 50))
+            elif current_vol > 0 and future_vol > current_vol * 2.5:
+                stability -= 40
+                penalties_applied.append(('P7_vol_2.5x', 40))
+            elif current_vol > 0 and future_vol > current_vol * 2.0:
+                stability -= 30
+                penalties_applied.append(('P7_vol_2x', 30))
+            elif current_vol > 0 and future_vol > current_vol * 1.5:
+                stability -= 20
+                penalties_applied.append(('P7_vol_1.5x', 20))
+
+            # ═══════════════════════════════════════════════════════════════
+            # PRIORITY 8: Major interruption signals
+            # ═══════════════════════════════════════════════════════════════
+            # Extreme price spikes (>75% and >100% jumps)
+            major_spikes = (future_price_changes > 1.0).sum()  # >100%
+            severe_spikes = (future_price_changes > 0.75).sum()  # >75%
+            if major_spikes > 0:
+                stability -= 80
+                penalties_applied.append(('P8_spike>100%', 80))
+            elif severe_spikes > 0:
+                stability -= 60
+                penalties_applied.append(('P8_spike>75%', 60))
+
+            # ═══════════════════════════════════════════════════════════════
+            # PRIORITY 9: Consecutive bad hours (NEW)
+            # ═══════════════════════════════════════════════════════════════
+            # Multiple consecutive hours with low discount = sustained pressure
+            consecutive_bad = 0
+            max_consecutive_bad = 0
+            for discount in future_data['discount_pct'].values:
+                if discount < 30:
+                    consecutive_bad += 1
+                    max_consecutive_bad = max(max_consecutive_bad, consecutive_bad)
+                else:
+                    consecutive_bad = 0
+
+            if max_consecutive_bad >= 4:
+                stability -= 60
+                penalties_applied.append(('P9_4h_bad', 60))
+            elif max_consecutive_bad >= 3:
+                stability -= 45
+                penalties_applied.append(('P9_3h_bad', 45))
+            elif max_consecutive_bad >= 2:
+                stability -= 30
+                penalties_applied.append(('P9_2h_bad', 30))
+
+            # ═══════════════════════════════════════════════════════════════
+            # FINAL: Clip to [0, 100] range (ONLY clipping, NO individual caps)
+            # ═══════════════════════════════════════════════════════════════
+            stability = max(0, min(100, stability))
 
             df.loc[idx, 'stability_score'] = stability
 
@@ -531,6 +669,62 @@ def calculate_stability_score_future_based(df, lookahead_hours=6):
     print(f"    40-60: {((df['stability_score'] > 40) & (df['stability_score'] <= 60)).sum():,} rows ({((df['stability_score'] > 40) & (df['stability_score'] <= 60)).sum() / len(df) * 100:.1f}%)")
     print(f"    60-80: {((df['stability_score'] > 60) & (df['stability_score'] <= 80)).sum():,} rows ({((df['stability_score'] > 60) & (df['stability_score'] <= 80)).sum() / len(df) * 100:.1f}%)")
     print(f"    80-100: {(df['stability_score'] > 80).sum():,} rows ({(df['stability_score'] > 80).sum() / len(df) * 100:.1f}%)")
+
+    # ═══════════════════════════════════════════════════════════════
+    # VALIDATION: Ensure penalty system creates proper variance
+    # ═══════════════════════════════════════════════════════════════
+    print(f"\n  🔍 Validating stability score distribution...")
+
+    pct_below_30 = (df['stability_score'] < 30).sum() / len(df) * 100
+    pct_above_80 = (df['stability_score'] > 80).sum() / len(df) * 100
+
+    validation_passed = True
+    warnings = []
+
+    # Check 1: Mean should be balanced (40-70)
+    if avg_score < 40 or avg_score > 70:
+        warnings.append(f"⚠️  Mean={avg_score:.1f} is outside expected range [40-70]")
+        validation_passed = False
+    else:
+        print(f"  ✓ Mean stability in expected range: {avg_score:.1f}/100")
+
+    # Check 2: Standard deviation should show variance (>15)
+    if std_score < 15:
+        warnings.append(f"⚠️  Std={std_score:.1f} is too low (should be >15) - insufficient variance")
+        validation_passed = False
+    else:
+        print(f"  ✓ Std shows good variance: {std_score:.1f}")
+
+    # Check 3: At least 5% of data should be below 30 (unstable hours)
+    if pct_below_30 < 5:
+        warnings.append(f"⚠️  Only {pct_below_30:.1f}% below 30 (should be ≥5%) - penalties too weak")
+        validation_passed = False
+    else:
+        print(f"  ✓ {pct_below_30:.1f}% of hours are unstable (score <30)")
+
+    # Check 4: At least 5% should be above 80 (stable hours)
+    if pct_above_80 < 5:
+        warnings.append(f"⚠️  Only {pct_above_80:.1f}% above 80 (should be ≥5%) - not enough stable hours")
+        validation_passed = False
+    else:
+        print(f"  ✓ {pct_above_80:.1f}% of hours are stable (score >80)")
+
+    # Check 5: Distribution shouldn't be too concentrated
+    pct_in_top_bin = (df['stability_score'] > 80).sum() / len(df) * 100
+    if pct_in_top_bin > 50:
+        warnings.append(f"⚠️  {pct_in_top_bin:.1f}% concentrated in 80-100 bin - penalties still too weak")
+        validation_passed = False
+
+    if validation_passed:
+        print(f"  ✅ All validation checks passed - penalty system working correctly!")
+    else:
+        print(f"\n  ❌ Validation FAILED - penalty system needs tuning:")
+        for warning in warnings:
+            print(f"     {warning}")
+        print(f"\n  💡 This may indicate:")
+        print(f"     - Data is extremely stable (few instability signals in future windows)")
+        print(f"     - Penalty thresholds need adjustment for this data")
+        print(f"     - Consider reviewing penalty multipliers or thresholds")
 
     return df
 
