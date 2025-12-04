@@ -437,50 +437,69 @@ def calculate_stability_score_future_based(df, lookahead_hours=6):
     for (inst_type, az), group_df in tqdm(df.groupby(['instance_type', 'availability_zone']),
                                           desc="  Processing pools", unit="pool"):
         mask = (df['instance_type'] == inst_type) & (df['availability_zone'] == az)
-        group_idx = group_df.index
 
-        # Future volatility (next 6 hours)
-        future_vol = group_df['spot_price'].rolling(lookahead_hours, min_periods=1).std().shift(-lookahead_hours)
-        future_vol_ratio = (future_vol / group_df['on_demand_price']).fillna(0)
+        # Get indices for this pool
+        indices = group_df.index.tolist()
 
-        # Future spike count (>50% price jumps in next 6 hours)
-        price_changes = group_df['spot_price'].pct_change().shift(-1)
-        future_spikes = (price_changes > 0.5).rolling(lookahead_hours, min_periods=1).sum().shift(-lookahead_hours).fillna(0)
+        # For each row, calculate metrics from NEXT lookahead_hours rows
+        for i, idx in enumerate(indices):
+            # Get future window (next N hours)
+            future_start = i + 1
+            future_end = i + 1 + lookahead_hours
 
-        # Future discount change (if discount drops significantly = instability)
-        future_discount_drop = group_df['discount_pct'] - group_df['discount_pct'].shift(-lookahead_hours)
-        future_discount_drop = future_discount_drop.clip(lower=0).fillna(0)
+            # Skip if we don't have enough future data
+            if future_end > len(indices):
+                # Leave as NaN - will be dropped later
+                continue
 
-        # Future major interruption (>100% spike = likely interruption)
-        future_interruption = ((price_changes > 1.0).rolling(lookahead_hours, min_periods=1).sum().shift(-lookahead_hours) > 0).astype(int).fillna(0)
+            future_indices = indices[future_start:future_end]
+            future_data = df.loc[future_indices]
 
-        # Calculate stability score from future events
-        stability = 100.0
-        stability = stability - (future_vol_ratio * 200)  # High future volatility = unstable
-        stability = stability - (future_spikes * 15)      # Future spikes = unstable
-        stability = stability - (future_discount_drop * 2) # Discount dropping = unstable
-        stability = stability - (future_interruption * 50) # Major interruption = very unstable
-        stability = stability.clip(0, 100)
+            # Calculate future volatility
+            future_vol = future_data['spot_price'].std()
+            future_vol_ratio = future_vol / df.loc[idx, 'on_demand_price']
 
-        df.loc[mask, 'stability_score'] = stability.values
+            # Calculate future spikes (>50% price jumps)
+            future_price_changes = future_data['spot_price'].pct_change().fillna(0)
+            future_spikes = (future_price_changes > 0.5).sum()
+
+            # Calculate future discount change (how much discount drops)
+            current_discount = df.loc[idx, 'discount_pct']
+            future_min_discount = future_data['discount_pct'].min()
+            future_discount_drop = max(0, current_discount - future_min_discount)
+
+            # Calculate future major interruption (>100% price spike)
+            future_interruption = int((future_price_changes > 1.0).any())
+
+            # Calculate stability score from future events
+            stability = 100.0
+            stability = stability - (future_vol_ratio * 200)  # High future volatility = unstable
+            stability = stability - (future_spikes * 15)      # Future spikes = unstable
+            stability = stability - (future_discount_drop * 2) # Discount dropping = unstable
+            stability = stability - (future_interruption * 50) # Major interruption = very unstable
+            stability = max(0, min(100, stability))  # Clip to [0, 100]
+
+            df.loc[idx, 'stability_score'] = stability
 
     # Remove rows where we can't calculate future stability (last N rows per pool)
-    df = df.dropna(subset=['stability_score'])
+    rows_with_target = df['stability_score'].notna()
+    df = df[rows_with_target].copy()
 
     rows_after = len(df)
     rows_dropped = rows_before - rows_after
     avg_score = df['stability_score'].mean()
+    std_score = df['stability_score'].std()
 
     print(f"  ✓ Calculated future-based stability (lookahead={lookahead_hours}h)")
     print(f"  ✓ Dropped {rows_dropped:,} rows (last {lookahead_hours}h per pool, no future data)")
     print(f"  ✓ Remaining rows: {len(df):,}")
-    print(f"  ✓ Average stability score: {avg_score:.1f}/100")
+    print(f"  ✓ Average stability score: {avg_score:.1f}/100 (std: {std_score:.1f})")
     print(f"  Score distribution:")
-    print(f"    0-20:  {(df['stability_score'] <= 20).sum():,} rows")
-    print(f"    20-40: {((df['stability_score'] > 20) & (df['stability_score'] <= 40)).sum():,} rows")
-    print(f"    40-60: {((df['stability_score'] > 40) & (df['stability_score'] <= 60)).sum():,} rows")
-    print(f"    60-80: {((df['stability_score'] > 60) & (df['stability_score'] <= 80)).sum():,} rows")
-    print(f"    80-100: {(df['stability_score'] > 80).sum():,} rows")
+    print(f"    0-20:  {(df['stability_score'] <= 20).sum():,} rows ({(df['stability_score'] <= 20).sum() / len(df) * 100:.1f}%)")
+    print(f"    20-40: {((df['stability_score'] > 20) & (df['stability_score'] <= 40)).sum():,} rows ({((df['stability_score'] > 20) & (df['stability_score'] <= 40)).sum() / len(df) * 100:.1f}%)")
+    print(f"    40-60: {((df['stability_score'] > 40) & (df['stability_score'] <= 60)).sum():,} rows ({((df['stability_score'] > 40) & (df['stability_score'] <= 60)).sum() / len(df) * 100:.1f}%)")
+    print(f"    60-80: {((df['stability_score'] > 60) & (df['stability_score'] <= 80)).sum():,} rows ({((df['stability_score'] > 60) & (df['stability_score'] <= 80)).sum() / len(df) * 100:.1f}%)")
+    print(f"    80-100: {(df['stability_score'] > 80).sum():,} rows ({(df['stability_score'] > 80).sum() / len(df) * 100:.1f}%)")
 
     return df
 
