@@ -472,11 +472,42 @@ def calculate_stability_score_future_based(df, lookahead_hours=6):
             future_interruption = int((future_price_changes > 1.0).any())
 
             # Calculate stability score from future events
+            # CRITICAL: Use aggressive penalties to create variance in stable data
             stability = 100.0
-            stability = stability - (future_vol_ratio * 200)  # High future volatility = unstable
-            stability = stability - (future_spikes * 15)      # Future spikes = unstable
-            stability = stability - (future_discount_drop * 2) # Discount dropping = unstable
-            stability = stability - (future_interruption * 50) # Major interruption = very unstable
+
+            # Penalty 1: Future volatility (MUCH more aggressive)
+            # Even small volatility should significantly reduce stability
+            if future_vol_ratio > 0:
+                volatility_penalty = min(50, future_vol_ratio * 1000)  # Cap at 50
+                stability -= volatility_penalty
+
+            # Penalty 2: Future spikes (more aggressive)
+            spike_penalty = future_spikes * 25  # Increased from 15 to 25
+            stability -= spike_penalty
+
+            # Penalty 3: Discount drop (MUCH more aggressive)
+            # Any discount drop is a red flag
+            if future_discount_drop > 0:
+                discount_penalty = min(40, future_discount_drop * 5)  # Cap at 40
+                stability -= discount_penalty
+
+            # Penalty 4: Major interruption (keep at 50)
+            if future_interruption:
+                stability -= 50
+
+            # Penalty 5: NEW - Relative volatility compared to current
+            # If future is more volatile than past, that's instability
+            current_vol = df.loc[idx, 'volatility_24h']
+            if current_vol > 0 and future_vol > current_vol * 1.5:
+                stability -= 20  # Future is 50%+ more volatile
+
+            # Penalty 6: NEW - Price trend direction
+            # If prices are rising in future = potential interruption risk
+            future_mean_price = future_data['spot_price'].mean()
+            current_price = df.loc[idx, 'spot_price']
+            if future_mean_price > current_price * 1.1:  # 10%+ increase
+                stability -= 15
+
             stability = max(0, min(100, stability))  # Clip to [0, 100]
 
             df.loc[idx, 'stability_score'] = stability
