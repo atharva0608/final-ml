@@ -415,9 +415,15 @@ def calculate_stability_score_future_based(df, lookahead_hours=6):
     """
     Calculate stability_score based on FUTURE events (6 hours ahead)
 
-    CRITICAL: This fixes data leakage. Target is based on future stability,
-    while features are from current time. Model must learn patterns that
-    predict future, not memorize current state.
+    CRITICAL DESIGN:
+    1. Uses PERCENTILE-BASED penalties (not absolute thresholds)
+    2. Compares each hour against data distribution (worst 10%, 20%, etc.)
+    3. Guarantees variance - there will ALWAYS be high/low risk zones
+    4. Works for any data (stable or volatile) - learns from price patterns
+
+    Two-pass approach:
+    - Pass 1: Calculate raw future metrics (discount, volatility, spikes)
+    - Pass 2: Convert to percentiles and apply distribution-based penalties
 
     Args:
         df: DataFrame with spot price data
@@ -428,9 +434,21 @@ def calculate_stability_score_future_based(df, lookahead_hours=6):
         (last lookahead_hours rows per pool are dropped - no future data)
     """
     print(f"\n🎯 Calculating future-based stability scores (lookahead={lookahead_hours}h)...")
+    print(f"  📊 Using PERCENTILE-BASED penalties (compares against data distribution)")
 
     df = df.copy().sort_values(['instance_type', 'availability_zone', 'timestamp'])
     df['stability_score'] = np.nan
+
+    # Initialize columns for raw future metrics
+    df['future_min_discount'] = np.nan
+    df['future_vol_ratio'] = np.nan
+    df['future_spikes'] = np.nan
+    df['future_discount_drop'] = np.nan
+    df['future_mean_price_ratio'] = np.nan
+    df['future_high_price_hours'] = np.nan
+    df['future_vol_increase_ratio'] = np.nan
+    df['future_max_spike'] = np.nan
+    df['future_consecutive_bad'] = np.nan
 
     rows_before = len(df)
 
@@ -455,175 +473,43 @@ def calculate_stability_score_future_based(df, lookahead_hours=6):
             future_indices = indices[future_start:future_end]
             future_data = df.loc[future_indices]
 
-            # Calculate future volatility
+            # ═══════════════════════════════════════════════════════════════
+            # PASS 1: Calculate RAW future metrics (store for percentile calc)
+            # ═══════════════════════════════════════════════════════════════
+
+            # Metric 1: Future minimum discount (lower = closer to on-demand = risky)
+            df.loc[idx, 'future_min_discount'] = future_data['discount_pct'].min()
+
+            # Metric 2: Future volatility normalized by on-demand
             future_vol = future_data['spot_price'].std()
-            future_vol_ratio = future_vol / df.loc[idx, 'on_demand_price']
+            df.loc[idx, 'future_vol_ratio'] = future_vol / df.loc[idx, 'on_demand_price']
 
-            # Calculate future spikes (>50% price jumps)
+            # Metric 3: Future spikes count (>50% price jumps)
             future_price_changes = future_data['spot_price'].pct_change().fillna(0)
-            future_spikes = (future_price_changes > 0.5).sum()
+            df.loc[idx, 'future_spikes'] = (future_price_changes > 0.5).sum()
 
-            # Calculate future discount change (how much discount drops)
+            # Metric 4: Discount drop (how much discount is lost)
             current_discount = df.loc[idx, 'discount_pct']
             future_min_discount = future_data['discount_pct'].min()
-            future_discount_drop = max(0, current_discount - future_min_discount)
+            df.loc[idx, 'future_discount_drop'] = max(0, current_discount - future_min_discount)
 
-            # Calculate future major interruption (>100% price spike)
-            future_interruption = int((future_price_changes > 1.0).any())
-
-            # Calculate stability score from future events
-            # CRITICAL: Aggressive 9-category penalty system to create variance in stable data
-            # NO individual caps - penalties stack additively, only final score clipped to [0,100]
-            stability = 100.0
-            penalties_applied = []  # For debugging
-
-            # ═══════════════════════════════════════════════════════════════
-            # PRIORITY 1: Discount proximity to on-demand (STRONGEST signal)
-            # ═══════════════════════════════════════════════════════════════
-            # Discount < 20% is extremely dangerous - AWS reclaiming capacity
-            if future_min_discount < 5:
-                stability -= 80
-                penalties_applied.append(('P1_discount<5%', 80))
-            elif future_min_discount < 10:
-                stability -= 70
-                penalties_applied.append(('P1_discount<10%', 70))
-            elif future_min_discount < 15:
-                stability -= 60
-                penalties_applied.append(('P1_discount<15%', 60))
-            elif future_min_discount < 20:
-                stability -= 50
-                penalties_applied.append(('P1_discount<20%', 50))
-            elif future_min_discount < 30:
-                stability -= 40
-                penalties_applied.append(('P1_discount<30%', 40))
-
-            # ═══════════════════════════════════════════════════════════════
-            # PRIORITY 2: Volatility normalized by on-demand price
-            # ═══════════════════════════════════════════════════════════════
-            # High volatility indicates market instability
-            if future_vol_ratio > 0.15:  # >15%
-                stability -= 70
-                penalties_applied.append(('P2_vol>15%', 70))
-            elif future_vol_ratio > 0.10:  # >10%
-                stability -= 60
-                penalties_applied.append(('P2_vol>10%', 60))
-            elif future_vol_ratio > 0.07:  # >7%
-                stability -= 50
-                penalties_applied.append(('P2_vol>7%', 50))
-            elif future_vol_ratio > 0.05:  # >5%
-                stability -= 40
-                penalties_applied.append(('P2_vol>5%', 40))
-            elif future_vol_ratio > 0.03:  # >3%
-                stability -= 30
-                penalties_applied.append(('P2_vol>3%', 30))
-
-            # ═══════════════════════════════════════════════════════════════
-            # PRIORITY 3: Price spikes (>50% sudden jumps)
-            # ═══════════════════════════════════════════════════════════════
-            # Multiple spikes = chaotic market
-            if future_spikes >= 3:
-                stability -= 60
-                penalties_applied.append(('P3_spikes>=3', 60))
-            elif future_spikes >= 2:
-                stability -= 45
-                penalties_applied.append(('P3_spikes>=2', 45))
-            elif future_spikes >= 1:
-                stability -= 30
-                penalties_applied.append(('P3_spikes>=1', 30))
-
-            # ═══════════════════════════════════════════════════════════════
-            # PRIORITY 4: Discount collapse (current → future)
-            # ═══════════════════════════════════════════════════════════════
-            # Losing discount means approaching interruption
-            if future_discount_drop > 50:
-                stability -= 70
-                penalties_applied.append(('P4_drop>50%', 70))
-            elif future_discount_drop > 30:
-                stability -= 55
-                penalties_applied.append(('P4_drop>30%', 55))
-            elif future_discount_drop > 20:
-                stability -= 45
-                penalties_applied.append(('P4_drop>20%', 45))
-            elif future_discount_drop > 10:
-                stability -= 35
-                penalties_applied.append(('P4_drop>10%', 35))
-            elif future_discount_drop > 5:
-                stability -= 25
-                penalties_applied.append(('P4_drop>5%', 25))
-
-            # ═══════════════════════════════════════════════════════════════
-            # PRIORITY 5: Price trend rising
-            # ═══════════════════════════════════════════════════════════════
-            # Rising prices = capacity crunch
+            # Metric 5: Price trend (future mean / current price)
             future_mean_price = future_data['spot_price'].mean()
             current_price = df.loc[idx, 'spot_price']
-            if future_mean_price > current_price * 1.5:
-                stability -= 60
-                penalties_applied.append(('P5_price+50%', 60))
-            elif future_mean_price > current_price * 1.3:
-                stability -= 50
-                penalties_applied.append(('P5_price+30%', 50))
-            elif future_mean_price > current_price * 1.2:
-                stability -= 40
-                penalties_applied.append(('P5_price+20%', 40))
-            elif future_mean_price > current_price * 1.1:
-                stability -= 30
-                penalties_applied.append(('P5_price+10%', 30))
-            elif future_mean_price > current_price * 1.05:
-                stability -= 20
-                penalties_applied.append(('P5_price+5%', 20))
+            df.loc[idx, 'future_mean_price_ratio'] = future_mean_price / current_price if current_price > 0 else 1.0
 
-            # ═══════════════════════════════════════════════════════════════
-            # PRIORITY 6: Sustained high prices (NEW)
-            # ═══════════════════════════════════════════════════════════════
-            # Many hours near on-demand = prolonged capacity pressure
+            # Metric 6: High price hours (near on-demand)
             on_demand = df.loc[idx, 'on_demand_price']
-            high_price_hours = (future_data['spot_price'] > on_demand * 0.8).sum()
-            if high_price_hours >= 5:
-                stability -= 50
-                penalties_applied.append(('P6_high_price_5h+', 50))
-            elif high_price_hours >= 4:
-                stability -= 40
-                penalties_applied.append(('P6_high_price_4h', 40))
-            elif high_price_hours >= 3:
-                stability -= 30
-                penalties_applied.append(('P6_high_price_3h', 30))
+            df.loc[idx, 'future_high_price_hours'] = (future_data['spot_price'] > on_demand * 0.8).sum()
 
-            # ═══════════════════════════════════════════════════════════════
-            # PRIORITY 7: Relative volatility increase
-            # ═══════════════════════════════════════════════════════════════
-            # Future more volatile than past = market destabilizing
+            # Metric 7: Volatility increase ratio
             current_vol = df.loc[idx, 'volatility_24h']
-            if current_vol > 0 and future_vol > current_vol * 3.0:
-                stability -= 50
-                penalties_applied.append(('P7_vol_3x', 50))
-            elif current_vol > 0 and future_vol > current_vol * 2.5:
-                stability -= 40
-                penalties_applied.append(('P7_vol_2.5x', 40))
-            elif current_vol > 0 and future_vol > current_vol * 2.0:
-                stability -= 30
-                penalties_applied.append(('P7_vol_2x', 30))
-            elif current_vol > 0 and future_vol > current_vol * 1.5:
-                stability -= 20
-                penalties_applied.append(('P7_vol_1.5x', 20))
+            df.loc[idx, 'future_vol_increase_ratio'] = future_vol / current_vol if current_vol > 0 else 1.0
 
-            # ═══════════════════════════════════════════════════════════════
-            # PRIORITY 8: Major interruption signals
-            # ═══════════════════════════════════════════════════════════════
-            # Extreme price spikes (>75% and >100% jumps)
-            major_spikes = (future_price_changes > 1.0).sum()  # >100%
-            severe_spikes = (future_price_changes > 0.75).sum()  # >75%
-            if major_spikes > 0:
-                stability -= 80
-                penalties_applied.append(('P8_spike>100%', 80))
-            elif severe_spikes > 0:
-                stability -= 60
-                penalties_applied.append(('P8_spike>75%', 60))
+            # Metric 8: Maximum spike magnitude
+            df.loc[idx, 'future_max_spike'] = future_price_changes.max()
 
-            # ═══════════════════════════════════════════════════════════════
-            # PRIORITY 9: Consecutive bad hours (NEW)
-            # ═══════════════════════════════════════════════════════════════
-            # Multiple consecutive hours with low discount = sustained pressure
+            # Metric 9: Consecutive bad hours (discount < 30%)
             consecutive_bad = 0
             max_consecutive_bad = 0
             for discount in future_data['discount_pct'].values:
@@ -632,23 +518,175 @@ def calculate_stability_score_future_based(df, lookahead_hours=6):
                     max_consecutive_bad = max(max_consecutive_bad, consecutive_bad)
                 else:
                     consecutive_bad = 0
+            df.loc[idx, 'future_consecutive_bad'] = max_consecutive_bad
 
-            if max_consecutive_bad >= 4:
-                stability -= 60
-                penalties_applied.append(('P9_4h_bad', 60))
-            elif max_consecutive_bad >= 3:
-                stability -= 45
-                penalties_applied.append(('P9_3h_bad', 45))
-            elif max_consecutive_bad >= 2:
-                stability -= 30
-                penalties_applied.append(('P9_2h_bad', 30))
+    # ═══════════════════════════════════════════════════════════════
+    # PASS 2: Calculate PERCENTILES across all data
+    # ═══════════════════════════════════════════════════════════════
+    print(f"  📊 Pass 2: Calculating percentiles and applying distribution-based penalties...")
 
-            # ═══════════════════════════════════════════════════════════════
-            # FINAL: Clip to [0, 100] range (ONLY clipping, NO individual caps)
-            # ═══════════════════════════════════════════════════════════════
-            stability = max(0, min(100, stability))
+    # Only calculate percentiles on rows with future data
+    valid_mask = df['future_min_discount'].notna()
+    valid_df = df[valid_mask]
 
-            df.loc[idx, 'stability_score'] = stability
+    # Calculate percentile rank for each metric (0-100 scale)
+    # Lower percentile = worse (more risky)
+    df.loc[valid_mask, 'pct_min_discount'] = valid_df['future_min_discount'].rank(pct=True) * 100
+    df.loc[valid_mask, 'pct_vol_ratio'] = (1 - valid_df['future_vol_ratio'].rank(pct=True)) * 100  # Invert: high vol = bad
+    df.loc[valid_mask, 'pct_spikes'] = (1 - valid_df['future_spikes'].rank(pct=True)) * 100  # Invert: more spikes = bad
+    df.loc[valid_mask, 'pct_discount_drop'] = (1 - valid_df['future_discount_drop'].rank(pct=True)) * 100  # Invert
+    df.loc[valid_mask, 'pct_price_ratio'] = (1 - valid_df['future_mean_price_ratio'].rank(pct=True)) * 100  # Invert
+    df.loc[valid_mask, 'pct_high_price_hours'] = (1 - valid_df['future_high_price_hours'].rank(pct=True)) * 100  # Invert
+    df.loc[valid_mask, 'pct_vol_increase'] = (1 - valid_df['future_vol_increase_ratio'].rank(pct=True)) * 100  # Invert
+    df.loc[valid_mask, 'pct_max_spike'] = (1 - valid_df['future_max_spike'].rank(pct=True)) * 100  # Invert
+    df.loc[valid_mask, 'pct_consecutive_bad'] = (1 - valid_df['future_consecutive_bad'].rank(pct=True)) * 100  # Invert
+
+    print(f"  📊 Applying percentile-based penalties (worst 10%, 20%, 30%, etc.)...")
+
+    # Now calculate stability score based on PERCENTILES (not absolute thresholds)
+    for idx in tqdm(valid_df.index, desc="  Calculating stability scores"):
+        stability = 100.0
+
+        # ═══════════════════════════════════════════════════════════════
+        # PRIORITY 1: Discount proximity (STRONGEST signal)
+        # ═══════════════════════════════════════════════════════════════
+        pct = df.loc[idx, 'pct_min_discount']
+        if pct <= 5:    # Worst 5% (extremely low discount)
+            stability -= 90
+        elif pct <= 10:  # Worst 10%
+            stability -= 80
+        elif pct <= 20:  # Worst 20%
+            stability -= 70
+        elif pct <= 30:  # Worst 30%
+            stability -= 55
+        elif pct <= 40:  # Worst 40%
+            stability -= 40
+        elif pct <= 50:  # Below median
+            stability -= 25
+
+        # ═══════════════════════════════════════════════════════════════
+        # PRIORITY 2: Volatility ratio
+        # ═══════════════════════════════════════════════════════════════
+        pct = df.loc[idx, 'pct_vol_ratio']
+        if pct <= 5:    # Worst 5% (highest volatility)
+            stability -= 75
+        elif pct <= 10:
+            stability -= 65
+        elif pct <= 20:
+            stability -= 55
+        elif pct <= 30:
+            stability -= 40
+        elif pct <= 50:
+            stability -= 25
+
+        # ═══════════════════════════════════════════════════════════════
+        # PRIORITY 3: Price spikes
+        # ═══════════════════════════════════════════════════════════════
+        pct = df.loc[idx, 'pct_spikes']
+        if pct <= 5:
+            stability -= 70
+        elif pct <= 10:
+            stability -= 55
+        elif pct <= 20:
+            stability -= 40
+        elif pct <= 30:
+            stability -= 30
+        elif pct <= 50:
+            stability -= 15
+
+        # ═══════════════════════════════════════════════════════════════
+        # PRIORITY 4: Discount drop
+        # ═══════════════════════════════════════════════════════════════
+        pct = df.loc[idx, 'pct_discount_drop']
+        if pct <= 5:
+            stability -= 65
+        elif pct <= 10:
+            stability -= 55
+        elif pct <= 20:
+            stability -= 45
+        elif pct <= 30:
+            stability -= 35
+        elif pct <= 50:
+            stability -= 20
+
+        # ═══════════════════════════════════════════════════════════════
+        # PRIORITY 5: Price trend rising
+        # ═══════════════════════════════════════════════════════════════
+        pct = df.loc[idx, 'pct_price_ratio']
+        if pct <= 5:
+            stability -= 60
+        elif pct <= 10:
+            stability -= 50
+        elif pct <= 20:
+            stability -= 40
+        elif pct <= 30:
+            stability -= 30
+        elif pct <= 50:
+            stability -= 15
+
+        # ═══════════════════════════════════════════════════════════════
+        # PRIORITY 6: High price hours
+        # ═══════════════════════════════════════════════════════════════
+        pct = df.loc[idx, 'pct_high_price_hours']
+        if pct <= 5:
+            stability -= 55
+        elif pct <= 10:
+            stability -= 45
+        elif pct <= 20:
+            stability -= 35
+        elif pct <= 30:
+            stability -= 25
+        elif pct <= 50:
+            stability -= 15
+
+        # ═══════════════════════════════════════════════════════════════
+        # PRIORITY 7: Volatility increase
+        # ═══════════════════════════════════════════════════════════════
+        pct = df.loc[idx, 'pct_vol_increase']
+        if pct <= 5:
+            stability -= 50
+        elif pct <= 10:
+            stability -= 40
+        elif pct <= 20:
+            stability -= 30
+        elif pct <= 30:
+            stability -= 20
+        elif pct <= 50:
+            stability -= 10
+
+        # ═══════════════════════════════════════════════════════════════
+        # PRIORITY 8: Maximum spike magnitude
+        # ═══════════════════════════════════════════════════════════════
+        pct = df.loc[idx, 'pct_max_spike']
+        if pct <= 5:
+            stability -= 70
+        elif pct <= 10:
+            stability -= 55
+        elif pct <= 20:
+            stability -= 40
+        elif pct <= 30:
+            stability -= 30
+        elif pct <= 50:
+            stability -= 15
+
+        # ═══════════════════════════════════════════════════════════════
+        # PRIORITY 9: Consecutive bad hours
+        # ═══════════════════════════════════════════════════════════════
+        pct = df.loc[idx, 'pct_consecutive_bad']
+        if pct <= 5:
+            stability -= 60
+        elif pct <= 10:
+            stability -= 48
+        elif pct <= 20:
+            stability -= 35
+        elif pct <= 30:
+            stability -= 25
+        elif pct <= 50:
+            stability -= 12
+
+        # Final clipping to [0, 100]
+        stability = max(0, min(100, stability))
+        df.loc[idx, 'stability_score'] = stability
 
     # Remove rows where we can't calculate future stability (last N rows per pool)
     rows_with_target = df['stability_score'].notna()
