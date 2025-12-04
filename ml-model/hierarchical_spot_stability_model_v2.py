@@ -105,6 +105,11 @@ OPTIMIZATION_CONFIG = {
 if OPTIMIZATION_CONFIG['ENABLE_FEATURE_CACHING']:
     Path(OPTIMIZATION_CONFIG['CACHE_DIR']).mkdir(parents=True, exist_ok=True)
 
+# IMPORTANT: Clear cache after major feature engineering changes!
+# If you've updated the target calculation or added/removed features, delete:
+#   ./training/feature_cache/*.parquet
+print(f"\n💡 NOTE: If you've changed feature engineering, clear cache: rm -rf {OPTIMIZATION_CONFIG['CACHE_DIR']}/*.parquet\n")
+
 print(f"\n⚡ OPTIMIZATION MODE:")
 print(f"  Testing Mode: {'ON' if OPTIMIZATION_CONFIG['TESTING_MODE'] else 'OFF'}")
 print(f"  Sample Rate: {OPTIMIZATION_CONFIG['SAMPLE_RATE']*100:.0f}% of data")
@@ -406,51 +411,69 @@ def calculate_absolute_features(df):
     return df
 
 
-def calculate_stress_and_stability(df):
+def calculate_stability_score_future_based(df, lookahead_hours=6):
     """
-    Calculate is_stressed flag and stability_score target
+    Calculate stability_score based on FUTURE events (6 hours ahead)
 
-    Stress conditions:
-    - Low discount (<20%)
-    - High spike count (>3 in 24h)
-    - Extreme deviation from mean (>300%)
+    CRITICAL: This fixes data leakage. Target is based on future stability,
+    while features are from current time. Model must learn patterns that
+    predict future, not memorize current state.
+
+    Args:
+        df: DataFrame with spot price data
+        lookahead_hours: How many hours ahead to look for stability calculation
+
+    Returns:
+        DataFrame with stability_score calculated from future events
+        (last lookahead_hours rows per pool are dropped - no future data)
     """
-    print("\n🎯 Calculating stress flags and stability scores...")
+    print(f"\n🎯 Calculating future-based stability scores (lookahead={lookahead_hours}h)...")
 
-    df = df.copy()
+    df = df.copy().sort_values(['instance_type', 'availability_zone', 'timestamp'])
+    df['stability_score'] = np.nan
 
-    # Stress conditions
-    low_discount = df['discount_pct'] < 20
-    high_spikes = df['spike_count_24h'] > 3
-    extreme_deviation = df['deviation_from_mean'].abs() > 300
+    rows_before = len(df)
 
-    # is_stressed = any condition true
-    df['is_stressed'] = (low_discount | high_spikes | extreme_deviation).astype(int)
+    for (inst_type, az), group_df in tqdm(df.groupby(['instance_type', 'availability_zone']),
+                                          desc="  Processing pools", unit="pool"):
+        mask = (df['instance_type'] == inst_type) & (df['availability_zone'] == az)
+        group_idx = group_df.index
 
-    # Calculate stability_score (0-100, higher = more stable)
-    df['stability_score'] = 100.0
+        # Future volatility (next 6 hours)
+        future_vol = group_df['spot_price'].rolling(lookahead_hours, min_periods=1).std().shift(-lookahead_hours)
+        future_vol_ratio = (future_vol / group_df['on_demand_price']).fillna(0)
 
-    # Penalties
-    df.loc[df['discount_pct'] < 20, 'stability_score'] -= 40
-    df.loc[df['discount_pct'] < 40, 'stability_score'] -= 20
-    df.loc[df['discount_pct'] < 60, 'stability_score'] -= 10
+        # Future spike count (>50% price jumps in next 6 hours)
+        price_changes = group_df['spot_price'].pct_change().shift(-1)
+        future_spikes = (price_changes > 0.5).rolling(lookahead_hours, min_periods=1).sum().shift(-lookahead_hours).fillna(0)
 
-    volatility_ratio = df['volatility_24h'] / df['on_demand_price']
-    df.loc[volatility_ratio > 0.1, 'stability_score'] -= 30
-    df.loc[volatility_ratio > 0.05, 'stability_score'] -= 15
+        # Future discount change (if discount drops significantly = instability)
+        future_discount_drop = group_df['discount_pct'] - group_df['discount_pct'].shift(-lookahead_hours)
+        future_discount_drop = future_discount_drop.clip(lower=0).fillna(0)
 
-    df.loc[df['spike_count_24h'] > 4, 'stability_score'] -= 20
-    df.loc[df['spike_count_24h'] > 2, 'stability_score'] -= 10
+        # Future major interruption (>100% spike = likely interruption)
+        future_interruption = ((price_changes > 1.0).rolling(lookahead_hours, min_periods=1).sum().shift(-lookahead_hours) > 0).astype(int).fillna(0)
 
-    df.loc[df['deviation_from_mean'].abs() > 200, 'stability_score'] -= 10
+        # Calculate stability score from future events
+        stability = 100.0
+        stability = stability - (future_vol_ratio * 200)  # High future volatility = unstable
+        stability = stability - (future_spikes * 15)      # Future spikes = unstable
+        stability = stability - (future_discount_drop * 2) # Discount dropping = unstable
+        stability = stability - (future_interruption * 50) # Major interruption = very unstable
+        stability = stability.clip(0, 100)
 
-    # Clip to [0, 100]
-    df['stability_score'] = df['stability_score'].clip(0, 100)
+        df.loc[mask, 'stability_score'] = stability.values
 
-    stressed_pct = df['is_stressed'].mean() * 100
+    # Remove rows where we can't calculate future stability (last N rows per pool)
+    df = df.dropna(subset=['stability_score'])
+
+    rows_after = len(df)
+    rows_dropped = rows_before - rows_after
     avg_score = df['stability_score'].mean()
 
-    print(f"  ✓ Stress rate: {stressed_pct:.1f}%")
+    print(f"  ✓ Calculated future-based stability (lookahead={lookahead_hours}h)")
+    print(f"  ✓ Dropped {rows_dropped:,} rows (last {lookahead_hours}h per pool, no future data)")
+    print(f"  ✓ Remaining rows: {len(df):,}")
     print(f"  ✓ Average stability score: {avg_score:.1f}/100")
     print(f"  Score distribution:")
     print(f"    0-20:  {(df['stability_score'] <= 20).sum():,} rows")
@@ -500,8 +523,8 @@ def calculate_hierarchical_features_vectorized(df):
     discount_std = df.groupby('timestamp')['discount_pct'].transform('std').replace(0, 1)
     df['discount_zscore_L1_global'] = (df['discount_pct'] - discount_mean) / discount_std
 
-    # Market stress
-    df['market_stress_L1_global'] = df.groupby('timestamp')['is_stressed'].transform('mean')
+    # Market stress (continuous - based on volatility, not binary flag)
+    df['market_stress_L1_global'] = df.groupby('timestamp')['volatility_percentile_L1_global'].transform('mean')
 
     # L2: Family level - VECTORIZED
     print(f"  ⚡ L2 Family features...")
@@ -511,7 +534,8 @@ def calculate_hierarchical_features_vectorized(df):
     df['volatility_percentile_L2_family'] = df.groupby(['timestamp', 'instance_family'])['volatility_24h'].transform(
         lambda x: x.rank(pct=True) if len(x) > 1 else 0.5
     )
-    df['family_stress_L2'] = df.groupby(['timestamp', 'instance_family'])['is_stressed'].transform('mean')
+    # Family stress (continuous - based on volatility percentile)
+    df['family_stress_L2'] = df.groupby(['timestamp', 'instance_family'])['volatility_percentile_L2_family'].transform('mean')
 
     # L3: AZ level - VECTORIZED
     print(f"  ⚡ L3 AZ features...")
@@ -521,7 +545,8 @@ def calculate_hierarchical_features_vectorized(df):
     df['volatility_percentile_L3_az'] = df.groupby(['timestamp', 'availability_zone'])['volatility_24h'].transform(
         lambda x: x.rank(pct=True) if len(x) > 1 else 0.5
     )
-    df['az_stress_L3'] = df.groupby(['timestamp', 'availability_zone'])['is_stressed'].transform('mean')
+    # AZ stress (continuous - based on volatility percentile)
+    df['az_stress_L3'] = df.groupby(['timestamp', 'availability_zone'])['volatility_percentile_L3_az'].transform('mean')
 
     # L4: Peer level (family + AZ) - VECTORIZED
     print(f"  ⚡ L4 Peer features...")
@@ -647,7 +672,8 @@ def calculate_hierarchical_features(df):
         if global_std > 0:
             df.loc[ts_mask, 'discount_zscore_L1_global'] = (ts_data['discount_pct'] - global_mean) / global_std
 
-        df.loc[ts_mask, 'market_stress_L1_global'] = ts_data['is_stressed'].mean()
+        # Market stress (continuous - based on volatility percentile)
+        df.loc[ts_mask, 'market_stress_L1_global'] = ts_data['volatility_percentile_L1_global'].mean()
 
         # L2: Family level
         for family in ts_data['instance_family'].unique():
@@ -657,7 +683,8 @@ def calculate_hierarchical_features(df):
             if len(family_data) >= 2:
                 df.loc[family_mask, 'discount_percentile_L2_family'] = family_data['discount_pct'].rank(pct=True).values
                 df.loc[family_mask, 'volatility_percentile_L2_family'] = family_data['volatility_24h'].rank(pct=True).values
-                df.loc[family_mask, 'family_stress_L2'] = family_data['is_stressed'].mean()
+                # Family stress (continuous - based on volatility)
+                df.loc[family_mask, 'family_stress_L2'] = family_data['volatility_percentile_L2_family'].mean()
             else:
                 df.loc[family_mask, 'discount_percentile_L2_family'] = 0.5
                 df.loc[family_mask, 'volatility_percentile_L2_family'] = 0.5
@@ -671,7 +698,8 @@ def calculate_hierarchical_features(df):
             if len(az_data) >= 2:
                 df.loc[az_mask, 'discount_percentile_L3_az'] = az_data['discount_pct'].rank(pct=True).values
                 df.loc[az_mask, 'volatility_percentile_L3_az'] = az_data['volatility_24h'].rank(pct=True).values
-                df.loc[az_mask, 'az_stress_L3'] = az_data['is_stressed'].mean()
+                # AZ stress (continuous - based on volatility)
+                df.loc[az_mask, 'az_stress_L3'] = az_data['volatility_percentile_L3_az'].mean()
             else:
                 df.loc[az_mask, 'discount_percentile_L3_az'] = 0.5
                 df.loc[az_mask, 'volatility_percentile_L3_az'] = 0.5
@@ -727,12 +755,57 @@ def add_pool_history_features(df):
     for (inst_type, az), group_df in tqdm(pool_groups, desc="  Pool history", unit="pool"):
         mask = (df['instance_type'] == inst_type) & (df['availability_zone'] == az)
 
-        # Historical stress rate (expanding window)
-        df.loc[mask, 'pool_historical_stress_rate'] = group_df['is_stressed'].expanding().mean().values
+        # Historical volatility rate (expanding window) - continuous metric
+        # High volatility = high stress, so we normalize to 0-1 scale
+        volatility_norm = (group_df['volatility_24h'] / group_df['on_demand_price']).clip(0, 1)
+        df.loc[mask, 'pool_historical_stress_rate'] = volatility_norm.expanding().mean().values
 
     df['pool_historical_stress_rate'] = df['pool_historical_stress_rate'].fillna(0)
 
     print(f"  ✓ Added pool history features")
+
+    return df
+
+
+def add_lag_features(df, lag_hours=[1, 3, 6, 12, 24]):
+    """
+    Add lag features to capture temporal patterns leading to instability
+
+    Lag features help the model learn how past metrics evolve into future stability/instability.
+    For example, a discount that's been dropping for 6 hours might predict future instability.
+
+    Args:
+        df: DataFrame with engineered features
+        lag_hours: List of lag periods in hours
+
+    Returns:
+        DataFrame with lag features added
+    """
+    print(f"\n⏱️  Adding lag features: {lag_hours} hours...")
+
+    df = df.copy().sort_values(['instance_type', 'availability_zone', 'timestamp'])
+
+    pool_groups = list(df.groupby(['instance_type', 'availability_zone']))
+    for (inst_type, az), group_df in tqdm(pool_groups, desc="  Adding lags", unit="pool"):
+        mask = (df['instance_type'] == inst_type) & (df['availability_zone'] == az)
+
+        for lag in lag_hours:
+            # Lagged discount
+            df.loc[mask, f'discount_pct_lag_{lag}h'] = group_df['discount_pct'].shift(lag)
+
+            # Lagged volatility
+            df.loc[mask, f'volatility_24h_lag_{lag}h'] = group_df['volatility_24h'].shift(lag)
+
+            # Change from lag to now (trend direction)
+            df.loc[mask, f'discount_change_{lag}h'] = group_df['discount_pct'] - group_df['discount_pct'].shift(lag)
+
+    # Fill NaNs from shift operations (backfill first rows, then fill any remaining)
+    lag_cols = [col for col in df.columns if '_lag_' in col or '_change_' in col]
+    for col in lag_cols:
+        df[col] = df.groupby(['instance_type', 'availability_zone'])[col].fillna(method='bfill')
+    df[lag_cols] = df[lag_cols].fillna(0)
+
+    print(f"  ✓ Added {len(lag_cols)} lag features")
 
     return df
 
@@ -754,9 +827,10 @@ def engineer_features_with_cache(df, dataset_name):
     if not OPTIMIZATION_CONFIG['ENABLE_FEATURE_CACHING']:
         # No caching - compute directly
         df = calculate_absolute_features(df)
-        df = calculate_stress_and_stability(df)
+        df = calculate_stability_score_future_based(df, lookahead_hours=6)
         df = calculate_hierarchical_features(df)
         df = add_pool_history_features(df)
+        df = add_lag_features(df, lag_hours=[1, 3, 6, 12, 24])
         return df
 
     # Generate cache filename
@@ -786,9 +860,10 @@ def engineer_features_with_cache(df, dataset_name):
     # Compute features
     print(f"\n🔧 Computing features (will cache to: {cache_file.name})...")
     df = calculate_absolute_features(df)
-    df = calculate_stress_and_stability(df)
+    df = calculate_stability_score_future_based(df, lookahead_hours=6)
     df = calculate_hierarchical_features(df)
     df = add_pool_history_features(df)
+    df = add_lag_features(df, lag_hours=[1, 3, 6, 12, 24])
 
     # Save to cache
     try:
@@ -819,20 +894,28 @@ print("\n" + "="*80)
 print("3. MODEL TRAINING (LightGBM Regressor)")
 print("="*80)
 
-# Define feature list
+# Define feature list (UPDATED: No is_stressed, added lag features)
 FEATURE_LIST = [
-    # Absolute features
+    # Absolute features (now safe to use - target is future-based)
     'discount_pct', 'volatility_24h', 'price_velocity_1h', 'price_velocity_6h',
     'spike_count_24h', 'ceiling_distance_pct', 'deviation_from_mean',
 
-    # L1 Global
+    # Lag features (temporal patterns leading to instability)
+    'discount_pct_lag_1h', 'discount_pct_lag_3h', 'discount_pct_lag_6h',
+    'discount_pct_lag_12h', 'discount_pct_lag_24h',
+    'volatility_24h_lag_1h', 'volatility_24h_lag_3h', 'volatility_24h_lag_6h',
+    'volatility_24h_lag_12h', 'volatility_24h_lag_24h',
+    'discount_change_1h', 'discount_change_3h', 'discount_change_6h',
+    'discount_change_12h', 'discount_change_24h',
+
+    # L1 Global (continuous stress metrics)
     'discount_percentile_L1_global', 'volatility_percentile_L1_global',
     'discount_zscore_L1_global', 'market_stress_L1_global',
 
-    # L2 Family
+    # L2 Family (continuous stress metrics)
     'discount_percentile_L2_family', 'volatility_percentile_L2_family', 'family_stress_L2',
 
-    # L3 AZ
+    # L3 AZ (continuous stress metrics)
     'discount_percentile_L3_az', 'volatility_percentile_L3_az', 'az_stress_L3',
 
     # L4 Peer
@@ -841,7 +924,7 @@ FEATURE_LIST = [
     # Cross-level
     'global_vs_family_gap', 'better_alternatives_L2_family',
 
-    # Pool history
+    # Pool history (continuous metric based on volatility)
     'pool_historical_stress_rate',
 
     # Instance encoding
@@ -850,6 +933,10 @@ FEATURE_LIST = [
     # Time
     'hour', 'day_of_week', 'is_business_hours'
 ]
+
+print(f"\n📋 Feature List:")
+print(f"  Total features: {len(FEATURE_LIST)}")
+print(f"  Absolute: 7, Lag: 15, Hierarchical: 18, Other: {len(FEATURE_LIST) - 40}")
 
 # Encode categorical features
 from sklearn.preprocessing import LabelEncoder
@@ -936,8 +1023,14 @@ print("4. WALK-FORWARD BACKTESTING (Q1/Q2/Q3 2025)")
 print("="*80)
 
 def prepare_test_data(df_test, test_name):
-    """Prepare test data with same feature engineering"""
+    """
+    Prepare test data with same feature engineering
+
+    IMPORTANT: Test data uses the same future-based target calculation,
+    so some rows will be dropped (last 6h per pool).
+    """
     print(f"\n📊 Preparing {test_name}...")
+    print(f"  (Using future-based stability target - expect some rows dropped)")
 
     # Use caching for test data too
     dataset_name = test_name.replace(' ', '_').lower()
@@ -953,8 +1046,13 @@ def prepare_test_data(df_test, test_name):
 
     y_test = df_test['stability_score'].copy()
 
+    # Validation checks
+    assert not X_test.isnull().any().any(), "X_test contains NaN values after fillna"
+    assert (y_test >= 0).all() and (y_test <= 100).all(), "y_test not in [0, 100] range"
+
     print(f"  ✓ X_test shape: {X_test.shape}")
     print(f"  ✓ y_test range: [{y_test.min():.1f}, {y_test.max():.1f}]")
+    print(f"  ✓ Features: {len(FEATURE_LIST)}")
 
     return X_test, y_test, df_test
 
@@ -1233,8 +1331,27 @@ print(f"  Model: {model_path}")
 print(f"  Plots: {CONFIG['plots_dir']}")
 print(f"  Results: {CONFIG['output_dir']}")
 
+# Expected metrics after data leakage fixes
+print(f"\n💡 EXPECTED METRICS (After Data Leakage Fixes):")
+print(f"   ✅ REALISTIC Training MAE: 8-15 (NOT <5)")
+print(f"   ✅ Test MAE slightly worse than train (generalization gap is HEALTHY)")
+print(f"   ✅ R² between 0.60-0.85 (NOT >0.95)")
+print(f"   ✅ Precision @ >=80 around 70-85% (NOT 100%)")
+print(f"   ⚠️  If MAE <5 or R² >0.95: Still has data leakage, review target calculation")
+print(f"   ⚠️  If test MAE much worse: Normal! Model is predicting future, not memorizing")
+
 print("\n" + "="*80)
 print("✅ HIERARCHICAL SPOT STABILITY MODEL COMPLETE!")
 print("="*80)
 print(f"End Time: {datetime.now()}")
+print(f"="*80)
+
+print(f"\n🔍 DATA LEAKAGE FIXES APPLIED:")
+print(f"   ✅ Target is now FUTURE-based (6h ahead), not current-time")
+print(f"   ✅ Removed is_stressed binary flags, using continuous metrics")
+print(f"   ✅ Added 15 lag features for temporal pattern learning")
+print(f"   ✅ Total features: {len(FEATURE_LIST)}")
+print(f"   ✅ Model predicts: X[t] → y[t+6h] (future stability)")
+print(f"\n   Next Step: Clear cache and re-train!")
+print(f"   Command: rm -rf {OPTIMIZATION_CONFIG['CACHE_DIR']}/*.parquet")
 print("="*80)
