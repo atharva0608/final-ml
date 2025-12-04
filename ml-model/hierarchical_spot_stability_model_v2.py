@@ -846,13 +846,20 @@ def engineer_features_with_cache(df, dataset_name):
             df_cached = pd.read_parquet(cache_file)
             print(f"  ✓ Loaded {len(df_cached):,} rows with {len(df_cached.columns)} columns from cache")
 
-            # Validate cache has required columns
-            required_cols = ['discount_pct', 'stability_score', 'discount_percentile_L1_global']
-            if all(col in df_cached.columns for col in required_cols):
-                print(f"  ✓ Cache validation passed")
+            # Validate cache has ALL required columns (including lag features)
+            required_cols = [
+                'discount_pct', 'stability_score', 'discount_percentile_L1_global',
+                'discount_pct_lag_1h', 'discount_pct_lag_6h', 'volatility_24h_lag_1h',  # Check for lag features
+                'market_stress_L1_global', 'family_stress_L2', 'az_stress_L3'  # Check for continuous stress metrics
+            ]
+            missing_cols = [col for col in required_cols if col not in df_cached.columns]
+
+            if len(missing_cols) == 0:
+                print(f"  ✓ Cache validation passed (all features present)")
                 return df_cached
             else:
-                print(f"  ⚠️  Cache missing required columns, recomputing...")
+                print(f"  ⚠️  Cache missing {len(missing_cols)} columns: {missing_cols[:3]}...")
+                print(f"  ⚠️  Cache was created before data leakage fixes, recomputing...")
         except Exception as e:
             print(f"  ⚠️  Error loading cache: {e}")
             print(f"  Recomputing features...")
