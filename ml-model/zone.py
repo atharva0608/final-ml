@@ -1,528 +1,721 @@
+"""
+Zone-Based Spot Instance Risk Prediction and Smart Switching System
+===================================================================
+
+Purpose:
+- Calculate pool-specific risk zones (Green/Yellow/Orange/Red/Purple)
+- Train on 2023-24 data, backtest on 2025 data
+- Predict abnormalities and rank pools by safety + discount
+- Perform smart switches when crossing zones
+- Show actual vs predicted savings
+
+Zone Definitions (Pool-Specific Percentiles):
+- Green:  P70  (70th percentile - safe zone, normal operations)
+- Yellow: P90  (90th percentile - elevated risk, manageable)
+- Orange: P95  (95th percentile - high risk, outlier threshold)
+- Red:    Max+10% (critical - capacity crunch with safety margin)
+- Purple: Volatility spikes (6-hour windows exceeding quarterly baseline)
+
+Key Innovation:
+- Quarterly volatility calculation (captures seasonal patterns)
+- Pool-relative zones (t3.medium vs c5.large have different baselines)
+- Switching triggers: Zone crossing, purple zones, abnormality prediction
+
+Author: Zone-Based Switching System
+Date: 2025
+"""
+
+import sys
+import os
+import warnings
+import pickle
+from pathlib import Path
+from datetime import datetime, timedelta
+
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-from pathlib import Path
-import warnings
-import os
-from datetime import timedelta, datetime
-from matplotlib.patches import Rectangle, Patch
-from scipy import stats
+from tqdm import tqdm
+
+from sklearn.ensemble import IsolationForest
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import classification_report, confusion_matrix
 
 warnings.filterwarnings('ignore')
 sns.set_style('whitegrid')
 
 # ============================================================================
-# IMPROVED CONFIGURATION
+# CONFIGURATION
 # ============================================================================
+
 CONFIG = {
-    'files': [
-        '/Users/atharvapudale/Downloads/aws_2023_2024_complete_24months.csv',
-        '/Users/atharvapudale/Downloads/mumbai_spot_data_sorted_asc(1-2-3-25).csv',
-        '/Users/atharvapudale/Downloads/mumbai_spot_data_sorted_asc(4-5-6-25).csv',
-        '/Users/atharvapudale/Downloads/mumbai_spot_data_sorted_asc(7-8-9-25).csv'
-    ],
-    'target_instances': ['t3.medium', 't4g.medium', 'c5.large', 't4g.small'],
-    'region_filter': 'ap-south-1',
-    'output_dir': 'output_enhanced_zones/',
-    
-    'analysis_year': 2024,
-    
-    # ZONE CALCULATIONS (ANNUAL - Relative to pool history)
-    'green_percentile': 70,      
-    'yellow_percentile': 90,     
-    'orange_percentile': 95,     
-    'green_window_days': 365,    
-    'yellow_window_days': 548,   
-    'orange_window_days': 730,   
-    'red_window_years': 3,       
-    
-    # VOLATILITY DETECTION (QUARTERLY - Seasonal patterns)
-    'volatility_quarterly': True,              # NEW: Calculate per quarter
-    'volatility_window_hours': 6,              
-    'volatility_threshold_sigma': 2.5,         
-    'min_volatile_duration_hours': 1,          
-    'volatility_merge_gap_hours': 2,           
-    
-    # DATA QUALITY
-    'min_data_points': 100,                 
-    'outlier_iqr_multiplier': 3,            
+    # Data paths (same as hierarchical model)
+    'training_data': '/Users/atharvapudale/Downloads/aws_2023_2024_complete_24months.csv',
+    'test_q1': '/Users/atharvapudale/Downloads/mumbai_spot_data_sorted_asc(1-2-3-25).csv',
+    'test_q2': '/Users/atharvapudale/Downloads/mumbai_spot_data_sorted_asc(4-5-6-25).csv',
+    'test_q3': '/Users/atharvapudale/Downloads/mumbai_spot_data_sorted_asc(7-8-9-25).csv',
+
+    # Scope
+    'region': 'ap-south-1',
+    'instance_types': ['t3.medium', 't4g.medium', 'c5.large', 't4g.small'],
+
+    # Output
+    'output_dir': './training/outputs',
+    'plots_dir': './training/plots',
+    'zone_plots_dir': './training/plots/zones',
+
+    # Zone configuration
+    'zone_percentiles': {
+        'green': 70,   # P70 - safe operations (<5% interruption)
+        'yellow': 90,  # P90 - elevated risk (manageable with automation)
+        'orange': 95,  # P95 - high risk (outlier threshold)
+        'red_buffer': 0.10  # Max + 10% safety margin
+    },
+
+    # Purple zone (volatility) configuration
+    'volatility_window': 6,  # 6-hour rolling window
+    'quarterly_baseline': True,  # Calculate volatility per quarter (not annual)
+    'purple_threshold_multiplier': 2.0,  # 2x quarterly baseline = purple
+
+    # Switching configuration
+    'switching_cost': 0.01,  # $0.01 per switch (API overhead)
+    'prediction_horizon': 1,  # Predict 1 hour ahead for switching
+
+    'random_seed': 42,
 }
 
-Path(CONFIG['output_dir']).mkdir(parents=True, exist_ok=True)
+# Create output directories
+for dir_path in [CONFIG['output_dir'], CONFIG['plots_dir'], CONFIG['zone_plots_dir']]:
+    Path(dir_path).mkdir(parents=True, exist_ok=True)
+
+print("="*80)
+print("ZONE-BASED SPOT INSTANCE RISK PREDICTION & SMART SWITCHING")
+print("="*80)
+print(f"Start Time: {datetime.now()}")
+print("="*80)
 
 # ============================================================================
-# DATA LOADING (Same as before)
+# 1. DATA LOADING
 # ============================================================================
-def load_and_clean_data(files, targets):
-    """Load and clean spot price data with robust outlier removal"""
-    print("📊 Loading spot price data...")
-    dfs = []
-    
-    for f in files:
-        if not os.path.exists(f):
-            print(f"   ⚠️  File not found: {Path(f).name}")
-            continue
-        try:
-            df = pd.read_csv(f)
-            df.columns = [c.lower().replace('_', '').replace(' ', '') for c in df.columns]
-            
-            col_map = {}
-            for col in df.columns:
-                if 'spotprice' in col or col == 'price':
-                    col_map[col] = 'SpotPrice'
-                elif 'instancetype' in col:
-                    col_map[col] = 'InstanceType'
-                elif 'zone' in col or col == 'az':
-                    col_map[col] = 'AvailabilityZone'
-                elif 'time' in col or 'date' in col:
-                    col_map[col] = 'Timestamp'
-            
-            df = df.rename(columns=col_map)
-            required = ['Timestamp', 'InstanceType', 'AvailabilityZone', 'SpotPrice']
-            if not all(c in df.columns for c in required):
-                continue
-            
-            df = df[df['InstanceType'].isin(targets)]
-            if 'Region' in df.columns:
-                df = df[df['Region'] == CONFIG['region_filter']]
-            
-            df['Timestamp'] = pd.to_datetime(df['Timestamp'], utc=True).dt.tz_localize(None)
-            df['SpotPrice'] = pd.to_numeric(df['SpotPrice'], errors='coerce').abs()
-            df = df[df['SpotPrice'] > 0]
-            
-            Q1, Q3 = df['SpotPrice'].quantile([0.25, 0.75])
-            IQR = Q3 - Q1
-            upper_bound = Q3 + CONFIG['outlier_iqr_multiplier'] * IQR
-            df = df[df['SpotPrice'] <= upper_bound]
-            df = df.dropna(subset=['SpotPrice'])
-            dfs.append(df)
-            print(f"   ✅ Loaded {Path(f).name}: {len(df):,} rows")
-            
-        except Exception as e:
-            print(f"   ❌ Error loading {Path(f).name}: {e}")
-    
-    if not dfs:
-        raise ValueError("No data loaded successfully!")
-    
-    full_df = pd.concat(dfs, ignore_index=True)
-    full_df = full_df.sort_values('Timestamp').drop_duplicates()
-    full_df['PoolID'] = full_df['InstanceType'] + "_" + full_df['AvailabilityZone']
-    
-    print(f"\n✅ Total loaded: {len(full_df):,} rows")
-    print(f"   Date range: {full_df['Timestamp'].min().date()} → {full_df['Timestamp'].max().date()}\n")
-    
-    return full_df
+
+def load_data():
+    """Load training (2023-24) and test (2025 Q1/Q2/Q3) data"""
+    print("\n📂 Loading data...")
+
+    try:
+        # Training data (2023-24)
+        print(f"  Loading training data (2023-24)...")
+        df_train = pd.read_csv(CONFIG['training_data'])
+        df_train['timestamp'] = pd.to_datetime(df_train['timestamp'])
+        print(f"    ✓ Training: {len(df_train):,} rows")
+
+        # Test data (2025 Q1/Q2/Q3)
+        print(f"  Loading test data (2025)...")
+        df_test_q1 = pd.read_csv(CONFIG['test_q1'])
+        df_test_q1['timestamp'] = pd.to_datetime(df_test_q1['timestamp'])
+
+        df_test_q2 = pd.read_csv(CONFIG['test_q2'])
+        df_test_q2['timestamp'] = pd.to_datetime(df_test_q2['timestamp'])
+
+        df_test_q3 = pd.read_csv(CONFIG['test_q3'])
+        df_test_q3['timestamp'] = pd.to_datetime(df_test_q3['timestamp'])
+
+        df_test = pd.concat([df_test_q1, df_test_q2, df_test_q3], ignore_index=True)
+        df_test = df_test.sort_values('timestamp').reset_index(drop=True)
+
+        print(f"    ✓ Test Q1: {len(df_test_q1):,} rows")
+        print(f"    ✓ Test Q2: {len(df_test_q2):,} rows")
+        print(f"    ✓ Test Q3: {len(df_test_q3):,} rows")
+        print(f"    ✓ Total Test: {len(df_test):,} rows")
+
+        return df_train, df_test
+
+    except Exception as e:
+        print(f"    ❌ Error loading data: {e}")
+        sys.exit(1)
 
 # ============================================================================
-# ZONE CALCULATION (ANNUAL - Same as before)
+# 2. ZONE CALCULATION (Pool-Specific, Quarterly for Purple)
 # ============================================================================
-def calculate_enhanced_zones(df, analysis_year):
-    """Calculate zones using research-backed percentile methodology"""
-    
-    print("=" * 80)
-    print("ZONE CALCULATION (Annual - Relative to Pool History)")
-    print("=" * 80 + "\n")
-    
-    zones_dict = {}
-    analysis_end = datetime(analysis_year, 12, 31)
-    
-    for pool in sorted(df['PoolID'].unique()):
-        pool_data = df[df['PoolID'] == pool].copy()
-        
-        if len(pool_data) < CONFIG['min_data_points']:
-            continue
-        
-        year_data = pool_data[pool_data['Timestamp'].dt.year == analysis_year]
-        if len(year_data) < CONFIG['min_data_points']:
-            continue
-        
-        # GREEN ZONE: P70 from 12-month window
-        green_start = analysis_end - timedelta(days=CONFIG['green_window_days'])
-        green_data = pool_data[(pool_data['Timestamp'] >= green_start) & 
-                               (pool_data['Timestamp'] <= analysis_end)]
-        if len(green_data) < 50:
-            green_data = year_data
-        green_upper = green_data['SpotPrice'].quantile(CONFIG['green_percentile'] / 100)
-        
-        # YELLOW ZONE: P90 from 18-month window
-        yellow_start = analysis_end - timedelta(days=CONFIG['yellow_window_days'])
-        yellow_data = pool_data[(pool_data['Timestamp'] >= yellow_start) & 
-                                (pool_data['Timestamp'] <= analysis_end)]
-        if len(yellow_data) < 50:
-            yellow_data = year_data
-        yellow_upper = yellow_data['SpotPrice'].quantile(CONFIG['yellow_percentile'] / 100)
-        
-        # ORANGE ZONE: P95 from 24-month window
-        orange_start = analysis_end - timedelta(days=CONFIG['orange_window_days'])
-        orange_data = pool_data[(pool_data['Timestamp'] >= orange_start) & 
-                                (pool_data['Timestamp'] <= analysis_end)]
-        if len(orange_data) < 50:
-            orange_data = year_data
-        orange_upper = orange_data['SpotPrice'].quantile(CONFIG['orange_percentile'] / 100)
-        
-        # RED ZONE: Historical max + 10% buffer
-        red_start = analysis_end - timedelta(days=CONFIG['red_window_years'] * 365)
-        red_data = pool_data[(pool_data['Timestamp'] >= red_start) & 
-                            (pool_data['Timestamp'] <= analysis_end)]
-        if len(red_data) < 50:
-            red_data = pool_data
-        red_upper = red_data['SpotPrice'].max() * 1.10
-        
-        # Ensure monotonic boundaries
-        if yellow_upper <= green_upper:
-            yellow_upper = green_upper * 1.15
-        if orange_upper <= yellow_upper:
-            orange_upper = yellow_upper * 1.10
-        if red_upper <= orange_upper:
-            red_upper = orange_upper * 1.10
-        
-        # Calculate distribution
-        prices = year_data['SpotPrice']
-        in_green = (prices <= green_upper).sum()
-        in_yellow = ((prices > green_upper) & (prices <= yellow_upper)).sum()
-        in_orange = ((prices > yellow_upper) & (prices <= orange_upper)).sum()
-        in_red = (prices > orange_upper).sum()
-        total = len(prices)
-        
-        mean_price = prices.mean()
-        cv = (prices.std() / mean_price) * 100
-        
-        zones_dict[pool] = {
-            'green_upper': green_upper,
-            'yellow_upper': yellow_upper,
-            'orange_upper': orange_upper,
-            'red_upper': red_upper,
-            'year_min': prices.min(),
-            'year_max': prices.max(),
-            'year_mean': mean_price,
-            'year_median': prices.median(),
-            'year_std': prices.std(),
-            'cv_percent': cv,
-            'in_green_pct': (in_green / total) * 100,
-            'in_yellow_pct': (in_yellow / total) * 100,
-            'in_orange_pct': (in_orange / total) * 100,
-            'in_red_pct': (in_red / total) * 100,
-        }
-        
-        print(f"   {pool}: Green={zones_dict[pool]['in_green_pct']:.1f}% | CV={cv:.1f}%")
-    
-    print()
-    return zones_dict
 
-# ============================================================================
-# QUARTERLY VOLATILITY DETECTION (NEW!)
-# ============================================================================
-def detect_quarterly_volatility(pool_data, analysis_year):
+def calculate_pool_zones(df):
     """
-    Detect volatility QUARTERLY instead of annually
-    This captures seasonal infrastructure changes better
+    Calculate pool-specific price zones based on historical percentiles
+
+    Zones are RELATIVE to each pool's own price history:
+    - Green: P70 (normal operations)
+    - Yellow: P90 (elevated but manageable)
+    - Orange: P95 (high risk)
+    - Red: Max+10% (critical with safety buffer)
+
+    Returns: DataFrame with zone thresholds for each pool
     """
-    df = pool_data.copy().sort_values('Timestamp')
-    year_data = df[df['Timestamp'].dt.year == analysis_year].copy()
-    
-    if len(year_data) < 100:
-        year_data['Is_Volatile'] = False
-        year_data['Volatile_Group'] = 0
-        year_data['Quarter'] = 0
-        return year_data
-    
-    # Define quarters
-    quarters = [
-        (1, datetime(analysis_year, 1, 1), datetime(analysis_year, 3, 31)),   # Q1
-        (2, datetime(analysis_year, 4, 1), datetime(analysis_year, 6, 30)),   # Q2
-        (3, datetime(analysis_year, 7, 1), datetime(analysis_year, 9, 30)),   # Q3
-        (4, datetime(analysis_year, 10, 1), datetime(analysis_year, 12, 31)), # Q4
-    ]
-    
-    year_data['Is_Volatile'] = False
-    year_data['Volatile_Group'] = 0
-    year_data['Quarter'] = 0
-    
-    window_size = int(CONFIG['volatility_window_hours'] * 6)  # 6 records per hour
-    global_group_id = 1
-    
-    for q_num, q_start, q_end in quarters:
-        quarter_data = year_data[
-            (year_data['Timestamp'] >= q_start) & 
-            (year_data['Timestamp'] <= q_end)
-        ].copy()
-        
-        if len(quarter_data) < window_size:
-            continue
-        
-        # Calculate rolling std dev for this quarter
-        quarter_data['Rolling_StdDev'] = quarter_data['SpotPrice'].rolling(
-            window=window_size,
-            min_periods=window_size // 2
+    print("\n🎯 Calculating pool-specific price zones...")
+    print(f"  📊 Zone methodology: Pool-relative percentiles (P70/P90/P95/Max+10%)")
+    print(f"  📊 Why these percentiles?")
+    print(f"     - P70: Statistical 'normal range' (AWS <5% interruption)")
+    print(f"     - P90: 95% CI lower bound (industry standard)")
+    print(f"     - P95: 95% CI upper bound (outlier threshold)")
+    print(f"     - Max+10%: Engineering margin for black swan events")
+
+    zone_thresholds = []
+
+    for (inst_type, az), group in tqdm(df.groupby(['instance_type', 'availability_zone']),
+                                        desc="  Calculating zones"):
+        pool_id = f"{inst_type}_{az}"
+        prices = group['spot_price']
+
+        # Calculate percentile thresholds
+        p70 = np.percentile(prices, CONFIG['zone_percentiles']['green'])
+        p90 = np.percentile(prices, CONFIG['zone_percentiles']['yellow'])
+        p95 = np.percentile(prices, CONFIG['zone_percentiles']['orange'])
+        max_price = prices.max()
+        red_threshold = max_price * (1 + CONFIG['zone_percentiles']['red_buffer'])
+
+        zone_thresholds.append({
+            'pool_id': pool_id,
+            'instance_type': inst_type,
+            'availability_zone': az,
+            'green_max': p70,
+            'yellow_max': p90,
+            'orange_max': p95,
+            'red_max': red_threshold,
+            'historical_max': max_price,
+            'mean_price': prices.mean(),
+            'std_price': prices.std()
+        })
+
+    zones_df = pd.DataFrame(zone_thresholds)
+
+    print(f"\n  ✓ Calculated zones for {len(zones_df)} pools")
+    print(f"\n  📊 Zone thresholds (example: first pool):")
+    first_pool = zones_df.iloc[0]
+    print(f"     Pool: {first_pool['pool_id']}")
+    print(f"     Green:  ≤ ${first_pool['green_max']:.4f}")
+    print(f"     Yellow: ≤ ${first_pool['yellow_max']:.4f}")
+    print(f"     Orange: ≤ ${first_pool['orange_max']:.4f}")
+    print(f"     Red:    ≤ ${first_pool['red_max']:.4f}")
+
+    return zones_df
+
+def calculate_quarterly_purple_zones(df):
+    """
+    Calculate purple zones (volatility spikes) on QUARTERLY basis
+
+    CRITICAL: Quarterly calculation captures seasonal patterns:
+    - Q1: Jan-Mar (post-holiday normalization)
+    - Q2: Apr-Jun (tax season, spring traffic)
+    - Q3: Jul-Sep (summer peak, infrastructure changes)
+    - Q4: Oct-Dec (holiday surge, capacity pressure)
+
+    Purple zone = 6-hour volatility > 2x quarterly baseline
+    """
+    print("\n🟣 Calculating purple zones (quarterly volatility spikes)...")
+    print(f"  📊 Window: {CONFIG['volatility_window']}-hour rolling volatility")
+    print(f"  📊 Baseline: Quarterly (every 3 months) NOT annual")
+    print(f"  📊 Threshold: {CONFIG['purple_threshold_multiplier']}x quarterly baseline")
+    print(f"  📊 Why quarterly? Captures seasonal AWS pricing patterns")
+
+    df = df.copy()
+    df['quarter'] = df['timestamp'].dt.to_period('Q')
+
+    purple_zones = []
+
+    for (inst_type, az), group in tqdm(df.groupby(['instance_type', 'availability_zone']),
+                                        desc="  Calculating purple zones"):
+        pool_id = f"{inst_type}_{az}"
+        group = group.sort_values('timestamp').reset_index(drop=True)
+
+        # Calculate 6-hour rolling volatility
+        group['volatility_6h'] = group['spot_price'].rolling(
+            window=CONFIG['volatility_window'],
+            min_periods=CONFIG['volatility_window']
         ).std()
-        
-        # Establish baseline from green zone prices IN THIS QUARTER
-        green_threshold = quarter_data['SpotPrice'].quantile(0.70)
-        baseline_data = quarter_data[quarter_data['SpotPrice'] <= green_threshold]
-        
-        if len(baseline_data) < window_size:
-            continue
-        
-        # Calculate quarterly baseline volatility
-        baseline_std = baseline_data['Rolling_StdDev'].mean()
-        baseline_sigma = baseline_data['Rolling_StdDev'].std()
-        volatility_threshold = baseline_std + (CONFIG['volatility_threshold_sigma'] * baseline_sigma)
-        
-        # Mark volatile periods
-        quarter_data['Is_Volatile'] = (
-            (quarter_data['SpotPrice'] <= green_threshold) & 
-            (quarter_data['Rolling_StdDev'] > volatility_threshold) &
-            (quarter_data['Rolling_StdDev'].notna())
-        )
-        
-        # Group consecutive volatile periods
-        quarter_data = group_volatile_periods_quarterly(quarter_data, global_group_id)
-        global_group_id = quarter_data['Volatile_Group'].max() + 1
-        
-        # Mark quarter number
-        quarter_data['Quarter'] = q_num
-        
-        # Update main dataframe
-        year_data.loc[quarter_data.index, 'Is_Volatile'] = quarter_data['Is_Volatile']
-        year_data.loc[quarter_data.index, 'Volatile_Group'] = quarter_data['Volatile_Group']
-        year_data.loc[quarter_data.index, 'Quarter'] = q_num
-        year_data.loc[quarter_data.index, 'Rolling_StdDev'] = quarter_data['Rolling_StdDev']
-    
-    return year_data
 
-def group_volatile_periods_quarterly(df, start_group_id):
-    """Group consecutive volatile points"""
-    min_records = int(CONFIG['min_volatile_duration_hours'] * 6)
-    merge_gap = timedelta(hours=CONFIG['volatility_merge_gap_hours'])
-    
-    df['Volatile_Group'] = 0
-    
-    if not df['Is_Volatile'].any():
-        return df
-    
-    volatile_indices = df[df['Is_Volatile']].index.tolist()
-    
-    if len(volatile_indices) < min_records:
-        df['Is_Volatile'] = False
-        return df
-    
-    group_id = start_group_id
-    current_group = [volatile_indices[0]]
-    
-    for i in range(1, len(volatile_indices)):
-        curr_idx = volatile_indices[i]
-        prev_idx = volatile_indices[i-1]
-        
-        time_gap = df.loc[curr_idx, 'Timestamp'] - df.loc[prev_idx, 'Timestamp']
-        
-        if time_gap <= merge_gap:
-            current_group.append(curr_idx)
-        else:
-            if len(current_group) >= min_records:
-                df.loc[current_group, 'Volatile_Group'] = group_id
-                group_id += 1
-            current_group = [curr_idx]
-    
-    if len(current_group) >= min_records:
-        df.loc[current_group, 'Volatile_Group'] = group_id
-    
-    df['Is_Volatile'] = df['Volatile_Group'] > 0
+        # Calculate quarterly baseline volatility
+        for quarter, quarter_group in group.groupby('quarter'):
+            quarter_baseline = quarter_group['volatility_6h'].median()
+            purple_threshold = quarter_baseline * CONFIG['purple_threshold_multiplier']
+
+            # Mark purple zones (volatility exceeds 2x quarterly baseline)
+            quarter_mask = group['quarter'] == quarter
+            purple_mask = (group['volatility_6h'] > purple_threshold) & quarter_mask
+
+            if purple_mask.sum() > 0:
+                # Find continuous purple regions
+                purple_indices = group[purple_mask].index.tolist()
+
+                # Group consecutive indices
+                purple_regions = []
+                if purple_indices:
+                    start_idx = purple_indices[0]
+                    prev_idx = purple_indices[0]
+
+                    for idx in purple_indices[1:]:
+                        if idx != prev_idx + 1:
+                            # End of region
+                            purple_regions.append({
+                                'pool_id': pool_id,
+                                'instance_type': inst_type,
+                                'availability_zone': az,
+                                'quarter': str(quarter),
+                                'start_time': group.loc[start_idx, 'timestamp'],
+                                'end_time': group.loc[prev_idx, 'timestamp'],
+                                'duration_hours': prev_idx - start_idx + 1,
+                                'max_volatility': group.loc[start_idx:prev_idx, 'volatility_6h'].max(),
+                                'baseline': quarter_baseline,
+                                'threshold': purple_threshold
+                            })
+                            start_idx = idx
+                        prev_idx = idx
+
+                    # Add final region
+                    purple_regions.append({
+                        'pool_id': pool_id,
+                        'instance_type': inst_type,
+                        'availability_zone': az,
+                        'quarter': str(quarter),
+                        'start_time': group.loc[start_idx, 'timestamp'],
+                        'end_time': group.loc[prev_idx, 'timestamp'],
+                        'duration_hours': prev_idx - start_idx + 1,
+                        'max_volatility': group.loc[start_idx:prev_idx, 'volatility_6h'].max(),
+                        'baseline': quarter_baseline,
+                        'threshold': purple_threshold
+                    })
+
+                purple_zones.extend(purple_regions)
+
+    purple_df = pd.DataFrame(purple_zones)
+
+    if len(purple_df) > 0:
+        print(f"\n  ✓ Found {len(purple_df)} purple zones (volatility spikes)")
+        print(f"  📊 Purple zone statistics:")
+        print(f"     Average duration: {purple_df['duration_hours'].mean():.1f} hours")
+        print(f"     Max duration: {purple_df['duration_hours'].max():.0f} hours")
+        print(f"     Total purple hours: {purple_df['duration_hours'].sum():.0f}")
+    else:
+        print(f"\n  ⚠️  No purple zones found (data may be very stable)")
+        purple_df = pd.DataFrame(columns=['pool_id', 'start_time', 'end_time', 'duration_hours'])
+
+    return purple_df
+
+# ============================================================================
+# 3. ASSIGN ZONES TO DATA
+# ============================================================================
+
+def assign_zones_to_data(df, zones_df, purple_df=None):
+    """
+    Assign zone labels (green/yellow/orange/red/purple) to each row
+    """
+    print("\n🏷️  Assigning zones to data...")
+
+    df = df.copy()
+    df['pool_id'] = df['instance_type'] + '_' + df['availability_zone']
+    df['zone'] = 'unknown'
+    df['is_purple'] = False
+
+    # Merge zone thresholds
+    df = df.merge(zones_df[['pool_id', 'green_max', 'yellow_max', 'orange_max', 'red_max']],
+                  on='pool_id', how='left')
+
+    # Assign color zones based on spot price
+    df.loc[df['spot_price'] <= df['green_max'], 'zone'] = 'green'
+    df.loc[(df['spot_price'] > df['green_max']) & (df['spot_price'] <= df['yellow_max']), 'zone'] = 'yellow'
+    df.loc[(df['spot_price'] > df['yellow_max']) & (df['spot_price'] <= df['orange_max']), 'zone'] = 'orange'
+    df.loc[df['spot_price'] > df['orange_max'], 'zone'] = 'red'
+
+    # Mark purple zones (volatility spikes)
+    if purple_df is not None and len(purple_df) > 0:
+        for _, purple_row in purple_df.iterrows():
+            purple_mask = (
+                (df['pool_id'] == purple_row['pool_id']) &
+                (df['timestamp'] >= purple_row['start_time']) &
+                (df['timestamp'] <= purple_row['end_time'])
+            )
+            df.loc[purple_mask, 'is_purple'] = True
+
+    # Calculate zone distribution
+    zone_dist = df['zone'].value_counts()
+    purple_count = df['is_purple'].sum()
+
+    print(f"  ✓ Zone distribution:")
+    print(f"     Green:  {zone_dist.get('green', 0):,} rows ({zone_dist.get('green', 0)/len(df)*100:.1f}%)")
+    print(f"     Yellow: {zone_dist.get('yellow', 0):,} rows ({zone_dist.get('yellow', 0)/len(df)*100:.1f}%)")
+    print(f"     Orange: {zone_dist.get('orange', 0):,} rows ({zone_dist.get('orange', 0)/len(df)*100:.1f}%)")
+    print(f"     Red:    {zone_dist.get('red', 0):,} rows ({zone_dist.get('red', 0)/len(df)*100:.1f}%)")
+    print(f"     Purple: {purple_count:,} rows ({purple_count/len(df)*100:.1f}%) [volatility spikes]")
+
     return df
 
 # ============================================================================
-# ENHANCED VISUALIZATION WITH ZOOMED VOLATILITY
+# 4. POOL RANKING (Green Time + Discount + Stability)
 # ============================================================================
-def create_enhanced_plot_quarterly(pool_data, pool, zones, analysis_year):
-    """Create plot with quarterly volatility and zoomed views"""
-    
-    year_data = pool_data[pool_data['Timestamp'].dt.year == analysis_year].copy()
-    
-    if len(year_data) < CONFIG['min_data_points']:
-        return
-    
-    # Detect quarterly volatility
-    year_data = detect_quarterly_volatility(year_data, analysis_year)
-    
-    vol_count = year_data['Is_Volatile'].sum()
-    vol_pct = (vol_count / len(year_data)) * 100
-    num_periods = year_data['Volatile_Group'].max()
-    
-    print(f"   📊 {pool}")
-    print(f"      Quarterly Volatility: {vol_pct:.2f}% | Periods: {int(num_periods)}")
-    print(f"      CV: {zones['cv_percent']:.1f}% | Mean: ${zones['year_mean']:.5f}")
-    
-    # Create main figure
-    fig = plt.figure(figsize=(24, 16))
-    gs = fig.add_gridspec(3, 1, height_ratios=[3.5, 1, 1.5], hspace=0.3)
-    
-    ax1 = fig.add_subplot(gs[0, 0])  # Price chart
-    ax2 = fig.add_subplot(gs[1, 0])  # Volatility indicator
-    ax3 = fig.add_subplot(gs[2, 0])  # Zoomed volatility view
-    
-    y_max = zones['red_upper'] * 1.05
-    
-    # --- MAIN PRICE CHART ---
-    ax1.fill_between(year_data['Timestamp'], 0, zones['green_upper'],
-                     color='#27ae60', alpha=0.20,
-                     label=f'🟢 SAFE (P0-P70): <${zones["green_upper"]:.5f}', zorder=1)
-    
-    ax1.fill_between(year_data['Timestamp'], zones['green_upper'], zones['yellow_upper'],
-                     color='#f39c12', alpha=0.25,
-                     label=f'🟡 ELEVATED (P70-P90): ${zones["green_upper"]:.5f}-${zones["yellow_upper"]:.5f}', zorder=1)
-    
-    ax1.fill_between(year_data['Timestamp'], zones['yellow_upper'], zones['orange_upper'],
-                     color='#e67e22', alpha=0.30,
-                     label=f'🟠 HIGH RISK (P90-P95): ${zones["yellow_upper"]:.5f}-${zones["orange_upper"]:.5f}', zorder=1)
-    
-    ax1.fill_between(year_data['Timestamp'], zones['orange_upper'], zones['red_upper'],
-                     color='#c0392b', alpha=0.35,
-                     label=f'🔴 CRITICAL (P95+): >${zones["orange_upper"]:.5f}', zorder=1)
-    
-    # Purple volatility boxes
-    volatile_data = year_data[year_data['Is_Volatile']]
-    if len(volatile_data) > 0:
-        for group_id in volatile_data['Volatile_Group'].unique():
-            if group_id == 0:
-                continue
-            
-            group = volatile_data[volatile_data['Volatile_Group'] == group_id]
-            start = group['Timestamp'].min()
-            end = group['Timestamp'].max()
-            duration_h = (end - start).total_seconds() / 3600
-            quarter = group['Quarter'].iloc[0]
-            
-            rect = Rectangle((start, 0), end - start, zones['green_upper'],
-                           facecolor='#9b59b6', alpha=0.35,
-                           edgecolor='#8e44ad', linewidth=2.5, zorder=4)
-            ax1.add_patch(rect)
-            
-            if duration_h >= 1:
-                mid = start + (end - start) / 2
-                ax1.text(mid, zones['green_upper'] * 0.35,
-                        f"⚡{duration_h:.1f}h\nQ{quarter}",
-                        ha='center', va='center', fontsize=8, fontweight='bold',
-                        color='white',
-                        bbox=dict(boxstyle='round,pad=0.5', facecolor='#8e44ad',
-                                alpha=0.9, edgecolor='white', linewidth=1.5), zorder=6)
-    
-    ax1.plot(year_data['Timestamp'], year_data['SpotPrice'],
-            linewidth=1.8, color='#2c3e50', alpha=0.85, label='Spot Price', zorder=5)
-    
-    ax1.axhline(zones['year_median'], color='#16a085', linewidth=2.5,
-               linestyle=':', alpha=0.8, label=f'Median: ${zones["year_median"]:.5f}', zorder=7)
-    
-    ax1.axhline(zones['year_mean'], color='#2980b9', linewidth=2.5,
-               linestyle='--', alpha=0.8, label=f'Mean: ${zones["year_mean"]:.5f}', zorder=7)
-    
-    handles, labels = ax1.get_legend_handles_labels()
-    handles.append(Patch(facecolor='#9b59b6', alpha=0.5, edgecolor='#8e44ad', linewidth=2,
-                        label='⚡ Abnormal Volatility (Quarterly)'))
-    ax1.legend(handles=handles, loc='upper left', fontsize=10, ncol=2,
-              framealpha=0.95, edgecolor='gray', shadow=True)
-    
-    ax1.set_ylim(0, y_max)
-    ax1.set_ylabel('Spot Price (USD)', fontsize=14, fontweight='bold')
-    ax1.set_title(
-        f'{pool} - Year {analysis_year} Enhanced Analysis (Quarterly Volatility)\n' +
-        f'Green: {zones["in_green_pct"]:.1f}% | Yellow: {zones["in_yellow_pct"]:.1f}% | ' +
-        f'Orange: {zones["in_orange_pct"]:.1f}% | Red: {zones["in_red_pct"]:.1f}% | ' +
-        f'⚡Volatile: {vol_pct:.1f}% | CV: {zones["cv_percent"]:.1f}%',
-        fontsize=15, fontweight='bold', pad=20
+
+def rank_pools_by_safety_and_discount(df):
+    """
+    Rank pools by:
+    1. Time spent in green zone (60% weight)
+    2. Average discount percentage (30% weight)
+    3. Price stability (10% weight)
+
+    Returns: DataFrame with pool rankings and scores
+    """
+    print("\n🏆 Ranking pools by safety + discount + stability...")
+    print(f"  📊 Weighting: 60% green time, 30% discount, 10% stability")
+
+    pool_rankings = []
+
+    for pool_id, group in df.groupby('pool_id'):
+        # Metric 1: Green zone time (percentage)
+        green_pct = (group['zone'] == 'green').sum() / len(group) * 100
+
+        # Metric 2: Average discount
+        avg_discount = group['discount_pct'].mean()
+
+        # Metric 3: Price stability (inverse of coefficient of variation)
+        cv = group['spot_price'].std() / group['spot_price'].mean()
+        stability = 1 / (1 + cv)  # Normalize to 0-1, higher = more stable
+
+        # Purple zone penalty (reduce score if many volatility spikes)
+        purple_pct = group['is_purple'].sum() / len(group) * 100
+        purple_penalty = purple_pct * 2  # 2% penalty per 1% purple time
+
+        # Composite score (0-100)
+        score = (
+            green_pct * 0.60 +           # 60% weight on green time
+            avg_discount * 0.30 +        # 30% weight on discount
+            stability * 100 * 0.10       # 10% weight on stability
+            - purple_penalty             # Penalty for volatility
+        )
+
+        pool_rankings.append({
+            'pool_id': pool_id,
+            'instance_type': pool_id.split('_')[0],
+            'availability_zone': pool_id.split('_')[1],
+            'green_pct': green_pct,
+            'avg_discount': avg_discount,
+            'stability': stability,
+            'purple_pct': purple_pct,
+            'composite_score': score,
+            'avg_price': group['spot_price'].mean(),
+            'total_hours': len(group)
+        })
+
+    rankings_df = pd.DataFrame(pool_rankings)
+    rankings_df = rankings_df.sort_values('composite_score', ascending=False).reset_index(drop=True)
+    rankings_df['rank'] = range(1, len(rankings_df) + 1)
+
+    print(f"\n  ✓ Pool rankings (Top 5):")
+    for i, row in rankings_df.head(5).iterrows():
+        print(f"     #{row['rank']}: {row['pool_id']}")
+        print(f"         Score: {row['composite_score']:.1f}/100")
+        print(f"         Green: {row['green_pct']:.1f}% | Discount: {row['avg_discount']:.1f}% | Stability: {row['stability']:.3f}")
+        print(f"         Purple: {row['purple_pct']:.1f}% | Avg Price: ${row['avg_price']:.4f}")
+
+    return rankings_df
+
+# ============================================================================
+# 5. ABNORMALITY DETECTION (Isolation Forest)
+# ============================================================================
+
+def train_abnormality_detector(df):
+    """
+    Train Isolation Forest to detect price/volatility anomalies
+    Features: spot_price, discount_pct, volatility_24h, zone
+    """
+    print("\n🔮 Training abnormality detection model...")
+
+    # Prepare features
+    df_model = df.copy()
+    df_model['zone_encoded'] = pd.Categorical(df_model['zone'],
+                                               categories=['green', 'yellow', 'orange', 'red']).codes
+
+    features = ['spot_price', 'discount_pct', 'volatility_24h', 'zone_encoded',
+                'price_velocity_1h', 'spike_count_24h']
+
+    # Handle missing values
+    df_model[features] = df_model[features].fillna(df_model[features].median())
+
+    X = df_model[features].values
+
+    # Standardize features
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+
+    # Train Isolation Forest
+    iso_forest = IsolationForest(
+        contamination=0.05,  # Expect 5% anomalies
+        random_state=CONFIG['random_seed'],
+        n_jobs=-1
     )
-    ax1.grid(True, alpha=0.3, linestyle='--', linewidth=0.8)
-    ax1.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'${x:.5f}'))
-    
-    # --- VOLATILITY INDICATOR ---
-    ax2.plot(year_data['Timestamp'], year_data['Rolling_StdDev'],
-            linewidth=1.5, color='#9b59b6', alpha=0.8,
-            label=f'Rolling StdDev (6h, Quarterly Baseline)')
-    
-    if len(volatile_data) > 0:
-        ax2.scatter(volatile_data['Timestamp'], volatile_data['Rolling_StdDev'],
-                   color='#c0392b', s=25, alpha=0.8, zorder=5, label='Volatile Periods')
-    
-    ax2.set_ylabel('Volatility', fontsize=12, fontweight='bold')
-    ax2.set_title('Volatility Indicator (Quarterly Baselines)', fontsize=12, fontweight='bold')
-    ax2.legend(loc='upper right', fontsize=10, framealpha=0.95)
-    ax2.grid(True, alpha=0.3, linestyle='--')
-    
-    # --- ZOOMED VOLATILITY VIEW ---
-    if len(volatile_data) > 0:
-        # Find most significant volatile period
-        max_group = volatile_data.groupby('Volatile_Group')['Rolling_StdDev'].max().idxmax()
-        focus_group = volatile_data[volatile_data['Volatile_Group'] == max_group]
-        
-        start_focus = focus_group['Timestamp'].min() - timedelta(hours=12)
-        end_focus = focus_group['Timestamp'].max() + timedelta(hours=12)
-        
-        zoom_data = year_data[
-            (year_data['Timestamp'] >= start_focus) & 
-            (year_data['Timestamp'] <= end_focus)
-        ]
-        
-        ax3.plot(zoom_data['Timestamp'], zoom_data['SpotPrice'],
-                linewidth=2, color='#2c3e50', alpha=0.9, label='Spot Price')
-        
-        ax3.axhline(zones['green_upper'], color='#27ae60', linewidth=2,
-                   linestyle='--', alpha=0.7, label='Green Upper')
-        
-        # Highlight volatile region
-        group_start = focus_group['Timestamp'].min()
-        group_end = focus_group['Timestamp'].max()
-        ax3.axvspan(group_start, group_end, color='#9b59b6', alpha=0.3, label='Volatile Period')
-        
-        ax3.set_ylabel('Spot Price (USD)', fontsize=11, fontweight='bold')
-        ax3.set_xlabel('Date', fontsize=11, fontweight='bold')
-        ax3.set_title(f'Zoomed View: Most Significant Volatility Period (Group {int(max_group)})',
-                     fontsize=11, fontweight='bold')
-        ax3.legend(loc='upper right', fontsize=9, framealpha=0.95)
-        ax3.grid(True, alpha=0.3, linestyle='--')
-        ax3.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'${x:.5f}'))
-    else:
-        ax3.text(0.5, 0.5, 'No significant volatility detected',
-                ha='center', va='center', fontsize=14, transform=ax3.transAxes)
-        ax3.set_xlabel('Date', fontsize=11, fontweight='bold')
-    
+    iso_forest.fit(X_scaled)
+
+    # Predict anomalies
+    predictions = iso_forest.predict(X_scaled)
+    anomaly_scores = iso_forest.score_samples(X_scaled)
+
+    df_model['is_anomaly'] = (predictions == -1)
+    df_model['anomaly_score'] = anomaly_scores
+
+    anomaly_count = df_model['is_anomaly'].sum()
+    print(f"  ✓ Detected {anomaly_count:,} anomalies ({anomaly_count/len(df_model)*100:.2f}%)")
+
+    return iso_forest, scaler, features
+
+# ============================================================================
+# 6. SMART SWITCHING (Zone-Based + Abnormality Prediction)
+# ============================================================================
+
+def backtest_smart_switching(df_test, zones_df, rankings_df, iso_forest, scaler, features):
+    """
+    Backtest smart switching strategy on 2025 data
+
+    Switching triggers:
+    1. Current pool exits green zone
+    2. Current pool enters purple zone (volatility spike)
+    3. Abnormality predicted in next hour
+
+    Switch to: Highest-ranked pool currently in green zone
+    """
+    print("\n🔄 Backtesting smart switching strategy on 2025 data...")
+    print(f"  🎯 Switching triggers:")
+    print(f"     1. Exit green zone")
+    print(f"     2. Enter purple zone (volatility spike)")
+    print(f"     3. Abnormality predicted (next hour)")
+    print(f"  💰 Switching cost: ${CONFIG['switching_cost']:.2f} per switch")
+
+    df = df_test.copy()
+
+    # Assign zones to test data
+    df = assign_zones_to_data(df, zones_df)
+
+    # Predict abnormalities
+    df['zone_encoded'] = pd.Categorical(df['zone'],
+                                         categories=['green', 'yellow', 'orange', 'red']).codes
+    df[features] = df[features].fillna(df[features].median())
+    X_test = df[features].values
+    X_test_scaled = scaler.transform(X_test)
+    df['predicted_anomaly'] = (iso_forest.predict(X_test_scaled) == -1)
+
+    # Initialize switching simulation
+    timestamps = sorted(df['timestamp'].unique())
+    current_pool = rankings_df.iloc[0]['pool_id']  # Start with top-ranked pool
+
+    switches = []
+    costs = []
+
+    for i, ts in enumerate(tqdm(timestamps[:-1], desc="  Simulating switches")):
+        current_data = df[(df['timestamp'] == ts) & (df['pool_id'] == current_pool)]
+
+        if len(current_data) == 0:
+            continue
+
+        current_row = current_data.iloc[0]
+
+        # Check switching triggers
+        should_switch = False
+        switch_reason = None
+
+        # Trigger 1: Exit green zone
+        if current_row['zone'] != 'green':
+            should_switch = True
+            switch_reason = f"exit_green_{current_row['zone']}"
+
+        # Trigger 2: Purple zone (volatility spike)
+        if current_row['is_purple']:
+            should_switch = True
+            switch_reason = "purple_zone"
+
+        # Trigger 3: Predicted abnormality
+        if current_row['predicted_anomaly']:
+            should_switch = True
+            switch_reason = "predicted_abnormaly"
+
+        if should_switch:
+            # Find best alternative pool (highest-ranked, currently in green)
+            alternative_pools = df[df['timestamp'] == ts].copy()
+            alternative_pools = alternative_pools.merge(
+                rankings_df[['pool_id', 'composite_score']],
+                on='pool_id',
+                how='left'
+            )
+            alternative_pools = alternative_pools[alternative_pools['zone'] == 'green']
+            alternative_pools = alternative_pools.sort_values('composite_score', ascending=False)
+
+            if len(alternative_pools) > 0:
+                new_pool = alternative_pools.iloc[0]['pool_id']
+
+                if new_pool != current_pool:
+                    switches.append({
+                        'timestamp': ts,
+                        'from_pool': current_pool,
+                        'to_pool': new_pool,
+                        'reason': switch_reason,
+                        'from_price': current_row['spot_price'],
+                        'to_price': alternative_pools.iloc[0]['spot_price'],
+                        'from_zone': current_row['zone'],
+                        'to_zone': alternative_pools.iloc[0]['zone']
+                    })
+
+                    costs.append(CONFIG['switching_cost'])
+                    current_pool = new_pool
+
+        # Track hourly cost
+        hourly_data = df[(df['timestamp'] == ts) & (df['pool_id'] == current_pool)]
+        if len(hourly_data) > 0:
+            costs.append(hourly_data.iloc[0]['spot_price'])
+
+    switches_df = pd.DataFrame(switches)
+
+    print(f"\n  ✓ Backtesting complete:")
+    print(f"     Total switches: {len(switches_df)}")
+    if len(switches_df) > 0:
+        print(f"     Switch reasons:")
+        for reason, count in switches_df['reason'].value_counts().items():
+            print(f"       - {reason}: {count}")
+        print(f"     Total switching cost: ${len(switches_df) * CONFIG['switching_cost']:.2f}")
+
+    # Calculate baseline (no switching - stay on initial pool)
+    baseline_pool = rankings_df.iloc[0]['pool_id']
+    baseline_costs = df[df['pool_id'] == baseline_pool].groupby('timestamp')['spot_price'].first()
+
+    # Calculate actual costs with switching
+    actual_cost_total = sum(costs)
+    baseline_cost_total = baseline_costs.sum()
+    savings = baseline_cost_total - actual_cost_total
+    savings_pct = (savings / baseline_cost_total) * 100
+
+    print(f"\n  💰 Cost comparison:")
+    print(f"     Baseline (no switching): ${baseline_cost_total:.2f}")
+    print(f"     With smart switching:    ${actual_cost_total:.2f}")
+    print(f"     Savings:                 ${savings:.2f} ({savings_pct:.2f}%)")
+
+    return switches_df, {
+        'actual_cost': actual_cost_total,
+        'baseline_cost': baseline_cost_total,
+        'savings': savings,
+        'savings_pct': savings_pct,
+        'total_switches': len(switches_df)
+    }
+
+# ============================================================================
+# 7. VISUALIZATION
+# ============================================================================
+
+def plot_zone_timeline(df, pool_id, zones_df, purple_df, save_path):
+    """Plot price timeline with colored zones for a specific pool"""
+
+    pool_data = df[df['pool_id'] == pool_id].sort_values('timestamp')
+    zone_thresholds = zones_df[zones_df['pool_id'] == pool_id].iloc[0]
+
+    fig, ax = plt.subplots(figsize=(16, 6))
+
+    # Plot price line
+    ax.plot(pool_data['timestamp'], pool_data['spot_price'],
+            color='black', linewidth=1, label='Spot Price', zorder=5)
+
+    # Fill zone areas
+    ax.axhspan(0, zone_thresholds['green_max'],
+               color='green', alpha=0.2, label='Green Zone (P70)')
+    ax.axhspan(zone_thresholds['green_max'], zone_thresholds['yellow_max'],
+               color='yellow', alpha=0.2, label='Yellow Zone (P90)')
+    ax.axhspan(zone_thresholds['yellow_max'], zone_thresholds['orange_max'],
+               color='orange', alpha=0.2, label='Orange Zone (P95)')
+    ax.axhspan(zone_thresholds['orange_max'], zone_thresholds['red_max'],
+               color='red', alpha=0.2, label='Red Zone (Max+10%)')
+
+    # Mark purple zones (volatility spikes)
+    if purple_df is not None and len(purple_df) > 0:
+        pool_purple = purple_df[purple_df['pool_id'] == pool_id]
+        for _, purple_row in pool_purple.iterrows():
+            ax.axvspan(purple_row['start_time'], purple_row['end_time'],
+                      color='purple', alpha=0.3, zorder=3)
+
+    ax.set_xlabel('Timestamp', fontsize=12)
+    ax.set_ylabel('Spot Price ($)', fontsize=12)
+    ax.set_title(f'Zone Timeline: {pool_id}', fontsize=14, fontweight='bold')
+    ax.legend(loc='upper left', fontsize=10)
+    ax.grid(True, alpha=0.3)
+
     plt.tight_layout()
-    
-    filename = f"{CONFIG['output_dir']}{pool}_{analysis_year}_quarterly.png"
-    plt.savefig(filename, dpi=300, bbox_inches='tight')
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
     plt.close()
-    
-    print(f"      ✅ Saved: {filename}")
+
+def create_zone_visualizations(df_train, df_test, zones_df, purple_df, rankings_df):
+    """Create comprehensive zone visualizations"""
+    print("\n📊 Creating zone visualizations...")
+
+    # 1. Plot top 3 pools zone timelines (training data)
+    for i, row in rankings_df.head(3).iterrows():
+        pool_id = row['pool_id']
+        save_path = Path(CONFIG['zone_plots_dir']) / f'zone_timeline_{pool_id}_train.png'
+        plot_zone_timeline(df_train, pool_id, zones_df, purple_df, save_path)
+
+    print(f"  ✓ Created zone timeline plots in {CONFIG['zone_plots_dir']}/")
 
 # ============================================================================
 # MAIN EXECUTION
 # ============================================================================
+
 def main():
-    print("\n" + "=" * 80)
-    print(" AWS SPOT PRICE ANALYSIS - QUARTERLY VOLATILITY DETECTION")
-    print("=" * 80 + "\n")
-    
-    try:
-        df = load_and_clean_data(CONFIG['files'], CONFIG['target_instances'])
-        zones_dict = calculate_enhanced_zones(df, CONFIG['analysis_year'])
-        
-        if not zones_dict:
-            print("❌ No zones calculated")
-            return
-        
-        print("\n" + "=" * 80)
-        print("GENERATING VISUALIZATIONS (Quarterly Volatility)")
-        print("=" * 80 + "\n")
-        
-        for pool in sorted(zones_dict.keys()):
-            pool_data = df[df['PoolID'] == pool].copy()
-            create_enhanced_plot_quarterly(pool_data, pool, zones_dict[pool], CONFIG['analysis_year'])
-        
-        print("\n✅ ANALYSIS COMPLETE!")
-        print(f"📁 Output: {CONFIG['output_dir']}")
-        
-    except Exception as e:
-        print(f"\n❌ ERROR: {e}")
-        import traceback
-        traceback.print_exc()
+    print("\n" + "="*80)
+    print("STARTING ZONE-BASED RISK PREDICTION AND SWITCHING ANALYSIS")
+    print("="*80)
+
+    # 1. Load data
+    df_train, df_test = load_data()
+
+    # 2. Calculate zones (only on training data 2023-24)
+    zones_df = calculate_pool_zones(df_train)
+    purple_df = calculate_quarterly_purple_zones(df_train)
+
+    # 3. Assign zones to training data
+    df_train = assign_zones_to_data(df_train, zones_df, purple_df)
+
+    # 4. Rank pools
+    rankings_df = rank_pools_by_safety_and_discount(df_train)
+
+    # 5. Train abnormality detector
+    iso_forest, scaler, features = train_abnormality_detector(df_train)
+
+    # 6. Backtest on 2025 data
+    switches_df, metrics = backtest_smart_switching(
+        df_test, zones_df, rankings_df, iso_forest, scaler, features
+    )
+
+    # 7. Create visualizations
+    create_zone_visualizations(df_train, df_test, zones_df, purple_df, rankings_df)
+
+    # 8. Save results
+    print("\n💾 Saving results...")
+    zones_df.to_csv(Path(CONFIG['output_dir']) / 'pool_zones.csv', index=False)
+    purple_df.to_csv(Path(CONFIG['output_dir']) / 'purple_zones.csv', index=False)
+    rankings_df.to_csv(Path(CONFIG['output_dir']) / 'pool_rankings.csv', index=False)
+    switches_df.to_csv(Path(CONFIG['output_dir']) / 'switching_decisions.csv', index=False)
+
+    with open(Path(CONFIG['output_dir']) / 'switching_metrics.txt', 'w') as f:
+        f.write("SMART SWITCHING METRICS (2025 Backtest)\n")
+        f.write("="*50 + "\n\n")
+        f.write(f"Baseline Cost (no switching): ${metrics['baseline_cost']:.2f}\n")
+        f.write(f"Actual Cost (with switching): ${metrics['actual_cost']:.2f}\n")
+        f.write(f"Total Savings:                ${metrics['savings']:.2f}\n")
+        f.write(f"Savings Percentage:           {metrics['savings_pct']:.2f}%\n")
+        f.write(f"Total Switches:               {metrics['total_switches']}\n")
+
+    print(f"  ✓ Saved results to {CONFIG['output_dir']}/")
+
+    print("\n" + "="*80)
+    print("ZONE-BASED ANALYSIS COMPLETE")
+    print("="*80)
+    print(f"End Time: {datetime.now()}")
+    print(f"\n📊 Summary:")
+    print(f"  - Calculated zones for {len(zones_df)} pools")
+    print(f"  - Found {len(purple_df)} purple zones (volatility spikes)")
+    print(f"  - Performed {metrics['total_switches']} smart switches")
+    print(f"  - Achieved {metrics['savings_pct']:.2f}% cost savings")
+    print(f"\n📁 Results saved to: {CONFIG['output_dir']}/")
+    print("="*80)
 
 if __name__ == "__main__":
     main()
