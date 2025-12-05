@@ -99,6 +99,104 @@ print("="*80)
 # 1. DATA LOADING
 # ============================================================================
 
+def standardize_columns(df):
+    """Standardize column names across different CSV formats"""
+    # Convert all columns to lowercase
+    df.columns = df.columns.str.lower().str.strip()
+
+    # Create mapping for common variations
+    col_mapping = {}
+    for col in df.columns:
+        # Timestamp variations
+        if 'time' in col or 'date' in col:
+            col_mapping[col] = 'timestamp'
+        # Instance type variations
+        elif 'instance' in col and 'type' in col:
+            col_mapping[col] = 'instance_type'
+        # Availability zone variations
+        elif ('availability' in col and 'zone' in col) or col in ['az', 'zone']:
+            col_mapping[col] = 'availability_zone'
+        # Spot price variations
+        elif 'spot' in col and 'price' in col:
+            col_mapping[col] = 'spot_price'
+        elif col == 'price':
+            col_mapping[col] = 'spot_price'
+        # On-demand price variations
+        elif 'ondemand' in col or 'on_demand' in col:
+            col_mapping[col] = 'on_demand_price'
+        # Discount percentage
+        elif 'discount' in col:
+            col_mapping[col] = 'discount_pct'
+        # Volatility
+        elif 'volatility' in col:
+            col_mapping[col] = 'volatility_24h'
+        # Price velocity
+        elif 'velocity' in col:
+            if '1h' in col or '1_h' in col:
+                col_mapping[col] = 'price_velocity_1h'
+            elif '6h' in col or '6_h' in col:
+                col_mapping[col] = 'price_velocity_6h'
+        # Spike count
+        elif 'spike' in col:
+            col_mapping[col] = 'spike_count_24h'
+
+    df = df.rename(columns=col_mapping)
+    return df
+
+def calculate_missing_features(df):
+    """Calculate missing features from basic spot price data"""
+    df = df.copy()
+
+    # Calculate on-demand price if missing (using a fixed ratio or lookup)
+    if 'on_demand_price' not in df.columns:
+        # Estimate: on-demand is typically 3-5x spot price for stable instances
+        # Use a conservative multiplier
+        df['on_demand_price'] = df['spot_price'] * 4.0
+        print(f"    ⚠️  Estimated on_demand_price (spot_price × 4)")
+
+    # Calculate discount percentage if missing
+    if 'discount_pct' not in df.columns:
+        df['discount_pct'] = ((df['on_demand_price'] - df['spot_price']) / df['on_demand_price']) * 100
+        print(f"    ✓ Calculated discount_pct")
+
+    # Sort by pool and timestamp for rolling calculations
+    df = df.sort_values(['instance_type', 'availability_zone', 'timestamp'])
+
+    # Calculate volatility (24-hour rolling std) if missing
+    if 'volatility_24h' not in df.columns:
+        df['volatility_24h'] = df.groupby(['instance_type', 'availability_zone'])['spot_price'].transform(
+            lambda x: x.rolling(window=24, min_periods=1).std()
+        )
+        print(f"    ✓ Calculated volatility_24h")
+
+    # Calculate price velocity (hourly change) if missing
+    if 'price_velocity_1h' not in df.columns:
+        df['price_velocity_1h'] = df.groupby(['instance_type', 'availability_zone'])['spot_price'].transform(
+            lambda x: x.pct_change()
+        ).fillna(0)
+        print(f"    ✓ Calculated price_velocity_1h")
+
+    if 'price_velocity_6h' not in df.columns:
+        df['price_velocity_6h'] = df.groupby(['instance_type', 'availability_zone'])['spot_price'].transform(
+            lambda x: x.pct_change(periods=6)
+        ).fillna(0)
+        print(f"    ✓ Calculated price_velocity_6h")
+
+    # Calculate spike count (24-hour window) if missing
+    if 'spike_count_24h' not in df.columns:
+        # Define spike as >50% price jump
+        df['_temp_spike'] = (df.groupby(['instance_type', 'availability_zone'])['spot_price'].transform(
+            lambda x: x.pct_change()
+        ).fillna(0) > 0.5).astype(int)
+
+        df['spike_count_24h'] = df.groupby(['instance_type', 'availability_zone'])['_temp_spike'].transform(
+            lambda x: x.rolling(window=24, min_periods=1).sum()
+        )
+        df = df.drop(columns=['_temp_spike'])
+        print(f"    ✓ Calculated spike_count_24h")
+
+    return df
+
 def load_data():
     """Load training (2023-24) and test (2025 Q1/Q2/Q3) data"""
     print("\n📂 Loading data...")
@@ -107,18 +205,33 @@ def load_data():
         # Training data (2023-24)
         print(f"  Loading training data (2023-24)...")
         df_train = pd.read_csv(CONFIG['training_data'])
+        df_train = standardize_columns(df_train)
+
+        if 'timestamp' not in df_train.columns:
+            print(f"    ⚠️  Available columns: {list(df_train.columns)}")
+            raise ValueError("No timestamp column found in training data")
+
         df_train['timestamp'] = pd.to_datetime(df_train['timestamp'])
         print(f"    ✓ Training: {len(df_train):,} rows")
 
         # Test data (2025 Q1/Q2/Q3)
         print(f"  Loading test data (2025)...")
+
         df_test_q1 = pd.read_csv(CONFIG['test_q1'])
+        df_test_q1 = standardize_columns(df_test_q1)
+
+        if 'timestamp' not in df_test_q1.columns:
+            print(f"    ⚠️  Q1 columns: {list(df_test_q1.columns)}")
+            raise ValueError("No timestamp column found in Q1 test data")
+
         df_test_q1['timestamp'] = pd.to_datetime(df_test_q1['timestamp'])
 
         df_test_q2 = pd.read_csv(CONFIG['test_q2'])
+        df_test_q2 = standardize_columns(df_test_q2)
         df_test_q2['timestamp'] = pd.to_datetime(df_test_q2['timestamp'])
 
         df_test_q3 = pd.read_csv(CONFIG['test_q3'])
+        df_test_q3 = standardize_columns(df_test_q3)
         df_test_q3['timestamp'] = pd.to_datetime(df_test_q3['timestamp'])
 
         df_test = pd.concat([df_test_q1, df_test_q2, df_test_q3], ignore_index=True)
@@ -129,10 +242,33 @@ def load_data():
         print(f"    ✓ Test Q3: {len(df_test_q3):,} rows")
         print(f"    ✓ Total Test: {len(df_test):,} rows")
 
+        # Calculate missing features if needed
+        print(f"  🔧 Calculating missing features...")
+        df_train = calculate_missing_features(df_train)
+        df_test = calculate_missing_features(df_test)
+
+        # Verify required columns are present
+        required_cols = ['timestamp', 'instance_type', 'availability_zone', 'spot_price']
+        missing_train = [col for col in required_cols if col not in df_train.columns]
+        missing_test = [col for col in required_cols if col not in df_test.columns]
+
+        if missing_train:
+            print(f"    ⚠️  Training data missing: {missing_train}")
+            print(f"    ⚠️  Available: {list(df_train.columns)}")
+            raise ValueError(f"Required columns missing from training data: {missing_train}")
+        if missing_test:
+            print(f"    ⚠️  Test data missing: {missing_test}")
+            print(f"    ⚠️  Available: {list(df_test.columns)}")
+            raise ValueError(f"Required columns missing from test data: {missing_test}")
+
+        print(f"  ✓ All required features present")
+
         return df_train, df_test
 
     except Exception as e:
         print(f"    ❌ Error loading data: {e}")
+        import traceback
+        traceback.print_exc()
         sys.exit(1)
 
 # ============================================================================
