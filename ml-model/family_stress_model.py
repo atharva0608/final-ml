@@ -99,12 +99,12 @@ CONFIG = {
     },
 
     # Target definition
-    'spike_threshold': 0.05,  # REDUCED: 5% (was 10% - too high for stable data)
+    'spike_threshold': 0.01,  # REDUCED: 1% (Mumbai data is very stable!)
     'lookahead_hours': 6,     # Predict 6 hours ahead
     'lookahead_intervals': 36,  # 6 hours / 10 min intervals
 
     # Feature windows
-    'price_position_window_days': 30,  # 30-day min/max
+    'price_position_window_days': 7,  # REDUCED: 7-day (30-day too stable)
 
     # Model hyperparameters
     'model_params': {
@@ -361,11 +361,11 @@ def create_target_variable(df, spike_threshold=0.10, lookahead=36):
 # 4. FEATURE ENGINEERING: Hardware-Aware Stress Signals
 # ============================================================================
 
-def calculate_price_position(df, window_days=30):
+def calculate_price_position(df, window_days=7):
     """
     A. Price Position (Normalized Pressure)
 
-    P_pos = (P_current - P_min_30d) / (P_max_30d - P_min_30d + ε)
+    P_pos = (P_current - P_min_7d) / (P_max_7d - P_min_7d + ε)
 
     Interpretation:
     - 0.0 = Cheapest price recently (safe)
@@ -376,25 +376,85 @@ def calculate_price_position(df, window_days=30):
     df = df.sort_values(['pool_id', 'timestamp']).copy()
     window = window_days * 24 * 6  # Convert to 10-min intervals
 
-    df['price_min_30d'] = df.groupby('pool_id')['spot_price'].transform(
-        lambda x: x.rolling(window=window, min_periods=1).min()
+    # Diagnostic: Check actual price ranges
+    print(f"  Diagnostic: Checking price volatility...")
+    for pool_id in df['pool_id'].unique()[:3]:  # Check first 3 pools
+        pool_prices = df[df['pool_id'] == pool_id]['spot_price']
+        print(f"    {pool_id}: min=${pool_prices.min():.4f}, max=${pool_prices.max():.4f}, range=${pool_prices.max()-pool_prices.min():.4f}")
+
+    df['price_min_7d'] = df.groupby('pool_id')['spot_price'].transform(
+        lambda x: x.rolling(window=window, min_periods=max(1, window//10)).min()
     )
-    df['price_max_30d'] = df.groupby('pool_id')['spot_price'].transform(
-        lambda x: x.rolling(window=window, min_periods=1).max()
+    df['price_max_7d'] = df.groupby('pool_id')['spot_price'].transform(
+        lambda x: x.rolling(window=window, min_periods=max(1, window//10)).max()
     )
 
-    epsilon = 1e-9
+    # Calculate range
+    df['price_range'] = df['price_max_7d'] - df['price_min_7d']
+
+    # Use adaptive epsilon based on price magnitude
+    epsilon = df['spot_price'].median() * 0.001  # 0.1% of median price
+    print(f"  Using epsilon: {epsilon:.6f}")
+
     df['price_position'] = (
-        (df['spot_price'] - df['price_min_30d']) /
-        (df['price_max_30d'] - df['price_min_30d'] + epsilon)
+        (df['spot_price'] - df['price_min_7d']) /
+        (df['price_range'] + epsilon)
     )
 
     # Clip to [0, 1]
     df['price_position'] = df['price_position'].clip(0, 1).astype('float32' if CONFIG['use_float32'] else 'float64')
 
+    # Diagnostic output
+    zero_range_count = (df['price_range'] < epsilon).sum()
+    if zero_range_count > 0:
+        print(f"  ⚠️  {zero_range_count:,} rows ({zero_range_count/len(df)*100:.1f}%) have near-zero price range (very stable)")
+
     print(f"  ✓ Price Position calculated")
     print(f"  Mean: {df['price_position'].mean():.3f}")
     print(f"  Std: {df['price_position'].std():.3f}")
+    print(f"  Min: {df['price_position'].min():.3f}, Max: {df['price_position'].max():.3f}")
+
+    # Clean up temp columns
+    df = df.drop(columns=['price_min_7d', 'price_max_7d', 'price_range'])
+
+    return df
+
+def calculate_price_velocity(df):
+    """
+    Price Velocity (Rate of Change) - Alternative for stable markets
+
+    Captures small price movements that position might miss.
+
+    velocity = (P_current - P_1h_ago) / P_1h_ago
+    volatility = rolling std dev over 6 hours
+    """
+    print(f"\n📈 Calculating Price Velocity & Volatility (backup features)...")
+
+    df = df.sort_values(['pool_id', 'timestamp']).copy()
+
+    # Price velocity: % change over last hour (6 intervals)
+    df['price_velocity_1h'] = df.groupby('pool_id')['spot_price'].transform(
+        lambda x: x.pct_change(periods=6).fillna(0)
+    )
+
+    # Rolling volatility: std dev over 6 hours (36 intervals)
+    df['price_volatility_6h'] = df.groupby('pool_id')['spot_price'].transform(
+        lambda x: x.rolling(window=36, min_periods=6).std().fillna(0)
+    )
+
+    # Normalize volatility by current price (coefficient of variation)
+    df['price_cv_6h'] = (df['price_volatility_6h'] / (df['spot_price'] + 1e-8)).fillna(0)
+
+    # Convert to float32
+    if CONFIG['use_float32']:
+        df['price_velocity_1h'] = df['price_velocity_1h'].astype('float32')
+        df['price_volatility_6h'] = df['price_volatility_6h'].astype('float32')
+        df['price_cv_6h'] = df['price_cv_6h'].astype('float32')
+
+    print(f"  ✓ Price Velocity calculated")
+    print(f"  Velocity Mean: {df['price_velocity_1h'].mean():.6f}, Std: {df['price_velocity_1h'].std():.6f}")
+    print(f"  Volatility Mean: {df['price_volatility_6h'].mean():.6f}, Std: {df['price_volatility_6h'].std():.6f}")
+    print(f"  CV Mean: {df['price_cv_6h'].mean():.6f}, Std: {df['price_cv_6h'].std():.6f}")
 
     return df
 
@@ -519,7 +579,10 @@ def calculate_time_embeddings(df):
 # ============================================================================
 
 FEATURE_COLUMNS = [
-    'price_position',      # A. Normalized price pressure
+    'price_position',      # A. Normalized price pressure (7-day range)
+    'price_velocity_1h',   # A2. Rate of change (backup for stable markets)
+    'price_volatility_6h', # A3. Rolling std dev (backup for stable markets)
+    'price_cv_6h',         # A4. Coefficient of variation (backup for stable markets)
     'discount_depth',      # B. Economic buffer
     'family_stress',       # C. Hardware contagion (KEY FEATURE)
     'hour_sin',            # D. Time embeddings
@@ -761,11 +824,13 @@ def main():
     print("="*80)
 
     df_train = calculate_price_position(df_train, CONFIG['price_position_window_days'])
+    df_train = calculate_price_velocity(df_train)  # Backup features for stable markets
     df_train = calculate_discount_depth(df_train)
     df_train = calculate_family_stress_index(df_train, CONFIG['families'])
     df_train = calculate_time_embeddings(df_train)
 
     df_test = calculate_price_position(df_test, CONFIG['price_position_window_days'])
+    df_test = calculate_price_velocity(df_test)  # Backup features for stable markets
     df_test = calculate_discount_depth(df_test)
     df_test = calculate_family_stress_index(df_test, CONFIG['families'])
     df_test = calculate_time_embeddings(df_test)
@@ -777,6 +842,36 @@ def main():
     print(f"\n✓ Final dataset sizes:")
     print(f"  Training: {len(df_train):,} rows")
     print(f"  Test: {len(df_test):,} rows")
+
+    # Data quality validation
+    print(f"\n🔍 Data Quality Validation...")
+    print("="*80)
+    zero_variance_features = []
+    for feature in FEATURE_COLUMNS:
+        std = df_train[feature].std()
+        mean = df_train[feature].mean()
+        print(f"  {feature:20s}: Mean={mean:8.6f}, Std={std:8.6f}", end="")
+        if std < 1e-6:
+            print("  ⚠️  ZERO VARIANCE - Feature may not be useful!")
+            zero_variance_features.append(feature)
+        else:
+            print("  ✓")
+
+    if zero_variance_features:
+        print(f"\n⚠️  WARNING: {len(zero_variance_features)} features have zero variance!")
+        print(f"  Features: {', '.join(zero_variance_features)}")
+        print(f"\n  Possible causes:")
+        print(f"  1. Data is EXTREMELY stable (prices barely move)")
+        print(f"  2. Window size too large for stable market")
+        print(f"  3. Data quality issues (all prices same)")
+        print(f"\n  Recommendations:")
+        print(f"  1. Check raw price data for actual volatility")
+        print(f"  2. Reduce window size (try 3-day or 24-hour)")
+        print(f"  3. Consider using velocity/volatility features instead")
+        print(f"  4. Use different time period with more price movement")
+        print(f"\n  The model will still train but may have poor performance.")
+        print(f"  Zero-variance features contribute nothing to predictions.")
+    print("="*80)
 
     # 5. Train model
     model = train_model(df_train, scale_pos_weight)
