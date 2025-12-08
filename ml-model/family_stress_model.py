@@ -148,7 +148,7 @@ print("="*80)
 # 1. MEMORY-EFFICIENT DATA LOADING
 # ============================================================================
 
-def standardize_columns(df):
+def standardize_columns(df, verbose=False):
     """Standardize column names across different CSV formats"""
     df.columns = df.columns.str.lower().str.strip()
 
@@ -181,25 +181,26 @@ def standardize_columns(df):
     if price_col:
         col_mapping[price_col] = 'spot_price'
 
-    # Diagnostic output
-    print(f"  📋 Column mapping:")
-    print(f"    Timestamp: '{timestamp_col}' → 'timestamp'")
-    print(f"    Instance: '{instance_type_col}' → 'instance_type'")
-    print(f"    AZ: '{az_col}' → 'availability_zone'")
-    print(f"    Price: '{price_col}' → 'spot_price'")
+    # Diagnostic output (only if verbose=True, i.e., first chunk)
+    if verbose:
+        print(f"  📋 Column mapping:")
+        print(f"    Timestamp: '{timestamp_col}' → 'timestamp'")
+        print(f"    Instance: '{instance_type_col}' → 'instance_type'")
+        print(f"    AZ: '{az_col}' → 'availability_zone'")
+        print(f"    Price: '{price_col}' → 'spot_price'")
 
-    # Warn if reading wrong column
-    if price_col and 'ondemand' in price_col.lower():
-        print(f"\n  ⚠️  WARNING: Reading '{price_col}' which appears to be ON-DEMAND prices!")
-        print(f"     On-demand prices are FIXED (no variance per instance).")
-        print(f"     Looking for 'SpotPrice' column instead...")
-        # Try to find spot price column
-        for col in df.columns:
-            if 'spot' in col.lower() and 'price' in col.lower():
-                price_col = col
-                col_mapping[price_col] = 'spot_price'
-                print(f"     ✓ Found and using '{price_col}' instead!")
-                break
+        # Warn if reading wrong column
+        if price_col and 'ondemand' in price_col.lower():
+            print(f"\n  ⚠️  WARNING: Reading '{price_col}' which appears to be ON-DEMAND prices!")
+            print(f"     On-demand prices are FIXED (no variance per instance).")
+            print(f"     Looking for 'SpotPrice' column instead...")
+            # Try to find spot price column
+            for col in df.columns:
+                if 'spot' in col.lower() and 'price' in col.lower():
+                    price_col = col
+                    col_mapping[price_col] = 'spot_price'
+                    print(f"     ✓ Found and using '{price_col}' instead!")
+                    break
 
     # Rename columns
     df = df.rename(columns=col_mapping)
@@ -232,10 +233,13 @@ def load_data_efficient(file_path, families_config, is_training=True):
     chunks = []
     total_rows_before = 0
     total_rows_after = 0
+    first_chunk = True
 
     for chunk in tqdm(pd.read_csv(file_path, chunksize=CONFIG['chunk_size']),
-                      desc="  Loading chunks"):
-        chunk = standardize_columns(chunk)
+                      desc="  Loading chunks", unit="chunk"):
+        # Show column mapping only for first chunk
+        chunk = standardize_columns(chunk, verbose=first_chunk)
+        first_chunk = False
         total_rows_before += len(chunk)
 
         # Filter to required instances BEFORE concatenating
@@ -252,13 +256,34 @@ def load_data_efficient(file_path, families_config, is_training=True):
 
     # Quick variance check to confirm we're reading spot prices (not on-demand)
     if 'spot_price' in df.columns:
+        price_min = df['spot_price'].min()
+        price_max = df['spot_price'].max()
         price_std = df['spot_price'].std()
-        price_range = df['spot_price'].max() - df['spot_price'].min()
+        price_range = price_max - price_min
+
         print(f"\n  📊 Spot Price Variance Check:")
-        print(f"    Min: ${df['spot_price'].min():.4f}")
-        print(f"    Max: ${df['spot_price'].max():.4f}")
+        print(f"    Min: ${price_min:.4f}")
+        print(f"    Max: ${price_max:.4f}")
         print(f"    Range: ${price_range:.4f}")
         print(f"    Std: ${price_std:.6f}")
+
+        # Check for negative prices (should never happen)
+        if price_min < 0:
+            print(f"\n    ❌ CRITICAL: Negative spot prices detected (min=${price_min:.4f})!")
+            print(f"       Spot prices should NEVER be negative.")
+            print(f"       Possible causes:")
+            print(f"         1. Wrong column selected (reading 'Savings' as price?)")
+            print(f"         2. Data corruption in CSV file")
+            print(f"         3. Normalization error")
+            print(f"       Filtering out negative prices...")
+
+            neg_count = (df['spot_price'] < 0).sum()
+            print(f"       Removing {neg_count:,} rows with negative prices ({neg_count/len(df)*100:.1f}%)")
+            df = df[df['spot_price'] >= 0].copy()
+
+            if len(df) == 0:
+                print(f"\n    ❌ ERROR: No valid rows remaining after filtering!")
+                return None
 
         if price_std < 0.001:
             print(f"\n    ⚠️  WARNING: Spot prices have very low variance (std < $0.001)!")
