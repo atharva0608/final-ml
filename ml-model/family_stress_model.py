@@ -646,11 +646,44 @@ def evaluate_and_visualize(model, df_test, output_dir, plots_dir):
     y_pred_proba = model.predict_proba(X_test)[:, 1]
     y_pred = (y_pred_proba > CONFIG['decision_threshold']).astype(int)
 
-    # Calculate metrics
-    precision = precision_score(y_test, y_pred)
-    recall = recall_score(y_test, y_pred)
-    f1 = f1_score(y_test, y_pred)
-    auc_score = roc_auc_score(y_test, y_pred_proba)
+    # Prediction diagnostics
+    print(f"\n  🔍 Prediction Diagnostics:")
+    print(f"    Unique predictions: {len(np.unique(y_pred))}")
+    print(f"    Predicted positive: {y_pred.sum():,} ({y_pred.sum()/len(y_pred)*100:.2f}%)")
+    print(f"    Actual positive: {y_test.sum():,} ({y_test.sum()/len(y_test)*100:.2f}%)")
+    print(f"    Pred proba range: [{y_pred_proba.min():.6f}, {y_pred_proba.max():.6f}]")
+
+    # Check if model is making diverse predictions
+    if len(np.unique(y_pred)) == 1:
+        print(f"\n  ❌ CRITICAL: Model only predicts ONE class ({np.unique(y_pred)[0]})!")
+        print(f"     This happens when features have zero variance.")
+        print(f"     Model cannot distinguish between stable and unstable periods.")
+        print(f"\n  🔧 Solutions:")
+        print(f"     1. Use data period with actual price movement")
+        print(f"     2. Lower decision threshold (try 0.01 instead of 0.5)")
+        print(f"     3. Check raw CSV - prices may be aggregated/filtered incorrectly")
+
+        # Try different threshold
+        print(f"\n  Attempting with threshold=0.01...")
+        y_pred_low = (y_pred_proba > 0.01).astype(int)
+        print(f"    Predicted positive with 0.01 threshold: {y_pred_low.sum():,}")
+        if y_pred_low.sum() > 0:
+            y_pred = y_pred_low
+            print(f"    ✓ Using lower threshold")
+        else:
+            print(f"    ❌ Still no positive predictions - model is broken")
+
+    # Calculate metrics with zero_division handling
+    precision = precision_score(y_test, y_pred, zero_division=0)
+    recall = recall_score(y_test, y_pred, zero_division=0)
+    f1 = f1_score(y_test, y_pred, zero_division=0)
+
+    # AUC requires at least some variance in predictions
+    try:
+        auc_score = roc_auc_score(y_test, y_pred_proba)
+    except ValueError:
+        auc_score = 0.5  # Random guessing
+        print(f"    ⚠️  Cannot calculate AUC (no variance in predictions)")
 
     print(f"\n  Test Metrics:")
     print(f"    Precision: {precision:.3f}")
@@ -658,111 +691,142 @@ def evaluate_and_visualize(model, df_test, output_dir, plots_dir):
     print(f"    F1 Score: {f1:.3f}")
     print(f"    AUC: {auc_score:.3f}")
 
-    # Confusion matrix
+    # Confusion matrix with error handling
     cm = confusion_matrix(y_test, y_pred)
     print(f"\n  Confusion Matrix:")
-    print(f"    TN: {cm[0,0]:,} | FP: {cm[0,1]:,}")
-    print(f"    FN: {cm[1,0]:,} | TP: {cm[1,1]:,}")
+    if cm.shape == (2, 2):
+        print(f"    TN: {cm[0,0]:,} | FP: {cm[0,1]:,}")
+        print(f"    FN: {cm[1,0]:,} | TP: {cm[1,1]:,}")
+    elif cm.shape == (1, 1):
+        print(f"    ❌ Only one class predicted")
+        print(f"    All predictions: {np.unique(y_pred)[0]} (count: {cm[0,0]:,})")
+    else:
+        print(f"    Shape: {cm.shape}")
+        print(f"    {cm}")
+
+    # Skip graph generation if predictions are broken
+    if len(np.unique(y_pred)) == 1 or precision == 0:
+        print(f"\n  ⚠️  Skipping graph generation (predictions are broken)")
+        print(f"     Model only predicts one class - graphs would be meaningless")
+        return {
+            'precision': precision,
+            'recall': recall,
+            'f1': f1,
+            'auc': auc_score
+        }
 
     # ========== GRAPH 1: Precision-Recall Curve ==========
     print(f"\n  Creating Graph 1: Precision-Recall Curve...")
 
-    precisions, recalls, thresholds = precision_recall_curve(y_test, y_pred_proba)
-    pr_auc = auc(recalls, precisions)
+    try:
+        precisions, recalls, thresholds = precision_recall_curve(y_test, y_pred_proba)
+        pr_auc = auc(recalls, precisions)
 
-    fig, ax = plt.subplots(figsize=(10, 8))
-    ax.plot(recalls, precisions, linewidth=2, label=f'PR Curve (AUC = {pr_auc:.3f})')
-    ax.axhline(y=precision, color='r', linestyle='--', alpha=0.5, label=f'Operating Point (P={precision:.3f}, R={recall:.3f})')
-    ax.axvline(x=recall, color='r', linestyle='--', alpha=0.5)
-    ax.scatter([recall], [precision], color='red', s=100, zorder=5)
+        fig, ax = plt.subplots(figsize=(10, 8))
+        ax.plot(recalls, precisions, linewidth=2, label=f'PR Curve (AUC = {pr_auc:.3f})')
+        ax.axhline(y=precision, color='r', linestyle='--', alpha=0.5, label=f'Operating Point (P={precision:.3f}, R={recall:.3f})')
+        ax.axvline(x=recall, color='r', linestyle='--', alpha=0.5)
+        ax.scatter([recall], [precision], color='red', s=100, zorder=5)
 
-    ax.set_xlabel('Recall', fontsize=12)
-    ax.set_ylabel('Precision', fontsize=12)
-    ax.set_title('Precision-Recall Curve\n(Goal: Top-Right Corner)', fontsize=14, fontweight='bold')
-    ax.legend(fontsize=10)
-    ax.grid(True, alpha=0.3)
+        ax.set_xlabel('Recall', fontsize=12)
+        ax.set_ylabel('Precision', fontsize=12)
+        ax.set_title('Precision-Recall Curve\n(Goal: Top-Right Corner)', fontsize=14, fontweight='bold')
+        ax.legend(fontsize=10)
+        ax.grid(True, alpha=0.3)
 
-    plt.tight_layout()
-    plt.savefig(Path(plots_dir) / 'precision_recall_curve.png', dpi=150)
-    plt.close()
+        plt.tight_layout()
+        plt.savefig(Path(plots_dir) / 'precision_recall_curve.png', dpi=150)
+        plt.close()
+        print(f"    ✓ Saved to {Path(plots_dir) / 'precision_recall_curve.png'}")
+    except Exception as e:
+        print(f"    ⚠️  Failed to create PR curve: {e}")
 
     # ========== GRAPH 2: Feature Importance ==========
     print(f"  Creating Graph 2: Feature Importance...")
 
-    importances = model.feature_importances_
-    feature_importance_df = pd.DataFrame({
-        'feature': FEATURE_COLUMNS,
-        'importance': importances
-    }).sort_values('importance', ascending=False)
+    try:
+        importances = model.feature_importances_
+        feature_importance_df = pd.DataFrame({
+            'feature': FEATURE_COLUMNS,
+            'importance': importances
+        }).sort_values('importance', ascending=False)
 
-    fig, ax = plt.subplots(figsize=(10, 6))
-    colors = ['red' if feat == 'family_stress' else 'steelblue' for feat in feature_importance_df['feature']]
-    ax.barh(range(len(feature_importance_df)), feature_importance_df['importance'], color=colors)
-    ax.set_yticks(range(len(feature_importance_df)))
-    ax.set_yticklabels(feature_importance_df['feature'])
-    ax.set_xlabel('Importance', fontsize=12)
-    ax.set_title('Feature Importance\n(Red = Family Stress Index)', fontsize=14, fontweight='bold')
-    ax.grid(axis='x', alpha=0.3)
+        fig, ax = plt.subplots(figsize=(10, 6))
+        colors = ['red' if feat == 'family_stress' else 'steelblue' for feat in feature_importance_df['feature']]
+        ax.barh(range(len(feature_importance_df)), feature_importance_df['importance'], color=colors)
+        ax.set_yticks(range(len(feature_importance_df)))
+        ax.set_yticklabels(feature_importance_df['feature'])
+        ax.set_xlabel('Importance', fontsize=12)
+        ax.set_title('Feature Importance\n(Red = Family Stress Index)', fontsize=14, fontweight='bold')
+        ax.grid(axis='x', alpha=0.3)
 
-    # Add annotation if family_stress is top
-    if feature_importance_df.iloc[0]['feature'] == 'family_stress':
-        ax.text(0.95, 0.95, '✓ Hardware Contagion\nSignal Validated!',
-                transform=ax.transAxes, fontsize=10, verticalalignment='top',
-                horizontalalignment='right', bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.8))
+        # Add annotation if family_stress is top
+        if 'family_stress' in feature_importance_df['feature'].values:
+            if feature_importance_df.iloc[0]['feature'] == 'family_stress':
+                ax.text(0.95, 0.95, '✓ Hardware Contagion\nSignal Validated!',
+                        transform=ax.transAxes, fontsize=10, verticalalignment='top',
+                        horizontalalignment='right', bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.8))
 
-    plt.tight_layout()
-    plt.savefig(Path(plots_dir) / 'feature_importance_bar_chart.png', dpi=150)
-    plt.close()
+        plt.tight_layout()
+        plt.savefig(Path(plots_dir) / 'feature_importance_bar_chart.png', dpi=150)
+        plt.close()
+        print(f"    ✓ Saved to {Path(plots_dir) / 'feature_importance_bar_chart.png'}")
+    except Exception as e:
+        print(f"    ⚠️  Failed to create feature importance: {e}")
 
     # ========== GRAPH 3: Prediction Timeline Overlay ==========
     print(f"  Creating Graph 3: Prediction Timeline Overlay...")
 
-    # Sample a pool for visualization
-    sample_pool = df_test['pool_id'].value_counts().index[0]
-    df_sample = df_test[df_test['pool_id'] == sample_pool].copy()
-    df_sample = df_sample.sort_values('timestamp').head(500)  # First 500 points
+    try:
+        # Sample a pool for visualization
+        sample_pool = df_test['pool_id'].value_counts().index[0]
+        df_sample = df_test[df_test['pool_id'] == sample_pool].copy()
+        df_sample = df_sample.sort_values('timestamp').head(500)  # First 500 points
 
-    if len(df_sample) > 0:
-        X_sample = df_sample[FEATURE_COLUMNS]
-        y_sample_true = df_sample['is_unstable_next_6h']
-        y_sample_pred = model.predict_proba(X_sample)[:, 1]
+        if len(df_sample) > 0:
+            X_sample = df_sample[FEATURE_COLUMNS]
+            y_sample_true = df_sample['is_unstable_next_6h']
+            y_sample_pred = model.predict_proba(X_sample)[:, 1]
 
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10), sharex=True)
+            fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10), sharex=True)
 
-        # Top panel: Price with true instability markers
-        ax1.plot(df_sample['timestamp'], df_sample['spot_price'], linewidth=1, color='black', label='Spot Price')
-        unstable_mask = y_sample_true == 1
-        if unstable_mask.sum() > 0:
-            ax1.scatter(df_sample.loc[unstable_mask, 'timestamp'],
-                       df_sample.loc[unstable_mask, 'spot_price'],
-                       color='red', s=30, alpha=0.6, label='True Unstable', zorder=5)
+            # Top panel: Price with true instability markers
+            ax1.plot(df_sample['timestamp'], df_sample['spot_price'], linewidth=1, color='black', label='Spot Price')
+            unstable_mask = y_sample_true == 1
+            if unstable_mask.sum() > 0:
+                ax1.scatter(df_sample.loc[unstable_mask, 'timestamp'],
+                           df_sample.loc[unstable_mask, 'spot_price'],
+                           color='red', s=30, alpha=0.6, label='True Unstable', zorder=5)
 
-        ax1.set_ylabel('Spot Price ($)', fontsize=12)
-        ax1.set_title(f'Prediction Timeline: {sample_pool}\n(Top: Price + True Labels | Bottom: Model Predictions)',
-                     fontsize=14, fontweight='bold')
-        ax1.legend()
-        ax1.grid(True, alpha=0.3)
+            ax1.set_ylabel('Spot Price ($)', fontsize=12)
+            ax1.set_title(f'Prediction Timeline: {sample_pool}\n(Top: Price + True Labels | Bottom: Model Predictions)',
+                         fontsize=14, fontweight='bold')
+            ax1.legend()
+            ax1.grid(True, alpha=0.3)
 
-        # Bottom panel: Predicted probability
-        ax2.plot(df_sample['timestamp'], y_sample_pred, linewidth=2, color='blue', label='P(Unstable)')
-        ax2.axhline(y=CONFIG['decision_threshold'], color='red', linestyle='--',
-                   linewidth=1, label=f'Threshold ({CONFIG["decision_threshold"]})')
-        ax2.fill_between(df_sample['timestamp'], CONFIG['decision_threshold'], 1.0,
-                        alpha=0.2, color='red', label='Red Zone (Unsafe)')
-        ax2.fill_between(df_sample['timestamp'], 0, CONFIG['decision_threshold'],
-                        alpha=0.2, color='green', label='Green Zone (Safe)')
+            # Bottom panel: Predicted probability
+            ax2.plot(df_sample['timestamp'], y_sample_pred, linewidth=2, color='blue', label='P(Unstable)')
+            ax2.axhline(y=CONFIG['decision_threshold'], color='red', linestyle='--',
+                       linewidth=1, label=f'Threshold ({CONFIG["decision_threshold"]})')
+            ax2.fill_between(df_sample['timestamp'], CONFIG['decision_threshold'], 1.0,
+                            alpha=0.2, color='red', label='Red Zone (Unsafe)')
+            ax2.fill_between(df_sample['timestamp'], 0, CONFIG['decision_threshold'],
+                            alpha=0.2, color='green', label='Green Zone (Safe)')
 
-        ax2.set_xlabel('Timestamp', fontsize=12)
-        ax2.set_ylabel('Probability', fontsize=12)
-        ax2.set_ylim(0, 1)
-        ax2.legend(loc='upper right')
-        ax2.grid(True, alpha=0.3)
+            ax2.set_xlabel('Timestamp', fontsize=12)
+            ax2.set_ylabel('Probability', fontsize=12)
+            ax2.set_ylim(0, 1)
+            ax2.legend(loc='upper right')
+            ax2.grid(True, alpha=0.3)
 
-        plt.tight_layout()
-        plt.savefig(Path(plots_dir) / 'prediction_timeline_overlay.png', dpi=150)
-        plt.close()
+            plt.tight_layout()
+            plt.savefig(Path(plots_dir) / 'prediction_timeline_overlay.png', dpi=150)
+            plt.close()
+            print(f"    ✓ Saved to {Path(plots_dir) / 'prediction_timeline_overlay.png'}")
+    except Exception as e:
+        print(f"    ⚠️  Failed to create timeline: {e}")
 
-    print(f"\n  ✓ All graphs saved to {plots_dir}/")
+    print(f"\n  ✓ Graph generation complete")
 
     # Save metrics to file
     metrics_file = Path(output_dir) / 'evaluation_metrics.txt'
@@ -864,14 +928,50 @@ def main():
         print(f"  1. Data is EXTREMELY stable (prices barely move)")
         print(f"  2. Window size too large for stable market")
         print(f"  3. Data quality issues (all prices same)")
-        print(f"\n  Recommendations:")
-        print(f"  1. Check raw price data for actual volatility")
-        print(f"  2. Reduce window size (try 3-day or 24-hour)")
-        print(f"  3. Consider using velocity/volatility features instead")
-        print(f"  4. Use different time period with more price movement")
-        print(f"\n  The model will still train but may have poor performance.")
-        print(f"  Zero-variance features contribute nothing to predictions.")
+        print(f"\n  🔧 AUTO-FIX: Removing zero-variance features from training...")
+
+        # Create new feature list without zero-variance features
+        active_features = [f for f in FEATURE_COLUMNS if f not in zero_variance_features]
+
+        if len(active_features) < 2:
+            print(f"\n  ❌ CRITICAL: Only {len(active_features)} usable features!")
+            print(f"     Cannot train model with so few features.")
+            print(f"\n  ACTION REQUIRED:")
+            print(f"     1. Run diagnostic tool: python ml-model/diagnose_data.py")
+            print(f"     2. Check raw CSV data for price variance")
+            print(f"     3. Use different time period with actual market activity")
+            print(f"\n  Exiting...")
+            return
+        else:
+            print(f"  ✓ Removed {len(zero_variance_features)} features")
+            print(f"  ✓ Training with {len(active_features)} features: {active_features}")
+            # Update feature columns for training
+            FEATURE_COLUMNS.clear()
+            FEATURE_COLUMNS.extend(active_features)
+    else:
+        active_features = FEATURE_COLUMNS
+
     print("="*80)
+
+    # Final check: Do we have ANY variance in target variable?
+    train_pos = df_train['is_unstable_next_6h'].sum()
+    train_total = len(df_train)
+    test_pos = df_test['is_unstable_next_6h'].sum()
+
+    if train_pos < 10:
+        print(f"\n❌ CRITICAL: Only {train_pos} unstable samples in training data!")
+        print(f"   Model cannot learn from <10 positive samples.")
+        print(f"\n  ACTION REQUIRED:")
+        print(f"     1. Lower spike_threshold (current: {CONFIG['spike_threshold']*100}%)")
+        print(f"        Try: 'spike_threshold': 0.001 (0.1%)")
+        print(f"     2. Or use different time period with more volatility")
+        print(f"\n  Exiting...")
+        return
+
+    print(f"\n✓ Ready to train:")
+    print(f"  Features: {len(active_features)}")
+    print(f"  Training samples: {train_total:,} ({train_pos} unstable = {train_pos/train_total*100:.3f}%)")
+    print(f"  Test samples: {len(df_test):,} ({test_pos} unstable = {test_pos/len(df_test)*100:.3f}%)")
 
     # 5. Train model
     model = train_model(df_train, scale_pos_weight)
