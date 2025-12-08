@@ -212,6 +212,15 @@ def standardize_columns(df, verbose=False):
     # Select only these columns (drops all others including any duplicates)
     df = df[existing_cols].copy()
 
+    # CRITICAL: Remove negative spot prices (should never happen in real data)
+    if 'spot_price' in df.columns:
+        neg_mask = df['spot_price'] < 0
+        if neg_mask.any():
+            neg_count = neg_mask.sum()
+            if verbose:
+                print(f"\n  ⚠️  Found {neg_count:,} rows with negative prices in this chunk")
+            df = df[~neg_mask].copy()
+
     return df
 
 def load_data_efficient(file_path, families_config, is_training=True):
@@ -254,6 +263,39 @@ def load_data_efficient(file_path, families_config, is_training=True):
     print(f"  Rows before filter: {total_rows_before:,}")
     print(f"  Rows after filter: {total_rows_after:,} ({total_rows_after/total_rows_before*100:.1f}%)")
 
+    # Safety check: Remove invalid prices after concatenation
+    if 'spot_price' in df.columns:
+        initial_count = len(df)
+
+        # Remove negative prices
+        neg_mask = df['spot_price'] < 0
+        neg_count = neg_mask.sum()
+
+        # Remove NaN prices
+        nan_mask = df['spot_price'].isna()
+        nan_count = nan_mask.sum()
+
+        # Remove infinite prices
+        inf_mask = np.isinf(df['spot_price'])
+        inf_count = inf_mask.sum()
+
+        # Combine masks
+        invalid_mask = neg_mask | nan_mask | inf_mask
+        invalid_count = invalid_mask.sum()
+
+        if invalid_count > 0:
+            print(f"\n  🧹 Cleaning invalid prices:")
+            if neg_count > 0:
+                print(f"    Negative: {neg_count:,} rows ({neg_count/initial_count*100:.2f}%)")
+            if nan_count > 0:
+                print(f"    NaN: {nan_count:,} rows ({nan_count/initial_count*100:.2f}%)")
+            if inf_count > 0:
+                print(f"    Infinite: {inf_count:,} rows ({inf_count/initial_count*100:.2f}%)")
+            print(f"    Total removed: {invalid_count:,} rows ({invalid_count/initial_count*100:.2f}%)")
+
+            df = df[~invalid_mask].copy()
+            print(f"    Remaining: {len(df):,} rows")
+
     # Quick variance check to confirm we're reading spot prices (not on-demand)
     if 'spot_price' in df.columns:
         price_min = df['spot_price'].min()
@@ -267,23 +309,11 @@ def load_data_efficient(file_path, families_config, is_training=True):
         print(f"    Range: ${price_range:.4f}")
         print(f"    Std: ${price_std:.6f}")
 
-        # Check for negative prices (should never happen)
+        # Final check - should be clean now
         if price_min < 0:
-            print(f"\n    ❌ CRITICAL: Negative spot prices detected (min=${price_min:.4f})!")
-            print(f"       Spot prices should NEVER be negative.")
-            print(f"       Possible causes:")
-            print(f"         1. Wrong column selected (reading 'Savings' as price?)")
-            print(f"         2. Data corruption in CSV file")
-            print(f"         3. Normalization error")
-            print(f"       Filtering out negative prices...")
-
-            neg_count = (df['spot_price'] < 0).sum()
-            print(f"       Removing {neg_count:,} rows with negative prices ({neg_count/len(df)*100:.1f}%)")
-            df = df[df['spot_price'] >= 0].copy()
-
-            if len(df) == 0:
-                print(f"\n    ❌ ERROR: No valid rows remaining after filtering!")
-                return None
+            print(f"\n    ❌ ERROR: Negative prices still present after filtering!")
+            print(f"       This should not happen. Check data pipeline.")
+            return None
 
         if price_std < 0.001:
             print(f"\n    ⚠️  WARNING: Spot prices have very low variance (std < $0.001)!")
