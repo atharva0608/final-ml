@@ -203,8 +203,17 @@ def load_data_efficient(file_path, families_config, is_training=True):
         df = df.loc[:, ~df.columns.duplicated()]
         print(f"  ✓ Columns after dedup: {list(df.columns)}")
 
-    # Optimize dtypes
-    df['timestamp'] = pd.to_datetime(df['timestamp'])
+    # Optimize dtypes - handle mixed datetime formats
+    print(f"  Converting timestamps (handling mixed formats)...")
+    df['timestamp'] = pd.to_datetime(df['timestamp'], format='mixed', errors='coerce')
+
+    # Check for failed conversions
+    failed_timestamps = df['timestamp'].isna().sum()
+    if failed_timestamps > 0:
+        print(f"  ⚠️  {failed_timestamps:,} timestamps failed to parse (will be dropped)")
+        df = df.dropna(subset=['timestamp'])
+
+    print(f"  ✓ Final rows: {len(df):,}")
 
     if CONFIG['use_float32']:
         df['spot_price'] = df['spot_price'].astype('float32')
