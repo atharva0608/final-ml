@@ -40,9 +40,9 @@ sns.set_style('whitegrid')
 # ============================================================================
 
 CONFIG = {
-    # Data paths - SWAPPED: Train on volatile 2024, test on stable 2023
-    'training_data': '/Users/atharvapudale/Downloads/aws_mumbai_2024_all.csv',  # Has 13.6% unstable
-    'test_data': '/Users/atharvapudale/Downloads/aws_mumbai_2023_all.csv',      # Has 2.4% unstable
+    # Data paths - REVERTED: Train on stable 2023, test on volatile 2024 (with calibrated threshold)
+    'training_data': '/Users/atharvapudale/Downloads/aws_mumbai_2023_all.csv',  # Has 2.4% unstable
+    'test_data': '/Users/atharvapudale/Downloads/aws_mumbai_2024_all.csv',      # Has 13.6% unstable
 
     # M4 MacBook Air Optimizations
     'use_float32': True,  # Half memory vs float64
@@ -122,8 +122,10 @@ CONFIG = {
         'n_jobs': -1
     },
 
-    # Decision threshold (optimized for safety over cost)
-    'decision_threshold': 0.5,  # Mark as unsafe if P(unstable) > 50%
+    # Decision threshold (calibrated for 2023→2024 distribution shift)
+    # Training on 2.4% unstable, testing on 13.6% unstable
+    # Need HIGHER threshold to compensate for model being too conservative
+    'decision_threshold': 0.65,  # Mark as unsafe if P(unstable) > 65%
 
     # Output
     'output_dir': './training/outputs',
