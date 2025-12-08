@@ -67,8 +67,39 @@ CONFIG = {
         }
     },
 
+    # Static On-Demand prices (AWS Mumbai region)
+    # CRITICAL: Do NOT use spot_price * 4 - that makes discount always 75%!
+    'on_demand_prices': {
+        # C5 family (Compute Optimized)
+        'c5.large': 0.096,
+        'c5.xlarge': 0.192,
+        'c5.2xlarge': 0.384,
+        'c5.4xlarge': 0.768,
+        'c5.9xlarge': 1.728,
+        'c5.12xlarge': 2.304,
+        'c5.18xlarge': 3.456,
+        'c5.24xlarge': 4.608,
+        'c5.metal': 4.608,
+        # T4g family (ARM, Burstable)
+        't4g.nano': 0.0042,
+        't4g.micro': 0.0084,
+        't4g.small': 0.0168,
+        't4g.medium': 0.0336,
+        't4g.large': 0.0672,
+        't4g.xlarge': 0.1344,
+        't4g.2xlarge': 0.2688,
+        # T3 family (Burstable)
+        't3.nano': 0.0066,
+        't3.micro': 0.0132,
+        't3.small': 0.0264,
+        't3.medium': 0.0528,
+        't3.large': 0.1056,
+        't3.xlarge': 0.2112,
+        't3.2xlarge': 0.4224,
+    },
+
     # Target definition
-    'spike_threshold': 0.10,  # 10% price increase = unstable
+    'spike_threshold': 0.05,  # REDUCED: 5% (was 10% - too high for stable data)
     'lookahead_hours': 6,     # Predict 6 hours ahead
     'lookahead_intervals': 36,  # 6 hours / 10 min intervals
 
@@ -222,8 +253,16 @@ def load_data_efficient(file_path, families_config, is_training=True):
         df['instance_type'] = df['instance_type'].astype('category')
         df['availability_zone'] = df['availability_zone'].astype('category')
 
-    # Add on-demand price (estimated as 4x spot for simplicity)
-    df['on_demand_price'] = (df['spot_price'] * 4.0).astype('float32' if CONFIG['use_float32'] else 'float64')
+    # Add on-demand price (STATIC from AWS pricing, NOT spot*4!)
+    df['on_demand_price'] = df['instance_type'].map(CONFIG['on_demand_prices'])
+    # Fallback for missing types
+    missing_mask = df['on_demand_price'].isna()
+    if missing_mask.sum() > 0:
+        print(f"  ⚠️  {missing_mask.sum()} rows missing on-demand price, using fallback (spot*4)")
+        df.loc[missing_mask, 'on_demand_price'] = df.loc[missing_mask, 'spot_price'] * 4.0
+
+    if CONFIG['use_float32']:
+        df['on_demand_price'] = df['on_demand_price'].astype('float32')
 
     print(f"  ✓ Loaded: {len(df):,} rows")
     print(f"  Memory: {df.memory_usage(deep=True).sum() / 1024**2:.1f} MB")
@@ -269,52 +308,52 @@ def create_market_snapshots(df, freq='10T'):
 
 def create_target_variable(df, spike_threshold=0.10, lookahead=36):
     """
-    Binary target: Is_Unstable_Next_6H
+    Binary target: Is_Unstable_Next_6H (VECTORIZED VERSION)
 
     Y_t = 1 if:
-        max(Price_{t+1...t+36}) > 1.10 * Price_t
+        max(Price_{t+1...t+36}) > (1 + threshold) * Price_t
 
-    Logic: If price spikes >10% in next 6 hours, current state was "unstable"
+    Uses rolling().max() with shift - NO LOOPS!
     """
-    print(f"\n🎯 Creating target variable...")
+    print(f"\n🎯 Creating target variable (VECTORIZED)...")
     print(f"  Spike threshold: {spike_threshold*100}%")
     print(f"  Lookahead: {lookahead} intervals (6 hours)")
 
     df = df.sort_values(['pool_id', 'timestamp']).copy()
-    df['is_unstable_next_6h'] = 0
 
-    for pool_id, group in tqdm(df.groupby('pool_id'), desc="  Calculating targets"):
-        indices = group.index.tolist()
+    # VECTORIZED: Calculate future max for every row instantly
+    # Step 1: Shift forward by 1 (skip current), then rolling max over lookahead window
+    df['future_max_price'] = (
+        df.groupby('pool_id')['spot_price']
+        .shift(-1)  # Start from next timestamp
+        .rolling(window=lookahead, min_periods=1)
+        .max()
+        .shift(lookahead - 1)  # Align back to current row
+    )
 
-        for i, idx in enumerate(indices):
-            # Look ahead 36 intervals (6 hours)
-            future_end = min(i + lookahead + 1, len(indices))
-            if future_end <= i + 1:
-                continue
+    # Step 2: Compare current price vs future max
+    df['is_unstable_next_6h'] = (
+        df['future_max_price'] > df['spot_price'] * (1 + spike_threshold)
+    ).astype(int)
 
-            current_price = df.loc[idx, 'spot_price']
-            future_indices = indices[i+1:future_end]
-            future_prices = df.loc[future_indices, 'spot_price']
-
-            max_future_price = future_prices.max()
-
-            # Check if future price spikes >10%
-            if max_future_price > current_price * (1 + spike_threshold):
-                df.loc[idx, 'is_unstable_next_6h'] = 1
-
-    # Remove rows without future data
-    df = df[df.index.isin([idx for i, idx in enumerate(df.index) if i < len(df) - lookahead])]
+    # Step 3: Remove rows where we don't have future data
+    rows_before = len(df)
+    df = df.dropna(subset=['future_max_price'])
+    rows_dropped = rows_before - len(df)
 
     positive_count = df['is_unstable_next_6h'].sum()
-    positive_pct = positive_count / len(df) * 100
+    positive_pct = positive_count / len(df) * 100 if len(df) > 0 else 0
 
-    print(f"  ✓ Target created")
+    print(f"  ✓ Target created (dropped {rows_dropped:,} rows without future)")
     print(f"  Unstable samples: {positive_count:,} ({positive_pct:.2f}%)")
     print(f"  Stable samples: {len(df) - positive_count:,} ({100-positive_pct:.2f}%)")
 
     # Calculate scale_pos_weight for imbalanced data
     scale_pos_weight = (len(df) - positive_count) / positive_count if positive_count > 0 else 1.0
     print(f"  Recommended scale_pos_weight: {scale_pos_weight:.2f}")
+
+    # Clean up temporary column
+    df = df.drop(columns=['future_max_price'])
 
     return df, scale_pos_weight
 
@@ -382,51 +421,67 @@ def calculate_discount_depth(df):
 
 def calculate_family_stress_index(df, families_config):
     """
-    C. Family Stress Index (Hardware Contagion) - THE KEY INNOVATION
+    C. Family Stress Index (Hardware Contagion) - VECTORIZED VERSION
 
     S_family = (1/|F|) * Σ P_pos(i) for i in Family F
 
-    Logic:
-    - If c5.large has P_pos=0.1 (low) but c5.metal has P_pos=0.9 (high)
-    - The average S_family will be high (~0.5)
-    - This marks c5.large as risky due to "Big Brother" stress
-
-    This is the HARDWARE CONTAGION mechanism
+    Uses pivot_table - aligns timestamps instantly without loops!
+    100-1000x faster than nested loops.
     """
-    print(f"\n🔥 Calculating Family Stress Index (Hardware Contagion)...")
+    print(f"\n🔥 Calculating Family Stress Index (VECTORIZED - Pivot Table)...")
 
     df['family_stress'] = 0.0
+
+    # Create a wide pivot table: Index=(timestamp, AZ), Columns=instance_type, Values=price_position
+    # This aligns all instances at each timestamp instantly
+    print(f"  Creating pivot table...")
+    pivot = df.pivot_table(
+        index=['timestamp', 'availability_zone'],
+        columns='instance_type',
+        values='price_position',
+        aggfunc='mean'  # In case of duplicates
+    )
 
     for family_name, family_data in families_config.items():
         target = family_data['target']
         signal_instances = family_data['signals']
+        all_members = [target] + signal_instances
 
         print(f"  Processing {family_name} family...")
         print(f"    Target: {target}")
         print(f"    Signals: {len(signal_instances)} instances")
 
-        # For each timestamp, calculate average price_position across ALL family members
-        for az in df['availability_zone'].unique():
-            # Get all family members in this AZ
-            family_pools = [f"{inst}_{az}" for inst in [target] + signal_instances]
+        # Filter pivot to only columns in this family (handle missing cols)
+        valid_cols = [c for c in all_members if c in pivot.columns]
 
-            # For each timestamp
-            for ts in tqdm(df['timestamp'].unique(), desc=f"    {family_name}/{az}", leave=False):
-                # Get price positions of all family members at this timestamp
-                family_data_at_ts = df[
-                    (df['timestamp'] == ts) &
-                    (df['pool_id'].isin(family_pools))
-                ]
+        if not valid_cols:
+            print(f"    ⚠️  No valid columns found for {family_name}")
+            continue
 
-                if len(family_data_at_ts) > 0:
-                    avg_stress = family_data_at_ts['price_position'].mean()
+        # Calculate row-wise mean (the Family Stress Index)
+        # This is instant - one calculation for all timestamps!
+        family_stress_series = pivot[valid_cols].mean(axis=1)
+        family_stress_series.name = 'family_stress_temp'
 
-                    # Assign this stress to the TARGET instance
-                    target_mask = (
-                        (df['timestamp'] == ts) &
-                        (df['pool_id'] == f"{target}_{az}")
-                    )
-                    df.loc[target_mask, 'family_stress'] = avg_stress
+        # Reset index to make merging easier
+        stress_df = family_stress_series.reset_index()
+
+        # Merge back to original dataframe (only for target rows)
+        mask = df['instance_type'] == target
+
+        # Create temporary merge on target rows
+        df_target = df[mask].merge(
+            stress_df,
+            on=['timestamp', 'availability_zone'],
+            how='left',
+            suffixes=('', '_new')
+        )
+
+        # Update family_stress for target rows
+        if 'family_stress_temp' in df_target.columns:
+            df.loc[mask, 'family_stress'] = df_target['family_stress_temp'].fillna(0).values
+
+        print(f"    ✓ Updated {mask.sum():,} rows for {target}")
 
     df['family_stress'] = df['family_stress'].astype('float32' if CONFIG['use_float32'] else 'float64')
 
