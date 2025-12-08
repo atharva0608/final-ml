@@ -41,8 +41,8 @@ sns.set_style('whitegrid')
 
 CONFIG = {
     # Data paths
-    'training_data': '/Users/atharvapudale/Downloads/aws_2023_2024_complete_24months.csv',
-    'test_data': '/Users/atharvapudale/Downloads/mumbai_spot_data_sorted_asc(1-2-3-25).csv',
+    'training_data': '/Users/atharvapudale/Downloads/aws_mumbai_2023_all.csv',
+    'test_data': '/Users/atharvapudale/Downloads/aws_mumbai_2024_all.csv',
 
     # M4 MacBook Air Optimizations
     'use_float32': True,  # Half memory vs float64
@@ -122,17 +122,33 @@ def standardize_columns(df):
     df.columns = df.columns.str.lower().str.strip()
 
     col_mapping = {}
+    timestamp_found = False
+    instance_type_found = False
+    az_found = False
+    price_found = False
+
     for col in df.columns:
-        if any(x in col for x in ['time', 'date', 'timestamp']):
+        # Only map first occurrence of each column type to avoid duplicates
+        if any(x in col for x in ['time', 'date', 'timestamp']) and not timestamp_found:
             col_mapping[col] = 'timestamp'
-        elif any(x in col for x in ['instance', 'type']):
+            timestamp_found = True
+        elif any(x in col for x in ['instance', 'type']) and not instance_type_found:
             col_mapping[col] = 'instance_type'
-        elif any(x in col for x in ['availability', 'zone', 'az']):
+            instance_type_found = True
+        elif any(x in col for x in ['availability', 'zone', 'az']) and not az_found:
             col_mapping[col] = 'availability_zone'
-        elif any(x in col for x in ['spot', 'price']) or col == 'price':
+            az_found = True
+        elif (any(x in col for x in ['spot', 'price']) or col == 'price') and not price_found:
             col_mapping[col] = 'spot_price'
+            price_found = True
 
     df = df.rename(columns=col_mapping)
+
+    # Keep only the standardized columns we need
+    required_cols = ['timestamp', 'instance_type', 'availability_zone', 'spot_price']
+    existing_cols = [c for c in required_cols if c in df.columns]
+    df = df[existing_cols]
+
     return df
 
 def load_data_efficient(file_path, families_config, is_training=True):
