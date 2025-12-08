@@ -159,13 +159,15 @@ def standardize_columns(df):
     price_col = None
 
     for col in df.columns:
-        if timestamp_col is None and any(x in col for x in ['time', 'date', 'timestamp']):
+        col_lower = col.lower()
+        if timestamp_col is None and any(x in col_lower for x in ['time', 'date', 'timestamp']):
             timestamp_col = col
-        elif instance_type_col is None and any(x in col for x in ['instance', 'type']):
+        elif instance_type_col is None and any(x in col_lower for x in ['instance', 'type']):
             instance_type_col = col
-        elif az_col is None and any(x in col for x in ['availability', 'zone', 'az']):
+        elif az_col is None and any(x in col_lower for x in ['availability', 'zone', 'az']):
             az_col = col
-        elif price_col is None and (any(x in col for x in ['spot', 'price']) or col == 'price'):
+        # CRITICAL: Match 'spot' specifically (not just 'price') to avoid OndemandPrice
+        elif price_col is None and 'spot' in col_lower:
             price_col = col
 
     # Build mapping
@@ -178,6 +180,26 @@ def standardize_columns(df):
         col_mapping[az_col] = 'availability_zone'
     if price_col:
         col_mapping[price_col] = 'spot_price'
+
+    # Diagnostic output
+    print(f"  📋 Column mapping:")
+    print(f"    Timestamp: '{timestamp_col}' → 'timestamp'")
+    print(f"    Instance: '{instance_type_col}' → 'instance_type'")
+    print(f"    AZ: '{az_col}' → 'availability_zone'")
+    print(f"    Price: '{price_col}' → 'spot_price'")
+
+    # Warn if reading wrong column
+    if price_col and 'ondemand' in price_col.lower():
+        print(f"\n  ⚠️  WARNING: Reading '{price_col}' which appears to be ON-DEMAND prices!")
+        print(f"     On-demand prices are FIXED (no variance per instance).")
+        print(f"     Looking for 'SpotPrice' column instead...")
+        # Try to find spot price column
+        for col in df.columns:
+            if 'spot' in col.lower() and 'price' in col.lower():
+                price_col = col
+                col_mapping[price_col] = 'spot_price'
+                print(f"     ✓ Found and using '{price_col}' instead!")
+                break
 
     # Rename columns
     df = df.rename(columns=col_mapping)
@@ -227,6 +249,23 @@ def load_data_efficient(file_path, families_config, is_training=True):
 
     print(f"  Rows before filter: {total_rows_before:,}")
     print(f"  Rows after filter: {total_rows_after:,} ({total_rows_after/total_rows_before*100:.1f}%)")
+
+    # Quick variance check to confirm we're reading spot prices (not on-demand)
+    if 'spot_price' in df.columns:
+        price_std = df['spot_price'].std()
+        price_range = df['spot_price'].max() - df['spot_price'].min()
+        print(f"\n  📊 Spot Price Variance Check:")
+        print(f"    Min: ${df['spot_price'].min():.4f}")
+        print(f"    Max: ${df['spot_price'].max():.4f}")
+        print(f"    Range: ${price_range:.4f}")
+        print(f"    Std: ${price_std:.6f}")
+
+        if price_std < 0.001:
+            print(f"\n    ⚠️  WARNING: Spot prices have very low variance (std < $0.001)!")
+            print(f"       This might indicate on-demand prices were loaded instead of spot prices.")
+            print(f"       Check that CSV has a 'SpotPrice' column with varying prices.")
+        else:
+            print(f"    ✓ Spot prices have reasonable variance!")
 
     # Remove duplicate columns if they exist (safety check)
     if not df.columns.is_unique:
