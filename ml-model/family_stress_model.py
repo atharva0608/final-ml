@@ -685,75 +685,22 @@ def calculate_time_embeddings(df):
 
     return df
 
-def calculate_interaction_features(df):
-    """
-    E. Explicit Feature Interactions - "Last Drop" Optimization
-
-    Standard ML models struggle to understand that two safe things combined
-    can equal one dangerous thing. These interaction features force-feed the
-    model the "context" it needs to see the full danger.
-
-    Interaction #1: stress_x_business
-        Formula: Family Stress (Max) × Is Business Hours
-        Logic: "Hardware Contagion is annoying at night, but deadly during the day."
-        Night: High stress (0.8) × Night (0) = 0.0 → Model ignores it
-        Day:   High stress (0.8) × Day (1) = 0.8 → Model panics
-        Impact: Dramatically improves Precision - stops false alarms at night
-
-    Interaction #2: stress_x_discount
-        Formula: Family Stress (Max) × (1 - Discount Depth)
-        Logic: "High Price + High Stress = Immediate Eviction"
-        Deep discount (0.8): 0.9 stress × 0.2 = 0.18 → Safe
-        No discount (0.1):   0.9 stress × 0.9 = 0.81 → Deadly
-        Impact: Creates a "Death Score" - high stress + low buffer = eviction
-    """
-    print(f"\n🔗 Calculating Interaction Features (Explicit Context)...")
-
-    # Interaction #1: Stress during business hours is DEADLY
-    # Night stress is often just batch jobs (AWS has spare capacity)
-    # Day stress means paying customers scaling up (AWS is under pressure)
-    df['stress_x_business'] = (
-        df['family_stress_max'] * df['is_business_hours']
-    ).astype('float32' if CONFIG['use_float32'] else 'float64')
-
-    # Interaction #2: High stress + low discount = immediate eviction
-    # If you're paying $0.90 (10% discount) and hardware is stressed,
-    # any tiny fluctuation pushes you over the edge
-    df['stress_x_discount'] = (
-        df['family_stress_max'] * (1 - df['discount_depth'])
-    ).astype('float32' if CONFIG['use_float32'] else 'float64')
-
-    print(f"  ✓ Interaction Features calculated")
-    print(f"  stress_x_business: Mean={df['stress_x_business'].mean():.3f}, Std={df['stress_x_business'].std():.3f}")
-    print(f"  stress_x_discount: Mean={df['stress_x_discount'].mean():.3f}, Std={df['stress_x_discount'].std():.3f}")
-
-    # PRUNING: Drop price_velocity_1h - it's pure noise in Mumbai data
-    # Mean velocity = 0.000000 → Mostly zero with tiny floating-point errors
-    # Keeping it risks overfitting on meaningless micro-adjustments
-    if 'price_velocity_1h' in df.columns:
-        print(f"  🗑️  Dropping 'price_velocity_1h' (near-zero variance = noise)")
-        df = df.drop(columns=['price_velocity_1h'])
-
-    return df
-
 # ============================================================================
 # 5. MODEL TRAINING
 # ============================================================================
 
 FEATURE_COLUMNS = [
     'price_position',      # A. Normalized price pressure (7-day range)
-    # REMOVED: 'price_velocity_1h' - near-zero variance in Mumbai data (noise)
+    'price_velocity_1h',   # A2. Rate of change (backup for stable markets)
     'price_volatility_6h', # A3. Rolling std dev (backup for stable markets)
     'price_cv_6h',         # A4. Coefficient of variation (backup for stable markets)
     'discount_depth',      # B. Economic buffer
-    'family_stress_mean',  # C1. Hardware contagion - Average family stress
+    'family_stress_mean',  # C1. Hardware contagion - Average family stress (KEY FEATURE)
     'family_stress_max',   # C2. Hardware contagion - Peak family stress (captures parent spikes)
     'hour_sin',            # D. Time embeddings
     'hour_cos',
     'is_weekend',
-    'is_business_hours',
-    'stress_x_business',   # E1. Interaction: Stress × Business Hours (day stress is deadly)
-    'stress_x_discount',   # E2. Interaction: Stress × (1-Discount) (high price + high stress = eviction)
+    'is_business_hours'
 ]
 
 def train_model(df_train, scale_pos_weight):
@@ -1146,14 +1093,12 @@ def main():
     df_train = calculate_discount_depth(df_train)
     df_train = calculate_family_stress_index(df_train, CONFIG['families'])
     df_train = calculate_time_embeddings(df_train)
-    df_train = calculate_interaction_features(df_train)  # "Last Drop" optimization
 
     df_test = calculate_price_position(df_test, CONFIG['price_position_window_days'])
     df_test = calculate_price_velocity(df_test)  # Backup features for stable markets
     df_test = calculate_discount_depth(df_test)
     df_test = calculate_family_stress_index(df_test, CONFIG['families'])
     df_test = calculate_time_embeddings(df_test)
-    df_test = calculate_interaction_features(df_test)  # "Last Drop" optimization
 
     # Drop rows with missing features
     df_train = df_train.dropna(subset=FEATURE_COLUMNS + ['is_unstable_next_6h'])
