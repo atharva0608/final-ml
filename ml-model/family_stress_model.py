@@ -958,9 +958,46 @@ def main():
 
     print("\n🚀 Starting Family Stress Model Pipeline...\n")
 
-    # 1. Load data
-    df_train = load_data_efficient(CONFIG['training_data'], CONFIG['families'], is_training=True)
-    df_test = load_data_efficient(CONFIG['test_data'], CONFIG['families'], is_training=False)
+    # 1. Load data - Load BOTH years and split temporally for proper backtesting
+    print("📂 Loading combined 2023-2024 data for temporal split...")
+
+    # Load both years
+    df_2023 = load_data_efficient(CONFIG['training_data'], CONFIG['families'], is_training=True)
+    df_2024 = load_data_efficient(CONFIG['test_data'], CONFIG['families'], is_training=False)
+
+    # Combine
+    print("\n🔗 Combining datasets...")
+    df_combined = pd.concat([df_2023, df_2024], ignore_index=True)
+    print(f"  Combined: {len(df_combined):,} rows")
+
+    # Sort by timestamp
+    df_combined = df_combined.sort_values('timestamp').reset_index(drop=True)
+    print(f"  Date range: {df_combined['timestamp'].min()} to {df_combined['timestamp'].max()}")
+
+    # Split: Train on everything before Oct 2024, Test on Oct-Dec 2024 (3-month backtest)
+    split_date = pd.Timestamp('2024-10-01')
+    df_train = df_combined[df_combined['timestamp'] < split_date].copy()
+    df_test = df_combined[df_combined['timestamp'] >= split_date].copy()
+
+    print(f"\n✂️  Temporal Split (3-month backtest):")
+    print(f"  Training: Before {split_date.strftime('%Y-%m-%d')} → {len(df_train):,} rows")
+    if len(df_train) > 0:
+        print(f"    Date range: {df_train['timestamp'].min()} to {df_train['timestamp'].max()}")
+    print(f"  Testing: {split_date.strftime('%Y-%m-%d')} onwards → {len(df_test):,} rows")
+    if len(df_test) > 0:
+        print(f"    Date range: {df_test['timestamp'].min()} to {df_test['timestamp'].max()}")
+
+    if len(df_test) == 0:
+        print(f"\n⚠️  WARNING: No test data after {split_date}!")
+        print(f"   Your 2024 data might not include Oct-Dec 2024.")
+        print(f"   Falling back to 80/20 temporal split...")
+
+        # Fallback: 80/20 split
+        split_idx = int(len(df_combined) * 0.8)
+        df_train = df_combined.iloc[:split_idx].copy()
+        df_test = df_combined.iloc[split_idx:].copy()
+        print(f"  Training: First 80% → {len(df_train):,} rows")
+        print(f"  Testing: Last 20% → {len(df_test):,} rows")
 
     # 2. Time synchronization
     df_train = create_market_snapshots(df_train, freq='10T')
