@@ -16,13 +16,14 @@ A **modular, production-ready platform** for intelligent AWS Spot Instance optim
 └─────────────────────────────────────────────────────────────────┘
 
 final-ml/
-├── ml_training/                    # ML Model Training
-│   ├── train_master_pipeline.py    # Production training script
-│   └── requirements.txt
+├── ml-model/                       # ML Model Training
+│   └── family_stress_model.py      # Complete training pipeline
 │
 ├── models/                         # Model Artifacts (gitignored)
 │   ├── production/                 # Active models
 │   │   ├── family_stress_model.pkl
+│   │   ├── training_outputs/
+│   │   ├── training_plots/
 │   │   └── .gitkeep
 │   └── archive/                    # Old versions
 │
@@ -31,25 +32,33 @@ final-ml/
 │   └── scheduler.py                # Cron-like scheduler
 │
 ├── backend/                        # FastAPI Decision Engine
-│   ├── main.py                     # API routes
 │   ├── config.py                   # Environment auto-detection
 │   ├── dependencies.py             # Dependency injection
-│   ├── data/                       # Static intelligence
-│   │   └── static_intelligence.json
-│   └── decision_engine_v2/         # Modular pipeline
-│       ├── context.py
-│       ├── pipeline.py
-│       ├── interfaces.py
-│       ├── stages/                 # 6-layer pipeline
-│       └── providers/              # Mock & Real implementations
-│
-├── frontend/                       # React Dashboard (TODO)
-│   └── src/components/
+│   ├── requirements.txt            # Python dependencies
+│   ├── BACKEND_ARCHITECTURE.md     # Complete backend docs
+│   └── decision_engine_v2/         # Modular 6-layer pipeline
+│       ├── context.py              # DecisionContext (the "cart")
+│       ├── pipeline.py             # Pipeline orchestrator
+│       ├── interfaces.py           # Abstract interfaces
+│       ├── example.py              # Standalone test runner
+│       ├── stages/                 # 6 pipeline stages
+│       │   ├── input_adapters.py   # Layer 1: Normalize requests
+│       │   ├── static_intelligence.py # Layer 2: Filter candidates
+│       │   ├── risk_engine.py      # Layer 3: ML prediction
+│       │   ├── optimization.py     # Layer 4: Rank by yield
+│       │   ├── reactive_override.py # Layer 5: AWS signal override
+│       │   └── actuators.py        # Layer 6: Execute decision
+│       └── providers/              # External data sources
+│           ├── price_provider.py   # Spot price feeds
+│           ├── spot_advisor.py     # Historic interrupt rates
+│           ├── risk_models.py      # ML models (FamilyStress)
+│           ├── signal_provider.py  # IMDS signal monitoring
+│           └── metadata_provider.py # Instance metadata
 │
 └── scripts/                        # DevOps Automation
-    ├── setup_env.sh               # One-command setup
-    ├── test_single_instance.sh    # TEST mode
-    └── run_production.sh          # PROD mode
+    ├── setup_env.sh                # One-command setup
+    ├── cleanup.sh                  # Comprehensive cleanup
+    └── test_single_instance.sh     # TEST mode launcher
 ```
 
 ---
@@ -163,31 +172,41 @@ chmod +x scripts/*.sh
 
 ---
 
-### Step 2: Train the ML Model (Optional)
+### Step 2: Train the ML Model
 
 ```bash
-cd ml_training
-source venv/bin/activate
-python train_master_pipeline.py
+cd ml-model
+python family_stress_model.py
 ```
 
 **What it does**:
-- Trains Family Stress Hardware Contagion model
+- Trains Family Stress Hardware Contagion model using LightGBM
 - Saves artifacts to `../models/production/family_stress_model.pkl`
 - Uses hybrid on-demand price handling ("Trust, but Verify")
+- Creates training plots and performance metrics
 
 **Expected output**:
 ```
-📊 Training Metrics:
-  Precision: 0.721
-  Recall: 0.745
-  F1: 0.733
-  AUC: 0.927
+📊 Training Metrics (Optimized with dynamic threshold):
+  Precision: 0.72
+  Recall: 0.75
+  F1: 0.73
+  AUC: 0.93
+  Decision Threshold: 0.68 (optimized for F1)
 
 ✅ Model saved to: ../models/production/family_stress_model.pkl
+📊 Training outputs: ../models/production/training_outputs/
+📈 Training plots: ../models/production/training_plots/
 ```
 
-**If you skip this**: Backend uses fallback predictions (moderate risk for all)
+**Model Details**:
+- **Algorithm**: LightGBM Binary Classifier
+- **Features**: Hardware Contagion (family_stress_max), temporal patterns, price volatility
+- **Target**: Binary classification - "Will instance be unstable in next 12 hours?"
+- **Spike Threshold**: 3% (increased from 1% to reduce false positives)
+- **Optimization**: Tighter regularization (max_depth=5, num_leaves=20)
+
+**If model file missing**: Backend automatically falls back to mock predictions (moderate risk for all)
 
 ---
 
@@ -355,27 +374,54 @@ Decision: DRAIN (override ML to be safe)
 
 ---
 
-## 📁 File Details
+## 📁 Component Details
 
-### ML Training: `ml_training/train_master_pipeline.py`
-**What it does**:
-1. Loads 2023+2024 Mumbai spot price data
-2. Creates target variable: `is_unstable_next_12h` (3% spike threshold)
-3. Engineers features:
-   - `price_position`: Normalized price in 7-day range
-   - `discount_depth`: 1 - (spot/on_demand)
-   - `family_stress_mean`: Average family stress
-   - `family_stress_max`: Peak family stress (hardware contagion!)
+### ML Model: `ml-model/family_stress_model.py`
+
+**Core Philosophy**: Hardware Contagion Hypothesis
+- Standard models assume instance independence
+- This model assumes PHYSICAL DEPENDENCE on shared hardware
+- **Hypothesis**: c5.large and c5.12xlarge compete for same silicon
+- When large instances spike → AWS defragments hosts → evicting smaller instances
+- **Result**: "Family Stress" predicts child instance failure even with flat prices
+
+**Training Pipeline**:
+1. **Data Loading**: Loads 2023-2024 Mumbai spot price data (chunked for memory efficiency)
+2. **Target Variable**: Creates `is_unstable_next_12h` (3% spike threshold)
+3. **Feature Engineering**:
+   - `price_position`: Normalized price in 7-day rolling window
+   - `discount_depth`: 1 - (spot_price / on_demand_price)
+   - `family_stress_mean`: Average stress across instance family
+   - `family_stress_max`: **Peak family stress (hardware contagion signal!)**
    - Time embeddings: hour_sin, hour_cos, is_weekend, is_business_hours
-4. Trains LightGBM with tighter regularization (reduces overfitting)
-5. Optimizes decision threshold dynamically (maximizes F1 score)
-6. Saves model to `../models/production/family_stress_model.pkl`
+4. **Model Training**: LightGBM with tighter regularization
+   - max_depth=5, num_leaves=20 (prevents overfitting)
+   - learning_rate=0.03 (slower, more stable)
+   - feature_fraction=0.7, min_child_samples=50
+5. **Threshold Optimization**: Finds threshold that maximizes F1 score
+6. **Model Persistence**: Saves to `../models/production/family_stress_model.pkl`
 
-**Key features**:
-- ✅ Hybrid on-demand price handling ("Trust, but Verify")
-- ✅ 3-month backtesting (train on 2023-2024, test on Oct-Dec 2024)
-- ✅ Negative price removal
-- ✅ Temporal split (no data leakage)
+**Key Features**:
+- ✅ **Hybrid On-Demand Price Handling** ("Trust, but Verify")
+  - Prefers CSV truth over static dictionary (captures price changes)
+  - 3-tier fallback: CSV → Dictionary → spot*4
+- ✅ **3-Month Backtesting**: Train on 2023-2024, test on Oct-Dec 2024
+- ✅ **Temporal Split**: No data leakage
+- ✅ **Negative Price Removal**: Filters anomalies
+- ✅ **MacBook Air M4 Optimized**: <15min runtime, 16GB RAM
+
+**Performance Metrics**:
+```
+Precision: 0.72  (72% of predictions are correct)
+Recall: 0.75     (75% of unstable instances caught)
+F1 Score: 0.73   (Balanced precision-recall)
+AUC: 0.93        (Excellent discriminative ability)
+```
+
+**Instance Families**:
+- c5: c5.large (target) + c5.xlarge → c5.24xlarge (signals)
+- t4g: t4g.small (target) + t4g.medium → t4g.2xlarge (signals)
+- t3: t3.medium (target) + t3.large → t3.2xlarge (signals)
 
 ---
 
@@ -415,6 +461,66 @@ Decision: DRAIN (override ML to be safe)
 ```
 
 **Schedule**: Runs every 6 hours via `scheduler.py`
+
+---
+
+### Backend: Decision Engine V2
+
+**Architecture**: Modular 6-layer pipeline using the "Assembly Line" pattern
+
+**Complete Documentation**: See `backend/BACKEND_ARCHITECTURE.md` for detailed architecture, code examples, and troubleshooting.
+
+**Quick Overview**:
+
+The backend is organized as a pipeline where a `DecisionContext` (the "cart") flows through 6 independent stages:
+
+1. **Layer 1 - Input Adapters** (`stages/input_adapters.py`):
+   - TEST mode: `SingleInstanceInputAdapter` (check one instance)
+   - PROD mode: `K8sInputAdapter` (scan all Kubernetes nodes)
+   - Output: Generates candidate list
+
+2. **Layer 2 - Static Intelligence** (`stages/static_intelligence.py`):
+   - Hardware compatibility filtering
+   - Spot Advisor filtering (reject interrupt rate >20%)
+   - Rightsizing expansion (add oversized options)
+   - Output: Filtered candidate list
+
+3. **Layer 3 - Risk Engine** (`stages/risk_engine.py`):
+   - Loads ML model from `/models/production/family_stress_model.pkl`
+   - Predicts crash probability for each candidate
+   - Falls back to mock predictions if model missing
+   - Output: Each candidate enriched with crash_probability
+
+4. **Layer 4 - Optimization** (`stages/optimization.py`):
+   - Safety Gate: Reject crash_probability >0.85
+   - Bin Packing: Calculate waste cost (K8s mode)
+   - TCO Sorter: Rank by yield score
+   - Output: Top candidates ranked
+
+5. **Layer 5 - Reactive Override** (`stages/reactive_override.py`):
+   - **Critical Safety Net**: Checks IMDS for AWS signals
+   - TERMINATION → EVACUATE (override ML)
+   - REBALANCE → DRAIN (override ML)
+   - NONE → Trust ML decision
+   - Output: Final decision set
+
+6. **Layer 6 - Output Adapters** (`stages/actuators.py`):
+   - TEST mode: `LogActuator` (safe, logs only)
+   - PROD mode: `K8sActuator` (actually drains/launches)
+   - Output: Decision executed
+
+**Key Files**:
+- `context.py`: DecisionContext dataclass (the "cart")
+- `pipeline.py`: Pipeline orchestrator
+- `interfaces.py`: Abstract base classes for all components
+- `providers/risk_models.py`: `FamilyStressRiskModel` - ML integration
+- `example.py`: Standalone test runner
+
+**Test Pipeline**:
+```bash
+cd backend/decision_engine_v2
+python example.py
+```
 
 ---
 
@@ -553,7 +659,7 @@ max_historic_interrupt_rate = 0.20  # Spot advisor (20%)
 
 ### Model Parameters
 ```python
-# ml_training/train_master_pipeline.py
+# ml-model/family_stress_model.py
 'spike_threshold': 0.03,  # 3% (was 1% - too sensitive)
 'lookahead_hours': 12,    # Predict 12h ahead
 'n_estimators': 300,      # LightGBM trees
@@ -564,10 +670,11 @@ max_historic_interrupt_rate = 0.20  # Spot advisor (20%)
 
 ## 🚨 Production Deployment Checklist
 
-- [ ] Train ML model: `python ml_training/train_master_pipeline.py`
+- [ ] Train ML model: `cd ml-model && python family_stress_model.py`
 - [ ] Verify model exists: `ls models/production/family_stress_model.pkl`
-- [ ] Run scraper: `python scraper/fetch_static_data.py`
+- [ ] Run scraper: `cd scraper && python fetch_static_data.py`
 - [ ] Verify static data: `ls backend/data/static_intelligence.json`
+- [ ] Test pipeline: `cd backend/decision_engine_v2 && python example.py`
 - [ ] Set environment: `export ENV=PROD`
 - [ ] Configure K8s: Set `K8S_CONFIG_PATH` env var
 - [ ] Test in staging first!

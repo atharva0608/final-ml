@@ -60,9 +60,6 @@ mkdir -p backend/data
 mkdir -p logs
 echo "  ✓ Directories created"
 
-# Setup ML Training
-setup_component "ML Training" "ml_training" "requirements.txt"
-
 # Setup Backend
 echo ""
 echo "Setting up Backend..."
@@ -131,14 +128,14 @@ echo "==========================================================================
 echo ""
 echo "Next steps:"
 echo "  1. Train the ML model:"
-echo "     cd ml_training"
-echo "     source venv/bin/activate"
-echo "     python train_master_pipeline.py"
+echo "     cd ml-model"
+echo "     python family_stress_model.py"
 echo ""
 echo "  2. Test single instance (TEST mode):"
 echo "     ./scripts/test_single_instance.sh"
 echo ""
-echo "  3. Run in production (PROD mode):"
-echo "     ./scripts/run_production.sh"
+echo "  3. Test pipeline standalone:"
+echo "     cd backend/decision_engine_v2"
+echo "     python example.py"
 echo ""
 echo "================================================================================"
