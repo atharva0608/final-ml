@@ -151,14 +151,22 @@ print("="*80)
 # ============================================================================
 
 def standardize_columns(df, verbose=False):
-    """Standardize column names across different CSV formats"""
+    """
+    Standardize column names across different CSV formats
+
+    HYBRID ON-DEMAND PRICE HANDLING:
+    - Actively hunts for on-demand price columns in CSV (captures historical changes)
+    - If found, keeps it for later use
+    - If not found, will be filled from CONFIG dictionary in load_data_efficient()
+    """
     df.columns = df.columns.str.lower().str.strip()
 
     # Find the first matching column for each type
     timestamp_col = None
     instance_type_col = None
     az_col = None
-    price_col = None
+    spot_price_col = None
+    on_demand_price_col = None  # NEW: Hunt for on-demand price column
 
     for col in df.columns:
         col_lower = col.lower()
@@ -168,9 +176,15 @@ def standardize_columns(df, verbose=False):
             instance_type_col = col
         elif az_col is None and any(x in col_lower for x in ['availability', 'zone', 'az']):
             az_col = col
-        # CRITICAL: Match 'spot' specifically (not just 'price') to avoid OndemandPrice
-        elif price_col is None and 'spot' in col_lower:
-            price_col = col
+        # Match spot price specifically
+        elif spot_price_col is None and 'spot' in col_lower and 'price' in col_lower:
+            spot_price_col = col
+        # NEW: Hunt for on-demand price column (various naming conventions)
+        elif on_demand_price_col is None and (
+            ('demand' in col_lower and 'price' in col_lower) or  # "ondemandprice", "on_demand_price"
+            ('od' in col_lower and 'price' in col_lower)         # "od_price", "odprice"
+        ):
+            on_demand_price_col = col
 
     # Build mapping
     col_mapping = {}
@@ -180,8 +194,10 @@ def standardize_columns(df, verbose=False):
         col_mapping[instance_type_col] = 'instance_type'
     if az_col:
         col_mapping[az_col] = 'availability_zone'
-    if price_col:
-        col_mapping[price_col] = 'spot_price'
+    if spot_price_col:
+        col_mapping[spot_price_col] = 'spot_price'
+    if on_demand_price_col:  # NEW: Map on-demand price if found
+        col_mapping[on_demand_price_col] = 'on_demand_price'
 
     # Diagnostic output (only if verbose=True, i.e., first chunk)
     if verbose:
@@ -189,26 +205,24 @@ def standardize_columns(df, verbose=False):
         print(f"    Timestamp: '{timestamp_col}' → 'timestamp'")
         print(f"    Instance: '{instance_type_col}' → 'instance_type'")
         print(f"    AZ: '{az_col}' → 'availability_zone'")
-        print(f"    Price: '{price_col}' → 'spot_price'")
+        print(f"    Spot Price: '{spot_price_col}' → 'spot_price'")
 
-        # Warn if reading wrong column
-        if price_col and 'ondemand' in price_col.lower():
-            print(f"\n  ⚠️  WARNING: Reading '{price_col}' which appears to be ON-DEMAND prices!")
-            print(f"     On-demand prices are FIXED (no variance per instance).")
-            print(f"     Looking for 'SpotPrice' column instead...")
-            # Try to find spot price column
-            for col in df.columns:
-                if 'spot' in col.lower() and 'price' in col.lower():
-                    price_col = col
-                    col_mapping[price_col] = 'spot_price'
-                    print(f"     ✓ Found and using '{price_col}' instead!")
-                    break
+        # NEW: Report on-demand price status
+        if on_demand_price_col:
+            print(f"    On-Demand Price: '{on_demand_price_col}' → 'on_demand_price'")
+            print(f"  ✓ Found REAL On-Demand Price column in CSV! (Captures historical changes)")
+        else:
+            print(f"    On-Demand Price: NOT FOUND")
+            print(f"  ⚠️  On-Demand Price column MISSING. Will use Static Dictionary.")
 
     # Rename columns
     df = df.rename(columns=col_mapping)
 
-    # Keep ONLY the standardized columns we need (this drops everything else)
+    # Keep required columns + on_demand_price if found
     required_cols = ['timestamp', 'instance_type', 'availability_zone', 'spot_price']
+    if 'on_demand_price' in df.columns:  # NEW: Keep on-demand price if it exists
+        required_cols.append('on_demand_price')
+
     existing_cols = [c for c in required_cols if c in df.columns]
 
     # Select only these columns (drops all others including any duplicates)
@@ -349,14 +363,39 @@ def load_data_efficient(file_path, families_config, is_training=True):
         df['instance_type'] = df['instance_type'].astype('category')
         df['availability_zone'] = df['availability_zone'].astype('category')
 
-    # Add on-demand price (STATIC from AWS pricing, NOT spot*4!)
-    df['on_demand_price'] = df['instance_type'].map(CONFIG['on_demand_prices'])
-    # Fallback for missing types
-    missing_mask = df['on_demand_price'].isna()
-    if missing_mask.sum() > 0:
-        print(f"  ⚠️  {missing_mask.sum()} rows missing on-demand price, using fallback (spot*4)")
-        df.loc[missing_mask, 'on_demand_price'] = df.loc[missing_mask, 'spot_price'] * 4.0
+    # ============================================================================
+    # HYBRID ON-DEMAND PRICE STRATEGY: "Trust, but Verify"
+    # ============================================================================
+    # Scenario A: Column exists in CSV (prefers historical truth)
+    # Scenario B: Column missing (uses static CONFIG dictionary)
+    # Scenario C: Hybrid (CSV column has gaps, patches with dictionary)
+    # ============================================================================
 
+    if 'on_demand_price' in df.columns:
+        # Scenario A or C: Column exists (may have gaps)
+        missing_mask = df['on_demand_price'].isna() | (df['on_demand_price'] == 0)
+
+        if missing_mask.sum() > 0:
+            # Scenario C: CSV column has gaps - patch with dictionary
+            print(f"  🔧 Patching {missing_mask.sum():,} missing on-demand prices using CONFIG dictionary")
+            df.loc[missing_mask, 'on_demand_price'] = df.loc[missing_mask, 'instance_type'].map(CONFIG['on_demand_prices'])
+        else:
+            # Scenario A: CSV column is complete
+            print(f"  ✓ Using CSV on-demand prices (complete, no gaps)")
+
+    else:
+        # Scenario B: Column does NOT exist - use dictionary entirely
+        print(f"  ℹ️  Using Static CONFIG Dictionary for On-Demand prices (CSV column missing)")
+        df['on_demand_price'] = df['instance_type'].map(CONFIG['on_demand_prices'])
+
+    # Final Safety Check: Any NaNs left? (e.g., instance type not in dictionary)
+    final_missing = df['on_demand_price'].isna()
+    if final_missing.sum() > 0:
+        print(f"  ⚠️  {final_missing.sum():,} rows still missing OD price (instance type not in CONFIG)")
+        print(f"     Using spot*4.0 fallback for these rows")
+        df.loc[final_missing, 'on_demand_price'] = df.loc[final_missing, 'spot_price'] * 4.0
+
+    # Enforce float32 for memory efficiency
     if CONFIG['use_float32']:
         df['on_demand_price'] = df['on_demand_price'].astype('float32')
 
