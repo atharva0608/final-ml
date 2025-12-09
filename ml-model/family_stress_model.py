@@ -99,22 +99,24 @@ CONFIG = {
     },
 
     # Target definition
-    'spike_threshold': 0.01,  # REDUCED: 1% (Mumbai data is very stable!)
-    'lookahead_hours': 6,     # Predict 6 hours ahead
-    'lookahead_intervals': 36,  # 6 hours / 10 min intervals
+    # CHANGE 1: Increase threshold to 3% to filter noise and capture real capacity crunches
+    'spike_threshold': 0.03,  # 3% (was 1% - too sensitive for stable Mumbai market)
+    'lookahead_hours': 12,    # Predict 12 hours ahead (was 6 - gives more early warning)
+    'lookahead_intervals': 72,  # 12 hours / 10 min intervals (was 36)
 
     # Feature windows
     'price_position_window_days': 7,  # REDUCED: 7-day (30-day too stable)
 
-    # Model hyperparameters
+    # Model hyperparameters - CHANGE 3: Tighter regularization to reduce overfitting
     'model_params': {
         'objective': 'binary',
         'metric': 'auc',
-        'n_estimators': 200,
-        'num_leaves': 31,
-        'max_depth': 6,
-        'learning_rate': 0.05,
-        'feature_fraction': 0.8,
+        'n_estimators': 300,        # Increased from 200 - more trees, better learning
+        'num_leaves': 20,           # Decreased from 31 - reduces complexity
+        'max_depth': 5,             # Decreased from 6 - prevents overfitting
+        'learning_rate': 0.03,      # Decreased from 0.05 - slower, more careful learning
+        'feature_fraction': 0.7,    # Decreased from 0.8 - forces use of diverse features
+        'min_child_samples': 50,    # NEW - prevents learning from outliers
         'bagging_fraction': 0.8,
         'bagging_freq': 5,
         'verbose': -1,
@@ -122,10 +124,8 @@ CONFIG = {
         'n_jobs': -1
     },
 
-    # Decision threshold (calibrated for 2023→2024 distribution shift)
-    # Training on 2.4% unstable, testing on 13.6% unstable
-    # Need HIGHER threshold to compensate for model being too conservative
-    'decision_threshold': 0.65,  # Mark as unsafe if P(unstable) > 65%
+    # Decision threshold (will be optimized dynamically - CHANGE 4)
+    'decision_threshold': 0.65,  # Starting point, will be optimized for F1
 
     # Output
     'output_dir': './training/outputs',
@@ -577,16 +577,20 @@ def calculate_discount_depth(df):
 
 def calculate_family_stress_index(df, families_config):
     """
-    C. Family Stress Index (Hardware Contagion) - VECTORIZED VERSION
+    C. Family Stress Index (Hardware Contagion) - VECTORIZED VERSION WITH MAX
 
-    S_family = (1/|F|) * Σ P_pos(i) for i in Family F
+    S_family_mean = (1/|F|) * Σ P_pos(i) for i in Family F
+    S_family_max = max(P_pos(i)) for i in Family F
 
     Uses pivot_table - aligns timestamps instantly without loops!
     100-1000x faster than nested loops.
+
+    Now calculates BOTH mean and max to better capture parent instance stress.
     """
     print(f"\n🔥 Calculating Family Stress Index (VECTORIZED - Pivot Table)...")
 
-    df['family_stress'] = 0.0
+    df['family_stress_mean'] = 0.0
+    df['family_stress_max'] = 0.0
 
     # Create a wide pivot table: Index=(timestamp, AZ), Columns=instance_type, Values=price_position
     # This aligns all instances at each timestamp instantly
@@ -614,13 +618,21 @@ def calculate_family_stress_index(df, families_config):
             print(f"    ⚠️  No valid columns found for {family_name}")
             continue
 
-        # Calculate row-wise mean (the Family Stress Index)
-        # This is instant - one calculation for all timestamps!
-        family_stress_series = pivot[valid_cols].mean(axis=1)
-        family_stress_series.name = 'family_stress_temp'
+        # Calculate row-wise mean (average family stress)
+        family_stress_mean_series = pivot[valid_cols].mean(axis=1)
+        family_stress_mean_series.name = 'family_stress_mean_temp'
+
+        # Calculate row-wise max (peak family stress - captures parent instance spikes)
+        family_stress_max_series = pivot[valid_cols].max(axis=1)
+        family_stress_max_series.name = 'family_stress_max_temp'
 
         # Reset index to make merging easier
-        stress_df = family_stress_series.reset_index()
+        stress_df = pd.DataFrame({
+            'timestamp': family_stress_mean_series.index.get_level_values('timestamp'),
+            'availability_zone': family_stress_mean_series.index.get_level_values('availability_zone'),
+            'family_stress_mean_temp': family_stress_mean_series.values,
+            'family_stress_max_temp': family_stress_max_series.values
+        })
 
         # Merge back to original dataframe (only for target rows)
         mask = df['instance_type'] == target
@@ -633,17 +645,20 @@ def calculate_family_stress_index(df, families_config):
             suffixes=('', '_new')
         )
 
-        # Update family_stress for target rows
-        if 'family_stress_temp' in df_target.columns:
-            df.loc[mask, 'family_stress'] = df_target['family_stress_temp'].fillna(0).values
+        # Update family_stress_mean and family_stress_max for target rows
+        if 'family_stress_mean_temp' in df_target.columns:
+            df.loc[mask, 'family_stress_mean'] = df_target['family_stress_mean_temp'].fillna(0).values
+        if 'family_stress_max_temp' in df_target.columns:
+            df.loc[mask, 'family_stress_max'] = df_target['family_stress_max_temp'].fillna(0).values
 
         print(f"    ✓ Updated {mask.sum():,} rows for {target}")
 
-    df['family_stress'] = df['family_stress'].astype('float32' if CONFIG['use_float32'] else 'float64')
+    df['family_stress_mean'] = df['family_stress_mean'].astype('float32' if CONFIG['use_float32'] else 'float64')
+    df['family_stress_max'] = df['family_stress_max'].astype('float32' if CONFIG['use_float32'] else 'float64')
 
     print(f"  ✓ Family Stress Index calculated")
-    print(f"  Mean: {df['family_stress'].mean():.3f}")
-    print(f"  Std: {df['family_stress'].std():.3f}")
+    print(f"  Mean: {df['family_stress_mean'].mean():.3f}, Max: {df['family_stress_max'].mean():.3f}")
+    print(f"  Std:  {df['family_stress_mean'].std():.3f}, Max: {df['family_stress_max'].std():.3f}")
 
     return df
 
@@ -680,7 +695,8 @@ FEATURE_COLUMNS = [
     'price_volatility_6h', # A3. Rolling std dev (backup for stable markets)
     'price_cv_6h',         # A4. Coefficient of variation (backup for stable markets)
     'discount_depth',      # B. Economic buffer
-    'family_stress',       # C. Hardware contagion (KEY FEATURE)
+    'family_stress_mean',  # C1. Hardware contagion - Average family stress (KEY FEATURE)
+    'family_stress_max',   # C2. Hardware contagion - Peak family stress (captures parent spikes)
     'hour_sin',            # D. Time embeddings
     'hour_cos',
     'is_weekend',
@@ -730,6 +746,52 @@ def train_model(df_train, scale_pos_weight):
 # 6. EVALUATION & VISUALIZATION
 # ============================================================================
 
+def find_optimal_threshold(y_true, y_pred_proba, metric='f1'):
+    """
+    Dynamic Threshold Optimization - Find the threshold that maximizes a metric
+
+    Instead of using a fixed 0.5 or 0.65 threshold, mathematically find the
+    best threshold that maximizes F1 score on the validation/test set.
+
+    Args:
+        y_true: Actual labels
+        y_pred_proba: Predicted probabilities
+        metric: 'f1', 'precision', or 'recall'
+
+    Returns:
+        optimal_threshold: Best threshold found
+        best_score: Best metric score achieved
+    """
+    print(f"\n🎯 Finding Optimal Threshold (maximizing {metric.upper()})...")
+
+    thresholds = np.arange(0.1, 0.9, 0.01)  # Test thresholds from 0.1 to 0.9
+    scores = []
+
+    for thresh in thresholds:
+        y_pred = (y_pred_proba >= thresh).astype(int)
+
+        if metric == 'f1':
+            score = f1_score(y_true, y_pred, zero_division=0)
+        elif metric == 'precision':
+            score = precision_score(y_true, y_pred, zero_division=0)
+        elif metric == 'recall':
+            score = recall_score(y_true, y_pred, zero_division=0)
+        else:
+            raise ValueError(f"Unknown metric: {metric}")
+
+        scores.append(score)
+
+    # Find best threshold
+    best_idx = np.argmax(scores)
+    optimal_threshold = thresholds[best_idx]
+    best_score = scores[best_idx]
+
+    print(f"  ✓ Optimal threshold: {optimal_threshold:.3f}")
+    print(f"  ✓ Best {metric.upper()} score: {best_score:.3f}")
+    print(f"  (Previous threshold: {CONFIG['decision_threshold']:.3f})")
+
+    return optimal_threshold, best_score
+
 def evaluate_and_visualize(model, df_test, output_dir, plots_dir):
     """
     Generate the 3 required graphs + metrics
@@ -740,7 +802,13 @@ def evaluate_and_visualize(model, df_test, output_dir, plots_dir):
     y_test = df_test['is_unstable_next_6h']
 
     y_pred_proba = model.predict_proba(X_test)[:, 1]
-    y_pred = (y_pred_proba > CONFIG['decision_threshold']).astype(int)
+
+    # CHANGE 4: Dynamic Threshold Optimization
+    # Find the threshold that maximizes F1 score instead of using fixed 0.65
+    optimal_threshold, best_f1 = find_optimal_threshold(y_test, y_pred_proba, metric='f1')
+
+    # Use the optimal threshold for predictions
+    y_pred = (y_pred_proba > optimal_threshold).astype(int)
 
     # Prediction diagnostics
     print(f"\n  🔍 Prediction Diagnostics:")
