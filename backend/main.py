@@ -20,6 +20,7 @@ from contextlib import asynccontextmanager
 from config import settings
 from api.lab import router as lab_router
 from api.auth import router as auth_router
+from api.admin import router as admin_router
 from api.websocket_routes import router as websocket_router
 from database.connection import init_db
 from jobs.scheduler import start_scheduler, stop_scheduler
@@ -125,6 +126,13 @@ app.include_router(
     websocket_router,
     prefix='/api/v1',
     tags=['WebSocket']
+)
+
+# Admin (System Monitoring)
+app.include_router(
+    admin_router,
+    prefix='/api/v1/admin',
+    tags=['Admin']
 )
 
 

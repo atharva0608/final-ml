@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { FlaskConical, ChevronDown, Check, Activity, Menu, Settings, Server, User, Lock, LogOut, KeyRound, ScrollText } from 'lucide-react';
+import { FlaskConical, ChevronDown, Check, Activity, Menu, Settings, Server, User, Lock, LogOut, KeyRound, ScrollText, Monitor } from 'lucide-react';
 import { cn } from '../lib/utils';
 
 const DashboardLayout = ({ children, activeView, setActiveView, onSelectClient, selectedClientId, role = 'admin', clientName = '' }) => {
@@ -51,7 +51,9 @@ const DashboardLayout = ({ children, activeView, setActiveView, onSelectClient, 
         // Hide Controls in Lab Mode
         ...(accountScope !== 'lab' ? [{ id: 'controls', label: 'System Controls', icon: Settings }] : []),
         // Show Experiments ONLY in Lab Mode
-        ...(accountScope === 'lab' ? [{ id: 'experiments', label: 'Model Experiments', icon: FlaskConical }] : [])
+        ...(accountScope === 'lab' ? [{ id: 'experiments', label: 'Model Experiments', icon: FlaskConical }] : []),
+        // System Monitor (available in both modes for admin)
+        { id: 'monitor', label: 'System Monitor', icon: Monitor }
     ];
 
     // Sidebar Theme (Dynamic)

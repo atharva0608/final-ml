@@ -248,6 +248,64 @@ export async function evaluateInstance(instanceId) {
 }
 
 // ============================================================================
+// Admin API - System Monitoring
+// ============================================================================
+
+/**
+ * Get system-wide health overview
+ * @returns {Promise<Object>} System overview with all components
+ */
+export async function getSystemOverview() {
+    return fetchApi('/api/v1/admin/health/overview');
+}
+
+/**
+ * Get logs for a specific component
+ * @param {string} component - Component name (web_scraper, price_scraper, etc.)
+ * @param {number} limit - Number of logs to return (default: 5)
+ * @param {string} level - Filter by log level (optional)
+ * @returns {Promise<Object>} Component health and logs
+ */
+export async function getComponentLogs(component, limit = 5, level = null) {
+    const params = new URLSearchParams({ limit: limit.toString() });
+    if (level) params.append('level', level);
+
+    return fetchApi(`/api/v1/admin/logs/${component}?${params.toString()}`);
+}
+
+/**
+ * Get recent logs from all components
+ * @param {number} limit - Number of logs to return (default: 20)
+ * @param {string} level - Filter by log level (optional)
+ * @returns {Promise<Array>} Recent log entries
+ */
+export async function getRecentLogs(limit = 20, level = null) {
+    const params = new URLSearchParams({ limit: limit.toString() });
+    if (level) params.append('level', level);
+
+    return fetchApi(`/api/v1/admin/logs/all/recent?${params.toString()}`);
+}
+
+/**
+ * Get log statistics for the last 24 hours
+ * @returns {Promise<Object>} Log statistics
+ */
+export async function getLogStatistics() {
+    return fetchApi('/api/v1/admin/stats');
+}
+
+/**
+ * Clean up old logs
+ * @param {number} days - Number of days to keep (default: 7)
+ * @returns {Promise<Object>} Cleanup result
+ */
+export async function cleanupOldLogs(days = 7) {
+    return fetchApi(`/api/v1/admin/logs/cleanup?days=${days}`, {
+        method: 'POST'
+    });
+}
+
+// ============================================================================
 // Helper Functions
 // ============================================================================
 
@@ -297,6 +355,13 @@ export default {
     getLiveMetrics,
     getActivityFeed,
     getPipelineStats,
+
+    // Admin - System Monitoring
+    getSystemOverview,
+    getComponentLogs,
+    getRecentLogs,
+    getLogStatistics,
+    cleanupOldLogs,
 
     // Admin
     getClients,

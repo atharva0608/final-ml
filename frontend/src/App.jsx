@@ -9,6 +9,7 @@ import { DEMO_CLIENT } from './data/mockData';
 import Controls from './components/Controls';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import ModelExperiments from './components/Lab/ModelExperiments';
+import SystemMonitor from './pages/SystemMonitor';
 import { ModelProvider } from './context/ModelContext';
 import './App.css';
 
@@ -40,6 +41,7 @@ const AdminDashboard = () => {
       case 'fleet': return <NodeFleet externalSelectedClientId={selectedClientId} />;
       case 'controls': return <Controls />;
       case 'experiments': return <ModelExperiments />;
+      case 'monitor': return <SystemMonitor />;
       case 'profile':
         return (
           <div className="max-w-4xl mx-auto space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-500">

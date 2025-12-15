@@ -17,6 +17,9 @@ import enum
 
 from .connection import Base
 
+# Import system logging models
+from .system_logs import SystemLog, ComponentHealth, ComponentType, LogLevel, ComponentStatus
+
 
 # ============================================================================
 # User Management
