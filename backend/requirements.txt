@@ -17,8 +17,12 @@ psycopg2-binary==2.9.9
 sqlalchemy==2.0.23
 alembic==1.13.1
 
-# AWS SDK (for SANDBOX mode)
-boto3==1.28.0
+# Cache & Data Pipeline
+redis==5.0.1
+
+# AWS SDK (agentless cross-account access)
+boto3==1.34.0
+botocore==1.34.0
 
 # ML Dependencies
 lightgbm==4.1.0
@@ -30,10 +34,3 @@ numpy==1.26.2
 requests==2.31.0
 python-dotenv==1.0.0
 APScheduler==3.10.4
-
-# Legacy (Flask-based backend - can be removed if not used)
-Flask==3.0.0
-flask-cors==4.0.0
-mysql-connector-python==8.2.0
-marshmallow==3.20.1
-gunicorn==21.2.0
