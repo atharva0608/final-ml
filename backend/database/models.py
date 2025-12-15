@@ -114,6 +114,12 @@ class Instance(Base):
     pipeline_mode = Column(String(20), default='CLUSTER', nullable=False)  # CLUSTER or LINEAR
     is_shadow_mode = Column(Boolean, default=False)  # Read-only mode (no actual switches)
 
+    # Security Enforcer fields
+    auth_status = Column(String(20), default='AUTHORIZED')  # AUTHORIZED, UNAUTHORIZED, FLAGGED, TERMINATED
+
+    # Kubernetes cluster membership
+    cluster_membership = Column(JSONB)  # {"cluster_name": "prod-eks", "node_group": "workers", "role": "worker"}
+
     # Status and metadata
     is_active = Column(Boolean, default=True)
     last_evaluation = Column(DateTime)
@@ -207,3 +213,133 @@ class ExperimentLog(Base):
 
     def __repr__(self):
         return f"<ExperimentLog(instance={self.instance_id}, decision={self.decision}, score={self.prediction_score})>"
+
+
+# ============================================================================
+# Waste Management (Financial Hygiene)
+# ============================================================================
+
+class WasteResourceType(str, enum.Enum):
+    """Types of wasted AWS resources"""
+    ELASTIC_IP = "elastic_ip"
+    EBS_VOLUME = "ebs_volume"
+    EBS_SNAPSHOT = "ebs_snapshot"
+    AMI = "ami"
+
+
+class WasteResource(Base):
+    """Tracking unused/orphaned AWS resources for automated cleanup"""
+    __tablename__ = "waste_resources"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    account_id = Column(UUID(as_uuid=True), ForeignKey('accounts.id', ondelete='CASCADE'), nullable=False, index=True)
+
+    # Resource identification
+    resource_type = Column(String(20), nullable=False, index=True)  # elastic_ip, ebs_volume, ebs_snapshot, ami
+    resource_id = Column(String(100), nullable=False, index=True)  # e.g., "eipalloc-abc123", "vol-xyz789"
+    region = Column(String(20), nullable=False)
+
+    # Cost data
+    monthly_cost = Column(Float, default=0.0)  # Estimated monthly waste cost
+    currency = Column(String(3), default='USD')
+
+    # Detection metadata
+    detected_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    days_unused = Column(Integer, default=0)  # How long has it been unused?
+
+    # Status tracking
+    status = Column(String(20), default='DETECTED', nullable=False)  # DETECTED, FLAGGED, SCHEDULED_DELETE, DELETED
+    scheduled_deletion_date = Column(DateTime)  # Grace period before auto-delete
+    deleted_at = Column(DateTime)
+
+    # Metadata
+    metadata = Column(JSONB)  # Additional resource info (tags, attachments, etc.)
+    reason = Column(Text)  # Why is this considered waste?
+
+    # Relationships
+    account = relationship("Account")
+
+    def __repr__(self):
+        return f"<WasteResource(type={self.resource_type}, id={self.resource_id}, cost=${self.monthly_cost})>"
+
+
+# ============================================================================
+# Global Risk Contagion (Hive Intelligence)
+# ============================================================================
+
+class SpotPoolRisk(Base):
+    """Global spot pool risk tracking (hive intelligence across all customers)"""
+    __tablename__ = "spot_pool_risks"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+
+    # Spot pool identification (unique combination)
+    region = Column(String(20), nullable=False, index=True)
+    availability_zone = Column(String(20), nullable=False, index=True)
+    instance_type = Column(String(20), nullable=False, index=True)
+
+    # Risk tracking
+    is_poisoned = Column(Boolean, default=False, nullable=False, index=True)  # Is this pool blocked?
+    interruption_count = Column(Integer, default=0)  # Total interruptions observed
+    last_interruption = Column(DateTime, index=True)  # Most recent interruption
+    poisoned_at = Column(DateTime)  # When was it marked as poisoned?
+    poison_expires_at = Column(DateTime)  # 15-day cooldown
+
+    # Metadata
+    triggering_customer_id = Column(UUID(as_uuid=True))  # Which customer experienced the interruption?
+    metadata = Column(JSONB)  # Additional context (rebalance event, price spike, etc.)
+
+    # Audit
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def __repr__(self):
+        return f"<SpotPoolRisk(pool={self.region}/{self.availability_zone}/{self.instance_type}, poisoned={self.is_poisoned})>"
+
+
+# ============================================================================
+# Approval Workflow
+# ============================================================================
+
+class ApprovalStatus(str, enum.Enum):
+    """Approval request statuses"""
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    EXPIRED = "expired"
+
+
+class ApprovalRequest(Base):
+    """Manual approval gates for high-risk production actions"""
+    __tablename__ = "approval_requests"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    instance_id = Column(UUID(as_uuid=True), ForeignKey('instances.id', ondelete='CASCADE'), nullable=False, index=True)
+    requester_id = Column(UUID(as_uuid=True), ForeignKey('users.id'), nullable=False)
+    approver_id = Column(UUID(as_uuid=True), ForeignKey('users.id'))
+
+    # Request details
+    action_type = Column(String(50), nullable=False)  # "SWITCH_INSTANCE", "TERMINATE_ROGUE", "DELETE_WASTE"
+    action_description = Column(Text)  # Human-readable description of what will happen
+    risk_level = Column(String(20), default='MEDIUM')  # LOW, MEDIUM, HIGH, CRITICAL
+
+    # Decision metadata (what will be executed if approved)
+    action_payload = Column(JSONB, nullable=False)  # Contains all details needed to execute action
+
+    # Status tracking
+    status = Column(String(20), default=ApprovalStatus.PENDING.value, nullable=False, index=True)
+    rejection_reason = Column(Text)
+
+    # Timing
+    requested_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    expires_at = Column(DateTime, nullable=False)  # Auto-reject if not approved in time
+    decided_at = Column(DateTime)  # When was approve/reject decision made?
+    executed_at = Column(DateTime)  # When was the action actually executed (if approved)?
+
+    # Relationships
+    instance = relationship("Instance")
+    requester = relationship("User", foreign_keys=[requester_id])
+    approver = relationship("User", foreign_keys=[approver_id])
+
+    def __repr__(self):
+        return f"<ApprovalRequest(id={self.id}, action={self.action_type}, status={self.status})>"

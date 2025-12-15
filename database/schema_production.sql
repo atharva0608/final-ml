@@ -104,8 +104,14 @@ CREATE TABLE instances (
 
     -- Lab Mode configuration
     assigned_model_version VARCHAR(50),  -- e.g., "v2.1.0", NULL = use default model
-    pipeline_mode VARCHAR(20) NOT NULL DEFAULT 'CLUSTER',  -- CLUSTER or LINEAR
+    pipeline_mode VARCHAR(20) NOT NULL DEFAULT 'CLUSTER',  -- CLUSTER, LINEAR, or KUBERNETES
     is_shadow_mode BOOLEAN DEFAULT FALSE,  -- Read-only mode (no actual instance switches)
+
+    -- Security Enforcer fields
+    auth_status VARCHAR(20) DEFAULT 'AUTHORIZED',  -- AUTHORIZED, UNAUTHORIZED, FLAGGED, TERMINATED
+
+    -- Kubernetes cluster membership
+    cluster_membership JSONB,  -- {"cluster_name": "prod-eks", "node_group": "workers", "role": "worker"}
 
     -- Status and metadata
     is_active BOOLEAN DEFAULT TRUE,
@@ -114,7 +120,8 @@ CREATE TABLE instances (
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
-    CONSTRAINT chk_pipeline_mode CHECK (pipeline_mode IN ('CLUSTER', 'LINEAR'))
+    CONSTRAINT chk_pipeline_mode CHECK (pipeline_mode IN ('CLUSTER', 'LINEAR', 'KUBERNETES')),
+    CONSTRAINT chk_auth_status CHECK (auth_status IN ('AUTHORIZED', 'UNAUTHORIZED', 'FLAGGED', 'TERMINATED'))
 );
 
 -- Indexes for fast instance lookup
@@ -215,6 +222,141 @@ COMMENT ON COLUMN experiment_logs.features_used IS 'JSONB snapshot of feature ve
 COMMENT ON COLUMN experiment_logs.decision IS 'Pipeline decision: SWITCH (change instance), STAY (keep current), FALLBACK_ONDEMAND';
 
 -- ============================================================================
+-- Waste Management (Financial Hygiene)
+-- ============================================================================
+
+-- Tracking unused/orphaned AWS resources for automated cleanup
+CREATE TABLE waste_resources (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    account_id UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+
+    -- Resource identification
+    resource_type VARCHAR(20) NOT NULL,  -- elastic_ip, ebs_volume, ebs_snapshot, ami
+    resource_id VARCHAR(100) NOT NULL,  -- e.g., "eipalloc-abc123", "vol-xyz789"
+    region VARCHAR(20) NOT NULL,
+
+    -- Cost data
+    monthly_cost FLOAT DEFAULT 0.0,  -- Estimated monthly waste cost
+    currency VARCHAR(3) DEFAULT 'USD',
+
+    -- Detection metadata
+    detected_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    days_unused INTEGER DEFAULT 0,  -- How long has it been unused?
+
+    -- Status tracking
+    status VARCHAR(20) NOT NULL DEFAULT 'DETECTED',  -- DETECTED, FLAGGED, SCHEDULED_DELETE, DELETED
+    scheduled_deletion_date TIMESTAMP,  -- Grace period before auto-delete
+    deleted_at TIMESTAMP,
+
+    -- Metadata
+    metadata JSONB,  -- Additional resource info (tags, attachments, etc.)
+    reason TEXT,  -- Why is this considered waste?
+
+    CONSTRAINT chk_waste_resource_type CHECK (resource_type IN ('elastic_ip', 'ebs_volume', 'ebs_snapshot', 'ami')),
+    CONSTRAINT chk_waste_status CHECK (status IN ('DETECTED', 'FLAGGED', 'SCHEDULED_DELETE', 'DELETED'))
+);
+
+-- Indexes for waste resource tracking
+CREATE INDEX idx_waste_resources_account_id ON waste_resources(account_id);
+CREATE INDEX idx_waste_resources_resource_type ON waste_resources(resource_type);
+CREATE INDEX idx_waste_resources_resource_id ON waste_resources(resource_id);
+CREATE INDEX idx_waste_resources_status ON waste_resources(status);
+CREATE INDEX idx_waste_resources_detected_at ON waste_resources(detected_at);
+
+COMMENT ON TABLE waste_resources IS 'Tracking unused AWS resources for automated cleanup (EIPs, volumes, snapshots)';
+COMMENT ON COLUMN waste_resources.monthly_cost IS 'Estimated monthly cost of this wasted resource';
+COMMENT ON COLUMN waste_resources.days_unused IS 'Number of days resource has been unused';
+COMMENT ON COLUMN waste_resources.scheduled_deletion_date IS 'Grace period expiration - resource will be deleted after this';
+
+-- ============================================================================
+-- Global Risk Contagion (Hive Intelligence)
+-- ============================================================================
+
+-- Global spot pool risk tracking (hive intelligence across all customers)
+CREATE TABLE spot_pool_risks (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+
+    -- Spot pool identification (unique combination)
+    region VARCHAR(20) NOT NULL,
+    availability_zone VARCHAR(20) NOT NULL,
+    instance_type VARCHAR(20) NOT NULL,
+
+    -- Risk tracking
+    is_poisoned BOOLEAN NOT NULL DEFAULT FALSE,  -- Is this pool blocked?
+    interruption_count INTEGER DEFAULT 0,  -- Total interruptions observed
+    last_interruption TIMESTAMP,  -- Most recent interruption
+    poisoned_at TIMESTAMP,  -- When was it marked as poisoned?
+    poison_expires_at TIMESTAMP,  -- 15-day cooldown
+
+    -- Metadata
+    triggering_customer_id UUID,  -- Which customer experienced the interruption?
+    metadata JSONB,  -- Additional context (rebalance event, price spike, etc.)
+
+    -- Audit
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    -- Unique constraint on pool identification
+    CONSTRAINT uq_spot_pool UNIQUE (region, availability_zone, instance_type)
+);
+
+-- Indexes for spot pool risk queries
+CREATE INDEX idx_spot_pool_risks_region ON spot_pool_risks(region);
+CREATE INDEX idx_spot_pool_risks_az ON spot_pool_risks(availability_zone);
+CREATE INDEX idx_spot_pool_risks_instance_type ON spot_pool_risks(instance_type);
+CREATE INDEX idx_spot_pool_risks_is_poisoned ON spot_pool_risks(is_poisoned);
+CREATE INDEX idx_spot_pool_risks_last_interruption ON spot_pool_risks(last_interruption);
+
+COMMENT ON TABLE spot_pool_risks IS 'Global spot pool risk tracking (hive intelligence) - blocks poisoned pools across all customers';
+COMMENT ON COLUMN spot_pool_risks.is_poisoned IS 'TRUE = pool is blocked for 15 days due to interruption';
+COMMENT ON COLUMN spot_pool_risks.poison_expires_at IS 'Pool will be unblocked after this timestamp (15-day cooldown)';
+COMMENT ON COLUMN spot_pool_risks.triggering_customer_id IS 'Customer who experienced the interruption that poisoned this pool';
+
+-- ============================================================================
+-- Approval Workflow
+-- ============================================================================
+
+-- Manual approval gates for high-risk production actions
+CREATE TABLE approval_requests (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    instance_id UUID NOT NULL REFERENCES instances(id) ON DELETE CASCADE,
+    requester_id UUID NOT NULL REFERENCES users(id),
+    approver_id UUID REFERENCES users(id),
+
+    -- Request details
+    action_type VARCHAR(50) NOT NULL,  -- "SWITCH_INSTANCE", "TERMINATE_ROGUE", "DELETE_WASTE"
+    action_description TEXT,  -- Human-readable description of what will happen
+    risk_level VARCHAR(20) DEFAULT 'MEDIUM',  -- LOW, MEDIUM, HIGH, CRITICAL
+
+    -- Decision metadata (what will be executed if approved)
+    action_payload JSONB NOT NULL,  -- Contains all details needed to execute action
+
+    -- Status tracking
+    status VARCHAR(20) NOT NULL DEFAULT 'pending',  -- pending, approved, rejected, expired
+    rejection_reason TEXT,
+
+    -- Timing
+    requested_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    expires_at TIMESTAMP NOT NULL,  -- Auto-reject if not approved in time
+    decided_at TIMESTAMP,  -- When was approve/reject decision made?
+    executed_at TIMESTAMP,  -- When was the action actually executed (if approved)?
+
+    CONSTRAINT chk_approval_status CHECK (status IN ('pending', 'approved', 'rejected', 'expired')),
+    CONSTRAINT chk_risk_level CHECK (risk_level IN ('LOW', 'MEDIUM', 'HIGH', 'CRITICAL'))
+);
+
+-- Indexes for approval workflow
+CREATE INDEX idx_approval_requests_instance_id ON approval_requests(instance_id);
+CREATE INDEX idx_approval_requests_requester_id ON approval_requests(requester_id);
+CREATE INDEX idx_approval_requests_approver_id ON approval_requests(approver_id);
+CREATE INDEX idx_approval_requests_status ON approval_requests(status);
+CREATE INDEX idx_approval_requests_requested_at ON approval_requests(requested_at);
+
+COMMENT ON TABLE approval_requests IS 'Manual approval gates for high-risk production actions';
+COMMENT ON COLUMN approval_requests.action_payload IS 'JSONB containing all parameters needed to execute the action';
+COMMENT ON COLUMN approval_requests.expires_at IS 'Approval window expiration - auto-reject after this time';
+
+-- ============================================================================
 -- Triggers for automatic timestamp updates
 -- ============================================================================
 
@@ -240,6 +382,11 @@ CREATE TRIGGER update_accounts_updated_at
 
 CREATE TRIGGER update_instances_updated_at
     BEFORE UPDATE ON instances
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_spot_pool_risks_updated_at
+    BEFORE UPDATE ON spot_pool_risks
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
 

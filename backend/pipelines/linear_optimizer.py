@@ -19,11 +19,13 @@ BYPASSED in Lab Mode:
 """
 
 import json
+import time
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 from dataclasses import dataclass, field
 from enum import Enum
 import numpy as np
+from botocore.exceptions import ClientError, WaiterError
 
 # Database models
 from database.models import Instance, Account, ExperimentLog, ModelRegistry
@@ -185,6 +187,10 @@ class LinearPipeline:
 
             # Step 4: Decision - Select best candidate
             context = self._step_decision(context)
+
+            # Step 5: Execution - Perform atomic switch (if decision is SWITCH)
+            if context.final_decision == DecisionType.SWITCH:
+                context = self._step_execution(context, instance)
 
         except Exception as e:
             print(f"\n❌ Pipeline failed: {e}")
@@ -521,6 +527,85 @@ class LinearPipeline:
 
         return context
 
+    def _step_execution(self, context: PipelineContext, instance: Instance) -> PipelineContext:
+        """
+        Step 5: Execution - Perform Atomic Switch
+
+        This is "The Actuator" - the component that actually performs the switch.
+        It's the last step in the pipeline and only runs if the decision is SWITCH.
+
+        Args:
+            context: Pipeline context with selected candidate
+            instance: Database instance record
+
+        Returns:
+            Updated context with execution results
+        """
+        print("[Step 5/5] ⚡ Execution - Running Atomic Switch")
+        print("-" * 80)
+
+        # 1. Shadow Mode Check (Lab Mode Safety Feature)
+        if context.is_shadow_mode:
+            print("  👻 Shadow Mode Active: Skipping actual AWS calls.")
+            context.log_stage("Execution", "SKIPPED (Shadow Mode)")
+            print()
+            return context
+
+        # 2. Environment Validation (Critical Safety Check)
+        # Prevent accidental cross-environment operations
+        expected_account = instance.account.account_id
+        if not expected_account:
+            error_msg = "No account ID available for validation"
+            print(f"  🚨 {error_msg}")
+            context.log_stage("Execution", f"BLOCKED: {error_msg}")
+            print()
+            return context
+
+        # 3. Get EC2 Client (Real Auth)
+        try:
+            ec2 = get_ec2_client(
+                account_id=instance.account.account_id,
+                region=context.region,
+                db=self.db
+            )
+        except Exception as e:
+            error_msg = f"Failed to get EC2 client: {str(e)}"
+            print(f"  🚨 {error_msg}")
+            context.log_stage("Execution", f"FAILED: {error_msg}")
+            print()
+            return context
+
+        try:
+            # 4. Call The Actuator
+            result = execute_atomic_switch(
+                ec2_client=ec2,
+                source_instance_id=instance.instance_id,
+                target_instance_type=context.selected_candidate.instance_type,
+                target_az=context.selected_candidate.availability_zone
+            )
+
+            # 5. Log Success
+            context.log_stage("Execution", "SUCCESS", result)
+
+            # 6. Update Database Record
+            # We update the instance_id in the DB to match the new one
+            instance.instance_id = result['new_instance_id']
+            instance.instance_type = context.selected_candidate.instance_type
+            instance.availability_zone = context.selected_candidate.availability_zone
+            instance.updated_at = datetime.now()
+            self.db.commit()
+
+            print(f"  📝 Database updated with new Instance ID: {result['new_instance_id']}")
+            print()
+
+        except Exception as e:
+            context.log_stage("Execution", f"FAILED: {str(e)}")
+            # Don't re-raise, just log failure so we can see it in dashboard
+            print(f"  ❌ Execution Step Failed: {e}")
+            print()
+
+        return context
+
     def _log_experiment(self, context: PipelineContext, instance: Instance, execution_time: float):
         """
         Log experiment to database
@@ -652,6 +737,171 @@ class LinearPipeline:
 
         # Fallback to default safe values
         return 0.10  # Default 10% interrupt rate
+
+
+# ============================================================================
+# THE ACTUATOR - Atomic Switch Implementation
+# ============================================================================
+
+def execute_atomic_switch(
+    ec2_client,
+    source_instance_id: str,
+    target_instance_type: str,
+    target_az: str,
+    dry_run: bool = False
+) -> Dict[str, Any]:
+    """
+    Performs the 'Atomic Switch':
+    1. Clones the source instance (creates AMI)
+    2. Finds a matching subnet in the Target AZ
+    3. Launches a new Spot Instance from the clone
+    4. Verifies health
+    5. Stops the old instance
+
+    Args:
+        ec2_client: Boto3 EC2 client with cross-account credentials
+        source_instance_id: Current EC2 instance ID to clone
+        target_instance_type: Desired instance type (e.g., 't3.medium')
+        target_az: Target availability zone (e.g., 'us-east-1a')
+        dry_run: If True, simulates execution without AWS changes
+
+    Returns:
+        Dict with status, old_instance_id, new_instance_id, ami_id
+    """
+    print(f"\n⚡ STARTING ATOMIC SWITCH: {source_instance_id} -> {target_instance_type} ({target_az})")
+
+    try:
+        # 1. GET SOURCE CONFIGURATION
+        # ----------------------------------------------------------------
+        desc = ec2_client.describe_instances(InstanceIds=[source_instance_id])
+        source = desc['Reservations'][0]['Instances'][0]
+        vpc_id = source['VpcId']
+        security_groups = [sg['GroupId'] for sg in source.get('SecurityGroups', [])]
+        iam_profile = source.get('IamInstanceProfile', {})
+        key_name = source.get('KeyName')
+        source_tags = source.get('Tags', [])
+
+        print(f"  ✓ Fetched config from source (VPC: {vpc_id})")
+
+        # 2. RESOLVE SUBNET FOR TARGET AZ
+        # ----------------------------------------------------------------
+        # We must find a subnet in the *Target AZ* that belongs to the *Same VPC*
+        subnets = ec2_client.describe_subnets(Filters=[
+            {'Name': 'vpc-id', 'Values': [vpc_id]},
+            {'Name': 'availability-zone', 'Values': [target_az]}
+        ])
+
+        if not subnets['Subnets']:
+            raise RuntimeError(f"No subnets found in {target_az} for VPC {vpc_id}")
+
+        # Naive selection: Pick the first available subnet in target AZ
+        # (In production, you'd match tags or 'MapPublicIpOnLaunch' settings)
+        target_subnet_id = subnets['Subnets'][0]['SubnetId']
+        print(f"  ✓ Resolved target subnet: {target_subnet_id} ({target_az})")
+
+        if dry_run:
+            print("  ⚠️ DRY RUN: Skipping AMI creation and Launch")
+            return {"status": "dry_run_success", "new_instance_id": "i-dryrun"}
+
+        # 3. CREATE CLONE (AMI)
+        # ----------------------------------------------------------------
+        image_name = f"SpotOpt-Clone-{source_instance_id}-{int(datetime.now().timestamp())}"
+        print(f"  📸 Creating AMI: {image_name}...")
+
+        ami_resp = ec2_client.create_image(
+            InstanceId=source_instance_id,
+            Name=image_name,
+            NoReboot=False  # Reboot ensures file system consistency
+        )
+        ami_id = ami_resp['ImageId']
+
+        # Wait for AMI to be available (can take minutes)
+        print(f"  ⏳ Waiting for AMI {ami_id} to be available...")
+        waiter = ec2_client.get_waiter('image_available')
+        waiter.wait(ImageIds=[ami_id], WaiterConfig={'Delay': 15, 'MaxAttempts': 40})
+        print("  ✓ AMI Ready")
+
+        # 4. LAUNCH SPOT INSTANCE
+        # ----------------------------------------------------------------
+        print(f"  🚀 Launching {target_instance_type} in {target_az}...")
+
+        launch_args = {
+            'ImageId': ami_id,
+            'InstanceType': target_instance_type,
+            'SubnetId': target_subnet_id,
+            'SecurityGroupIds': security_groups,
+            'MinCount': 1,
+            'MaxCount': 1,
+            'InstanceMarketOptions': {
+                'MarketType': 'spot',
+                'SpotOptions': {'SpotInstanceType': 'one-time'}
+            }
+        }
+
+        # Only add optional params if they existed on source
+        if key_name:
+            launch_args['KeyName'] = key_name
+        if iam_profile:
+            launch_args['IamInstanceProfile'] = {'Arn': iam_profile['Arn']}
+
+        # Tag inheritance - copy all user tags + add system tags
+        tags_to_apply = []
+        for tag in source_tags:
+            if tag['Key'] not in ['Name', 'aws:*']:  # Skip AWS reserved tags
+                tags_to_apply.append(tag)
+
+        # Add system management tags (for Security Enforcer)
+        tags_to_apply.extend([
+            {'Key': 'ManagedBy', 'Value': 'SpotOptimizer'},
+            {'Key': 'CreatedVia', 'Value': 'LabMode'},
+            {'Key': 'SourceInstance', 'Value': source_instance_id}
+        ])
+
+        run_resp = ec2_client.run_instances(**launch_args)
+        new_instance_id = run_resp['Instances'][0]['InstanceId']
+        print(f"  ✓ Spot Request Placed. New ID: {new_instance_id}")
+
+        # Apply tags to new instance
+        if tags_to_apply:
+            ec2_client.create_tags(Resources=[new_instance_id], Tags=tags_to_apply)
+            print(f"  ✓ Tags inherited ({len(tags_to_apply)} tags copied)")
+
+        # 5. HEALTH CHECK (Safety Latch)
+        # ----------------------------------------------------------------
+        print(f"  🩺 Performing Health Checks on {new_instance_id}...")
+
+        # Wait for Running state
+        ec2_client.get_waiter('instance_running').wait(InstanceIds=[new_instance_id])
+
+        # Wait for Status Checks (2/2 OK)
+        # This ensures the OS booted and network is up
+        status_waiter = ec2_client.get_waiter('instance_status_ok')
+        try:
+            status_waiter.wait(InstanceIds=[new_instance_id], WaiterConfig={'Delay': 15, 'MaxAttempts': 20})
+            print("  ✅ New Instance is HEALTHY (2/2 checks passed)")
+        except WaiterError as we:
+            print(f"  ❌ New Instance FAILED health checks: {we}")
+            print("  🔄 Rollback: Terminating new instance, keeping old...")
+            ec2_client.terminate_instances(InstanceIds=[new_instance_id])
+            raise RuntimeError("New instance failed health checks - rolled back")
+
+        # 6. SWAP (Stop Old)
+        # ----------------------------------------------------------------
+        print(f"  🛑 Stopping old instance {source_instance_id}...")
+        ec2_client.stop_instances(InstanceIds=[source_instance_id])
+
+        print("  ✨ ATOMIC SWITCH SUCCESSFUL")
+
+        return {
+            "status": "success",
+            "old_instance_id": source_instance_id,
+            "new_instance_id": new_instance_id,
+            "ami_id": ami_id
+        }
+
+    except Exception as e:
+        print(f"  ❌ SWITCH FAILED: {str(e)}")
+        raise e
 
 
 # For testing
