@@ -12,6 +12,7 @@ from datetime import datetime
 
 from config import settings
 from api.sandbox import router as sandbox_router
+from api.lab import router as lab_router
 
 # Create FastAPI app
 app = FastAPI(
@@ -58,6 +59,12 @@ app.include_router(
     tags=['Sandbox']
 )
 
+app.include_router(
+    lab_router,
+    prefix='/api/v1',
+    tags=['Lab Mode']
+)
+
 
 @app.get('/health')
 async def health_check():
@@ -77,24 +84,30 @@ async def evaluate_instance(request: EvaluateRequest):
 
     This endpoint:
     1. Creates a DecisionContext from the request
-    2. Runs the 6-layer decision pipeline
+    2. Runs the decision pipeline (CLUSTER_FULL or SINGLE_LINEAR based on config)
     3. Returns the final decision with reasoning
 
-    **Note**: This is a placeholder. Real implementation would use:
-    - decision_engine_v2.DecisionContext
-    - dependencies.get_decision_pipeline()
+    The pipeline router (workers.optimizer_task) automatically selects:
+    - SINGLE_LINEAR: Lab Mode (simplified pipeline for experimentation)
+    - CLUSTER_FULL: Production Mode (full 6-layer pipeline)
     """
-    # TODO: Implement real pipeline execution
-    # For now, return mock response
+    from workers.optimizer_task import run_optimization_cycle
 
+    # Use instance_id if provided, otherwise generate a test ID
+    instance_id = request.instance_id or f"test-{request.instance_type}-{request.availability_zone}"
+
+    # Run optimization cycle (automatically routes to correct pipeline)
+    summary = run_optimization_cycle(instance_id)
+
+    # Convert to response format
     return EvaluateResponse(
-        decision='STAY',
-        reason='Instance is safe (crash probability < 0.85)',
-        crash_probability=0.28,
-        aws_signal='NONE',
-        execution_time_ms=150.2,
-        candidates_evaluated=1,
-        selected_candidate=None
+        decision=summary['decision'],
+        reason=summary['reason'],
+        crash_probability=summary['selected_candidate']['crash_probability'] if summary['selected_candidate'] else None,
+        aws_signal=summary['aws_signal'],
+        execution_time_ms=summary['execution_time_ms'],
+        candidates_evaluated=3,  # TODO: Get from summary
+        selected_candidate=summary['selected_candidate']
     )
 
 
