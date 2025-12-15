@@ -1,305 +1,105 @@
 #!/bin/bash
-# ==============================================================================
-# AWS Spot Optimizer - Complete Cleanup Script
-# ==============================================================================
-# This script removes ALL components installed by setup.sh:
-# - Systemd services
-# - Docker containers, volumes, networks, images
-# - Application directories and files
-# - Configuration files
-# - Helper scripts
-# ==============================================================================
+# Comprehensive cleanup script for Spot Optimizer Platform
+# Removes all generated files, caches, logs, and resets to fresh state
 
 set -e
 
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-# Logging functions
-log() {
-    echo -e "${GREEN}[$(date +'%Y-%m-%d %H:%M:%S')]${NC} $1"
-}
-
-warn() {
-    echo -e "${YELLOW}[WARNING]${NC} $1"
-}
-
-error() {
-    echo -e "${RED}[ERROR]${NC} $1"
-}
-
-info() {
-    echo -e "${BLUE}[INFO]${NC} $1"
-}
-
-# ==============================================================================
-# CONFIRMATION
-# ==============================================================================
-
+echo "================================================================================"
+echo "SPOT OPTIMIZER PLATFORM - COMPREHENSIVE CLEANUP"
+echo "================================================================================"
+echo "This script will remove:"
+echo "  1. All Python virtual environments"
+echo "  2. All Python caches (__pycache__, .pyc files)"
+echo "  3. All trained models and training outputs"
+echo "  4. All logs and temporary files"
+echo "  5. Scraped static data"
+echo "  6. FastAPI/Uvicorn pid files"
 echo ""
-echo "======================================================================"
-echo "  AWS SPOT OPTIMIZER - COMPLETE CLEANUP"
-echo "======================================================================"
-echo ""
-warn "This script will REMOVE ALL components of the Spot Optimizer:"
-echo "  - Systemd services (backend)"
-echo "  - Docker containers (MySQL)"
-echo "  - Docker volumes (mysql-data)"
-echo "  - Docker networks (spot-network)"
-echo "  - Docker images (mysql, python, node)"
-echo "  - Application directories (/home/ubuntu/spot-optimizer)"
-echo "  - Model files (/home/ubuntu/production_models)"
-echo "  - Log files (/home/ubuntu/logs)"
-echo "  - Helper scripts (/home/ubuntu/scripts)"
-echo "  - Nginx configuration"
-echo "  - Frontend files (/var/www/spot-optimizer)"
-echo ""
-echo -e "${RED}WARNING: THIS CANNOT BE UNDONE!${NC}"
+echo "⚠️  WARNING: This will reset the project to a fresh state."
+echo "   You will need to run ./scripts/setup_env.sh again after cleanup."
+echo "================================================================================"
 echo ""
 
-read -p "Are you sure you want to continue? (type 'yes' to confirm): " confirmation
-
-if [ "$confirmation" != "yes" ]; then
-    log "Cleanup cancelled."
+# Ask for confirmation
+read -p "Are you sure you want to continue? (yes/no): " confirm
+if [ "$confirm" != "yes" ]; then
+    echo "Cleanup cancelled."
     exit 0
 fi
 
-echo ""
-log "Starting cleanup process..."
-echo ""
-
-# ==============================================================================
-# STEP 1: STOP AND REMOVE SYSTEMD SERVICES
-# ==============================================================================
-
-log "Step 1: Stopping and removing systemd services..."
-
-if systemctl is-active --quiet spot-optimizer-backend; then
-    sudo systemctl stop spot-optimizer-backend
-    log "✓ Stopped spot-optimizer-backend service"
-fi
-
-if systemctl is-enabled --quiet spot-optimizer-backend 2>/dev/null; then
-    sudo systemctl disable spot-optimizer-backend
-    log "✓ Disabled spot-optimizer-backend service"
-fi
-
-if [ -f /etc/systemd/system/spot-optimizer-backend.service ]; then
-    sudo rm /etc/systemd/system/spot-optimizer-backend.service
-    log "✓ Removed service file"
-fi
-
-sudo systemctl daemon-reload
-log "✓ Reloaded systemd"
-
-# ==============================================================================
-# STEP 2: STOP AND REMOVE NGINX CONFIGURATION
-# ==============================================================================
-
-log "Step 2: Removing Nginx configuration..."
-
-if systemctl is-active --quiet nginx; then
-    sudo systemctl stop nginx
-    log "✓ Stopped Nginx"
-fi
-
-if [ -f /etc/nginx/sites-enabled/spot-optimizer ]; then
-    sudo rm /etc/nginx/sites-enabled/spot-optimizer
-    log "✓ Removed Nginx site (enabled)"
-fi
-
-if [ -f /etc/nginx/sites-available/spot-optimizer ]; then
-    sudo rm /etc/nginx/sites-available/spot-optimizer
-    log "✓ Removed Nginx site (available)"
-fi
-
-# Restart Nginx to default config (or stop if you want)
-if systemctl is-enabled --quiet nginx 2>/dev/null; then
-    sudo systemctl start nginx 2>/dev/null || true
-    log "✓ Restarted Nginx with default config"
-fi
-
-# ==============================================================================
-# STEP 3: STOP AND REMOVE DOCKER CONTAINERS
-# ==============================================================================
-
-log "Step 3: Stopping and removing Docker containers..."
-
-# Stop and remove spot-mysql container
-if docker ps -a | grep -q spot-mysql; then
-    docker stop spot-mysql 2>/dev/null || true
-    docker rm spot-mysql 2>/dev/null || true
-    log "✓ Removed spot-mysql container"
-fi
-
-# Remove any other related containers
-RELATED_CONTAINERS=$(docker ps -a | grep -E "spot-optimizer|spot_optimizer" | awk '{print $1}' || echo "")
-if [ ! -z "$RELATED_CONTAINERS" ]; then
-    docker stop $RELATED_CONTAINERS 2>/dev/null || true
-    docker rm $RELATED_CONTAINERS 2>/dev/null || true
-    log "✓ Removed related containers"
-fi
-
-# ==============================================================================
-# STEP 4: REMOVE DOCKER VOLUMES
-# ==============================================================================
-
-log "Step 4: Removing Docker volumes..."
-
-# Remove named volumes
-if docker volume ls | grep -q mysql-data; then
-    docker volume rm mysql-data 2>/dev/null || true
-    log "✓ Removed mysql-data volume"
-fi
-
-# Remove any other related volumes
-RELATED_VOLUMES=$(docker volume ls | grep -E "spot" | awk '{print $2}' || echo "")
-if [ ! -z "$RELATED_VOLUMES" ]; then
-    docker volume rm $RELATED_VOLUMES 2>/dev/null || true
-    log "✓ Removed related volumes"
-fi
-
-# ==============================================================================
-# STEP 5: REMOVE DOCKER NETWORKS
-# ==============================================================================
-
-log "Step 5: Removing Docker networks..."
-
-if docker network ls | grep -q spot-network; then
-    docker network rm spot-network 2>/dev/null || true
-    log "✓ Removed spot-network"
-fi
-
-# ==============================================================================
-# STEP 6: REMOVE DOCKER IMAGES (OPTIONAL)
-# ==============================================================================
-
-log "Step 6: Removing Docker images..."
-
-read -p "Do you want to remove MySQL Docker image? (y/n): " remove_images
-
-if [ "$remove_images" = "y" ]; then
-    # Remove MySQL image
-    if docker images | grep -q "mysql.*8.0"; then
-        docker rmi mysql:8.0 2>/dev/null || warn "Could not remove mysql:8.0 image (may be in use)"
-    fi
-    log "✓ Attempted to remove Docker images"
-else
-    log "Skipped Docker image removal"
-fi
-
-# ==============================================================================
-# STEP 7: REMOVE APPLICATION DIRECTORIES
-# ==============================================================================
-
-log "Step 7: Removing application directories..."
-
-# Remove main application directory
-if [ -d "/home/ubuntu/spot-optimizer" ]; then
-    sudo rm -rf /home/ubuntu/spot-optimizer
-    log "✓ Removed /home/ubuntu/spot-optimizer"
-fi
-
-# Remove model files directory
-if [ -d "/home/ubuntu/production_models" ]; then
-    sudo rm -rf /home/ubuntu/production_models
-    log "✓ Removed /home/ubuntu/production_models"
-fi
-
-# Remove logs directory
-if [ -d "/home/ubuntu/logs" ]; then
-    sudo rm -rf /home/ubuntu/logs
-    log "✓ Removed /home/ubuntu/logs"
-fi
-
-# Remove helper scripts directory
-if [ -d "/home/ubuntu/scripts" ]; then
-    sudo rm -rf /home/ubuntu/scripts
-    log "✓ Removed /home/ubuntu/scripts"
-fi
-
-# Remove MySQL data directory (if exists on host)
-if [ -d "/home/ubuntu/mysql-data" ]; then
-    sudo rm -rf /home/ubuntu/mysql-data
-    log "✓ Removed /home/ubuntu/mysql-data"
-fi
-
-# ==============================================================================
-# STEP 8: REMOVE FRONTEND FILES
-# ==============================================================================
-
-log "Step 8: Removing frontend files..."
-
-if [ -d "/var/www/spot-optimizer" ]; then
-    sudo rm -rf /var/www/spot-optimizer
-    log "✓ Removed /var/www/spot-optimizer"
-fi
-
-# ==============================================================================
-# STEP 9: CLEAN UP TEMPORARY FILES
-# ==============================================================================
-
-log "Step 9: Cleaning up temporary files..."
-
-# Remove any .env files
-if [ -f "/home/ubuntu/spot-optimizer/backend/.env" ]; then
-    sudo rm /home/ubuntu/spot-optimizer/backend/.env 2>/dev/null || true
-fi
-
-# Clean up docker system (optional)
-read -p "Do you want to prune Docker system (removes unused data)? (y/n): " prune_docker
-
-if [ "$prune_docker" = "y" ]; then
-    docker system prune -af --volumes
-    log "✓ Pruned Docker system"
-else
-    log "Skipped Docker system prune"
-fi
-
-# ==============================================================================
-# STEP 10: SUMMARY
-# ==============================================================================
+cd "$PROJECT_ROOT"
 
 echo ""
-log "======================================================================"
-log "  CLEANUP COMPLETE"
-log "======================================================================"
-echo ""
-info "Removed components:"
-echo "  ✓ Systemd services"
-echo "  ✓ Docker containers"
-echo "  ✓ Docker volumes"
-echo "  ✓ Docker networks"
-echo "  ✓ Application directories"
-echo "  ✓ Model files"
-echo "  ✓ Log files"
-echo "  ✓ Helper scripts"
-echo "  ✓ Nginx configuration"
-echo "  ✓ Frontend files"
-echo ""
-log "The system has been cleaned up successfully."
-log "You can now run setup.sh again for a fresh installation."
+echo "🧹 Starting cleanup..."
 echo ""
 
-# ==============================================================================
-# STEP 11: OPTIONAL - REMOVE REPOSITORY
-# ==============================================================================
+# 1. Remove virtual environments
+echo "1️⃣  Removing virtual environments..."
+rm -rf ml_training/venv
+rm -rf backend/venv
+rm -rf scraper/venv
+rm -rf ml-model/venv
+echo "   ✓ Virtual environments removed"
+
+# 2. Remove Python caches
+echo "2️⃣  Removing Python caches..."
+find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+find . -type f -name "*.pyc" -delete 2>/dev/null || true
+find . -type f -name "*.pyo" -delete 2>/dev/null || true
+find . -type d -name "*.egg-info" -exec rm -rf {} + 2>/dev/null || true
+find . -type d -name ".pytest_cache" -exec rm -rf {} + 2>/dev/null || true
+echo "   ✓ Python caches removed"
+
+# 3. Remove trained models and outputs
+echo "3️⃣  Removing trained models and outputs..."
+rm -rf models/production/*.pkl
+rm -rf models/production/training_outputs
+rm -rf models/production/training_plots
+rm -rf models/archive/*.pkl
+echo "   ✓ Models and training outputs removed"
+
+# 4. Remove logs
+echo "4️⃣  Removing logs..."
+rm -rf logs/*.log
+rm -rf logs/*.json
+rm -rf *.log
+echo "   ✓ Logs removed"
+
+# 5. Remove scraped data
+echo "5️⃣  Removing scraped static data..."
+rm -f backend/data/static_intelligence.json
+echo "   ✓ Scraped data removed"
+
+# 6. Remove FastAPI/Uvicorn pid files
+echo "6️⃣  Removing FastAPI/Uvicorn pid files..."
+rm -f backend/*.pid
+rm -f *.pid
+echo "   ✓ PID files removed"
+
+# 7. Remove temporary files
+echo "7️⃣  Removing temporary files..."
+find . -type f -name "*.tmp" -delete 2>/dev/null || true
+find . -type f -name "*.temp" -delete 2>/dev/null || true
+find . -type f -name ".DS_Store" -delete 2>/dev/null || true
+echo "   ✓ Temporary files removed"
+
+# 8. Remove Jupyter notebook checkpoints
+echo "8️⃣  Removing Jupyter notebook checkpoints..."
+find . -type d -name ".ipynb_checkpoints" -exec rm -rf {} + 2>/dev/null || true
+echo "   ✓ Notebook checkpoints removed"
 
 echo ""
-read -p "Do you want to remove the repository directory (/home/ubuntu/final-ml)? (y/n): " remove_repo
-
-if [ "$remove_repo" = "y" ]; then
-    if [ -d "/home/ubuntu/final-ml" ]; then
-        cd /home/ubuntu
-        sudo rm -rf /home/ubuntu/final-ml
-        log "✓ Removed repository directory"
-    fi
-fi
-
+echo "================================================================================"
+echo "✅ CLEANUP COMPLETE!"
+echo "================================================================================"
 echo ""
-log "Cleanup script finished!"
+echo "The project has been reset to a fresh state."
 echo ""
+echo "Next steps:"
+echo "  1. Run setup: ./scripts/setup_env.sh"
+echo "  2. Train model: cd ml_training && source venv/bin/activate && python train_master_pipeline.py"
+echo "  3. Test: ./scripts/test_single_instance.sh"
+echo ""
+echo "================================================================================"

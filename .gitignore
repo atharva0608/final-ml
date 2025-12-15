@@ -82,3 +82,4 @@ ml_models/
 # Backups
 *.bak
 *.backup
+__pycache__/
