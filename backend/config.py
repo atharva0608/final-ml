@@ -22,6 +22,23 @@ class Settings(BaseSettings):
     api_port: int = Field(default=8000, env="API_PORT")
     api_reload: bool = Field(default=True, env="API_RELOAD")
 
+    # Database Settings
+    database_url: str = Field(
+        default="postgresql://postgres:postgres@localhost:5432/spot_optimizer",
+        env="DATABASE_URL"
+    )
+
+    # JWT Settings
+    jwt_secret_key: str = Field(
+        default="your-secret-key-change-in-production",
+        env="JWT_SECRET_KEY"
+    )
+    jwt_algorithm: str = Field(default="HS256", env="JWT_ALGORITHM")
+    access_token_expire_minutes: int = Field(default=1440, env="ACCESS_TOKEN_EXPIRE_MINUTES")  # 24 hours
+
+    # Encryption Key (for AWS credentials)
+    encryption_key: Optional[str] = Field(default=None, env="ENCRYPTION_KEY")
+
     # Decision Engine Settings
     decision_engine_mode: str = Field(default="test", env="DECISION_ENGINE_MODE")
     risk_model_path: str = Field(

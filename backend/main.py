@@ -1,7 +1,13 @@
 """
 Spot Optimizer Platform - FastAPI Backend
 
-Main application entry point with health check and evaluation endpoints
+Main application entry point with complete feature set:
+- JWT Authentication
+- PostgreSQL Database
+- WebSocket for real-time logs
+- Background cleanup jobs
+- Rate limiting
+- Lab Mode and Sandbox Mode
 """
 
 from fastapi import FastAPI, Depends, HTTPException
@@ -9,10 +15,57 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Optional
 from datetime import datetime
+from contextlib import asynccontextmanager
 
 from config import settings
 from api.sandbox import router as sandbox_router
 from api.lab import router as lab_router
+from api.auth import router as auth_router
+from api.websocket_routes import router as websocket_router
+from database.connection import init_db
+from jobs.scheduler import start_scheduler, stop_scheduler
+
+# Lifespan context manager for startup/shutdown
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Application lifespan manager
+
+    Handles startup and shutdown events.
+    """
+    # Startup
+    print("\n" + "="*80)
+    print("🚀 STARTING SPOT OPTIMIZER PLATFORM")
+    print("="*80)
+
+    # Initialize database
+    try:
+        init_db()
+    except Exception as e:
+        print(f"⚠️  Database initialization failed: {e}")
+        print("   Continuing without database (using in-memory storage)")
+
+    # Start background scheduler
+    try:
+        start_scheduler()
+    except Exception as e:
+        print(f"⚠️  Scheduler startup failed: {e}")
+
+    print("="*80)
+    print(f"✓ Server running on http://{settings.api_host}:{settings.api_port}")
+    print(f"✓ API docs available at http://{settings.api_host}:{settings.api_port}/docs")
+    print(f"✓ Environment: {settings.environment}")
+    print("="*80 + "\n")
+
+    yield
+
+    # Shutdown
+    print("\n" + "="*80)
+    print("🛑 SHUTTING DOWN")
+    print("="*80)
+    stop_scheduler()
+    print("="*80 + "\n")
+
 
 # Create FastAPI app
 app = FastAPI(
@@ -20,7 +73,8 @@ app = FastAPI(
     description='Intelligent AWS Spot Instance optimization with ML prediction and reactive safety',
     version='3.0.0',
     docs_url='/docs',
-    redoc_url='/redoc'
+    redoc_url='/redoc',
+    lifespan=lifespan
 )
 
 # CORS middleware
@@ -53,16 +107,32 @@ class EvaluateResponse(BaseModel):
 
 
 # Include routers
+# Authentication
+app.include_router(
+    auth_router,
+    prefix='/api/v1/auth',
+    tags=['Authentication']
+)
+
+# Sandbox Mode
 app.include_router(
     sandbox_router,
     prefix='/api/v1/sandbox',
     tags=['Sandbox']
 )
 
+# Lab Mode
 app.include_router(
     lab_router,
     prefix='/api/v1',
     tags=['Lab Mode']
+)
+
+# WebSocket
+app.include_router(
+    websocket_router,
+    prefix='/api/v1',
+    tags=['WebSocket']
 )
 
 
