@@ -56,20 +56,33 @@ def run_cluster_pipeline(instance: Instance, db: Session) -> Dict[str, Any]:
     print(f"   Region: {instance.account.region}")
     print()
 
-    # TODO: Import ClusterPipeline when implemented
-    # from pipelines.cluster_optimizer import ClusterPipeline
-    # cluster_pipeline = ClusterPipeline(db=db)
-    # result = cluster_pipeline.execute(instance_id=str(instance.id))
+    # Import and execute ClusterPipeline
+    from pipelines.cluster_optimizer import ClusterPipeline
 
-    print("⚠️  ClusterPipeline not yet implemented")
-    print("   This will be implemented to support batch optimization")
-    print()
+    cluster_pipeline = ClusterPipeline(db=db)
 
-    return {
-        "status": "not_implemented",
-        "pipeline": "CLUSTER",
-        "message": "ClusterPipeline is planned for future implementation"
-    }
+    # For CLUSTER mode, we need ASG information from instance metadata
+    asg_name = instance.metadata.get('asg_name') if instance.metadata else None
+
+    if not asg_name:
+        print("⚠️  Warning: Instance is in CLUSTER mode but no ASG name found in metadata")
+        print("   Defaulting to single-instance optimization")
+        # Fall back to single instance optimization
+        result = cluster_pipeline.execute(
+            asg_name=None,
+            account_id=str(instance.account.id),
+            region=instance.account.region,
+            target_instance_id=instance.instance_id
+        )
+    else:
+        # Batch optimize the entire ASG
+        result = cluster_pipeline.execute(
+            asg_name=asg_name,
+            account_id=str(instance.account.id),
+            region=instance.account.region
+        )
+
+    return result
 
 
 def run_linear_pipeline(instance: Instance, db: Session):
@@ -136,20 +149,23 @@ def run_kubernetes_pipeline(instance: Instance, db: Session) -> Dict[str, Any]:
     print(f"   Region: {instance.account.region}")
     print()
 
-    # TODO: Import KubernetesPipeline when implemented
-    # from pipelines.kubernetes_optimizer import KubernetesPipeline
-    # k8s_pipeline = KubernetesPipeline(db=db)
-    # result = k8s_pipeline.execute(instance_id=str(instance.id))
+    # Validate cluster membership
+    if not instance.cluster_membership:
+        error_msg = "Instance is in KUBERNETES mode but has no cluster_membership data"
+        print(f"❌ {error_msg}")
+        return {
+            "status": "error",
+            "error": error_msg,
+            "pipeline": "KUBERNETES"
+        }
 
-    print("⚠️  KubernetesPipeline not yet implemented")
-    print("   This will be implemented to support K8s node optimization")
-    print()
+    # Import and execute KubernetesPipeline
+    from pipelines.kubernetes_optimizer import KubernetesPipeline
 
-    return {
-        "status": "not_implemented",
-        "pipeline": "KUBERNETES",
-        "message": "KubernetesPipeline is planned for future implementation"
-    }
+    k8s_pipeline = KubernetesPipeline(db=db)
+    result = k8s_pipeline.execute(instance_id=str(instance.id))
+
+    return result
 
 
 def run_optimization_cycle(instance_id: str, db: Optional[Session] = None) -> Dict[str, Any]:
