@@ -72,3 +72,54 @@ def drop_db():
     from .models import Base
     Base.metadata.drop_all(bind=engine)
     print("✗ Database tables dropped")
+
+def seed_test_users():
+    """
+    Seed test users for development and UI testing
+    
+    Creates:
+    - Admin test user (admin/admin)
+    - Client test user (ath/ath)
+    
+    Only runs when ENABLE_TEST_USERS=true environment variable is set.
+    """
+    # Check if test users should be created
+    enable_test_users = os.getenv('ENABLE_TEST_USERS', 'true').lower() == 'true'
+    if not enable_test_users:
+        print("⚠️  Test user seeding disabled (ENABLE_TEST_USERS != true)")
+        return
+    
+    from .models import User
+    from auth.password import get_password_hash
+    
+    db = SessionLocal()
+    try:
+        # Check if admin test user exists
+        if not db.query(User).filter(User.username == 'admin').first():
+            print("🛡️  Seeding Admin (admin)...")
+            admin_user = User(
+                username='admin',
+                email='admin@test.com',
+                hashed_password=get_password_hash('admin'),
+                role='admin'
+            )
+            db.add(admin_user)
+        
+        # Check if client test user exists
+        if not db.query(User).filter(User.username == 'ath').first():
+            print("👤 Seeding Client (ath)...")
+            client_user = User(
+                username='ath',
+                email='client@test.com',
+                hashed_password=get_password_hash('ath'),
+                role='client'
+            )
+            db.add(client_user)
+        
+        db.commit()
+        print("✓ Test users seeded successfully")
+    except Exception as e:
+        print(f"⚠️  Seeding skipped: {e}")
+        db.rollback()
+    finally:
+        db.close()
