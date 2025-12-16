@@ -524,10 +524,7 @@ export const ClientDetailView = ({ client, onBack, onSelectCluster }) => {
                         <div className="bg-white border border-slate-200 shadow-sm rounded-lg p-6">
                             <h3 className="text-sm font-bold text-slate-900 mb-4">Fleet Policies</h3>
                             <div className="space-y-4">
-                                <div className="flex justify-between items-center">
-                                    <span className="text-sm text-slate-700">Spot Fallback</span>
-                                    <Switch checked={policies.spotFallback} onChange={() => togglePolicy('spotFallback')} />
-                                </div>
+                                {/* Policies section - currently empty, can be expanded with future policies */}
                             </div>
                         </div>
                     </div>
