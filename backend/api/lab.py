@@ -50,6 +50,7 @@ class ModelInfo(BaseModel):
     description: Optional[str]
     is_experimental: bool
     is_active: bool
+    status: str  # testing, graduated, rejected
     created_at: datetime
 
 
@@ -375,18 +376,60 @@ async def list_models(db: Session = Depends(get_db)):
         ModelRegistry.is_active == True
     ).order_by(ModelRegistry.created_at.desc()).all()
 
-    return [
-        ModelInfo(
+    result = []
+    for model in models:
+        # Determine status
+        status_str = "testing"
+        if not model.is_active:
+            status_str = "rejected"
+        elif not model.is_experimental:
+            status_str = "graduated"
+            
+        result.append(ModelInfo(
             id=str(model.id),
             name=model.name,
             version=model.version,
             description=model.description,
             is_experimental=model.is_experimental,
             is_active=model.is_active,
+            status=status_str,
             created_at=model.created_at
-        )
-        for model in models
-    ]
+        ))
+
+    return result
+
+
+@router.put("/models/{model_id}/graduate")
+async def graduate_model(
+    model_id: str,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """Graduate a model from Lab (experimental) to Production (stable)"""
+    model = db.query(ModelRegistry).filter(ModelRegistry.id == model_id).first()
+    if not model:
+        raise HTTPException(status_code=404, detail="Model not found")
+    
+    model.is_experimental = False
+    model.is_active = True
+    db.commit()
+    return {"status": "graduated", "model_id": model_id}
+
+
+@router.put("/models/{model_id}/reject")
+async def reject_model(
+    model_id: str,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """Reject a model (mark inactive)"""
+    model = db.query(ModelRegistry).filter(ModelRegistry.id == model_id).first()
+    if not model:
+        raise HTTPException(status_code=404, detail="Model not found")
+    
+    model.is_active = False
+    db.commit()
+    return {"status": "rejected", "model_id": model_id}
 
 
 # ============================================================================
@@ -602,6 +645,19 @@ async def evaluate_instance(
             detail=f"Instance {instance_id} not found"
         )
 
+    # Authorization check
+    if current_user.role != "admin" and instance.account.user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You don't have permission to evaluate this instance"
+        )
+
+    # Run optimization (will be implemented in optimizer_task)
+    from workers.optimizer_task import run_optimization_cycle
+
+    result = run_optimization_cycle(instance_id, db)
+
+    return result
     # Authorization check
     if current_user.role != "admin" and instance.account.user_id != current_user.id:
         raise HTTPException(

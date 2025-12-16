@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from database.models import Instance, Account
 from utils.aws_session import get_ec2_client
+from utils.system_logger import SystemLogger, Component
 
 
 class SecurityEnforcer:
@@ -37,6 +38,7 @@ class SecurityEnforcer:
             db: Database session
         """
         self.db = db
+        self.logger = SystemLogger(Component.SECURITY_ENFORCER, db)
 
     def audit_account(self, account_id: str, region: str, auto_terminate: bool = False) -> Dict[str, Any]:
         """
@@ -50,19 +52,16 @@ class SecurityEnforcer:
         Returns:
             Summary dict with counts of authorized/unauthorized instances
         """
-        print(f"\n{'='*80}")
-        print(f"🚨 SECURITY ENFORCER - Rogue Instance Detection")
-        print(f"{'='*80}")
-
         # Get account from database
         account = self.db.query(Account).filter(Account.id == account_id).first()
         if not account:
             raise ValueError(f"Account {account_id} not found")
 
-        print(f"Account: {account.account_id}")
-        print(f"Region: {region}")
-        print(f"Auto-Terminate: {auto_terminate}")
-        print(f"{'='*80}\n")
+        self.logger.info("Starting Security Audit", details={
+            "account": account.account_id,
+            "region": region,
+            "auto_terminate": auto_terminate
+        })
 
         # Get EC2 client
         ec2 = get_ec2_client(
@@ -99,21 +98,21 @@ class SecurityEnforcer:
                     # THE ENFORCEMENT: Check if past grace period
                     if auto_terminate:
                         if self._should_terminate(instance_id):
-                            print(f"   🛑 TERMINATING {instance_id} (past grace period)")
+                    if auto_terminate:
+                        if self._should_terminate(instance_id):
+                            self.logger.warning(f"TERMINATING: {instance_id} (past grace period)")
                             ec2.terminate_instances(InstanceIds=[instance_id])
                             self._update_instance_status(instance_id, 'TERMINATED')
                             terminated_count += 1
                         else:
                             flagged_count += 1
 
-        print(f"\n{'='*80}")
-        print(f"📊 SECURITY AUDIT COMPLETE")
-        print(f"{'='*80}")
-        print(f"✅ Authorized: {authorized_count}")
-        print(f"⚠️  Unauthorized: {unauthorized_count}")
-        print(f"🚩 Flagged (in grace period): {flagged_count}")
-        print(f"🛑 Terminated: {terminated_count}")
-        print(f"{'='*80}\n")
+        self.logger.info("Security Audit Complete", details={
+            "authorized": authorized_count,
+            "unauthorized": unauthorized_count,
+            "flagged": flagged_count,
+            "terminated": terminated_count
+        })
 
         return {
             "account_id": account_id,
@@ -153,7 +152,7 @@ class SecurityEnforcer:
             return 'AUTHORIZED'
 
         # No authorization found
-        print(f"   ⚠️  UNAUTHORIZED: {instance_id} (no authorization tags)")
+        self.logger.debug(f"UNAUTHORIZED: {instance_id} (no authorization tags)")
         return 'UNAUTHORIZED'
 
     def _flag_unauthorized(self, instance_id: str, account: Account, region: str, tags: Dict[str, str]):
@@ -176,7 +175,10 @@ class SecurityEnforcer:
             if instance.auth_status != 'FLAGGED':
                 instance.auth_status = 'FLAGGED'
                 instance.updated_at = datetime.utcnow()
-                print(f"      Flagged in database (grace period: {self.GRACE_PERIOD_HOURS}h)")
+            if instance.auth_status != 'FLAGGED':
+                instance.auth_status = 'FLAGGED'
+                instance.updated_at = datetime.utcnow()
+                self.logger.warning(f"Flagged {instance_id} as unauthorized", details={"grace_period_hours": self.GRACE_PERIOD_HOURS})
         else:
             # Create new tracking record for unauthorized instance
             instance = Instance(
@@ -192,7 +194,9 @@ class SecurityEnforcer:
                 }
             )
             self.db.add(instance)
-            print(f"      Added to database as FLAGGED")
+            )
+            self.db.add(instance)
+            self.logger.warning(f"New unauthorized instance detected: {instance_id}")
 
         self.db.commit()
 

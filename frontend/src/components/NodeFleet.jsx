@@ -852,12 +852,31 @@ const ResourceDistributionChart = ({ clusters = [] }) => {
     const [currIndex, setCurrIndex] = useState(0);
 
     // Mock distribution generator based on cluster name/id to keep it deterministic
-    const getClusterDist = (id) => [
-        { name: 'C5 Family', value: 30 + (id.length * 2), color: '#6366f1' }, // Indigo
-        { name: 'M5 Family', value: 20 + (id.length % 3 * 10), color: '#ec4899' }, // Pink
-        { name: 'R6 Family', value: 15 + (id.length % 2 * 5), color: '#8b5cf6' }, // Purple
-        { name: 'T3 Others', value: 10, color: '#0ea5e9' }, // Sky
-    ];
+    // Colors for families
+    const COLORS = ['#6366f1', '#ec4899', '#8b5cf6', '#0ea5e9', '#10b981', '#f59e0b'];
+
+    // Real distribution generator based on nodes
+    const getClusterDist = (cluster) => {
+        if (!cluster || !cluster.nodes || cluster.nodes.length === 0) {
+            return [{ name: 'No Instances', value: 1, color: '#f1f5f9' }];
+        }
+
+        const counts = {};
+        cluster.nodes.forEach(node => {
+            // Using node.family (provided by backend) or deriving from instance_type
+            const family = (node.family || (node.instance_type ? node.instance_type.split('.')[0] : 'unknown')).toUpperCase();
+            counts[family] = (counts[family] || 0) + 1;
+        });
+
+        return Object.entries(counts)
+            .sort((a, b) => b[1] - a[1]) // Sort by count descending
+            .slice(0, 5) // Top 5 + Others? (Simplifying for now)
+            .map(([name, value], idx) => ({
+                name: `${name} Family`,
+                value,
+                color: COLORS[idx % COLORS.length]
+            }));
+    };
 
     // Default if no clusters passed (fallback)
     const effectiveClusters = clusters.length > 0 ? clusters : [{ id: 'default', name: 'Global Fleet', nodes: [] }];
@@ -894,7 +913,7 @@ const ResourceDistributionChart = ({ clusters = [] }) => {
                     <ResponsiveContainer width="100%" height="100%">
                         <PieChart>
                             <Pie
-                                data={getClusterDist(current.id)}
+                                data={getClusterDist(current)}
                                 innerRadius={60}
                                 outerRadius={80}
                                 paddingAngle={4}
@@ -902,7 +921,7 @@ const ResourceDistributionChart = ({ clusters = [] }) => {
                                 dataKey="value"
                                 stroke="none"
                             >
-                                {getClusterDist(current.id).map((entry, index) => (
+                                {getClusterDist(current).map((entry, index) => (
                                     <Cell key={`cell-${index}`} fill={entry.color} />
                                 ))}
                             </Pie>
@@ -924,7 +943,7 @@ const ResourceDistributionChart = ({ clusters = [] }) => {
                     {/* Centered Total/Label */}
                     <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none pb-8">
                         <span className="text-2xl font-black text-slate-800 tracking-tight">
-                            <AnimatedCounter value={getClusterDist(current.id).reduce((acc, curr) => acc + curr.value, 0)} key={current.id} />
+                            <AnimatedCounter value={getClusterDist(current).reduce((acc, curr) => acc + curr.value, 0)} key={current.id} />
                         </span>
                         <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Nodes</span>
                     </div>
@@ -957,8 +976,8 @@ const ResourceDistributionChart = ({ clusters = [] }) => {
                         {current.name}
                     </span>
                 </div>
-            </div>
-        </div>
+            </div >
+        </div >
     );
 };
 

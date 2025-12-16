@@ -116,135 +116,113 @@ const ComponentCard = ({ component, health, logs, onRefresh }) => {
   };
 
   const statusColors = STATUS_COLORS[health?.status || 'unknown'];
+  const [showLogs, setShowLogs] = useState(true);
 
   return (
-    <div className={`${statusColors.bg} border-l-4 ${statusColors.border} rounded-lg shadow-md p-6 mb-6`}>
-      {/* Header */}
-      <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center space-x-3">
-          <span className="text-3xl">{info.icon}</span>
-          <div>
-            <h3 className="text-lg font-bold text-gray-900">{info.name}</h3>
-            <p className="text-sm text-gray-600">{info.description}</p>
-          </div>
-        </div>
+    <div className={`bg-white border border-slate-200 rounded-xl shadow-sm hover:shadow-md transition-all duration-300 overflow-hidden flex flex-col h-full ring-1 ring-slate-900/5`}>
+      {/* Header with Status Strip */}
+      <div className={`h-1 w-full ${statusColors.bg.replace('bg-', 'bg-').replace('50', '500')}`}></div>
 
-        <div className="flex items-center space-x-3">
-          {/* Status Badge */}
-          <span className={`px-3 py-1 rounded-full text-sm font-medium ${statusColors.badge}`}>
-            {health?.status || 'unknown'}
-          </span>
-
-          {/* Refresh Button */}
-          <button
-            onClick={() => onRefresh(component)}
-            className="p-2 hover:bg-gray-200 rounded-full transition-colors"
-            title="Refresh logs"
-          >
-            <RefreshCw className="w-4 h-4 text-gray-600" />
-          </button>
-        </div>
-      </div>
-
-      {/* Health Metrics */}
-      {health && (
-        <div className="grid grid-cols-4 gap-4 mb-4 bg-white bg-opacity-50 rounded-lg p-4">
-          <div>
-            <p className="text-xs text-gray-600 uppercase">Uptime 24h</p>
-            <p className="text-xl font-bold text-gray-900">
-              {health.uptime_percentage.toFixed(1)}%
-            </p>
-          </div>
-          <div>
-            <p className="text-xs text-gray-600 uppercase">Success / Fail</p>
-            <p className="text-xl font-bold text-gray-900">
-              <span className="text-green-600">{health.success_count_24h}</span>
-              {' / '}
-              <span className="text-red-600">{health.failure_count_24h}</span>
-            </p>
-          </div>
-          <div>
-            <p className="text-xs text-gray-600 uppercase">Avg Exec Time</p>
-            <p className="text-xl font-bold text-gray-900">
-              {health.avg_execution_time_ms ? `${health.avg_execution_time_ms}ms` : 'N/A'}
-            </p>
-          </div>
-          <div>
-            <p className="text-xs text-gray-600 uppercase">Last Check</p>
-            <p className="text-sm font-medium text-gray-900">
-              {health.last_check ? new Date(health.last_check).toLocaleTimeString() : 'Never'}
-            </p>
-          </div>
-        </div>
-      )}
-
-      {/* Error Message (if any) */}
-      {health?.error_message && (
-        <div className="bg-red-50 border border-red-200 rounded p-3 mb-4">
-          <div className="flex items-start space-x-2">
-            <AlertCircle className="w-5 h-5 text-red-500 mt-0.5" />
+      <div className="p-5 flex-1 flex flex-col">
+        <div className="flex items-start justify-between mb-6">
+          <div className="flex items-start space-x-4">
+            <div className={`p-3 rounded-lg ${statusColors.bg} ${statusColors.text} ring-1 ring-inset ring-black/5`}>
+              <span className="text-2xl">{info.icon}</span>
+            </div>
             <div>
-              <p className="text-sm font-medium text-red-800">Last Error:</p>
-              <p className="text-sm text-red-700">{health.error_message}</p>
+              <h3 className="text-lg font-bold text-slate-900 leading-tight">{info.name}</h3>
+              <p className="text-xs font-medium text-slate-500 mt-1">{info.description}</p>
             </div>
           </div>
+          <div className={`flex items-center space-x-2 px-2.5 py-1 rounded-full text-xs font-bold uppercase tracking-wider ${statusColors.badge}`}>
+            <div className={`w-1.5 h-1.5 rounded-full bg-current animate-pulse`} />
+            <span>{health?.status || 'unknown'}</span>
+          </div>
         </div>
-      )}
 
-      {/* Recent Logs */}
-      <div>
-        <h4 className="text-sm font-bold text-gray-700 uppercase mb-2 flex items-center">
-          <Activity className="w-4 h-4 mr-2" />
-          Recent Logs (Last 5)
-        </h4>
-
-        {logs && logs.length > 0 ? (
-          <div className="space-y-2 bg-gray-900 rounded-lg p-4 font-mono text-xs">
-            {logs.map((log, idx) => (
-              <div key={log.id || idx} className="border-b border-gray-700 last:border-0 pb-2 last:pb-0">
-                <div className="flex items-start justify-between space-x-2">
-                  <div className="flex-1">
-                    <div className="flex items-center space-x-2 mb-1">
-                      <span className={`font-bold uppercase ${LOG_LEVEL_COLORS[log.level]}`}>
-                        [{log.level}]
-                      </span>
-                      <span className="text-gray-400 text-xs">
-                        {new Date(log.timestamp).toLocaleString()}
-                      </span>
-                      {log.execution_time_ms && (
-                        <span className="text-green-400 text-xs">
-                          {log.execution_time_ms}ms
-                        </span>
-                      )}
-                      {log.success && (
-                        <span className={`text-xs ${log.success === 'success' ? 'text-green-400' : 'text-red-400'}`}>
-                          {log.success === 'success' ? '✓' : '✗'}
-                        </span>
-                      )}
-                    </div>
-                    <p className="text-gray-300">{log.message}</p>
-
-                    {/* Log Details (if any) */}
-                    {log.details && Object.keys(log.details).length > 0 && (
-                      <details className="mt-1">
-                        <summary className="text-gray-500 cursor-pointer text-xs">
-                          View details
-                        </summary>
-                        <pre className="text-gray-400 text-xs mt-1 overflow-x-auto">
-                          {JSON.stringify(log.details, null, 2)}
-                        </pre>
-                      </details>
-                    )}
-                  </div>
+        {/* Health Metrics Grid */}
+        {health && (
+          <div className="grid grid-cols-2 gap-3 mb-6">
+            <div className="p-3 bg-slate-50 rounded-lg border border-slate-100">
+              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">Uptime (24h)</span>
+              <span className="text-lg font-mono font-bold text-slate-700">{health.uptime_percentage.toFixed(1)}%</span>
+            </div>
+            <div className="p-3 bg-slate-50 rounded-lg border border-slate-100">
+              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">Avg Latency</span>
+              <span className="text-lg font-mono font-bold text-slate-700">
+                {health.avg_execution_time_ms ? `${health.avg_execution_time_ms}ms` : '-'}
+              </span>
+            </div>
+            <div className="p-3 bg-slate-50 rounded-lg border border-slate-100 col-span-2 flex items-center justify-between">
+              <div>
+                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">Success Rate</span>
+                <div className="flex items-baseline space-x-1">
+                  <span className="text-lg font-mono font-bold text-emerald-600">{health.success_count_24h}</span>
+                  <span className="text-xs text-slate-400">/</span>
+                  <span className="text-sm font-mono font-medium text-slate-500">{health.success_count_24h + health.failure_count_24h}</span>
                 </div>
               </div>
-            ))}
-          </div>
-        ) : (
-          <div className="bg-gray-900 rounded-lg p-4 text-center">
-            <p className="text-gray-500 text-sm">No logs available</p>
+              {health.failure_count_24h > 0 && (
+                <div className="px-2 py-1 bg-red-100 text-red-700 text-xs font-bold rounded">
+                  {health.failure_count_24h} Faulures
+                </div>
+              )}
+            </div>
           </div>
         )}
+
+        {/* Logs Section */}
+        <div className="mt-auto">
+          <div className="flex items-center justify-between mb-2">
+            <button
+              onClick={() => setShowLogs(!showLogs)}
+              className="flex items-center text-xs font-bold text-slate-500 uppercase tracking-wider hover:text-slate-800 transition-colors"
+            >
+              <Activity className="w-3 h-3 mr-1.5" />
+              Recent Activity
+            </button>
+            <button
+              onClick={() => onRefresh(component)}
+              className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-md transition-all"
+              title="Refresh logs"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+            </button>
+          </div>
+
+          {showLogs && (
+            <div className="bg-slate-900 rounded-lg border border-slate-800 overflow-hidden flex flex-col">
+              <div className="flex items-center px-3 py-1.5 bg-slate-950 border-b border-slate-800">
+                <div className="flex space-x-1.5">
+                  <div className="w-2 h-2 rounded-full bg-slate-700"></div>
+                  <div className="w-2 h-2 rounded-full bg-slate-700"></div>
+                  <div className="w-2 h-2 rounded-full bg-slate-700"></div>
+                </div>
+                <span className="ml-auto text-[10px] text-slate-600 font-mono">bash</span>
+              </div>
+              <div className="p-3 space-y-2 font-mono text-[10px] h-48 overflow-y-auto scrollbar-thin scrollbar-thumb-slate-700 scrollbar-track-transparent">
+                {logs && logs.length > 0 ? (
+                  logs.slice(0, 20).map((log, idx) => ( // Show max 20 logs in card
+                    <div key={log.id || idx} className="flex flex-col border-b border-slate-800/50 last:border-0 pb-1 last:pb-0">
+                      <div className="flex items-start">
+                        <span className={`mr-2 font-bold ${LOG_LEVEL_COLORS[log.level]}`}>
+                          {log.level === 'info' ? '➜' : log.level === 'error' ? '✖' : '•'}
+                        </span>
+                        <span className="text-slate-300 flex-1 break-all">{log.message}</span>
+                      </div>
+                      <div className="flex items-center mt-0.5 ml-4 space-x-2 opacity-50">
+                        <span className="text-slate-500">{new Date(log.timestamp).toLocaleTimeString()}</span>
+                        {log.execution_time_ms && <span className="text-slate-600">{log.execution_time_ms}ms</span>}
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <span className="text-slate-600 italic">waiting for logs...</span>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -266,13 +244,31 @@ const SystemMonitor = () => {
     } catch (err) {
       setError(err.message);
       console.error('Failed to fetch system overview:', err);
+      // Fallback to show UI even if backend is down
+      setOverview({
+        overall_status: 'critical',
+        healthy_count: 0,
+        degraded_count: 0,
+        down_count: Object.keys(COMPONENT_INFO).length,
+        last_updated: new Date().toISOString(),
+        components: Object.keys(COMPONENT_INFO).map(key => ({
+          component: key,
+          status: 'down', // Default to down
+          uptime_percentage: 0,
+          success_count_24h: 0,
+          failure_count_24h: 0,
+          avg_execution_time_ms: 0,
+          last_check: null,
+          error_message: 'Backend Unreachable'
+        }))
+      });
     }
   };
 
   // Fetch logs for a specific component
   const fetchComponentLogs = async (component) => {
     try {
-      const data = await api.getComponentLogs(component, 5);
+      const data = await api.getComponentLogs(component, 50);
       setComponentLogs(prev => ({
         ...prev,
         [component]: data
@@ -337,25 +333,7 @@ const SystemMonitor = () => {
     );
   }
 
-  if (error) {
-    return (
-      <div className="flex items-center justify-center h-screen">
-        <div className="bg-red-50 border border-red-200 rounded-lg p-6 max-w-md">
-          <div className="flex items-center space-x-3 mb-3">
-            <XCircle className="w-6 h-6 text-red-500" />
-            <h3 className="text-lg font-bold text-red-900">Error Loading System Status</h3>
-          </div>
-          <p className="text-red-700 mb-4">{error}</p>
-          <button
-            onClick={handleRefresh}
-            className="bg-red-600 text-white px-4 py-2 rounded hover:bg-red-700 transition-colors"
-          >
-            Retry
-          </button>
-        </div>
-      </div>
-    );
-  }
+
 
   const overallStatusColors = {
     healthy: 'bg-green-500',
@@ -365,65 +343,96 @@ const SystemMonitor = () => {
   };
 
   return (
-    <div className="min-h-screen bg-gray-100 p-6">
-      {/* Header */}
-      <div className="mb-6">
-        <div className="flex items-center justify-between mb-4">
+    <div className="min-h-screen bg-slate-50 p-8">
+      {/* Header & Stats Dashboard */}
+      <div className="mb-8">
+        <div className="flex flex-col md:flex-row md:items-center justify-between mb-8">
           <div>
-            <h1 className="text-3xl font-bold text-gray-900">System Monitor</h1>
-            <p className="text-gray-600">Real-time component health and logs</p>
+            <h1 className="text-3xl font-black text-slate-900 tracking-tight">System Monitor</h1>
+            <p className="text-slate-500 mt-1 font-medium">Real-time infrastructure & pipeline observability</p>
           </div>
 
-          <div className="flex items-center space-x-4">
+          <div className="flex items-center space-x-4 mt-4 md:mt-0">
             {/* Auto-refresh toggle */}
-            <label className="flex items-center space-x-2 cursor-pointer">
+            <label className="flex items-center space-x-3 cursor-pointer bg-white px-4 py-2 rounded-full border border-slate-200 shadow-sm hover:border-slate-300 transition-colors">
+              <div className={`w-2 h-2 rounded-full ${autoRefresh ? 'bg-green-500 animate-pulse' : 'bg-slate-300'}`}></div>
               <input
                 type="checkbox"
                 checked={autoRefresh}
                 onChange={(e) => setAutoRefresh(e.target.checked)}
-                className="form-checkbox h-5 w-5 text-blue-600"
+                className="hidden"
               />
-              <span className="text-sm text-gray-700">Auto-refresh (30s)</span>
+              <span className="text-sm font-bold text-slate-600">Auto-refresh</span>
             </label>
 
-            {/* Manual refresh */}
             <button
               onClick={handleRefresh}
               disabled={loading}
-              className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors flex items-center space-x-2 disabled:opacity-50"
+              className="bg-indigo-600 text-white px-5 py-2 rounded-full hover:bg-indigo-700 transition-all shadow-md hover:shadow-lg flex items-center font-bold text-sm disabled:opacity-50 disabled:shadow-none"
             >
-              <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-              <span>Refresh</span>
+              <RefreshCw className={`w-4 h-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
+              Refresh
             </button>
           </div>
         </div>
 
-        {/* Overall Status */}
-        {overview && (
-          <div className="bg-white rounded-lg shadow p-6">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center space-x-4">
-                <div className={`w-4 h-4 rounded-full ${overallStatusColors[overview.overall_status]} animate-pulse`}></div>
-                <div>
-                  <h3 className="text-lg font-bold text-gray-900">Overall Status: <span className="capitalize">{overview.overall_status}</span></h3>
-                  <p className="text-sm text-gray-600">
-                    {overview.healthy_count} healthy, {overview.degraded_count} degraded, {overview.down_count} down
-                  </p>
-                </div>
+        {/* Connection Error Alert */}
+        {error && (
+          <div className="bg-red-50 border border-red-200 p-4 mb-8 rounded-xl flex items-center justify-between shadow-sm animate-in slide-in-from-top-2">
+            <div className="flex items-center">
+              <div className="p-2 bg-red-100 rounded-lg mr-3">
+                <AlertCircle className="w-5 h-5 text-red-600" />
               </div>
-              <div className="text-right">
-                <p className="text-xs text-gray-500 uppercase">Last Updated</p>
-                <p className="text-sm font-medium text-gray-900">
-                  {new Date(overview.last_updated).toLocaleString()}
-                </p>
+              <div>
+                <p className="font-bold text-red-900">System Connection Error</p>
+                <p className="text-sm text-red-700">{error} - Displaying offline mode</p>
+              </div>
+            </div>
+            <button onClick={handleRefresh} className="px-4 py-2 bg-white border border-red-200 text-red-700 hover:bg-red-50 font-bold rounded-lg text-sm transition-colors shadow-sm">Retry Connection</button>
+          </div>
+        )}
+
+        {/* Stat Cards */}
+        {overview && (
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm relative overflow-hidden group hover:shadow-md transition-all">
+              <div className="absolute right-0 top-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
+                <CheckCircle className="w-24 h-24 text-teal-500" />
+              </div>
+              <p className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-1">Healthy Components</p>
+              <div className="flex items-baseline space-x-2">
+                <h3 className="text-4xl font-black text-slate-900">{overview.healthy_count}</h3>
+                <span className="text-sm font-bold text-teal-600 bg-teal-50 px-2 py-0.5 rounded-full">Operational</span>
+              </div>
+            </div>
+
+            <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm relative overflow-hidden group hover:shadow-md transition-all">
+              <div className="absolute right-0 top-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
+                <Activity className="w-24 h-24 text-amber-500" />
+              </div>
+              <p className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-1">Degraded</p>
+              <div className="flex items-baseline space-x-2">
+                <h3 className="text-4xl font-black text-slate-900">{overview.degraded_count}</h3>
+                <span className="text-sm font-bold text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full">Warning</span>
+              </div>
+            </div>
+
+            <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm relative overflow-hidden group hover:shadow-md transition-all">
+              <div className="absolute right-0 top-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
+                <XCircle className="w-24 h-24 text-rose-500" />
+              </div>
+              <p className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-1">Critical / Down</p>
+              <div className="flex items-baseline space-x-2">
+                <h3 className="text-4xl font-black text-slate-900">{overview.down_count}</h3>
+                <span className="text-sm font-bold text-rose-600 bg-rose-50 px-2 py-0.5 rounded-full">Action Req.</span>
               </div>
             </div>
           </div>
         )}
       </div>
 
-      {/* Component Cards */}
-      <div className="space-y-6">
+      {/* Component Grid */}
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
         {overview?.components.map((component) => (
           <ComponentCard
             key={component.component}
@@ -434,6 +443,13 @@ const SystemMonitor = () => {
           />
         ))}
       </div>
+
+      {/* Footer Info */}
+      {overview && (
+        <div className="mt-8 text-center text-xs font-medium text-slate-400">
+          Last updated: {new Date(overview.last_updated).toLocaleString()} • ID: {Math.random().toString(36).substr(2, 9)}
+        </div>
+      )}
     </div>
   );
 };

@@ -117,7 +117,7 @@ const LiveOperations = () => {
                         </div>
                     </div>
 
-                    <div className="h-[400px] w-full">
+                    <div className="h-[400px] w-full" style={{ height: 400, width: '100%', minHeight: 400 }}>
                         <ResponsiveContainer width="100%" height="100%">
                             <FunnelChart>
                                 <Tooltip content={<CustomTooltip />} cursor={{ fill: 'transparent' }} />

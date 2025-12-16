@@ -5,7 +5,7 @@ import DashboardLayout from './layouts/DashboardLayout';
 import LoginPage from './components/LoginPage';
 import LiveOperations from './components/LiveOperations';
 import NodeFleet, { ClientDetailView, MOCK_CLIENTS } from './components/NodeFleet';
-import { DEMO_CLIENT } from './data/mockData';
+// Mock data removed - using real API
 import Controls from './components/Controls';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import ModelExperiments from './components/Lab/ModelExperiments';
@@ -134,8 +134,8 @@ const ClientViewWrapper = () => {
   const { user } = useAuth();
   const [currentView, setCurrentView] = useState('live');
 
-  // Combine all known clients
-  const allClients = [...MOCK_CLIENTS, DEMO_CLIENT];
+  // Use MOCK_CLIENTS as fallback (will be replaced with real API)
+  const allClients = MOCK_CLIENTS;
 
   // Find the client assigned to the logged-in user
   const client = allClients.find(c => c.id === user?.clientId);

@@ -8,46 +8,58 @@ import DragDropUpload from './DragDropUpload';
 import { cn } from '../../lib/utils';
 import { useModel } from '../../context/ModelContext';
 
-// Mock Data for Lab Instances
+import api from '../../services/api';
+import { useEffect } from 'react';
+
+// Real Data Integration
 const ModelExperiments = () => {
-    const { getLabModels, graduateModel } = useModel();
+    const { models, getLabModels, graduateModel, rejectModel } = useModel();
     const [historyType, setHistoryType] = useState('live'); // 'live' | 'historical'
-    // Local state to simulate the full workflow including "Rejected" which might not be in context
-    const [models, setModels] = useState([
-        { id: 'm-3', name: 'DeepSpot V3 (Beta)', status: 'testing', uploadedAt: '10 mins ago', accuracy: '94.2%' },
-        { id: 'm-4', name: 'CostSaver X1', status: 'graduated', uploadedAt: '2 days ago', accuracy: '91.5%' },
-        { id: 'm-5', name: 'Legacy Optimizer', status: 'rejected', uploadedAt: '1 week ago', accuracy: '68.0%' }
-    ]);
+
+    const [testSubjects, setTestSubjects] = useState([]);
+
+    // Filter only Lab models for this view
+    const visibleModels = models.filter(m => m.scope === 'lab' || m.status === 'rejected' || m.status === 'graduated');
+
+    // Fetch instances on mount
+    useEffect(() => {
+        const fetchInstances = async () => {
+            try {
+                // Fetch instances (filtered by account if needed, currently fetching all user has access to)
+                const data = await api.getInstances();
+                // Filter for instances in Lab mode (LINEAR) or Shadow mode
+                const subjects = data.filter(i => i.pipeline_mode === 'LINEAR' || i.is_shadow_mode).map(i => ({
+                    id: i.instance_id,
+                    type: i.instance_type,
+                    currentModel: i.assigned_model_version || 'Default',
+                    status: i.is_active ? 'active' : 'standby',
+                    lastSwitch: i.last_evaluation ? new Date(i.last_evaluation).toLocaleTimeString() : 'Never'
+                }));
+                setTestSubjects(subjects);
+            } catch (e) {
+                console.error("Failed to fetch test subjects", e);
+            }
+        };
+        fetchInstances();
+        const interval = setInterval(fetchInstances, 10000); // Poll every 10s
+        return () => clearInterval(interval);
+    }, []);
 
     // Derive active model for graph/logs
-    const activeTestingModel = models.find(m => m.status === 'testing') || { name: 'No Active Model' };
+    const activeTestingModel = visibleModels.find(m => m.status === 'testing') || { name: 'No Active Model' };
 
     // View State for Drill-down
     const [selectedModel, setSelectedModel] = useState(null);
 
-    const [testSubjects, setTestSubjects] = useState([
-        { id: 'i-098a7b', type: 'g4dn.xlarge', currentModel: 'DeepSpot V3 (Beta)', status: 'active', lastSwitch: '2 mins ago' },
-        { id: 'i-124c8d', type: 'p3.2xlarge', currentModel: 'CostSaver X1', status: 'warning', lastSwitch: '45 mins ago' },
-        { id: 'i-442x9p', type: 'c5.4xlarge', currentModel: 'Legacy Optimizer', status: 'standby', lastSwitch: '1 day ago' },
-    ]);
 
-    const handleUpload = (file) => {
-        const newModel = {
-            id: `m-${Date.now()}`,
-            name: file.name.replace(/\.[^/.]+$/, ""),
-            status: 'testing',
-            uploadedAt: 'Just now',
-            accuracy: '-'
-        };
-        // Set old testing to rejected or graduated? For now just add new one
-        setModels([newModel, ...models]);
-    };
 
-    const updateStatus = (id, newStatus) => {
-        setModels(models.map(m => m.id === id ? { ...m, status: newStatus } : m));
+
+
+    const updateStatus = async (id, newStatus) => {
         if (newStatus === 'graduated') {
-            // Trigger context update if needed
-            // graduateModel(id); // call real context
+            await graduateModel(id);
+        } else if (newStatus === 'rejected') {
+            await rejectModel(id);
         }
     };
 
@@ -147,7 +159,7 @@ const ModelExperiments = () => {
                         </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
-                        {models.map(model => (
+                        {visibleModels.map(model => (
                             <tr key={model.id} className="hover:bg-slate-50 transition-colors group">
                                 <td className="px-6 py-4 font-medium text-slate-900">
                                     <div className="flex items-center">
@@ -224,7 +236,11 @@ const ModelExperiments = () => {
             {/* 4. Upload Section (Bottom) */}
             <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm">
                 <h3 className="text-sm font-bold text-slate-900 mb-4 px-1">Upload New Candidate</h3>
-                <DragDropUpload onUpload={handleUpload} className="bg-slate-50 border-slate-200 hover:bg-white" />
+                {/* We pass the context's uploadModel function directly if DragDropUpload supports it, 
+                    or we need to wrap it. DragDropUpload likely expects a file. 
+                    Context uploadModel takes (file, scope). 
+                */}
+                <DragDropUpload onUpload={(file) => useModel().uploadModel(file, 'lab')} className="bg-slate-50 border-slate-200 hover:bg-white" />
             </div>
 
             {/* 5. Metrics & Logs */}

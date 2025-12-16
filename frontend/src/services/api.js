@@ -1,9 +1,4 @@
-"""
-API Service - Real Backend Integration
 
-Replaces mock data with real API calls to FastAPI backend.
-All endpoints use JWT authentication (Bearer token).
-"""
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
@@ -121,6 +116,18 @@ export async function toggleShadowMode(instanceId, enabled) {
 
 export async function getModels() {
     return fetchApi('/api/v1/lab/models');
+}
+
+export async function graduateModel(modelId) {
+    return fetchApi(`/api/v1/lab/models/${modelId}/graduate`, {
+        method: 'PUT'
+    });
+}
+
+export async function rejectModel(modelId) {
+    return fetchApi(`/api/v1/lab/models/${modelId}/reject`, {
+        method: 'PUT'
+    });
 }
 
 export async function uploadModel(formData) {
@@ -339,6 +346,8 @@ export default {
     setPipelineMode,
     toggleShadowMode,
     getModels,
+    graduateModel,
+    rejectModel,
     uploadModel,
     getExperimentLogs,
     getModelPerformance,

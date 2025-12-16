@@ -86,6 +86,37 @@ class LogStatsResponse(BaseModel):
     top_errors: List[dict]
 
 
+class NodeResponse(BaseModel):
+    id: str
+    instance_type: str
+    availability_zone: str
+    zone: str # For frontend compatibility
+    family: str # For frontend compatibility (e.g. c5)
+    status: str
+    stress: int = 0
+    risk: str = "low"
+    cpu_utilization: float = 0.0
+    memory_utilization: float = 0.0
+
+class ClusterResponse(BaseModel):
+    id: str
+    name: str 
+    nodes: List[NodeResponse]
+    nodeCount: int
+    status: str
+    region: str
+
+class ClientResponse(BaseModel):
+    id: str
+    name: str
+    tier: str
+    region: str
+    status: str
+    clusters: List[ClusterResponse]
+    total_instances: int
+    monthly_savings: float
+
+
 # ============================================================================
 # Endpoints
 # ============================================================================
@@ -395,3 +426,128 @@ async def cleanup_old_logs(
         "deleted_count": deleted,
         "cutoff_date": cutoff.isoformat()
     }
+
+
+# ============================================================================
+# Client Management (Topology)
+# ============================================================================
+
+from database.models import Account, Instance
+
+@router.get("/clients", response_model=List[ClientResponse])
+async def list_clients(
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """List all clients (Tenants) with their topology"""
+    if current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    # Get all users (treat as clients)
+    users = db.query(User).filter(User.role != "admin").all()
+    
+    result = []
+    for user in users:
+        # Get accounts for this user (Clusters)
+        accounts = db.query(Account).filter(Account.user_id == user.id).all()
+        
+        clusters = []
+        total_instances = 0
+        
+        for acc in accounts:
+            instances = db.query(Instance).filter(Instance.account_id == acc.id).all()
+            nodes = [
+                NodeResponse(
+                    id=inst.instance_id,
+                    instance_type=inst.instance_type,
+                    availability_zone=inst.availability_zone,
+                    zone=inst.availability_zone,
+                    family=inst.instance_type.split('.')[0] if '.' in inst.instance_type else inst.instance_type,
+                    status="active" if inst.is_active else "terminated",
+                    stress=15, # Mock metric
+                    risk="low",
+                    cpu_utilization=45.5, 
+                    memory_utilization=60.2
+                )
+                for inst in instances
+            ]
+            clusters.append(ClusterResponse(
+                id=str(acc.id),
+                name=acc.account_name,
+                nodes=nodes,
+                nodeCount=len(nodes),
+                status="active" if acc.is_active else "inactive",
+                region=acc.region
+            ))
+            total_instances += len(instances)
+            
+        result.append(ClientResponse(
+            id=str(user.id),
+            name=user.full_name or user.username,
+            tier="Enterprise",
+            region="Global",
+            status="active",
+            clusters=clusters,
+            total_instances=total_instances,
+            monthly_savings=12500.0  # limit scope, mock for now
+        ))
+        
+    return result
+
+
+@router.get("/clients/{client_id}", response_model=ClientResponse)
+async def get_client_details(
+    client_id: str,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """Get detailed topology for a specific client"""
+    if current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+        
+    user = db.query(User).filter(User.id == client_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Client not found")
+        
+    accounts = db.query(Account).filter(Account.user_id == user.id).all()
+    
+    clusters = []
+    total_instances = 0
+    
+    for acc in accounts:
+        instances = db.query(Instance).filter(Instance.account_id == acc.id).all()
+        nodes = [
+            NodeResponse(
+                id=inst.instance_id,
+                instance_type=inst.instance_type,
+                availability_zone=inst.availability_zone,
+                zone=inst.availability_zone,
+                family=inst.instance_type.split('.')[0] if '.' in inst.instance_type else inst.instance_type,
+                status="active" if inst.is_active else "terminated",
+                stress=15,
+                risk="low",
+                cpu_utilization=45.5,
+                memory_utilization=60.2
+            )
+            for inst in instances
+        ]
+        clusters.append(ClusterResponse(
+            id=str(acc.id),
+            name=acc.account_name,
+            nodes=nodes,
+            nodeCount=len(nodes),
+            status="active" if acc.is_active else "inactive",
+            region=acc.region
+        ))
+        total_instances += len(instances)
+        
+    return ClientResponse(
+        id=str(user.id),
+        name=user.full_name or user.username,
+        tier="Enterprise",
+        region="Global",
+        status="active",
+        clusters=clusters,
+        total_instances=total_instances,
+        monthly_savings=12500.0
+    )

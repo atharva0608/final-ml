@@ -24,6 +24,9 @@ from api.admin import router as admin_router
 from api.websocket_routes import router as websocket_router
 from database.connection import init_db
 from jobs.scheduler import start_scheduler, stop_scheduler
+from utils.system_logger import SystemLogger, Component
+from database.connection import get_db
+
 
 # Lifespan context manager for startup/shutdown
 @asynccontextmanager
@@ -44,6 +47,25 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"⚠️  Database initialization failed: {e}")
         print("   Continuing without database (using in-memory storage)")
+
+    # Initialize component health records (so Monitor isn't empty)
+    try:
+        print("✓ Initializing system component registry...")
+        db_gen = get_db()
+        db = next(db_gen, None)
+        if db:
+            for attr in dir(Component):
+                if not attr.startswith("__"):
+                    comp_name = getattr(Component, attr)
+                    if isinstance(comp_name, str): # Verify it's a value
+                        try:
+                            SystemLogger(comp_name, db=db)._ensure_health_record()
+                        except Exception as e: 
+                            print(f"  - Failed to init {comp_name}: {e}")
+            db.close()
+    except Exception as e:
+        print(f"⚠️  Component registration failed: {e}")
+
 
     # Start background scheduler
     try:

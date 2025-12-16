@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from database.models import WasteResource, Account
 from utils.aws_session import get_ec2_client
+from utils.system_logger import SystemLogger, Component
 
 
 class WasteScanner:
@@ -35,6 +36,7 @@ class WasteScanner:
             db: Database session
         """
         self.db = db
+        self.logger = SystemLogger(Component.WASTE_SCANNER, db)
 
     def scan_account(self, account_id: str, region: str) -> Dict[str, Any]:
         """
@@ -47,18 +49,12 @@ class WasteScanner:
         Returns:
             Summary dict with counts of waste found
         """
-        print(f"\n{'='*80}")
-        print(f"🧹 WASTE SCANNER - Financial Hygiene Audit")
-        print(f"{'='*80}")
-
         # Get account from database
         account = self.db.query(Account).filter(Account.id == account_id).first()
         if not account:
             raise ValueError(f"Account {account_id} not found")
 
-        print(f"Account: {account.account_id}")
-        print(f"Region: {region}")
-        print(f"{'='*80}\n")
+        self.logger.info("Starting Waste Scan", details={"account": account.account_id, "region": region})
 
         # Get EC2 client
         ec2 = get_ec2_client(
@@ -77,15 +73,13 @@ class WasteScanner:
         total_waste = sum(r["count"] for r in results.values())
         total_cost = sum(r["monthly_cost"] for r in results.values())
 
-        print(f"\n{'='*80}")
-        print(f"📊 WASTE SCAN COMPLETE")
-        print(f"{'='*80}")
-        print(f"Elastic IPs: {results['elastic_ips']['count']} (${results['elastic_ips']['monthly_cost']:.2f}/mo)")
-        print(f"EBS Volumes: {results['ebs_volumes']['count']} (${results['ebs_volumes']['monthly_cost']:.2f}/mo)")
-        print(f"EBS Snapshots: {results['ebs_snapshots']['count']} (${results['ebs_snapshots']['monthly_cost']:.2f}/mo)")
-        print(f"---")
-        print(f"TOTAL: {total_waste} resources (${total_cost:.2f}/mo)")
-        print(f"{'='*80}\n")
+        self.logger.info("Waste Scan Complete", details={
+            "total_waste": total_waste,
+            "total_monthly_cost": total_cost,
+            "elastic_ips": results['elastic_ips'],
+            "ebs_volumes": results['ebs_volumes'],
+            "ebs_snapshots": results['ebs_snapshots']
+        })
 
         return {
             "account_id": account_id,
@@ -110,7 +104,7 @@ class WasteScanner:
         Returns:
             Dict with count and monthly cost
         """
-        print("🔍 Scanning Elastic IPs...")
+        self.logger.info("Scanning Elastic IPs...")
 
         try:
             response = ec2_client.describe_addresses()
@@ -146,18 +140,20 @@ class WasteScanner:
                     if not existing:
                         self.db.add(waste)
                         waste_count += 1
-                        print(f"   ⚠️  Unattached EIP: {public_ip}")
+                        self.logger.warning(f"Unattached EIP: {public_ip}", details={"allocation_id": allocation_id})
 
             self.db.commit()
 
-            print(f"   Found {waste_count} unattached Elastic IPs")
+            self.db.commit()
+
+            self.logger.info(f"Elastic IP Scan Finished: Found {waste_count} unattached")
             return {
                 "count": waste_count,
                 "monthly_cost": waste_count * 3.60
             }
 
         except Exception as e:
-            print(f"   ❌ Error scanning Elastic IPs: {e}")
+            self.logger.error(f"Error scanning Elastic IPs: {e}")
             return {"count": 0, "monthly_cost": 0.0}
 
     def _scan_ebs_volumes(self, ec2_client, account: Account, region: str) -> Dict[str, Any]:
@@ -175,7 +171,8 @@ class WasteScanner:
         Returns:
             Dict with count and monthly cost
         """
-        print("🔍 Scanning EBS Volumes...")
+        """
+        self.logger.info("Scanning EBS Volumes...")
 
         try:
             response = ec2_client.describe_volumes(
@@ -228,18 +225,21 @@ class WasteScanner:
                         self.db.add(waste)
                         waste_count += 1
                         total_cost += monthly_cost
-                        print(f"   ⚠️  Unattached volume: {volume_id} ({size_gb}GB, ${monthly_cost:.2f}/mo)")
+                        self.db.add(waste)
+                        waste_count += 1
+                        total_cost += monthly_cost
+                        self.logger.warning(f"Unattached volume: {volume_id} ({size_gb}GB, ${monthly_cost:.2f}/mo)")
 
             self.db.commit()
 
-            print(f"   Found {waste_count} unattached EBS volumes")
+            self.logger.info(f"EBS Volume Scan Finished: Found {waste_count} unattached")
             return {
                 "count": waste_count,
                 "monthly_cost": total_cost
             }
 
         except Exception as e:
-            print(f"   ❌ Error scanning EBS volumes: {e}")
+            self.logger.error(f"Error scanning EBS volumes: {e}")
             return {"count": 0, "monthly_cost": 0.0}
 
     def _scan_ebs_snapshots(self, ec2_client, account: Account, region: str) -> Dict[str, Any]:
@@ -257,7 +257,8 @@ class WasteScanner:
         Returns:
             Dict with count and monthly cost
         """
-        print("🔍 Scanning EBS Snapshots...")
+        """
+        self.logger.info("Scanning EBS Snapshots...")
 
         try:
             # Get all snapshots owned by this account
@@ -318,18 +319,21 @@ class WasteScanner:
                         self.db.add(waste)
                         waste_count += 1
                         total_cost += monthly_cost
-                        print(f"   ⚠️  Old snapshot: {snapshot_id} ({size_gb}GB, ${monthly_cost:.2f}/mo)")
+                        self.db.add(waste)
+                        waste_count += 1
+                        total_cost += monthly_cost
+                        self.logger.warning(f"Old snapshot: {snapshot_id} ({size_gb}GB, ${monthly_cost:.2f}/mo)")
 
             self.db.commit()
 
-            print(f"   Found {waste_count} old unused snapshots")
+            self.logger.info(f"EBS Snapshot Scan Finished: Found {waste_count} old snapshots")
             return {
                 "count": waste_count,
                 "monthly_cost": total_cost
             }
 
         except Exception as e:
-            print(f"   ❌ Error scanning snapshots: {e}")
+            self.logger.error(f"Error scanning snapshots: {e}")
             return {"count": 0, "monthly_cost": 0.0}
 
 

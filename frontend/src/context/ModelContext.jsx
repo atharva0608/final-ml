@@ -1,37 +1,57 @@
-import React, { createContext, useContext, useState } from 'react';
+import React, { createContext, useContext, useState, useEffect } from 'react';
+import api from '../services/api';
 
 const ModelContext = createContext(null);
 
 export const ModelProvider = ({ children }) => {
-    // Initial Mock Data
-    const [models, setModels] = useState([
-        { id: 'm-1', name: 'Legacy Linear', version: 'v1.0.0', type: 'stable', scope: 'prod', uploadedAt: '2023-10-01' },
-        { id: 'm-2', name: 'DeepSpot V1', version: 'v1.1.0', type: 'stable', scope: 'prod', uploadedAt: '2023-11-15' },
-        { id: 'm-3', name: 'DeepSpot V2-Beta', version: 'v2.0.0-beta', type: 'beta', scope: 'lab', uploadedAt: '2023-12-01' }
-    ]);
+    const [models, setModels] = useState([]);
+    const [isLoading, setIsLoading] = useState(true);
+    const [activeProdModelId, setActiveProdModelId] = useState(null);
 
-    const [activeProdModelId, setActiveProdModelId] = useState('m-2');
+    const fetchModels = async () => {
+        try {
+            const data = await api.getModels();
+            // Map API data to context format
+            const mapped = data.map(m => ({
+                ...m,
+                uploadedAt: new Date(m.created_at).toLocaleDateString(),
+                type: m.status === 'graduated' ? 'stable' : 'beta',
+                scope: m.status === 'graduated' ? 'prod' : 'lab'
+            }));
+            setModels(mapped);
 
-    const uploadModel = (file, scope) => {
-        const newModel = {
-            id: `m-${Date.now()}`,
-            name: file.name.replace('.pkl', ''),
-            version: 'v' + (models.length + 1) + '.0.0-dev',
-            type: scope === 'lab' ? 'beta' : 'stable',
-            scope: scope,
-            uploadedAt: new Date().toISOString().split('T')[0]
-        };
-        setModels(prev => [...prev, newModel]);
-        return newModel;
+            // Set default active prod model if none
+            if (!activeProdModelId) {
+                const prod = mapped.find(m => m.scope === 'prod');
+                if (prod) setActiveProdModelId(prod.id);
+            }
+        } catch (e) {
+            console.error("Failed to fetch models", e);
+        } finally {
+            setIsLoading(false);
+        }
     };
 
-    const graduateModel = (modelId) => {
-        setModels(prev => prev.map(m => {
-            if (m.id === modelId) {
-                return { ...m, scope: 'prod', type: 'stable', version: m.version.replace('-dev', '').replace('-beta', '') + '-R' };
-            }
-            return m;
-        }));
+    useEffect(() => {
+        fetchModels();
+    }, []);
+
+    const uploadModel = async (file, scope) => {
+        const formData = new FormData();
+        formData.append('file', file);
+        // Scope is handled by backend logic (new uploads are lab by default)
+        await api.uploadModel(formData);
+        await fetchModels();
+    };
+
+    const graduateModel = async (modelId) => {
+        await api.graduateModel(modelId);
+        await fetchModels();
+    };
+
+    const rejectModel = async (modelId) => {
+        await api.rejectModel(modelId);
+        await fetchModels();
     };
 
     const getLabModels = () => models.filter(m => m.scope === 'lab');
@@ -41,13 +61,16 @@ export const ModelProvider = ({ children }) => {
     return (
         <ModelContext.Provider value={{
             models,
+            isLoading,
             activeProdModelId,
             setActiveProdModelId,
             uploadModel,
             graduateModel,
+            rejectModel,
             getLabModels,
             getProdModels,
-            getActiveProdModel
+            getActiveProdModel,
+            refreshModels: fetchModels
         }}>
             {children}
         </ModelContext.Provider>

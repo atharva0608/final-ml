@@ -39,6 +39,7 @@ from utils.aws_session import get_ec2_client, get_pricing_client
 from ai.feature_engine import FeatureEngine, build_feature_vector
 from ai.base_adapter import BaseModelAdapter
 from utils.model_loader import load_model
+from utils.system_logger import SystemLogger, Component
 
 
 class DecisionType(Enum):
@@ -128,6 +129,7 @@ class LinearPipeline:
         """
         self.db = db
         self.feature_engine = FeatureEngine()
+        self.logger = SystemLogger(Component.LINEAR_OPTIMIZER, db)
 
     def execute(self, instance_id: str) -> PipelineContext:
         """
@@ -151,17 +153,14 @@ class LinearPipeline:
                 f"Environment: {instance.account.environment_type}"
             )
 
-        print("\n" + "="*80)
-        print("🔬 LAB MODE - LINEAR PIPELINE (PRODUCTION)")
-        print("="*80)
-        print(f"Instance: {instance.instance_id}")
-        print(f"Type: {instance.instance_type}")
-        print(f"AZ: {instance.availability_zone}")
-        print(f"Model: {instance.assigned_model_version or 'default'}")
-        print(f"Account: {instance.account.account_id}")
-        print(f"Region: {instance.account.region}")
-        print(f"Shadow Mode: {instance.is_shadow_mode}")
-        print("="*80 + "\n")
+        self.logger.info(f"Starting Lab Mode Pipeline for {instance.instance_id}", details={
+            "type": instance.instance_type,
+            "az": instance.availability_zone,
+            "account": instance.account.account_id,
+            "region": instance.account.region,
+            "model": instance.assigned_model_version,
+            "shadow_mode": instance.is_shadow_mode
+        })
 
         # Create context
         context = PipelineContext(
@@ -175,27 +174,28 @@ class LinearPipeline:
         )
         context.pipeline_start_time = datetime.now()
 
-        try:
-            # Step 1: Scraper - Fetch real-time spot prices from AWS
-            context = self._step_scraper(context, instance)
+        with self.logger.operation("Optimization Cycle"):
+            try:
+                # Step 1: Scraper - Fetch real-time spot prices from AWS
+                context = self._step_scraper(context, instance)
 
-            # Step 2: Safe Filter - Filter by interrupt rate
-            context = self._step_safe_filter(context)
+                # Step 2: Safe Filter - Filter by interrupt rate
+                context = self._step_safe_filter(context)
 
-            # Step 3: ML Inference - Run model prediction
-            context = self._step_ml_inference(context, instance)
+                # Step 3: ML Inference - Run model prediction
+                context = self._step_ml_inference(context, instance)
 
-            # Step 4: Decision - Select best candidate
-            context = self._step_decision(context)
+                # Step 4: Decision - Select best candidate
+                context = self._step_decision(context)
 
-            # Step 5: Execution - Perform atomic switch (if decision is SWITCH)
-            if context.final_decision == DecisionType.SWITCH:
-                context = self._step_execution(context, instance)
+                # Step 5: Execution - Perform atomic switch (if decision is SWITCH)
+                if context.final_decision == DecisionType.SWITCH:
+                    context = self._step_execution(context, instance)
 
-        except Exception as e:
-            print(f"\n❌ Pipeline failed: {e}")
-            context.final_decision = DecisionType.STAY
-            context.decision_reason = f"Pipeline error: {str(e)}"
+            except Exception as e:
+                self.logger.error(f"Pipeline failed: {e}")
+                context.final_decision = DecisionType.STAY
+                context.decision_reason = f"Pipeline error: {str(e)}"
             context.log_stage("Error", str(e))
 
         context.pipeline_end_time = datetime.now()
@@ -204,16 +204,13 @@ class LinearPipeline:
         # Log to database
         self._log_experiment(context, instance, execution_time)
 
-        print("\n" + "="*80)
-        print("🏁 LAB PIPELINE COMPLETE")
-        print("="*80)
-        print(f"Decision: {context.final_decision.value}")
-        print(f"Reason: {context.decision_reason}")
-        print(f"Execution Time: {execution_time:.2f}s")
-        if context.selected_candidate:
-            print(f"Selected: {context.selected_candidate.instance_type}@{context.selected_candidate.availability_zone}")
-        print(f"Shadow Mode: {'YES (read-only)' if context.is_shadow_mode else 'NO (will execute)'}")
-        print("="*80 + "\n")
+        self.logger.info("Lab Pipeline Complete", details={
+            "decision": context.final_decision.value,
+            "reason": context.decision_reason,
+            "execution_time": f"{execution_time:.2f}s",
+            "selected": f"{context.selected_candidate.instance_type}@{context.selected_candidate.availability_zone}" if context.selected_candidate else None,
+            "shadow_mode": context.is_shadow_mode
+        })
 
         return context
 
@@ -231,8 +228,7 @@ class LinearPipeline:
         Returns:
             Updated context with candidates populated
         """
-        print("[Step 1/4] 📡 Scraper - Fetching real-time spot prices")
-        print("-" * 80)
+        self.logger.info("Scraper - Fetching real-time spot prices")
 
         # Get cross-account EC2 client via STS AssumeRole
         ec2 = get_ec2_client(
@@ -251,11 +247,10 @@ class LinearPipeline:
             )
 
             spot_prices = response.get('SpotPriceHistory', [])
-            print(f"  ✓ Fetched {len(spot_prices)} spot price records from AWS")
+            self.logger.debug(f"Fetched {len(spot_prices)} spot price records")
 
         except Exception as e:
-            print(f"  ⚠️  AWS API call failed: {e}")
-            print(f"  → Using fallback: Stay on current instance")
+            self.logger.warning(f"AWS API call failed: {e}", details={"fallback": "Stay on current instance"})
             context.log_stage("Scraper", f"AWS API failed: {e}")
             return context
 
@@ -347,17 +342,19 @@ class LinearPipeline:
                 candidate.is_filtered = True
                 candidate.filter_reason = f"Interrupt rate {interrupt_rate*100:.1f}% >= {threshold*100:.0f}%"
                 filtered_count += 1
-                print(f"  ✗ {candidate.instance_type}@{candidate.availability_zone}: "
-                      f"{interrupt_rate*100:.1f}% interrupt rate (FILTERED)")
+                self.logger.debug(f"Filtered: {candidate.instance_type}@{candidate.availability_zone}: "
+                                  f"{interrupt_rate*100:.1f}% interrupt rate")
             else:
-                print(f"  ✓ {candidate.instance_type}@{candidate.availability_zone}: "
-                      f"{interrupt_rate*100:.1f}% interrupt rate (SAFE)")
+                self.logger.debug(f"Safe: {candidate.instance_type}@{candidate.availability_zone}: "
+                                  f"{interrupt_rate*100:.1f}% interrupt rate")
+
+        if filtered_count > 0:
+            details = {c.instance_type: f"{c.historic_interrupt_rate*100:.1f}%" for c in context.candidates if c.is_filtered}
+            self.logger.debug(f"Filtered {filtered_count} candidates due to high interrupt rate", details=details)
 
         valid_count = len(context.get_valid_candidates())
         context.log_stage("SafeFilter", f"{valid_count}/{len(context.candidates)} candidates safe")
-
-        print(f"  → {valid_count} candidates passed filter ({filtered_count} filtered)")
-        print()
+        self.logger.info(f"Filter Complete: {valid_count} candidates safe ({filtered_count} filtered)")
 
         return context
 
@@ -419,18 +416,18 @@ class LinearPipeline:
                 candidate.yield_score = candidate.discount_depth - crash_prob
 
                 risk_emoji = "🟢" if crash_prob < 0.30 else "🟡" if crash_prob < 0.70 else "🔴"
-                print(f"  {risk_emoji} {candidate.instance_type}@{candidate.availability_zone}: "
-                      f"Crash Risk = {crash_prob:.2f}, Yield = {candidate.yield_score:.2f}")
+                # Granular logging only if needed for debugging
+                # self.logger.debug(f"{risk_emoji} {candidate.instance_type}@{candidate.availability_zone}: Risk={crash_prob:.2f}")
 
             except Exception as e:
-                print(f"  ❌ Inference failed for {candidate.instance_type}@{candidate.availability_zone}: {e}")
+                self.logger.warning(f"Inference failed for {candidate.instance_type}@{candidate.availability_zone}: {e}")
                 # Filter out candidates with failed inference
                 candidate.is_filtered = True
                 candidate.filter_reason = f"Inference failed: {str(e)}"
 
         valid_with_predictions = len([c for c in context.get_valid_candidates() if c.crash_probability is not None])
         context.log_stage("MLInference", f"Predicted {valid_with_predictions} candidates")
-        print()
+        self.logger.info(f"ML Inference Complete: {valid_with_predictions} candidates scored")
 
         return context
 
@@ -508,13 +505,12 @@ class LinearPipeline:
             best_candidate.on_demand_price - best_candidate.spot_price
         )
 
-        print(f"  🎯 Best Candidate: {best_candidate.instance_type}@{best_candidate.availability_zone}")
-        print(f"     Spot Price: ${best_candidate.spot_price:.4f}/hr")
-        print(f"     Crash Risk: {best_candidate.crash_probability:.2f}")
-        print(f"     Yield Score: {best_candidate.yield_score:.2f}")
-        print(f"     Savings: ${savings_per_hour:.4f}/hr")
-        print(f"  → Decision: SWITCH")
-        print()
+        self.logger.info(f"Decision: SWITCH to {best_candidate.instance_type}@{best_candidate.availability_zone}", details={
+            "spot_price": best_candidate.spot_price,
+            "crash_risk": best_candidate.crash_probability,
+            "yield_score": best_candidate.yield_score,
+            "savings_per_hour": savings_per_hour
+        })
 
         # Log decision metadata
         context.log_stage("Decision", "SWITCH", {
@@ -541,14 +537,12 @@ class LinearPipeline:
         Returns:
             Updated context with execution results
         """
-        print("[Step 5/5] ⚡ Execution - Running Atomic Switch")
-        print("-" * 80)
+        self.logger.info("Step 5: Execution - Running Atomic Switch")
 
         # 1. Shadow Mode Check (Lab Mode Safety Feature)
         if context.is_shadow_mode:
-            print("  👻 Shadow Mode Active: Skipping actual AWS calls.")
+            self.logger.info("Shadow Mode Active: Skipping actual AWS calls.")
             context.log_stage("Execution", "SKIPPED (Shadow Mode)")
-            print()
             return context
 
         # 2. Environment Validation (Critical Safety Check)
@@ -556,9 +550,8 @@ class LinearPipeline:
         expected_account = instance.account.account_id
         if not expected_account:
             error_msg = "No account ID available for validation"
-            print(f"  🚨 {error_msg}")
+            self.logger.error(f"Execution Blocked: {error_msg}")
             context.log_stage("Execution", f"BLOCKED: {error_msg}")
-            print()
             return context
 
         # 3. Get EC2 Client (Real Auth)
@@ -570,9 +563,8 @@ class LinearPipeline:
             )
         except Exception as e:
             error_msg = f"Failed to get EC2 client: {str(e)}"
-            print(f"  🚨 {error_msg}")
+            self.logger.error(error_msg)
             context.log_stage("Execution", f"FAILED: {error_msg}")
-            print()
             return context
 
         try:
@@ -586,6 +578,7 @@ class LinearPipeline:
 
             # 5. Log Success
             context.log_stage("Execution", "SUCCESS", result)
+            self.logger.success(f"Atomic Switch Successful: New Instance {result['new_instance_id']}", details=result)
 
             # 6. Update Database Record
             # We update the instance_id in the DB to match the new one
@@ -595,14 +588,11 @@ class LinearPipeline:
             instance.updated_at = datetime.now()
             self.db.commit()
 
-            print(f"  📝 Database updated with new Instance ID: {result['new_instance_id']}")
-            print()
+            self.logger.info(f"Database updated with new Instance ID: {result['new_instance_id']}")
 
         except Exception as e:
             context.log_stage("Execution", f"FAILED: {str(e)}")
-            # Don't re-raise, just log failure so we can see it in dashboard
-            print(f"  ❌ Execution Step Failed: {e}")
-            print()
+            self.logger.error(f"Atomic Switch Failed: {e}")
 
         return context
 

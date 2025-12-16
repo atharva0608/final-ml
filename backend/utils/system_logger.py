@@ -35,6 +35,8 @@ class Component:
     INSTANCE_MANAGER = ComponentType.INSTANCE_MANAGER.value
     REDIS_CACHE = ComponentType.REDIS_CACHE.value
     API_SERVER = ComponentType.API_SERVER.value
+    WASTE_SCANNER = ComponentType.WASTE_SCANNER.value
+    SECURITY_ENFORCER = ComponentType.SECURITY_ENFORCER.value
 
 
 class SystemLogger:

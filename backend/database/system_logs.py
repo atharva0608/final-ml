@@ -31,6 +31,8 @@ class ComponentType(str, enum.Enum):
     INSTANCE_MANAGER = "instance_manager"
     REDIS_CACHE = "redis_cache"
     API_SERVER = "api_server"
+    WASTE_SCANNER = "waste_scanner"
+    SECURITY_ENFORCER = "security_enforcer"
 
 
 class LogLevel(str, enum.Enum):
