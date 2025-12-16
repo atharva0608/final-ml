@@ -1,147 +1,158 @@
 import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { useAuth } from '../context/AuthContext';
-import { FlaskConical, ChevronDown, Check, Activity, Menu, Settings, Server, User, Lock, LogOut, KeyRound, ScrollText, Monitor } from 'lucide-react';
+import {
+    LayoutDashboard, Server, Settings, Activity, Menu,
+    Users, ChevronDown, FlaskConical, Radio, Globe, Check, X
+} from 'lucide-react';
 import { cn } from '../lib/utils';
 
-const DashboardLayout = ({ children, activeView, setActiveView, onSelectClient, selectedClientId, role = 'admin', clientName = '' }) => {
-    const [isSidebarOpen, setIsSidebarOpen] = useState(true);
-    const { accountScope, switchScope } = useAuth();
-    const [isScopeMenuOpen, setIsScopeMenuOpen] = useState(false);
-    const navigate = useNavigate();
-
-    const isLab = accountScope === 'lab';
-    const isClient = role === 'client';
-
-    // Theme Config
-    const theme = isLab ? {
-        sidebarBg: "bg-slate-50",
-        sidebarBorder: "border-purple-100",
-        sidebarText: "text-slate-600 font-medium",
-        sidebarActiveBg: "bg-purple-50",
-        sidebarActiveText: "text-purple-700 font-bold",
-        sidebarIcon: "text-slate-400",
-        sidebarIconActive: "text-purple-600",
-        logoBg: "bg-purple-600",
-        logoText: "text-white",
-        headerEnvBadge: "bg-purple-50 border-purple-200 text-purple-700"
-    } : {
-        // User's Requested "Old" Design for Prod
-        sidebarBg: "bg-white",
-        sidebarBorder: "border-slate-200", // border-r
-        sidebarText: "text-slate-500 font-medium",
+const NavigationItem = ({ icon: Icon, label, active, onClick, hasSubmenu, isOpen, onToggle, customTheme }) => {
+    // Default theme fallback
+    const theme = customTheme || {
         sidebarActiveBg: "bg-slate-50",
-        sidebarActiveText: "text-slate-900 font-bold",
-        sidebarIcon: "text-slate-400 group-hover:text-slate-600",
-        sidebarIconActive: "text-blue-600",
-        logoBg: "bg-blue-600",
-        logoText: "text-slate-900 tracking-tight",
-        headerEnvBadge: "bg-slate-50 border-slate-200 text-slate-700"
-    };
-
-    // Navigation Items Configuration
-    const navItems = isClient ? [
-        { id: 'live', label: 'Dashboard', icon: Activity },
-    ] : [
-        // Admin Navigation
-        // Hide Live Ops in Lab Mode
-        ...(accountScope !== 'lab' ? [{ id: 'live', label: 'Live Operations', icon: Activity }] : []),
-        // Show Fleet ONLY in Production
-        ...(accountScope !== 'lab' ? [{ id: 'fleet', label: 'Node Fleet', icon: Server }] : []),
-        // Hide Controls in Lab Mode
-        ...(accountScope !== 'lab' ? [{ id: 'controls', label: 'System Controls', icon: Settings }] : []),
-        // Show Experiments ONLY in Lab Mode
-        ...(accountScope === 'lab' ? [{ id: 'experiments', label: 'Model Experiments', icon: FlaskConical }] : []),
-        // System Monitor (available in both modes for admin)
-        { id: 'monitor', label: 'System Monitor', icon: Monitor }
-    ];
-
-    // Sidebar Theme (Dynamic)
-    const sidebarTheme = isLab
-        ? "bg-slate-900 border-r border-purple-900/50"
-        : "bg-white border-r border-slate-200";
-
-    const handleSwitchToProd = () => {
-        switchScope('production');
-        setIsScopeMenuOpen(false);
-        setActiveView('live');
-    };
-
-    const handleSwitchToLab = () => {
-        switchScope('lab');
-        setIsScopeMenuOpen(false);
-        setActiveView('experiments');
+        sidebarActiveText: "text-slate-900",
+        sidebarText: "text-slate-500",
+        sidebarIcon: "text-slate-400",
+        sidebarIconActive: "text-blue-600"
     };
 
     return (
-        <div className={cn("min-h-screen flex transition-colors duration-500", isLab ? "bg-slate-950" : "bg-slate-50")}>
-            {/* Sidebar */}
-            {/* Sidebar Overlay for Mobile */}
-            {isSidebarOpen && (
-                <div
-                    className="fixed inset-0 z-40 bg-black/20 backdrop-blur-sm lg:hidden"
-                    onClick={() => setIsSidebarOpen(false)}
-                />
-            )}
+        <div className="w-full">
+            <button
+                onClick={onClick}
+                className={cn(
+                    "flex items-center w-full px-4 py-2.5 text-sm transition-all duration-200 group relative rounded-lg mx-2 w-[calc(100%-16px)]",
+                    active
+                        ? `${theme.sidebarActiveBg} ${theme.sidebarActiveText} font-bold`
+                        : `${theme.sidebarText} font-medium hover:bg-opacity-50 hover:bg-slate-100`
+                )}
+            >
+                {active && (
+                    <div className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-6 bg-blue-600 rounded-r-sm" />
+                )}
+                <Icon className={cn("w-4 h-4 mr-3 transition-colors", active ? theme.sidebarIconActive : theme.sidebarIcon)} />
+                <span className="flex-1 text-left">{label}</span>
+                {hasSubmenu && (
+                    <div
+                        role="button"
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            onToggle();
+                        }}
+                        className="p-1 hover:bg-slate-200 rounded"
+                    >
+                        <ChevronDown className={cn("w-3 h-3 transition-transform", isOpen && "rotate-180")} />
+                    </div>
+                )}
+            </button>
+        </div>
+    );
+};
 
+const DashboardLayout = ({ children, activeView, setActiveView, role = 'admin', clientName = null }) => {
+    const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+    const [environmentMode, setEnvironmentMode] = useState('prod'); // 'prod' | 'lab'
+    const [isScopeMenuOpen, setIsScopeMenuOpen] = useState(false);
+
+    // Helpers
+    const isLab = environmentMode === 'lab';
+    const isClient = role === 'client';
+
+    const handleSwitchToProd = () => {
+        setEnvironmentMode('prod');
+        setActiveView('live');
+        setIsScopeMenuOpen(false);
+    };
+
+    const handleSwitchToLab = () => {
+        setEnvironmentMode('lab');
+        setActiveView('experiments');
+        setIsScopeMenuOpen(false);
+    };
+
+    // Define Menu Items based on Role/Mode
+    const getMenuItems = () => {
+        if (role === 'client') {
+            return [
+                { id: 'live', label: 'Dashboard', icon: LayoutDashboard },
+                { id: 'profile', label: 'Profile Settings', icon: Settings },
+            ];
+        }
+
+        // Admin - Prod
+        if (environmentMode === 'prod') {
+            return [
+                { id: 'live', label: 'Live Operations', icon: Radio },
+                { id: 'fleet', label: 'Node Fleet', icon: Server },
+                { id: 'monitor', label: 'System Monitor', icon: Globe },
+                { id: 'controls', label: 'Global Controls', icon: Settings },
+                { id: 'clients', label: 'Client Management', icon: Users },
+            ];
+        }
+
+        // Admin - Lab
+        return [
+            { id: 'experiments', label: 'Model Experiments', icon: FlaskConical },
+            { id: 'monitor', label: 'System Monitor', icon: Activity },
+            { id: 'controls', label: 'Global Controls', icon: Settings },
+        ];
+    };
+
+    const menuItems = getMenuItems();
+
+    // Theme logic for Nav Items (Lab gets purple accents)
+    const navTheme = isLab ? {
+        sidebarActiveBg: "bg-purple-50",
+        sidebarActiveText: "text-purple-900",
+        sidebarText: "text-slate-500",
+        sidebarIcon: "text-slate-400",
+        sidebarIconActive: "text-purple-600"
+    } : undefined;
+
+    return (
+        <div className="min-h-screen bg-white text-slate-900 flex font-sans">
             {/* Sidebar */}
-            <aside className={cn(
-                "fixed inset-y-0 left-0 z-50 transition-all duration-300 ease-in-out lg:relative lg:translate-x-0",
-                sidebarTheme,
-                isSidebarOpen ? "w-64 translate-x-0" : "w-0 -translate-x-full lg:w-0 lg:translate-x-0 border-none overflow-hidden"
-            )}>
-                <div className={cn("flex items-center h-16 px-6 min-w-[16rem] relative z-20 shadow-sm", isLab ? "bg-slate-900" : "bg-white")}>
+            <aside
+                className={cn(
+                    "fixed inset-y-0 left-0 z-50 bg-white border-r border-slate-200 transition-all duration-300 ease-in-out lg:relative h-screen flex flex-col",
+                    isSidebarOpen ? "w-64 translate-x-0" : "-translate-x-full w-0 lg:translate-x-0 lg:w-0 overflow-hidden border-none"
+                )}
+            >
+                <div className="flex items-center h-16 px-6 border-b border-slate-100 min-w-[16rem]">
                     <div className="flex items-center space-x-2">
-                        <div className={cn("w-8 h-8 rounded flex items-center justify-center flex-shrink-0 shadow-sm", theme.logoBg)}>
+                        <div className={cn("w-8 h-8 rounded flex items-center justify-center flex-shrink-0 transition-colors", isLab ? "bg-purple-600" : "bg-blue-600")}>
                             <Activity className="w-5 h-5 text-white" />
                         </div>
-                        <span className={cn("text-xl font-bold tracking-tight whitespace-nowrap", isLab ? "text-white" : "text-slate-900")}> Atharva.ai 🤯</span>
+                        <span className="text-xl font-bold text-slate-900 tracking-tight whitespace-nowrap"> Atharva.ai 🤯</span>
                     </div>
                 </div>
 
-                <nav className="p-4 space-y-1 min-w-[16rem]">
-                    <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-4 px-4 mt-4">
-                        Platform
+                <nav className="flex-1 p-2 space-y-1 min-w-[16rem] overflow-y-auto">
+                    <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-4 px-4 mt-6">
+                        {isClient ? 'Client Portal' : (isLab ? 'R&D Lab' : 'Platform')}
                     </div>
 
-                    {navItems.map((item) => (
+                    {menuItems.map(item => (
                         <NavigationItem
                             key={item.id}
                             icon={item.icon}
                             label={item.label}
                             active={activeView === item.id}
-                            onClick={() => {
-                                setActiveView(item.id);
-                                if (item.id === 'fleet') onSelectClient(null);
-                                // On mobile, close sidebar after click
-                                if (window.innerWidth < 1024) setIsSidebarOpen(false);
-                            }}
-                            customTheme={theme}
+                            onClick={() => setActiveView(item.id)}
+                            customTheme={navTheme}
                         />
                     ))}
 
-                    <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2 px-4 mt-8">
-                        Account
-                    </div>
-
-                    {/* Unified Profile for Everyone */}
-                    <NavigationItem
-                        icon={User}
-                        label={isClient ? "My Profile" : "Admin Profile"}
-                        active={activeView === 'profile'}
-                        onClick={() => setActiveView('profile')}
-                        customTheme={theme}
-                    />
-
-                    <NavigationItem
-                        icon={LogOut}
-                        label="Sign Out"
-                        onClick={() => {
-                            // Mock Sign Out
-                            window.location.href = '/login';
-                        }}
-                        customTheme={theme}
-                    />
+                    {role === 'admin' && (
+                        <div className="mt-8 pt-4 border-t border-slate-100 mx-2">
+                            <NavigationItem
+                                icon={Users}
+                                label="Admin Profile"
+                                active={activeView === 'profile'}
+                                onClick={() => setActiveView('profile')}
+                                customTheme={navTheme}
+                            />
+                        </div>
+                    )}
                 </nav>
             </aside>
 
@@ -238,46 +249,6 @@ const DashboardLayout = ({ children, activeView, setActiveView, onSelectClient, 
                     </div>
                 </main>
             </div>
-        </div>
-    );
-};
-
-const NavigationItem = ({ icon: Icon, label, active, onClick, hasSubmenu, isOpen, onToggle, customTheme }) => {
-    // Default theme fallback
-    const theme = customTheme || {
-        sidebarActiveBg: "bg-slate-50",
-        sidebarActiveText: "text-slate-900",
-        sidebarText: "text-slate-500",
-        sidebarIcon: "text-slate-400",
-        sidebarIconActive: "text-blue-600"
-    };
-
-    return (
-        <div className="w-full">
-            <button
-                onClick={onClick}
-                className={cn(
-                    "flex items-center w-full px-4 py-2.5 text-sm transition-all duration-200 group relative rounded-lg mx-2 w-[calc(100%-16px)]", // Added rounded and margin
-                    active
-                        ? `${theme.sidebarActiveBg} ${theme.sidebarActiveText} font-bold`
-                        : `${theme.sidebarText} font-medium hover:bg-opacity-50 hover:bg-slate-100` // Simplified hover
-                )}
-            >
-                <Icon className={cn("w-4 h-4 mr-3 transition-colors", active ? theme.sidebarIconActive : theme.sidebarIcon)} />
-                <span className="flex-1 text-left">{label}</span>
-                {hasSubmenu && (
-                    <div
-                        role="button"
-                        onClick={(e) => {
-                            e.stopPropagation();
-                            onToggle();
-                        }}
-                        className="p-1 hover:bg-slate-200 rounded"
-                    >
-                        <ChevronDown className={cn("w-3 h-3 transition-transform", isOpen && "rotate-180")} />
-                    </div>
-                )}
-            </button>
         </div>
     );
 };

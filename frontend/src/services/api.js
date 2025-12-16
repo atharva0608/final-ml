@@ -212,6 +212,34 @@ export async function getClientDetails(clientId) {
 }
 
 // ============================================================================
+// User Management API (for Admin)
+// ============================================================================
+
+export async function getUsers() {
+    return fetchApi('/api/v1/admin/users');
+}
+
+export async function updateUserStatus(userId, isActive) {
+    return fetchApi(`/api/v1/admin/users/${userId}/status`, {
+        method: 'PUT',
+        body: JSON.stringify({ is_active: isActive }),
+    });
+}
+
+export async function updateUserRole(userId, role) {
+    return fetchApi(`/api/v1/admin/users/${userId}/role`, {
+        method: 'PUT',
+        body: JSON.stringify({ role }),
+    });
+}
+
+export async function deleteUser(userId) {
+    return fetchApi(`/api/v1/admin/users/${userId}`, {
+        method: 'DELETE',
+    });
+}
+
+// ============================================================================
 // WebSocket Connection
 // ============================================================================
 
@@ -313,6 +341,45 @@ export async function cleanupOldLogs(days = 7) {
 }
 
 // ============================================================================
+// V3.1 Production API (Waste, Governance, Approvals)
+// ============================================================================
+
+export async function getWaste() {
+    return fetchApi('/api/v1/waste');
+}
+
+export async function triggerWasteScan() {
+    return fetchApi('/api/v1/waste/scan', { method: 'POST' });
+}
+
+export async function getSecurityAudit() {
+    return fetchApi('/api/v1/governance/audit');
+}
+
+export async function getUnauthorizedInstances() {
+    return fetchApi('/api/v1/governance/unauthorized');
+}
+
+export async function getPendingApprovals() {
+    return fetchApi('/api/v1/approvals/pending');
+}
+
+export async function approveRequest(requestId) {
+    return fetchApi(`/api/v1/approvals/${requestId}/approve`, { method: 'POST' });
+}
+
+export async function rejectRequest(requestId) {
+    return fetchApi(`/api/v1/approvals/${requestId}/reject`, { method: 'POST' });
+}
+
+export async function setSpotMarketStatus(disabled) {
+    return fetchApi('/api/v1/admin/system/spot-status', {
+        method: 'PUT',
+        body: JSON.stringify({ disabled })
+    });
+}
+
+// ============================================================================
 // Helper Functions
 // ============================================================================
 
@@ -376,6 +443,22 @@ export default {
     getClients,
     createClient,
     getClientDetails,
+
+    // User Management
+    getUsers,
+    updateUserStatus,
+    updateUserRole,
+    deleteUser,
+
+    // Waste & Governance
+    getWaste,
+    triggerWasteScan,
+    getSecurityAudit,
+    getUnauthorizedInstances,
+    getPendingApprovals,
+    approveRequest,
+    rejectRequest,
+    setSpotMarketStatus,
 
     // WebSocket
     connectWebSocket,

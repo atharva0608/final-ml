@@ -4,7 +4,8 @@ import { BrowserRouter as Router, Routes, Route, Navigate, Outlet } from 'react-
 import DashboardLayout from './layouts/DashboardLayout';
 import LoginPage from './components/LoginPage';
 import LiveOperations from './components/LiveOperations';
-import NodeFleet, { ClientDetailView, MOCK_CLIENTS } from './components/NodeFleet';
+import NodeFleet, { ClientDetailView } from './components/NodeFleet';
+import ClientManagement from './components/ClientManagement';
 // Mock data removed - using real API
 import Controls from './components/Controls';
 import { AuthProvider, useAuth } from './context/AuthContext';
@@ -12,6 +13,7 @@ import ModelExperiments from './components/Lab/ModelExperiments';
 import SystemMonitor from './pages/SystemMonitor';
 import { ModelProvider } from './context/ModelContext';
 import './App.css';
+import api from './services/api';
 
 // Protected Route Component
 const ProtectedRoute = ({ allowedRoles }) => {
@@ -42,6 +44,7 @@ const AdminDashboard = () => {
       case 'controls': return <Controls />;
       case 'experiments': return <ModelExperiments />;
       case 'monitor': return <SystemMonitor />;
+      case 'clients': return <ClientManagement />;
       case 'profile':
         return (
           <div className="max-w-4xl mx-auto space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-500">
@@ -133,18 +136,54 @@ const AdminDashboard = () => {
 const ClientViewWrapper = () => {
   const { user } = useAuth();
   const [currentView, setCurrentView] = useState('live');
+  const [client, setClient] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
 
-  // Use MOCK_CLIENTS as fallback (will be replaced with real API)
-  const allClients = MOCK_CLIENTS;
+  React.useEffect(() => {
+    const fetchClientData = async () => {
+      try {
+        setLoading(true);
+        // In a real app, we might have an endpoint for "my client profile"
+        // For now, we fetch all clients and filter by the user's clientId
+        const clients = await api.getClients();
+        const foundClient = clients.find(c => c.id === user?.clientId);
 
-  // Find the client assigned to the logged-in user
-  const client = allClients.find(c => c.id === user?.clientId);
+        if (foundClient) {
+          setClient(foundClient);
+        } else {
+          setError(`Client not found for ID: ${user?.clientId}`);
+        }
+      } catch (err) {
+        console.error("Failed to fetch client profile:", err);
+        setError("Failed to load client profile.");
+      } finally {
+        setLoading(false);
+      }
+    };
 
-  if (!client) return (
+    if (user?.clientId) {
+      fetchClientData();
+    } else {
+      setLoading(false);
+    }
+  }, [user]);
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center min-h-screen">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+      </div>
+    );
+  }
+
+  if (error || !client) return (
     <div className="flex items-center justify-center min-h-screen text-slate-500">
       <div className="text-center">
         <h3 className="text-lg font-bold text-slate-900">Client Configuration Not Found</h3>
-        <p className="text-sm text-slate-400 mt-2">User: {user?.username} ({user?.clientId})</p>
+        <p className="text-sm text-slate-400 mt-2">
+          {error || `User: ${user?.username} (${user?.clientId})`}
+        </p>
       </div>
     </div>
   );

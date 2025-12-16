@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useModel } from '../context/ModelContext';
-import { CheckCircle2, UploadCloud, RefreshCw, AlertOctagon } from 'lucide-react'; // Adding likely missing icons too based on usage
+import { CheckCircle2, UploadCloud, RefreshCw, AlertOctagon } from 'lucide-react';
+import api from '../services/api';
 
 const Controls = () => {
     const [isDragging, setIsDragging] = useState(false);
@@ -110,7 +111,17 @@ const Controls = () => {
                                         </div>
                                         <div className="flex flex-col gap-2 pt-2">
                                             <button
-                                                onClick={(e) => { e.stopPropagation(); setIsSpotDisabled(true); setShowSpotConfirm(false); }}
+                                                onClick={async (e) => {
+                                                    e.stopPropagation();
+                                                    try {
+                                                        await api.setSpotMarketStatus(true);
+                                                        setIsSpotDisabled(true);
+                                                        setShowSpotConfirm(false);
+                                                    } catch (err) {
+                                                        console.error('Failed to disable spot:', err);
+                                                        alert('Failed to disable Spot Market: ' + err.message);
+                                                    }
+                                                }}
                                                 className="w-full py-2.5 bg-slate-900 text-white font-bold rounded-lg hover:bg-slate-800 transition-colors shadow-lg shadow-slate-200"
                                             >
                                                 Confirm Disable

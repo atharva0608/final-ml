@@ -20,6 +20,11 @@ from database.models import Instance, Account, SpotPoolRisk, ExperimentLog
 from utils.aws_session import get_ec2_client
 from pipelines.linear_optimizer import execute_atomic_switch
 from logic.risk_manager import RiskManager
+from utils.system_logger import SystemLogger, Component
+
+# Initialize logger for this module
+logger = SystemLogger(Component.LINEAR_OPTIMIZER)
+
 
 
 @dataclass
@@ -71,13 +76,13 @@ class ClusterPipeline:
         Returns:
             Execution summary with success/failure counts
         """
-        print(f"\n{'='*80}")
-        print(f"🏭 CLUSTER OPTIMIZATION - ASG Mode")
-        print(f"{'='*80}")
-        print(f"ASG: {asg_name}")
-        print(f"Region: {region}")
-        print(f"Max Instances: {max_instances}")
-        print(f"{'='*80}\n")
+        logger.info(f"\n{'='*80}")
+        logger.info(f"🏭 CLUSTER OPTIMIZATION - ASG Mode")
+        logger.info(f"{'='*80}")
+        logger.info(f"ASG: {asg_name}")
+        logger.info(f"Region: {region}")
+        logger.info(f"Max Instances: {max_instances}")
+        logger.info(f"{'='*80}\n")
 
         # Get account from database
         account = self.db.query(Account).filter(Account.id == account_id).first()
@@ -108,10 +113,10 @@ class ClusterPipeline:
 
         # Step 1: Discovery - Find all instances in ASG
         targets = self._discover_targets(asg_client, asg_name, ec2)
-        print(f"📊 Discovered {len(targets)} On-Demand instances in ASG")
+        logger.info(f"📊 Discovered {len(targets)} On-Demand instances in ASG")
 
         if not targets:
-            print("✓ No On-Demand instances found. ASG is already optimized!")
+            logger.info("✓ No On-Demand instances found. ASG is already optimized!")
             return {
                 "status": "complete",
                 "asg_name": asg_name,
@@ -123,7 +128,7 @@ class ClusterPipeline:
 
         # Limit batch size
         targets = targets[:max_instances]
-        print(f"📋 Processing batch of {len(targets)} instances\n")
+        logger.info(f"📋 Processing batch of {len(targets)} instances\n")
 
         # Step 2: Process each target
         results = {
@@ -137,24 +142,24 @@ class ClusterPipeline:
                 result = self._optimize_target(target, asg_client, ec2, account, region)
                 if result["status"] == "success":
                     results["optimized"].append(target.instance_id)
-                    print(f"✅ {target.instance_id} optimized successfully\n")
+                    logger.info(f"✅ {target.instance_id} optimized successfully\n")
                 elif result["status"] == "skipped":
                     results["skipped"].append(target.instance_id)
-                    print(f"⏭️  {target.instance_id} skipped: {result['reason']}\n")
+                    logger.info(f"⏭️  {target.instance_id} skipped: {result['reason']}\n")
                 else:
                     results["failed"].append(target.instance_id)
-                    print(f"❌ {target.instance_id} failed: {result['reason']}\n")
+                    logger.error(f"❌ {target.instance_id} failed: {result['reason']}\n")
             except Exception as e:
                 results["failed"].append(target.instance_id)
-                print(f"❌ {target.instance_id} failed with exception: {e}\n")
+                logger.error(f"❌ {target.instance_id} failed with exception: {e}\n")
 
-        print(f"\n{'='*80}")
-        print(f"🏁 CLUSTER OPTIMIZATION COMPLETE")
-        print(f"{'='*80}")
-        print(f"Optimized: {len(results['optimized'])}")
-        print(f"Skipped: {len(results['skipped'])}")
-        print(f"Failed: {len(results['failed'])}")
-        print(f"{'='*80}\n")
+        logger.info(f"\n{'='*80}")
+        logger.info(f"🏁 CLUSTER OPTIMIZATION COMPLETE")
+        logger.info(f"{'='*80}")
+        logger.info(f"Optimized: {len(results['optimized'])}")
+        logger.info(f"Skipped: {len(results['skipped'])}")
+        logger.info(f"Failed: {len(results['failed'])}")
+        logger.info(f"{'='*80}\n")
 
         return {
             "status": "complete",
@@ -239,7 +244,7 @@ class ClusterPipeline:
         Returns:
             Result dict with status and reason
         """
-        print(f"🔄 Processing {target.instance_id} ({target.instance_type} in {target.availability_zone})")
+        logger.info(f"🔄 Processing {target.instance_id} ({target.instance_type} in {target.availability_zone})")
 
         # Step 1: Global Risk Check (THE GATEKEEPER)
         is_risky = self.risk_manager.is_pool_poisoned(
@@ -256,7 +261,7 @@ class ClusterPipeline:
 
         # Step 2: Execute Atomic Switch (Launch new Spot)
         try:
-            print(f"  🚀 Launching replacement Spot instance...")
+            logger.info(f"  🚀 Launching replacement Spot instance...")
             switch_result = execute_atomic_switch(
                 ec2_client=ec2_client,
                 source_instance_id=target.instance_id,
@@ -266,7 +271,7 @@ class ClusterPipeline:
             )
 
             new_instance_id = switch_result['new_instance_id']
-            print(f"  ✓ New instance {new_instance_id} launched and healthy")
+            logger.info(f"  ✓ New instance {new_instance_id} launched and healthy")
 
         except Exception as e:
             return {
@@ -276,7 +281,7 @@ class ClusterPipeline:
 
         # Step 3: Attach new instance to ASG (Scale Out: N -> N+1)
         try:
-            print(f"  🔗 Attaching {new_instance_id} to ASG...")
+            logger.info(f"  🔗 Attaching {new_instance_id} to ASG...")
             asg_client.attach_instances(
                 InstanceIds=[new_instance_id],
                 AutoScalingGroupName=target.asg_name
@@ -286,11 +291,11 @@ class ClusterPipeline:
             import time
             time.sleep(10)  # Give ASG time to register the instance
 
-            print(f"  ✓ Instance attached to ASG")
+            logger.info(f"  ✓ Instance attached to ASG")
 
         except Exception as e:
             # Rollback: Terminate the new instance
-            print(f"  ⚠️  Attachment failed, rolling back...")
+            logger.warning(f"  ⚠️  Attachment failed, rolling back...")
             ec2_client.terminate_instances(InstanceIds=[new_instance_id])
             return {
                 "status": "failed",
@@ -299,7 +304,7 @@ class ClusterPipeline:
 
         # Step 4: Detach and terminate old instance (Scale In: N+1 -> N)
         try:
-            print(f"  🔓 Detaching old instance {target.instance_id}...")
+            logger.info(f"  🔓 Detaching old instance {target.instance_id}...")
             asg_client.detach_instances(
                 InstanceIds=[target.instance_id],
                 AutoScalingGroupName=target.asg_name,
@@ -310,16 +315,16 @@ class ClusterPipeline:
             import time
             time.sleep(5)
 
-            print(f"  🛑 Terminating old instance...")
+            logger.info(f"  🛑 Terminating old instance...")
             ec2_client.terminate_instances(InstanceIds=[target.instance_id])
 
-            print(f"  ✓ Old instance detached and terminated")
+            logger.info(f"  ✓ Old instance detached and terminated")
 
         except Exception as e:
             # The new instance is now in the ASG, but we couldn't remove the old one
             # This leaves the ASG over-capacity temporarily
-            print(f"  ⚠️  Detachment/termination failed: {e}")
-            print(f"  ℹ️  New instance is active, but old instance remains (manual cleanup needed)")
+            logger.error(f"  ⚠️  Detachment/termination failed: {e}")
+            logger.warning(f"  ℹ️  New instance is active, but old instance remains (manual cleanup needed)")
             return {
                 "status": "partial",
                 "reason": f"New instance active, but old cleanup failed: {str(e)}",

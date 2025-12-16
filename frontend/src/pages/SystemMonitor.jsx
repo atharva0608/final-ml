@@ -20,7 +20,11 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { RefreshCw, AlertCircle, CheckCircle, XCircle, Activity } from 'lucide-react';
+import {
+  RefreshCw, AlertCircle, CheckCircle, XCircle, Activity,
+  Globe, DollarSign, Database, Zap, Brain, Cloud, HardDrive, Server,
+  BarChart2, Info, Terminal, AlertTriangle
+} from 'lucide-react';
 import api from '../services/api';
 
 // Component status colors
@@ -47,21 +51,21 @@ const STATUS_COLORS = {
     badge: 'bg-red-100 text-red-800'
   },
   unknown: {
-    bg: 'bg-gray-50',
-    border: 'border-gray-500',
-    text: 'text-gray-700',
-    icon: 'text-gray-500',
-    badge: 'bg-gray-100 text-gray-800'
+    bg: 'bg-slate-50',
+    border: 'border-slate-300',
+    text: 'text-slate-700',
+    icon: 'text-slate-400',
+    badge: 'bg-slate-100 text-slate-600'
   }
 };
 
 // Log level colors
 const LOG_LEVEL_COLORS = {
-  debug: 'text-gray-500',
-  info: 'text-blue-600',
-  warning: 'text-yellow-600',
-  error: 'text-red-600',
-  critical: 'text-red-800 font-bold'
+  debug: 'text-slate-500',
+  info: 'text-blue-500',
+  warning: 'text-amber-500',
+  error: 'text-red-500',
+  critical: 'text-rose-600 font-bold'
 };
 
 // Component display names and descriptions
@@ -69,42 +73,42 @@ const COMPONENT_INFO = {
   web_scraper: {
     name: 'Web Scraper',
     description: 'AWS Spot Advisor data fetching',
-    icon: '🌐'
+    icon: Globe
   },
   price_scraper: {
     name: 'Price Scraper',
     description: 'AWS Pricing API integration',
-    icon: '💰'
+    icon: DollarSign
   },
   database: {
     name: 'Database',
     description: 'PostgreSQL operations',
-    icon: '🗄️'
+    icon: Database
   },
   linear_optimizer: {
     name: 'Linear Optimizer',
     description: 'Instance switching decisions',
-    icon: '⚡'
+    icon: Zap
   },
   ml_inference: {
     name: 'ML Inference',
     description: 'Model predictions and features',
-    icon: '🤖'
+    icon: Brain
   },
   instance_manager: {
     name: 'Instance Manager',
     description: 'EC2 instance tracking',
-    icon: '☁️'
+    icon: Cloud
   },
   redis_cache: {
     name: 'Redis Cache',
     description: 'Data pipeline caching',
-    icon: '🔴'
+    icon: HardDrive
   },
   api_server: {
     name: 'API Server',
     description: 'FastAPI backend',
-    icon: '🚀'
+    icon: Server
   }
 };
 
@@ -112,9 +116,10 @@ const ComponentCard = ({ component, health, logs, onRefresh }) => {
   const info = COMPONENT_INFO[component] || {
     name: component,
     description: '',
-    icon: '📊'
+    icon: BarChart2
   };
 
+  const Icon = info.icon;
   const statusColors = STATUS_COLORS[health?.status || 'unknown'];
   const [showLogs, setShowLogs] = useState(true);
 
@@ -127,7 +132,7 @@ const ComponentCard = ({ component, health, logs, onRefresh }) => {
         <div className="flex items-start justify-between mb-6">
           <div className="flex items-start space-x-4">
             <div className={`p-3 rounded-lg ${statusColors.bg} ${statusColors.text} ring-1 ring-inset ring-black/5`}>
-              <span className="text-2xl">{info.icon}</span>
+              <Icon className="w-6 h-6" />
             </div>
             <div>
               <h3 className="text-lg font-bold text-slate-900 leading-tight">{info.name}</h3>
@@ -164,7 +169,7 @@ const ComponentCard = ({ component, health, logs, onRefresh }) => {
               </div>
               {health.failure_count_24h > 0 && (
                 <div className="px-2 py-1 bg-red-100 text-red-700 text-xs font-bold rounded">
-                  {health.failure_count_24h} Faulures
+                  {health.failure_count_24h} Failures
                 </div>
               )}
             </div>
@@ -198,15 +203,20 @@ const ComponentCard = ({ component, health, logs, onRefresh }) => {
                   <div className="w-2 h-2 rounded-full bg-slate-700"></div>
                   <div className="w-2 h-2 rounded-full bg-slate-700"></div>
                 </div>
-                <span className="ml-auto text-[10px] text-slate-600 font-mono">bash</span>
+                <span className="ml-auto text-[10px] text-slate-600 font-mono flex items-center">
+                  <Terminal className="w-3 h-3 mr-1" /> bash
+                </span>
               </div>
               <div className="p-3 space-y-2 font-mono text-[10px] h-48 overflow-y-auto scrollbar-thin scrollbar-thumb-slate-700 scrollbar-track-transparent">
                 {logs && logs.length > 0 ? (
                   logs.slice(0, 20).map((log, idx) => ( // Show max 20 logs in card
                     <div key={log.id || idx} className="flex flex-col border-b border-slate-800/50 last:border-0 pb-1 last:pb-0">
                       <div className="flex items-start">
-                        <span className={`mr-2 font-bold ${LOG_LEVEL_COLORS[log.level]}`}>
-                          {log.level === 'info' ? '➜' : log.level === 'error' ? '✖' : '•'}
+                        <span className={`mr-2 mt-0.5 ${LOG_LEVEL_COLORS[log.level]}`}>
+                          {log.level === 'info' && <Info className="w-3 h-3" />}
+                          {log.level === 'error' && <XCircle className="w-3 h-3" />}
+                          {log.level === 'warning' && <AlertTriangle className="w-3 h-3" />}
+                          {!['info', 'error', 'warning'].includes(log.level) && <div className="w-1.5 h-1.5 rounded-full bg-slate-500 my-1 mx-0.5" />}
                         </span>
                         <span className="text-slate-300 flex-1 break-all">{log.message}</span>
                       </div>

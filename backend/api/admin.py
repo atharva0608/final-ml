@@ -551,3 +551,112 @@ async def get_client_details(
         total_instances=total_instances,
         monthly_savings=12500.0
     )
+
+# ============================================================================
+# User Management (Identity & Access)
+# ============================================================================
+
+class UserUpdateStatus(BaseModel):
+    is_active: bool
+
+class UserUpdateRole(BaseModel):
+    role: str
+
+class UserResponse(BaseModel):
+    id: str
+    email: str
+    username: str
+    full_name: Optional[str] = None
+    role: str
+    is_active: bool
+    last_login: Optional[datetime]
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+@router.get("/users", response_model=List[UserResponse])
+async def list_users(
+    skip: int = 0,
+    limit: int = 100,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """List all registered users"""
+    if current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    users = db.query(User).offset(skip).limit(limit).all()
+    return users
+
+
+@router.put("/users/{user_id}/status")
+async def update_user_status(
+    user_id: str,
+    status_update: UserUpdateStatus,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """Block or unblock a user"""
+    if current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+        
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+        
+    user.is_active = status_update.is_active
+    db.commit()
+    
+    return {"status": "success", "user_id": user_id, "is_active": user.is_active}
+
+
+@router.put("/users/{user_id}/role")
+async def update_user_role(
+    user_id: str,
+    role_update: UserUpdateRole,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """Change user role (admin/user/lab)"""
+    if current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+        
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+        
+    # Validation
+    valid_roles = ["admin", "user", "lab"]
+    if role_update.role not in valid_roles:
+        raise HTTPException(status_code=400, detail=f"Invalid role. Must be one of: {valid_roles}")
+        
+    user.role = role_update.role
+    db.commit()
+    
+    return {"status": "success", "user_id": user_id, "role": user.role}
+
+
+@router.delete("/users/{user_id}")
+async def delete_user(
+    user_id: str,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """Permanently delete a user"""
+    if current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+        
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+        
+    # Prevent deleting yourself
+    if str(user.id) == str(current_user.id):
+        raise HTTPException(status_code=400, detail="Cannot delete your own admin account")
+        
+    db.delete(user)
+    db.commit()
+    
+    return {"status": "success", "message": "User deleted"}

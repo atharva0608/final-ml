@@ -22,6 +22,11 @@ from database.models import Instance, Account
 from utils.aws_session import get_ec2_client
 from pipelines.linear_optimizer import execute_atomic_switch
 from logic.risk_manager import RiskManager
+from utils.system_logger import SystemLogger, Component
+
+# Initialize logger for this module
+logger = SystemLogger(Component.KUBERNETES_OPTIMIZER)
+
 
 
 @dataclass
@@ -82,9 +87,9 @@ class KubernetesPipeline:
         Returns:
             Execution result dict
         """
-        print(f"\n{'='*80}")
-        print(f"☸️  KUBERNETES OPTIMIZATION - Node Mode")
-        print(f"{'='*80}\n")
+        logger.info(f"\\n{'='*80}")
+        logger.info(f"☸️  KUBERNETES OPTIMIZATION - Node Mode")
+        logger.info(f"{'='*80}\\n")
 
         # Fetch instance from database
         instance = self.db.query(Instance).filter(Instance.id == instance_id).first()
@@ -98,12 +103,12 @@ class KubernetesPipeline:
         cluster_name = instance.cluster_membership.get('cluster_name')
         node_group = instance.cluster_membership.get('node_group')
 
-        print(f"Instance: {instance.instance_id}")
-        print(f"Cluster: {cluster_name}")
-        print(f"Node Group: {node_group}")
-        print(f"Type: {instance.instance_type}")
-        print(f"AZ: {instance.availability_zone}")
-        print(f"{'='*80}\n")
+        logger.info(f"Instance: {instance.instance_id}")
+        logger.info(f"Cluster: {cluster_name}")
+        logger.info(f"Node Group: {node_group}")
+        logger.info(f"Type: {instance.instance_type}")
+        logger.info(f"AZ: {instance.availability_zone}")
+        logger.info(f"{'='*80}\\n")
 
         # Initialize Kubernetes client
         self._init_k8s_client(cluster_name, instance.account.region, instance.account)
@@ -113,42 +118,42 @@ class KubernetesPipeline:
         if not node:
             raise ValueError(f"Cannot find Kubernetes node for instance {instance.instance_id}")
 
-        print(f"🎯 Target Node: {node.node_name}")
-        print(f"   Pods Running: {node.pod_count}")
-        print(f"   Status: {'Ready' if node.is_ready else 'Not Ready'}\n")
+        logger.info(f"🎯 Target Node: {node.node_name}")
+        logger.info(f"   Pods Running: {node.pod_count}")
+        logger.info(f"   Status: {'Ready' if node.is_ready else 'Not Ready'}\\n")
 
         try:
             # PHASE 1: Scale Out - Launch new Spot node FIRST
-            print("[Phase 1/4] 🚀 Scale Out - Launching new Spot node...")
+            logger.info("[Phase 1/4] 🚀 Scale Out - Launching new Spot node...")
             new_instance_id = self._phase_scale_out(instance, node)
-            print(f"✓ New node launched: {new_instance_id}\n")
+            logger.info(f"✓ New node launched: {new_instance_id}\\n")
 
             # PHASE 2: Cordon - Mark old node unschedulable
-            print("[Phase 2/4] 🚧 Cordon - Marking old node unschedulable...")
+            logger.info("[Phase 2/4] 🚧 Cordon - Marking old node unschedulable...")
             self._phase_cordon(node.node_name)
-            print(f"✓ Node {node.node_name} cordoned\n")
+            logger.info(f"✓ Node {node.node_name} cordoned\\n")
 
             # PHASE 3: Drain - Evict pods gracefully
-            print("[Phase 3/4] 💧 Drain - Evicting pods...")
+            logger.info("[Phase 3/4] 💧 Drain - Evicting pods...")
             self._phase_drain(node.node_name, respect_pdbs=True)
-            print(f"✓ Node {node.node_name} drained\n")
+            logger.info(f"✓ Node {node.node_name} drained\\n")
 
             # PHASE 4: Terminate - Remove old EC2 instance
-            print("[Phase 4/4] 🛑 Terminate - Removing old EC2 instance...")
+            logger.info("[Phase 4/4] 🛑 Terminate - Removing old EC2 instance...")
             self._phase_terminate(instance.instance_id, instance.account, instance.account.region)
-            print(f"✓ Old instance {instance.instance_id} terminated\n")
+            logger.info(f"✓ Old instance {instance.instance_id} terminated\\n")
 
             # Update database
             instance.instance_id = new_instance_id
             instance.updated_at = datetime.utcnow()
             self.db.commit()
 
-            print(f"{'='*80}")
-            print(f"✅ KUBERNETES OPTIMIZATION COMPLETE")
-            print(f"{'='*80}")
-            print(f"Old Instance: {node.instance_id}")
-            print(f"New Instance: {new_instance_id}")
-            print(f"{'='*80}\n")
+            logger.info(f"{'='*80}")
+            logger.info(f"✅ KUBERNETES OPTIMIZATION COMPLETE")
+            logger.info(f"{'='*80}")
+            logger.info(f"Old Instance: {node.instance_id}")
+            logger.info(f"New Instance: {new_instance_id}")
+            logger.info(f"{'='*80}\\n")
 
             return {
                 "status": "success",
@@ -159,7 +164,7 @@ class KubernetesPipeline:
             }
 
         except Exception as e:
-            print(f"\n❌ Optimization failed: {e}")
+            logger.error(f"\\n❌ Optimization failed: {e}")
             return {
                 "status": "failed",
                 "error": str(e),
@@ -186,27 +191,27 @@ class KubernetesPipeline:
             from utils.k8s_auth import get_k8s_client, KUBERNETES_AVAILABLE
 
             if not KUBERNETES_AVAILABLE:
-                print("⚠️  Warning: kubernetes package not installed")
-                print("   Install with: pip install kubernetes==26.1.0")
-                print("   Using mock client for now")
+                logger.warning("⚠️  Warning: kubernetes package not installed")
+                logger.warning("   Install with: pip install kubernetes==26.1.0")
+                logger.warning("   Using mock client for now")
                 self.k8s_client = MockK8sClient()
                 return
 
-            print(f"   Authenticating to EKS cluster: {cluster_name}")
+            logger.info(f"   Authenticating to EKS cluster: {cluster_name}")
             self.k8s_client = get_k8s_client(
                 cluster_name=cluster_name,
                 region=region,
                 account=account,
                 db=self.db
             )
-            print(f"   ✓ Successfully authenticated to cluster")
+            logger.info(f"   ✓ Successfully authenticated to cluster")
 
         except ImportError:
-            print("⚠️  kubernetes package not available, using mock client")
+            logger.warning("⚠️  kubernetes package not available, using mock client")
             self.k8s_client = MockK8sClient()
         except Exception as e:
-            print(f"⚠️  Failed to authenticate to K8s cluster: {e}")
-            print("   Using mock client for testing")
+            logger.warning(f"⚠️  Failed to authenticate to K8s cluster: {e}")
+            logger.warning("   Using mock client for testing")
             self.k8s_client = MockK8sClient()
 
     def _get_node_from_instance(self, instance_id: str) -> Optional[K8sNode]:
@@ -221,7 +226,7 @@ class KubernetesPipeline:
         """
         if isinstance(self.k8s_client, MockK8sClient):
             # Return mock node for testing
-            print(f"   [MOCK] Looking up node for instance {instance_id}")
+            logger.info(f"   [MOCK] Looking up node for instance {instance_id}")
             return K8sNode(
                 node_name=f"ip-10-0-1-100.ec2.internal",
                 instance_id=instance_id,
@@ -278,7 +283,7 @@ class KubernetesPipeline:
             return None
 
         except Exception as e:
-            print(f"   ⚠️  Failed to find node for instance {instance_id}: {e}")
+            logger.warning(f"   ⚠️  Failed to find node for instance {instance_id}: {e}")
             return None
 
     def _phase_scale_out(self, instance: Instance, old_node: K8sNode) -> str:
@@ -314,14 +319,14 @@ class KubernetesPipeline:
         new_instance_id = result['new_instance_id']
 
         # Wait for new node to join cluster and become Ready
-        print(f"   Waiting for new node to join cluster...")
+        logger.info(f"   Waiting for new node to join cluster...")
         max_wait = 300  # 5 minutes
         start_time = time.time()
 
         while time.time() - start_time < max_wait:
             new_node = self._get_node_from_instance(new_instance_id)
             if new_node and new_node.is_ready:
-                print(f"   ✓ New node {new_node.node_name} is Ready")
+                logger.info(f"   ✓ New node {new_node.node_name} is Ready")
                 return new_instance_id
 
             time.sleep(10)
@@ -339,8 +344,8 @@ class KubernetesPipeline:
             node_name: Kubernetes node name
         """
         if isinstance(self.k8s_client, MockK8sClient):
-            print(f"   [MOCK] kubectl cordon {node_name}")
-            print(f"   (Kubernetes package not available - using mock)")
+            logger.info(f"   [MOCK] kubectl cordon {node_name}")
+            logger.info(f"   (Kubernetes package not available - using mock)")
             return
 
         try:
@@ -351,10 +356,10 @@ class KubernetesPipeline:
                 }
             }
             self.k8s_client.patch_node(node_name, body)
-            print(f"   ✓ Node {node_name} marked as unschedulable")
+            logger.info(f"   ✓ Node {node_name} marked as unschedulable")
 
         except Exception as e:
-            print(f"   ⚠️  Failed to cordon node: {e}")
+            logger.warning(f"   ⚠️  Failed to cordon node: {e}")
             raise
 
     def _phase_drain(self, node_name: str, respect_pdbs: bool = True):
@@ -370,9 +375,9 @@ class KubernetesPipeline:
             respect_pdbs: If True, respects PodDisruptionBudgets
         """
         if isinstance(self.k8s_client, MockK8sClient):
-            print(f"   [MOCK] kubectl drain {node_name} --ignore-daemonsets --delete-emptydir-data")
-            print(f"   (Kubernetes package not available - using mock)")
-            print(f"   Simulating drain time...")
+            logger.info(f"   [MOCK] kubectl drain {node_name} --ignore-daemonsets --delete-emptydir-data")
+            logger.info(f"   (Kubernetes package not available - using mock)")
+            logger.info(f"   Simulating drain time...")
             time.sleep(5)
             return
 
@@ -384,7 +389,7 @@ class KubernetesPipeline:
                 field_selector=f"spec.nodeName={node_name}"
             )
 
-            print(f"   Found {len(pods.items)} pods to evict")
+            logger.info(f"   Found {len(pods.items)} pods to evict")
 
             # Evict each pod
             evicted_count = 0
@@ -396,7 +401,7 @@ class KubernetesPipeline:
                 if pod.metadata.owner_references:
                     for owner in pod.metadata.owner_references:
                         if owner.kind == 'DaemonSet':
-                            print(f"      Skipping DaemonSet pod: {namespace}/{pod_name}")
+                            logger.info(f"      Skipping DaemonSet pod: {namespace}/{pod_name}")
                             continue
 
                 # Create eviction request
@@ -415,18 +420,18 @@ class KubernetesPipeline:
                         body=eviction
                     )
                     evicted_count += 1
-                    print(f"      ✓ Evicted: {namespace}/{pod_name}")
+                    logger.info(f"      ✓ Evicted: {namespace}/{pod_name}")
 
                 except Exception as e:
                     # PDB may block eviction temporarily
                     if respect_pdbs and 'Cannot evict pod' in str(e):
-                        print(f"      ⏳ Waiting for PDB: {namespace}/{pod_name}")
+                        logger.warning(f"      ⏳ Waiting for PDB: {namespace}/{pod_name}")
                         time.sleep(10)  # Wait and retry
                     else:
-                        print(f"      ⚠️  Failed to evict {namespace}/{pod_name}: {e}")
+                        logger.warning(f"      ⚠️  Failed to evict {namespace}/{pod_name}: {e}")
 
             # Wait for all pods to terminate
-            print(f"   Waiting for {evicted_count} pods to terminate...")
+            logger.info(f"   Waiting for {evicted_count} pods to terminate...")
             max_wait = 300  # 5 minutes
             start_time = time.time()
 
@@ -448,14 +453,14 @@ class KubernetesPipeline:
                         non_daemonset_count += 1
 
                 if non_daemonset_count == 0:
-                    print(f"   ✓ All pods successfully drained")
+                    logger.info(f"   ✓ All pods successfully drained")
                     break
 
-                print(f"      {non_daemonset_count} pods remaining...")
+                logger.info(f"      {non_daemonset_count} pods remaining...")
                 time.sleep(10)
 
         except Exception as e:
-            print(f"   ⚠️  Failed to drain node: {e}")
+            logger.warning(f"   ⚠️  Failed to drain node: {e}")
             raise
 
     def _phase_terminate(self, instance_id: str, account: Account, region: str):
@@ -477,7 +482,7 @@ class KubernetesPipeline:
         )
 
         ec2.terminate_instances(InstanceIds=[instance_id])
-        print(f"   EC2 instance {instance_id} termination initiated")
+        logger.info(f"   EC2 instance {instance_id} termination initiated")
 
 
 class MockK8sClient:
@@ -490,13 +495,13 @@ if __name__ == '__main__':
     print("="*80)
     print("KUBERNETES OPTIMIZER - Production EKS Pipeline")
     print("="*80)
-    print("\nImplements 4-Step Safety Dance for zero-downtime node replacement:")
+    print("\\nImplements 4-Step Safety Dance for zero-downtime node replacement:")
     print("  1. Scale Out: Launch new Spot node FIRST")
     print("  2. Cordon: Mark old node unschedulable")
     print("  3. Drain: Evict pods respecting PDBs")
     print("  4. Terminate: Remove old EC2 instance")
-    print("\nCRITICAL INVARIANT: Cluster capacity NEVER drops during optimization")
-    print("\nPrerequisites:")
+    print("\\nCRITICAL INVARIANT: Cluster capacity NEVER drops during optimization")
+    print("\\nPrerequisites:")
     print("  - kubectl access to cluster")
     print("  - Kubernetes Python client (pip install kubernetes==26.1.0)")
     print("  - Proper RBAC permissions (node management)")
