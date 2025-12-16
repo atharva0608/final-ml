@@ -1,13 +1,13 @@
 """
-Spot Optimizer Platform - FastAPI Backend
+Spot Optimizer Platform - Production Lab Mode Backend
 
-Main application entry point with complete feature set:
-- JWT Authentication
-- PostgreSQL Database
-- WebSocket for real-time logs
-- Background cleanup jobs
-- Rate limiting
-- Lab Mode and Sandbox Mode
+Agentless, production-grade AWS Spot Instance optimizer with:
+- Cross-account STS AssumeRole security
+- Real ML inference on live data
+- PostgreSQL + Redis data pipeline
+- WebSocket real-time logs
+- Multi-tenant authorization
+- Lab Mode for single-instance optimization
 """
 
 from fastapi import FastAPI, Depends, HTTPException
@@ -18,9 +18,9 @@ from datetime import datetime
 from contextlib import asynccontextmanager
 
 from config import settings
-from api.sandbox import router as sandbox_router
 from api.lab import router as lab_router
 from api.auth import router as auth_router
+from api.admin import router as admin_router
 from api.websocket_routes import router as websocket_router
 from database.connection import init_db
 from jobs.scheduler import start_scheduler, stop_scheduler
@@ -114,25 +114,25 @@ app.include_router(
     tags=['Authentication']
 )
 
-# Sandbox Mode
-app.include_router(
-    sandbox_router,
-    prefix='/api/v1/sandbox',
-    tags=['Sandbox']
-)
-
-# Lab Mode
+# Lab Mode (Production ML Optimizer)
 app.include_router(
     lab_router,
-    prefix='/api/v1',
+    prefix='/api/v1/lab',
     tags=['Lab Mode']
 )
 
-# WebSocket
+# WebSocket (Real-time logs)
 app.include_router(
     websocket_router,
     prefix='/api/v1',
     tags=['WebSocket']
+)
+
+# Admin (System Monitoring)
+app.include_router(
+    admin_router,
+    prefix='/api/v1/admin',
+    tags=['Admin']
 )
 
 

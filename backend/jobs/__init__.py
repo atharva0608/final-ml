@@ -1,16 +1,8 @@
 """
-Background Jobs Package
+Background Jobs Layer
 
-Scheduled cleanup and maintenance tasks.
+This package contains scheduled background jobs for governance and maintenance:
+- Waste Scanner: Find and cleanup unused AWS resources
+- Security Enforcer: Detect and terminate unauthorized instances
+- Risk Cleanup: Expire old poison flags
 """
-
-from .cleanup import cleanup_expired_sessions, cleanup_old_experiment_logs, update_session_counts
-from .scheduler import start_scheduler, stop_scheduler
-
-__all__ = [
-    'cleanup_expired_sessions',
-    'cleanup_old_experiment_logs',
-    'update_session_counts',
-    'start_scheduler',
-    'stop_scheduler',
-]

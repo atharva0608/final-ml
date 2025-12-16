@@ -1,28 +1,35 @@
 """
-Lab Mode API Endpoints
+Lab Mode API Endpoints - Production Database Integration
 
-FastAPI router for Lab Mode management, allowing real execution on single
-instances with simplified pipeline and model version control.
+Real database-backed Lab Mode management with:
+- EC2 instance tracking and configuration
+- ML model version control
+- Experiment logging and analytics
+- Cross-account authorization
 """
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, status
 from pydantic import BaseModel, Field
 from typing import Optional, List
 from datetime import datetime
-from uuid import UUID
+from sqlalchemy.orm import Session
+from sqlalchemy import func
 
-# NOTE: Database integration would go here
-# For now, using in-memory store for demo purposes
-LAB_CONFIGS = {}
-MODEL_REGISTRY = {}
+from database.connection import get_db
+from database.models import User, Account, Instance, ModelRegistry, ExperimentLog
+from auth.jwt import get_current_active_user
+from utils.aws_session import validate_account_access
 
 router = APIRouter()
 
 
+# ============================================================================
 # Request/Response Models
+# ============================================================================
+
 class AssignModelRequest(BaseModel):
-    instance_id: str = Field(..., description="Target instance ID")
-    model_id: str = Field(..., description="Model UUID from registry")
+    instance_id: str
+    model_version: str  # e.g., "v2.1.0"
 
 
 class PipelineStatusResponse(BaseModel):
@@ -46,238 +53,565 @@ class ModelInfo(BaseModel):
     created_at: datetime
 
 
-class InstanceConfigResponse(BaseModel):
+class InstanceResponse(BaseModel):
+    id: str
     instance_id: str
-    pipeline_mode: str
-    assigned_model_id: Optional[str]
+    instance_type: str
+    availability_zone: str
     assigned_model_version: Optional[str]
-    enable_bin_packing: bool
-    enable_right_sizing: bool
-    enable_family_stress: bool
-    aws_region: str
+    pipeline_mode: str
+    is_shadow_mode: bool
+    is_active: bool
+    last_evaluation: Optional[datetime]
+    account_name: str
 
 
 class ExperimentLogResponse(BaseModel):
     id: str
     instance_id: str
-    model_version: str
-    prediction_score: float
+    pipeline_mode: str
+    prediction_score: Optional[float]
     decision: str
+    decision_reason: Optional[str]
     execution_time: datetime
-    execution_duration_ms: int
-    projected_savings: Optional[float]
+    execution_duration_ms: Optional[int]
+    selected_instance_type: Optional[str]
+    projected_hourly_savings: Optional[float]
+    is_shadow_run: bool
 
 
-# Endpoints
-@router.post("/lab/assign-model")
-async def assign_model_to_instance(request: AssignModelRequest):
+class AccountResponse(BaseModel):
+    id: str
+    account_id: str
+    account_name: str
+    environment_type: str
+    region: str
+    is_active: bool
+    instance_count: int
+
+
+class CreateAccountRequest(BaseModel):
+    account_id: str = Field(..., min_length=12, max_length=12)
+    account_name: str
+    environment_type: str = Field(default="LAB")
+    role_arn: str
+    external_id: str
+    region: str = Field(default="ap-south-1")
+
+
+# ============================================================================
+# Instance Management
+# ============================================================================
+
+@router.get("/instances", response_model=List[InstanceResponse])
+async def list_instances(
+    account_id: Optional[str] = None,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
     """
-    Assign a specific model version to an instance
+    List all instances (optionally filtered by account)
 
-    Called when Admin selects a new model from the dropdown in Lab Dashboard.
-
-    This endpoint:
-    1. Verifies instance is in Lab environment
-    2. Updates instance configuration with model assignment
-    3. Sets pipeline to SINGLE_LINEAR mode
+    Returns instances owned by the current user.
+    Admins can see all instances.
     """
-    instance_id = request.instance_id
-    model_id = request.model_id
+    query = db.query(Instance).join(Account)
 
-    # TODO: Database integration
-    # Verify this is a Lab Account (Safety Check)
-    # account = db.get_account_for_instance(instance_id)
-    # if account.environment_type != 'LAB_INTERNAL':
-    #     raise HTTPException(403, "Cannot change models on Production instances directly.")
+    # Non-admin users can only see their own instances
+    if current_user.role != "admin":
+        query = query.filter(Account.user_id == current_user.id)
 
-    # Update configuration
-    LAB_CONFIGS[instance_id] = {
-        "instance_id": instance_id,
-        "pipeline_mode": "SINGLE_LINEAR",
-        "assigned_model_id": model_id,
-        "enable_bin_packing": False,
-        "enable_right_sizing": False,
-        "updated_at": datetime.now()
-    }
+    # Filter by account if specified
+    if account_id:
+        query = query.filter(Account.account_id == account_id)
+
+    instances = query.all()
+
+    return [
+        InstanceResponse(
+            id=str(inst.id),
+            instance_id=inst.instance_id,
+            instance_type=inst.instance_type,
+            availability_zone=inst.availability_zone,
+            assigned_model_version=inst.assigned_model_version,
+            pipeline_mode=inst.pipeline_mode,
+            is_shadow_mode=inst.is_shadow_mode,
+            is_active=inst.is_active,
+            last_evaluation=inst.last_evaluation,
+            account_name=inst.account.account_name
+        )
+        for inst in instances
+    ]
+
+
+@router.get("/instances/{instance_id}", response_model=InstanceResponse)
+async def get_instance(
+    instance_id: str,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """Get detailed instance information"""
+    instance = db.query(Instance).filter(
+        Instance.instance_id == instance_id
+    ).join(Account).first()
+
+    if not instance:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Instance {instance_id} not found"
+        )
+
+    # Authorization check
+    if current_user.role != "admin" and instance.account.user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You don't have permission to access this instance"
+        )
+
+    return InstanceResponse(
+        id=str(instance.id),
+        instance_id=instance.instance_id,
+        instance_type=instance.instance_type,
+        availability_zone=instance.availability_zone,
+        assigned_model_version=instance.assigned_model_version,
+        pipeline_mode=instance.pipeline_mode,
+        is_shadow_mode=instance.is_shadow_mode,
+        is_active=instance.is_active,
+        last_evaluation=instance.last_evaluation,
+        account_name=instance.account.account_name
+    )
+
+
+@router.post("/assign-model")
+async def assign_model_to_instance(
+    request: AssignModelRequest,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Assign a model version to an instance
+
+    Sets the instance to SINGLE_LINEAR mode and assigns the specified model.
+    Only works on LAB environment instances (safety check).
+    """
+    # Find instance
+    instance = db.query(Instance).filter(
+        Instance.instance_id == request.instance_id
+    ).join(Account).first()
+
+    if not instance:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Instance {request.instance_id} not found"
+        )
+
+    # Authorization check
+    if current_user.role != "admin" and instance.account.user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You don't have permission to modify this instance"
+        )
+
+    # Safety check: Only allow on LAB instances
+    if instance.account.environment_type != "LAB":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Cannot change models on Production instances. Use Lab environment only."
+        )
+
+    # Update instance configuration
+    instance.assigned_model_version = request.model_version
+    instance.pipeline_mode = "LINEAR"  # Force LINEAR mode for Lab
+    instance.updated_at = datetime.utcnow()
+
+    db.commit()
 
     return {
         "status": "updated",
         "mode": "Lab Experiment Active",
-        "instance_id": instance_id,
-        "model_id": model_id
+        "instance_id": instance.instance_id,
+        "model_version": request.model_version,
+        "pipeline_mode": "LINEAR"
     }
 
 
-@router.get("/lab/pipeline-status/{instance_id}", response_model=PipelineStatusResponse)
-async def get_pipeline_status(instance_id: str):
-    """
-    Get pipeline status for visualization
+@router.put("/instances/{instance_id}/pipeline-mode")
+async def set_pipeline_mode(
+    instance_id: str,
+    pipeline_mode: str,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """Toggle between CLUSTER and LINEAR pipeline modes"""
+    if pipeline_mode not in ["CLUSTER", "LINEAR"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Pipeline mode must be 'CLUSTER' or 'LINEAR'"
+        )
 
-    Returns the status of each block for the Frontend Visualizer:
-    - active: Block is running
-    - disabled: Block is bypassed in Lab Mode
-    - inactive: Block is not applicable
-    """
-    # Get configuration
-    config = LAB_CONFIGS.get(instance_id, {
-        "pipeline_mode": "CLUSTER_FULL",
-        "assigned_model_id": None,
-        "enable_bin_packing": True,
-        "enable_right_sizing": True
-    })
+    instance = db.query(Instance).filter(
+        Instance.instance_id == instance_id
+    ).join(Account).first()
 
-    is_lab_mode = config.get("pipeline_mode") == "SINGLE_LINEAR"
+    if not instance:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Instance {instance_id} not found"
+        )
+
+    # Authorization check
+    if current_user.role != "admin" and instance.account.user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You don't have permission to modify this instance"
+        )
+
+    instance.pipeline_mode = pipeline_mode
+    instance.updated_at = datetime.utcnow()
+    db.commit()
+
+    return {
+        "status": "updated",
+        "instance_id": instance_id,
+        "pipeline_mode": pipeline_mode
+    }
+
+
+@router.put("/instances/{instance_id}/shadow-mode")
+async def toggle_shadow_mode(
+    instance_id: str,
+    is_shadow_mode: bool,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """Toggle shadow mode (read-only mode that doesn't execute switches)"""
+    instance = db.query(Instance).filter(
+        Instance.instance_id == instance_id
+    ).join(Account).first()
+
+    if not instance:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Instance {instance_id} not found"
+        )
+
+    # Authorization check
+    if current_user.role != "admin" and instance.account.user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You don't have permission to modify this instance"
+        )
+
+    instance.is_shadow_mode = is_shadow_mode
+    instance.updated_at = datetime.utcnow()
+    db.commit()
+
+    return {
+        "status": "updated",
+        "instance_id": instance_id,
+        "is_shadow_mode": is_shadow_mode
+    }
+
+
+@router.get("/pipeline-status/{instance_id}", response_model=PipelineStatusResponse)
+async def get_pipeline_status(
+    instance_id: str,
+    db: Session = Depends(get_db)
+):
+    """Get pipeline status for frontend visualization"""
+    instance = db.query(Instance).filter(
+        Instance.instance_id == instance_id
+    ).first()
+
+    if not instance:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Instance {instance_id} not found"
+        )
+
+    is_linear = instance.pipeline_mode == "LINEAR"
 
     return PipelineStatusResponse(
         instance_id=instance_id,
-        pipeline_mode=config.get("pipeline_mode", "CLUSTER_FULL"),
+        pipeline_mode=instance.pipeline_mode,
         scraper={
             "status": "active",
-            "description": "Fetching real-time spot prices"
+            "description": "Fetching real-time spot prices via STS AssumeRole"
         },
         safe_filter={
             "status": "active",
             "description": "Filtering by interrupt rate < 20%"
         },
         bin_packing={
-            "status": "disabled" if is_lab_mode else "active",
-            "description": "Bypassed in Lab Mode" if is_lab_mode else "Calculating waste cost"
+            "status": "disabled" if is_linear else "active",
+            "description": "Bypassed in LINEAR mode" if is_linear else "Calculating waste cost"
         },
         right_sizing={
-            "status": "disabled" if is_lab_mode else "active",
-            "description": "Bypassed in Lab Mode" if is_lab_mode else "Finding oversized candidates"
+            "status": "disabled" if is_linear else "active",
+            "description": "Bypassed in LINEAR mode" if is_linear else "Finding better instance sizes"
         },
         ml_inference={
             "status": "active",
-            "model_id": config.get("assigned_model_id"),
-            "description": f"Model: {config.get('assigned_model_id', 'default')[:8]}..."
+            "model_version": instance.assigned_model_version or "default",
+            "description": f"Model: {instance.assigned_model_version or 'default production model'}"
         },
         execution={
-            "status": "active",
-            "description": "Atomic switch" if is_lab_mode else "Kubernetes drain"
+            "status": "shadow" if instance.is_shadow_mode else "active",
+            "description": "Shadow mode (read-only)" if instance.is_shadow_mode else (
+                "Atomic switch" if is_linear else "Kubernetes drain"
+            )
         }
     )
 
 
-@router.get("/lab/models", response_model=List[ModelInfo])
-async def list_available_models():
-    """
-    List all available models in the registry
+# ============================================================================
+# Model Management
+# ============================================================================
 
-    Returns models for dropdown selection in Lab Dashboard
-    """
-    # TODO: Query model_registry table
-    # For now, return mock data
+@router.get("/models", response_model=List[ModelInfo])
+async def list_models(db: Session = Depends(get_db)):
+    """List all available models in the registry"""
+    models = db.query(ModelRegistry).filter(
+        ModelRegistry.is_active == True
+    ).order_by(ModelRegistry.created_at.desc()).all()
+
     return [
         ModelInfo(
-            id="model-001",
-            name="FamilyStressPredictor",
-            version="v2.1.0",
-            description="Production LightGBM model with hardware contagion features",
-            is_experimental=False,
-            is_active=True,
-            created_at=datetime.now()
-        ),
-        ModelInfo(
-            id="model-002",
-            name="FamilyStressPredictor",
-            version="v2.2.0-beta",
-            description="Experimental model with enhanced temporal features",
-            is_experimental=True,
-            is_active=True,
-            created_at=datetime.now()
+            id=str(model.id),
+            name=model.name,
+            version=model.version,
+            description=model.description,
+            is_experimental=model.is_experimental,
+            is_active=model.is_active,
+            created_at=model.created_at
         )
+        for model in models
     ]
 
 
-@router.get("/lab/config/{instance_id}", response_model=InstanceConfigResponse)
-async def get_instance_config(instance_id: str):
-    """Get instance configuration"""
-    if instance_id not in LAB_CONFIGS:
-        raise HTTPException(status_code=404, detail="Instance configuration not found")
+# ============================================================================
+# Experiment Logging
+# ============================================================================
 
-    config = LAB_CONFIGS[instance_id]
-
-    return InstanceConfigResponse(
-        instance_id=instance_id,
-        pipeline_mode=config.get("pipeline_mode", "CLUSTER_FULL"),
-        assigned_model_id=config.get("assigned_model_id"),
-        assigned_model_version=config.get("assigned_model_version"),
-        enable_bin_packing=config.get("enable_bin_packing", True),
-        enable_right_sizing=config.get("enable_right_sizing", True),
-        enable_family_stress=config.get("enable_family_stress", True),
-        aws_region=config.get("aws_region", "ap-south-1")
-    )
-
-
-@router.put("/lab/config/{instance_id}")
-async def update_instance_config(
+@router.get("/experiments/{instance_id}", response_model=List[ExperimentLogResponse])
+async def get_experiment_logs(
     instance_id: str,
-    pipeline_mode: Optional[str] = None,
-    enable_bin_packing: Optional[bool] = None,
-    enable_right_sizing: Optional[bool] = None
+    limit: int = 50,
+    db: Session = Depends(get_db)
 ):
-    """
-    Update instance configuration flags
+    """Get experiment logs for an instance"""
+    # Find instance UUID from instance_id string
+    instance = db.query(Instance).filter(
+        Instance.instance_id == instance_id
+    ).first()
 
-    Allows fine-grained control over which pipeline features are enabled
-    """
-    if instance_id not in LAB_CONFIGS:
-        LAB_CONFIGS[instance_id] = {"instance_id": instance_id}
+    if not instance:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Instance {instance_id} not found"
+        )
 
-    config = LAB_CONFIGS[instance_id]
+    logs = db.query(ExperimentLog).filter(
+        ExperimentLog.instance_id == instance.id
+    ).order_by(ExperimentLog.execution_time.desc()).limit(limit).all()
 
-    if pipeline_mode:
-        config["pipeline_mode"] = pipeline_mode
-    if enable_bin_packing is not None:
-        config["enable_bin_packing"] = enable_bin_packing
-    if enable_right_sizing is not None:
-        config["enable_right_sizing"] = enable_right_sizing
-
-    config["updated_at"] = datetime.now()
-
-    return {"status": "updated", "config": config}
-
-
-@router.get("/lab/experiments/{instance_id}", response_model=List[ExperimentLogResponse])
-async def get_experiment_logs(instance_id: str, limit: int = 50):
-    """
-    Get experiment logs for an instance
-
-    Returns recent predictions and decisions for analytics dashboard
-    """
-    # TODO: Query experiment_logs table
-    # For now, return mock data
     return [
         ExperimentLogResponse(
-            id="exp-001",
+            id=str(log.id),
             instance_id=instance_id,
-            model_version="v2.1.0",
-            prediction_score=0.28,
-            decision="HOLD",
-            execution_time=datetime.now(),
-            execution_duration_ms=150,
-            projected_savings=None
+            pipeline_mode=log.pipeline_mode,
+            prediction_score=log.prediction_score,
+            decision=log.decision,
+            decision_reason=log.decision_reason,
+            execution_time=log.execution_time,
+            execution_duration_ms=log.execution_duration_ms,
+            selected_instance_type=log.selected_instance_type,
+            projected_hourly_savings=log.projected_hourly_savings,
+            is_shadow_run=log.is_shadow_run
         )
+        for log in logs
     ]
 
 
-@router.get("/lab/experiments/model/{model_id}")
-async def get_model_performance(model_id: str):
-    """
-    Get aggregated performance metrics for a model
+@router.get("/experiments/model/{model_version}")
+async def get_model_performance(
+    model_version: str,
+    db: Session = Depends(get_db)
+):
+    """Get aggregated performance metrics for a model version"""
+    # Query experiment logs for this model version
+    logs = db.query(ExperimentLog).join(Instance).filter(
+        Instance.assigned_model_version == model_version
+    ).all()
 
-    Returns:
-    - Total predictions
-    - Switch rate
-    - Average prediction score
-    - Total projected savings
-    """
-    # TODO: Aggregate experiment_logs by model_id
+    if not logs:
+        return {
+            "model_version": model_version,
+            "total_predictions": 0,
+            "switch_count": 0,
+            "switch_rate": 0.0,
+            "average_score": 0.0,
+            "total_savings": 0.0
+        }
+
+    total_predictions = len(logs)
+    switch_count = sum(1 for log in logs if log.decision == "SWITCH")
+    switch_rate = switch_count / total_predictions if total_predictions > 0 else 0.0
+
+    scores = [log.prediction_score for log in logs if log.prediction_score is not None]
+    average_score = sum(scores) / len(scores) if scores else 0.0
+
+    savings = [log.projected_hourly_savings for log in logs if log.projected_hourly_savings is not None]
+    total_savings = sum(savings)
+
     return {
-        "model_id": model_id,
-        "total_predictions": 0,
-        "switch_rate": 0.0,
-        "average_score": 0.0,
-        "total_savings": 0.0
+        "model_version": model_version,
+        "total_predictions": total_predictions,
+        "switch_count": switch_count,
+        "switch_rate": switch_rate,
+        "average_score": average_score,
+        "total_savings": total_savings
     }
+
+
+# ============================================================================
+# Account Management
+# ============================================================================
+
+@router.get("/accounts", response_model=List[AccountResponse])
+async def list_accounts(
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """List all AWS accounts (admins see all, users see their own)"""
+    query = db.query(Account)
+
+    if current_user.role != "admin":
+        query = query.filter(Account.user_id == current_user.id)
+
+    accounts = query.all()
+
+    result = []
+    for account in accounts:
+        instance_count = db.query(Instance).filter(
+            Instance.account_id == account.id
+        ).count()
+
+        result.append(AccountResponse(
+            id=str(account.id),
+            account_id=account.account_id,
+            account_name=account.account_name,
+            environment_type=account.environment_type,
+            region=account.region,
+            is_active=account.is_active,
+            instance_count=instance_count
+        ))
+
+    return result
+
+
+@router.post("/accounts")
+async def create_account(
+    request: CreateAccountRequest,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """Create a new AWS account configuration"""
+    # Check if account already exists
+    existing = db.query(Account).filter(
+        Account.account_id == request.account_id
+    ).first()
+
+    if existing:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Account {request.account_id} already exists"
+        )
+
+    # Create account
+    account = Account(
+        user_id=current_user.id,
+        account_id=request.account_id,
+        account_name=request.account_name,
+        environment_type=request.environment_type,
+        role_arn=request.role_arn,
+        external_id=request.external_id,
+        region=request.region,
+        is_active=True
+    )
+
+    db.add(account)
+    db.commit()
+    db.refresh(account)
+
+    return {
+        "status": "created",
+        "account_id": account.account_id,
+        "id": str(account.id)
+    }
+
+
+@router.get("/accounts/{account_id}/validate")
+async def validate_account(
+    account_id: str,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """Validate that cross-account access is working"""
+    account = db.query(Account).filter(
+        Account.account_id == account_id
+    ).first()
+
+    if not account:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Account {account_id} not found"
+        )
+
+    # Authorization check
+    if current_user.role != "admin" and account.user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You don't have permission to access this account"
+        )
+
+    # Test STS AssumeRole
+    result = validate_account_access(account_id, account.region, db)
+
+    return result
+
+
+@router.post("/instances/{instance_id}/evaluate")
+async def evaluate_instance(
+    instance_id: str,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Manually trigger evaluation for an instance
+
+    Runs the linear optimizer immediately instead of waiting for scheduled execution.
+    """
+    instance = db.query(Instance).filter(
+        Instance.instance_id == instance_id
+    ).join(Account).first()
+
+    if not instance:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Instance {instance_id} not found"
+        )
+
+    # Authorization check
+    if current_user.role != "admin" and instance.account.user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You don't have permission to evaluate this instance"
+        )
+
+    # Run optimization (will be implemented in optimizer_task)
+    from workers.optimizer_task import run_optimization_cycle
+
+    result = run_optimization_cycle(instance_id, db)
+
+    return result

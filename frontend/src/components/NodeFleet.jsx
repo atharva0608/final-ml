@@ -1,9 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
     MoreHorizontal, AlertTriangle, ShieldCheck, Server, ChevronDown,
     Layers, Globe, ArrowLeft, Plus, Settings, DollarSign, Activity, Zap,
     X, History, TrendingDown, Cpu, BarChart3, Database, Trash2, MinusCircle, Info, LayoutDashboard,
-    Download, RefreshCw, FileText, CheckCircle, Clock
+    Download, RefreshCw, FileText, CheckCircle, Clock, ChevronLeft, ChevronRight
 } from 'lucide-react';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line, Legend, BarChart, Bar, PieChart, Pie, Cell } from 'recharts';
 import { cn } from '../lib/utils';
@@ -817,43 +817,145 @@ const ActivityLog = () => {
     );
 };
 
-const ResourceDistributionChart = () => {
-    const data = [
-        { name: 'C5 Family', value: 45, color: '#3b82f6' },
-        { name: 'M5 Family', value: 30, color: '#10b981' },
-        { name: 'R6 Family', value: 15, color: '#8b5cf6' },
-        { name: 'T3 Others', value: 10, color: '#cbd5e1' },
+const AnimatedCounter = ({ value, duration = 1000 }) => {
+    const [count, setCount] = useState(0);
+
+    useEffect(() => {
+        let start = 0;
+        const end = value;
+        if (start === end) return;
+
+        const startTime = performance.now();
+
+        const animate = (currentTime) => {
+            const elapsed = currentTime - startTime;
+            const progress = Math.min(elapsed / duration, 1);
+            // Ease out quart
+            const ease = 1 - Math.pow(1 - progress, 4);
+
+            setCount(Math.floor(start + (end - start) * ease));
+
+            if (progress < 1) {
+                requestAnimationFrame(animate);
+            } else {
+                setCount(end); // Ensure exact end value
+            }
+        };
+
+        requestAnimationFrame(animate);
+    }, [value, duration]);
+
+    return count;
+};
+
+const ResourceDistributionChart = ({ clusters = [] }) => {
+    const [currIndex, setCurrIndex] = useState(0);
+
+    // Mock distribution generator based on cluster name/id to keep it deterministic
+    const getClusterDist = (id) => [
+        { name: 'C5 Family', value: 30 + (id.length * 2), color: '#6366f1' }, // Indigo
+        { name: 'M5 Family', value: 20 + (id.length % 3 * 10), color: '#ec4899' }, // Pink
+        { name: 'R6 Family', value: 15 + (id.length % 2 * 5), color: '#8b5cf6' }, // Purple
+        { name: 'T3 Others', value: 10, color: '#0ea5e9' }, // Sky
     ];
 
+    // Default if no clusters passed (fallback)
+    const effectiveClusters = clusters.length > 0 ? clusters : [{ id: 'default', name: 'Global Fleet', nodes: [] }];
+    const current = effectiveClusters[currIndex];
+
+    const next = () => setCurrIndex(prev => (prev + 1) % effectiveClusters.length);
+    const prev = () => setCurrIndex(prev => (prev - 1 + effectiveClusters.length) % effectiveClusters.length);
+
     return (
-        <div className="bg-white border border-slate-200 shadow-sm rounded-lg p-6 h-full">
-            <h3 className="text-sm font-bold text-slate-900 mb-2 flex items-center">
-                <Cpu className="w-4 h-4 text-slate-400 mr-2" />
-                Resource Distribution
-            </h3>
-            <div className="h-48 relative">
-                <ResponsiveContainer width="100%" height="100%">
-                    <PieChart>
-                        <Pie
-                            data={data}
-                            innerRadius={50}
-                            outerRadius={70}
-                            paddingAngle={5}
-                            dataKey="value"
-                        >
-                            {data.map((entry, index) => (
-                                <Cell key={`cell-${index}`} fill={entry.color} />
-                            ))}
-                        </Pie>
-                        <Tooltip />
-                        <Legend iconSize={8} wrapperStyle={{ fontSize: '10px' }} />
-                    </PieChart>
-                </ResponsiveContainer>
-                <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                    <div className="text-center">
-                        <span className="text-2xl font-bold text-slate-700 block">156</span>
-                        <span className="text-[9px] text-slate-400 uppercase font-bold tracking-wider">Nodes</span>
+        <div className="bg-white border border-slate-200 shadow-sm rounded-lg p-6 h-full flex flex-col items-center justify-start relative overflow-hidden">
+            {/* Header */}
+            <h3 className="w-full text-sm font-bold text-slate-900 mb-6 flex items-center justify-between z-10">
+                <div className="flex items-center">
+                    <div className="p-1.5 bg-indigo-50 text-indigo-600 rounded-md mr-2">
+                        <Cpu className="w-4 h-4" />
                     </div>
+                    Resource Distribution
+                </div>
+                <div className="text-[10px] font-mono text-slate-400 bg-slate-50 px-2 py-0.5 rounded-full border border-slate-100">
+                    {currIndex + 1} / {effectiveClusters.length}
+                </div>
+            </h3>
+
+            <div className="w-full flex flex-col items-center justify-start relative z-0 pt-2">
+                {/* Chart Container - Holds Ring, Chart, Center Label, and Controls */}
+                <div key={current.id} className="h-56 w-full relative flex items-center justify-center animate-in fade-in zoom-in-95 duration-500">
+
+                    {/* Decorative Background Ring */}
+                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                        <div className="w-40 h-40 rounded-full border-[6px] border-slate-50"></div>
+                    </div>
+
+                    {/* Chart */}
+                    <ResponsiveContainer width="100%" height="100%">
+                        <PieChart>
+                            <Pie
+                                data={getClusterDist(current.id)}
+                                innerRadius={60}
+                                outerRadius={80}
+                                paddingAngle={4}
+                                cornerRadius={4}
+                                dataKey="value"
+                                stroke="none"
+                            >
+                                {getClusterDist(current.id).map((entry, index) => (
+                                    <Cell key={`cell-${index}`} fill={entry.color} />
+                                ))}
+                            </Pie>
+                            <Tooltip
+                                contentStyle={{ fontSize: '12px', borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+                                itemStyle={{ fontWeight: 600 }}
+                            />
+                            <Legend
+                                iconType="circle"
+                                iconSize={6}
+                                wrapperStyle={{ fontSize: '11px', paddingTop: '10px' }}
+                                layout="horizontal"
+                                verticalAlign="bottom"
+                                align="center"
+                            />
+                        </PieChart>
+                    </ResponsiveContainer>
+
+                    {/* Centered Total/Label */}
+                    <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none pb-8">
+                        <span className="text-2xl font-black text-slate-800 tracking-tight">
+                            <AnimatedCounter value={getClusterDist(current.id).reduce((acc, curr) => acc + curr.value, 0)} key={current.id} />
+                        </span>
+                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Nodes</span>
+                    </div>
+
+                    {/* Controls Overlay (Now inside Chart Container) */}
+                    <div className="w-full flex items-center justify-between absolute top-[40%] -translate-y-1/2 px-0 pointer-events-none z-20">
+                        <button
+                            onClick={(e) => { e.stopPropagation(); prev(); }}
+                            className="p-2 rounded-full bg-white border border-slate-200 text-slate-400 hover:text-indigo-600 hover:border-indigo-100 shadow-sm hover:shadow-md transition-all pointer-events-auto transform hover:-translate-x-1 active:scale-95"
+                            disabled={effectiveClusters.length <= 1}
+                        >
+                            <ChevronLeft className="w-5 h-5" />
+                        </button>
+                        <button
+                            onClick={(e) => { e.stopPropagation(); next(); }}
+                            className="p-2 rounded-full bg-white border border-slate-200 text-slate-400 hover:text-indigo-600 hover:border-indigo-100 shadow-sm hover:shadow-md transition-all pointer-events-auto transform hover:translate-x-1 active:scale-95"
+                            disabled={effectiveClusters.length <= 1}
+                        >
+                            <ChevronRight className="w-5 h-5" />
+                        </button>
+                    </div>
+                </div>
+
+                {/* Cluster Name Badge */}
+                <div className="mt-2 text-center relative z-10 w-full">
+                    <span
+                        key={current.id}
+                        className="inline-flex items-center px-4 py-1.5 rounded-full bg-white border border-slate-200 shadow-sm text-xs font-bold text-slate-700 animate-in fade-in slide-in-from-bottom-2 duration-300"
+                    >
+                        {current.name}
+                    </span>
                 </div>
             </div>
         </div>
@@ -905,9 +1007,6 @@ const ClientDetailView = ({ client, onBack, onSelectCluster, isFallbackActive })
                     </div>
                 </div>
             </div>
-
-            {/* Quick Actions */}
-            <QuickActions />
 
             {/* Tab Navigation */}
             <div className="flex items-center space-x-1 mb-6 overflow-x-auto pb-2 noscrollbar border-b border-slate-200">
@@ -985,7 +1084,7 @@ const ClientDetailView = ({ client, onBack, onSelectCluster, isFallbackActive })
                         {/* Right Column: Stats & Controls */}
                         <div className="space-y-6">
                             {/* Distribution Chart */}
-                            <ResourceDistributionChart />
+                            <ResourceDistributionChart clusters={client.clusters} />
 
                             {/* Activity Log */}
                             <ActivityLog />
@@ -1137,7 +1236,7 @@ const ClientCard = ({ client, onClick }) => (
     </div>
 );
 
-const ClientMasterView = ({ clients, onSelectClient, onAddClient }) => (
+const ClientMasterView = ({ clients, onSelectClient, onAddClient, onOpenGlobalPolicies }) => (
     <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
         <div className="flex justify-between items-end">
             <div>
@@ -1150,6 +1249,13 @@ const ClientMasterView = ({ clients, onSelectClient, onAddClient }) => (
             >
                 <Plus className="w-4 h-4" />
                 <span>Add Client</span>
+            </button>
+            <button
+                onClick={onOpenGlobalPolicies}
+                className="flex items-center space-x-2 px-4 py-2 bg-white border border-slate-200 text-slate-700 text-sm font-bold rounded shadow-sm hover:bg-slate-50 transition-colors mr-2"
+            >
+                <Settings className="w-4 h-4 text-slate-500" />
+                <span>Global Policies</span>
             </button>
         </div>
 
@@ -1274,6 +1380,74 @@ const AddClientModal = ({ onClose, onAdd }) => {
     );
 };
 
+// --- Global Policy Modal ---
+const GlobalPolicyModal = ({ onClose, onUpdate }) => {
+    // Mock Global Defaults
+    const [policies, setPolicies] = useState({
+        spotFallback: true,
+        rebalanceAggressive: false,
+        autoBinpacking: true,
+    });
+
+    return (
+        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+            <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg overflow-hidden animate-in fade-in zoom-in-95">
+                <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50">
+                    <div className="flex items-center space-x-2">
+                        <ScrollText className="w-5 h-5 text-blue-600" />
+                        <h3 className="text-lg font-bold text-slate-900">Global Fleet Policies</h3>
+                    </div>
+                    <button onClick={onClose} className="p-1 hover:bg-slate-200 rounded-full transition-colors">
+                        <X className="w-5 h-5 text-slate-500" />
+                    </button>
+                </div>
+                <div className="p-6 space-y-6">
+                    <div className="bg-blue-50 border border-blue-100 rounded-lg p-3 text-xs text-blue-700 mb-4">
+                        <Info className="w-4 h-4 inline mr-2 mb-0.5" />
+                        Changes here will apply defaults to <strong>All Managed Clients</strong>.
+                    </div>
+
+                    <div className="space-y-4">
+                        <div className="flex items-center justify-between p-3 border border-slate-200 rounded-lg hover:bg-slate-50">
+                            <div>
+                                <div className="text-sm font-bold text-slate-900">Spot Fallback Strategy</div>
+                                <div className="text-xs text-slate-500">Auto-switch to On-Demand when Spot pools are exhausted.</div>
+                            </div>
+                            <Switch checked={policies.spotFallback} onChange={() => setPolicies(p => ({ ...p, spotFallback: !p.spotFallback }))} />
+                        </div>
+                        <div className="flex items-center justify-between p-3 border border-slate-200 rounded-lg hover:bg-slate-50">
+                            <div>
+                                <div className="text-sm font-bold text-slate-900">Aggressive Rebalancing</div>
+                                <div className="text-xs text-slate-500">Proactively cycle nodes for &gt;10% savings opportunities.</div>
+                            </div>
+                            <Switch checked={policies.rebalanceAggressive} onChange={() => setPolicies(p => ({ ...p, rebalanceAggressive: !p.rebalanceAggressive }))} />
+                        </div>
+                        <div className="flex items-center justify-between p-3 border border-slate-200 rounded-lg hover:bg-slate-50">
+                            <div>
+                                <div className="text-sm font-bold text-slate-900">Auto-Binpacking</div>
+                                <div className="text-xs text-slate-500">Consolidate workloads to minimize node count.</div>
+                            </div>
+                            <Switch checked={policies.autoBinpacking} onChange={() => setPolicies(p => ({ ...p, autoBinpacking: !p.autoBinpacking }))} />
+                        </div>
+                    </div>
+                </div>
+                <div className="px-6 py-4 bg-slate-50 border-t border-slate-100 flex justify-end space-x-3">
+                    <button onClick={onClose} className="px-4 py-2 border border-slate-200 rounded-lg text-sm font-bold text-slate-600 hover:bg-white">
+                        Cancel
+                    </button>
+                    <button
+                        onClick={() => onUpdate(policies)}
+                        className="px-4 py-2 bg-blue-600 rounded-lg text-sm font-bold text-white hover:bg-blue-700 shadow-sm"
+                    >
+                        Apply Global Changes
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+
 // --- Main Component ---
 
 
@@ -1284,6 +1458,7 @@ const NodeFleet = ({ externalSelectedClientId }) => {
     const [selectedCluster, setSelectedCluster] = useState(null);
     const [selectedInstance, setSelectedInstance] = useState(null);
     const [isAddClientOpen, setIsAddClientOpen] = useState(false);
+    const [isGlobalPolicyOpen, setIsGlobalPolicyOpen] = useState(false);
 
     // Sync with sidebar selection
     React.useEffect(() => {
@@ -1323,6 +1498,15 @@ const NodeFleet = ({ externalSelectedClientId }) => {
             localStorage.setItem('ecc_custom_users', JSON.stringify(storedUsers));
             console.log("Created user:", data.username);
         }
+    };
+
+    const handleUpdateGlobalPolicies = (newPolicies) => {
+        // Update all clients with new policies
+        setClients(prev => prev.map(c => ({
+            ...c,
+            policies: { ...c.policies, ...newPolicies }
+        })));
+        setIsGlobalPolicyOpen(false);
     };
 
     return (
@@ -1366,6 +1550,7 @@ const NodeFleet = ({ externalSelectedClientId }) => {
                     clients={clients}
                     onSelectClient={setSelectedClient}
                     onAddClient={() => setIsAddClientOpen(true)}
+                    onOpenGlobalPolicies={() => setIsGlobalPolicyOpen(true)}
                 />
             )}
         </div>

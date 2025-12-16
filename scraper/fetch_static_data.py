@@ -1,18 +1,26 @@
 """
-Static Data Scraper for Spot Optimizer Platform
+Static Data Scraper for Spot Optimizer Platform - Redis Edition
 
 Fetches:
 1. Historical interrupt rates from AWS Spot Advisor
 2. Instance hardware specifications (vCPU, RAM, Architecture)
 
-Saves to: ../backend/data/static_intelligence.json
+Writes to: Redis (primary) + backend/data/static_intelligence.json (backup)
+
+Redis Keys:
+- spot_risk:{region}:{instance_type} - Interrupt rate and savings data
+- spot_price_history:{region}:{family} - Historical price statistics
+- instance_metadata:{instance_type} - Instance specifications
+
+TTL: 3600 seconds (1 hour)
 """
 
 import json
+import redis
 import requests
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 
 
 class SpotAdvisorScraper:
@@ -57,6 +65,7 @@ class SpotAdvisorScraper:
 
                 for instance_type, type_data in linux_data.items():
                     interrupt_rate_code = type_data.get('r', 2)  # Default to 2 (5-10%)
+                    savings_code = type_data.get('s', 50)  # Savings percentage
 
                     # Convert AWS's 0-5 scale to actual interrupt rate
                     # 0: <5%, 1: 5-10%, 2: 10-15%, 3: 15-20%, 4: >20%
@@ -75,6 +84,8 @@ class SpotAdvisorScraper:
                     result[key] = {
                         'interrupt_rate': interrupt_rate,
                         'interrupt_rate_code': interrupt_rate_code,
+                        'savings_vs_od': savings_code / 100.0,  # Convert to 0-1 scale
+                        'availability_zone': az,
                         'last_updated': datetime.now().isoformat()
                     }
 
@@ -108,6 +119,8 @@ class SpotAdvisorScraper:
                 fallback[key] = {
                     'interrupt_rate': base_rate,
                     'interrupt_rate_code': 1,
+                    'savings_vs_od': 0.65,  # Default 65% savings
+                    'availability_zone': az,
                     'last_updated': datetime.now().isoformat(),
                     'source': 'fallback'
                 }
@@ -174,34 +187,229 @@ class InstanceMetadataScraper:
         return self.INSTANCE_METADATA
 
 
+class RedisWriter:
+    """Writes scraped data to Redis"""
+
+    def __init__(self, host: str = "localhost", port: int = 6379, db: int = 0, ttl: int = 3600):
+        """
+        Initialize Redis writer
+
+        Args:
+            host: Redis host
+            port: Redis port
+            db: Redis database number
+            ttl: Time-to-live in seconds (default: 1 hour)
+        """
+        self.ttl = ttl
+        try:
+            self.redis = redis.Redis(
+                host=host,
+                port=port,
+                db=db,
+                decode_responses=True
+            )
+            self.redis.ping()
+            self.connected = True
+            print(f"\n✅ Connected to Redis: {host}:{port}/{db}")
+        except Exception as e:
+            print(f"\n⚠️  Failed to connect to Redis: {e}")
+            print(f"  → Data will only be saved to JSON file")
+            self.redis = None
+            self.connected = False
+
+    def write_spot_risk_data(self, spot_data: Dict[str, Dict], region: str):
+        """
+        Write spot risk data to Redis
+
+        Keys: spot_risk:{region}:{instance_type}
+        TTL: 3600 seconds (1 hour)
+
+        Args:
+            spot_data: Dict of spot advisor data
+            region: AWS region
+        """
+        if not self.connected:
+            return
+
+        print(f"\n📝 Writing spot risk data to Redis...")
+
+        written_count = 0
+        for key, data in spot_data.items():
+            # Parse instance_type@az format
+            instance_type, az = key.split('@')
+
+            # Create Redis key
+            redis_key = f"spot_risk:{region}:{instance_type}"
+
+            # Prepare data
+            risk_data = {
+                "interrupt_rate": data['interrupt_rate'],
+                "savings_vs_od": data.get('savings_vs_od', 0.65),
+                "updated_at": datetime.now().isoformat(),
+                "source": data.get('source', 'aws_spot_advisor')
+            }
+
+            # Write to Redis with TTL
+            try:
+                self.redis.setex(
+                    redis_key,
+                    self.ttl,
+                    json.dumps(risk_data)
+                )
+                written_count += 1
+            except Exception as e:
+                print(f"  ⚠️  Failed to write {redis_key}: {e}")
+
+        print(f"  ✓ Wrote {written_count} spot risk entries to Redis")
+
+    def write_price_history(self, spot_data: Dict[str, Dict], region: str):
+        """
+        Write price history statistics to Redis
+
+        Keys: spot_price_history:{region}:{family}
+        TTL: 3600 seconds (1 hour)
+
+        This aggregates data by instance family (e.g., c5, m5) to calculate
+        regional demand indicators.
+
+        Args:
+            spot_data: Dict of spot advisor data
+            region: AWS region
+        """
+        if not self.connected:
+            return
+
+        print(f"\n📊 Calculating price history statistics...")
+
+        # Group by family
+        family_stats: Dict[str, Dict] = {}
+
+        for key, data in spot_data.items():
+            instance_type, az = key.split('@')
+            family = instance_type.split('.')[0]  # e.g., "c5.large" -> "c5"
+
+            if family not in family_stats:
+                family_stats[family] = {
+                    'interrupt_rates': [],
+                    'savings_rates': []
+                }
+
+            family_stats[family]['interrupt_rates'].append(data['interrupt_rate'])
+            family_stats[family]['savings_rates'].append(data.get('savings_vs_od', 0.65))
+
+        # Write aggregated statistics to Redis
+        written_count = 0
+        for family, stats in family_stats.items():
+            redis_key = f"spot_price_history:{region}:{family}"
+
+            # Calculate statistics
+            interrupt_rates = stats['interrupt_rates']
+            savings_rates = stats['savings_rates']
+
+            price_history = {
+                "current_avg_price": 0.028,  # Placeholder - would come from real pricing API
+                "min_price": 0.020,
+                "max_price": 0.040,
+                "avg_interrupt_rate": sum(interrupt_rates) / len(interrupt_rates),
+                "avg_savings": sum(savings_rates) / len(savings_rates),
+                "sample_size": len(interrupt_rates),
+                "last_updated": datetime.now().isoformat()
+            }
+
+            try:
+                self.redis.setex(
+                    redis_key,
+                    self.ttl,
+                    json.dumps(price_history)
+                )
+                written_count += 1
+            except Exception as e:
+                print(f"  ⚠️  Failed to write {redis_key}: {e}")
+
+        print(f"  ✓ Wrote {written_count} price history entries to Redis")
+
+    def write_instance_metadata(self, metadata: Dict[str, Dict]):
+        """
+        Write instance metadata to Redis
+
+        Keys: instance_metadata:{instance_type}
+        TTL: 86400 seconds (24 hours) - metadata changes rarely
+
+        Args:
+            metadata: Dict of instance metadata
+        """
+        if not self.connected:
+            return
+
+        print(f"\n🖥️  Writing instance metadata to Redis...")
+
+        written_count = 0
+        for instance_type, specs in metadata.items():
+            redis_key = f"instance_metadata:{instance_type}"
+
+            metadata_entry = {
+                "vcpu": specs['vcpu'],
+                "memory_gb": specs['memory_gb'],
+                "architecture": specs['architecture'],
+                "family": specs['family'],
+                "updated_at": datetime.now().isoformat()
+            }
+
+            try:
+                # Use longer TTL for metadata (24 hours)
+                self.redis.setex(
+                    redis_key,
+                    86400,  # 24 hours
+                    json.dumps(metadata_entry)
+                )
+                written_count += 1
+            except Exception as e:
+                print(f"  ⚠️  Failed to write {redis_key}: {e}")
+
+        print(f"  ✓ Wrote {written_count} metadata entries to Redis")
+
+
 def main():
     """Main scraper execution"""
     print("="*80)
-    print("STATIC DATA SCRAPER")
+    print("STATIC DATA SCRAPER - REDIS EDITION")
     print("="*80)
     print(f"Start Time: {datetime.now()}")
     print("="*80)
 
     # Initialize scrapers
-    spot_scraper = SpotAdvisorScraper(region="ap-south-1")
+    region = "ap-south-1"
+    spot_scraper = SpotAdvisorScraper(region=region)
     metadata_scraper = InstanceMetadataScraper()
 
     # Fetch data
     spot_data = spot_scraper.fetch()
     metadata = metadata_scraper.fetch()
 
-    # Combine into single JSON
+    # Write to Redis
+    redis_writer = RedisWriter(
+        host="localhost",
+        port=6379,
+        db=0,
+        ttl=3600  # 1 hour
+    )
+
+    redis_writer.write_spot_risk_data(spot_data, region)
+    redis_writer.write_price_history(spot_data, region)
+    redis_writer.write_instance_metadata(metadata)
+
+    # Also save to JSON as backup
     output_data = {
         'metadata': {
             'last_updated': datetime.now().isoformat(),
-            'region': 'ap-south-1',
-            'source': 'AWS Spot Advisor + Hardcoded Metadata'
+            'region': region,
+            'source': 'AWS Spot Advisor + Hardcoded Metadata',
+            'redis_ttl': redis_writer.ttl
         },
         'spot_advisor': spot_data,
         'instance_metadata': metadata
     }
 
-    # Save to backend data directory
     output_dir = Path(__file__).parent.parent / 'backend' / 'data'
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -210,9 +418,14 @@ def main():
     with open(output_file, 'w') as f:
         json.dump(output_data, f, indent=2)
 
-    print(f"\n✅ Saved static intelligence data to: {output_file}")
+    print(f"\n✅ Saved backup to: {output_file}")
     print(f"  - Spot pools: {len(spot_data)}")
     print(f"  - Instance types: {len(metadata)}")
+    print("="*80)
+    print("\n📋 Redis Key Summary:")
+    print(f"  - spot_risk:{region}:<instance_type> (TTL: 1 hour)")
+    print(f"  - spot_price_history:{region}:<family> (TTL: 1 hour)")
+    print(f"  - instance_metadata:<instance_type> (TTL: 24 hours)")
     print("="*80)
 
 

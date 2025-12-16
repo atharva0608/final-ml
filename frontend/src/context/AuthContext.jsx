@@ -4,12 +4,19 @@ const AuthContext = createContext(null);
 
 export const AuthProvider = ({ children }) => {
     const [user, setUser] = useState(null);
+    const [accountScope, setAccountScope] = useState('production'); // 'production' | 'lab'
 
     useEffect(() => {
         // Check local storage for existing session
         const storedUser = localStorage.getItem('ecc_user');
         if (storedUser) {
-            setUser(JSON.parse(storedUser));
+            try {
+                setUser(JSON.parse(storedUser));
+            } catch (error) {
+                console.error("Failed to parse user session:", error);
+                localStorage.removeItem('ecc_user');
+                setUser(null);
+            }
         }
     }, []);
 
@@ -42,11 +49,16 @@ export const AuthProvider = ({ children }) => {
 
     const logout = () => {
         setUser(null);
+        setAccountScope('production');
         localStorage.removeItem('ecc_user');
     };
 
+    const switchScope = (scope) => {
+        setAccountScope(scope);
+    };
+
     return (
-        <AuthContext.Provider value={{ user, login, logout }}>
+        <AuthContext.Provider value={{ user, login, logout, accountScope, switchScope }}>
             {children}
         </AuthContext.Provider>
     );
