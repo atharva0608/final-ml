@@ -106,12 +106,12 @@ def seed_test_users():
             db.add(admin_user)
         
         # Check if client test user exists
-        if not db.query(User).filter(User.username == 'ath').first():
-            print("👤 Seeding Client (ath)...")
+        if not db.query(User).filter(User.username == 'client').first():
+            print("👤 Seeding Client (client)...")
             client_user = User(
-                username='ath',
+                username='client',
                 email='client@test.com',
-                hashed_password=get_password_hash('ath'),
+                hashed_password=get_password_hash('client'),
                 role='client'
             )
             db.add(client_user)
