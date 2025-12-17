@@ -1,6 +1,13 @@
+// Detect production vs development environment
+const isProduction = import.meta.env.PROD;
 
+// In production, use relative path '/api' so Nginx handles the proxy
+// In development, point directly to localhost:8000
+const API_BASE_URL = isProduction
+    ? '/api'
+    : (import.meta.env.VITE_API_URL || 'http://localhost:8000');
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+console.log(`🔌 API Connected to: ${API_BASE_URL} (${isProduction ? 'PRODUCTION' : 'DEVELOPMENT'})`);
 
 class ApiError extends Error {
     constructor(message, status, data) {

@@ -16,13 +16,17 @@ DATABASE_URL = os.getenv(
     'postgresql://postgres:postgres@localhost:5432/spot_optimizer'
 )
 
-# Create engine with connection pooling
+# Create engine with production-grade connection pooling
 engine = create_engine(
     DATABASE_URL,
-    pool_pre_ping=True,  # Verify connections before using
-    pool_size=10,  # Max connections in pool
-    max_overflow=20,  # Max additional connections
-    echo=False,  # Set to True for SQL debugging
+    # Connection Health & Pooling
+    pool_pre_ping=True,          # CRITICAL: Verify connections before using
+    pool_size=10,                # Keep 10 connections open
+    max_overflow=20,             # Allow spike to 30 total connections
+    pool_timeout=30,             # Wait 30s for available connection
+    pool_recycle=1800,           # Refresh connections every 30 mins (prevent stale)
+    # Debugging
+    echo=False,                  # Set to True for SQL debugging
 )
 
 # Session factory
