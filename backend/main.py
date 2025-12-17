@@ -57,23 +57,47 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"⚠️  Test user seeding failed: {e}")
 
-    # Initialize component health records (so Monitor isn't empty)
+    # Run real health checks for all components
     try:
-        print("✓ Initializing system component registry...")
+        print("✓ Running health checks for all components...")
+        from utils.health_checks import run_all_health_checks
+
         db_gen = get_db()
         db = next(db_gen, None)
         if db:
-            for attr in dir(Component):
-                if not attr.startswith("__"):
-                    comp_name = getattr(Component, attr)
-                    if isinstance(comp_name, str): # Verify it's a value
-                        try:
-                            SystemLogger(comp_name, db=db)._ensure_health_record()
-                        except Exception as e: 
-                            print(f"  - Failed to init {comp_name}: {e}")
+            results = run_all_health_checks(db)
+
+            for component_name, (status, details) in results.items():
+                try:
+                    logger = SystemLogger(component_name, db=db)
+
+                    # Log based on health check result
+                    if status == "healthy":
+                        logger.success(
+                            f"Component initialized successfully",
+                            details=details
+                        )
+                        print(f"  ✅ {component_name}: healthy")
+                    elif status == "degraded":
+                        logger.warning(
+                            f"Component partially functional",
+                            details=details
+                        )
+                        print(f"  ⚠️  {component_name}: degraded - {details.get('message', 'unknown')}")
+                    else:  # unhealthy
+                        logger.error(
+                            f"Component health check failed",
+                            details=details
+                        )
+                        print(f"  ❌ {component_name}: unhealthy - {details.get('message', 'unknown')}")
+
+                except Exception as e:
+                    print(f"  ❌ Failed to check {component_name}: {e}")
+
             db.close()
+            print("✓ Health checks completed")
     except Exception as e:
-        print(f"⚠️  Component registration failed: {e}")
+        print(f"⚠️  Health check failed: {e}")
 
 
     # Start background scheduler
