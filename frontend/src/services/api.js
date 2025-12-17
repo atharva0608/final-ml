@@ -499,3 +499,96 @@ export default {
     // WebSocket
     connectWebSocket,
 };
+
+// ============================================================================
+// Client Dashboard API
+// ============================================================================
+
+export async function getClientDashboard() {
+    return fetchApi('/api/v1/client/dashboard');
+}
+
+// ============================================================================
+// Admin Controls API
+// ============================================================================
+
+export async function triggerRebalance() {
+    return fetchApi('/api/v1/admin/system/rebalance', {
+        method: 'POST'
+    });
+}
+
+export async function setSpotMarketStatus(disabled) {
+    return fetchApi('/api/v1/admin/system/spot-market', {
+        method: 'PUT',
+        body: JSON.stringify({ disabled })
+    });
+}
+
+export async function getSpotMarketStatus() {
+    return fetchApi('/api/v1/admin/system/spot-market');
+}
+
+export async function getSystemHealth() {
+    return fetchApi('/api/v1/admin/health/overview');
+}
+
+// ============================================================================
+// Default export
+// ============================================================================
+
+export default {
+    // Auth
+    login,
+    register,
+    getProfile,
+    verifyToken,
+    
+    // Lab
+    getInstances,
+    getInstance,
+    assignModelToInstance,
+    setPipelineMode,
+    toggleShadowMode,
+    getModels,
+    graduateModel,
+    rejectModel,
+    uploadModel,
+    getExperimentLogs,
+    getModelPerformance,
+    getPipelineStatus,
+    
+    // Accounts
+    getAccounts,
+    createAccount,
+    updateAccount,
+    validateAccountAccess,
+    
+    // Live Metrics
+    getLiveMetrics,
+    getActivityFeed,
+    getPipelineStats,
+    
+    // Client Management (Admin)
+    getClients,
+    createClient,
+    getClientDetails,
+    
+    // User Management (Admin)
+    getUsers,
+    updateUserStatus,
+    updateUserRole,
+    deleteUser,
+    
+    // Client Dashboard
+    getClientDashboard,
+    
+    // Admin Controls
+    triggerRebalance,
+    setSpotMarketStatus,
+    getSpotMarketStatus,
+    getSystemHealth,
+    
+    // WebSocket
+    connectWebSocket
+};
