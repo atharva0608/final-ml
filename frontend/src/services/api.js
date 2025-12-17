@@ -63,25 +63,25 @@ async function fetchApi(endpoint, options = {}) {
 // ============================================================================
 
 export async function login(identifier, password) {
-    return fetchApi('/api/v1/auth/login', {
+    return fetchApi('/v1/auth/login', {
         method: 'POST',
         body: JSON.stringify({ identifier, password }),
     });
 }
 
 export async function register(userData) {
-    return fetchApi('/api/v1/auth/register', {
+    return fetchApi('/v1/auth/register', {
         method: 'POST',
         body: JSON.stringify(userData),
     });
 }
 
 export async function getProfile() {
-    return fetchApi('/api/v1/auth/profile');
+    return fetchApi('/v1/auth/profile');
 }
 
 export async function verifyToken() {
-    return fetchApi('/api/v1/auth/verify');
+    return fetchApi('/v1/auth/verify');
 }
 
 // ============================================================================
@@ -90,15 +90,15 @@ export async function verifyToken() {
 
 export async function getInstances(accountId = null) {
     const query = accountId ? `?account_id=${accountId}` : '';
-    return fetchApi(`/api/v1/lab/instances${query}`);
+    return fetchApi(`/v1/lab/instances${query}`);
 }
 
 export async function getInstance(instanceId) {
-    return fetchApi(`/api/v1/lab/instances/${instanceId}`);
+    return fetchApi(`/v1/lab/instances/${instanceId}`);
 }
 
 export async function assignModelToInstance(instanceId, modelVersion) {
-    return fetchApi('/api/v1/lab/assign-model', {
+    return fetchApi('/v1/lab/assign-model', {
         method: 'POST',
         body: JSON.stringify({
             instance_id: instanceId,
@@ -108,37 +108,37 @@ export async function assignModelToInstance(instanceId, modelVersion) {
 }
 
 export async function setPipelineMode(instanceId, pipelineMode) {
-    return fetchApi(`/api/v1/lab/instances/${instanceId}/pipeline-mode`, {
+    return fetchApi(`/v1/lab/instances/${instanceId}/pipeline-mode`, {
         method: 'PUT',
         body: JSON.stringify({ pipeline_mode: pipelineMode }),
     });
 }
 
 export async function toggleShadowMode(instanceId, enabled) {
-    return fetchApi(`/api/v1/lab/instances/${instanceId}/shadow-mode`, {
+    return fetchApi(`/v1/lab/instances/${instanceId}/shadow-mode`, {
         method: 'PUT',
         body: JSON.stringify({ is_shadow_mode: enabled }),
     });
 }
 
 export async function getModels() {
-    return fetchApi('/api/v1/lab/models');
+    return fetchApi('/v1/lab/models');
 }
 
 export async function graduateModel(modelId) {
-    return fetchApi(`/api/v1/lab/models/${modelId}/graduate`, {
+    return fetchApi(`/v1/lab/models/${modelId}/graduate`, {
         method: 'PUT'
     });
 }
 
 export async function rejectModel(modelId) {
-    return fetchApi(`/api/v1/lab/models/${modelId}/reject`, {
+    return fetchApi(`/v1/lab/models/${modelId}/reject`, {
         method: 'PUT'
     });
 }
 
 export async function uploadModel(formData) {
-    return fetchApi('/api/v1/lab/models/upload', {
+    return fetchApi('/v1/lab/models/upload', {
         method: 'POST',
         headers: {}, // Let browser set Content-Type with boundary for multipart
         body: formData,
@@ -146,15 +146,15 @@ export async function uploadModel(formData) {
 }
 
 export async function getExperimentLogs(instanceId, limit = 50) {
-    return fetchApi(`/api/v1/lab/experiments/${instanceId}?limit=${limit}`);
+    return fetchApi(`/v1/lab/experiments/${instanceId}?limit=${limit}`);
 }
 
 export async function getModelPerformance(modelId) {
-    return fetchApi(`/api/v1/lab/experiments/model/${modelId}`);
+    return fetchApi(`/v1/lab/experiments/model/${modelId}`);
 }
 
 export async function getPipelineStatus(instanceId) {
-    return fetchApi(`/api/v1/lab/pipeline-status/${instanceId}`);
+    return fetchApi(`/v1/lab/pipeline-status/${instanceId}`);
 }
 
 // ============================================================================
@@ -162,25 +162,25 @@ export async function getPipelineStatus(instanceId) {
 // ============================================================================
 
 export async function getAccounts() {
-    return fetchApi('/api/v1/lab/accounts');
+    return fetchApi('/v1/lab/accounts');
 }
 
 export async function createAccount(accountData) {
-    return fetchApi('/api/v1/lab/accounts', {
+    return fetchApi('/v1/lab/accounts', {
         method: 'POST',
         body: JSON.stringify(accountData),
     });
 }
 
 export async function updateAccount(accountId, accountData) {
-    return fetchApi(`/api/v1/lab/accounts/${accountId}`, {
+    return fetchApi(`/v1/lab/accounts/${accountId}`, {
         method: 'PUT',
         body: JSON.stringify(accountData),
     });
 }
 
 export async function validateAccountAccess(accountId) {
-    return fetchApi(`/api/v1/lab/accounts/${accountId}/validate`);
+    return fetchApi(`/v1/lab/accounts/${accountId}/validate`);
 }
 
 // ============================================================================
@@ -188,15 +188,15 @@ export async function validateAccountAccess(accountId) {
 // ============================================================================
 
 export async function getLiveMetrics() {
-    return fetchApi('/api/v1/metrics/live');
+    return fetchApi('/v1/metrics/live');
 }
 
 export async function getActivityFeed(limit = 20) {
-    return fetchApi(`/api/v1/metrics/activity?limit=${limit}`);
+    return fetchApi(`/v1/metrics/activity?limit=${limit}`);
 }
 
 export async function getPipelineStats() {
-    return fetchApi('/api/v1/metrics/pipeline-stats');
+    return fetchApi('/v1/metrics/pipeline-stats');
 }
 
 // ============================================================================
@@ -204,18 +204,18 @@ export async function getPipelineStats() {
 // ============================================================================
 
 export async function getClients() {
-    return fetchApi('/api/v1/admin/clients');
+    return fetchApi('/v1/admin/clients');
 }
 
 export async function createClient(clientData) {
-    return fetchApi('/api/v1/admin/clients', {
+    return fetchApi('/v1/admin/clients', {
         method: 'POST',
         body: JSON.stringify(clientData),
     });
 }
 
 export async function getClientDetails(clientId) {
-    return fetchApi(`/api/v1/admin/clients/${clientId}`);
+    return fetchApi(`/v1/admin/clients/${clientId}`);
 }
 
 // ============================================================================
@@ -223,25 +223,25 @@ export async function getClientDetails(clientId) {
 // ============================================================================
 
 export async function getUsers() {
-    return fetchApi('/api/v1/admin/users');
+    return fetchApi('/v1/admin/users');
 }
 
 export async function updateUserStatus(userId, isActive) {
-    return fetchApi(`/api/v1/admin/users/${userId}/status`, {
+    return fetchApi(`/v1/admin/users/${userId}/status`, {
         method: 'PUT',
         body: JSON.stringify({ is_active: isActive }),
     });
 }
 
 export async function updateUserRole(userId, role) {
-    return fetchApi(`/api/v1/admin/users/${userId}/role`, {
+    return fetchApi(`/v1/admin/users/${userId}/role`, {
         method: 'PUT',
         body: JSON.stringify({ role }),
     });
 }
 
 export async function deleteUser(userId) {
-    return fetchApi(`/api/v1/admin/users/${userId}`, {
+    return fetchApi(`/v1/admin/users/${userId}`, {
         method: 'DELETE',
     });
 }
@@ -252,7 +252,7 @@ export async function deleteUser(userId) {
 
 export function connectWebSocket(instanceId, onMessage, onError) {
     const wsUrl = API_BASE_URL.replace('http', 'ws');
-    const ws = new WebSocket(`${wsUrl}/api/v1/ws/lab/${instanceId}`);
+    const ws = new WebSocket(`${wsUrl}/v1/ws/lab/${instanceId}`);
 
     ws.onmessage = (event) => {
         try {
@@ -284,7 +284,7 @@ export function connectWebSocket(instanceId, onMessage, onError) {
 // ============================================================================
 
 export async function evaluateInstance(instanceId) {
-    return fetchApi(`/api/v1/lab/instances/${instanceId}/evaluate`, {
+    return fetchApi(`/v1/lab/instances/${instanceId}/evaluate`, {
         method: 'POST',
     });
 }
@@ -298,7 +298,7 @@ export async function evaluateInstance(instanceId) {
  * @returns {Promise<Object>} System overview with all components
  */
 export async function getSystemOverview() {
-    return fetchApi('/api/v1/admin/health/overview');
+    return fetchApi('/v1/admin/health/overview');
 }
 
 /**
@@ -312,7 +312,7 @@ export async function getComponentLogs(component, limit = 5, level = null) {
     const params = new URLSearchParams({ limit: limit.toString() });
     if (level) params.append('level', level);
 
-    return fetchApi(`/api/v1/admin/logs/${component}?${params.toString()}`);
+    return fetchApi(`/v1/admin/logs/${component}?${params.toString()}`);
 }
 
 /**
@@ -325,7 +325,7 @@ export async function getRecentLogs(limit = 20, level = null) {
     const params = new URLSearchParams({ limit: limit.toString() });
     if (level) params.append('level', level);
 
-    return fetchApi(`/api/v1/admin/logs/all/recent?${params.toString()}`);
+    return fetchApi(`/v1/admin/logs/all/recent?${params.toString()}`);
 }
 
 /**
@@ -333,7 +333,7 @@ export async function getRecentLogs(limit = 20, level = null) {
  * @returns {Promise<Object>} Log statistics
  */
 export async function getLogStatistics() {
-    return fetchApi('/api/v1/admin/stats');
+    return fetchApi('/v1/admin/stats');
 }
 
 /**
@@ -342,7 +342,7 @@ export async function getLogStatistics() {
  * @returns {Promise<Object>} Cleanup result
  */
 export async function cleanupOldLogs(days = 7) {
-    return fetchApi(`/api/v1/admin/logs/cleanup?days=${days}`, {
+    return fetchApi(`/v1/admin/logs/cleanup?days=${days}`, {
         method: 'POST'
     });
 }
@@ -352,42 +352,42 @@ export async function cleanupOldLogs(days = 7) {
 // ============================================================================
 
 export async function getWaste() {
-    return fetchApi('/api/v1/waste');
+    return fetchApi('/v1/waste');
 }
 
 export async function triggerWasteScan() {
-    return fetchApi('/api/v1/waste/scan', { method: 'POST' });
+    return fetchApi('/v1/waste/scan', { method: 'POST' });
 }
 
 export async function getSecurityAudit() {
-    return fetchApi('/api/v1/governance/audit');
+    return fetchApi('/v1/governance/audit');
 }
 
 export async function getUnauthorizedInstances() {
-    return fetchApi('/api/v1/governance/unauthorized');
+    return fetchApi('/v1/governance/unauthorized');
 }
 
 export async function getPendingApprovals() {
-    return fetchApi('/api/v1/approvals/pending');
+    return fetchApi('/v1/approvals/pending');
 }
 
 export async function approveRequest(requestId) {
-    return fetchApi(`/api/v1/approvals/${requestId}/approve`, { method: 'POST' });
+    return fetchApi(`/v1/approvals/${requestId}/approve`, { method: 'POST' });
 }
 
 export async function rejectRequest(requestId) {
-    return fetchApi(`/api/v1/approvals/${requestId}/reject`, { method: 'POST' });
+    return fetchApi(`/v1/approvals/${requestId}/reject`, { method: 'POST' });
 }
 
 export async function setSpotMarketStatus(disabled) {
-    return fetchApi('/api/v1/admin/system/spot-status', {
+    return fetchApi('/v1/admin/system/spot-status', {
         method: 'PUT',
         body: JSON.stringify({ disabled })
     });
 }
 
 export async function triggerRebalance() {
-    return fetchApi('/api/v1/admin/system/rebalance', {
+    return fetchApi('/v1/admin/system/rebalance', {
         method: 'POST'
     });
 }
@@ -397,22 +397,22 @@ export async function triggerRebalance() {
 // ============================================================================
 
 export async function createOnboardingRequest() {
-    return fetchApi('/api/v1/onboarding/create', { method: 'POST' });
+    return fetchApi('/v1/onboarding/create', { method: 'POST' });
 }
 
 export async function getOnboardingTemplate(accountId) {
-    return fetchApi(`/api/v1/onboarding/template/${accountId}`);
+    return fetchApi(`/v1/onboarding/template/${accountId}`);
 }
 
 export async function verifyOnboarding(accountId, roleArn) {
-    return fetchApi(`/api/v1/onboarding/${accountId}/verify`, {
+    return fetchApi(`/v1/onboarding/${accountId}/verify`, {
         method: 'POST',
         body: JSON.stringify({ role_arn: roleArn })
     });
 }
 
 export async function getDiscoveryStatus(accountId) {
-    return fetchApi(`/api/v1/onboarding/${accountId}/discovery`);
+    return fetchApi(`/v1/onboarding/${accountId}/discovery`);
 }
 
 // ============================================================================
@@ -512,7 +512,7 @@ export default {
 // ============================================================================
 
 export async function getClientDashboard() {
-    return fetchApi('/api/v1/client/dashboard');
+    return fetchApi('/v1/client/dashboard');
 }
 
 // ============================================================================
@@ -520,24 +520,24 @@ export async function getClientDashboard() {
 // ============================================================================
 
 export async function triggerRebalance() {
-    return fetchApi('/api/v1/admin/system/rebalance', {
+    return fetchApi('/v1/admin/system/rebalance', {
         method: 'POST'
     });
 }
 
 export async function setSpotMarketStatus(disabled) {
-    return fetchApi('/api/v1/admin/system/spot-market', {
+    return fetchApi('/v1/admin/system/spot-market', {
         method: 'PUT',
         body: JSON.stringify({ disabled })
     });
 }
 
 export async function getSpotMarketStatus() {
-    return fetchApi('/api/v1/admin/system/spot-market');
+    return fetchApi('/v1/admin/system/spot-market');
 }
 
 export async function getSystemHealth() {
-    return fetchApi('/api/v1/admin/health/overview');
+    return fetchApi('/v1/admin/health/overview');
 }
 
 // ============================================================================

@@ -1,8 +1,10 @@
 import React, { useState } from 'react';
 import {
     LayoutDashboard, Server, Settings, Activity, Menu,
-    Users, ChevronDown, FlaskConical, Radio, Globe, Check, X, Cloud
+    Users, ChevronDown, FlaskConical, Radio, Globe, Check, X, Cloud, LogOut
 } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { useAuth } from '../context/AuthContext';
 import { cn } from '../lib/utils';
 
 const NavigationItem = ({ icon: Icon, label, active, onClick, hasSubmenu, isOpen, onToggle, customTheme }) => {
@@ -53,9 +55,17 @@ const DashboardLayout = ({ children, activeView, setActiveView, role = 'admin', 
     const [environmentMode, setEnvironmentMode] = useState('prod'); // 'prod' | 'lab'
     const [isScopeMenuOpen, setIsScopeMenuOpen] = useState(false);
 
+    const { logout, user } = useAuth();
+    const navigate = useNavigate();
+
     // Helpers
     const isLab = environmentMode === 'lab';
     const isClient = role === 'client';
+
+    const handleLogout = () => {
+        logout();
+        navigate('/login');
+    };
 
     const handleSwitchToProd = () => {
         setEnvironmentMode('prod');
@@ -241,6 +251,22 @@ const DashboardLayout = ({ children, activeView, setActiveView, role = 'admin', 
                                 )}
                             </div>
                         )}
+
+                        {/* User Info & Logout */}
+                        <div className="flex items-center space-x-3 border-l border-slate-200 pl-4">
+                            <div className="text-right">
+                                <p className="text-xs font-semibold text-slate-900">{user?.username || 'User'}</p>
+                                <p className="text-[10px] text-slate-500 capitalize">{role}</p>
+                            </div>
+                            <button
+                                onClick={handleLogout}
+                                className="flex items-center space-x-2 px-3 py-1.5 bg-red-50 border border-red-200 text-red-700 hover:bg-red-100 rounded-lg transition-all group"
+                                title="Logout"
+                            >
+                                <LogOut className="w-4 h-4" />
+                                <span className="text-xs font-semibold">Logout</span>
+                            </button>
+                        </div>
                     </div>
                 </header>
 
