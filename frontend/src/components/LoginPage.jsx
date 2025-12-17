@@ -13,20 +13,25 @@ const LoginPage = () => {
     const { login } = useAuth();
     const navigate = useNavigate();
 
-    const handleSubmit = (e) => {
+    const handleSubmit = async (e) => {
         e.preventDefault();
         setError('');
 
         if (isLogin) {
-            const success = login(username, password);
-            if (success) {
-                if (username === 'admin') {
-                    navigate('/');
+            try {
+                const success = await login(username, password);
+                if (success) {
+                    // Navigate based on role will be handled by App.jsx routes
+                    if (username === 'admin') {
+                        navigate('/');
+                    } else {
+                        navigate('/client');
+                    }
                 } else {
-                    navigate('/client');
+                    setError('Invalid credentials');
                 }
-            } else {
-                setError('Invalid credentials');
+            } catch (error) {
+                setError('Login failed. Please check your credentials and try again.');
             }
         } else {
             // Mock Signup Logic

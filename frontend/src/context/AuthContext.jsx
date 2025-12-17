@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
+import * as api from '../services/api';
 
 const AuthContext = createContext(null);
 
@@ -9,48 +10,56 @@ export const AuthProvider = ({ children }) => {
     useEffect(() => {
         // Check local storage for existing session
         const storedUser = localStorage.getItem('ecc_user');
-        if (storedUser) {
+        const storedToken = localStorage.getItem('auth_token');
+        if (storedUser && storedToken) {
             try {
                 setUser(JSON.parse(storedUser));
             } catch (error) {
                 console.error("Failed to parse user session:", error);
                 localStorage.removeItem('ecc_user');
+                localStorage.removeItem('auth_token');
                 setUser(null);
             }
         }
     }, []);
 
-    const login = (username, password) => {
-        // Mock Authentication Logic
-        if (username === 'admin' && password === 'admin') {
-            const userData = { username: 'admin', role: 'admin' };
-            setUser(userData);
-            localStorage.setItem('ecc_user', JSON.stringify(userData));
-            return true;
-        } else if (username === 'ath' && password === 'ath') {
-            const userData = { username: 'ath', role: 'client', clientId: 'client-demo-001' }; // Map to TechCorp Solutions
-            setUser(userData);
-            localStorage.setItem('ecc_user', JSON.stringify(userData));
-            return true;
-        }
+    const login = async (username, password) => {
+        try {
+            // Map username to email for test users
+            const emailMap = {
+                'admin': 'admin@test.com',
+                'client': 'client@test.com'
+            };
+            const email = emailMap[username] || username;
 
-        // Check for custom created users
-        const customUsers = JSON.parse(localStorage.getItem('ecc_custom_users') || '[]');
-        const foundUser = customUsers.find(u => u.username === username && u.password === password);
-        if (foundUser) {
-            const userData = { username: foundUser.username, role: foundUser.role, clientId: foundUser.clientId };
+            // Call real backend API
+            const response = await api.login(email, password);
+
+            // Store JWT token
+            localStorage.setItem('auth_token', response.access_token);
+
+            // Store user data
+            const userData = {
+                id: response.user.id,
+                username: response.user.username,
+                email: response.user.email,
+                role: response.user.role
+            };
             setUser(userData);
             localStorage.setItem('ecc_user', JSON.stringify(userData));
-            return true;
-        }
 
-        return false;
+            return true;
+        } catch (error) {
+            console.error("Login failed:", error);
+            return false;
+        }
     };
 
     const logout = () => {
         setUser(null);
         setAccountScope('production');
         localStorage.removeItem('ecc_user');
+        localStorage.removeItem('auth_token');
     };
 
     const switchScope = (scope) => {

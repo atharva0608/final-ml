@@ -13,7 +13,7 @@ import { useEffect } from 'react';
 
 // Real Data Integration
 const ModelExperiments = () => {
-    const { models, getLabModels, graduateModel, rejectModel } = useModel();
+    const { models, getLabModels, graduateModel, rejectModel, uploadModel } = useModel();
     const [historyType, setHistoryType] = useState('live'); // 'live' | 'historical'
 
     const [testSubjects, setTestSubjects] = useState([]);
@@ -240,7 +240,7 @@ const ModelExperiments = () => {
                     or we need to wrap it. DragDropUpload likely expects a file. 
                     Context uploadModel takes (file, scope). 
                 */}
-                <DragDropUpload onUpload={(file) => useModel().uploadModel(file, 'lab')} className="bg-slate-50 border-slate-200 hover:bg-white" />
+                <DragDropUpload onUpload={(file) => uploadModel(file, 'lab')} className="bg-slate-50 border-slate-200 hover:bg-white" />
             </div>
 
             {/* 5. Metrics & Logs */}
