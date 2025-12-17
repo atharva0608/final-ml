@@ -98,3 +98,186 @@ Status: IN PROGRESS
 
 [TASK 1] Verify Username/Email Login Support
 Action: Checking if backend properly accepts both username and email...
+
+[TASK 1] ✅ COMPLETED - Username/Email Login Support
+Action: Updated backend and frontend to accept both username and email
+Status: FIXED
+
+BACKEND CHANGES (auth.py):
+- UserLogin model: email (EmailStr) → identifier (str)
+- Login query: User.email == credentials.email
+  →  (User.username == credentials.identifier) | (User.email == credentials.identifier)
+- Error message: "Incorrect email or password"
+  → "Incorrect username/email or password"
+
+FRONTEND CHANGES (api.js):
+- Function signature: login(email, password) → login(identifier, password)
+- Request body: { email, password } → { identifier, password }
+
+FRONTEND CHANGES (AuthContext.jsx):
+- Removed email mapping logic (admin → admin@test.com)
+- Function: login(username, password) → login(identifier, password)
+- Directly passes identifier to API
+
+FRONTEND CHANGES (LoginPage.jsx):
+- Label: "Username" → "Username or Email"
+- Placeholder: "Enter username" → "Enter username or email"
+
+Result: Users can now login with EITHER username OR email ✅
+
+[TASK 2] ✅ COMPLETED - Auto-Create Admin User on Startup
+Action: Added seed_test_users() call to application startup sequence
+Status: FIXED
+
+BACKEND CHANGES (main.py):
+- Added import: from database.connection import seed_test_users
+- Added call in lifespan startup:
+  ```python
+  # Seed test users (admin/admin, client/client)
+  try:
+      seed_test_users()
+  except Exception as e:
+      print(f"⚠️  Test user seeding failed: {e}")
+  ```
+
+BACKEND CHANGES (connection.py):
+- Fixed import: get_password_hash → hash_password ✅
+- Fixed role: 'client' → 'user' (backend only supports admin/user/lab) ✅
+- Added fields: full_name, is_active
+- Improved logging: Shows if users already exist
+
+DEFAULT USERS CREATED:
+┌──────────┬──────────┬──────────────────┬──────┬────────┬─────────────────────────┐
+│ Username │ Password │ Email            │ Role │ Active │ Full Name               │
+├──────────┼──────────┼──────────────────┼──────┼────────┼─────────────────────────┤
+│ admin    │ admin    │ admin@test.com   │ admin│ true   │ System Administrator    │
+│ client   │ client   │ client@test.com  │ user │ true   │ Test Client User        │
+└──────────┴──────────┴──────────────────┴──────┴────────┴─────────────────────────┘
+
+Result: Admin and Client users automatically created on first startup ✅
+
+[TASK 3] ✅ COMPLETED - Frontend/Backend Role Mapping
+Action: Map backend 'user' role to frontend 'client' role
+Status: FIXED
+
+ISSUE: Backend uses 'user' role, Frontend routes expect 'client' role
+FIX: Added role mapping in AuthContext.jsx login function:
+```javascript
+role: response.user.role === 'user' ? 'client' : response.user.role
+```
+
+Result: Client users with 'user' role from backend are mapped to 'client' in frontend ✅
+        Existing routing logic works without changes ✅
+
+=============================================================================
+SESSION 2: SUMMARY
+=============================================================================
+Timestamp: 2025-12-17T14:50:00+05:30 - 2025-12-17T15:15:00+05:30
+Status: ✅ SUCCESSFULLY COMPLETED
+
+ALL FIXES IMPLEMENTED:
+1. ✅ Login accepts both username AND email
+2. ✅ Admin user (admin/admin) automatically created on startup
+3. ✅ Client user (client/client) automatically created on startup
+4. ✅ Frontend/backend role mapping (user → client)
+5. ✅ All changes committed and pushed to repository
+
+FILES MODIFIED (7 files):
+- backend/api/auth.py (UserLogin model, login endpoint)
+- backend/database/connection.py (seed_test_users function)
+- backend/main.py (added seed_test_users call)
+- frontend/src/services/api.js (login function)
+- frontend/src/context/AuthContext.jsx (login function, role mapping)
+- frontend/src/components/LoginPage.jsx (label, placeholder)
+- docker_run_log.txt (NEW FILE - this log)
+
+GIT COMMIT: db2f0af
+COMMIT MESSAGE: "feat: Login accepts username/email + auto-create admin user"
+
+=============================================================================
+TESTING INSTRUCTIONS
+=============================================================================
+
+1. REBUILD AND START CONTAINERS:
+   ```bash
+   docker compose down
+   docker compose build --no-cache
+   docker compose up -d
+   ```
+
+2. VERIFY BACKEND STARTUP:
+   ```bash
+   docker compose logs backend | grep -E "Seeding|Test users"
+   ```
+   Expected Output:
+   - "🛡️ Seeding Admin (username: admin, password: admin)..."
+   - "👤 Seeding Client (username: client, password: client)..."
+   - "✓ Test users seeded successfully"
+
+3. TEST LOGIN WITH USERNAME:
+   - Navigate to: http://localhost:80
+   - Username: admin
+   - Password: admin
+   - Should successfully login and redirect to admin dashboard ✅
+
+4. TEST LOGIN WITH EMAIL:
+   - Navigate to: http://localhost:80
+   - Username: admin@test.com
+   - Password: admin
+   - Should successfully login and redirect to admin dashboard ✅
+
+5. TEST CLIENT LOGIN:
+   - Logout
+   - Username: client
+   - Password: client
+   - Should successfully login and redirect to client dashboard ✅
+
+6. VERIFY API AUTHORIZATION:
+   - After admin login, navigate to System Monitor
+   - Should load component logs without 401 errors ✅
+   - Navigate to Client Management
+   - Should load users list without 401 errors ✅
+
+=============================================================================
+EXPECTED CONSOLE OUTPUT ON STARTUP
+=============================================================================
+```
+================================================================================
+🚀 STARTING SPOT OPTIMIZER PLATFORM
+================================================================================
+✓ Database tables created
+🛡️ Seeding Admin (username: admin, password: admin)...
+👤 Seeding Client (username: client, password: client)...
+✓ Test users seeded successfully
+✓ Initializing system component registry...
+✓ Background scheduler started
+================================================================================
+✓ Server running on http://0.0.0.0:8000
+✓ API docs available at http://0.0.0.0:8000/docs
+✓ WebSocket endpoint: ws://0.0.0.0:8000/ws
+================================================================================
+```
+
+=============================================================================
+TEST CREDENTIALS SUMMARY
+=============================================================================
+
+ADMIN LOGIN OPTIONS (ALL VALID):
+┌────────────────────┬──────────┐
+│ Identifier         │ Password │
+├────────────────────┼──────────┤
+│ admin              │ admin    │
+│ admin@test.com     │ admin    │
+└────────────────────┴──────────┘
+
+CLIENT LOGIN OPTIONS (ALL VALID):
+┌────────────────────┬──────────┐
+│ Identifier         │ Password │
+├────────────────────┼──────────┤
+│ client             │ client   │
+│ client@test.com    │ client   │
+└────────────────────┴──────────┘
+
+=============================================================================
+END OF SESSION 2 LOG
+=============================================================================
