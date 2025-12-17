@@ -114,7 +114,7 @@ const LoginPage = () => {
                         )}
 
                         <div className="space-y-1">
-                            <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Username</label>
+                            <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Username or Email</label>
                             <div className="relative">
                                 <User className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                                 <input
@@ -122,7 +122,7 @@ const LoginPage = () => {
                                     value={username}
                                     onChange={(e) => setUsername(e.target.value)}
                                     className="w-full pl-9 pr-4 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
-                                    placeholder="Enter username"
+                                    placeholder="Enter username or email"
                                     autoFocus
                                 />
                             </div>

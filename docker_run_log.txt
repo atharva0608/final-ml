@@ -1,0 +1,100 @@
+=============================================================================
+DOCKER DEPLOYMENT LOG - Cloud Cost Optimizer Platform
+=============================================================================
+Log Created: 2025-12-17T14:50:00+05:30
+Branch: claude/design-agentl-system-01WHZAbcQYmJdWUDHUuSbFQG
+
+=============================================================================
+SESSION 1: Initial Deployment Fixes
+=============================================================================
+Timestamp: 2025-12-17T12:46:31+05:30 - 2025-12-17T14:44:00+05:30
+Status: Successfully Deployed
+
+[ERROR 1] Frontend Docker Build Failed
+Timestamp: 2025-12-17T12:48:00+05:30
+Problem: sh: vite: not found
+Root Cause: Dockerfile used 'npm ci --only=production' excluding devDependencies
+Fix: Changed to 'npm ci' to include Vite
+File: frontend/Dockerfile
+Status: ✅ FIXED
+
+[ERROR 2] Duplicate Export in api.js
+Timestamp: 2025-12-17T12:50:00+05:30
+Problem: Vite build failed - Duplicate 'export default'
+Root Cause: Lines 435 and 547 had duplicate exports
+Fix: Removed duplicate export block and function declarations
+File: frontend/src/services/api.js
+Status: ✅ FIXED
+
+[ERROR 3] Unclosed Function Body
+Timestamp: 2025-12-17T12:55:00+05:30
+Problem: Unexpected export at NodeFleet.jsx:790
+Root Cause: ClientMasterView ended with ); instead of };
+Fix: Added missing closing brace
+File: frontend/src/components/NodeFleet.jsx
+Status: ✅ FIXED
+
+[ERROR 4] Missing Utils Module
+Timestamp: 2025-12-17T12:58:00+05:30
+Problem: Could not resolve '../lib/utils'
+Root Cause: lib/utils.js file was missing
+Fix: Created utils.js with cn() classNames utility
+File: frontend/src/lib/utils.js (NEW)
+Status: ✅ FIXED
+
+[ERROR 5-6] ModelRegistry Import Errors
+Timestamp: 2025-12-17T12:57:00+05:30 - 2025-12-17T13:05:00+05:30
+Problem: Cannot import 'ModelRegistry'
+Root Cause: Class renamed to MLModel but imports not updated
+Fix: Updated all imports and field references
+Files: backend/database/__init__.py, backend/api/lab.py, backend/pipelines/linear_optimizer.py
+Status: ✅ FIXED
+
+[ERROR 7] Missing Module
+Timestamp: 2025-12-17T13:10:00+05:30
+Problem: No module named 'logic.model_registry'
+Root Cause: Module never created
+Fix: Created model_registry.py with ML lifecycle functions
+File: backend/logic/model_registry.py (NEW)
+Status: ✅ FIXED
+
+[ERROR 8] Backend Healthcheck Failing
+Timestamp: 2025-12-17T13:15:00+05:30
+Problem: /api/v1/admin/health/overview requires auth, healthcheck failing
+Root Cause: Endpoint requires authentication
+Fix: Changed healthcheck to /health public endpoint
+File: docker-compose.yml
+Status: ✅ FIXED
+
+[ERROR 9] 401 Unauthorized Errors
+Timestamp: 2025-12-17T14:19:00+05:30
+Problem: All admin API calls returning 401 - User not found
+Root Cause: AuthContext using mock login, no JWT token stored
+Fix: Replaced mock auth with real API integration
+Files: frontend/src/context/AuthContext.jsx, frontend/src/components/LoginPage.jsx
+Status: ✅ FIXED
+
+[ERROR 10] Login Only Accepts Email
+Timestamp: 2025-12-17T14:33:00+05:30
+Problem: Cannot login with username, only email
+Root Cause: UserLogin model only has 'email' field (EmailStr)
+Fix: Modified to accept 'identifier' field (username OR email)
+Files: backend/api/auth.py, frontend (LoginPage, api.js, AuthContext)
+Status: ⚠️ NEEDS VERIFICATION
+
+[ERROR 11] 404 Not Found in Production
+Timestamp: 2025-12-17T14:44:00+05:30
+Problem: All API calls 404 after production build
+Root Cause: Double /api prefix ('/api' + '/api/v1/...')
+Fix: Changed API_BASE_URL from '/api' to '' for production
+File: frontend/src/services/api.js
+Status: ✅ FIXED
+
+=============================================================================
+SESSION 2: Login Enhancement & Admin User Creation
+=============================================================================
+Timestamp: 2025-12-17T14:50:00+05:30
+Status: IN PROGRESS
+
+[TASK 1] Verify Username/Email Login Support
+Action: Checking if backend properly accepts both username and email...

@@ -24,7 +24,7 @@ from api.admin import router as admin_router
 from api.websocket_routes import router as websocket_router
 # V3.1 Production Features
 from api import waste_routes, governance_routes, approval_routes, onboarding_routes, ai_routes
-from database.connection import init_db
+from database.connection import init_db, seed_test_users
 from jobs.scheduler import start_scheduler, stop_scheduler
 from utils.system_logger import SystemLogger, Component
 from database.connection import get_db
@@ -46,9 +46,16 @@ async def lifespan(app: FastAPI):
     # Initialize database
     try:
         init_db()
+        print("✓ Database tables created")
     except Exception as e:
         print(f"⚠️  Database initialization failed: {e}")
         print("   Continuing without database (using in-memory storage)")
+
+    # Seed test users (admin/admin, client/client)
+    try:
+        seed_test_users()
+    except Exception as e:
+        print(f"⚠️  Test user seeding failed: {e}")
 
     # Initialize component health records (so Monitor isn't empty)
     try:

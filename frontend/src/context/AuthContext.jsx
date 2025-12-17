@@ -23,27 +23,20 @@ export const AuthProvider = ({ children }) => {
         }
     }, []);
 
-    const login = async (username, password) => {
+    const login = async (identifier, password) => {
         try {
-            // Map username to email for test users
-            const emailMap = {
-                'admin': 'admin@test.com',
-                'client': 'client@test.com'
-            };
-            const email = emailMap[username] || username;
-
-            // Call real backend API
-            const response = await api.login(email, password);
+            // Call real backend API with identifier (can be username or email)
+            const response = await api.login(identifier, password);
 
             // Store JWT token
             localStorage.setItem('auth_token', response.access_token);
 
-            // Store user data
+            // Store user data (map 'user' role to 'client' for frontend routing)
             const userData = {
                 id: response.user.id,
                 username: response.user.username,
                 email: response.user.email,
-                role: response.user.role
+                role: response.user.role === 'user' ? 'client' : response.user.role
             };
             setUser(userData);
             localStorage.setItem('ecc_user', JSON.stringify(userData));

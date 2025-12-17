@@ -80,11 +80,11 @@ def drop_db():
 def seed_test_users():
     """
     Seed test users for development and UI testing
-    
+
     Creates:
-    - Admin test user (admin/admin)
-    - Client test user (ath/ath)
-    
+    - Admin test user (username: admin, password: admin)
+    - Client test user (username: client, password: client)
+
     Only runs when ENABLE_TEST_USERS=true environment variable is set.
     """
     # Check if test users should be created
@@ -92,38 +92,46 @@ def seed_test_users():
     if not enable_test_users:
         print("⚠️  Test user seeding disabled (ENABLE_TEST_USERS != true)")
         return
-    
+
     from .models import User
-    from auth.password import get_password_hash
-    
+    from auth.password import hash_password
+
     db = SessionLocal()
     try:
         # Check if admin test user exists
         if not db.query(User).filter(User.username == 'admin').first():
-            print("🛡️  Seeding Admin (admin)...")
+            print("🛡️  Seeding Admin (username: admin, password: admin)...")
             admin_user = User(
                 username='admin',
                 email='admin@test.com',
-                hashed_password=get_password_hash('admin'),
-                role='admin'
+                hashed_password=hash_password('admin'),
+                role='admin',
+                full_name='System Administrator',
+                is_active=True
             )
             db.add(admin_user)
-        
+        else:
+            print("✓ Admin user already exists")
+
         # Check if client test user exists
         if not db.query(User).filter(User.username == 'client').first():
-            print("👤 Seeding Client (client)...")
+            print("👤 Seeding Client (username: client, password: client)...")
             client_user = User(
                 username='client',
                 email='client@test.com',
-                hashed_password=get_password_hash('client'),
-                role='client'
+                hashed_password=hash_password('client'),
+                role='user',  # Use 'user' role for client accounts
+                full_name='Test Client User',
+                is_active=True
             )
             db.add(client_user)
-        
+        else:
+            print("✓ Client user already exists")
+
         db.commit()
         print("✓ Test users seeded successfully")
     except Exception as e:
-        print(f"⚠️  Seeding skipped: {e}")
+        print(f"⚠️  Seeding failed: {e}")
         db.rollback()
     finally:
         db.close()

@@ -62,10 +62,10 @@ async function fetchApi(endpoint, options = {}) {
 // Authentication API
 // ============================================================================
 
-export async function login(email, password) {
+export async function login(identifier, password) {
     return fetchApi('/api/v1/auth/login', {
         method: 'POST',
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify({ identifier, password }),
     });
 }
 

@@ -26,7 +26,7 @@ class UserRegister(BaseModel):
 
 
 class UserLogin(BaseModel):
-    email: EmailStr
+    identifier: str = Field(..., description="Username or email")
     password: str
 
 
@@ -112,9 +112,10 @@ async def login_user(credentials: UserLogin, db: Session = Depends(get_db)):
     User login
 
     Authenticate user and return access token.
+    Supports login with either username or email.
 
     Args:
-        credentials: Login credentials (email and password)
+        credentials: Login credentials (username/email and password)
         db: Database session
 
     Returns:
@@ -123,13 +124,15 @@ async def login_user(credentials: UserLogin, db: Session = Depends(get_db)):
     Raises:
         HTTPException: If credentials are invalid
     """
-    # Find user
-    user = db.query(User).filter(User.email == credentials.email).first()
+    # Find user by username OR email
+    user = db.query(User).filter(
+        (User.username == credentials.identifier) | (User.email == credentials.identifier)
+    ).first()
 
     if not user or not verify_password(credentials.password, user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect email or password",
+            detail="Incorrect username/email or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
