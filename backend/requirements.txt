@@ -36,5 +36,6 @@ numpy==1.26.2
 
 # Utilities
 requests==2.31.0
+beautifulsoup4==4.12.2
 python-dotenv==1.0.0
 APScheduler==3.10.4

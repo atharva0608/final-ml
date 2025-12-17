@@ -89,7 +89,6 @@ def start_scheduler():
     print("  Jobs scheduled:")
     print("    - Cleanup expired sessions (every 5 minutes)")
     print("    - Update session counts (every 10 minutes)")
-    print("    - Update session counts (every 10 minutes)")
     print("    - Archive old logs (daily at 2 AM)")
     print("    - Waste Scanner (daily at 6 AM)")
     print("    - Security Enforcer (every 30 minutes)")

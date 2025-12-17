@@ -93,7 +93,6 @@ const DashboardLayout = ({ children, activeView, setActiveView, role = 'admin', 
         if (environmentMode === 'prod') {
             return [
                 { id: 'live', label: 'Live Operations', icon: Radio },
-                { id: 'fleet', label: 'Node Fleet', icon: Server },
                 { id: 'monitor', label: 'System Monitor', icon: Globe },
                 { id: 'controls', label: 'Global Controls', icon: Settings },
                 { id: 'clients', label: 'Client Management', icon: Users },

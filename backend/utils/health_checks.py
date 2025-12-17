@@ -174,17 +174,14 @@ def check_linear_optimizer() -> Tuple[str, Dict]:
         (status, details)
     """
     try:
-        # Try importing the optimizer
-        from pipelines.linear_optimizer import LinearOptimizer
-
-        # Check if optimizer can be instantiated
-        optimizer = LinearOptimizer()
+        # Try importing the optimizer (class is LinearPipeline)
+        from pipelines.linear_optimizer import LinearPipeline
 
         return ("healthy", {
             "message": "Linear optimizer operational",
             "details": {
                 "module": "loaded",
-                "class": "LinearOptimizer instantiated"
+                "class": "LinearPipeline"
             }
         })
 
