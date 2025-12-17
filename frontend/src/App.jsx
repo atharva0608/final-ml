@@ -191,6 +191,8 @@ const ClientDashboard = () => {
     switch (currentView) {
       case 'live':
         return <LiveOperations clientMode={true} clientData={clientData} />;
+      case 'experiments':
+        return <ModelExperiments />;
       case 'profile':
         return (
           <div className="max-w-4xl mx-auto space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-500">
