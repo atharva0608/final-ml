@@ -9,7 +9,7 @@ Contains database models, connection management, and utilities for:
 """
 
 from .connection import engine, SessionLocal, get_db
-from .models import Base, User, Account, Instance, ModelRegistry, ExperimentLog
+from .models import Base, User, Account, Instance, MLModel, ExperimentLog
 
 __all__ = [
     'engine',
@@ -19,6 +19,6 @@ __all__ = [
     'User',
     'Account',
     'Instance',
-    'ModelRegistry',
+    'MLModel',
     'ExperimentLog',
 ]

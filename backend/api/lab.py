@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 
 from database.connection import get_db
-from database.models import User, Account, Instance, ModelRegistry, ExperimentLog
+from database.models import User, Account, Instance, MLModel, ExperimentLog, ModelStatus
 from auth.jwt import get_current_active_user
 from utils.aws_session import validate_account_access
 
@@ -372,28 +372,25 @@ async def get_pipeline_status(
 @router.get("/models", response_model=List[ModelInfo])
 async def list_models(db: Session = Depends(get_db)):
     """List all available models in the registry"""
-    models = db.query(ModelRegistry).filter(
-        ModelRegistry.is_active == True
-    ).order_by(ModelRegistry.created_at.desc()).all()
+    models = db.query(MLModel).filter(
+        MLModel.status != ModelStatus.ARCHIVED
+    ).order_by(MLModel.uploaded_at.desc()).all()
 
     result = []
     for model in models:
-        # Determine status
-        status_str = "testing"
-        if not model.is_active:
-            status_str = "rejected"
-        elif not model.is_experimental:
-            status_str = "graduated"
-            
+        # Map status
+        is_experimental = model.status == ModelStatus.CANDIDATE
+        status_str = "candidate" if model.status == ModelStatus.CANDIDATE else "graduated"
+
         result.append(ModelInfo(
             id=str(model.id),
             name=model.name,
-            version=model.version,
-            description=model.description,
-            is_experimental=model.is_experimental,
-            is_active=model.is_active,
+            version=model.name,  # Use name as version for compatibility
+            description=model.description or "",
+            is_experimental=is_experimental,
+            is_active=model.is_active_prod,
             status=status_str,
-            created_at=model.created_at
+            created_at=model.uploaded_at
         ))
 
     return result
@@ -406,12 +403,12 @@ async def graduate_model(
     db: Session = Depends(get_db)
 ):
     """Graduate a model from Lab (experimental) to Production (stable)"""
-    model = db.query(ModelRegistry).filter(ModelRegistry.id == model_id).first()
+    model = db.query(MLModel).filter(MLModel.id == model_id).first()
     if not model:
         raise HTTPException(status_code=404, detail="Model not found")
-    
-    model.is_experimental = False
-    model.is_active = True
+
+    model.status = ModelStatus.GRADUATED
+    model.graduated_at = datetime.utcnow()
     db.commit()
     return {"status": "graduated", "model_id": model_id}
 
@@ -422,12 +419,13 @@ async def reject_model(
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
-    """Reject a model (mark inactive)"""
-    model = db.query(ModelRegistry).filter(ModelRegistry.id == model_id).first()
+    """Reject a model (mark as archived)"""
+    model = db.query(MLModel).filter(MLModel.id == model_id).first()
     if not model:
         raise HTTPException(status_code=404, detail="Model not found")
-    
-    model.is_active = False
+
+    model.status = ModelStatus.ARCHIVED
+    model.is_active_prod = False
     db.commit()
     return {"status": "rejected", "model_id": model_id}
 

@@ -28,7 +28,7 @@ import numpy as np
 from botocore.exceptions import ClientError, WaiterError
 
 # Database models
-from database.models import Instance, Account, ExperimentLog, ModelRegistry
+from database.models import Instance, Account, ExperimentLog, MLModel, ModelStatus
 from database.connection import get_db
 from sqlalchemy.orm import Session
 
@@ -667,8 +667,8 @@ class LinearPipeline:
             # Get model registry entry
             model_registry = None
             if context.assigned_model_version:
-                model_registry = self.db.query(ModelRegistry).filter(
-                    ModelRegistry.version == context.assigned_model_version
+                model_registry = self.db.query(MLModel).filter(
+                    MLModel.name == context.assigned_model_version
                 ).first()
 
             # Create experiment log
