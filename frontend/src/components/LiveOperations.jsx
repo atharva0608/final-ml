@@ -57,8 +57,10 @@ const LiveOperations = () => {
                     { name: "K8s Controller", status: healthOverview.components.find(c => c.component === 'instance_manager')?.status || 'unknown' }
                 ],
                 metrics: {
-                    activeInstances: healthOverview.components.find(c => c.component === 'instance_manager')?.success_count_24h || 142,
+                    activeInstances: healthOverview.components.find(c => c.component === 'instance_manager')?.success_count_24h || 0,
                     riskDetected: healthOverview.components.find(c => c.component === 'ml_inference')?.failure_count_24h || 0,
+                    costSavings: healthOverview.cost_savings_24h || 0,
+                    optimizations: healthOverview.components.find(c => c.component === 'linear_optimizer')?.success_count_24h || 0,
                 },
                 funnel: [
                     { value: 500, name: "Pools Scanned", fill: "#3b82f6", description: "Total candidates found" },
@@ -82,8 +84,10 @@ const LiveOperations = () => {
                     { name: "K8s Controller", status: 'Offline' }
                 ],
                 metrics: {
-                    activeInstances: '-',
-                    riskDetected: '-',
+                    activeInstances: 0,
+                    riskDetected: 0,
+                    costSavings: 0,
+                    optimizations: 0,
                 },
                 funnel: [
                     { value: 0, name: "Pools Scanned", fill: "#94a3b8", description: "Offline" },
@@ -167,15 +171,15 @@ const LiveOperations = () => {
                 />
                 <MetricCard
                     label="Cost Savings"
-                    value={error ? "-" : "$1.2k"}
+                    value={error ? "-" : `$${(pipelineData?.metrics.costSavings || 0).toLocaleString()}`}
                     icon={Filter}
-                    trend={error ? "Offline" : "Daily"}
+                    trend={error ? "Offline" : "24h"}
                 />
                 <MetricCard
                     label="Optimizations"
-                    value={error ? "-" : "89"}
+                    value={error ? "-" : (pipelineData?.metrics.optimizations || 0)}
                     icon={Zap}
-                    trend={error ? "Offline" : "Last 1h"}
+                    trend={error ? "Offline" : "24h"}
                 />
             </div>
 

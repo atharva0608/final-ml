@@ -101,15 +101,33 @@ const Switch = ({ checked, onChange }) => (
 // --- Sub-Components (View Modules) ---
 
 const UnregisteredInstances = () => {
-    // Local mock data or logic for unregistered instances
-    const [instances, setInstances] = useState([
-        { id: 'i-0a1b2c3d4e5f6g7h8', region: 'us-east-1', zone: 'us-east-1a', type: 'c5.xlarge', launchTime: '2025-05-15 10:30:00 UTC' }
-    ]);
+    const [instances, setInstances] = useState([]);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState(null);
     const [decisions, setDecisions] = useState({});
+
+    // Fetch real unregistered instances from governance API
+    useEffect(() => {
+        const fetchUnregistered = async () => {
+            try {
+                setLoading(true);
+                const data = await api.getUnauthorizedInstances();
+                setInstances(data || []);
+                setError(null);
+            } catch (err) {
+                console.error("Failed to load unregistered instances:", err);
+                setError("Failed to load unregistered instances");
+                setInstances([]);
+            } finally {
+                setLoading(false);
+            }
+        };
+        fetchUnregistered();
+    }, []);
 
     const handleDecision = (id, decision) => {
         setDecisions(prev => ({ ...prev, [id]: decision }));
-        // In a real app, API call here
+        // TODO: Add API call to persist decision
     };
 
     return (
@@ -136,7 +154,27 @@ const UnregisteredInstances = () => {
                         </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 bg-white">
-                        {instances.map(inst => (
+                        {loading ? (
+                            <tr>
+                                <td colSpan={5} className="px-4 py-8 text-center text-slate-400 text-xs">
+                                    <RefreshCw className="w-5 h-5 mx-auto mb-2 animate-spin text-blue-500" />
+                                    Loading unregistered instances...
+                                </td>
+                            </tr>
+                        ) : error ? (
+                            <tr>
+                                <td colSpan={5} className="px-4 py-8 text-center text-red-600 text-xs">
+                                    <AlertTriangle className="w-5 h-5 mx-auto mb-2" />
+                                    {error}
+                                </td>
+                            </tr>
+                        ) : instances.length === 0 ? (
+                            <tr>
+                                <td colSpan={5} className="px-4 py-8 text-center text-slate-400 text-xs italic">
+                                    No unregistered instances found. All instances are properly tracked.
+                                </td>
+                            </tr>
+                        ) : instances.map(inst => (
                             <tr key={inst.id} className="hover:bg-slate-50 transition-colors">
                                 <td className="px-4 py-3 font-mono text-xs font-medium text-slate-700 flex items-center">
                                     <Server className="w-3 h-3 mr-2 text-slate-400" />
@@ -289,12 +327,27 @@ const AmiSnapshots = () => {
 };
 
 const ActivityLog = () => {
-    const logs = [
-        { id: 1, time: '2m ago', message: 'Auto-scaled Cluster "Production-East" to 84 nodes', type: 'info' },
-        { id: 2, time: '15m ago', message: 'Spot instance i-0a1b... reclaimed. Fallback triggered.', type: 'alert' },
-        { id: 3, time: '1h ago', message: 'Cost optimization routine saved $45.20', type: 'success' },
-        { id: 4, time: '2h ago', message: 'Weekly backup completed successfully', type: 'info' },
-    ];
+    const [logs, setLogs] = useState([]);
+    const [loading, setLoading] = useState(true);
+
+    useEffect(() => {
+        const fetchActivity = async () => {
+            try {
+                setLoading(true);
+                const data = await api.getActivityFeed(10);
+                setLogs(data || []);
+            } catch (err) {
+                console.error("Failed to load activity feed:", err);
+                setLogs([]);
+            } finally {
+                setLoading(false);
+            }
+        };
+        fetchActivity();
+        const interval = setInterval(fetchActivity, 30000); // Refresh every 30s
+        return () => clearInterval(interval);
+    }, []);
+
     return (
         <div className="bg-white border border-slate-200 shadow-sm rounded-lg p-6">
             <div className="flex items-center justify-between mb-4">
@@ -302,16 +355,19 @@ const ActivityLog = () => {
                     <Clock className="w-4 h-4 text-slate-400 mr-2" />
                     Recent Activity
                 </h3>
+                {loading && <RefreshCw className="w-3 h-3 text-blue-500 animate-spin" />}
             </div>
             <div className="space-y-4">
-                {logs.map(log => (
+                {logs.length === 0 ? (
+                    <p className="text-xs text-slate-400 italic text-center py-4">No recent activity</p>
+                ) : logs.map(log => (
                     <div key={log.id} className="flex items-start space-x-3 pb-3 border-b border-slate-50 last:border-0 last:pb-0">
                         <div className={cn("mt-0.5 w-2 h-2 rounded-full",
                             log.type === 'info' ? "bg-blue-400" : (log.type === 'alert' ? "bg-amber-400" : "bg-emerald-400")
                         )} />
                         <div>
                             <p className="text-xs font-medium text-slate-700 leading-snug">{log.message}</p>
-                            <p className="text-[10px] text-slate-400 mt-0.5">{log.time}</p>
+                            <p className="text-[10px] text-slate-400 mt-0.5">{log.timestamp || log.time}</p>
                         </div>
                     </div>
                 ))}
@@ -573,35 +629,56 @@ const ClientCard = ({ client, onClick }) => (
     </div>
 );
 
-const ClientMasterView = ({ clients, onSelectClient, loading, error }) => (
-    <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
-        <div className="flex justify-between items-end">
-            <div>
-                <h1 className="text-2xl font-bold text-slate-900 mb-2 tracking-tight">Mission Control</h1>
-                <p className="text-slate-500 text-sm">Overview of all managed clients and fleet status</p>
-            </div>
-        </div>
+const ClientMasterView = ({ clients, onSelectClient, loading, error }) => {
+    // Calculate real KPIs from client data
+    const totalNodes = clients.reduce((sum, client) => sum + (client.totalNodes || 0), 0);
+    const totalSavings = clients.reduce((sum, client) => {
+        const savingsStr = client.potentialSavings || '$0';
+        const savingsNum = parseFloat(savingsStr.replace(/[$,]/g, ''));
+        return sum + (isNaN(savingsNum) ? 0 : savingsNum);
+    }, 0);
+    const activeClients = clients.filter(c => c.status === 'Active').length;
+    const optimizationRate = clients.length > 0 ? ((activeClients / clients.length) * 100).toFixed(1) : 0;
 
-        {/* KPI Grid */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            <div className="bg-slate-900 rounded-xl p-6 shadow-xl text-white relative overflow-hidden">
-                <div className="absolute top-0 right-0 p-8 bg-blue-500 rounded-full blur-[60px] opacity-20 -mr-10 -mt-10" />
-                <div className="relative">
-                    <div className="text-slate-400 text-xs font-bold uppercase tracking-wider mb-2">Total Monthly Savings</div>
-                    <div className="text-3xl font-bold mb-4">$42,850</div>
+    return (
+        <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
+            <div className="flex justify-between items-end">
+                <div>
+                    <h1 className="text-2xl font-bold text-slate-900 mb-2 tracking-tight">Mission Control</h1>
+                    <p className="text-slate-500 text-sm">Overview of all managed clients and fleet status</p>
                 </div>
             </div>
-            <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm">
-                <div className="text-slate-500 text-xs font-bold uppercase tracking-wider mb-2">Total Active Nodes</div>
-                <div className="text-3xl font-bold text-slate-900 mb-4">1,248</div>
-                <div className="w-full bg-slate-100 h-1.5 rounded-full overflow-hidden"><div className="bg-blue-600 h-full w-[75%] rounded-full" /></div>
+
+            {/* KPI Grid */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                <div className="bg-slate-900 rounded-xl p-6 shadow-xl text-white relative overflow-hidden">
+                    <div className="absolute top-0 right-0 p-8 bg-blue-500 rounded-full blur-[60px] opacity-20 -mr-10 -mt-10" />
+                    <div className="relative">
+                        <div className="text-slate-400 text-xs font-bold uppercase tracking-wider mb-2">Total Monthly Savings</div>
+                        <div className="text-3xl font-bold mb-4">
+                            {loading ? '...' : `$${totalSavings.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`}
+                        </div>
+                    </div>
+                </div>
+                <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm">
+                    <div className="text-slate-500 text-xs font-bold uppercase tracking-wider mb-2">Total Active Nodes</div>
+                    <div className="text-3xl font-bold text-slate-900 mb-4">
+                        {loading ? '...' : totalNodes.toLocaleString()}
+                    </div>
+                    <div className="w-full bg-slate-100 h-1.5 rounded-full overflow-hidden">
+                        <div className="bg-blue-600 h-full w-[75%] rounded-full" />
+                    </div>
+                </div>
+                <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm">
+                    <div className="text-slate-500 text-xs font-bold uppercase tracking-wider mb-2">Optimization Rate</div>
+                    <div className="text-3xl font-bold text-emerald-600 mb-4">
+                        {loading ? '...' : `${optimizationRate}%`}
+                    </div>
+                    <div className="w-full bg-slate-100 h-1.5 rounded-full overflow-hidden">
+                        <div className="bg-emerald-500 h-full rounded-full" style={{ width: `${optimizationRate}%` }} />
+                    </div>
+                </div>
             </div>
-            <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm">
-                <div className="text-slate-500 text-xs font-bold uppercase tracking-wider mb-2">Optimization Rate</div>
-                <div className="text-3xl font-bold text-emerald-600 mb-4">98.2%</div>
-                <div className="w-full bg-slate-100 h-1.5 rounded-full overflow-hidden"><div className="bg-emerald-500 h-full w-[98%] rounded-full" /></div>
-            </div>
-        </div>
 
         {/* Client Grid */}
         <div>
