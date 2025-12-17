@@ -50,12 +50,19 @@ const STATUS_COLORS = {
     icon: 'text-red-500',
     badge: 'bg-red-100 text-red-800'
   },
-  unknown: {
-    bg: 'bg-slate-50',
-    border: 'border-slate-300',
-    text: 'text-slate-700',
-    icon: 'text-slate-400',
-    badge: 'bg-slate-100 text-slate-600'
+  critical: {
+    bg: 'bg-red-50',
+    border: 'border-red-600',
+    text: 'text-red-800',
+    icon: 'text-red-600',
+    badge: 'bg-red-100 text-red-900'
+  },
+  unhealthy: {
+    bg: 'bg-red-50',
+    border: 'border-red-500',
+    text: 'text-red-700',
+    icon: 'text-red-500',
+    badge: 'bg-red-100 text-red-800'
   }
 };
 
@@ -120,7 +127,7 @@ const ComponentCard = ({ component, health, logs, onRefresh }) => {
   };
 
   const Icon = info.icon;
-  const statusColors = STATUS_COLORS[health?.status || 'unknown'];
+  const statusColors = STATUS_COLORS[health?.status || 'degraded'];
   const [showLogs, setShowLogs] = useState(true);
 
   return (
@@ -141,7 +148,7 @@ const ComponentCard = ({ component, health, logs, onRefresh }) => {
           </div>
           <div className={`flex items-center space-x-2 px-2.5 py-1 rounded-full text-xs font-bold uppercase tracking-wider ${statusColors.badge}`}>
             <div className={`w-1.5 h-1.5 rounded-full bg-current animate-pulse`} />
-            <span>{health?.status || 'unknown'}</span>
+            <span>{health?.status || 'degraded'}</span>
           </div>
         </div>
 
@@ -348,8 +355,10 @@ const SystemMonitor = () => {
   const overallStatusColors = {
     healthy: 'bg-green-500',
     warning: 'bg-yellow-500',
+    degraded: 'bg-yellow-500',
     critical: 'bg-red-500',
-    unknown: 'bg-gray-500'
+    down: 'bg-red-500',
+    unhealthy: 'bg-red-500'
   };
 
   return (

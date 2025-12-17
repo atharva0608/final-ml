@@ -3,7 +3,6 @@ import { FunnelChart, Funnel, Tooltip, ResponsiveContainer, LabelList } from 're
 import { Shield, Filter, Zap, Activity, AlertCircle, RefreshCw, WifiOff } from 'lucide-react';
 import { cn } from '../lib/utils';
 import api from '../services/api';
-import InstanceFlowAnimation from './InstanceFlowAnimation';
 
 const CustomTooltip = ({ active, payload }) => {
     if (active && payload && payload.length) {
@@ -51,10 +50,10 @@ const LiveOperations = () => {
             setPipelineData({
                 status: healthOverview.overall_status,
                 components: [
-                    { name: "Scraper Service", status: healthOverview.components.find(c => c.component === 'web_scraper')?.status || 'unknown' },
-                    { name: "Risk Engine", status: healthOverview.components.find(c => c.component === 'ml_inference')?.status || 'unknown' },
-                    { name: "Cost Optimizer", status: healthOverview.components.find(c => c.component === 'linear_optimizer')?.status || 'unknown' },
-                    { name: "K8s Controller", status: healthOverview.components.find(c => c.component === 'instance_manager')?.status || 'unknown' }
+                    { name: "Scraper Service", status: healthOverview.components.find(c => c.component === 'web_scraper')?.status || 'degraded' },
+                    { name: "Risk Engine", status: healthOverview.components.find(c => c.component === 'ml_inference')?.status || 'degraded' },
+                    { name: "Cost Optimizer", status: healthOverview.components.find(c => c.component === 'linear_optimizer')?.status || 'degraded' },
+                    { name: "K8s Controller", status: healthOverview.components.find(c => c.component === 'instance_manager')?.status || 'degraded' }
                 ],
                 metrics: {
                     activeInstances: healthOverview.components.find(c => c.component === 'instance_manager')?.success_count_24h || 0,
@@ -141,19 +140,6 @@ const LiveOperations = () => {
                         <button onClick={fetchData} className="ml-4 hover:underline">Retry</button>
                     </div>
                 )}
-            </div>
-
-            {/* Real-Time Decision Flow Visualization */}
-            <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-1 overflow-hidden">
-                <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
-                    <h3 className="text-sm font-bold text-slate-900 flex items-center">
-                        <Activity className="w-4 h-4 mr-2 text-blue-500" />
-                        Real-Time Decision Flow
-                    </h3>
-                </div>
-                <div className="h-64 relative bg-slate-50">
-                    <InstanceFlowAnimation />
-                </div>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">

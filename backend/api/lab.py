@@ -8,12 +8,15 @@ Real database-backed Lab Mode management with:
 - Cross-account authorization
 """
 
-from fastapi import APIRouter, HTTPException, Depends, status
+from fastapi import APIRouter, HTTPException, Depends, status, UploadFile, File
 from pydantic import BaseModel, Field
 from typing import Optional, List
 from datetime import datetime
 from sqlalchemy.orm import Session
 from sqlalchemy import func
+from pathlib import Path
+import shutil
+import hashlib
 
 from database.connection import get_db
 from database.models import User, Account, Instance, MLModel, ExperimentLog, ModelStatus
@@ -428,6 +431,71 @@ async def reject_model(
     model.is_active_prod = False
     db.commit()
     return {"status": "rejected", "model_id": model_id}
+
+
+@router.post("/models/upload")
+async def upload_model(
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """Upload a new ML model (.pkl file)"""
+
+    # Validate file type
+    if not file.filename.endswith('.pkl'):
+        raise HTTPException(
+            status_code=400,
+            detail="Only .pkl files are supported"
+        )
+
+    # Define ml-models directory
+    ml_models_dir = Path(__file__).parent.parent / "ml-models"
+    ml_models_dir.mkdir(exist_ok=True)
+
+    # Save file
+    file_path = ml_models_dir / file.filename
+
+    # Check if model already exists
+    existing_model = db.query(MLModel).filter(MLModel.name == file.filename).first()
+    if existing_model:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Model {file.filename} already exists"
+        )
+
+    # Save uploaded file
+    with file_path.open("wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+
+    # Calculate file hash
+    sha256 = hashlib.sha256()
+    with file_path.open('rb') as f:
+        for chunk in iter(lambda: f.read(4096), b''):
+            sha256.update(chunk)
+    file_hash = sha256.hexdigest()
+
+    # Create database record
+    new_model = MLModel(
+        name=file.filename,
+        file_path=str(file_path.absolute()),
+        file_hash=file_hash,
+        status=ModelStatus.CANDIDATE,
+        is_active_prod=False,
+        uploaded_by=current_user.id,
+        uploaded_at=datetime.utcnow()
+    )
+
+    db.add(new_model)
+    db.commit()
+    db.refresh(new_model)
+
+    return {
+        "id": new_model.id,
+        "name": new_model.name,
+        "status": new_model.status.value,
+        "uploaded_at": new_model.uploaded_at,
+        "message": f"Model {file.filename} uploaded successfully"
+    }
 
 
 # ============================================================================
