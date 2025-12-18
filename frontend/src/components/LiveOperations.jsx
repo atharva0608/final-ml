@@ -3,7 +3,6 @@ import { FunnelChart, Funnel, Tooltip, ResponsiveContainer, LabelList } from 're
 import { Shield, Filter, Zap, Activity, AlertCircle, RefreshCw, WifiOff } from 'lucide-react';
 import { cn } from '../lib/utils';
 import api from '../services/api';
-import InstanceFlowAnimation from './InstanceFlowAnimation';
 
 const CustomTooltip = ({ active, payload }) => {
     if (active && payload && payload.length) {
@@ -39,7 +38,6 @@ const MetricCard = ({ label, value, icon: Icon, trend }) => (
 
 const LiveOperations = () => {
     const [pipelineData, setPipelineData] = useState(null);
-    const [clusterData, setClusterData] = useState([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
 
@@ -48,36 +46,6 @@ const LiveOperations = () => {
         try {
             // Fetch real system health overview to derive pipeline status
             const healthOverview = await api.getSystemOverview();
-
-            // Fetch cluster topology data for animation
-            try {
-                const clients = await api.getClients();
-                // Safety check: ensure clients is an array
-                if (!Array.isArray(clients)) {
-                    console.warn('Clients API returned non-array:', clients);
-                    setClusterData([]);
-                } else {
-                    // Flatten all clusters from all clients into a single array
-                    const allClusters = clients.flatMap(client =>
-                        (Array.isArray(client?.clusters) ? client.clusters : []).map(cluster => ({
-                            id: cluster.id,
-                            name: cluster.name,
-                            region: cluster.region,
-                            nodeCount: cluster.nodeCount,
-                            nodes: (Array.isArray(cluster?.nodes) ? cluster.nodes : []).map(node => ({
-                                id: node.id,
-                                name: node.id,
-                                instanceType: node.family,
-                                status: 'stable'
-                            }))
-                        }))
-                    );
-                    setClusterData(allClusters);
-                }
-            } catch (clusterErr) {
-                console.error('Failed to fetch cluster data:', clusterErr);
-                setClusterData([]); // Empty array shows "No Clusters Found"
-            }
 
             setPipelineData({
                 status: healthOverview.overall_status,
@@ -200,9 +168,6 @@ const LiveOperations = () => {
                     trend={error ? "Offline" : "24h"}
                 />
             </div>
-
-            {/* Cluster Topology Animation */}
-            <InstanceFlowAnimation clusters={clusterData} fallbackMode="none" />
 
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
                 <div className="lg:col-span-2 bg-white border border-slate-200 shadow-sm rounded-lg p-8">

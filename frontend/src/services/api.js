@@ -138,11 +138,39 @@ export async function rejectModel(modelId) {
 }
 
 export async function uploadModel(formData) {
-    return fetchApi('/v1/lab/models/upload', {
-        method: 'POST',
-        headers: {}, // Let browser set Content-Type with boundary for multipart
-        body: formData,
-    });
+    // For file uploads, we need to handle headers specially
+    // Don't set Content-Type - let browser set it with boundary
+    // But we still need the Authorization header
+    const token = localStorage.getItem('auth_token');
+    const url = `${API_BASE_URL}/v1/lab/models/upload`;
+
+    try {
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: {
+                ...(token && { 'Authorization': `Bearer ${token}` }),
+                // Don't set Content-Type for FormData - browser will add it with boundary
+            },
+            body: formData,
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+            throw new ApiError(
+                data.detail || 'Upload failed',
+                response.status,
+                data
+            );
+        }
+
+        return data;
+    } catch (error) {
+        if (error instanceof ApiError) {
+            throw error;
+        }
+        throw new ApiError(error.message, 0, null);
+    }
 }
 
 export async function getExperimentLogs(instanceId, limit = 50) {
