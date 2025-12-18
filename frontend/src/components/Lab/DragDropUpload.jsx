@@ -45,21 +45,28 @@ const DragDropUpload = ({ onUpload, className }) => {
         }
     };
 
-    const handleUpload = () => {
-        if (!file) return;
+    const handleUpload = async () => {
+        if (!file || !onUpload) return;
         setUploadStatus('uploading');
 
-        // Simulate upload
-        setTimeout(() => {
+        try {
+            // Call the actual upload function passed from parent
+            await onUpload(file);
             setUploadStatus('success');
-            if (onUpload) onUpload(file);
 
             // Reset after success
             setTimeout(() => {
                 setFile(null);
                 setUploadStatus('idle');
             }, 2000);
-        }, 1500);
+        } catch (error) {
+            console.error('Upload failed:', error);
+            setUploadStatus('error');
+            // Reset error state after 3 seconds
+            setTimeout(() => {
+                setUploadStatus('idle');
+            }, 3000);
+        }
     };
 
     return (
@@ -102,6 +109,20 @@ const DragDropUpload = ({ onUpload, className }) => {
                         </div>
                         <h3 className="text-emerald-700 font-bold mb-1">Upload Complete</h3>
                         <p className="text-slate-500 text-xs">{file?.name}</p>
+                    </div>
+                ) : uploadStatus === 'error' ? (
+                    <div className="text-center animate-in fade-in zoom-in duration-300">
+                        <div className="w-12 h-12 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-3 text-red-600">
+                            <AlertCircle className="w-6 h-6" />
+                        </div>
+                        <h3 className="text-red-700 font-bold mb-1">Upload Failed</h3>
+                        <p className="text-slate-500 text-xs">Please try again</p>
+                        <button
+                            onClick={(e) => { e.stopPropagation(); setUploadStatus('idle'); setFile(null); }}
+                            className="mt-3 px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-xs font-bold rounded-lg transition-colors"
+                        >
+                            Try Again
+                        </button>
                     </div>
                 ) : !file ? (
                     <>
