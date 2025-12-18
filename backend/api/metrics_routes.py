@@ -102,7 +102,7 @@ async def get_activity_metrics(
 @router.get('/live')
 async def get_live_metrics(
     db: Session = Depends(get_db),
-    current_user = Depends(get_current_user)
+    current_user = Depends(get_current_active_user)
 ):
     """
     Returns live pipeline metrics for real-time monitoring
