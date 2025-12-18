@@ -14,6 +14,7 @@ import {
 } from 'recharts';
 import { cn } from "../lib/utils";
 import api from '../services/api';
+import InstanceFlowAnimation from './InstanceFlowAnimation';
 
 // --- Helpers & Visual Components ---
 
@@ -566,21 +567,29 @@ const ClientDetailView = ({ client, onBack, onSelectCluster }) => {
             </div>
 
             {activeTab === 'dashboard' && (
-                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                    <div className="lg:col-span-2 space-y-6">
-                        {/* Savings Chart Placeholder */}
-                        <div className="bg-white border border-slate-200 rounded-lg shadow-sm p-6">
-                            <h3 className="text-sm font-bold text-slate-900 mb-4">Cost Savings Overview</h3>
-                            <div className="h-64 flex items-center justify-center bg-slate-50 rounded text-slate-400 text-xs">Chart Visualization Check</div>
+                <div className="space-y-6">
+                    {/* Cluster Topology Visualization */}
+                    <InstanceFlowAnimation
+                        clusters={client.clusters || []}
+                        fallbackMode="none"
+                    />
+
+                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                        <div className="lg:col-span-2 space-y-6">
+                            {/* Savings Chart Placeholder */}
+                            <div className="bg-white border border-slate-200 rounded-lg shadow-sm p-6">
+                                <h3 className="text-sm font-bold text-slate-900 mb-4">Cost Savings Overview</h3>
+                                <div className="h-64 flex items-center justify-center bg-slate-50 rounded text-slate-400 text-xs">Chart Visualization Check</div>
+                            </div>
                         </div>
-                    </div>
-                    <div className="space-y-6">
-                        <ResourceDistributionChart clusters={client.clusters || []} />
-                        <ActivityLog />
-                        <div className="bg-white border border-slate-200 shadow-sm rounded-lg p-6">
-                            <h3 className="text-sm font-bold text-slate-900 mb-4">Fleet Policies</h3>
-                            <div className="space-y-4">
-                                {/* Policies section - currently empty, can be expanded with future policies */}
+                        <div className="space-y-6">
+                            <ResourceDistributionChart clusters={client.clusters || []} />
+                            <ActivityLog />
+                            <div className="bg-white border border-slate-200 shadow-sm rounded-lg p-6">
+                                <h3 className="text-sm font-bold text-slate-900 mb-4">Fleet Policies</h3>
+                                <div className="space-y-4">
+                                    {/* Policies section - currently empty, can be expanded with future policies */}
+                                </div>
                             </div>
                         </div>
                     </div>

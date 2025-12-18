@@ -23,6 +23,7 @@ import time
 from database.system_logs import SystemLog, ComponentHealth, ComponentType, LogLevel, ComponentStatus
 from database.connection import get_db
 from sqlalchemy.orm import Session
+from utils.component_health_checks import ComponentHealthEvaluator
 
 
 class Component:
@@ -112,12 +113,7 @@ class SystemLogger:
 
     def _update_health(self, success: Optional[str], execution_time_ms: Optional[int]):
         """
-        Update component health metrics
-
-        Health Status Logic:
-        - HEALTHY: Component is responding AND actively doing work (recent successes)
-        - DEGRADED: Component is up but not doing work, or has some failures
-        - DOWN: Component not responding or high failure rate
+        Update component health metrics using component-specific evaluation logic
         """
         try:
             health = self._ensure_health_record()
@@ -133,24 +129,8 @@ class SystemLogger:
                 health.last_failure = datetime.utcnow()
                 health.failure_count_24h += 1
 
-            # Determine status based on activity and failure rate
-            total = health.success_count_24h + health.failure_count_24h
-            failure_rate = health.failure_count_24h / total if total > 0 else 0
-
-            # Check if component has been active recently (last hour)
-            now = datetime.utcnow()
-            last_activity = health.last_success or health.last_failure
-            is_recently_active = last_activity and (now - last_activity) < timedelta(hours=1)
-
-            # Component not responding or critical failure rate
-            if failure_rate > 0.5 or not is_recently_active:
-                health.status = ComponentStatus.DOWN.value
-            # Component has failures or low activity (degraded)
-            elif failure_rate > 0.2 or health.success_count_24h < 5:
-                health.status = ComponentStatus.DEGRADED.value
-            # Component actively working with good success rate
-            else:
-                health.status = ComponentStatus.HEALTHY.value
+            # Use component-specific health evaluation
+            health.status = ComponentHealthEvaluator.evaluate_health(self.component, health)
 
             # Update average execution time
             if execution_time_ms:
