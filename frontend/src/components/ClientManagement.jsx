@@ -5,6 +5,7 @@ import {
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import api from '../services/api';
+import InstanceFlowAnimation from './InstanceFlowAnimation';
 
 const ClientCreateModal = ({ onClose, onCreate }) => {
     const [formData, setFormData] = useState({
@@ -216,6 +217,7 @@ const ClientEditModal = ({ user, onClose, onSave }) => {
 
 const ClientManagement = () => {
     const [users, setUsers] = useState([]);
+    const [clusterData, setClusterData] = useState([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
     const [searchTerm, setSearchTerm] = useState('');
@@ -237,8 +239,42 @@ const ClientManagement = () => {
         }
     };
 
+    // Fetch cluster topology data
+    const fetchClusters = async () => {
+        try {
+            const clients = await api.getClients();
+            if (!Array.isArray(clients)) {
+                console.warn('Clients API returned non-array:', clients);
+                setClusterData([]);
+            } else {
+                const allClusters = clients.flatMap(client =>
+                    (Array.isArray(client?.clusters) ? client.clusters : []).map(cluster => ({
+                        id: cluster.id,
+                        name: cluster.name,
+                        region: cluster.region,
+                        nodeCount: cluster.nodeCount,
+                        nodes: (Array.isArray(cluster?.nodes) ? cluster.nodes : []).map(node => ({
+                            id: node.id,
+                            name: node.id,
+                            instanceType: node.family,
+                            status: 'stable'
+                        }))
+                    }))
+                );
+                setClusterData(allClusters);
+            }
+        } catch (err) {
+            console.error('Failed to fetch cluster data:', err);
+            setClusterData([]);
+        }
+    };
+
     useEffect(() => {
         fetchUsers();
+        fetchClusters();
+        // Refresh clusters periodically
+        const interval = setInterval(fetchClusters, 30000);
+        return () => clearInterval(interval);
     }, []);
 
     const handleSave = async (updatedUser) => {
@@ -322,8 +358,8 @@ const ClientManagement = () => {
             {/* Header */}
             <div className="flex justify-between items-end">
                 <div>
-                    <h1 className="text-2xl font-bold text-slate-900 mb-2 tracking-tight">Access Control</h1>
-                    <p className="text-slate-500 text-sm">Manage users, roles, and platform permissions</p>
+                    <h1 className="text-2xl font-bold text-slate-900 mb-2 tracking-tight">Client Management</h1>
+                    <p className="text-slate-500 text-sm">Manage clients, monitor topology, and control platform access</p>
                 </div>
                 <button
                     onClick={() => setShowCreateModal(true)}
@@ -332,6 +368,9 @@ const ClientManagement = () => {
                     <Plus className="w-4 h-4" /> <span>Add Client</span>
                 </button>
             </div>
+
+            {/* Cluster Topology Visualization */}
+            <InstanceFlowAnimation clusters={clusterData} fallbackMode="none" />
 
             {/* Table */}
             <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">

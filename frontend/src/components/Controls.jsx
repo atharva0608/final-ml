@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useModel } from '../context/ModelContext';
 import { CheckCircle2, UploadCloud, RefreshCw, AlertOctagon } from 'lucide-react';
 import api from '../services/api';
+import DragDropUpload from './Lab/DragDropUpload';
 
 const Controls = () => {
     const [isDragging, setIsDragging] = useState(false);
@@ -62,11 +63,11 @@ const Controls = () => {
 
                     {/* Quick Upload */}
                     <div className="flex-1 border-l border-slate-100 pl-6">
-                        <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-2">Upload Hotfix</label>
-                        <button className="flex items-center justify-center w-full px-4 py-2.5 bg-white border border-slate-200 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-50 hover:text-slate-900 transition-colors">
-                            <UploadCloud className="w-4 h-4 mr-2" />
-                            Upload .pkl (Direct to Prod)
-                        </button>
+                        <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-2">Upload Hotfix Model</label>
+                        <DragDropUpload onUpload={(file) => uploadModel(file, 'prod')} className="min-h-[100px]" />
+                        <p className="text-xs text-slate-400 mt-2">
+                            Direct upload to production (use with caution)
+                        </p>
                     </div>
                 </div>
 

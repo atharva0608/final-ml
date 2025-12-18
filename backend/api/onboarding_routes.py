@@ -43,11 +43,15 @@ async def create_onboarding_request(
         # Generate unique ExternalID
         external_id = f"spot-optimizer-{uuid.uuid4()}"
 
+        # Generate unique temporary account_id to avoid constraint violation
+        # Use UUID prefix so it's unique until real AWS account ID is provided
+        temp_account_id = f"pending-{uuid.uuid4().hex[:12]}"
+
         # Create placeholder account record
         new_account = Account(
             user_id=current_user.id,
             account_name=f"Pending Setup - {datetime.utcnow().strftime('%Y-%m-%d %H:%M')}",
-            account_id="pending",  # Will be updated after verification
+            account_id=temp_account_id,  # Unique temp ID, will be updated after verification
             external_id=external_id,
             role_arn="pending",  # Will be updated after verification
             region='us-east-1',  # Default, can be changed later
