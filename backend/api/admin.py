@@ -13,6 +13,7 @@ from sqlalchemy import desc, func
 from typing import List, Optional
 from datetime import datetime, timedelta
 from pydantic import BaseModel
+from uuid import UUID
 
 from database.connection import get_db
 from database.models import User
@@ -99,15 +100,18 @@ class NodeResponse(BaseModel):
     memory_utilization: float = 0.0
 
 class ClusterResponse(BaseModel):
-    id: str
-    name: str 
+    id: UUID
+    name: str
     nodes: List[NodeResponse]
     nodeCount: int
     status: str
     region: str
 
+    class Config:
+        from_attributes = True
+
 class ClientResponse(BaseModel):
-    id: str
+    id: UUID
     name: str
     tier: str
     region: str
@@ -115,6 +119,9 @@ class ClientResponse(BaseModel):
     clusters: List[ClusterResponse]
     total_instances: int
     monthly_savings: float
+
+    class Config:
+        from_attributes = True
 
 
 # ============================================================================
@@ -562,11 +569,19 @@ class UserUpdateStatus(BaseModel):
 class UserUpdateRole(BaseModel):
     role: str
 
+class UserCreate(BaseModel):
+    username: str
+    email: str
+    password: str
+    full_name: Optional[str] = None
+    role: str = "user"
+    is_active: bool = True
+
 class SpotStatusUpdate(BaseModel):
     disabled: bool
 
 class UserResponse(BaseModel):
-    id: str
+    id: UUID
     email: str
     username: str
     full_name: Optional[str] = None
@@ -579,6 +594,45 @@ class UserResponse(BaseModel):
         from_attributes = True
 
 
+@router.post("/clients", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
+async def create_client_user(
+    user_data: UserCreate,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """Create a new user/client (Admin only)"""
+    from auth.password import hash_password
+
+    if current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    # Check if username or email already exists
+    existing_user = db.query(User).filter(
+        (User.username == user_data.username) | (User.email == user_data.email)
+    ).first()
+
+    if existing_user:
+        raise HTTPException(
+            status_code=400,
+            detail="Username or email already registered"
+        )
+
+    # Create new user
+    new_user = User(
+        username=user_data.username,
+        email=user_data.email,
+        hashed_password=hash_password(user_data.password),
+        full_name=user_data.full_name,
+        role=user_data.role,
+        is_active=user_data.is_active
+    )
+
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+
+    return new_user
+
 @router.get("/users", response_model=List[UserResponse])
 async def list_users(
     skip: int = 0,
@@ -589,7 +643,7 @@ async def list_users(
     """List all registered users"""
     if current_user.role != "admin":
         raise HTTPException(status_code=403, detail="Admin access required")
-    
+
     users = db.query(User).offset(skip).limit(limit).all()
     return users
 

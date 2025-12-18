@@ -47,8 +47,8 @@ async def get_security_audit(
         ).all()
 
         # Group by severity
-        critical = [i for i in unauthorized_instances if i.metadata.get('grace_expired', False)]
-        high = [i for i in unauthorized_instances if not i.metadata.get('grace_expired', False)]
+        critical = [i for i in unauthorized_instances if (i.instance_metadata or {}).get('grace_expired', False)]
+        high = [i for i in unauthorized_instances if not (i.instance_metadata or {}).get('grace_expired', False)]
         medium = grace_period_instances
 
         result = {
@@ -66,10 +66,10 @@ async def get_security_audit(
                     'instance_type': i.instance_type,
                     'account_id': str(i.account_id),
                     'region': i.account.region if i.account else 'unknown',
-                    'severity': 'critical' if i.metadata.get('grace_expired') else 'high',
+                    'severity': 'critical' if (i.instance_metadata or {}).get('grace_expired') else 'high',
                     'violation_type': 'unauthorized_instance',
                     'description': f'Instance {i.instance_id} running without proper authorization tags',
-                    'detected_at': i.last_seen.isoformat() if i.last_seen else datetime.utcnow().isoformat()
+                    'detected_at': i.updated_at.isoformat() if i.updated_at else datetime.utcnow().isoformat()
                 }
                 for i in (unauthorized_instances + grace_period_instances)[:50]  # Limit to 50 most recent
             ]
@@ -107,7 +107,7 @@ async def get_unauthorized_instances(
         # Query unauthorized instances
         unauthorized = db.query(Instance).filter(
             Instance.auth_status.in_(['unauthorized', 'grace_period'])
-        ).order_by(Instance.last_seen.desc()).all()
+        ).order_by(Instance.updated_at.desc()).all()
 
         result = [
             {
@@ -116,12 +116,12 @@ async def get_unauthorized_instances(
                 'instance_type': item.instance_type,
                 'account_id': str(item.account_id),
                 'region': item.account.region if item.account else 'unknown',
-                'state': item.state,
-                'launch_time': item.launch_time.isoformat() if item.launch_time else None,
+                'state': (item.instance_metadata or {}).get('state', 'unknown'),
+                'launch_time': (item.instance_metadata or {}).get('launch_time'),
                 'violation_reason': 'Missing authorization tags (ManagedBy, ASG, or EKS)',
                 'auth_status': item.auth_status,
-                'detected_at': item.last_seen.isoformat() if item.last_seen else datetime.utcnow().isoformat(),
-                'grace_period_expires': item.metadata.get('grace_expires_at') if item.metadata else None
+                'detected_at': item.updated_at.isoformat() if item.updated_at else datetime.utcnow().isoformat(),
+                'grace_period_expires': (item.instance_metadata or {}).get('grace_expires_at')
             }
             for item in unauthorized
         ]

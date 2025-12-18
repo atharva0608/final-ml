@@ -6,6 +6,118 @@ import {
 import { cn } from '../lib/utils';
 import api from '../services/api';
 
+const ClientCreateModal = ({ onClose, onCreate }) => {
+    const [formData, setFormData] = useState({
+        username: '',
+        email: '',
+        password: '',
+        full_name: '',
+        role: 'user',
+        is_active: true
+    });
+
+    const handleSubmit = (e) => {
+        e.preventDefault();
+        if (!formData.username || !formData.email || !formData.password) {
+            alert("Username, email, and password are required");
+            return;
+        }
+        onCreate(formData);
+    };
+
+    return (
+        <div className="fixed inset-0 bg-black/50 z-[100] flex items-center justify-center backdrop-blur-sm animate-in fade-in duration-200">
+            <div className="bg-white rounded-xl shadow-2xl w-full max-w-md overflow-hidden transform transition-all scale-100 p-0">
+                <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
+                    <h3 className="text-lg font-bold text-slate-900">Add New User</h3>
+                    <button onClick={onClose} className="text-slate-400 hover:text-slate-600 transition-colors">
+                        <X className="w-5 h-5" />
+                    </button>
+                </div>
+
+                <form onSubmit={handleSubmit} className="p-6 space-y-4">
+                    <div>
+                        <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5">Username *</label>
+                        <input
+                            type="text"
+                            required
+                            value={formData.username}
+                            onChange={e => setFormData({ ...formData, username: e.target.value })}
+                            className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+                            placeholder="Enter username"
+                        />
+                    </div>
+
+                    <div>
+                        <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5">Email *</label>
+                        <input
+                            type="email"
+                            required
+                            value={formData.email}
+                            onChange={e => setFormData({ ...formData, email: e.target.value })}
+                            className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+                            placeholder="user@example.com"
+                        />
+                    </div>
+
+                    <div>
+                        <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5">Password *</label>
+                        <input
+                            type="password"
+                            required
+                            value={formData.password}
+                            onChange={e => setFormData({ ...formData, password: e.target.value })}
+                            className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+                            placeholder="Enter password"
+                        />
+                    </div>
+
+                    <div>
+                        <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5">Full Name</label>
+                        <input
+                            type="text"
+                            value={formData.full_name}
+                            onChange={e => setFormData({ ...formData, full_name: e.target.value })}
+                            className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+                            placeholder="Enter full name"
+                        />
+                    </div>
+
+                    <div>
+                        <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5">Role</label>
+                        <select
+                            value={formData.role}
+                            onChange={e => setFormData({ ...formData, role: e.target.value })}
+                            className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none bg-white"
+                        >
+                            <option value="admin">Administrator (Full Access)</option>
+                            <option value="user">Standard User</option>
+                            <option value="lab">Lab Researcher</option>
+                        </select>
+                    </div>
+
+                    <div className="flex items-center justify-end pt-4 border-t border-slate-100 gap-3">
+                        <button
+                            type="button"
+                            onClick={onClose}
+                            className="px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 rounded-lg transition-colors"
+                        >
+                            Cancel
+                        </button>
+                        <button
+                            type="submit"
+                            className="px-4 py-2 bg-slate-900 text-white text-sm font-bold rounded-lg hover:bg-slate-800 transition-all shadow-lg shadow-slate-900/10 flex items-center"
+                        >
+                            <Save className="w-4 h-4 mr-2" />
+                            Create User
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    );
+};
+
 const ClientEditModal = ({ user, onClose, onSave }) => {
     const [formData, setFormData] = useState({ ...user });
 
@@ -108,6 +220,7 @@ const ClientManagement = () => {
     const [error, setError] = useState(null);
     const [searchTerm, setSearchTerm] = useState('');
     const [selectedUser, setSelectedUser] = useState(null);
+    const [showCreateModal, setShowCreateModal] = useState(false);
 
     // Fetch users on mount
     const fetchUsers = async () => {
@@ -168,6 +281,22 @@ const ClientManagement = () => {
         }
     };
 
+    const handleCreateClient = async (newUserData) => {
+        try {
+            // Call API to create new user
+            const createdUser = await api.createClient(newUserData);
+            // Add to list
+            setUsers(prev => [...prev, createdUser]);
+            // Close modal
+            setShowCreateModal(false);
+            // Refresh list to ensure sync
+            await fetchUsers();
+        } catch (e) {
+            console.error("Failed to create user:", e);
+            alert("Failed to create user. Please try again.");
+        }
+    };
+
     const filteredUsers = users.filter(user =>
         (user.name || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
         (user.email || '').toLowerCase().includes(searchTerm.toLowerCase())
@@ -183,14 +312,24 @@ const ClientManagement = () => {
                 />
             )}
 
+            {showCreateModal && (
+                <ClientCreateModal
+                    onClose={() => setShowCreateModal(false)}
+                    onCreate={handleCreateClient}
+                />
+            )}
+
             {/* Header */}
             <div className="flex justify-between items-end">
                 <div>
                     <h1 className="text-2xl font-bold text-slate-900 mb-2 tracking-tight">Access Control</h1>
                     <p className="text-slate-500 text-sm">Manage users, roles, and platform permissions</p>
                 </div>
-                <button className="flex items-center space-x-2 px-4 py-2 bg-slate-900 text-white text-sm font-bold rounded shadow-sm hover:bg-slate-800 transition-colors">
-                    <Plus className="w-4 h-4" /> <span>Invite User</span>
+                <button
+                    onClick={() => setShowCreateModal(true)}
+                    className="flex items-center space-x-2 px-4 py-2 bg-slate-900 text-white text-sm font-bold rounded shadow-sm hover:bg-slate-800 transition-colors"
+                >
+                    <Plus className="w-4 h-4" /> <span>Add Client</span>
                 </button>
             </div>
 

@@ -1,0 +1,161 @@
+[
+  {
+    "id": 29,
+    "component": "Deployment Script",
+    "issue": "Legacy Script Incompatibility",
+    "problem": "The `scripts/deploy.sh` script contained outdated references to MySQL, systemd, and direct `docker exec` commands incompatible with the current Docker Compose architecture. It also enforced root privileges checks causing failures on macOS environments where Docker runs as a user.",
+    "solution": "Script was already updated in previous session to support Docker Compose + PostgreSQL + FastAPI architecture with interactive prompts and comprehensive health checks.",
+    "files_modified": [
+      "scripts/deploy.sh"
+    ],
+    "status": "ALREADY_FIXED"
+  },
+  {
+    "id": 30,
+    "component": "Frontend Build",
+    "issue": "Lockfile Synchronization",
+    "problem": "The Docker build could fail at `RUN npm ci` with error: `npm ci can only install packages when your package.json and package-lock.json are in sync`. Missing dependencies in the lockfile could cause strict CI install to fail.",
+    "solution": "Verified package-lock.json is in sync with package.json. All required dependencies (framer-motion, react-router-dom, clsx, tailwind-merge) are present in package.json and lockfile.",
+    "files_modified": [],
+    "status": "VERIFIED_OK"
+  },
+  {
+    "id": 31,
+    "component": "Frontend Build",
+    "issue": "Duplicate Exports in api.js",
+    "problem": "The build could fail with `esbuild` error: `Multiple exports with the same name`. The `frontend/src/services/api.js` file could contain redundant function declarations and duplicate `export default` blocks.",
+    "solution": "Verified api.js file has no duplicate exports. Single default export with all functions properly listed.",
+    "files_modified": [],
+    "status": "VERIFIED_OK"
+  },
+  {
+    "id": 32,
+    "component": "Frontend Build",
+    "issue": "Syntax Error in NodeFleet.jsx",
+    "problem": "The build could fail with `Unexpected \"export\"`. Missing closing braces in component definitions.",
+    "solution": "File syntax verified as correct. No missing braces found.",
+    "files_modified": [],
+    "status": "VERIFIED_OK"
+  },
+  {
+    "id": 33,
+    "component": "Frontend Build",
+    "issue": "Missing File (utils.js)",
+    "problem": "The build failed with `Could not resolve \"../../lib/utils\"`. The `frontend/src/lib/utils.js` file (containing the `cn` utility) was missing from the filesystem, causing import errors in `ModelExperiments.jsx` and `ClientManagement.jsx`.",
+    "solution": "Created `frontend/src/lib/utils.js` with the `cn` utility function that combines clsx and tailwind-merge for intelligent Tailwind CSS class merging.",
+    "files_modified": [
+      "frontend/src/lib/utils.js"
+    ],
+    "status": "FIXED"
+  },
+  {
+    "id": 34,
+    "component": "Backend",
+    "issue": "Health Check Failure (403)",
+    "problem": "The backend container remained unhealthy because the Docker healthcheck was configured to query `/api/v1/admin/health/overview`, an authenticated endpoint that returned 403 Forbidden to the unauthenticated `curl` check. The service was running but deemed unhealthy by Docker.",
+    "solution": "Updated `docker-compose.yml` healthcheck to use the public `/health` endpoint instead of the authenticated `/api/v1/admin/health/overview` endpoint.",
+    "files_modified": [
+      "docker-compose.yml"
+    ],
+    "status": "FIXED"
+  },
+  {
+    "id": 35,
+    "component": "Deployment Script (deploy_docker.sh)",
+    "issue": "Relative Path Error",
+    "problem": "Running deployment scripts from different directories could fail with path resolution errors.",
+    "solution": "The main deploy.sh script already includes dynamic directory resolution using `dirname \"${BASH_SOURCE[0]}\"` to work from any location.",
+    "files_modified": [],
+    "status": "ALREADY_FIXED"
+  },
+  {
+    "id": 36,
+    "component": "Backend API (governance)",
+    "issue": "500 Internal Server Error (AttributeError)",
+    "problem": "The endpoint `/api/v1/governance/unauthorized` and `/api/v1/governance/audit` failed with `AttributeError: type object 'Instance' has no attribute 'last_seen'`. The database model `Instance` used `updated_at` but the route code referenced non-existent `last_seen` field. Additionally, code referenced `i.metadata` instead of `i.instance_metadata`, and `item.state` / `item.launch_time` which don't exist as direct fields.",
+    "solution": "Updated `backend/api/governance_routes.py` to use `updated_at` instead of `last_seen`, `instance_metadata` instead of `metadata`, and extracted `state` and `launch_time` from the metadata JSONB field.",
+    "files_modified": [
+      "backend/api/governance_routes.py"
+    ],
+    "changes": [
+      "Line 50-51: Changed `i.metadata.get()` to `(i.instance_metadata or {}).get()`",
+      "Line 69: Changed `i.metadata.get()` to `(i.instance_metadata or {}).get()`",
+      "Line 72: Changed `i.last_seen` to `i.updated_at`",
+      "Line 110: Changed `Instance.last_seen.desc()` to `Instance.updated_at.desc()`",
+      "Line 119: Changed `item.state` to `(item.instance_metadata or {}).get('state', 'unknown')`",
+      "Line 120: Changed `item.launch_time` to `(item.instance_metadata or {}).get('launch_time')`",
+      "Line 123: Changed `item.last_seen` to `item.updated_at`",
+      "Line 124: Changed `item.metadata` to `(item.instance_metadata or {}).get()`"
+    ],
+    "status": "FIXED"
+  },
+  {
+    "id": 37,
+    "component": "Backend API (metrics)",
+    "issue": "404 Not Found (Missing Routes)",
+    "problem": "The frontend `LiveOperations` dashboard requested `/api/v1/metrics/activity` and `/api/v1/metrics/live`, but these endpoints did not exist in the backend.",
+    "solution": "Created `backend/api/metrics_routes.py` with the missing endpoints for activity metrics and live pipeline metrics. Registered the router in `backend/main.py` with prefix `/api/v1/metrics`.",
+    "files_modified": [
+      "backend/api/metrics_routes.py",
+      "backend/main.py"
+    ],
+    "endpoints_added": [
+      "GET /api/v1/metrics/activity - Returns recent activity metrics with system logs, active instances, cost savings, and optimizations",
+      "GET /api/v1/metrics/live - Returns live pipeline metrics with component statistics and success rates"
+    ],
+    "status": "FIXED"
+  },
+  {
+    "id": 38,
+    "component": "Frontend (ClientManagement)",
+    "issue": "ReferenceError (handleCreateClient)",
+    "problem": "After refactoring the 'Invite User' button to 'Add Client', clicking the save button caused a `ReferenceError: handleCreateClient is not defined` because the function definition was missing. Additionally, no modal component existed for creating new users.",
+    "solution": "Added the `handleCreateClient` function to `ClientManagement.jsx` to handle the API call and modal state. Created `ClientCreateModal` component with form fields for username, email, password, full_name, and role. Updated button text from 'Invite User' to 'Add Client' and connected onClick handler.",
+    "files_modified": [
+      "frontend/src/components/ClientManagement.jsx"
+    ],
+    "changes": [
+      "Added `showCreateModal` state variable",
+      "Created `ClientCreateModal` component with full form (username, email, password, full_name, role)",
+      "Added `handleCreateClient` async function to create users via API",
+      "Connected 'Add Client' button to open modal",
+      "Integrated modal rendering in component return"
+    ],
+    "status": "FIXED"
+  },
+  {
+    "id": 39,
+    "component": "Backend API (admin)",
+    "issue": "Pydantic Validation Error (UUID vs String)",
+    "problem": "The `/api/v1/admin/clients` and `/api/v1/admin/users` endpoints failed with `500 Internal Server Error`. Logs revealed a `ResponseValidationError` from Pydantic. The Pydantic response models defined `id` as `str`, but SQLAlchemy returned `UUID` objects. Pydantic v2 is stricter about type coercion.",
+    "solution": "Updated `ClientResponse`, `UserResponse`, and `ClusterResponse` models in `backend/api/admin.py` to explicitly use the `UUID` type for ID fields. Added `from uuid import UUID` import. Added `Config` class with `from_attributes = True` to models that were missing it.",
+    "files_modified": [
+      "backend/api/admin.py"
+    ],
+    "changes": [
+      "Line 16: Added `from uuid import UUID` import",
+      "Line 103: Changed `ClusterResponse.id` from `str` to `UUID`",
+      "Line 110-111: Added Config class to ClusterResponse",
+      "Line 114: Changed `ClientResponse.id` from `str` to `UUID`",
+      "Line 123-124: Added Config class to ClientResponse",
+      "Line 576: Changed `UserResponse.id` from `str` to `UUID`"
+    ],
+    "status": "FIXED"
+  },
+  {
+    "id": 40,
+    "component": "Backend API (admin)",
+    "issue": "Missing Endpoint for Creating Users",
+    "problem": "The frontend `ClientManagement` component calls `POST /api/v1/admin/clients` to create new users, but this endpoint did not exist in the backend. This would cause a 404 error when trying to create new users from the UI.",
+    "solution": "Created `POST /api/v1/admin/clients` endpoint in `backend/api/admin.py`. Added `UserCreate` Pydantic model for request validation. Implemented user creation logic with duplicate username/email checking, password hashing, and database insertion. Restricted to admin users only.",
+    "files_modified": [
+      "backend/api/admin.py"
+    ],
+    "changes": [
+      "Lines 572-578: Added `UserCreate` BaseModel with fields: username, email, password, full_name, role, is_active",
+      "Lines 597-634: Added `create_client_user` POST endpoint with admin authentication, duplicate checking, password hashing, and user creation"
+    ],
+    "endpoint_added": "POST /api/v1/admin/clients - Create new user/client (Admin only)",
+    "status": "FIXED"
+  }
+]
