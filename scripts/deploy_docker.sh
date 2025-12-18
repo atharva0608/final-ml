@@ -1,8 +1,15 @@
 #!/bin/bash
 set -e
 
+# Get the directory where this script is located and navigate to project root
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$PROJECT_ROOT"
+
 echo "🚀 Initializing Docker Deployment..."
 echo "=================================="
+echo "📁 Project Root: $PROJECT_ROOT"
+echo ""
 
 # 1. Check if Docker is installed
 if ! command -v docker &> /dev/null; then
@@ -10,9 +17,16 @@ if ! command -v docker &> /dev/null; then
     exit 1
 fi
 
-if ! command -v docker-compose &> /dev/null; then
+if ! command -v docker-compose &> /dev/null && ! docker compose version &> /dev/null; then
     echo "❌ Error: Docker Compose is not installed"
     exit 1
+fi
+
+# Use 'docker compose' or 'docker-compose' depending on what's available
+if docker compose version &> /dev/null 2>&1; then
+    COMPOSE_CMD="docker compose"
+else
+    COMPOSE_CMD="docker-compose"
 fi
 
 # 2. Create .env if missing
@@ -32,23 +46,23 @@ fi
 # 3. Stop and remove existing containers
 echo ""
 echo "🛑 Stopping old services..."
-docker-compose down -v
+$COMPOSE_CMD down -v
 
 # 4. Build and Start Services
 echo ""
 echo "🏗️  Building and Starting Services..."
-docker-compose up -d --build
+$COMPOSE_CMD up -d --build
 
 # 5. Wait for database to be ready
 echo ""
 echo "⏳ Waiting for database to be ready..."
 timeout=60
 counter=0
-until docker-compose exec -T db pg_isready -U spotadmin -d spot_optimizer > /dev/null 2>&1; do
+until $COMPOSE_CMD exec -T db pg_isready -U spotadmin -d spot_optimizer > /dev/null 2>&1; do
     counter=$((counter + 1))
     if [ $counter -gt $timeout ]; then
         echo "❌ Database failed to start within ${timeout} seconds"
-        docker-compose logs db
+        $COMPOSE_CMD logs db
         exit 1
     fi
     echo "  Waiting... ($counter/$timeout)"
@@ -59,7 +73,7 @@ echo "✓ Database is ready"
 # 6. Run Database Migrations and Seeding
 echo ""
 echo "🌱 Initializing database..."
-docker-compose exec -T backend python -c "
+$COMPOSE_CMD exec -T backend python -c "
 from database.connection import init_db, seed_test_users
 print('Creating tables...')
 init_db()
@@ -75,7 +89,7 @@ echo "✅ Deployment Complete!"
 echo "=================================="
 echo ""
 echo "📊 Service Status:"
-docker-compose ps
+$COMPOSE_CMD ps
 echo ""
 echo "🌐 Access Points:"
 echo "  - Frontend: http://localhost:80"
@@ -87,9 +101,9 @@ echo "  - Admin: admin / admin"
 echo "  - Client: client / client"
 echo ""
 echo "📝 View Logs:"
-echo "  docker-compose logs -f [service]"
+echo "  $COMPOSE_CMD logs -f [service]"
 echo "  Available services: db, redis, backend, frontend"
 echo ""
 echo "🛑 Stop Services:"
-echo "  docker-compose down"
+echo "  $COMPOSE_CMD down"
 echo ""
