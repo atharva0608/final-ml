@@ -144,19 +144,20 @@ async def get_system_overview(
     # Get all component health records
     components = db.query(ComponentHealth).all()
 
-    # Calculate overall status
+    # Calculate overall status - map 'unknown' to 'degraded' for consistency
+    # Only 3 categories: healthy, degraded, down/critical
     healthy_count = sum(1 for c in components if c.status == ComponentStatus.HEALTHY.value)
-    degraded_count = sum(1 for c in components if c.status == ComponentStatus.DEGRADED.value)
+    degraded_count = sum(1 for c in components if c.status in [ComponentStatus.DEGRADED.value, ComponentStatus.UNKNOWN.value])
     down_count = sum(1 for c in components if c.status == ComponentStatus.DOWN.value)
 
     if down_count > 0:
         overall_status = "critical"
     elif degraded_count > 0:
-        overall_status = "warning"
+        overall_status = "degraded"
     elif healthy_count > 0:
         overall_status = "healthy"
     else:
-        overall_status = "unknown"
+        overall_status = "degraded"  # Default to degraded instead of unknown
 
     # Build response
     component_responses = []
@@ -164,9 +165,12 @@ async def get_system_overview(
         total = component.success_count_24h + component.failure_count_24h
         uptime = (component.success_count_24h / total * 100) if total > 0 else 100.0
 
+        # Map 'unknown' status to 'degraded' for display
+        display_status = component.status if component.status != ComponentStatus.UNKNOWN.value else ComponentStatus.DEGRADED.value
+
         component_responses.append(ComponentHealthResponse(
             component=component.component,
-            status=component.status,
+            status=display_status,
             last_success=component.last_success,
             last_failure=component.last_failure,
             last_check=component.last_check,
