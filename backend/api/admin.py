@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import desc, func
 from typing import List, Optional
 from datetime import datetime, timedelta
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from uuid import UUID
 
 from database.connection import get_db
@@ -30,6 +30,8 @@ router = APIRouter()
 
 class LogEntry(BaseModel):
     """Single log entry"""
+    model_config = ConfigDict(from_attributes=True)
+
     id: str
     component: str
     level: str
@@ -39,12 +41,11 @@ class LogEntry(BaseModel):
     execution_time_ms: Optional[int]
     success: Optional[str]
 
-    class Config:
-        from_attributes = True
-
 
 class ComponentHealthResponse(BaseModel):
     """Component health status"""
+    model_config = ConfigDict(from_attributes=True)
+
     component: str
     status: str
     last_success: Optional[datetime]
@@ -55,9 +56,6 @@ class ComponentHealthResponse(BaseModel):
     avg_execution_time_ms: Optional[int]
     error_message: Optional[str]
     uptime_percentage: float  # Calculated field
-
-    class Config:
-        from_attributes = True
 
 
 class ComponentLogsResponse(BaseModel):
@@ -100,6 +98,8 @@ class NodeResponse(BaseModel):
     memory_utilization: float = 0.0
 
 class ClusterResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: UUID
     name: str
     nodes: List[NodeResponse]
@@ -107,10 +107,9 @@ class ClusterResponse(BaseModel):
     status: str
     region: str
 
-    class Config:
-        from_attributes = True
-
 class ClientResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: UUID
     name: str
     tier: str
@@ -119,9 +118,6 @@ class ClientResponse(BaseModel):
     clusters: List[ClusterResponse]
     total_instances: int
     monthly_savings: float
-
-    class Config:
-        from_attributes = True
 
 
 # ============================================================================
@@ -581,6 +577,8 @@ class SpotStatusUpdate(BaseModel):
     disabled: bool
 
 class UserResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: UUID
     email: str
     username: str
@@ -589,9 +587,6 @@ class UserResponse(BaseModel):
     is_active: bool
     last_login: Optional[datetime]
     created_at: datetime
-
-    class Config:
-        from_attributes = True
 
 
 @router.post("/clients", response_model=UserResponse, status_code=status.HTTP_201_CREATED)

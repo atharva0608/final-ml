@@ -533,9 +533,9 @@ const InstanceDetailPanel = ({ instance, onClose }) => {
             </div>
         </div>
     );
-}
+};
 
-export const ClientDetailView = ({ client, onBack, onSelectCluster }) => {
+const ClientDetailView = ({ client, onBack, onSelectCluster }) => {
     const [activeTab, setActiveTab] = useState('dashboard');
     const [policies, setPolicies] = useState(client.policies || {});
     const togglePolicy = (key) => setPolicies(prev => ({ ...prev, [key]: !prev[key] }));
@@ -707,7 +707,8 @@ const ClientMasterView = ({ clients, onSelectClient, loading, error }) => {
             )}
         </div>
     </div>
-);
+    );
+};
 
 // --- Main Component ---
 
