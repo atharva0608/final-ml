@@ -1,0 +1,83 @@
+lets build and workflow doc so an lm can understand how to link apis and create schemas also it can add tags to them so they are easy to debug and troobulshoot lets start with
+Login Page and User Roles
+
+The login page provides two main options: "Sign In" and "Sign Up."
+Sign Up: This option is exclusively for onboarding new clients.
+Sign In: This allows any already registered user to log in.
+There are three distinct user roles, each with access to a specific dashboard:
+Super Admin (Default):
+Credentials: Username admin, Password admin
+Access: Admin dashboard
+Client Role:
+Access: Client dashboard
+Lab Role:
+Access: Lab dashboard
+Admin Dashboard Overview
+
+The Admin Dashboard provides a central control and monitoring interface, organized into the following sections:1. Live Operations
+
+This section offers a real-time snapshot of system performance and client activity, featuring key metrics displayed in cards at the top:
+Active Instances: Real-time count of all instances currently managed for clients across all platforms.
+Risk Detected: Count of rebalance or termination notices issued across all client nodes in the last 24 hours.
+Cost Savings: Total cost savings achieved across the platform. This is calculated by comparing the clients' initial on-demand pricing to the current total cost of operation (after switching/combining costs) for all clients on the platform.
+Optimizations: Total number of switching actions performed by the ML model or application.
+Below the cards, this section includes:
+Decision Pipeline Funnel: A real-time data graph illustrating the ML model's decision process, showing the total number of pools considered, the number remaining after filters are applied, and the final selection.
+Pipeline Status: Monitoring of backend components and their dependencies. This is a real-time health check (mirrored in the System Monitor section) that tracks system load, request volume, and output load.
+2. Node Fleet
+
+This section focuses on client-specific performance and includes:
+Total Monthly Saving: Same metric as Cost Savings in Live Operations.
+Total Active Nodes: Same metric as Active Instances in Live Operations.
+Optimisation Rate: (Requires definition/data)
+Client List: A card-based list of all clients. Each card displays:
+Nodes: The number of instances managed specifically for that client.
+Savings: The total savings achieved for that client. Clicking a client card opens their specific dashboard (the same view they see upon logging in).
+3. System Monitor
+
+This section is dedicated to monitoring the health and performance of critical system components. It tracks 20 live components, ensuring system health and facilitating error tracking.
+Health Status Cards (Top):
+HEALTHY: Component is fully operational, live-communicating, and passing necessary data/values.
+DEGRADED: Component is communicating but is not yet passing or receiving data.
+CRITICAL: Component is offline, not communicating, and not accepting values from other components.
+Component Cards: Each component is listed with its real-time operational data:
+Uptime: Time elapsed since the component started, accounting for interruptions and self-recovery.
+Avg Latency: Real-time average latency.
+Recent Activity (Logs):
+Normally shows the last 5 logs in the UI.
+If the state changes from HEALTHY to another state, it logs the last 10 activities from the point of state change to the current moment.
+Customized health checks are performed according to each component's role.
+Control Buttons: An Auto Refresh button for background log updates and health checks, and a Manual Refresh button for immediate status checks.
+Listed Components:
+Database
+Redis cache
+API server
+ML inference
+Linear optimizer
+Instance manager
+Price scraper
+Web scraper
+Security enforcer
+Waste scanner
+4. Global Controls
+
+This is the central configuration section for the application's core logic.
+Model Management: Includes a drop-down menu to view:
+All uploaded ML model files.
+Models graduated from the lab environment.
+Current models in the system.
+A section showing the currently operating model, its activation date, and uptime since deployment.
+Upload Model: A drag-and-drop area for uploading new models, which can then be applied (plugged into the system).
+Manual Override: A button to switch all platform-wide nodes back to on-demand pricing, allowing for risk-free maintenance. A progress bar confirms that all nodes have successfully reverted before showing "Done" at 100%.
+Apply Changes: A button to execute the new model changes on real clients.
+Re-compute Risk Scores: A button to recalculate and rebalance risk scores periodically.
+5. Client Management
+
+This section provides administrative control over clients, listing the same clients found in the Node Fleet section but in a list format.
+Client List: Displays client names along with their role status and last login time.
+Action Button: Provided for each client to:
+Change the client's role.
+Restrict the account (Block/Activate).
+Apply Changes: A button to implement any role or status modifications.
+Add Client Button: Located at the top, this functions as a signup process, adding the client to the database, creating role-based login credentials, and assigning them a dashboard.
+6. Admin Profile- This simple section allows the administrator to change their username and password for the current account.
