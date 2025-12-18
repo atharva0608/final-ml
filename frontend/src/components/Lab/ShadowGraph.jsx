@@ -1,45 +1,51 @@
 import React, { useState, useEffect } from 'react';
-import { Activity } from 'lucide-react';
+import { Activity, AlertCircle } from 'lucide-react';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+import api from '../../services/api';
 
-// Mock Data Generator for "Live" Feel
-const generateData = () => {
-    const data = [];
-    let baseRisk = 20;
-    for (let i = 0; i < 30; i++) {
-        const volatility = Math.random() * 10 - 5;
-        baseRisk = Math.max(5, Math.min(90, baseRisk + volatility));
+const ShadowGraph = ({ activeModel, modelId, instanceId }) => {
+    const [data, setData] = useState([]);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState(null);
 
-        data.push({
-            time: `${10 + Math.floor(i / 60)}:${(i % 60).toString().padStart(2, '0')}`,
-            production: Math.floor(baseRisk), // Production Model Risk
-            shadow: Math.floor(baseRisk * (0.8 + Math.random() * 0.4)), // Shadow Model (Experimental)
-        });
-    }
-    return data;
-};
-
-const ShadowGraph = ({ activeModel }) => {
-    const [data, setData] = useState(generateData());
-
-    // Simulate Live Data Update
     useEffect(() => {
-        const interval = setInterval(() => {
-            setData(prev => {
-                const lastRisk = prev[prev.length - 1].production;
-                const newTime = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
-                const newRisk = Math.max(5, Math.min(90, lastRisk + (Math.random() * 10 - 5)));
+        if (!instanceId) {
+            setData([]);
+            setLoading(false);
+            return;
+        }
 
-                const newPoint = {
-                    time: newTime,
-                    production: Math.floor(newRisk),
-                    shadow: Math.floor(newRisk * (0.7 + Math.random() * 0.5)) // Shadow varies
-                };
-                return [...prev.slice(1), newPoint];
-            });
-        }, 2000);
+        const fetchData = async () => {
+            try {
+                setLoading(true);
+                setError(null);
+                const logs = await api.getExperimentLogs(instanceId, 30);
+
+                // Transform experiment logs into chart data
+                const chartData = (logs || []).map(log => ({
+                    time: new Date(log.created_at).toLocaleTimeString('en-US', {
+                        hour12: false,
+                        hour: '2-digit',
+                        minute: '2-digit'
+                    }),
+                    production: log.baseline_risk_score || 0,
+                    shadow: log.predicted_risk_score || 0
+                })).reverse();
+
+                setData(chartData.length > 0 ? chartData : []);
+            } catch (err) {
+                console.error('Failed to fetch shadow evaluation data:', err);
+                setError('Unable to load evaluation data');
+                setData([]);
+            } finally {
+                setLoading(false);
+            }
+        };
+
+        fetchData();
+        const interval = setInterval(fetchData, 10000); // Refresh every 10s
         return () => clearInterval(interval);
-    }, []);
+    }, [instanceId]);
 
     return (
         <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm min-h-[350px] flex flex-col h-full">
@@ -61,57 +67,81 @@ const ShadowGraph = ({ activeModel }) => {
             </div>
 
             <div className="flex-1 w-full min-h-[250px]">
-                <ResponsiveContainer width="100%" height="100%">
-                    <AreaChart data={data}>
-                        <defs>
-                            <linearGradient id="colorProd" x1="0" y1="0" x2="0" y2="1">
-                                <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.1} />
-                                <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
-                            </linearGradient>
-                            <linearGradient id="colorShadow" x1="0" y1="0" x2="0" y2="1">
-                                <stop offset="5%" stopColor="#a855f7" stopOpacity={0.2} />
-                                <stop offset="95%" stopColor="#a855f7" stopOpacity={0} />
-                            </linearGradient>
-                        </defs>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" vertical={false} />
-                        <XAxis
-                            dataKey="time"
-                            stroke="#94a3b8"
-                            tick={{ fontSize: 10 }}
-                            tickLine={false}
-                            axisLine={false}
-                        />
-                        <YAxis
-                            stroke="#94a3b8"
-                            tick={{ fontSize: 10 }}
-                            tickLine={false}
-                            axisLine={false}
-                            domain={[0, 100]}
-                        />
-                        <Tooltip
-                            contentStyle={{ backgroundColor: '#ffffff', borderColor: '#e2e8f0', color: '#1e293b' }}
-                            itemStyle={{ fontSize: '12px' }}
-                            labelStyle={{ color: '#64748b', fontSize: '10px', marginBottom: '4px' }}
-                        />
-                        <Area
-                            type="monotone"
-                            dataKey="production"
-                            stroke="#3b82f6"
-                            strokeWidth={2}
-                            fillOpacity={1}
-                            fill="url(#colorProd)"
-                        />
-                        <Area
-                            type="monotone"
-                            dataKey="shadow"
-                            stroke="#a855f7"
-                            strokeWidth={2}
-                            strokeDasharray="4 4" // Dashed line for experimental
-                            fillOpacity={1}
-                            fill="url(#colorShadow)"
-                        />
-                    </AreaChart>
-                </ResponsiveContainer>
+                {loading ? (
+                    <div className="flex items-center justify-center h-full text-slate-400">
+                        <div className="text-center">
+                            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-purple-600 mx-auto mb-2"></div>
+                            <div className="text-xs">Loading evaluation data...</div>
+                        </div>
+                    </div>
+                ) : error ? (
+                    <div className="flex items-center justify-center h-full">
+                        <div className="text-center text-slate-500">
+                            <AlertCircle className="w-8 h-8 mx-auto mb-2" />
+                            <div className="text-xs">{error}</div>
+                        </div>
+                    </div>
+                ) : data.length === 0 ? (
+                    <div className="flex items-center justify-center h-full">
+                        <div className="text-center text-slate-400">
+                            <AlertCircle className="w-8 h-8 mx-auto mb-2 opacity-50" />
+                            <div className="text-xs">No evaluation data available</div>
+                            <div className="text-[10px] mt-1">Run experiments to see comparison data</div>
+                        </div>
+                    </div>
+                ) : (
+                    <ResponsiveContainer width="100%" height="100%">
+                        <AreaChart data={data}>
+                            <defs>
+                                <linearGradient id="colorProd" x1="0" y1="0" x2="0" y2="1">
+                                    <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.1} />
+                                    <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
+                                </linearGradient>
+                                <linearGradient id="colorShadow" x1="0" y1="0" x2="0" y2="1">
+                                    <stop offset="5%" stopColor="#a855f7" stopOpacity={0.2} />
+                                    <stop offset="95%" stopColor="#a855f7" stopOpacity={0} />
+                                </linearGradient>
+                            </defs>
+                            <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" vertical={false} />
+                            <XAxis
+                                dataKey="time"
+                                stroke="#94a3b8"
+                                tick={{ fontSize: 10 }}
+                                tickLine={false}
+                                axisLine={false}
+                            />
+                            <YAxis
+                                stroke="#94a3b8"
+                                tick={{ fontSize: 10 }}
+                                tickLine={false}
+                                axisLine={false}
+                                domain={[0, 100]}
+                            />
+                            <Tooltip
+                                contentStyle={{ backgroundColor: '#ffffff', borderColor: '#e2e8f0', color: '#1e293b' }}
+                                itemStyle={{ fontSize: '12px' }}
+                                labelStyle={{ color: '#64748b', fontSize: '10px', marginBottom: '4px' }}
+                            />
+                            <Area
+                                type="monotone"
+                                dataKey="production"
+                                stroke="#3b82f6"
+                                strokeWidth={2}
+                                fillOpacity={1}
+                                fill="url(#colorProd)"
+                            />
+                            <Area
+                                type="monotone"
+                                dataKey="shadow"
+                                stroke="#a855f7"
+                                strokeWidth={2}
+                                strokeDasharray="4 4" // Dashed line for experimental
+                                fillOpacity={1}
+                                fill="url(#colorShadow)"
+                            />
+                        </AreaChart>
+                    </ResponsiveContainer>
+                )}
             </div>
         </div>
     );

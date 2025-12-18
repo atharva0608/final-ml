@@ -1,35 +1,64 @@
-import React from 'react';
-import { ScrollText, Terminal, AlignJustify } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { ScrollText, Terminal, AlignJustify, AlertCircle } from 'lucide-react';
+import api from '../../services/api';
 
-const DecisionLog = ({ activeModel, historyType }) => {
+const DecisionLog = ({ activeModel, historyType, instanceId }) => {
     const isLive = historyType === 'live';
+    const [experiments, setExperiments] = useState([]);
+    const [loading, setLoading] = useState(true);
+
+    useEffect(() => {
+        if (!isLive && instanceId) {
+            const fetchExperiments = async () => {
+                try {
+                    setLoading(true);
+                    const data = await api.getExperimentLogs(instanceId, 10);
+                    setExperiments(data || []);
+                } catch (error) {
+                    console.error('Failed to fetch experiments:', error);
+                    setExperiments([]);
+                } finally {
+                    setLoading(false);
+                }
+            };
+            fetchExperiments();
+        }
+    }, [isLive, instanceId]);
 
     return (
         <div className="bg-slate-900 border border-slate-800 border-t-0 rounded-b-xl p-6 shadow-sm min-h-[300px] flex flex-col pt-2">
             {!isLive && (
                 <div className="mb-4">
                     <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Past Experiments</h4>
-                    <table className="w-full text-xs text-left">
-                        <thead className="text-slate-500 font-medium border-b border-slate-700">
-                            <tr>
-                                <th className="pb-2">Time</th>
-                                <th className="pb-2">Model</th>
-                                <th className="pb-2">Outcome</th>
-                            </tr>
-                        </thead>
-                        <tbody className="text-slate-400">
-                            <tr>
-                                <td className="py-2">2 hours ago</td>
-                                <td>DeepSpot V1</td>
-                                <td className="text-emerald-600">Success (15% Saved)</td>
-                            </tr>
-                            <tr>
-                                <td className="py-2">5 hours ago</td>
-                                <td>Linear V0.9</td>
-                                <td className="text-red-500">Failed (OOM)</td>
-                            </tr>
-                        </tbody>
-                    </table>
+                    {loading ? (
+                        <div className="text-slate-400 text-xs py-4">Loading experiments...</div>
+                    ) : experiments.length > 0 ? (
+                        <table className="w-full text-xs text-left">
+                            <thead className="text-slate-500 font-medium border-b border-slate-700">
+                                <tr>
+                                    <th className="pb-2">Time</th>
+                                    <th className="pb-2">Model</th>
+                                    <th className="pb-2">Outcome</th>
+                                </tr>
+                            </thead>
+                            <tbody className="text-slate-400">
+                                {experiments.map((exp, idx) => (
+                                    <tr key={exp.id || idx}>
+                                        <td className="py-2">{new Date(exp.created_at).toLocaleString()}</td>
+                                        <td>{exp.model_version || 'Default'}</td>
+                                        <td className={exp.cost_savings > 0 ? "text-emerald-600" : "text-slate-400"}>
+                                            {exp.cost_savings > 0 ? `Saved $${exp.cost_savings.toFixed(2)}` : 'No savings'}
+                                        </td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    ) : (
+                        <div className="flex items-center gap-2 text-slate-500 text-xs py-4">
+                            <AlertCircle className="w-4 h-4" />
+                            <span>No experiment history available</span>
+                        </div>
+                    )}
                 </div>
             )}
 
