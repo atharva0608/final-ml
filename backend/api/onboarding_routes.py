@@ -45,12 +45,13 @@ async def create_onboarding_request(
 
         # Create placeholder account record
         new_account = Account(
+            user_id=current_user.id,
             account_name=f"Pending Setup - {datetime.utcnow().strftime('%Y-%m-%d %H:%M')}",
             account_id="pending",  # Will be updated after verification
             external_id=external_id,
-            status='pending_setup',
+            role_arn="pending",  # Will be updated after verification
             region='us-east-1',  # Default, can be changed later
-            created_by=current_user.id
+            is_active=False  # Will be activated after verification
         )
 
         db.add(new_account)

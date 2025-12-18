@@ -43,7 +43,7 @@ async def get_activity_metrics(
         # Recent system logs (activity feed)
         recent_logs = db.query(SystemLog).filter(
             SystemLog.timestamp >= since,
-            SystemLog.level.in_([LogLevel.INFO, LogLevel.SUCCESS, LogLevel.WARNING])
+            SystemLog.level.in_([LogLevel.INFO, LogLevel.WARNING])
         ).order_by(desc(SystemLog.timestamp)).limit(20).all()
 
         # Active instances count
@@ -141,10 +141,10 @@ async def get_live_metrics(
             SystemLog.level == LogLevel.ERROR
         ).count()
 
-        # Recent successes
+        # Recent successes (INFO level logs)
         success_count = db.query(SystemLog).filter(
             SystemLog.timestamp >= since,
-            SystemLog.level.in_([LogLevel.SUCCESS, LogLevel.INFO])
+            SystemLog.level == LogLevel.INFO
         ).count()
 
         component_metrics = [

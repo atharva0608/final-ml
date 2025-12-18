@@ -63,6 +63,34 @@ const STATUS_COLORS = {
     text: 'text-red-700',
     icon: 'text-red-500',
     badge: 'bg-red-100 text-red-800'
+  },
+  pending: {
+    bg: 'bg-blue-50',
+    border: 'border-blue-500',
+    text: 'text-blue-700',
+    icon: 'text-blue-500',
+    badge: 'bg-blue-100 text-blue-800'
+  },
+  running: {
+    bg: 'bg-green-50',
+    border: 'border-green-500',
+    text: 'text-green-700',
+    icon: 'text-green-500',
+    badge: 'bg-green-100 text-green-800'
+  },
+  stopped: {
+    bg: 'bg-gray-50',
+    border: 'border-gray-500',
+    text: 'text-gray-700',
+    icon: 'text-gray-500',
+    badge: 'bg-gray-100 text-gray-800'
+  },
+  terminated: {
+    bg: 'bg-red-50',
+    border: 'border-red-500',
+    text: 'text-red-700',
+    icon: 'text-red-500',
+    badge: 'bg-red-100 text-red-800'
   }
 };
 
@@ -127,7 +155,8 @@ const ComponentCard = ({ component, health, logs, onRefresh }) => {
   };
 
   const Icon = info.icon;
-  const statusColors = STATUS_COLORS[health?.status || 'degraded'];
+  // Safety fallback: if status is undefined or not in our colors, use degraded
+  const statusColors = STATUS_COLORS[health?.status] || STATUS_COLORS['degraded'];
   const [showLogs, setShowLogs] = useState(true);
 
   return (

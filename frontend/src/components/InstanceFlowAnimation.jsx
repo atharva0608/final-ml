@@ -343,6 +343,8 @@ const InstanceFlowAnimation = ({ clusters = [], fallbackMode = 'none' }) => {
 
     // --- DATA MAPPING ---
     const scenarios = useMemo(() => {
+        // Always use the clusters prop - no fallback to mock data
+        // If clusters is empty, the component will show "No Clusters Found"
         if (clusters && clusters.length > 0) {
             return clusters.map(c => ({
                 id: c.id,
@@ -352,15 +354,14 @@ const InstanceFlowAnimation = ({ clusters = [], fallbackMode = 'none' }) => {
                 nodeCount: c.nodeCount,
                 nodes: c.nodes ? c.nodes.map(n => ({
                     id: n.id,
-                    name: n.id,
-                    instanceType: n.family,
-                    status: 'stable'
+                    name: n.name || n.id,
+                    instanceType: n.instanceType,
+                    status: n.status || 'stable'
                 })) : []
             }));
         }
-        // Fallback to internal mock only if absolutely no data provided (e.g. development standalone)
-        // But for consistency we prefer the prop.
-        return STABLE_CLUSTERS;
+        // Return empty array to show "No Clusters Found" message
+        return [];
     }, [clusters]);
 
     // --- CYCLING LOGIC ---
