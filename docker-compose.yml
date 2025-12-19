@@ -42,6 +42,7 @@ services:
       JWT_SECRET_KEY: "your-super-secret-jwt-key-change-in-production"
       ENVIRONMENT: "production"
       LOG_LEVEL: "INFO"
+      K8S_NAMESPACE: "default"
     ports:
       - "8000:8000"
     depends_on:
@@ -55,6 +56,40 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
+    restart: unless-stopped
+
+  # [ARCH-008] Kubernetes Event Watcher (Event-Driven Architecture)
+  k8s_watcher:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: spot_optimizer_k8s_watcher
+    command: python -m watchers.k8s_event_stream
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      K8S_NAMESPACE: "default"
+      LOG_LEVEL: "INFO"
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # [ARCH-008] Event Processor Worker
+  event_processor:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: spot_optimizer_event_processor
+    command: python -m workers.event_processor
+    environment:
+      DATABASE_URL: postgresql://spotadmin:spotpass123@db:5432/spot_optimizer
+      REDIS_URL: redis://redis:6379/0
+      LOG_LEVEL: "INFO"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     restart: unless-stopped
 
   # Frontend (Nginx serving React build)

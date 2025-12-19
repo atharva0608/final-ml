@@ -1,0 +1,21 @@
+# [ARCH-008] Architectural Improvements Dependencies
+
+# Event-Driven Architecture
+redis>=5.0.0
+hiredis>=2.2.0  # For performance
+
+# Kubernetes Integration
+kubernetes>=28.1.0
+
+# Constraint Solver (OR-Tools)
+ortools>=9.7.0
+
+# WebSocket (already in main requirements)
+# websockets>=12.0
+
+# Async support
+asyncio>=3.4.3
+aioredis>=2.0.1
+
+# Additional utilities
+python-dateutil>=2.8.2

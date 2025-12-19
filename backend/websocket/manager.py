@@ -139,6 +139,52 @@ class ConnectionManager:
         """
         return len(self.active_connections.get(session_id, set()))
 
+    # [ARCH-005] Enhanced WebSocket methods for live client updates
+
+    async def send_live_switch(self, client_id: str, switch_event: dict):
+        """
+        [ARCH-005] Send real-time switch event to client's dashboard
+
+        Args:
+            client_id: Client ID
+            switch_event: Switch event dictionary containing:
+                - instance_id: Instance being switched
+                - from_type: Current instance type
+                - to_type: Target instance type
+                - reason: Switch reason (spot-interruption, cost-optimization, etc.)
+                - timestamp: Event timestamp
+        """
+        await self.broadcast_to_session(f"client:{client_id}", {
+            "type": "live_switch",
+            "data": switch_event
+        })
+
+    async def send_cluster_update(self, client_id: str, cluster_event: dict):
+        """
+        [ARCH-005] Send cluster state update to client
+
+        Args:
+            client_id: Client ID
+            cluster_event: Cluster update containing topology changes
+        """
+        await self.broadcast_to_session(f"client:{client_id}", {
+            "type": "cluster_update",
+            "data": cluster_event
+        })
+
+    async def send_optimization_progress(self, client_id: str, progress: dict):
+        """
+        [ARCH-005] Send optimization progress update
+
+        Args:
+            client_id: Client ID
+            progress: Progress dictionary with percentage, current_step, etc.
+        """
+        await self.broadcast_to_session(f"client:{client_id}", {
+            "type": "optimization_progress",
+            "data": progress
+        })
+
 
 # Global connection manager instance
 manager = ConnectionManager()

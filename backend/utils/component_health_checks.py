@@ -71,6 +71,23 @@ class ComponentHealthEvaluator:
             return ComponentHealthEvaluator._evaluate_security_enforcer(
                 health_record, failure_rate, is_recently_active
             )
+        # [ARCH-007] New architectural components
+        elif component == 'k8s_watcher':
+            return ComponentHealthEvaluator._evaluate_k8s_watcher(
+                health_record, failure_rate, is_recently_active
+            )
+        elif component == 'event_processor':
+            return ComponentHealthEvaluator._evaluate_event_processor(
+                health_record, failure_rate, is_recently_active
+            )
+        elif component == 'safe_drainer':
+            return ComponentHealthEvaluator._evaluate_safe_drainer(
+                health_record, failure_rate, is_recently_active
+            )
+        elif component == 'constraint_solver':
+            return ComponentHealthEvaluator._evaluate_constraint_solver(
+                health_record, failure_rate, is_recently_active
+            )
         else:
             # Default generic evaluation
             return ComponentHealthEvaluator._evaluate_generic(
@@ -243,3 +260,96 @@ class ComponentHealthEvaluator:
             return ComponentStatus.DEGRADED.value
         else:
             return ComponentStatus.HEALTHY.value
+
+    # [ARCH-007] New architectural components health checks
+
+    @staticmethod
+    def _evaluate_k8s_watcher(health_record, failure_rate, is_recently_active):
+        """
+        [ARCH-007] Kubernetes Event Watcher
+        - Continuously watches K8s events
+        - Critical for real-time event-driven architecture
+        - Should be processing events constantly
+        """
+        now = datetime.utcnow()
+        last_activity = health_record.last_success or health_record.last_failure
+        minutes_since_activity = (now - last_activity).total_seconds() / 60 if last_activity else 999
+
+        # Should have activity within last 5 minutes
+        if minutes_since_activity > 5:
+            return ComponentStatus.DOWN.value
+        if failure_rate > 0.1:
+            return ComponentStatus.DEGRADED.value
+        if health_record.success_count_24h < 100:  # Should log many events per day
+            return ComponentStatus.DEGRADED.value
+        return ComponentStatus.HEALTHY.value
+
+    @staticmethod
+    def _evaluate_event_processor(health_record, failure_rate, is_recently_active):
+        """
+        [ARCH-007] Event Processor Worker
+        - Processes events from Redis queue
+        - Critical for event-driven optimization
+        - Should be processing continuously
+        """
+        now = datetime.utcnow()
+        last_activity = health_record.last_success or health_record.last_failure
+        minutes_since_activity = (now - last_activity).total_seconds() / 60 if last_activity else 999
+
+        # Should have activity within last 10 minutes
+        if minutes_since_activity > 10:
+            return ComponentStatus.DOWN.value
+        if failure_rate > 0.2:
+            return ComponentStatus.DEGRADED.value
+        if health_record.success_count_24h < 50:  # Should process many events
+            return ComponentStatus.DEGRADED.value
+        return ComponentStatus.HEALTHY.value
+
+    @staticmethod
+    def _evaluate_safe_drainer(health_record, failure_rate, is_recently_active):
+        """
+        [ARCH-007] PDB-Aware Safe Drainer
+        - Handles safe node evacuation
+        - On-demand component (not continuously running)
+        - Critical when active (zero-downtime guarantee)
+        """
+        # Safe drainer is on-demand, so we check if it succeeds when called
+        total = health_record.success_count_24h + health_record.failure_count_24h
+
+        if total == 0:
+            # Not used recently, that's okay
+            return ComponentStatus.HEALTHY.value
+
+        if failure_rate > 0.3:
+            # High failure rate is concerning for safe operations
+            return ComponentStatus.DEGRADED.value
+
+        if failure_rate > 0.1:
+            return ComponentStatus.DEGRADED.value
+
+        return ComponentStatus.HEALTHY.value
+
+    @staticmethod
+    def _evaluate_constraint_solver(health_record, failure_rate, is_recently_active):
+        """
+        [ARCH-007] Constraint Solver (OR-Tools)
+        - Optimal pod placement solver
+        - On-demand component (called during optimization)
+        - Should have high success rate when called
+        """
+        total = health_record.success_count_24h + health_record.failure_count_24h
+
+        if total == 0:
+            # Not used recently, that's okay
+            return ComponentStatus.HEALTHY.value
+
+        # Check average execution time (should be reasonable)
+        if health_record.avg_execution_time_ms and health_record.avg_execution_time_ms > 30000:  # 30 seconds
+            # Solver is too slow
+            return ComponentStatus.DEGRADED.value
+
+        if failure_rate > 0.2:
+            # Solver failing frequently
+            return ComponentStatus.DEGRADED.value
+
+        return ComponentStatus.HEALTHY.value
