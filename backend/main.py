@@ -23,7 +23,7 @@ from api.auth import router as auth_router
 from api.admin import router as admin_router
 from api.websocket_routes import router as websocket_router
 # V3.1 Production Features
-from api import waste_routes, governance_routes, approval_routes, onboarding_routes, ai_routes, metrics_routes
+from api import waste_routes, governance_routes, approval_routes, onboarding_routes, ai_routes, metrics_routes, pipeline_routes, instance_routes, storage_routes
 from database.connection import init_db, seed_test_users
 from jobs.scheduler import start_scheduler, stop_scheduler
 from utils.system_logger import SystemLogger, Component
@@ -230,6 +230,27 @@ app.include_router(
     metrics_routes.router,
     prefix='/api/v1/metrics',
     tags=['Metrics']
+)
+
+# [BE-PIPELINE-ROUTES] Pipeline Status & Funnel
+app.include_router(
+    pipeline_routes.router,
+    prefix='/api/v1',
+    tags=['Pipeline']
+)
+
+# [BE-INSTANCE-ROUTES] Instance Controls (Force On-Demand, Topology, Savings)
+app.include_router(
+    instance_routes.router,
+    prefix='/api/v1',
+    tags=['Instance Controls']
+)
+
+# [BE-STORAGE-ROUTES] Storage Cleanup (Volumes & Snapshots)
+app.include_router(
+    storage_routes.router,
+    prefix='/api/v1',
+    tags=['Storage Management']
 )
 
 

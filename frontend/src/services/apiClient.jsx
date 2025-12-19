@@ -51,6 +51,96 @@ class APIClient {
     return this.request('/api/admin/system-health');
   }
 
+  // [FE-API-CLIENT-001] System Overview for Live Operations
+  async getSystemOverview() {
+    return this.request('/api/admin/health/overview');
+  }
+
+  // [FE-API-CLIENT-002] Component Logs for System Monitor
+  async getComponentLogs(component, limit = 5) {
+    return this.request(`/api/admin/logs/${component}?limit=${limit}`);
+  }
+
+  // [FE-API-CLIENT-003] Clients list (different from getAllClients - for NodeFleet)
+  async getClients() {
+    return this.request('/api/admin/clients');
+  }
+
+  // [FE-API-CLIENT-004] Users list for Client Management
+  async getUsers() {
+    return this.request('/api/admin/users');
+  }
+
+  // [FE-API-CLIENT-005] Create User for Client Management
+  async createUser(userData) {
+    return this.request('/api/admin/clients', {
+      method: 'POST',
+      body: JSON.stringify(userData),
+    });
+  }
+
+  // [FE-API-CLIENT-006] Update User for Client Management
+  async updateUser(userId, updates) {
+    const requests = [];
+    if (updates.hasOwnProperty('is_active')) {
+      requests.push(
+        this.request(`/api/admin/users/${userId}/status`, {
+          method: 'PUT',
+          body: JSON.stringify({ is_active: updates.is_active }),
+        })
+      );
+    }
+    if (updates.role) {
+      requests.push(
+        this.request(`/api/admin/users/${userId}/role`, {
+          method: 'PUT',
+          body: JSON.stringify({ role: updates.role }),
+        })
+      );
+    }
+    if (requests.length === 0) return { status: 'success' };
+    const results = await Promise.all(requests);
+    return results[results.length - 1];
+  }
+
+  // [FE-API-CLIENT-007] Set Spot Market Status (Manual Override)
+  async setSpotMarketStatus(disabled) {
+    return this.request('/api/admin/system/spot-status', {
+      method: 'PUT',
+      body: JSON.stringify({ disabled }),
+    });
+  }
+
+  // [FE-API-CLIENT-008] Get Unauthorized Instances for Governance
+  async getUnauthorizedInstances() {
+    return this.request('/api/governance/unauthorized-instances');
+  }
+
+  // [FE-API-CLIENT-009] Get Activity Feed
+  async getActivityFeed(limit = 20) {
+    return this.request(`/api/admin/logs/all/recent?limit=${limit}`);
+  }
+
+  // [FE-API-CLIENT-010] Get Onboarding Template
+  async getOnboardingTemplate() {
+    return this.request('/api/onboarding/template');
+  }
+
+  // [FE-API-CLIENT-011] Get Discovery Status
+  async getDiscoveryStatus(clientId) {
+    return this.request(`/api/onboarding/discovery/${clientId}`);
+  }
+
+  // [FE-API-CLIENT-012] Get Experiment Logs (Lab)
+  async getExperimentLogs(experimentId) {
+    return this.request(`/api/lab/experiments/${experimentId}/logs`);
+  }
+
+  // [FE-API-CLIENT-013] Get Models (Lab)
+  async getModels() {
+    return this.request('/api/lab/models');
+  }
+
   // NEW: Client Growth Chart (Task 4)
   async getClientsGrowth(days = 30) {
     return this.request(`/api/admin/clients/growth?days=${days}`);
@@ -407,6 +497,139 @@ class APIClient {
 
   async exportGlobalStats() {
     window.open(`${this.baseUrl}/api/admin/export/global-stats`, '_blank');
+  }
+
+  // ==============================================================================
+  // DEDICATED METRICS APIs (from realworkflow.md)
+  // ==============================================================================
+
+  // [FE-API-CLIENT-014] Active Instances Metric
+  async getActiveInstancesMetric() {
+    return this.request('/api/metrics/active-instances');
+  }
+
+  // [FE-API-CLIENT-015] Risk Detected Metric
+  async getRiskDetectedMetric() {
+    return this.request('/api/metrics/risk-detected');
+  }
+
+  // [FE-API-CLIENT-016] Cost Savings Metric
+  async getCostSavingsMetric() {
+    return this.request('/api/metrics/cost-savings');
+  }
+
+  // [FE-API-CLIENT-017] Optimization Rate Metric
+  async getOptimizationRateMetric() {
+    return this.request('/api/metrics/optimization-rate');
+  }
+
+  // [FE-API-CLIENT-018] Pipeline Funnel Data
+  async getPipelineFunnel() {
+    return this.request('/api/pipeline/funnel');
+  }
+
+  // [FE-API-CLIENT-019] Pipeline Status
+  async getPipelineStatus() {
+    return this.request('/api/pipeline/status');
+  }
+
+  // ==============================================================================
+  // ADMIN CONTROLS & ACTIONS
+  // ==============================================================================
+
+  // [FE-API-CLIENT-020] Re-compute Risk Scores
+  async recomputeRiskScores() {
+    return this.request('/api/admin/recompute-risk', {
+      method: 'POST',
+    });
+  }
+
+  // [FE-API-CLIENT-021] Admin Profile Management
+  async updateAdminProfile(profileData) {
+    return this.request('/api/admin/profile', {
+      method: 'PUT',
+      body: JSON.stringify(profileData),
+    });
+  }
+
+  // ==============================================================================
+  // CLIENT TOPOLOGY & SAVINGS
+  // ==============================================================================
+
+  // [FE-API-CLIENT-022] Client Topology
+  async getClientTopology(clientId) {
+    return this.request(`/api/client/${clientId}/topology`);
+  }
+
+  // [FE-API-CLIENT-023] Client Savings Overview
+  async getClientSavingsOverview(clientId, mode = 'total') {
+    return this.request(`/api/client/${clientId}/savings-overview?mode=${mode}`);
+  }
+
+  // ==============================================================================
+  // FORCE ON-DEMAND CONTROLS (3 Levels)
+  // ==============================================================================
+
+  // [FE-API-CLIENT-024] Force Instance to On-Demand
+  async forceInstanceOnDemand(instanceId, durationHours) {
+    return this.request(`/api/client/instances/${instanceId}/force-on-demand`, {
+      method: 'POST',
+      body: JSON.stringify({ duration_hours: durationHours }),
+    });
+  }
+
+  // [FE-API-CLIENT-025] Force Cluster to On-Demand
+  async forceClusterOnDemand(clusterId, durationHours) {
+    return this.request(`/api/client/clusters/${clusterId}/force-on-demand`, {
+      method: 'POST',
+      body: JSON.stringify({ duration_hours: durationHours }),
+    });
+  }
+
+  // [FE-API-CLIENT-026] Force Client (All Instances) to On-Demand
+  async forceClientOnDemand(clientId, durationHours) {
+    return this.request(`/api/client/${clientId}/force-on-demand-all`, {
+      method: 'POST',
+      body: JSON.stringify({ duration_hours: durationHours }),
+    });
+  }
+
+  // ==============================================================================
+  // GOVERNANCE & STORAGE CLEANUP
+  // ==============================================================================
+
+  // [FE-API-CLIENT-027] Apply Flagged Instance Actions
+  async applyGovernanceActions(flaggedInstances) {
+    return this.request('/api/governance/instances/apply', {
+      method: 'POST',
+      body: JSON.stringify({ flagged_instances: flaggedInstances }),
+    });
+  }
+
+  // [FE-API-CLIENT-028] Get Unmapped Volumes
+  async getUnmappedVolumes() {
+    return this.request('/api/storage/unmapped-volumes');
+  }
+
+  // [FE-API-CLIENT-029] Cleanup Volumes
+  async cleanupVolumes(volumeIds) {
+    return this.request('/api/storage/volumes/cleanup', {
+      method: 'POST',
+      body: JSON.stringify({ volume_ids: volumeIds }),
+    });
+  }
+
+  // [FE-API-CLIENT-030] Get AMI Snapshots
+  async getAmiSnapshots() {
+    return this.request('/api/storage/ami-snapshots');
+  }
+
+  // [FE-API-CLIENT-031] Cleanup Snapshots
+  async cleanupSnapshots(snapshotIds) {
+    return this.request('/api/storage/snapshots/cleanup', {
+      method: 'POST',
+      body: JSON.stringify({ snapshot_ids: snapshotIds }),
+    });
   }
 }
 
