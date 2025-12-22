@@ -10,9 +10,10 @@ from sqlalchemy.orm import Session
 from datetime import datetime
 
 from database.connection import get_db
-from database.models import User, UserRole
+from database.models import User, UserRole, Account
 from auth.jwt import create_access_token, get_current_active_user
 from auth.password import hash_password, verify_password
+import uuid
 
 router = APIRouter()
 
@@ -91,6 +92,24 @@ async def register_user(user_data: UserRegister, db: Session = Depends(get_db)):
     db.add(new_user)
     db.commit()
     db.refresh(new_user)
+
+    # CREATE DEFAULT ACCOUNT (Fix for Orphaned User Issue)
+    # We use a temporary account_id valid for onboarding
+    temp_account_id = f"pending-{uuid.uuid4().hex[:8]}"
+    external_id = f"spot-optimizer-{uuid.uuid4()}"
+
+    new_account = Account(
+        user_id=new_user.id,
+        account_name=f"{user_data.username}'s Account",
+        account_id=temp_account_id,
+        external_id=external_id,
+        role_arn="pending",  # updated during onboarding
+        region="us-east-1",
+        status="pending",
+        is_active=False
+    )
+    db.add(new_account)
+    db.commit()
 
     # Generate access token
     access_token = create_access_token({"sub": new_user.email})

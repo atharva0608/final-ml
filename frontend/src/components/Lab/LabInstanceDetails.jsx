@@ -8,7 +8,8 @@ const LabInstanceDetails = ({ instance, onBack }) => {
     // Instance here is actually a "Model" object now
     // { id, name, status, accuracy, ... }
     const { getLabModels, getProdModels } = useModel();
-    const labModels = getLabModels();
+    // Filter out candidates (must be accepted first)
+    const labModels = getLabModels().filter(m => m.status !== 'candidate');
     const prodModels = getProdModels();
     const allModels = [...labModels, ...prodModels];
 

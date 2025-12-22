@@ -132,7 +132,7 @@ const AdminDashboard = () => {
 // Client Dashboard Component
 const ClientDashboard = () => {
   const { user } = useAuth();
-  const [currentView, setCurrentView] = useState('live');
+  const [currentView, setCurrentView] = useState('dashboard');
   const [clientData, setClientData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -189,8 +189,12 @@ const ClientDashboard = () => {
     }
 
     switch (currentView) {
-      case 'live':
-        return <LiveOperations clientMode={true} clientData={clientData} />;
+      case 'dashboard':
+      case 'live': // Fallback for legacy state
+        return <NodeFleet clientMode={true} clientData={clientData} />;
+      case 'connect':
+      case 'onboarding': // Fallback
+        return <ClientSetup />;
       case 'experiments':
         return <ModelExperiments />;
       case 'profile':
@@ -269,7 +273,7 @@ const ClientDashboard = () => {
     <DashboardLayout
       activeView={currentView}
       setActiveView={setCurrentView}
-      onSelectClient={() => {}}
+      onSelectClient={() => { }}
       selectedClientId={null}
       role="client"
       clientName={clientData?.name || 'Client'}

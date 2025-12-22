@@ -125,6 +125,24 @@ export async function getModels() {
     return fetchApi('/v1/lab/models');
 }
 
+export async function acceptModel(modelId) {
+    return fetchApi(`/v1/lab/models/${modelId}/accept`, {
+        method: 'PUT'
+    });
+}
+
+export async function enableModel(modelId) {
+    return fetchApi(`/v1/lab/models/${modelId}/enable`, {
+        method: 'PUT'
+    });
+}
+
+export async function activateModel(modelId) {
+    return fetchApi(`/v1/lab/models/${modelId}/activate`, {
+        method: 'PUT'
+    });
+}
+
 export async function graduateModel(modelId) {
     return fetchApi(`/v1/lab/models/${modelId}/graduate`, {
         method: 'PUT'
@@ -273,6 +291,9 @@ export async function deleteUser(userId) {
         method: 'DELETE',
     });
 }
+
+
+export const createUser = createClient;
 
 // ============================================================================
 // WebSocket Connection
@@ -477,7 +498,10 @@ export default {
     setPipelineMode,
     toggleShadowMode,
     getModels,
+    acceptModel,
     graduateModel,
+    enableModel,
+    activateModel,
     rejectModel,
     uploadModel,
     getExperimentLogs,
@@ -510,6 +534,7 @@ export default {
 
     // User Management
     getUsers,
+    createUser,
     updateUserStatus,
     updateUserRole,
     deleteUser,

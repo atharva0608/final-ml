@@ -36,7 +36,7 @@ const MetricCard = ({ label, value, icon: Icon, trend }) => (
     </div>
 );
 
-const LiveOperations = () => {
+const LiveOperations = ({ clientMode = false, clientData = null }) => {
     const [pipelineData, setPipelineData] = useState(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
@@ -44,31 +44,60 @@ const LiveOperations = () => {
     const fetchData = async () => {
         setLoading(true);
         try {
-            // Fetch real system health overview to derive pipeline status
-            const healthOverview = await api.getSystemOverview();
+            if (clientMode) {
+                // Client Mode: Use passed clientData or simplified structure
+                // Avoid calling Admin APIs to prevent 403 Forbidden
 
-            setPipelineData({
-                status: healthOverview.overall_status,
-                components: [
-                    { name: "Scraper Service", status: healthOverview.components.find(c => c.component === 'web_scraper')?.status || 'degraded' },
-                    { name: "Risk Engine", status: healthOverview.components.find(c => c.component === 'ml_inference')?.status || 'degraded' },
-                    { name: "Cost Optimizer", status: healthOverview.components.find(c => c.component === 'linear_optimizer')?.status || 'degraded' },
-                    { name: "K8s Controller", status: healthOverview.components.find(c => c.component === 'instance_manager')?.status || 'degraded' }
-                ],
-                metrics: {
-                    activeInstances: healthOverview.components.find(c => c.component === 'instance_manager')?.success_count_24h || 0,
-                    riskDetected: healthOverview.components.find(c => c.component === 'ml_inference')?.failure_count_24h || 0,
-                    costSavings: healthOverview.cost_savings_24h || 0,
-                    optimizations: healthOverview.components.find(c => c.component === 'linear_optimizer')?.success_count_24h || 0,
-                },
-                funnel: [
-                    { value: 500, name: "Pools Scanned", fill: "#3b82f6", description: "Total candidates found" },
-                    { value: 400, name: "Static Filter", fill: "#6366f1", description: "Hardware & Region checks" },
-                    { value: 350, name: "ML Prediction", fill: "#8b5cf6", description: "Risk < 0.85" },
-                    { value: 5, name: "Final Top 5", fill: "#10b981", description: "Lowest cost & risk" }
-                ]
-            });
-            setError(null);
+                // Mock or derive data from clientData prop
+                setPipelineData({
+                    status: clientData?.status || 'active',
+                    components: [
+                        { name: "Scraper Service", status: 'healthy' }, // Abstracted for client
+                        { name: "Risk Engine", status: 'healthy' },
+                        { name: "Cost Optimizer", status: 'healthy' },
+                        { name: "K8s Controller", status: 'healthy' }
+                    ],
+                    metrics: {
+                        activeInstances: clientData?.instances?.length || 0,
+                        riskDetected: 0, // Clients strictly don't need to see system risk details?
+                        costSavings: clientData?.savings_total || 0,
+                        optimizations: clientData?.optimizations_count || 0,
+                    },
+                    funnel: [
+                        { value: 100, name: "Pools Evaluated", fill: "#3b82f6", description: "Your region" },
+                        { value: 80, name: "Options Found", fill: "#6366f1", description: "Matches constraints" },
+                        { value: 60, name: "Safe Matches", fill: "#8b5cf6", description: "Risk Accepted" },
+                        { value: clientData?.instances?.length || 5, name: "Active", fill: "#10b981", description: "Running" }
+                    ]
+                });
+                setError(null);
+            } else {
+                // Admin Mode: Fetch real system health overview
+                const healthOverview = await api.getSystemOverview();
+
+                setPipelineData({
+                    status: healthOverview.overall_status,
+                    components: [
+                        { name: "Scraper Service", status: healthOverview.components.find(c => c.component === 'web_scraper')?.status || 'degraded' },
+                        { name: "Risk Engine", status: healthOverview.components.find(c => c.component === 'ml_inference')?.status || 'degraded' },
+                        { name: "Cost Optimizer", status: healthOverview.components.find(c => c.component === 'linear_optimizer')?.status || 'degraded' },
+                        { name: "K8s Controller", status: healthOverview.components.find(c => c.component === 'instance_manager')?.status || 'degraded' }
+                    ],
+                    metrics: {
+                        activeInstances: healthOverview.components.find(c => c.component === 'instance_manager')?.success_count_24h || 0,
+                        riskDetected: healthOverview.components.find(c => c.component === 'ml_inference')?.failure_count_24h || 0,
+                        costSavings: healthOverview.cost_savings_24h || 0,
+                        optimizations: healthOverview.components.find(c => c.component === 'linear_optimizer')?.success_count_24h || 0,
+                    },
+                    funnel: [
+                        { value: 500, name: "Pools Scanned", fill: "#3b82f6", description: "Total candidates found" },
+                        { value: 400, name: "Static Filter", fill: "#6366f1", description: "Hardware & Region checks" },
+                        { value: 350, name: "ML Prediction", fill: "#8b5cf6", description: "Risk < 0.85" },
+                        { value: 5, name: "Final Top 5", fill: "#10b981", description: "Lowest cost & risk" }
+                    ]
+                });
+                setError(null);
+            }
         } catch (err) {
             console.error("Pipeline data fetch failed:", err);
             setError("Backend unreachable - Showing cached/offline data");

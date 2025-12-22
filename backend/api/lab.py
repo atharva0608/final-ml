@@ -382,9 +382,8 @@ async def list_models(db: Session = Depends(get_db)):
     result = []
     for model in models:
         # Map status
-        is_experimental = model.status == ModelStatus.CANDIDATE.value
-        status_str = "candidate" if model.status == ModelStatus.CANDIDATE.value else "graduated"
-
+        is_experimental = model.status in [ModelStatus.CANDIDATE.value, ModelStatus.TESTING.value]
+        
         result.append(ModelInfo(
             id=str(model.id),
             name=model.name,
@@ -392,11 +391,27 @@ async def list_models(db: Session = Depends(get_db)):
             description=model.description or "",
             is_experimental=is_experimental,
             is_active=model.is_active_prod,
-            status=status_str,
+            status=model.status,
             created_at=model.uploaded_at
         ))
 
     return result
+
+
+@router.put("/models/{model_id}/accept")
+async def accept_model(
+    model_id: str,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """Accept a model for Lab testing (Candidate -> Testing)"""
+    model = db.query(MLModel).filter(MLModel.id == model_id).first()
+    if not model:
+        raise HTTPException(status_code=404, detail="Model not found")
+
+    model.status = ModelStatus.TESTING.value
+    db.commit()
+    return {"status": "testing", "model_id": model_id}
 
 
 @router.put("/models/{model_id}/graduate")
@@ -414,6 +429,49 @@ async def graduate_model(
     model.graduated_at = datetime.utcnow()
     db.commit()
     return {"status": "graduated", "model_id": model_id}
+
+
+@router.put("/models/{model_id}/enable")
+async def enable_model(
+    model_id: str,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """Enable a graduated model for Production use (Graduated -> Enabled)"""
+    model = db.query(MLModel).filter(MLModel.id == model_id).first()
+    if not model:
+        raise HTTPException(status_code=404, detail="Model not found")
+    
+    if model.status != ModelStatus.GRADUATED.value and model.status != ModelStatus.ENABLED.value:
+         raise HTTPException(status_code=400, detail="Model must be GRADUATED before enabling")
+
+    model.status = ModelStatus.ENABLED.value
+    db.commit()
+    return {"status": "enabled", "model_id": model_id}
+
+
+@router.put("/models/{model_id}/activate")
+async def activate_model(
+    model_id: str,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """Set a model as the Active Production Model"""
+    model = db.query(MLModel).filter(MLModel.id == model_id).first()
+    if not model:
+        raise HTTPException(status_code=404, detail="Model not found")
+    
+    if model.status != ModelStatus.ENABLED.value:
+         raise HTTPException(status_code=400, detail="Model must be ENABLED before activation")
+
+    # Deactivate all others
+    db.query(MLModel).update({MLModel.is_active_prod: False})
+    
+    # Activate this one
+    model.is_active_prod = True
+    db.commit()
+    
+    return {"status": "active", "model_id": model_id}
 
 
 @router.put("/models/{model_id}/reject")

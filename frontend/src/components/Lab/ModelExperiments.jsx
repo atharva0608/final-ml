@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Search, FlaskConical, Play, Pause, Activity, Rocket, History, MonitorPlay } from 'lucide-react';
+import { Search, FlaskConical, Play, Pause, Activity, Rocket, History, MonitorPlay, CheckCircle2 } from 'lucide-react';
 import PipelineVisualizer from './PipelineVisualizer';
 import ShadowGraph from './ShadowGraph';
 import DecisionLog from './DecisionLog';
@@ -13,8 +13,10 @@ import { useEffect } from 'react';
 
 // Real Data Integration
 const ModelExperiments = () => {
-    const { models, getLabModels, graduateModel, rejectModel, uploadModel } = useModel();
+    const { models, getLabModels, graduateModel, rejectModel, uploadModel, acceptModel, enableModel } = useModel();
     const [historyType, setHistoryType] = useState('live'); // 'live' | 'historical'
+    const [showTestModal, setShowTestModal] = useState(false);
+    const [selectedTestModel, setSelectedTestModel] = useState(null);
 
     const [testSubjects, setTestSubjects] = useState([]);
 
@@ -60,6 +62,10 @@ const ModelExperiments = () => {
             await graduateModel(id);
         } else if (newStatus === 'rejected') {
             await rejectModel(id);
+        } else if (newStatus === 'testing') {
+            await acceptModel(id);
+        } else if (newStatus === 'enabled') {
+            await enableModel(id);
         }
     };
 
@@ -67,6 +73,11 @@ const ModelExperiments = () => {
         // This effectively "Graduates" it to the Prod Dropdown context
         graduateModel(model.id);
         alert(`Model "${model.name}" is now available in Production Controls!`);
+    };
+
+    const handleTest = (model) => {
+        setSelectedTestModel(model);
+        setShowTestModal(true);
     };
 
     // If Drill-down view is active
@@ -189,13 +200,24 @@ const ModelExperiments = () => {
                                 <td className="px-6 py-4 text-right">
                                     <div className="flex items-center justify-end gap-2">
                                         {/* Workflow Buttons */}
+                                        {model.status === 'candidate' && (
+                                            <button
+                                                onClick={() => updateStatus(model.id, 'testing')}
+                                                className="px-3 py-1.5 text-xs font-bold text-purple-600 bg-purple-50 hover:bg-purple-100 rounded border border-purple-200 transition-colors flex items-center"
+                                            >
+                                                <CheckCircle2 className="w-3 h-3 mr-1" />
+                                                Accept
+                                            </button>
+                                        )}
+
                                         {model.status === 'testing' && (
                                             <>
                                                 <button
-                                                    onClick={() => updateStatus(model.id, 'rejected')}
-                                                    className="px-3 py-1.5 text-xs font-bold text-red-600 bg-red-50 hover:bg-red-100 rounded border border-red-200 transition-colors"
+                                                    onClick={() => handleTest(model)}
+                                                    className="px-3 py-1.5 text-xs font-bold text-blue-600 bg-blue-50 hover:bg-blue-100 rounded border border-blue-200 transition-colors flex items-center"
                                                 >
-                                                    Reject
+                                                    <Search className="w-3 h-3 mr-1" />
+                                                    Test
                                                 </button>
                                                 <button
                                                     onClick={() => updateStatus(model.id, 'graduated')}
@@ -203,6 +225,12 @@ const ModelExperiments = () => {
                                                 >
                                                     <Rocket className="w-3 h-3 mr-1" />
                                                     Graduate
+                                                </button>
+                                                <button
+                                                    onClick={() => updateStatus(model.id, 'rejected')}
+                                                    className="px-3 py-1.5 text-xs font-bold text-red-600 bg-red-50 hover:bg-red-100 rounded border border-red-200 transition-colors"
+                                                >
+                                                    Reject
                                                 </button>
                                             </>
                                         )}
@@ -281,6 +309,94 @@ const ModelExperiments = () => {
                 </div>
             </div>
 
+            {/* Test Model Modal */}
+            {showTestModal && selectedTestModel && (
+                <TestModelModal
+                    model={selectedTestModel}
+                    onClose={() => setShowTestModal(false)}
+                    onSuccess={() => {
+                        setShowTestModal(false);
+                        // Trigger a refresh of instances if possible, or just close
+                    }}
+                />
+            )}
+        </div>
+    );
+};
+
+// Modal Component for Testing (Reused/Duplicated from ModelGovernance for now to ensure isolation)
+const TestModelModal = ({ model, onClose, onSuccess }) => {
+    const [instances, setInstances] = useState([]);
+    const [loading, setLoading] = useState(true);
+    const [selectedInstance, setSelectedInstance] = useState('');
+    const [assigning, setAssigning] = useState(false);
+
+    useEffect(() => {
+        const fetchInstances = async () => {
+            try {
+                const data = await api.getInstances();
+                setInstances(data);
+            } catch (e) {
+                console.error("Failed to load instances", e);
+            } finally {
+                setLoading(false);
+            }
+        };
+        fetchInstances();
+    }, []);
+
+    const handleAssign = async () => {
+        if (!selectedInstance) return;
+        setAssigning(true);
+        try {
+            await api.assignModelToInstance(selectedInstance, model.name);
+            alert(`Model assigned to instance ${selectedInstance}`);
+            onSuccess();
+        } catch (e) {
+            alert("Failed to assign model: " + e.message);
+        } finally {
+            setAssigning(false);
+        }
+    };
+
+    return (
+        <div className="fixed inset-0 bg-black/50 z-[100] flex items-center justify-center backdrop-blur-sm animate-in fade-in">
+            <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-md">
+                <h3 className="text-lg font-bold mb-4">Test Model: {model.name}</h3>
+                <p className="text-sm text-slate-500 mb-4">Select an active instance to run this model in Shadow or Live mode.</p>
+
+                {loading ? (
+                    <div className="text-center py-4 text-slate-400">Loading instances...</div>
+                ) : (
+                    <div className="space-y-4">
+                        <div>
+                            <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5">Target Instance</label>
+                            <select
+                                className="w-full border rounded-lg px-3 py-2 text-sm"
+                                value={selectedInstance}
+                                onChange={e => setSelectedInstance(e.target.value)}
+                            >
+                                <option value="">Select Instance...</option>
+                                {instances.map(inst => (
+                                    <option key={inst.instance_id} value={inst.instance_id}>
+                                        {inst.instance_id} ({inst.instance_type}) - {inst.status}
+                                    </option>
+                                ))}
+                            </select>
+                        </div>
+                        <div className="flex justify-end gap-2 pt-4 border-t">
+                            <button onClick={onClose} className="px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 rounded-lg">Cancel</button>
+                            <button
+                                disabled={!selectedInstance || assigning}
+                                onClick={handleAssign}
+                                className="px-4 py-2 text-sm font-bold bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50"
+                            >
+                                {assigning ? 'Assigning...' : 'Assign Model'}
+                            </button>
+                        </div>
+                    </div>
+                )}
+            </div>
         </div>
     );
 };

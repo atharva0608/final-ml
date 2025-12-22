@@ -6,7 +6,7 @@ const ModelContext = createContext(null);
 export const ModelProvider = ({ children }) => {
     const [models, setModels] = useState([]);
     const [isLoading, setIsLoading] = useState(true);
-    const [activeProdModelId, setActiveProdModelId] = useState(null);
+    const [activeProdModelId, _setActiveState] = useState(null);
 
     const fetchModels = async () => {
         try {
@@ -15,15 +15,15 @@ export const ModelProvider = ({ children }) => {
             const mapped = data.map(m => ({
                 ...m,
                 uploadedAt: new Date(m.created_at).toLocaleDateString(),
-                type: m.status === 'graduated' ? 'stable' : 'beta',
-                scope: m.status === 'graduated' ? 'prod' : 'lab'
+                type: (m.status === 'enabled') ? 'stable' : 'beta',
+                scope: (m.status === 'enabled') ? 'prod' : 'lab'
             }));
             setModels(mapped);
 
-            // Set default active prod model if none
-            if (!activeProdModelId) {
-                const prod = mapped.find(m => m.scope === 'prod');
-                if (prod) setActiveProdModelId(prod.id);
+            // Sync active state from backend
+            const activeModel = mapped.find(m => m.is_active);
+            if (activeModel) {
+                _setActiveState(activeModel.id);
             }
         } catch (e) {
             console.error("Failed to fetch models", e);
@@ -44,8 +44,27 @@ export const ModelProvider = ({ children }) => {
         await fetchModels();
     };
 
+    const setActiveProdModelId = async (modelId) => {
+        if (!modelId) {
+            console.warn("Attempted to set active model with empty ID");
+            return;
+        }
+        await api.activateModel(modelId);
+        await fetchModels();
+    };
+
+    const acceptModel = async (modelId) => {
+        await api.acceptModel(modelId);
+        await fetchModels();
+    };
+
     const graduateModel = async (modelId) => {
         await api.graduateModel(modelId);
+        await fetchModels();
+    };
+
+    const enableModel = async (modelId) => {
+        await api.enableModel(modelId);
         await fetchModels();
     };
 
@@ -65,7 +84,9 @@ export const ModelProvider = ({ children }) => {
             activeProdModelId,
             setActiveProdModelId,
             uploadModel,
+            acceptModel,
             graduateModel,
+            enableModel,
             rejectModel,
             getLabModels,
             getProdModels,

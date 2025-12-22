@@ -18,6 +18,21 @@ const Controls = () => {
     const prodModels = getProdModels();
     const activeModel = getActiveProdModel();
 
+    // Local state for dropdown selection (pending application)
+    const [pendingModelId, setPendingModelId] = useState(activeModel?.id || '');
+
+    // Filter for only ENABLED models for the dropdown
+    const availableModels = prodModels.filter(m => m.status === 'enabled' || m.id === activeModel?.id);
+
+    // Sync pending state when active model loads/changes externally, or default to first available
+    React.useEffect(() => {
+        if (activeModel) {
+            setPendingModelId(activeModel.id);
+        } else if (availableModels.length > 0 && !pendingModelId) {
+            setPendingModelId(availableModels[0].id);
+        }
+    }, [activeModel, availableModels, pendingModelId]);
+
     return (
         <div className="space-y-6 max-w-4xl mx-auto">
             <div>
@@ -32,32 +47,44 @@ const Controls = () => {
                         <h2 className="text-lg font-bold text-slate-900 mb-1">Production Model Configuration</h2>
                         <p className="text-sm text-slate-500">Select the active inference engine for the fleet.</p>
                     </div>
-                    <div className="flex items-center space-x-2">
-                        <div className="bg-emerald-50 text-emerald-700 px-3 py-1 rounded-full text-xs font-bold border border-emerald-100 flex items-center">
-                            <CheckCircle2 className="w-3 h-3 mr-1.5" />
-                            Active Endpoint
-                        </div>
-                    </div>
                 </div>
+
+                {/* Current Active Model Display */}
+                {activeModel && (
+                    <div className="bg-emerald-50 border border-emerald-100 rounded-lg p-4 mb-6 flex items-center justify-between">
+                        <div className="flex items-center space-x-3">
+                            <div className="p-2 bg-emerald-100 rounded text-emerald-600">
+                                <CheckCircle2 className="w-5 h-5" />
+                            </div>
+                            <div>
+                                <div className="text-xs font-bold text-emerald-600 uppercase tracking-wider">Current Active Model</div>
+                                <div className="text-lg font-bold text-slate-900">{activeModel.name}</div>
+                                <div className="text-xs text-slate-500 font-mono">Version: {activeModel.version} • ID: {activeModel.id}</div>
+                            </div>
+                        </div>
+                        <div className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse"></div>
+                    </div>
+                )}
 
                 <div className="flex items-start space-x-6 border-b border-slate-100 pb-6 mb-6">
                     {/* Model Dropdown */}
                     <div className="flex-1">
                         <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-2">Active Model Version</label>
                         <select
-                            className="w-full bg-slate-50 border border-slate-200 text-slate-700 rounded-lg px-4 py-2.5 shadow-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none transition-all"
-                            value={activeModel?.id}
-                            onChange={(e) => setActiveProdModelId(e.target.value)}
+                            className="w-full bg-slate-50 border border-slate-200 text-slate-700 rounded-lg px-4 py-2.5 shadow-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                            value={pendingModelId}
+                            onChange={(e) => setPendingModelId(e.target.value)}
+                            disabled={availableModels.length === 0}
                         >
-                            {prodModels.map(m => (
+                            {availableModels.length === 0 && <option value="">No Enabled Models Available</option>}
+                            {availableModels.map(m => (
                                 <option key={m.id} value={m.id}>
                                     {m.name} {m.version}
-                                    {m.version.includes('-R') ? ' (Graduated)' : ''}
                                 </option>
                             ))}
                         </select>
                         <p className="text-xs text-slate-400 mt-2">
-                            Only "Stable" or "Graduated" models appear here.
+                            Only "Enabled" production models appear here.
                         </p>
                     </div>
 
@@ -138,16 +165,18 @@ const Controls = () => {
                                 </div>
                             )}
                         </div>
-
-
                     </div>
                 </div>
 
                 {/* Apply Button */}
                 <div className="flex justify-end">
                     <button
-                        onClick={() => alert("Changes Applied Successfully to Production Fleet!")}
-                        className="px-6 py-2.5 bg-blue-600 text-white text-sm font-bold rounded-lg hover:bg-blue-700 shadow-md shadow-blue-200 transition-all active:scale-95"
+                        onClick={() => {
+                            setActiveProdModelId(pendingModelId);
+                            alert("Changes Applied Successfully to Production Fleet!");
+                        }}
+                        disabled={!pendingModelId}
+                        className="px-6 py-2.5 bg-blue-600 text-white text-sm font-bold rounded-lg hover:bg-blue-700 shadow-md shadow-blue-200 transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none"
                     >
                         Apply Changes
                     </button>

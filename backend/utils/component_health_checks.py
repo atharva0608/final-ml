@@ -325,3 +325,71 @@ def run_all_health_checks(db: Session) -> Dict[str, Tuple[str, Dict]]:
             })
     
     return results
+
+
+class ComponentHealthEvaluator:
+    """
+    Evaluates health status for components using specific logic.
+    Used by SystemLogger to automatically update health status.
+    """
+
+    @staticmethod
+    def evaluate_health(component_name: str, health_record) -> str:
+        """
+        Run health check for specific component and return status string.
+        
+        Args:
+            component_name: Name of the component
+            health_record: SQLAlchemy ComponentHealth object
+            
+        Returns:
+            New status string ("healthy", "degraded", "critical", "down")
+        """
+        from sqlalchemy.orm import object_session
+        
+        # Get DB session from the health record
+        db = object_session(health_record)
+        if not db:
+            # If detached, we can't run DB-based checks
+            return health_record.status
+            
+        evaluator = None
+        
+        # Map component to check class
+        if component_name == "database":
+            evaluator = DatabaseCheck(db)
+        elif component_name == "redis_cache":
+            evaluator = RedisCheck(db)
+        elif component_name == "k8s_watcher":
+            evaluator = K8sWatcherCheck(db)
+        elif component_name in ["linear_optimizer", "cluster_optimizer"]:
+            evaluator = OptimizerCheck(db)
+        elif component_name == "price_scraper":
+            evaluator = PriceScraperCheck(db)
+        elif component_name == "risk_engine":
+            evaluator = RiskEngineCheck(db)
+        elif component_name == "ml_inference":
+            evaluator = MLInferenceCheck(db)
+            
+        if evaluator:
+            try:
+                status, details = evaluator.check()
+                
+                # Update metadata if provided
+                if details:
+                    if not health_record.component_metadata:
+                        health_record.component_metadata = {}
+                    # Merge existing metadata with new details
+                    # health_record.component_metadata.update(details) # Careful with JSONB updates
+                    
+                    # For now just set it to details to keep it fresh
+                    health_record.component_metadata = details
+                    
+                return status
+            except Exception as e:
+                # Keep existing status if check fails, but log error in metadata
+                health_record.error_message = f"Health check failed: {str(e)}"
+                return "unknown"
+                
+        # Default for components without specific checks
+        return health_record.status

@@ -280,31 +280,46 @@ def run_initial_discovery(account_db_id: int):
 
     except Exception as e:
         logger.error(f"Discovery worker failed for account {account_db_id}: {e}", exc_info=True)
+        if db:
+            db.rollback()
 
-        # Update account to failed state
+        # Update account to failed state using a FRESH session to ensure it saves
+        error_db = None
         try:
-            account = db.query(Account).filter(Account.id == account_db_id).first()
+            error_db = SessionLocal()
+            account = error_db.query(Account).filter(Account.id == account_db_id).first()
             if account:
                 account.status = 'failed'
                 account.updated_at = datetime.utcnow()
                 if not account.account_metadata:
                     account.account_metadata = {}
+                # Store full traceback if possible, or at least the message
                 account.account_metadata['last_error'] = str(e)
                 account.account_metadata['last_error_time'] = datetime.utcnow().isoformat()
-                db.commit()
+                error_db.commit()
 
-                if sys_logger:
-                    sys_logger.error(
+                # Try to log to system log if possible
+                try:
+                    error_logger = SystemLogger('discovery', db=error_db)
+                    error_logger.error(
                         f"Discovery failed: {e}",
                         details={'account_id': account_db_id, 'error': str(e)}
                     )
+                except Exception:
+                    pass
         except Exception as commit_error:
             logger.error(f"Failed to update account status: {commit_error}")
+        finally:
+            if error_db:
+                error_db.close()
 
     finally:
-        db.close()
+        if db:
+            db.close()
         if sys_logger:
-            sys_logger.close()
+            # SysLogger doesn't need explicit close if we closed the db, 
+            # but good practice if it manages its own state
+            pass
 
 
 def trigger_rediscovery(account_db_id: int):

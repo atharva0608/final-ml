@@ -83,8 +83,8 @@ const DashboardLayout = ({ children, activeView, setActiveView, role = 'admin', 
     const getMenuItems = () => {
         if (role === 'client') {
             return [
-                { id: 'live', label: 'Dashboard', icon: LayoutDashboard },
-                { id: 'onboarding', label: 'Connect Cloud', icon: Cloud },
+                { id: 'dashboard', label: 'Client Dashboard', icon: LayoutDashboard },
+                { id: 'connect', label: 'Cloud Connect', icon: Cloud },
                 { id: 'profile', label: 'Profile Settings', icon: Settings },
             ];
         }

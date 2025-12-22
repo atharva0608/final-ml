@@ -205,8 +205,10 @@ class ExperimentLog(Base):
 
 class ModelStatus(str, enum.Enum):
     """Model lifecycle statuses"""
-    CANDIDATE = "candidate"      # Lab Only - available for testing
-    GRADUATED = "graduated"      # Available for Production deployment
+    CANDIDATE = "candidate"      # Uploaded, waiting for acceptance
+    TESTING = "testing"          # Accepted, available in Lab Dropdowns
+    GRADUATED = "graduated"      # Passed Lab, waiting for Prod Enable
+    ENABLED = "enabled"          # Available for Production Dropdown
     ARCHIVED = "archived"        # Deprecated/removed from use
 
 

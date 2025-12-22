@@ -113,7 +113,9 @@ const UnregisteredInstances = () => {
             try {
                 setLoading(true);
                 const data = await api.getUnauthorizedInstances();
-                setInstances(data || []);
+                // FIX: API returns { instances: [...] }, not array directly. Add robust check.
+                const validInstances = (data && Array.isArray(data.instances)) ? data.instances : [];
+                setInstances(validInstances);
                 setError(null);
             } catch (err) {
                 console.error("Failed to load unregistered instances:", err);
@@ -169,7 +171,7 @@ const UnregisteredInstances = () => {
                                     {error}
                                 </td>
                             </tr>
-                        ) : instances.length === 0 ? (
+                        ) : (!Array.isArray(instances) || instances.length === 0) ? (
                             <tr>
                                 <td colSpan={5} className="px-4 py-8 text-center text-slate-400 text-xs italic">
                                     No unregistered instances found. All instances are properly tracked.
@@ -179,20 +181,20 @@ const UnregisteredInstances = () => {
                             <tr key={inst.id} className="hover:bg-slate-50 transition-colors">
                                 <td className="px-4 py-3 font-mono text-xs font-medium text-slate-700 flex items-center">
                                     <Server className="w-3 h-3 mr-2 text-slate-400" />
-                                    {inst.id}
+                                    {inst.instance_id || inst.id}
                                 </td>
                                 <td className="px-4 py-3 text-xs text-slate-600">
                                     <span className="font-bold text-slate-900">{inst.region}</span>
                                     <span className="text-slate-400 mx-1">/</span>
-                                    {inst.zone}
+                                    {inst.zone || 'N/A'}
                                 </td>
                                 <td className="px-4 py-3">
                                     <span className="px-1.5 py-0.5 bg-slate-100 border border-slate-200 rounded text-[10px] font-mono font-bold text-slate-600">
-                                        {inst.type}
+                                        {inst.instance_type || inst.type}
                                     </span>
                                 </td>
                                 <td className="px-4 py-3 text-xs text-slate-600 font-mono">
-                                    {inst.launchTime}
+                                    {new Date(inst.launch_time || inst.launchTime || Date.now()).toLocaleString()}
                                 </td>
                                 <td className="px-4 py-3 text-right">
                                     <div className="inline-flex bg-slate-100 rounded-lg p-0.5 border border-slate-200">
@@ -544,9 +546,11 @@ const ClientDetailView = ({ client, onBack, onSelectCluster }) => {
     return (
         <div className="animate-in fade-in slide-in-from-right-4 duration-300 relative">
             <div className="flex items-center space-x-4 mb-4">
-                <button onClick={onBack} className="p-2 hover:bg-slate-100 rounded-lg text-slate-500 hover:text-slate-900 transition-colors">
-                    <ArrowLeft className="w-5 h-5" />
-                </button>
+                {onBack && (
+                    <button onClick={onBack} className="p-2 hover:bg-slate-100 rounded-lg text-slate-500 hover:text-slate-900 transition-colors">
+                        <ArrowLeft className="w-5 h-5" />
+                    </button>
+                )}
                 <div>
                     <h1 className="text-2xl font-bold text-slate-900 tracking-tight">{client.name}</h1>
                     <p className="text-slate-500 text-sm">Client ID: {client.id}</p>
@@ -598,15 +602,15 @@ const ClientDetailView = ({ client, onBack, onSelectCluster }) => {
 
             {activeTab === 'clusters' && (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    {(!client.clusters || client.clusters.length === 0) ? (
+                    {(!Array.isArray(client.clusters) || client.clusters.length === 0) ? (
                         <div className="col-span-2 text-center py-10 text-slate-400 italic">No clusters configured.</div>
-                    ) : client.clusters.map(cluster => (
-                        <div key={cluster.id} onClick={() => onSelectCluster(cluster)} className="bg-white border border-slate-200 p-4 rounded-lg hover:border-blue-500 cursor-pointer shadow-sm">
+                    ) : client.clusters.map((cluster, idx) => (
+                        <div key={cluster.id || cluster.name || idx} onClick={() => onSelectCluster(cluster)} className="bg-white border border-slate-200 p-4 rounded-lg hover:border-blue-500 cursor-pointer shadow-sm">
                             <div className="flex items-center space-x-3">
                                 <Layers className="w-5 h-5 text-blue-500" />
                                 <div>
                                     <h4 className="font-bold text-slate-900">{cluster.name}</h4>
-                                    <p className="text-xs text-slate-500">{cluster.nodeCount} Nodes • {cluster.region}</p>
+                                    <p className="text-xs text-slate-500">{cluster.nodeCount || cluster.node_count || 0} Nodes • {cluster.region || 'Region N/A'}</p>
                                 </div>
                             </div>
                         </div>
@@ -689,50 +693,57 @@ const ClientMasterView = ({ clients, onSelectClient, loading, error }) => {
                 </div>
             </div>
 
-        {/* Client Grid */}
-        <div>
-            <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wider mb-6">Client List</h3>
-            {loading ? (
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                    {[1, 2, 3].map(i => <div key={i} className="h-64 bg-slate-100 animate-pulse rounded-lg border border-slate-200"></div>)}
-                </div>
-            ) : error ? (
-                <div className="p-8 border border-red-200 bg-red-50 rounded-lg text-center text-red-600">
-                    <AlertTriangle className="w-8 h-8 mx-auto mb-2" />
-                    {error}
-                </div>
-            ) : clients.length === 0 ? (
-                <div className="p-12 border-2 border-dashed border-slate-200 rounded-xl text-center">
-                    <Users className="w-12 h-12 mx-auto text-slate-300 mb-4" />
-                    <h3 className="text-lg font-bold text-slate-900">No Clients Found</h3>
-                    <p className="text-slate-500 text-sm mt-2">Get started by adding your first managed client.</p>
-                </div>
-            ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                    {clients.map(client => (
-                        <ClientCard key={client.id} client={client} onClick={() => onSelectClient(client)} />
-                    ))}
-                </div>
-            )}
+            {/* Client Grid */}
+            <div>
+                <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wider mb-6">Client List</h3>
+                {loading ? (
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                        {[1, 2, 3].map(i => <div key={i} className="h-64 bg-slate-100 animate-pulse rounded-lg border border-slate-200"></div>)}
+                    </div>
+                ) : error ? (
+                    <div className="p-8 border border-red-200 bg-red-50 rounded-lg text-center text-red-600">
+                        <AlertTriangle className="w-8 h-8 mx-auto mb-2" />
+                        {error}
+                    </div>
+                ) : clients.length === 0 ? (
+                    <div className="p-12 border-2 border-dashed border-slate-200 rounded-xl text-center">
+                        <Users className="w-12 h-12 mx-auto text-slate-300 mb-4" />
+                        <h3 className="text-lg font-bold text-slate-900">No Clients Found</h3>
+                        <p className="text-slate-500 text-sm mt-2">Get started by adding your first managed client.</p>
+                    </div>
+                ) : (
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                        {clients.map(client => (
+                            <ClientCard key={client.id} client={client} onClick={() => onSelectClient(client)} />
+                        ))}
+                    </div>
+                )}
+            </div>
         </div>
-    </div>
     );
 };
 
 // --- Main Component ---
 
-const NodeFleet = ({ externalSelectedClientId }) => {
+const NodeFleet = ({ externalSelectedClientId, clientMode = false, clientData = null }) => {
     const navigate = useNavigate();
     const [clients, setClients] = useState([]);
-    const [loading, setLoading] = useState(true);
+    const [loading, setLoading] = useState(!clientMode);
     const [error, setError] = useState(null);
 
-    const [selectedClient, setSelectedClient] = useState(null);
+    const [selectedClient, setSelectedClient] = useState(clientMode ? clientData : null);
     const [selectedCluster, setSelectedCluster] = useState(null);
     const [selectedInstance, setSelectedInstance] = useState(null);
 
-    // Fetch Clients (Real API)
+    // Fetch Clients (Real API) - Admin Only
     useEffect(() => {
+        if (clientMode) {
+            if (clientData) {
+                setSelectedClient(clientData);
+            }
+            return;
+        }
+
         const fetchClients = async () => {
             try {
                 setLoading(true);
@@ -746,7 +757,7 @@ const NodeFleet = ({ externalSelectedClientId }) => {
             }
         };
         fetchClients();
-    }, []);
+    }, [clientMode, clientData]);
 
     // Sync sidebar selection
     useEffect(() => {
@@ -780,7 +791,7 @@ const NodeFleet = ({ externalSelectedClientId }) => {
             ) : selectedClient ? (
                 <ClientDetailView
                     client={selectedClient}
-                    onBack={() => setSelectedClient(null)}
+                    onBack={clientMode ? null : () => setSelectedClient(null)}
                     onSelectCluster={setSelectedCluster}
                 />
             ) : (
