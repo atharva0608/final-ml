@@ -76,3 +76,10 @@
     - **Data Parsing**: Corrected API response handling to extract `data.instances`.
     - **Defensive Coding**: Added `Array.isArray()` checks before all `.map()` operations in `NodeFleet.jsx` (Clusters and Unregistered tabs).
     - **Property Mapping**: Fixed `snake_case` vs `camelCase` mismatches for `nodeCount` and `instanceType`.
+
+### 12. Activate Model 404 Guard & Controls Repair
+- **Problem**: clicking "Apply Changes" or external triggers could invoke `PUT /lab/models//activate` (empty ID), causing a 404 crash.
+- **Fix**:
+    - **Frontend Guard**: Added `if (!modelId) return;` to `setActiveProdModelId` in `ModelContext.jsx`, preventing invalid API calls at the source.
+    - **UI Repair**: Overwrote `Controls.jsx` to fix corruption and ensure the "Apply Changes" button is disabled when no model valid is selected.
+    - **Verification**: Code confirms the guard is present.
