@@ -1,606 +1,613 @@
 # Application Workflow Documentation
 
 ## Overview
-This document provides comprehensive scenario-based application workflow documentation designed to guide enterprise-level machine learning systems through various operational scenarios and integration patterns.
+This document provides comprehensive documentation of the enterprise application workflows, including authentication, dashboard operations, API mappings, data schemas, and debugging capabilities.
 
 ---
 
-## Table of Contents
-1. [Core Workflow Scenarios](#core-workflow-scenarios)
-2. [Data Processing Pipeline](#data-processing-pipeline)
-3. [Model Training Workflows](#model-training-workflows)
-4. [Deployment Scenarios](#deployment-scenarios)
-5. [Monitoring and Maintenance](#monitoring-and-maintenance)
-6. [Error Handling and Recovery](#error-handling-and-recovery)
-7. [Integration Patterns](#integration-patterns)
+## 1. Login Workflow
 
----
-
-## Core Workflow Scenarios
-
-### Scenario 1: Initial Data Ingestion and Validation
-**Purpose:** Establish baseline data quality and readiness for processing
-
-**Workflow Steps:**
-1. Data Source Connection
-   - Authenticate with external data sources (APIs, databases, file systems)
-   - Establish secure connection protocols (SSL/TLS)
-   - Validate source availability and accessibility
-
-2. Data Extraction
-   - Define extraction parameters and filters
-   - Implement batch or streaming extraction based on volume
-   - Log extraction metadata (timestamp, record count, source)
-
-3. Schema Validation
-   - Verify data structure against predefined schema
-   - Identify and handle schema mismatches
-   - Document schema evolution and versioning
-
-4. Quality Checks
-   - Validate data types and formats
-   - Check for missing or null values
-   - Verify data completeness and consistency
-   - Flag anomalies for manual review
-
-5. Data Staging
-   - Store validated data in temporary staging areas
-   - Create audit trails and checksums
-   - Generate quality reports
-
-**Decision Points:**
-- If validation fails: Route to manual review queue
-- If schema mismatch detected: Apply transformation rules
-- If quality thresholds not met: Halt and alert stakeholders
-
----
-
-### Scenario 2: Feature Engineering and Transformation
-**Purpose:** Convert raw data into meaningful features for model training
-
-**Workflow Steps:**
-1. Feature Identification
-   - Analyze data relationships and correlations
-   - Select relevant features based on domain knowledge
-   - Document feature lineage and dependencies
-
-2. Data Transformation
-   - Normalize and standardize numerical features
-   - Encode categorical variables (one-hot, label encoding)
-   - Handle missing values (imputation, removal, interpolation)
-   - Scale features to appropriate ranges
-
-3. Feature Creation
-   - Implement domain-specific feature engineering
-   - Create interaction features
-   - Generate time-based features for temporal data
-   - Apply dimensionality reduction if needed
-
-4. Feature Validation
-   - Verify feature distributions
-   - Check for multicollinearity
-   - Validate feature importance rankings
-   - Store feature definitions for reproducibility
-
-5. Feature Storage
-   - Persist engineered features in feature store
-   - Maintain feature versioning
-   - Document feature metadata and lineage
-
-**Decision Points:**
-- If feature quality is poor: Re-engineer or remove
-- If high correlation detected: Apply dimension reduction
-- If cardinality issues arise: Apply binning or grouping
-
----
-
-## Data Processing Pipeline
-
-### Pipeline Architecture
+### User Authentication Flow
 ```
-Raw Data → Validation → Transformation → Feature Engineering → Staging
-    ↓          ↓             ↓                  ↓                ↓
-  Logs      Metrics      Metrics           Metrics           Output
+┌─────────────────────────────────────────────────────────────┐
+│                     LOGIN WORKFLOW                           │
+└─────────────────────────────────────────────────────────────┘
+
+1. User Access
+   └─> Navigate to /login endpoint
+   └─> Frontend renders login form with credentials input
+
+2. Credential Submission
+   └─> User enters email/username and password
+   └─> Form validates input (client-side validation)
+   └─> POST request to /api/auth/login
+
+3. Server-side Authentication
+   └─> Verify credentials against user database
+   └─> Check password hash (bcrypt comparison)
+   └─> Validate account status (active/inactive)
+   └─> Check MFA requirements if enabled
+
+4. Session Management
+   └─> Generate JWT token (access token)
+   └─> Create refresh token
+   └─> Set secure httpOnly cookies
+   └─> Store session in Redis cache
+
+5. Response & Redirect
+   └─> Return authentication tokens
+   └─> Redirect to dashboard (admin or client)
+   └─> Initialize user context/state
 ```
 
-### Processing Configurations
+### Login Endpoint Details
+- **Path**: `/api/auth/login`
+- **Method**: POST
+- **Request Body**:
+  ```json
+  {
+    "email": "user@example.com",
+    "password": "secure_password",
+    "rememberMe": false
+  }
+  ```
+- **Response**:
+  ```json
+  {
+    "success": true,
+    "user": {
+      "id": "user_uuid",
+      "email": "user@example.com",
+      "role": "admin|client",
+      "name": "User Name"
+    },
+    "accessToken": "jwt_token",
+    "refreshToken": "refresh_token",
+    "expiresIn": 3600
+  }
+  ```
+- **Error Responses**: 
+  - 401: Invalid credentials
+  - 429: Too many login attempts
+  - 403: Account locked/inactive
 
-**Batch Processing Mode:**
-- Process data in predefined intervals (hourly, daily, weekly)
-- Aggregate results before storage
-- Generate consolidated reports
-- Suitable for: Large datasets, non-time-sensitive applications
-
-**Streaming Processing Mode:**
-- Real-time data processing with minimal latency
-- Immediate feature updates
-- Event-driven transformations
-- Suitable for: Time-sensitive applications, fraud detection, monitoring
-
-**Hybrid Mode:**
-- Combine batch and streaming approaches
-- Real-time streaming with periodic batch reconciliation
-- Balance between latency and computational efficiency
-
----
-
-## Model Training Workflows
-
-### Scenario 3: Model Training and Validation
-**Purpose:** Develop, train, and validate machine learning models
-
-**Workflow Steps:**
-1. Training Data Preparation
-   - Split data into training, validation, and test sets
-   - Apply stratification for balanced distributions
-   - Document data splits and ratios
-   - Store splits for reproducibility
-
-2. Model Selection
-   - Evaluate multiple algorithm candidates
-   - Consider computational requirements
-   - Assess interpretability vs. performance tradeoffs
-   - Document selection rationale
-
-3. Hyperparameter Tuning
-   - Define hyperparameter search space
-   - Implement grid search, random search, or Bayesian optimization
-   - Track all parameter combinations and results
-   - Select optimal configuration based on validation metrics
-
-4. Model Training
-   - Initialize model with selected hyperparameters
-   - Train on training dataset
-   - Monitor training progress and convergence
-   - Implement early stopping to prevent overfitting
-   - Save model checkpoints at regular intervals
-
-5. Validation and Testing
-   - Evaluate on validation dataset during training
-   - Generate comprehensive validation reports
-   - Analyze performance across different data segments
-   - Test on held-out test set for final evaluation
-   - Generate confusion matrices and ROC curves
-
-6. Model Evaluation Metrics
-   - Classification: Accuracy, Precision, Recall, F1-Score, AUC-ROC
-   - Regression: MSE, RMSE, MAE, R² Score
-   - Business metrics: Conversion rate, revenue impact, cost savings
-   - Fairness metrics: Demographic parity, equalized odds
-
-**Decision Points:**
-- If performance below threshold: Retrain with different hyperparameters
-- If overfitting detected: Apply regularization or reduce complexity
-- If performance acceptable: Proceed to model packaging
+### Session Timeout & Refresh
+- Access token expires in 1 hour
+- Refresh token expires in 7 days
+- Automatic token refresh on API calls
+- Logout clears all tokens and sessions
 
 ---
 
-### Scenario 4: Model Comparison and Selection
-**Purpose:** Systematically compare models and select the best candidate
+## 2. Admin Dashboard Workflow
 
-**Workflow Steps:**
-1. Candidate Model Collection
-   - Gather trained models from various approaches
-   - Document model versions and training parameters
-   - Ensure fair comparison conditions
+### Dashboard Access Flow
+```
+┌─────────────────────────────────────────────────────────────┐
+│                  ADMIN DASHBOARD WORKFLOW                    │
+└─────────────────────────────────────────────────────────────┘
 
-2. Comprehensive Evaluation
-   - Evaluate all models on same test dataset
-   - Compare across multiple metrics
-   - Analyze prediction distributions
-   - Test on edge cases and outliers
-   - Assess inference latency and computational requirements
+1. Initial Load
+   └─> Verify admin authentication
+   └─> Load user permissions
+   └─> Fetch dashboard metadata
 
-3. Comparison Analysis
-   - Create comparison matrices
-   - Generate visualization dashboards
-   - Analyze performance-efficiency tradeoffs
-   - Consider deployment requirements
-   - Evaluate interpretability
+2. Dashboard Components
+   ├─> Overview Panel
+   │  ├─> Total users count
+   │  ├─> Total revenue
+   │  ├─> Active sessions
+   │  └─> System health status
+   │
+   ├─> User Management Section
+   │  ├─> User list with pagination
+   │  ├─> Search and filter users
+   │  ├─> Create/Edit/Delete users
+   │  └─> Assign roles and permissions
+   │
+   ├─> Analytics & Reports
+   │  ├─> Revenue charts (monthly/yearly)
+   │  ├─> User activity timeline
+   │  ├─> System performance metrics
+   │  └─> Export report functionality
+   │
+   ├─> Configuration Panel
+   │  ├─> System settings
+   │  ├─> API key management
+   │  ├─> Email templates
+   │  └─> Notification preferences
+   │
+   └─> Audit Logs
+      ├─> Action history
+      ├─> User activity tracking
+      ├─> System events
+      └─> Export audit trails
+```
 
-4. Selection Criteria
-   - Performance metrics (accuracy, precision, recall)
-   - Business impact and ROI
-   - Computational efficiency
-   - Scalability and maintainability
-   - Regulatory compliance and fairness
+### Key Admin Features
 
-5. Documentation and Approval
-   - Document selection rationale
-   - Obtain stakeholder approval
-   - Create model cards
-   - Archive non-selected models
+#### User Management
+- **Create User**: POST `/api/admin/users`
+- **List Users**: GET `/api/admin/users?page=1&limit=20`
+- **Update User**: PUT `/api/admin/users/{userId}`
+- **Delete User**: DELETE `/api/admin/users/{userId}`
+- **Reset Password**: POST `/api/admin/users/{userId}/reset-password`
 
----
+#### Analytics
+- **Get Dashboard Stats**: GET `/api/admin/stats/overview`
+- **Revenue Report**: GET `/api/admin/reports/revenue?period=monthly`
+- **User Activity**: GET `/api/admin/reports/activity`
+- **Export Data**: POST `/api/admin/reports/export`
 
-## Deployment Scenarios
-
-### Scenario 5: Model Packaging and Containerization
-**Purpose:** Prepare model for production deployment
-
-**Workflow Steps:**
-1. Environment Setup
-   - Document all dependencies and versions
-   - Create requirements.txt or environment.yml
-   - Test dependencies in clean environment
-   - Create Docker image specification
-
-2. Model Serialization
-   - Convert trained model to portable format
-   - Store model artifacts in version control
-   - Create model checksums for integrity verification
-   - Document model format and loading procedures
-
-3. Application Code Development
-   - Develop prediction API/microservice
-   - Implement input validation and error handling
-   - Add logging and monitoring instrumentation
-   - Create configuration management system
-
-4. Testing Framework
-   - Develop unit tests for prediction logic
-   - Create integration tests with sample data
-   - Test error handling and edge cases
-   - Validate API contract and response formats
-
-5. Container Building
-   - Build Docker image with all dependencies
-   - Minimize image size (multi-stage builds)
-   - Test container functionality
-   - Push to container registry with versioning
-
-**Decision Points:**
-- If tests fail: Debug and fix issues before proceeding
-- If image size too large: Optimize dependencies
-- If performance inadequate: Profile and optimize code
+#### System Configuration
+- **Get Settings**: GET `/api/admin/settings`
+- **Update Settings**: PUT `/api/admin/settings`
+- **Manage API Keys**: GET/POST/DELETE `/api/admin/api-keys`
+- **Email Configuration**: GET/PUT `/api/admin/email-config`
 
 ---
 
-### Scenario 6: Staging and Production Deployment
-**Purpose:** Safely deploy models to production environment
+## 3. Client Dashboard Workflow
 
-**Workflow Steps:**
-1. Staging Environment Deployment
-   - Deploy container to staging cluster
-   - Configure staging environment variables
-   - Connect to staging data sources
-   - Verify connectivity and permissions
+### Client Portal Access Flow
+```
+┌─────────────────────────────────────────────────────────────┐
+│                 CLIENT DASHBOARD WORKFLOW                    │
+└─────────────────────────────────────────────────────────────┘
 
-2. Staging Validation
-   - Run functional tests
-   - Verify API endpoints and responses
-   - Test with realistic data volumes
-   - Monitor resource utilization
-   - Validate logging and monitoring setup
+1. Client Login & Access
+   └─> Authenticate with credentials
+   └─> Verify client account status
+   └─> Load client-specific data
 
-3. Performance Testing
-   - Load testing with expected traffic
-   - Stress testing with peak traffic simulation
-   - Latency measurements
-   - Error rate validation
-   - Database connection testing
+2. Dashboard Home
+   ├─> Welcome message with personalization
+   ├─> Quick action cards
+   ├─> Recent activity feed
+   └─> Important notifications
 
-4. Security Validation
-   - Security scanning of container image
-   - API authentication and authorization testing
-   - Data encryption verification
-   - Compliance check
+3. Client Services Section
+   ├─> Active Services
+   │  ├─> Service details and status
+   │  ├─> Usage metrics
+   │  └─> Quick manage actions
+   │
+   ├─> Billing & Payments
+   │  ├─> Invoice history
+   │  ├─> Payment methods
+   │  ├─> Billing address
+   │  └─> Download receipts
+   │
+   ├─> Support & Tickets
+   │  ├─> Submit support ticket
+   │  ├─> View ticket history
+   │  ├─> Chat with support
+   │  └─> Knowledge base access
+   │
+   └─> Profile Management
+      ├─> Edit profile information
+      ├─> Change password
+      ├─> Enable 2FA
+      └─> Manage preferences
 
-5. Production Deployment
-   - Create deployment plan with rollback strategy
-   - Set up canary or blue-green deployment
-   - Gradually roll out to production
-   - Monitor metrics during deployment
-   - Verify no service degradation
+4. Data & Export
+   └─> Download usage reports
+   └─> Export data in various formats
+   └─> API documentation access
+```
 
-6. Post-Deployment Verification
-   - Monitor error rates and latency
-   - Verify predictions accuracy
-   - Check resource utilization
-   - Validate logging and alerts
-   - Confirm rollback capability
+### Key Client Features
 
-**Decision Points:**
-- If staging tests fail: Fix issues and retest
-- If performance not acceptable: Optimize or rollback to previous version
-- If security issues found: Remediate before production deployment
+#### Services Management
+- **List Services**: GET `/api/client/services`
+- **Service Details**: GET `/api/client/services/{serviceId}`
+- **Update Service**: PUT `/api/client/services/{serviceId}`
+- **Get Usage Stats**: GET `/api/client/services/{serviceId}/usage`
 
----
+#### Billing
+- **Get Invoices**: GET `/api/client/billing/invoices`
+- **Get Invoice**: GET `/api/client/billing/invoices/{invoiceId}`
+- **Payment Methods**: GET/POST/DELETE `/api/client/billing/payment-methods`
+- **Make Payment**: POST `/api/client/billing/pay`
 
-## Monitoring and Maintenance
+#### Support
+- **Create Ticket**: POST `/api/client/support/tickets`
+- **List Tickets**: GET `/api/client/support/tickets`
+- **Get Ticket**: GET `/api/client/support/tickets/{ticketId}`
+- **Add Comment**: POST `/api/client/support/tickets/{ticketId}/comments`
 
-### Scenario 7: Production Monitoring and Alerting
-**Purpose:** Continuously monitor model performance and system health
-
-**Workflow Steps:**
-1. Metrics Collection
-   - Model prediction metrics (accuracy, latency, throughput)
-   - System metrics (CPU, memory, disk usage)
-   - Application metrics (request rate, error rate)
-   - Business metrics (predictions made, conversion rate)
-   - Data drift metrics (feature distributions)
-
-2. Logging Infrastructure
-   - Centralized log aggregation
-   - Structured logging with context
-   - Log retention and archival policies
-   - Log searching and filtering
-
-3. Alert Configuration
-   - Define alert thresholds for critical metrics
-   - Configure escalation policies
-   - Set up multi-channel notifications (email, Slack, PagerDuty)
-   - Create runbooks for common alerts
-
-4. Dashboard Creation
-   - Real-time performance dashboards
-   - Historical trend visualization
-   - Anomaly detection visualization
-   - Business KPI tracking
-   - Infrastructure health overview
-
-5. Performance Tracking
-   - Track prediction accuracy over time
-   - Monitor prediction latency trends
-   - Track resource utilization patterns
-   - Monitor model freshness
-
-**Decision Points:**
-- If alert threshold exceeded: Trigger incident response
-- If performance degradation detected: Initiate investigation
-- If data drift detected: Trigger retraining
+#### Profile
+- **Get Profile**: GET `/api/client/profile`
+- **Update Profile**: PUT `/api/client/profile`
+- **Change Password**: POST `/api/client/profile/change-password`
+- **Preferences**: GET/PUT `/api/client/preferences`
 
 ---
 
-### Scenario 8: Model Drift Detection and Retraining
-**Purpose:** Identify when models need retraining and execute retraining workflows
+## 4. API Mappings
 
-**Workflow Steps:**
-1. Drift Detection
-   - Monitor input data distribution (feature drift)
-   - Monitor prediction distribution (label drift)
-   - Compare current distributions to baseline
-   - Calculate statistical divergence metrics (KL divergence, JS divergence)
-   - Identify root causes of drift
+### Authentication Endpoints
+```
+POST   /api/auth/login                    - User login
+POST   /api/auth/logout                   - User logout
+POST   /api/auth/refresh-token            - Refresh access token
+POST   /api/auth/register                 - New user registration
+POST   /api/auth/forgot-password          - Password reset request
+POST   /api/auth/reset-password           - Confirm password reset
+POST   /api/auth/verify-email             - Email verification
+POST   /api/auth/enable-2fa               - Enable two-factor auth
+POST   /api/auth/disable-2fa              - Disable two-factor auth
+```
 
-2. Drift Assessment
-   - Evaluate impact on model performance
-   - Determine if retraining is necessary
-   - Assess urgency of retraining
-   - Consider business impact
+### Admin Endpoints
+```
+GET    /api/admin/dashboard               - Dashboard overview
+GET    /api/admin/users                   - List all users
+POST   /api/admin/users                   - Create new user
+GET    /api/admin/users/{id}              - Get user details
+PUT    /api/admin/users/{id}              - Update user
+DELETE /api/admin/users/{id}              - Delete user
+GET    /api/admin/stats/overview          - Dashboard statistics
+GET    /api/admin/stats/users             - User statistics
+GET    /api/admin/reports/revenue         - Revenue reports
+GET    /api/admin/reports/activity        - Activity reports
+POST   /api/admin/reports/export          - Export report
+GET    /api/admin/settings                - Get system settings
+PUT    /api/admin/settings                - Update settings
+GET    /api/admin/api-keys                - List API keys
+POST   /api/admin/api-keys                - Create API key
+DELETE /api/admin/api-keys/{id}           - Revoke API key
+```
 
-3. Retraining Trigger
-   - Automatic trigger if drift exceeds thresholds
-   - Manual trigger based on stakeholder request
-   - Scheduled periodic retraining
-   - Event-triggered retraining (policy changes, new data categories)
-
-4. Retraining Execution
-   - Collect fresh training data
-   - Execute training pipeline
-   - Validate new model on held-out test set
-   - Compare performance with current production model
-   - Document training results
-
-5. Model Comparison
-   - Compare metrics between old and new models
-   - Analyze performance across data segments
-   - Assess fairness and bias metrics
-   - Consider business impact
-
-6. Deployment Decision
-   - If new model superior: Plan deployment
-   - If performance similar: Keep current model
-   - If performance degraded: Investigate and retrain with different approach
-
-**Decision Points:**
-- If drift significant: Trigger retraining
-- If new model better: Plan canary deployment
-- If performance concerning: Implement enhanced monitoring
-
----
-
-## Error Handling and Recovery
-
-### Scenario 9: Error Handling and Fallback Strategies
-**Purpose:** Gracefully handle errors and maintain service availability
-
-**Workflow Steps:**
-1. Error Classification
-   - Data validation errors (missing values, schema mismatch)
-   - Processing errors (computation failures, timeouts)
-   - Model errors (invalid predictions, missing model)
-   - System errors (database unavailable, service down)
-
-2. Error Detection
-   - Implement comprehensive try-catch blocks
-   - Validate inputs before processing
-   - Monitor for unexpected exceptions
-   - Track error rates and patterns
-
-3. Error Logging
-   - Log error details with context
-   - Include stack traces for debugging
-   - Record error severity level
-   - Include request identifiers for tracing
-
-4. Fallback Strategies
-   - Return cached predictions if service unavailable
-   - Use previous model version if new model fails
-   - Apply default predictions based on business rules
-   - Route requests to alternative services
-   - Queue requests for later processing
-
-5. User Communication
-   - Provide informative error messages
-   - Include error codes for tracking
-   - Suggest corrective actions when possible
-   - Maintain service status communication
-
-6. Recovery Procedures
-   - Automatic recovery for transient errors (retries with backoff)
-   - Manual recovery procedures for critical errors
-   - Health checks and service restart procedures
-   - Data consistency verification after recovery
-
-**Decision Points:**
-- If error transient: Retry with exponential backoff
-- If error critical: Trigger alert and manual intervention
-- If service degraded: Activate fallback strategies
+### Client Endpoints
+```
+GET    /api/client/dashboard              - Client dashboard
+GET    /api/client/profile                - User profile
+PUT    /api/client/profile                - Update profile
+POST   /api/client/profile/change-password - Change password
+GET    /api/client/services               - List services
+GET    /api/client/services/{id}          - Service details
+GET    /api/client/services/{id}/usage    - Usage statistics
+PUT    /api/client/services/{id}          - Update service
+GET    /api/client/billing/invoices       - List invoices
+GET    /api/client/billing/invoices/{id}  - Invoice details
+POST   /api/client/billing/pay            - Make payment
+GET    /api/client/billing/payment-methods - Payment methods
+POST   /api/client/billing/payment-methods - Add payment method
+GET    /api/client/support/tickets        - List support tickets
+POST   /api/client/support/tickets        - Create ticket
+GET    /api/client/support/tickets/{id}   - Ticket details
+POST   /api/client/support/tickets/{id}/comments - Add comment
+```
 
 ---
 
-## Integration Patterns
+## 5. Data Schemas
 
-### Scenario 10: API Integration and Client Communication
-**Purpose:** Provide robust interfaces for model prediction requests
+### User Schema
+```json
+{
+  "id": "uuid",
+  "email": "string (unique)",
+  "username": "string (unique)",
+  "passwordHash": "string (bcrypt)",
+  "firstName": "string",
+  "lastName": "string",
+  "phone": "string (optional)",
+  "avatar": "string (url, optional)",
+  "role": "enum: [admin, client, support]",
+  "status": "enum: [active, inactive, suspended, deleted]",
+  "emailVerified": "boolean",
+  "twoFactorEnabled": "boolean",
+  "twoFactorSecret": "string (encrypted, optional)",
+  "lastLogin": "timestamp",
+  "loginAttempts": "integer",
+  "lockedUntil": "timestamp (optional)",
+  "createdAt": "timestamp",
+  "updatedAt": "timestamp",
+  "deletedAt": "timestamp (optional)"
+}
+```
 
-**Workflow Steps:**
-1. API Design
-   - Define request/response schemas
-   - Specify error responses
-   - Document API endpoints
-   - Plan versioning strategy
+### Service Schema
+```json
+{
+  "id": "uuid",
+  "clientId": "uuid (foreign key)",
+  "name": "string",
+  "description": "string",
+  "type": "enum: [premium, standard, basic]",
+  "status": "enum: [active, paused, cancelled, suspended]",
+  "startDate": "date",
+  "endDate": "date (optional)",
+  "monthlyFee": "decimal",
+  "billingCycle": "enum: [monthly, quarterly, yearly]",
+  "features": "array of strings",
+  "usageLimit": "integer",
+  "usageMetrics": {
+    "current": "integer",
+    "lastReset": "timestamp",
+    "overageCharge": "decimal"
+  },
+  "createdAt": "timestamp",
+  "updatedAt": "timestamp"
+}
+```
 
-2. Authentication and Authorization
-   - Implement API key authentication
-   - Add rate limiting per client
-   - Validate user permissions
-   - Log access attempts
+### Invoice Schema
+```json
+{
+  "id": "uuid",
+  "clientId": "uuid (foreign key)",
+  "invoiceNumber": "string (unique)",
+  "status": "enum: [draft, sent, paid, overdue, cancelled]",
+  "amount": "decimal",
+  "tax": "decimal",
+  "total": "decimal",
+  "currency": "string (ISO 4217)",
+  "issueDate": "date",
+  "dueDate": "date",
+  "paidDate": "date (optional)",
+  "items": [
+    {
+      "description": "string",
+      "quantity": "integer",
+      "unitPrice": "decimal",
+      "subtotal": "decimal"
+    }
+  ],
+  "notes": "string (optional)",
+  "createdAt": "timestamp",
+  "updatedAt": "timestamp"
+}
+```
 
-3. Request Handling
-   - Parse and validate input data
-   - Transform input to model format
-   - Handle batch vs single predictions
-   - Manage request timeouts
+### Support Ticket Schema
+```json
+{
+  "id": "uuid",
+  "ticketNumber": "string (unique)",
+  "clientId": "uuid (foreign key)",
+  "assignedTo": "uuid (optional, admin user)",
+  "subject": "string",
+  "description": "string",
+  "priority": "enum: [low, medium, high, critical]",
+  "status": "enum: [open, in-progress, on-hold, resolved, closed]",
+  "category": "enum: [billing, technical, feature-request, other]",
+  "attachments": "array of file objects",
+  "comments": [
+    {
+      "id": "uuid",
+      "authorId": "uuid",
+      "text": "string",
+      "createdAt": "timestamp"
+    }
+  ],
+  "createdAt": "timestamp",
+  "updatedAt": "timestamp",
+  "resolvedAt": "timestamp (optional)"
+}
+```
 
-4. Response Generation
-   - Format predictions in response schema
-   - Include confidence scores
-   - Add prediction explanations (SHAP values, feature importance)
-   - Include metadata (model version, processing time)
-
-5. Caching Strategy
-   - Cache identical prediction requests
-   - Store cache with TTL
-   - Implement cache invalidation
-   - Monitor cache hit rates
-
-6. Rate Limiting and Throttling
-   - Enforce per-client request limits
-   - Implement request queuing during high load
-   - Provide feedback on rate limit status
-   - Document rate limits in API documentation
-
----
-
-### Scenario 11: Batch Prediction Processing
-**Purpose:** Handle large-scale prediction requests efficiently
-
-**Workflow Steps:**
-1. Batch Job Configuration
-   - Define input data source (file, database, API)
-   - Configure batch size and processing parameters
-   - Set resource allocation (memory, CPU)
-   - Schedule execution timing
-
-2. Data Preparation
-   - Extract data from source
-   - Apply same preprocessing as training
-   - Validate data quality
-   - Create batch metadata
-
-3. Prediction Execution
-   - Process data in configured batches
-   - Generate predictions with confidence scores
-   - Track processing progress
-   - Monitor resource utilization
-
-4. Result Storage
-   - Store predictions in target destination
-   - Maintain mapping between input and output
-   - Create result metadata (timestamp, model version)
-   - Generate summary statistics
-
-5. Notification and Reporting
-   - Notify stakeholders of completion
-   - Generate batch processing reports
-   - Provide summary statistics
-   - Log any issues or warnings
-
-**Decision Points:**
-- If processing fails: Retry failed batches
-- If resource constraints: Adjust batch size
-- If quality issues detected: Flag for manual review
-
----
-
-### Scenario 12: Real-time Streaming Predictions
-**Purpose:** Handle continuous stream of prediction requests
-
-**Workflow Steps:**
-1. Stream Connection Setup
-   - Connect to data stream (Kafka, Kinesis, Pub/Sub)
-   - Configure consumer group
-   - Handle connection failures
-   - Monitor stream lag
-
-2. Stream Processing
-   - Deserialize incoming messages
-   - Apply feature engineering transformations
-   - Generate predictions
-   - Format output messages
-
-3. State Management
-   - Maintain session state if needed
-   - Cache recent predictions
-   - Track event aggregations
-   - Handle late-arriving events
-
-4. Output Publishing
-   - Publish predictions to output stream
-   - Maintain message ordering where required
-   - Handle publishing failures with retry logic
-   - Monitor output stream health
-
-5. Performance Optimization
-   - Monitor processing latency
-   - Track throughput metrics
-   - Optimize batch window sizes
-   - Manage backpressure
-
-**Decision Points:**
-- If latency too high: Reduce batch size or optimize code
-- If stream lag increasing: Scale up processing capacity
-- If quality issues: Apply filtering or validation
-
----
-
-## Compliance and Documentation
-
-### Documentation Requirements
-1. **Model Cards:** Comprehensive model documentation including:
-   - Model purpose and use cases
-   - Training data description
-   - Evaluation metrics and results
-   - Known limitations and biases
-   - Recommendations for use
-
-2. **Data Documentation:** 
-   - Data source descriptions
-   - Feature definitions and lineage
-   - Data quality metrics
-   - Privacy and compliance considerations
-
-3. **Workflow Documentation:**
-   - Deployment procedures
-   - Runbooks for common issues
-   - Escalation procedures
-   - Disaster recovery plans
+### Audit Log Schema
+```json
+{
+  "id": "uuid",
+  "userId": "uuid",
+  "action": "string",
+  "resource": "string",
+  "resourceId": "uuid",
+  "changes": {
+    "before": "object",
+    "after": "object"
+  },
+  "ipAddress": "string",
+  "userAgent": "string",
+  "status": "enum: [success, failure]",
+  "errorMessage": "string (optional)",
+  "timestamp": "timestamp"
+}
+```
 
 ---
 
-## Conclusion
-This document provides comprehensive guidance for implementing machine learning workflows in enterprise environments. Regular updates and revisions ensure alignment with evolving business requirements and technological advancements.
+## 6. Debug Tags
 
-Last Updated: 2025-12-22
+### Debug Tag Categories
+
+#### Authentication Debug Tags
+```
+DEBUG:AUTH:LOGIN          - Login attempt logging
+DEBUG:AUTH:TOKEN          - Token generation/validation
+DEBUG:AUTH:SESSION        - Session management
+DEBUG:AUTH:2FA            - Two-factor authentication
+DEBUG:AUTH:PASSWORD       - Password hashing/reset
+DEBUG:AUTH:PERMISSION     - Permission/role checks
+```
+
+#### API Request Debug Tags
+```
+DEBUG:API:REQUEST         - Incoming API request details
+DEBUG:API:RESPONSE        - API response data
+DEBUG:API:VALIDATION      - Input validation errors
+DEBUG:API:RATE_LIMIT      - Rate limiting information
+DEBUG:API:CACHE           - Cache hit/miss data
+```
+
+#### Database Debug Tags
+```
+DEBUG:DB:QUERY            - SQL query execution
+DEBUG:DB:TRANSACTION      - Transaction management
+DEBUG:DB:MIGRATION        - Database migration steps
+DEBUG:DB:CONNECTION       - DB connection pool
+DEBUG:DB:INDEX            - Query index usage
+```
+
+#### Admin Operations Debug Tags
+```
+DEBUG:ADMIN:USER_CREATE   - User creation process
+DEBUG:ADMIN:USER_UPDATE   - User update operations
+DEBUG:ADMIN:USER_DELETE   - User deletion process
+DEBUG:ADMIN:REPORT        - Report generation
+DEBUG:ADMIN:SETTINGS      - Configuration changes
+```
+
+#### Client Operations Debug Tags
+```
+DEBUG:CLIENT:SERVICE      - Service management
+DEBUG:CLIENT:BILLING      - Billing operations
+DEBUG:CLIENT:PAYMENT      - Payment processing
+DEBUG:CLIENT:TICKET       - Support ticket operations
+```
+
+#### System Debug Tags
+```
+DEBUG:SYSTEM:ERROR        - System errors
+DEBUG:SYSTEM:PERFORMANCE  - Performance metrics
+DEBUG:SYSTEM:SECURITY     - Security events
+DEBUG:SYSTEM:EMAIL        - Email sending
+DEBUG:SYSTEM:NOTIFICATION - Notifications
+```
+
+### Debug Usage Examples
+
+#### Enable Specific Debug Tags
+```javascript
+// Enable authentication debugging
+process.env.DEBUG = 'DEBUG:AUTH:*';
+
+// Enable API and database debugging
+process.env.DEBUG = 'DEBUG:API:*,DEBUG:DB:*';
+
+// Enable all debugging
+process.env.DEBUG = 'DEBUG:*';
+```
+
+#### Log Level Configuration
+```javascript
+// Debug levels: TRACE, DEBUG, INFO, WARN, ERROR, FATAL
+const debugLevels = {
+  'DEBUG:AUTH:LOGIN': 'DEBUG',
+  'DEBUG:API:RESPONSE': 'INFO',
+  'DEBUG:DB:QUERY': 'TRACE',
+  'DEBUG:SYSTEM:ERROR': 'ERROR'
+};
+```
+
+#### Debug Output Format
+```
+[TIMESTAMP] [LEVEL] [TAG] Message
+Example: [2025-12-22 06:06:40] [DEBUG] [DEBUG:AUTH:LOGIN] User login attempt for user@example.com
+```
+
+---
+
+## 7. Error Handling & Status Codes
+
+### HTTP Status Codes
+```
+200 - OK                 - Request successful
+201 - Created            - Resource created successfully
+204 - No Content         - Successful request with no content
+400 - Bad Request        - Invalid request data
+401 - Unauthorized       - Authentication required
+403 - Forbidden          - Insufficient permissions
+404 - Not Found          - Resource not found
+409 - Conflict           - Resource conflict (duplicate, etc)
+429 - Too Many Requests  - Rate limit exceeded
+500 - Server Error       - Internal server error
+503 - Service Unavailable - Service temporarily unavailable
+```
+
+### Error Response Format
+```json
+{
+  "success": false,
+  "error": {
+    "code": "ERROR_CODE",
+    "message": "Human readable message",
+    "details": "Additional error details",
+    "timestamp": "2025-12-22T06:06:40Z"
+  }
+}
+```
+
+---
+
+## 8. Security Considerations
+
+### Authentication Security
+- Password hashing with bcrypt (min 12 rounds)
+- JWT tokens with HS256 signing
+- Refresh token rotation on use
+- HTTPS-only for all endpoints
+- Secure httpOnly cookies for tokens
+
+### Data Protection
+- Encrypt sensitive data at rest
+- SQL injection prevention with parameterized queries
+- CSRF token validation
+- Input sanitization and validation
+- Rate limiting on authentication endpoints
+
+### Access Control
+- Role-based access control (RBAC)
+- Permission-based authorization
+- IP whitelist for admin endpoints (optional)
+- Activity logging and audit trails
+
+---
+
+## 9. Deployment & Configuration
+
+### Environment Variables
+```
+NODE_ENV=production
+DATABASE_URL=postgresql://user:pass@host:5432/dbname
+REDIS_URL=redis://host:6379
+JWT_SECRET=your_secret_key
+REFRESH_TOKEN_SECRET=your_refresh_secret
+SMTP_HOST=smtp.example.com
+SMTP_PORT=587
+SMTP_USER=email@example.com
+SMTP_PASS=password
+CORS_ORIGIN=https://yourdomain.com
+API_RATE_LIMIT=100/15min
+```
+
+### Database Initialization
+```sql
+-- Run migrations
+npm run migrate
+
+-- Seed initial data (optional)
+npm run seed
+```
+
+---
+
+## 10. Testing & Quality Assurance
+
+### Unit Tests
+- Authentication logic
+- Authorization checks
+- Data validation
+- Error handling
+
+### Integration Tests
+- API endpoint testing
+- Database operations
+- Payment processing
+- Email notifications
+
+### End-to-End Tests
+- Complete user workflows
+- Multi-step processes
+- Error scenarios
+- Performance testing
+
+---
+
+**Last Updated**: 2025-12-22 06:06:40 UTC
+**Documentation Version**: 1.0
+**Status**: Complete
