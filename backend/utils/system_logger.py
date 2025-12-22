@@ -23,7 +23,6 @@ import time
 from database.system_logs import SystemLog, ComponentHealth, ComponentType, LogLevel, ComponentStatus
 from database.connection import get_db
 from sqlalchemy.orm import Session
-from utils.component_health_checks import ComponentHealthEvaluator
 
 
 class Component:
@@ -116,6 +115,9 @@ class SystemLogger:
         Update component health metrics using component-specific evaluation logic
         """
         try:
+            # Lazy import to avoid circular dependency
+            from utils.component_health_checks import ComponentHealthEvaluator
+
             health = self._ensure_health_record()
 
             health.last_check = datetime.utcnow()
