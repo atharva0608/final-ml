@@ -80,6 +80,13 @@ class Account(Base):
     # AWS region
     region = Column(String(20), default='ap-south-1', nullable=False)
 
+    # Onboarding and discovery status
+    # Status flow: pending → connected (credentials verified) → active (discovery complete) | failed
+    status = Column(String(20), default='pending', nullable=False, index=True)
+
+    # Metadata for discovery tracking
+    account_metadata = Column(JSON, nullable=True)  # Stores scan results, errors, etc.
+
     # Status
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)

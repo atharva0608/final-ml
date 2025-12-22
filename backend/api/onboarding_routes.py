@@ -5,7 +5,7 @@ Self-service wizard for clients to connect their AWS accounts securely.
 Generates CloudFormation templates and verifies cross-account access.
 """
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from datetime import datetime
@@ -18,6 +18,7 @@ from database.connection import get_db
 from database.models import Account
 from utils.system_logger import logger
 from api.auth import get_current_active_user as get_current_user
+from workers.discovery_worker import run_initial_discovery
 
 router = APIRouter(
     prefix="",
@@ -222,14 +223,19 @@ async def get_cloudformation_template(
 async def verify_connection(
     account_id: str,
     verification: ConnectionVerification,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user = Depends(get_current_user)
 ):
     """
     Verifies cross-account access by attempting STS AssumeRole
 
+    Phase 1: Synchronous IAM role verification (< 2 seconds)
+    Phase 2: Asynchronous resource discovery (background task)
+
     Tests that we can successfully assume the role created by the
-    CloudFormation stack in the client's AWS account.
+    CloudFormation stack in the client's AWS account, then triggers
+    background discovery of EC2 instances and EKS clusters.
     """
     try:
         # Get account record
@@ -243,7 +249,7 @@ async def verify_connection(
             extra={'component': 'OnboardingAPI', 'account_id': account_id}
         )
 
-        # Attempt to assume role
+        # Attempt to assume role (synchronous verification)
         sts_client = boto3.client('sts')
 
         try:
@@ -266,15 +272,18 @@ async def verify_connection(
             client_aws_account_id = identity['Account']
 
             # Update account record with verified information
+            # Status: 'connected' = credentials verified, discovery pending
+            # Status: 'active' = discovery complete, dashboard unlocked
             account.role_arn = verification.role_arn
             account.account_id = client_aws_account_id
-            account.status = 'active'
+            account.status = 'connected'  # Will transition to 'active' after discovery
             account.account_name = f"AWS Account {client_aws_account_id}"
+            account.is_active = False  # Will be set to True after discovery
 
             db.commit()
 
             logger.info(
-                f'Connection verified successfully for account {client_aws_account_id}',
+                f'Connection verified successfully for account {client_aws_account_id}, starting discovery',
                 extra={
                     'component': 'OnboardingAPI',
                     'account_id': account_id,
@@ -282,12 +291,16 @@ async def verify_connection(
                 }
             )
 
+            # Trigger asynchronous resource discovery (runs in background)
+            background_tasks.add_task(run_initial_discovery, account.id)
+
             return {
                 'status': 'connected',
                 'aws_account_id': client_aws_account_id,
                 'role_arn': verification.role_arn,
                 'verified_at': datetime.utcnow().isoformat(),
-                'message': 'Connection verified successfully! You can now start optimizing.'
+                'message': 'Credentials verified! Scanning your AWS resources in the background...',
+                'discovery_status': 'in_progress'
             }
 
         except ClientError as e:
@@ -342,32 +355,129 @@ async def get_discovery_status(
         if not account:
             raise HTTPException(status_code=404, detail='Account not found')
 
-        if account.status != 'active':
+        # Return discovery status based on account status
+        if account.status == 'pending':
             return {
-                'status': 'not_connected',
-                'message': 'Account not yet connected'
+                'status': 'not_started',
+                'message': 'Account setup not completed'
+            }
+        elif account.status == 'connected':
+            return {
+                'status': 'in_progress',
+                'message': 'Scanning AWS resources...',
+                'account_status': account.status
+            }
+        elif account.status == 'failed':
+            error_details = account.account_metadata.get('last_error', 'Unknown error') if account.account_metadata else 'Unknown error'
+            return {
+                'status': 'failed',
+                'message': f'Discovery failed: {error_details}',
+                'error': error_details,
+                'account_status': account.status
+            }
+        elif account.status != 'active':
+            return {
+                'status': 'unknown',
+                'message': f'Account in unexpected state: {account.status}',
+                'account_status': account.status
             }
 
-        # In a real implementation, this would query discovered resources
-        # For now, return placeholder data
-        # TODO: Integrate with actual discovery engine
+        # Query actual discovered resources from database
+        from database.models import Instance
+
+        instance_count = db.query(Instance).filter(
+            Instance.account_id == account.id
+        ).count()
+
+        authorized_count = db.query(Instance).filter(
+            Instance.account_id == account.id,
+            Instance.auth_status == 'authorized'
+        ).count()
+
+        unauthorized_count = db.query(Instance).filter(
+            Instance.account_id == account.id,
+            Instance.auth_status == 'unauthorized'
+        ).count()
+
+        # Get scan metadata from account
+        scan_metadata = account.account_metadata or {}
+        last_scan = scan_metadata.get('last_scan', datetime.utcnow().isoformat())
+        regions_scanned = scan_metadata.get('regions_scanned', [account.region or 'us-east-1'])
 
         return {
-            'status': 'discovered',
+            'status': 'completed',
             'account_id': account.account_id,
+            'account_status': account.status,
             'resources': {
-                'eks_clusters': 0,  # TODO: Query actual count
-                'auto_scaling_groups': 0,  # TODO: Query actual count
-                'ec2_instances': 0,  # TODO: Query actual count
-                'optimizable_instances': 0  # TODO: Calculate eligible instances
+                'ec2_instances': instance_count,
+                'authorized_instances': authorized_count,
+                'unauthorized_instances': unauthorized_count,
+                'optimizable_instances': authorized_count  # All authorized instances are optimizable
             },
-            'last_discovery': datetime.utcnow().isoformat(),
-            'message': 'Resource discovery in progress. This may take a few minutes.'
+            'scan_info': {
+                'last_scan': last_scan,
+                'regions_scanned': regions_scanned,
+                'instances_discovered': scan_metadata.get('instances_discovered', instance_count)
+            },
+            'message': f'Discovery complete! Found {instance_count} EC2 instances.'
         }
 
     except Exception as e:
         logger.error(
             f'Failed to get discovery status: {e}',
+            extra={'component': 'OnboardingAPI', 'error': str(e)}
+        )
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post('/{account_id}/rediscover')
+async def trigger_rediscovery(
+    account_id: str,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+    """
+    Manually trigger re-discovery of AWS resources for an active account
+
+    This can be used to refresh instance data on-demand or periodically.
+    Only works for accounts that have already completed initial discovery.
+    """
+    try:
+        account = db.query(Account).filter(Account.id == account_id).first()
+
+        if not account:
+            raise HTTPException(status_code=404, detail='Account not found')
+
+        if account.status != 'active':
+            raise HTTPException(
+                status_code=400,
+                detail=f'Account must be in active status to re-discover. Current status: {account.status}'
+            )
+
+        logger.info(
+            f'Triggering re-discovery for account {account.account_name}',
+            extra={'component': 'OnboardingAPI', 'account_id': account_id}
+        )
+
+        # Import rediscovery function
+        from workers.discovery_worker import trigger_rediscovery
+
+        # Trigger background task
+        background_tasks.add_task(trigger_rediscovery, account.id)
+
+        return {
+            'status': 'triggered',
+            'message': 'Re-discovery started in background',
+            'account_id': account.account_id,
+            'timestamp': datetime.utcnow().isoformat()
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            f'Failed to trigger rediscovery: {e}',
             extra={'component': 'OnboardingAPI', 'error': str(e)}
         )
         raise HTTPException(status_code=500, detail=str(e))
