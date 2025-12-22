@@ -522,6 +522,10 @@ class APIClient {
     });
   }
 
+  async getClientDashboardSummary(accountId) {
+    return this.request(`/api/v1/onboarding/${accountId}/dashboard-summary`);
+  }
+
   // ==============================================================================
   // LAB & EXPERIMENT APIs
   // ==============================================================================

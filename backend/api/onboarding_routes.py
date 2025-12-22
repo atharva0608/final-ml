@@ -481,3 +481,184 @@ async def trigger_rediscovery(
             extra={'component': 'OnboardingAPI', 'error': str(e)}
         )
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get('/{account_id}/dashboard-summary')
+async def get_client_dashboard_summary(
+    account_id: str,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+    """
+    Get comprehensive dashboard summary for client after discovery
+
+    Returns all key metrics and counts for displaying on client dashboard:
+    - Total instances discovered
+    - Breakdown by authorization status
+    - Breakdown by lifecycle (on-demand vs spot)
+    - Breakdown by state (running, stopped, etc.)
+    - Regions covered
+    - Potential cost savings
+    - Last scan information
+    """
+    try:
+        from database.models import Instance
+        from sqlalchemy import func
+
+        # Get account
+        account = db.query(Account).filter(Account.id == account_id).first()
+        if not account:
+            raise HTTPException(status_code=404, detail='Account not found')
+
+        # Check if discovery is complete
+        if account.status == 'pending':
+            return {
+                'status': 'pending',
+                'message': 'Cloud connection not yet initiated',
+                'account_status': account.status
+            }
+        elif account.status == 'connected':
+            return {
+                'status': 'discovering',
+                'message': 'Scanning AWS resources in progress...',
+                'account_status': account.status,
+                'progress': 'Discovery worker is running in background'
+            }
+        elif account.status == 'failed':
+            error_msg = account.account_metadata.get('last_error', 'Unknown error') if account.account_metadata else 'Unknown error'
+            return {
+                'status': 'failed',
+                'message': f'Discovery failed: {error_msg}',
+                'account_status': account.status,
+                'error': error_msg
+            }
+
+        # Account is 'active' - fetch comprehensive data
+
+        # Total instances
+        total_instances = db.query(Instance).filter(
+            Instance.account_id == account.id
+        ).count()
+
+        # By authorization status
+        authorized_instances = db.query(Instance).filter(
+            Instance.account_id == account.id,
+            Instance.auth_status == 'authorized'
+        ).count()
+
+        unauthorized_instances = db.query(Instance).filter(
+            Instance.account_id == account.id,
+            Instance.auth_status == 'unauthorized'
+        ).count()
+
+        # By lifecycle
+        on_demand_instances = db.query(Instance).filter(
+            Instance.account_id == account.id,
+            Instance.lifecycle == 'on-demand'
+        ).count()
+
+        spot_instances = db.query(Instance).filter(
+            Instance.account_id == account.id,
+            Instance.lifecycle == 'spot'
+        ).count()
+
+        # By state
+        running_instances = db.query(Instance).filter(
+            Instance.account_id == account.id,
+            Instance.state == 'running'
+        ).count()
+
+        stopped_instances = db.query(Instance).filter(
+            Instance.account_id == account.id,
+            Instance.state == 'stopped'
+        ).count()
+
+        # Active instances (running or pending)
+        active_instances = db.query(Instance).filter(
+            Instance.account_id == account.id,
+            Instance.is_active == True
+        ).count()
+
+        # Get unique regions
+        regions = db.query(Instance.region).filter(
+            Instance.account_id == account.id
+        ).distinct().all()
+        unique_regions = [r[0] for r in regions if r[0]]
+
+        # Get instance type distribution (top 5)
+        instance_type_counts = db.query(
+            Instance.instance_type,
+            func.count(Instance.id).label('count')
+        ).filter(
+            Instance.account_id == account.id
+        ).group_by(Instance.instance_type).order_by(
+            func.count(Instance.id).desc()
+        ).limit(5).all()
+
+        instance_types = [
+            {'type': itype, 'count': count}
+            for itype, count in instance_type_counts
+        ]
+
+        # Estimate cost savings potential (simplified)
+        # Assume 70% savings on spot vs on-demand for authorized instances
+        optimizable_count = authorized_instances
+        estimated_monthly_savings = optimizable_count * 50  # $50 per instance/month avg
+
+        # Get scan metadata
+        scan_metadata = account.account_metadata or {}
+        last_scan = scan_metadata.get('last_scan', account.updated_at.isoformat())
+        instances_discovered = scan_metadata.get('instances_discovered', total_instances)
+
+        return {
+            'status': 'active',
+            'account_status': account.status,
+            'account_info': {
+                'aws_account_id': account.account_id,
+                'account_name': account.account_name,
+                'region': account.region,
+                'created_at': account.created_at.isoformat(),
+                'last_updated': account.updated_at.isoformat()
+            },
+            'discovery_info': {
+                'last_scan': last_scan,
+                'instances_discovered': instances_discovered,
+                'regions_scanned': unique_regions,
+                'scan_status': 'completed'
+            },
+            'instance_counts': {
+                'total': total_instances,
+                'active': active_instances,
+                'running': running_instances,
+                'stopped': stopped_instances,
+                'authorized': authorized_instances,
+                'unauthorized': unauthorized_instances,
+                'on_demand': on_demand_instances,
+                'spot': spot_instances,
+                'optimizable': optimizable_count
+            },
+            'cost_analysis': {
+                'estimated_monthly_savings': round(estimated_monthly_savings, 2),
+                'optimizable_instances': optimizable_count,
+                'current_spot_usage': spot_instances,
+                'potential_spot_candidates': on_demand_instances
+            },
+            'instance_distribution': {
+                'by_type': instance_types,
+                'by_region': unique_regions
+            },
+            'next_steps': {
+                'authorize_instances': unauthorized_instances > 0,
+                'start_optimization': authorized_instances > 0,
+                'configure_clusters': total_instances > 0
+            }
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            f'Failed to get dashboard summary: {e}',
+            extra={'component': 'OnboardingAPI', 'error': str(e)}
+        )
+        raise HTTPException(status_code=500, detail=str(e))

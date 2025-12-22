@@ -67,7 +67,9 @@ class Account(Base):
     user_id = Column(UUID(as_uuid=True), ForeignKey('users.id', ondelete='CASCADE'), nullable=False, index=True)
 
     # Account identification
-    account_id = Column(String(12), unique=True, nullable=False, index=True)  # AWS Account ID
+    # Expanded to 64 chars to support temporary "pending-xxx" IDs during onboarding
+    # Real AWS Account IDs are exactly 12 digits, but temp IDs need ~20 chars
+    account_id = Column(String(64), unique=True, nullable=False, index=True)
     account_name = Column(String(100), nullable=False)
 
     # Environment type
