@@ -2,23 +2,26 @@ import React, { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useNavigate } from 'react-router-dom';
 import { LayoutDashboard, Lock, User, AlertCircle } from 'lucide-react';
+import api from '../services/api';
 
 const LoginPage = () => {
     const [isLogin, setIsLogin] = useState(true);
     const [username, setUsername] = useState('');
     const [password, setPassword] = useState('');
-    const [companyName, setCompanyName] = useState(''); // New for signup
-    const [region, setRegion] = useState('us-east-1'); // New for signup
+    const [email, setEmail] = useState(''); // Email for signup
+    const [fullName, setFullName] = useState(''); // Full name for signup
     const [error, setError] = useState('');
+    const [loading, setLoading] = useState(false);
     const { login } = useAuth();
     const navigate = useNavigate();
 
     const handleSubmit = async (e) => {
         e.preventDefault();
         setError('');
+        setLoading(true);
 
-        if (isLogin) {
-            try {
+        try {
+            if (isLogin) {
                 const success = await login(username, password);
                 if (success) {
                     // Navigate based on role will be handled by App.jsx routes
@@ -30,19 +33,48 @@ const LoginPage = () => {
                 } else {
                     setError('Invalid credentials');
                 }
-            } catch (error) {
-                setError('Login failed. Please check your credentials and try again.');
+            } else {
+                // Signup Logic - Call register API
+                if (!username || !password || !email || !fullName) {
+                    setError('All fields are required');
+                    setLoading(false);
+                    return;
+                }
+
+                // Validate password length
+                if (password.length < 8) {
+                    setError('Password must be at least 8 characters');
+                    setLoading(false);
+                    return;
+                }
+
+                try {
+                    const response = await api.register({
+                        email: email,
+                        username: username,
+                        password: password,
+                        full_name: fullName
+                    });
+
+                    // Registration successful - auto-login with the token
+                    if (response.access_token) {
+                        localStorage.setItem('token', response.access_token);
+                        localStorage.setItem('user', JSON.stringify(response.user));
+                        navigate('/client');
+                    } else {
+                        // Switch to login mode
+                        setError('');
+                        setIsLogin(true);
+                        alert('Registration successful! Please log in with your credentials.');
+                    }
+                } catch (err) {
+                    setError(err.message || 'Registration failed. Please try again.');
+                }
             }
-        } else {
-            // Mock Signup Logic
-            if (!username || !password || !companyName) {
-                setError('All fields are required');
-                return;
-            }
-            alert(`Demo Signup Successful!\n\nYour Request for "${companyName}" has been submitted.\n\nPlease login with your credentials to access the demo environment.`);
-            // In a real app, this would call an API. Here we just switch back to login.
-            setIsLogin(true);
-            // Optionally auto-login or just let them type it.
+        } catch (error) {
+            setError(error.message || 'An error occurred. Please try again.');
+        } finally {
+            setLoading(false);
         }
     };
 
@@ -89,26 +121,26 @@ const LoginPage = () => {
                         {!isLogin && (
                             <>
                                 <div className="space-y-1">
-                                    <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Company Name</label>
+                                    <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Full Name</label>
                                     <input
                                         type="text"
-                                        value={companyName}
-                                        onChange={(e) => setCompanyName(e.target.value)}
+                                        value={fullName}
+                                        onChange={(e) => setFullName(e.target.value)}
                                         className="w-full px-4 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
-                                        placeholder="Globex Corp"
+                                        placeholder="John Doe"
+                                        required
                                     />
                                 </div>
                                 <div className="space-y-1">
-                                    <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Primary Region</label>
-                                    <select
-                                        value={region}
-                                        onChange={(e) => setRegion(e.target.value)}
-                                        className="w-full px-4 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
-                                    >
-                                        <option value="us-east-1">us-east-1 (N. Virginia)</option>
-                                        <option value="us-west-2">us-west-2 (Oregon)</option>
-                                        <option value="eu-west-1">eu-west-1 (Ireland)</option>
-                                    </select>
+                                    <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Email</label>
+                                    <input
+                                        type="email"
+                                        value={email}
+                                        onChange={(e) => setEmail(e.target.value)}
+                                        className="w-full px-4 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
+                                        placeholder="john@example.com"
+                                        required
+                                    />
                                 </div>
                             </>
                         )}
@@ -144,9 +176,10 @@ const LoginPage = () => {
 
                         <button
                             type="submit"
-                            className="w-full py-2.5 mt-2 bg-blue-600 text-white font-bold rounded-lg hover:bg-blue-700 transition-all shadow-lg shadow-blue-200 hover:scale-[1.01] active:scale-[0.99] text-sm"
+                            disabled={loading}
+                            className="w-full py-2.5 mt-2 bg-blue-600 text-white font-bold rounded-lg hover:bg-blue-700 transition-all shadow-lg shadow-blue-200 hover:scale-[1.01] active:scale-[0.99] text-sm disabled:opacity-50 disabled:cursor-not-allowed"
                         >
-                            {isLogin ? 'Sign In' : 'Create Account'}
+                            {loading ? 'Please wait...' : (isLogin ? 'Sign In' : 'Create Account')}
                         </button>
                     </form>
 

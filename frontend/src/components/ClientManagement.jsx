@@ -12,7 +12,7 @@ const ClientCreateModal = ({ onClose, onCreate }) => {
         email: '',
         password: '',
         full_name: '',
-        role: 'user',
+        role: 'client',
         is_active: true
     });
 
@@ -90,8 +90,8 @@ const ClientCreateModal = ({ onClose, onCreate }) => {
                             onChange={e => setFormData({ ...formData, role: e.target.value })}
                             className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none bg-white"
                         >
+                            <option value="client">Client (Dashboard Access)</option>
                             <option value="admin">Administrator (Full Access)</option>
-                            <option value="user">Standard User</option>
                             <option value="lab">Lab Researcher</option>
                         </select>
                     </div>
@@ -155,8 +155,8 @@ const ClientEditModal = ({ user, onClose, onSave }) => {
                                 onChange={e => setFormData({ ...formData, role: e.target.value })}
                                 className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none bg-white"
                             >
+                                <option value="client">Client (Dashboard Access)</option>
                                 <option value="admin">Administrator (Full Access)</option>
-                                <option value="user">Standard User</option>
                                 <option value="lab">Lab Researcher</option>
                             </select>
                         </div>
@@ -284,7 +284,7 @@ const ClientManagement = () => {
     const handleCreateClient = async (newUserData) => {
         try {
             // Call API to create new user
-            const createdUser = await api.createClient(newUserData);
+            const createdUser = await api.createUser(newUserData);
             // Add to list
             setUsers(prev => [...prev, createdUser]);
             // Close modal
@@ -293,7 +293,7 @@ const ClientManagement = () => {
             await fetchUsers();
         } catch (e) {
             console.error("Failed to create user:", e);
-            alert("Failed to create user. Please try again.");
+            alert("Failed to create user: " + (e.message || "Please try again."));
         }
     };
 

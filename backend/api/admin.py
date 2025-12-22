@@ -574,7 +574,7 @@ class UserCreate(BaseModel):
     email: str
     password: str
     full_name: Optional[str] = None
-    role: str = "user"
+    role: str = "client"
     is_active: bool = True
 
 class SpotStatusUpdate(BaseModel):

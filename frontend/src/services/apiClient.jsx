@@ -437,6 +437,17 @@ class APIClient {
   }
 
   // ==============================================================================
+  // AUTHENTICATION APIs
+  // ==============================================================================
+
+  async register(userData) {
+    return this.request('/api/v1/auth/register', {
+      method: 'POST',
+      body: JSON.stringify(userData),
+    });
+  }
+
+  // ==============================================================================
   // USER MANAGEMENT APIs
   // ==============================================================================
 
@@ -445,7 +456,7 @@ class APIClient {
   }
 
   async createUser(userData) {
-    return this.request('/api/v1/admin/users', {
+    return this.request('/api/v1/admin/clients', {
       method: 'POST',
       body: JSON.stringify(userData),
     });

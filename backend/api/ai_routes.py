@@ -456,16 +456,20 @@ async def upload_model(
                 detail=f"Cannot create model directory: {str(e)}"
             )
 
-        # Save file path
-        file_path = ml_models_dir / file.filename
+        # Auto-versioning: if model exists, add version number
+        original_filename = file.filename
+        base_name = original_filename.rsplit('.', 1)[0]  # Remove .pkl extension
+        extension = original_filename.rsplit('.', 1)[1] if '.' in original_filename else 'pkl'
 
-        # Check if model already exists (explicit check before DB operation)
-        existing_model = db.query(MLModel).filter(MLModel.name == file.filename).first()
-        if existing_model:
-            raise HTTPException(
-                status_code=409,
-                detail=f"Model {file.filename} already exists. Please use a different name or version."
-            )
+        # Check if model already exists and find next version number
+        final_filename = original_filename
+        version = 1
+        while db.query(MLModel).filter(MLModel.name == final_filename).first():
+            version += 1
+            final_filename = f"{base_name}_v{version}.{extension}"
+
+        # Use versioned filename
+        file_path = ml_models_dir / final_filename
 
         # Save uploaded file with error handling
         try:
@@ -525,7 +529,7 @@ async def upload_model(
         # Create database record with error handling
         try:
             new_model = MLModel(
-                name=file.filename,
+                name=final_filename,
                 file_path=str(file_path.absolute()),
                 file_hash=file_hash,
                 status=ModelStatus.CANDIDATE.value,
@@ -552,10 +556,12 @@ async def upload_model(
             from utils.system_logger import SystemLogger
             sys_logger = SystemLogger('ml_inference', db=db)
             sys_logger.success(
-                f"New model uploaded and validated: {file.filename}",
+                f"New model uploaded and validated: {final_filename}",
                 details={
                     'model_id': new_model.id,
-                    'model_name': file.filename,
+                    'model_name': final_filename,
+                    'original_filename': original_filename,
+                    'auto_versioned': final_filename != original_filename,
                     'file_hash': file_hash,
                     'uploaded_by': current_user.email,
                     'validation_status': 'passed'
@@ -565,6 +571,11 @@ async def upload_model(
             # Log error but don't fail the upload
             print(f"Warning: Failed to update health check: {e}")
 
+        # Build success message
+        success_message = f"Model {final_filename} uploaded, validated, and registered successfully"
+        if final_filename != original_filename:
+            success_message += f" (auto-versioned from {original_filename})"
+
         return {
             "status": "success",
             "id": new_model.id,
@@ -572,11 +583,13 @@ async def upload_model(
             "model_status": new_model.status,
             "uploaded_at": new_model.uploaded_at.isoformat(),
             "file_hash": file_hash,
+            "auto_versioned": final_filename != original_filename,
+            "original_filename": original_filename if final_filename != original_filename else None,
             "validation": {
                 "passed": True,
                 "message": "Model loaded successfully and has predict method"
             },
-            "message": f"Model {file.filename} uploaded, validated, and registered successfully"
+            "message": success_message
         }
 
     except HTTPException:
