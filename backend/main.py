@@ -106,6 +106,14 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"⚠️  Scheduler startup failed: {e}")
 
+    # Start health monitor (Phase 3)
+    try:
+        from workers.health_monitor import start_health_monitor_background
+        health_monitor = start_health_monitor_background()
+        print("✓ Health monitor started (checking every 30s)")
+    except Exception as e:
+        print(f"⚠️  Health monitor startup failed: {e}")
+
     print("="*80)
     print(f"✓ Server running on http://{settings.api_host}:{settings.api_port}")
     print(f"✓ API docs available at http://{settings.api_host}:{settings.api_port}/docs")

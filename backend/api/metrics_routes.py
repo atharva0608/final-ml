@@ -392,3 +392,89 @@ async def get_performance_metrics(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch performance metrics: {str(e)}")
+
+
+# ==============================================================================
+# PHASE 3: DEEP HEALTH MONITORING
+# ==============================================================================
+
+@router.get('/system/health')
+async def get_system_health(
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_active_user)
+):
+    """
+    Deep system health monitoring across 7 critical components
+
+    Returns health status for:
+    - Database (connection pool, query latency)
+    - Redis (connection, queue depth)
+    - K8s Watcher (heartbeat age)
+    - Optimizer (last run timestamp)
+    - Price Scraper (data freshness)
+    - Risk Engine (risk data freshness)
+    - ML Inference (active model availability)
+
+    For degraded/critical components, includes recent logs for diagnostics.
+
+    Overall status is worst status across all components.
+    """
+    try:
+        from utils.component_health_checks import run_all_health_checks
+
+        # Run all health checks
+        results = run_all_health_checks(db)
+
+        # Determine overall status (worst of all components)
+        status_priority = {"healthy": 0, "degraded": 1, "critical": 2}
+        overall_status = "healthy"
+
+        for component_status, _ in results.values():
+            if status_priority[component_status] > status_priority[overall_status]:
+                overall_status = component_status
+
+        # Build response
+        components = []
+        for component_name, (status, details) in results.items():
+            component_data = {
+                "name": component_name,
+                "status": status,
+                **details  # Spread details (latency_ms, message, etc.)
+            }
+
+            # Only include logs for unhealthy components (saves bandwidth)
+            if status != "healthy":
+                try:
+                    recent_logs = db.query(SystemLog).filter(
+                        SystemLog.component == component_name
+                    ).order_by(
+                        SystemLog.timestamp.desc()
+                    ).limit(5).all()
+
+                    component_data["recent_logs"] = [
+                        {
+                            "timestamp": log.timestamp.isoformat(),
+                            "level": log.level.value if hasattr(log.level, 'value') else str(log.level),
+                            "message": log.message
+                        }
+                        for log in recent_logs
+                    ]
+                except Exception as e:
+                    component_data["recent_logs"] = [{"error": f"Failed to fetch logs: {e}"}]
+
+            components.append(component_data)
+
+        return {
+            "overall_status": overall_status,
+            "components": components,
+            "checked_at": datetime.utcnow().isoformat(),
+            "healthy_count": sum(1 for s, _ in results.values() if s == "healthy"),
+            "degraded_count": sum(1 for s, _ in results.values() if s == "degraded"),
+            "critical_count": sum(1 for s, _ in results.values() if s == "critical")
+        }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Health check system failure: {str(e)}"
+        )
