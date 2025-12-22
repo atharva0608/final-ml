@@ -169,3 +169,226 @@ async def get_live_metrics(
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch live metrics: {str(e)}")
+
+
+# ==============================================================================
+# DEDICATED METRIC ENDPOINTS
+# ==============================================================================
+
+@router.get('/active-instances')
+async def get_active_instances_metric(
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_active_user)
+):
+    """Get count of active instances across all clients"""
+    try:
+        active_instances = db.query(Instance).filter(
+            Instance.is_active == True
+        ).count()
+
+        return {
+            'count': active_instances,
+            'timestamp': datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch active instances: {str(e)}")
+
+
+@router.get('/risk-detected')
+async def get_risk_detected_metric(
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_active_user)
+):
+    """Get count of risk detections in last 24 hours"""
+    try:
+        since = datetime.utcnow() - timedelta(hours=24)
+
+        # Count high-risk instances
+        risk_detected = db.query(Instance).filter(
+            Instance.is_active == True,
+            Instance.instance_metadata.op('->>')('risk_level').in_(['high', 'critical'])
+        ).count()
+
+        # Also count rebalance/termination notices from logs
+        risk_logs = db.query(SystemLog).filter(
+            SystemLog.timestamp >= since,
+            SystemLog.message.ilike('%rebalance%') | SystemLog.message.ilike('%termination%')
+        ).count()
+
+        total_risk = risk_detected + risk_logs
+
+        return {
+            'count': total_risk,
+            'high_risk_instances': risk_detected,
+            'risk_notices_24h': risk_logs,
+            'timestamp': datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch risk metrics: {str(e)}")
+
+
+@router.get('/cost-savings')
+async def get_cost_savings_metric(
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_active_user)
+):
+    """Get total cost savings across platform"""
+    try:
+        # Calculate total savings from experiment logs (all-time or last 30 days)
+        since = datetime.utcnow() - timedelta(days=30)
+
+        cost_savings_result = db.query(
+            func.sum(ExperimentLog.cost_savings).label('total_savings')
+        ).filter(
+            ExperimentLog.created_at >= since,
+            ExperimentLog.cost_savings.isnot(None)
+        ).first()
+
+        total_savings = float(cost_savings_result.total_savings or 0) if cost_savings_result else 0
+
+        return {
+            'total_savings': round(total_savings, 2),
+            'period_days': 30,
+            'timestamp': datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch cost savings: {str(e)}")
+
+
+@router.get('/optimization-rate')
+async def get_optimization_rate_metric(
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_active_user)
+):
+    """
+    Calculate optimization rate as percentage of instances successfully optimized
+    Formula: (successful_optimizations / total_instances) * 100
+    """
+    try:
+        # Total active instances
+        total_instances = db.query(Instance).filter(
+            Instance.is_active == True
+        ).count()
+
+        # Count instances that have been successfully optimized (have experiment logs)
+        since = datetime.utcnow() - timedelta(days=7)
+
+        optimized_instances = db.query(
+            func.count(func.distinct(ExperimentLog.instance_id)).label('count')
+        ).filter(
+            ExperimentLog.created_at >= since,
+            ExperimentLog.cost_savings > 0
+        ).first()
+
+        optimized_count = optimized_instances.count if optimized_instances else 0
+
+        rate = round((optimized_count / max(total_instances, 1)) * 100, 2)
+
+        return {
+            'optimization_rate': rate,
+            'optimized_instances': optimized_count,
+            'total_instances': total_instances,
+            'period_days': 7,
+            'timestamp': datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to calculate optimization rate: {str(e)}")
+
+
+@router.get('/system-load')
+async def get_system_load_metric(
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_active_user)
+):
+    """Get current system load metrics"""
+    try:
+        # Get request volume in last hour
+        since = datetime.utcnow() - timedelta(hours=1)
+
+        request_count = db.query(SystemLog).filter(
+            SystemLog.timestamp >= since
+        ).count()
+
+        # Calculate error rate
+        error_count = db.query(SystemLog).filter(
+            SystemLog.timestamp >= since,
+            SystemLog.level == LogLevel.ERROR
+        ).count()
+
+        error_rate = round((error_count / max(request_count, 1)) * 100, 2)
+
+        # Estimate load percentage (simplified - in production would use actual CPU/memory metrics)
+        # Assuming 1000 requests/hour is max capacity
+        max_capacity = 1000
+        load_percentage = min(round((request_count / max_capacity) * 100, 2), 100)
+
+        return {
+            'load_percentage': load_percentage,
+            'request_count_1h': request_count,
+            'error_rate': error_rate,
+            'status': 'normal' if load_percentage < 70 else 'high' if load_percentage < 90 else 'critical',
+            'timestamp': datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch system load: {str(e)}")
+
+
+@router.get('/performance')
+async def get_performance_metrics(
+    instance_id: str = None,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_active_user)
+):
+    """
+    Get application performance metrics
+    If instance_id provided, returns instance-specific metrics
+    Otherwise returns platform-wide metrics
+    """
+    try:
+        since = datetime.utcnow() - timedelta(hours=24)
+
+        if instance_id:
+            # Instance-specific metrics
+            instance = db.query(Instance).filter(Instance.id == instance_id).first()
+            if not instance:
+                raise HTTPException(status_code=404, detail="Instance not found")
+
+            # Get instance experiment logs for performance data
+            experiments = db.query(ExperimentLog).filter(
+                ExperimentLog.instance_id == instance_id,
+                ExperimentLog.created_at >= since
+            ).all()
+
+            avg_latency = sum(e.execution_time_ms or 0 for e in experiments) / max(len(experiments), 1)
+            error_count = sum(1 for e in experiments if e.cost_savings == 0)
+            error_rate = (error_count / max(len(experiments), 1)) * 100
+
+            return {
+                'instance_id': instance_id,
+                'avg_latency_ms': round(avg_latency, 2),
+                'request_count_24h': len(experiments),
+                'error_rate': round(error_rate, 2),
+                'timestamp': datetime.utcnow().isoformat()
+            }
+        else:
+            # Platform-wide performance metrics
+            all_experiments = db.query(ExperimentLog).filter(
+                ExperimentLog.created_at >= since
+            ).all()
+
+            avg_latency = sum(e.execution_time_ms or 0 for e in all_experiments) / max(len(all_experiments), 1)
+            error_count = sum(1 for e in all_experiments if e.cost_savings == 0)
+            error_rate = (error_count / max(len(all_experiments), 1)) * 100
+
+            return {
+                'platform_wide': True,
+                'avg_latency_ms': round(avg_latency, 2),
+                'total_requests_24h': len(all_experiments),
+                'error_rate': round(error_rate, 2),
+                'timestamp': datetime.utcnow().isoformat()
+            }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch performance metrics: {str(e)}")

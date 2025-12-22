@@ -408,6 +408,256 @@ class APIClient {
   async exportGlobalStats() {
     window.open(`${this.baseUrl}/api/admin/export/global-stats`, '_blank');
   }
+
+  // ==============================================================================
+  // SYSTEM MONITOR & HEALTH APIs
+  // ==============================================================================
+
+  async getSystemOverview() {
+    return this.request('/api/v1/admin/health/overview');
+  }
+
+  async getComponentLogs(component, limit = 50) {
+    return this.request(`/api/v1/admin/logs/${component}?limit=${limit}`);
+  }
+
+  // ==============================================================================
+  // GOVERNANCE APIs
+  // ==============================================================================
+
+  async getUnauthorizedInstances() {
+    return this.request('/api/governance/unauthorized');
+  }
+
+  async applyInstanceActions(flaggedInstances) {
+    return this.request('/api/governance/instances/apply', {
+      method: 'POST',
+      body: JSON.stringify({ flagged_instances: flaggedInstances }),
+    });
+  }
+
+  // ==============================================================================
+  // USER MANAGEMENT APIs
+  // ==============================================================================
+
+  async getUsers() {
+    return this.request('/api/v1/admin/users');
+  }
+
+  async createUser(userData) {
+    return this.request('/api/v1/admin/users', {
+      method: 'POST',
+      body: JSON.stringify(userData),
+    });
+  }
+
+  async updateUser(userId, userData) {
+    return this.request(`/api/v1/admin/users/${userId}`, {
+      method: 'PUT',
+      body: JSON.stringify(userData),
+    });
+  }
+
+  async deleteUser(userId) {
+    return this.request(`/api/v1/admin/users/${userId}`, {
+      method: 'DELETE',
+    });
+  }
+
+  // ==============================================================================
+  // ACTIVITY FEED APIs
+  // ==============================================================================
+
+  async getActivityFeed(limit = 20) {
+    return this.request(`/api/admin/activity?limit=${limit}`);
+  }
+
+  // ==============================================================================
+  // ADMIN CONTROL APIs
+  // ==============================================================================
+
+  async setSpotMarketStatus(enabled) {
+    return this.request('/api/admin/override/spot-market', {
+      method: 'POST',
+      body: JSON.stringify({ enabled }),
+    });
+  }
+
+  async recomputeRiskScores() {
+    return this.request('/api/admin/recompute-risk', {
+      method: 'POST',
+    });
+  }
+
+  async updateAdminProfile(profileData) {
+    return this.request('/api/admin/profile', {
+      method: 'PUT',
+      body: JSON.stringify(profileData),
+    });
+  }
+
+  // ==============================================================================
+  // ONBOARDING APIs
+  // ==============================================================================
+
+  async getOnboardingTemplate() {
+    return this.request('/api/v1/onboarding/template');
+  }
+
+  async getDiscoveryStatus(accountId = null) {
+    const query = accountId ? `?account_id=${accountId}` : '';
+    return this.request(`/api/v1/onboarding/discovery/status${query}`);
+  }
+
+  async createOnboardingRequest(data) {
+    return this.request('/api/v1/onboarding/create', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async completeDiscovery(accountId) {
+    return this.request(`/api/v1/onboarding/discovery/complete/${accountId}`, {
+      method: 'POST',
+    });
+  }
+
+  // ==============================================================================
+  // LAB & EXPERIMENT APIs
+  // ==============================================================================
+
+  async getExperimentLogs(instanceId, limit = 30) {
+    return this.request(`/api/v1/lab/experiments/${instanceId}?limit=${limit}`);
+  }
+
+  async getModels() {
+    return this.request('/api/v1/lab/models');
+  }
+
+  async activateModel(modelId) {
+    return this.request(`/api/v1/lab/models/${modelId}/activate`, {
+      method: 'POST',
+    });
+  }
+
+  // ==============================================================================
+  // CLIENT-SPECIFIC APIs (for Client Dashboard)
+  // ==============================================================================
+
+  async getClients() {
+    // Alias for getAllClients, but can be customized later
+    return this.getAllClients();
+  }
+
+  async getClientTopology(clientId) {
+    return this.request(`/api/client/${clientId}/topology`);
+  }
+
+  async getClientSavingsOverview(clientId, mode = 'total', clusterId = null) {
+    const params = new URLSearchParams({ mode });
+    if (clusterId) params.append('cluster_id', clusterId);
+    return this.request(`/api/client/${clientId}/savings-overview?${params}`);
+  }
+
+  async getClientClusters(clientId) {
+    return this.request(`/api/client/${clientId}/clusters`);
+  }
+
+  async getClusterInstances(clientId, clusterId) {
+    return this.request(`/api/client/${clientId}/clusters/${clusterId}/instances`);
+  }
+
+  // ==============================================================================
+  // FORCE ON-DEMAND APIs (3 Levels)
+  // ==============================================================================
+
+  async forceInstanceOnDemand(instanceId, durationHours) {
+    return this.request(`/api/client/instances/${instanceId}/force-on-demand`, {
+      method: 'POST',
+      body: JSON.stringify({ duration_hours: durationHours }),
+    });
+  }
+
+  async forceClusterOnDemand(clusterId, durationHours) {
+    return this.request(`/api/client/clusters/${clusterId}/force-on-demand`, {
+      method: 'POST',
+      body: JSON.stringify({ duration_hours: durationHours }),
+    });
+  }
+
+  async forceClientOnDemand(clientId, durationHours) {
+    return this.request(`/api/client/${clientId}/force-on-demand-all`, {
+      method: 'POST',
+      body: JSON.stringify({ duration_hours: durationHours }),
+    });
+  }
+
+  // ==============================================================================
+  // STORAGE CLEANUP APIs
+  // ==============================================================================
+
+  async getUnmappedVolumes() {
+    return this.request('/api/storage/unmapped-volumes');
+  }
+
+  async cleanupVolumes(volumeIds) {
+    return this.request('/api/storage/volumes/cleanup', {
+      method: 'POST',
+      body: JSON.stringify({ volume_ids: volumeIds }),
+    });
+  }
+
+  async getAmiSnapshots() {
+    return this.request('/api/storage/ami-snapshots');
+  }
+
+  async cleanupSnapshots(snapshotIds) {
+    return this.request('/api/storage/snapshots/cleanup', {
+      method: 'POST',
+      body: JSON.stringify({ snapshot_ids: snapshotIds }),
+    });
+  }
+
+  // ==============================================================================
+  // METRICS APIs (Dedicated Endpoints)
+  // ==============================================================================
+
+  async getActiveInstancesMetric() {
+    return this.request('/api/metrics/active-instances');
+  }
+
+  async getRiskDetectedMetric() {
+    return this.request('/api/metrics/risk-detected');
+  }
+
+  async getCostSavingsMetric() {
+    return this.request('/api/metrics/cost-savings');
+  }
+
+  async getOptimizationRateMetric() {
+    return this.request('/api/metrics/optimization-rate');
+  }
+
+  async getSystemLoadMetric() {
+    return this.request('/api/metrics/system-load');
+  }
+
+  async getPerformanceMetrics(instanceId = null) {
+    const query = instanceId ? `?instance_id=${instanceId}` : '';
+    return this.request(`/api/metrics/performance${query}`);
+  }
+
+  // ==============================================================================
+  // PIPELINE APIs
+  // ==============================================================================
+
+  async getPipelineFunnel() {
+    return this.request('/api/pipeline/funnel');
+  }
+
+  async getPipelineStatus() {
+    return this.request('/api/pipeline/status');
+  }
 }
 
 export default APIClient;

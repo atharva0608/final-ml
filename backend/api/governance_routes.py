@@ -195,3 +195,129 @@ async def trigger_security_scan(
             extra={'component': 'GovernanceAPI', 'error': str(e)}
         )
         raise HTTPException(status_code=500, detail=f'Scan failed: {str(e)}')
+
+
+@router.post('/instances/apply')
+async def apply_instance_actions(
+    flagged_instances: List[Dict],
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+    """
+    Apply flagged actions to instances (authorize or terminate)
+
+    Expected format:
+    [
+        {"instance_id": "i-123", "action": "authorize"},
+        {"instance_id": "i-456", "action": "terminate"}
+    ]
+    """
+    try:
+        logger.info(
+            f'Applying actions to {len(flagged_instances)} instances',
+            extra={'component': 'GovernanceAPI', 'user_id': current_user.id}
+        )
+
+        results = {
+            'authorized': [],
+            'terminated': [],
+            'failed': []
+        }
+
+        for item in flagged_instances:
+            instance_id = item.get('instance_id')
+            action = item.get('action')
+
+            try:
+                # Find instance in database
+                instance = db.query(Instance).filter(
+                    Instance.instance_id == instance_id
+                ).first()
+
+                if not instance:
+                    results['failed'].append({
+                        'instance_id': instance_id,
+                        'reason': 'Instance not found'
+                    })
+                    continue
+
+                if action == 'authorize':
+                    # Mark as authorized
+                    instance.auth_status = 'authorized'
+                    instance.updated_at = datetime.utcnow()
+
+                    # Clear grace period metadata
+                    if instance.instance_metadata:
+                        instance.instance_metadata.pop('grace_expired', None)
+                        instance.instance_metadata.pop('grace_expires_at', None)
+
+                    db.commit()
+
+                    results['authorized'].append({
+                        'instance_id': instance_id,
+                        'status': 'authorized'
+                    })
+
+                    logger.info(
+                        f'Instance {instance_id} authorized',
+                        extra={'component': 'GovernanceAPI', 'instance_id': instance_id}
+                    )
+
+                elif action == 'terminate':
+                    # TODO: In production, call AWS API to terminate instance
+                    # For now, mark as terminated in database
+                    instance.is_active = False
+                    instance.auth_status = 'terminated'
+                    instance.updated_at = datetime.utcnow()
+
+                    if not instance.instance_metadata:
+                        instance.instance_metadata = {}
+                    instance.instance_metadata['terminated_at'] = datetime.utcnow().isoformat()
+                    instance.instance_metadata['terminated_by'] = str(current_user.id)
+
+                    db.commit()
+
+                    results['terminated'].append({
+                        'instance_id': instance_id,
+                        'status': 'terminated'
+                    })
+
+                    logger.info(
+                        f'Instance {instance_id} terminated',
+                        extra={'component': 'GovernanceAPI', 'instance_id': instance_id}
+                    )
+
+                else:
+                    results['failed'].append({
+                        'instance_id': instance_id,
+                        'reason': f'Invalid action: {action}'
+                    })
+
+            except Exception as e:
+                results['failed'].append({
+                    'instance_id': instance_id,
+                    'reason': str(e)
+                })
+                logger.error(
+                    f'Failed to apply action for instance {instance_id}: {e}',
+                    extra={'component': 'GovernanceAPI', 'instance_id': instance_id}
+                )
+
+        return {
+            'status': 'completed',
+            'results': results,
+            'summary': {
+                'total': len(flagged_instances),
+                'authorized': len(results['authorized']),
+                'terminated': len(results['terminated']),
+                'failed': len(results['failed'])
+            },
+            'timestamp': datetime.utcnow().isoformat()
+        }
+
+    except Exception as e:
+        logger.error(
+            f'Failed to apply instance actions: {e}',
+            extra={'component': 'GovernanceAPI', 'error': str(e)}
+        )
+        raise HTTPException(status_code=500, detail=f'Failed to apply actions: {str(e)}')
