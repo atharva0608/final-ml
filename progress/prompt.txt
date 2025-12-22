@@ -1,0 +1,386 @@
+MASTER TOON PROMPT — FULL BACKEND + API SYSTEM (LOSSLESS)
+
+YOU ARE A BACKEND-REASONING LLM.
+YOU MUST UNDERSTAND, LINK, AND EXECUTE THE FOLLOWING SYSTEM.
+NO ASSUMPTIONS. NO OMITTING RULES. NO SILENT BEHAVIOR.
+
+====================================================
+GLOBAL SYSTEM INVARIANTS
+========================
+
+* DB = SINGLE SOURCE OF TRUTH
+
+  * users, roles, clients, clusters, instances, volumes, snapshots, models
+
+* REDIS = NON-PERSISTENT ONLY
+
+  * cache, realtime counters, live feeds, temporary locks
+
+* EVENT-DRIVEN CORE
+
+  * every UI action
+  * every model decision
+  * every health change
+  * every override
+  * every failure
+    → emits event
+    → event is persisted
+    → event updates UI
+    → event feeds system monitor
+
+* EVERY REQUEST (API / WORKER / MODEL / CRON) MUST CARRY:
+
+  * actor_id
+  * actor_role
+  * action_type
+  * scope ∈ {platform, client, cluster, instance}
+  * trace_id
+    → missing = HARD REJECT
+
+====================================================
+AUTHENTICATION & USER FLOW
+==========================
+
+LOGIN:
+
+* validate credentials (hashed)
+* resolve role + permissions + org_id
+* create session {login_time, role, last_activity, source_ip}
+* route:
+
+  * admin → /admin
+  * client → /client
+  * lab → /lab
+* emit event: login_success | login_failure
+
+SIGNUP (CLIENT ONLY):
+
+* validate email + org uniqueness
+* create client entity
+* assign CLIENT role
+* create empty cluster registry
+* store on-demand baseline snapshot
+* init savings = 0
+* emit event: client_onboarded
+
+ONBOARDING WIZARD (POST-SIGNUP):
+
+* generate CloudFormation/Terraform template
+* validate IAM Role ARN (sts.assume_role)
+* TRIGGER DISCOVERY SCAN:
+
+  * fetch regions
+  * fetch clusters
+  * fetch node groups
+* if discovery_fail → halt onboarding → alert user
+* if discovery_success → enable dashboard access
+
+====================================================
+ADMIN DASHBOARD — PLATFORM SCOPE
+================================
+
+LIVE OPERATIONS (READ-HEAVY, REALTIME):
+
+ACTIVE INSTANCES:
+
+* instance_manager reports all nodes + states
+* backend aggregates globally
+* count stored in redis
+* if instance_manager fails → card degrades → system monitor updates
+
+RISK DETECTED:
+
+* sources: ML, price scraper, capacity signals
+* filter: rebalance | termination only
+* window = 24h
+* spike → emit risk_spike_detected
+
+COST SAVINGS:
+
+* baseline = onboarding on-demand snapshot
+* runtime = actual ops cost (spot + fallback + partial)
+* savings = baseline - runtime
+* persisted + recalculated
+
+OPTIMISATIONS:
+
+* increment on every switch
+* tag source: ML | RULE | MANUAL
+* stored per-client + global
+
+---
+
+DECISION PIPELINE FUNNEL:
+
+* ML emits counts:
+  1 discovered
+  2 filtered (risk rules)
+  3 ranked
+  4 selected
+* backend snapshots each stage
+* UI renders live
+* ML stall → funnel freezes → monitor degrades
+
+---
+
+PIPELINE STATUS:
+
+* all components emit:
+
+  * heartbeat
+  * throughput
+  * latency
+* aggregated
+* SAME DATA as system monitor
+
+====================================================
+SYSTEM MONITOR — OBSERVABILITY CORE
+===================================
+
+EACH COMPONENT:
+
+* custom health checks:
+
+  * connectivity
+  * data flow
+  * latency thresholds
+
+STATE MACHINE:
+
+* HEALTHY → DEGRADED:
+
+  * capture last 10 logs
+* DEGRADED → CRITICAL:
+
+  * alert + escalate
+* CRITICAL → HEALTHY:
+
+  * log recovery
+
+LOG RULES:
+
+* stream logs
+* persist selectively
+* tag:
+
+  * component_id
+  * trace_id
+  * severity
+
+REFRESH:
+
+* auto = scheduler
+* manual = forced health check
+
+====================================================
+INFRASTRUCTURE SIGNALS
+======================
+
+K8S EVENT WATCHER (THE NERVOUS SYSTEM):
+
+* maintain persistent stream to K8s API
+* filter: Pod Pending | Node Added | Node Deleted
+* on event:
+
+  * push task to Redis Queue (immediate)
+  * update "Last Heard" heartbeat
+* if stream_disconnect → auto-reconnect → log warning
+
+====================================================
+GLOBAL CONTROLS — PLATFORM BRAIN
+================================
+
+MODEL SELECTION:
+
+* validate compatibility
+* mark PENDING
+* DO NOT APPLY
+
+APPLY MODEL:
+
+* lock registry
+* swap inference pointer
+* update active metadata
+* emit model_activated
+* retain rollback pointer
+
+MANUAL OVERRIDE (FORCE ON-DEMAND):
+
+* fetch ALL active nodes
+* issue fallback per node
+* track per-node completion
+* progress = nodes_done / nodes_total
+* DONE only at 100%
+* failure → override incomplete + surfaced
+
+RECOMPUTE RISK:
+
+* trigger batch inference
+* recompute scores
+* may emit rebalance events
+
+====================================================
+CLIENT MANAGEMENT (ADMIN)
+=========================
+
+ROLE / STATUS CHANGE:
+
+* update user
+* revoke sessions if blocked
+* log admin action
+
+ADD CLIENT:
+
+* identical to signup
+* admin-triggered
+* auto dashboard assignment
+
+====================================================
+CLIENT DASHBOARD — CLIENT SCOPE
+===============================
+
+FLEET TOPOLOGY:
+
+CYCLE VIEW:
+
+* fetch clusters
+* fetch node counts
+* static graph
+* NO live actions
+
+LIVE VIEW:
+
+* triggered by:
+
+  * switch
+  * override
+  * forced rebalance
+* stream events
+* states:
+  start → verify → complete
+* emit animation steps
+
+---
+
+COST SAVINGS:
+
+* same engine as admin
+* client-filtered
+* cluster slice supported
+
+====================================================
+LAB DASHBOARD — RESEARCH SCOPE
+==============================
+
+SHADOW SIMULATOR:
+
+* fetch historical cluster state (last 24h)
+* select candidate model vs. active model
+* replay decision logic (dry-run)
+* compare:
+
+  * proposed_savings vs. actual_savings
+  * proposed_interruptions vs. actual_interruptions
+* render comparison graph
+
+MODEL GRADUATION:
+
+* if shadow_score > threshold:
+
+  * enable GRADUATE action
+* on graduate:
+
+  * update model_status: candidate → graduated
+  * move to Global Controls availability list
+  * log graduation_event
+
+====================================================
+CLUSTERS & INSTANCES
+====================
+
+CLUSTER LIST CLICK:
+
+* fetch cluster meta
+* fetch instances
+* fetch live states
+
+INSTANCE POPUP LOADS:
+
+* lifecycle history
+* switch lineage
+* alt pools pricing (cached)
+* pricing history (persisted)
+
+FORCE ON-DEMAND (INSTANCE):
+
+* validate permission
+* issue fallback
+* lock instance from ML
+* start duration timer
+* expiry → return to ML
+
+FORCE ON-DEMAND (CLUSTER):
+
+* same logic
+* applied to all instances in cluster
+
+====================================================
+SECURITY & CLEANUP
+==================
+
+UNREGISTERED INSTANCES:
+
+* detect non-cluster nodes
+* show metadata
+* flag authorized | unauthorized
+* apply:
+
+  * unauthorized → terminate
+* progress bar
+* refresh inventory
+
+VOLUMES:
+
+* scan unattached
+* verify last access
+* flag
+* delete on apply
+
+SNAPSHOTS:
+
+* detect stale
+* verify ownership
+* safe delete
+* log cleanup
+
+====================================================
+API CONTRACT RULES (GLOBAL)
+===========================
+
+ALL APIs:
+
+* JWT auth
+* role + scope enforced
+* emit events on mutation
+* traceable via trace_id
+* no silent failure
+* manual override ALWAYS supersedes ML
+
+ASYNC WORKER PATTERN:
+
+* heavy logic = ASYNC ONLY
+* API → enqueue task → return 202 + task_id
+* frontend polls or listens via WebSocket
+* NEVER block HTTP > 2s
+
+====================================================
+YOU MUST:
+=========
+
+* link APIs correctly
+* enforce scope strictly
+* tag every action
+* log every state change
+* never invent behavior
+* never skip validation
+* never allow silent automation
