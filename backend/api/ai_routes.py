@@ -11,11 +11,14 @@ Provides endpoints for ML model lifecycle management:
 All operations are logged and require authentication.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime
+from pathlib import Path
+import shutil
+import hashlib
 
 from database.connection import get_db
 from database.models import User, MLModel, ModelStatus
@@ -399,3 +402,189 @@ async def get_model_details(
         )
 
     return ModelResponse.from_orm(model)
+
+
+@router.post("/upload")
+async def upload_model(
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Upload and validate a new ML model (.pkl file)
+
+    Steps:
+    1. Validate file type and name
+    2. Check for duplicates
+    3. Save file to disk with error handling
+    4. Test model loading (validation)
+    5. Create database record
+    6. Update health check status
+
+    Returns:
+        Model details with validation status
+    """
+
+    try:
+        # Validate file type
+        if not file.filename:
+            raise HTTPException(
+                status_code=400,
+                detail="No filename provided"
+            )
+
+        if not file.filename.endswith('.pkl'):
+            raise HTTPException(
+                status_code=400,
+                detail="Only .pkl files are supported"
+            )
+
+        # Define ml-models directory
+        ml_models_dir = Path(__file__).parent.parent / "ml-models"
+
+        # Ensure directory exists with proper error handling
+        try:
+            ml_models_dir.mkdir(exist_ok=True, parents=True)
+        except PermissionError:
+            raise HTTPException(
+                status_code=500,
+                detail="Cannot create model directory: Permission denied"
+            )
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Cannot create model directory: {str(e)}"
+            )
+
+        # Save file path
+        file_path = ml_models_dir / file.filename
+
+        # Check if model already exists (explicit check before DB operation)
+        existing_model = db.query(MLModel).filter(MLModel.name == file.filename).first()
+        if existing_model:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Model {file.filename} already exists. Please use a different name or version."
+            )
+
+        # Save uploaded file with error handling
+        try:
+            with file_path.open("wb") as buffer:
+                shutil.copyfileobj(file.file, buffer)
+        except IOError as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to save model file: {str(e)}"
+            )
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Unexpected error saving file: {str(e)}"
+            )
+
+        # Calculate file hash
+        try:
+            sha256 = hashlib.sha256()
+            with file_path.open('rb') as f:
+                for chunk in iter(lambda: f.read(4096), b''):
+                    sha256.update(chunk)
+            file_hash = sha256.hexdigest()
+        except Exception as e:
+            # Clean up file if hash calculation fails
+            if file_path.exists():
+                file_path.unlink()
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to calculate file hash: {str(e)}"
+            )
+
+        # Test model loading (validation)
+        model_valid = False
+        validation_error = None
+        try:
+            import pickle
+            with file_path.open('rb') as f:
+                model_obj = pickle.load(f)
+                # Basic validation: check if it has predict method
+                if hasattr(model_obj, 'predict'):
+                    model_valid = True
+                else:
+                    validation_error = "Model does not have a 'predict' method"
+        except Exception as e:
+            validation_error = f"Model validation failed: {str(e)}"
+
+        # If model is invalid, clean up and return error
+        if not model_valid:
+            if file_path.exists():
+                file_path.unlink()
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid model file: {validation_error}"
+            )
+
+        # Create database record with error handling
+        try:
+            new_model = MLModel(
+                name=file.filename,
+                file_path=str(file_path.absolute()),
+                file_hash=file_hash,
+                status=ModelStatus.CANDIDATE,
+                is_active_prod=False,
+                uploaded_by=current_user.id,
+                uploaded_at=datetime.utcnow()
+            )
+
+            db.add(new_model)
+            db.commit()
+            db.refresh(new_model)
+        except Exception as e:
+            # Clean up file if database operation fails
+            if file_path.exists():
+                file_path.unlink()
+            db.rollback()
+            raise HTTPException(
+                status_code=500,
+                detail=f"Database error: {str(e)}"
+            )
+
+        # Update system health check
+        try:
+            from utils.system_logger import SystemLogger
+            sys_logger = SystemLogger('ml_inference', db=db)
+            sys_logger.success(
+                f"New model uploaded and validated: {file.filename}",
+                details={
+                    'model_id': new_model.id,
+                    'model_name': file.filename,
+                    'file_hash': file_hash,
+                    'uploaded_by': current_user.email,
+                    'validation_status': 'passed'
+                }
+            )
+        except Exception as e:
+            # Log error but don't fail the upload
+            print(f"Warning: Failed to update health check: {e}")
+
+        return {
+            "status": "success",
+            "id": new_model.id,
+            "name": new_model.name,
+            "model_status": new_model.status.value,
+            "uploaded_at": new_model.uploaded_at.isoformat(),
+            "file_hash": file_hash,
+            "validation": {
+                "passed": True,
+                "message": "Model loaded successfully and has predict method"
+            },
+            "message": f"Model {file.filename} uploaded, validated, and registered successfully"
+        }
+
+    except HTTPException:
+        # Re-raise HTTPExceptions (they're already properly formatted)
+        raise
+    except Exception as e:
+        # Catch any other unexpected errors and return as JSON
+        raise HTTPException(
+            status_code=500,
+            detail=f"Unexpected error during model upload: {str(e)}"
+        )

@@ -77,12 +77,13 @@ async def register_user(user_data: UserRegister, db: Session = Depends(get_db)):
         )
 
     # Create new user
+    # FIXED: Default to "client" role so users can access dashboard after signup
     new_user = User(
         email=user_data.email,
         username=user_data.username,
         hashed_password=hash_password(user_data.password),
         full_name=user_data.full_name,
-        role=UserRole.USER.value,
+        role="client",  # Changed from UserRole.USER.value to "client"
         is_active=True,
         created_at=datetime.utcnow()
     )
