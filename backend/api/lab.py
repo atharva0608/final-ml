@@ -382,8 +382,8 @@ async def list_models(db: Session = Depends(get_db)):
     result = []
     for model in models:
         # Map status
-        is_experimental = model.status == ModelStatus.CANDIDATE
-        status_str = "candidate" if model.status == ModelStatus.CANDIDATE else "graduated"
+        is_experimental = model.status == ModelStatus.CANDIDATE.value
+        status_str = "candidate" if model.status == ModelStatus.CANDIDATE.value else "graduated"
 
         result.append(ModelInfo(
             id=str(model.id),
@@ -410,7 +410,7 @@ async def graduate_model(
     if not model:
         raise HTTPException(status_code=404, detail="Model not found")
 
-    model.status = ModelStatus.GRADUATED
+    model.status = ModelStatus.GRADUATED.value
     model.graduated_at = datetime.utcnow()
     db.commit()
     return {"status": "graduated", "model_id": model_id}
@@ -427,7 +427,7 @@ async def reject_model(
     if not model:
         raise HTTPException(status_code=404, detail="Model not found")
 
-    model.status = ModelStatus.ARCHIVED
+    model.status = ModelStatus.ARCHIVED.value
     model.is_active_prod = False
     db.commit()
     return {"status": "rejected", "model_id": model_id}
@@ -595,7 +595,7 @@ async def upload_model(
             "status": "success",
             "id": new_model.id,
             "name": new_model.name,
-            "model_status": new_model.status.value,
+            "model_status": new_model.status,
             "uploaded_at": new_model.uploaded_at.isoformat(),
             "file_hash": file_hash,
             "validation": {

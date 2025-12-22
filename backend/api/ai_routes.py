@@ -528,7 +528,7 @@ async def upload_model(
                 name=file.filename,
                 file_path=str(file_path.absolute()),
                 file_hash=file_hash,
-                status=ModelStatus.CANDIDATE,
+                status=ModelStatus.CANDIDATE.value,
                 is_active_prod=False,
                 uploaded_by=current_user.id,
                 uploaded_at=datetime.utcnow()
@@ -569,7 +569,7 @@ async def upload_model(
             "status": "success",
             "id": new_model.id,
             "name": new_model.name,
-            "model_status": new_model.status.value,
+            "model_status": new_model.status,
             "uploaded_at": new_model.uploaded_at.isoformat(),
             "file_hash": file_hash,
             "validation": {

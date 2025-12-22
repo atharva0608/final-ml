@@ -122,14 +122,14 @@ def graduate_model(db: Session, model_id: int, user_id: Optional[str] = None) ->
     if not model:
         raise ValueError(f"Model with ID {model_id} not found")
 
-    if model.status == ModelStatus.GRADUATED:
+    if model.status == ModelStatus.GRADUATED.value:
         raise ValueError(f"Model {model.name} is already graduated")
 
-    if model.status == ModelStatus.ARCHIVED:
+    if model.status == ModelStatus.ARCHIVED.value:
         raise ValueError(f"Model {model.name} is archived and cannot be graduated")
 
     # Update status
-    model.status = ModelStatus.GRADUATED
+    model.status = ModelStatus.GRADUATED.value
     model.graduated_at = datetime.utcnow()
 
     db.commit()
@@ -218,7 +218,7 @@ def get_active_production_model(db: Session) -> Optional[MLModel]:
     return db.query(MLModel).filter(
         and_(
             MLModel.is_active_prod == True,
-            MLModel.status == ModelStatus.GRADUATED
+            MLModel.status == ModelStatus.GRADUATED.value
         )
     ).first()
 
@@ -248,8 +248,11 @@ def archive_model(db: Session, model_id: int, user_id: Optional[str] = None) -> 
     if model.is_active_prod:
         raise ValueError(f"Cannot archive {model.name} - it is the active production model")
 
+    # Save previous status before updating
+    previous_status = model.status
+
     # Update status
-    model.status = ModelStatus.ARCHIVED
+    model.status = ModelStatus.ARCHIVED.value
     model.is_active_prod = False
 
     db.commit()
@@ -260,7 +263,7 @@ def archive_model(db: Session, model_id: int, user_id: Optional[str] = None) -> 
         details={
             "model_id": model_id,
             "model_name": model.name,
-            "previous_status": model.status.value
+            "previous_status": previous_status
         }
     )
 
