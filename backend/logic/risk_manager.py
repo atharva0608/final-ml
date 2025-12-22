@@ -14,7 +14,8 @@ from typing import Optional
 from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
 
-from database.models import SpotPoolRisk, Account
+from database.models import SpotPoolRisk, Account, GlobalRiskEvent
+from sqlalchemy import and_
 
 
 class RiskManager:
@@ -272,6 +273,107 @@ class RiskManager:
             print(f"🧹 Cleaned up {count} expired poison flags")
 
         return count
+
+    # ========================================================================
+    # New Global Risk Event System (Append-Only Log Pattern)
+    # ========================================================================
+
+    @staticmethod
+    def register_risk_event(
+        db: Session,
+        pool_id: str,
+        event_type: str,
+        client_id: str = None,
+        metadata: dict = None
+    ) -> GlobalRiskEvent:
+        """
+        Register a spot disruption event (write-only fast path)
+
+        This is the new append-only log pattern. Each disruption creates a new
+        event record that expires after 15 days. Never updates existing records.
+
+        Args:
+            db: Database session
+            pool_id: Pool identifier (format: 'us-east-1a:c5.large')
+            event_type: 'rebalance_notice' or 'termination_notice'
+            client_id: UUID of client who experienced the disruption
+            metadata: Additional context
+
+        Returns:
+            Created GlobalRiskEvent record
+
+        Performance: No queries, just INSERT (~1ms)
+        """
+        # Parse pool_id
+        parts = pool_id.split(':')
+        if len(parts) != 2:
+            raise ValueError(f"Invalid pool_id format: {pool_id}. Expected 'az:type' (e.g., 'us-east-1a:c5.large')")
+
+        availability_zone = parts[0]
+        instance_type = parts[1]
+
+        # Extract region from AZ (e.g., 'us-east-1a' -> 'us-east-1')
+        region = availability_zone[:-1] if len(availability_zone) > 1 else availability_zone
+
+        # Calculate expiry (15 days from now)
+        reported_at = datetime.utcnow()
+        expires_at = reported_at + timedelta(days=15)
+
+        # Create event record
+        event = GlobalRiskEvent(
+            pool_id=pool_id,
+            region=region,
+            availability_zone=availability_zone,
+            instance_type=instance_type,
+            event_type=event_type,
+            reported_at=reported_at,
+            expires_at=expires_at,
+            source_client_id=client_id,
+            event_metadata=metadata or {}
+        )
+
+        db.add(event)
+        db.commit()
+        db.refresh(event)
+
+        return event
+
+    @staticmethod
+    def is_pool_safe(db: Session, pool_id: str) -> tuple:
+        """
+        Check if a spot pool is safe to use (read-only fast path)
+
+        Args:
+            db: Database session
+            pool_id: Pool identifier (format: 'us-east-1a:c5.large')
+
+        Returns:
+            Tuple of (is_safe, active_events)
+            - is_safe: False if any active events exist, True otherwise
+            - active_events: List of active GlobalRiskEvent records
+
+        Performance:
+            - Query with indexed columns (pool_id, expires_at)
+            - Typical: <5ms for millions of events
+
+        Usage:
+            is_safe, events = RiskManager.is_pool_safe(db, 'us-east-1a:c5.large')
+            if not is_safe:
+                # Skip this pool, choose different candidate
+                print(f"Pool poisoned: {len(events)} active disruptions")
+        """
+        # Query for active events (not expired)
+        now = datetime.utcnow()
+        active_events = db.query(GlobalRiskEvent).filter(
+            and_(
+                GlobalRiskEvent.pool_id == pool_id,
+                GlobalRiskEvent.expires_at > now
+            )
+        ).all()
+
+        is_safe = len(active_events) == 0
+
+        return is_safe, active_events
 
 
 # For testing

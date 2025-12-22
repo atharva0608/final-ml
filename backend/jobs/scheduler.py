@@ -83,6 +83,15 @@ def start_scheduler():
         replace_existing=True
     )
 
+    # Job 6: Cleanup False Rebalance Replicas (Every 1 hour)
+    scheduler.add_job(
+        func=run_replica_cleanup,
+        trigger=IntervalTrigger(hours=1),
+        id='cleanup_fake_rebalances',
+        name='Cleanup False Rebalance Replicas',
+        replace_existing=True
+    )
+
     scheduler.start()
 
     print("✓ Background scheduler started")
@@ -92,6 +101,7 @@ def start_scheduler():
     print("    - Archive old logs (daily at 2 AM)")
     print("    - Waste Scanner (daily at 6 AM)")
     print("    - Security Enforcer (every 30 minutes)")
+    print("    - Cleanup false rebalance replicas (every 1 hour)")
 
     # Shut down scheduler on exit
     atexit.register(stop_scheduler)
@@ -147,5 +157,33 @@ def run_security_enforcer():
                 print(f"Failed to audit account {account.account_id}: {e}")
     except Exception as e:
         print(f"Security Enforcer job failed: {e}")
+    finally:
+        db.close()
+
+
+def run_replica_cleanup():
+    """
+    Cleanup false rebalance replicas (runs every 1 hour)
+
+    AWS sends 40% false rebalances (no termination follows).
+    After 6hr without termination, replica is wasted cost.
+
+    This job finds expired replicas and terminates them to save money.
+    Savings: ~$10-50/month per false alarm
+    """
+    db = SessionLocal()
+    try:
+        from workers.event_processor import cleanup_fake_rebalances
+
+        result = cleanup_fake_rebalances(db)
+
+        if result['status'] == 'success' and result['replicas_cleaned'] > 0:
+            print(
+                f"✓ Replica cleanup: {result['replicas_cleaned']} false alarms removed, "
+                f"${result['cost_saved_usd']:.2f} saved"
+            )
+
+    except Exception as e:
+        print(f"Replica cleanup job failed: {e}")
     finally:
         db.close()

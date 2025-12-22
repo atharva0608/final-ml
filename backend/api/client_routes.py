@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 from database.connection import get_db
-from database.models import User, Account, Instance, ExperimentLog
+from database.models import User, Account, Instance, ExperimentLog, DowntimeLog
 from api.auth import get_current_active_user
 from utils.system_logger import logger
 
@@ -218,6 +218,41 @@ async def get_client_dashboard(
         scan_metadata = account.account_metadata or {}
         last_scan = scan_metadata.get('last_scan', account.updated_at.isoformat())
 
+        # Calculate downtime metrics (SLA transparency)
+        # Monthly billing period
+        billing_period_start = datetime.utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+        downtime_result = db.query(
+            func.sum(DowntimeLog.duration_seconds).label('total_downtime'),
+            func.count(DowntimeLog.id).label('incident_count')
+        ).filter(
+            DowntimeLog.client_id == current_user.id,
+            DowntimeLog.start_time >= billing_period_start
+        ).first()
+
+        downtime_seconds = int(downtime_result.total_downtime or 0) if downtime_result else 0
+        downtime_incidents = int(downtime_result.incident_count or 0) if downtime_result else 0
+
+        # SLA: < 60s monthly downtime target
+        sla_compliance = downtime_seconds < 60
+        sla_remaining = max(0, 60 - downtime_seconds)
+
+        # Get recent downtime incidents for transparency
+        recent_incidents = db.query(DowntimeLog).filter(
+            DowntimeLog.client_id == current_user.id,
+            DowntimeLog.start_time >= billing_period_start
+        ).order_by(DowntimeLog.start_time.desc()).limit(5).all()
+
+        downtime_history = [
+            {
+                "instance_id": inc.instance_id,
+                "duration_seconds": inc.duration_seconds,
+                "cause": inc.cause,
+                "timestamp": inc.start_time.isoformat()
+            }
+            for inc in recent_incidents
+        ]
+
         # Determine next steps
         next_steps = []
         if authorized_instances < total_instances:
@@ -252,7 +287,22 @@ async def get_client_dashboard(
                 "optimization_rate": optimization_rate,
                 "authorized_instances": authorized_instances,
                 "spot_instances": spot_instances,
-                "on_demand_instances": on_demand_instances
+                "on_demand_instances": on_demand_instances,
+                # SLA & Downtime Metrics (Transparency)
+                "downtime_seconds": downtime_seconds,
+                "downtime_incidents": downtime_incidents,
+                "sla_compliance": sla_compliance,
+                "sla_remaining_seconds": sla_remaining,
+                "sla_target": 60  # 60s monthly target
+            },
+            "downtime": {
+                "total_seconds": downtime_seconds,
+                "incident_count": downtime_incidents,
+                "sla_compliance": sla_compliance,
+                "sla_target_seconds": 60,
+                "sla_remaining_seconds": sla_remaining,
+                "billing_period": "monthly",
+                "recent_incidents": downtime_history
             },
             "instances": instance_list,
             "clusters": cluster_topology,
