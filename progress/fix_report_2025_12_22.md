@@ -119,4 +119,14 @@
             -   Launches new Spot Instance (via modified `aws_agentless.launch_instance`).
             -   Waits for "running" state.
             -   Terminates old instance immediately (without K8s cordon/drain).
-    -   **Executor Update**: Implemented `launch_instance` in `aws_agentless.py` to support this flow.
+
+### 17. API Wiring (Lab Optimization Endpoint)
+- **Requirement**: The frontend "Optimize" button must trigger the new `StandaloneOptimizer` when in Lab Mode.
+- **Implementation**:
+    -   **File**: `backend/api/lab.py`
+    -   **Endpoint**: `POST /lab/optimize/{instance_id}`
+    -   **Routing Logic**:
+        -   Checks `instance.orchestrator_type`.
+        -   **If `STANDALONE`**: Instantiates `StandaloneOptimizer` and runs `optimize_node()`.
+        -   **If `KUBERNETES`**: Returns skipped message (strict separation).
+    -   **Security**: Explicitly calls `verify_lab_context(account_id)` to ensure no production accounts are touched.

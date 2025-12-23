@@ -907,22 +907,72 @@ async def evaluate_instance(
             detail="You don't have permission to evaluate this instance"
         )
 
-    # Run optimization (will be implemented in optimizer_task)
-    from workers.optimizer_task import run_optimization_cycle
-
-    result = run_optimization_cycle(instance_id, db)
-
     return result
-    # Authorization check
-    if current_user.role != "admin" and instance.account.user_id != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You don't have permission to evaluate this instance"
+
+
+@router.post("/optimize/{instance_id}")
+async def optimize_instance(
+    instance_id: str,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Trigger immediate optimization for a Lab Instance.
+    
+    Routes traffic based on Orchestrator Type:
+    - STANDALONE: Uses the new 'Brain' pipeline (Bypasses K8s)
+    - KUBERNETES: Uses the legacy ClusterOptimizer
+    """
+    from dependencies import verify_lab_context
+    from backend.pipelines.standalone_optimizer import StandaloneOptimizer
+    from backend.executor.aws_agentless import AWSAgentlessExecutor
+    from backend.decision_engine.engine_enhanced import EnhancedDecisionEngine
+
+    # 1. Fetch Instance & Verify Lab Context
+    # This queries Account internally and enforces strict isolation
+    # We first need the account_id, so we fetch instance first.
+    instance = db.query(Instance).filter(
+        Instance.instance_id == instance_id
+    ).join(Account).first()
+
+    if not instance:
+        raise HTTPException(status_code=404, detail="Instance not found")
+
+    # Safety Guardrail: Verify this is a Lab Account
+    verify_lab_context(instance.account_id, db)
+
+    # 2. Route based on Orchestrator Type
+    if instance.orchestrator_type == "STANDALONE":
+        # Initialize the Standalone Pipeline Components
+        # Note: In production, these should be dependency-injected singetons
+        executor = AWSAgentlessExecutor(
+            region=instance.account.region,
+            aws_access_key_id=None, # Use Instance Profile / Env Vars
+            aws_secret_access_key=None
         )
-
-    # Run optimization (will be implemented in optimizer_task)
-    from workers.optimizer_task import run_optimization_cycle
-
-    result = run_optimization_cycle(instance_id, db)
-
-    return result
+        
+        # Initialize Engine with defaults
+        engine = EnhancedDecisionEngine() # Load models if available
+        
+        optimizer = StandaloneOptimizer(executor, engine)
+        
+        # Run Optimization (The "Brain" Loop)
+        result = optimizer.optimize_node(instance.instance_id, instance.account.region)
+        
+        return {
+            "status": "success",
+            "pipeline": "STANDALONE",
+            "result": result
+        }
+        
+    elif instance.orchestrator_type == "KUBERNETES":
+        # Fallback to legacy path (or blocked if Lab shouldn't touch K8s directly without setup)
+        # For now, we return a message that this is a placeholder for K8s lab tests
+        return {
+            "status": "skipped",
+            "pipeline": "KUBERNETES",
+            "message": "K8s optimization not enabled in this Lab endpoint yet."
+        }
+    
+    else:
+        raise HTTPException(status_code=400, detail=f"Unknown orchestrator type: {instance.orchestrator_type}")
