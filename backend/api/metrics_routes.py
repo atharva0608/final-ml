@@ -53,15 +53,15 @@ async def get_activity_metrics(
 
         # Recent optimizations from experiment logs
         recent_experiments = db.query(ExperimentLog).filter(
-            ExperimentLog.created_at >= since
+            ExperimentLog.execution_time >= since
         ).count()
 
-        # Calculate cost savings from experiment logs
+        # Calculate cost savings from experiment logs (using projected_hourly_savings)
         cost_savings_result = db.query(
-            func.sum(ExperimentLog.cost_savings).label('total_savings')
+            func.sum(ExperimentLog.projected_hourly_savings).label('total_savings')
         ).filter(
-            ExperimentLog.created_at >= since,
-            ExperimentLog.cost_savings.isnot(None)
+            ExperimentLog.execution_time >= since,
+            ExperimentLog.projected_hourly_savings.isnot(None)
         ).first()
 
         total_cost_savings = float(cost_savings_result.total_savings or 0) if cost_savings_result else 0
@@ -238,10 +238,10 @@ async def get_cost_savings_metric(
         since = datetime.utcnow() - timedelta(days=30)
 
         cost_savings_result = db.query(
-            func.sum(ExperimentLog.cost_savings).label('total_savings')
+            func.sum(ExperimentLog.projected_hourly_savings).label('total_savings')
         ).filter(
-            ExperimentLog.created_at >= since,
-            ExperimentLog.cost_savings.isnot(None)
+            ExperimentLog.execution_time >= since,
+            ExperimentLog.projected_hourly_savings.isnot(None)
         ).first()
 
         total_savings = float(cost_savings_result.total_savings or 0) if cost_savings_result else 0
@@ -276,8 +276,8 @@ async def get_optimization_rate_metric(
         optimized_instances = db.query(
             func.count(func.distinct(ExperimentLog.instance_id)).label('count')
         ).filter(
-            ExperimentLog.created_at >= since,
-            ExperimentLog.cost_savings > 0
+            ExperimentLog.execution_time >= since,
+            ExperimentLog.projected_hourly_savings > 0
         ).first()
 
         optimized_count = optimized_instances.count if optimized_instances else 0
@@ -356,11 +356,11 @@ async def get_performance_metrics(
             # Get instance experiment logs for performance data
             experiments = db.query(ExperimentLog).filter(
                 ExperimentLog.instance_id == instance_id,
-                ExperimentLog.created_at >= since
+                ExperimentLog.execution_time >= since
             ).all()
 
-            avg_latency = sum(e.execution_time_ms or 0 for e in experiments) / max(len(experiments), 1)
-            error_count = sum(1 for e in experiments if e.cost_savings == 0)
+            avg_latency = sum(e.execution_duration_ms or 0 for e in experiments) / max(len(experiments), 1)
+            error_count = sum(1 for e in experiments if e.decision == 'FAILED' or e.error_message)
             error_rate = (error_count / max(len(experiments), 1)) * 100
 
             return {
@@ -373,11 +373,11 @@ async def get_performance_metrics(
         else:
             # Platform-wide performance metrics
             all_experiments = db.query(ExperimentLog).filter(
-                ExperimentLog.created_at >= since
+                ExperimentLog.execution_time >= since
             ).all()
 
-            avg_latency = sum(e.execution_time_ms or 0 for e in all_experiments) / max(len(all_experiments), 1)
-            error_count = sum(1 for e in all_experiments if e.cost_savings == 0)
+            avg_latency = sum(e.execution_duration_ms or 0 for e in all_experiments) / max(len(all_experiments), 1)
+            error_count = sum(1 for e in all_experiments if e.decision == 'FAILED' or e.error_message)
             error_rate = (error_count / max(len(all_experiments), 1)) * 100
 
             return {

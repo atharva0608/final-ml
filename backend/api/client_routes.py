@@ -161,14 +161,14 @@ async def get_client_dashboard(
                 if cluster_hint:
                     cluster_names.add(cluster_hint)
 
-        # Calculate cost savings from experiment logs
+        # Calculate cost savings from experiment logs (using projected_hourly_savings)
         since_30_days = datetime.utcnow() - timedelta(days=30)
         cost_savings_result = db.query(
-            func.sum(ExperimentLog.cost_savings).label('total_savings')
+            func.sum(ExperimentLog.projected_hourly_savings).label('total_savings')
         ).join(Instance).filter(
             Instance.account_id == account.id,
-            ExperimentLog.created_at >= since_30_days,
-            ExperimentLog.cost_savings.isnot(None)
+            ExperimentLog.execution_time >= since_30_days,
+            ExperimentLog.projected_hourly_savings.isnot(None)
         ).first()
 
         total_savings = float(cost_savings_result.total_savings or 0) if cost_savings_result else 0.0
@@ -178,8 +178,8 @@ async def get_client_dashboard(
             func.count(func.distinct(ExperimentLog.instance_id))
         ).join(Instance).filter(
             Instance.account_id == account.id,
-            ExperimentLog.created_at >= since_30_days,
-            ExperimentLog.cost_savings > 0
+            ExperimentLog.execution_time >= since_30_days,
+            ExperimentLog.projected_hourly_savings > 0
         ).scalar() or 0
 
         optimization_rate = round((optimized_count / max(total_instances, 1)) * 100, 1)

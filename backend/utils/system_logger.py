@@ -19,10 +19,41 @@ from typing import Optional, Dict, Any
 from datetime import datetime, timedelta
 from contextlib import contextmanager
 import time
+import uuid
+import json
 
 from database.system_logs import SystemLog, ComponentHealth, ComponentType, LogLevel, ComponentStatus
 from database.connection import get_db
 from sqlalchemy.orm import Session
+
+
+def _serialize_details(details: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Convert UUID and other non-JSON-serializable objects to strings
+
+    Args:
+        details: Dictionary that may contain UUID objects
+
+    Returns:
+        Dictionary with all values JSON-serializable
+    """
+    if not details:
+        return {}
+
+    serialized = {}
+    for key, value in details.items():
+        if isinstance(value, uuid.UUID):
+            serialized[key] = str(value)
+        elif isinstance(value, datetime):
+            serialized[key] = value.isoformat()
+        elif isinstance(value, (list, tuple)):
+            serialized[key] = [str(v) if isinstance(v, uuid.UUID) else v for v in value]
+        elif isinstance(value, dict):
+            serialized[key] = _serialize_details(value)
+        else:
+            serialized[key] = value
+
+    return serialized
 
 
 class Component:
@@ -89,11 +120,14 @@ class SystemLogger:
             success: "success" or "failure"
         """
         try:
+            # Serialize details to ensure all values are JSON-compatible
+            serialized_details = _serialize_details(details)
+
             log = SystemLog(
                 component=self.component,
                 level=level,
                 message=message,
-                details=details or {},
+                details=serialized_details,
                 execution_time_ms=execution_time_ms,
                 success=success,
                 timestamp=datetime.utcnow()
