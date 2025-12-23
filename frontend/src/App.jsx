@@ -150,7 +150,29 @@ const ClientDashboard = () => {
           throw new Error('Invalid response from server');
         }
 
-        setClientData(data);
+        // Transform dashboard API response to match NodeFleet's expected format
+        const transformedData = {
+          // Map account_info fields to top-level fields for NodeFleet compatibility
+          name: data.account_info?.account_name || 'My Account',
+          id: data.account_info?.aws_account_id || data.account_info?.account_id || 'unknown',
+          status: data.account_status || data.status,
+
+          // Pass through arrays (ensure they exist)
+          clusters: Array.isArray(data.clusters) ? data.clusters : [],
+          instances: Array.isArray(data.instances) ? data.instances : [],
+
+          // Pass through other fields
+          stats: data.stats || {},
+          account_info: data.account_info || {},
+          downtime: data.downtime || {},
+          instance_distribution: data.instance_distribution || {},
+          next_steps: data.next_steps || [],
+
+          // Keep original data for reference
+          _raw: data
+        };
+
+        setClientData(transformedData);
       } catch (err) {
         console.error('Error fetching client data:', err);
         setClientData(null); // Ensure clientData is cleared on error
