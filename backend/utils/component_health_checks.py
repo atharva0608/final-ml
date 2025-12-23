@@ -182,20 +182,20 @@ class PriceScraperCheck(ComponentHealthCheck):
     """
     Live Connectivity Check for Price Scraper
     
-    Actively probes AWS Spot Advisor endpoint to verify:
-    1. Upstream API is reachable
-    2. Response data structure is valid
-    3. Next component can process the data
+    Actively probes AWS Spot Advisor endpoint and validates the deep structure.
+    
+    The AWS data uses single-letter keys:
+    - r: Interruption Rate (Index 0-5)
+    - s: Savings (Integer)
     
     Tri-State Logic:
-    - HEALTHY: 200 OK + valid JSON structure
-    - DEGRADED: 200 OK but missing critical keys (schema changed)
+    - HEALTHY: 200 OK + valid structure with 'r' and 's' keys
+    - DEGRADED: 200 OK but schema changed (missing 'r'/'s' keys)
     - CRITICAL: Request fails or returns error status
     """
     
     SPOT_ADVISOR_URL = "https://spot-bid-advisor.s3.amazonaws.com/spot-advisor-data.json"
     TIMEOUT_SECONDS = 5
-    REQUIRED_KEYS = ["spot_advisor"]  # Critical top-level keys
     
     def check(self) -> Tuple[str, Dict]:
         import requests
@@ -219,11 +219,10 @@ class PriceScraperCheck(ComponentHealthCheck):
                     "url": self.SPOT_ADVISOR_URL
                 })
             
-            # Parse JSON (limited to structure check only)
+            # Parse JSON
             try:
                 data = response.json()
             except ValueError as e:
-                # 200 OK but invalid JSON
                 return ("degraded", {
                     "http_status": 200,
                     "response_time_ms": round(response_time_ms, 2),
@@ -232,39 +231,108 @@ class PriceScraperCheck(ComponentHealthCheck):
                     "url": self.SPOT_ADVISOR_URL
                 })
             
-            # DEGRADED: Valid JSON but wrong structure
-            missing_keys = [key for key in self.REQUIRED_KEYS if key not in data]
-            if missing_keys:
+            # STEP 1: Check Top Level - spot_advisor key
+            if "spot_advisor" not in data:
                 return ("degraded", {
                     "http_status": 200,
                     "response_time_ms": round(response_time_ms, 2),
-                    "message": "Data structure changed - scraper may crash",
-                    "missing_keys": missing_keys,
-                    "expected_keys": self.REQUIRED_KEYS,
-                    "actual_keys": list(data.keys())[:10],  # First 10 keys only
+                    "message": "Missing 'spot_advisor' key",
+                    "actual_keys": list(data.keys())[:10],
                     "url": self.SPOT_ADVISOR_URL
                 })
             
-            # DEGRADED: Empty data
-            if not data.get("spot_advisor"):
+            # STEP 2: Deep Structure Check - Validate 'r' and 's' keys
+            # Navigate: spot_advisor -> region -> AZ -> OS -> instance -> {r, s}
+            try:
+                spot_advisor = data["spot_advisor"]
+                
+                # Grab any region (e.g., 'us-east-1')
+                if not spot_advisor:
+                    return ("degraded", {
+                        "http_status": 200,
+                        "response_time_ms": round(response_time_ms, 2),
+                        "message": "spot_advisor is empty",
+                        "url": self.SPOT_ADVISOR_URL
+                    })
+                
+                regions = list(spot_advisor.values())
+                if not regions:
+                    return ("degraded", {
+                        "http_status": 200,
+                        "response_time_ms": round(response_time_ms, 2),
+                        "message": "No regions found in spot_advisor",
+                        "url": self.SPOT_ADVISOR_URL
+                    })
+                
+                # Grab any AZ inside that region
+                azs = list(regions[0].values())
+                if not azs:
+                    return ("degraded", {
+                        "http_status": 200,
+                        "response_time_ms": round(response_time_ms, 2),
+                        "message": "No AZs found in region",
+                        "url": self.SPOT_ADVISOR_URL
+                    })
+                
+                # Grab OS type (usually 'Linux')
+                os_types = list(azs[0].values())
+                if not os_types:
+                    return ("degraded", {
+                        "http_status": 200,
+                        "response_time_ms": round(response_time_ms, 2),
+                        "message": "No OS types found in AZ",
+                        "url": self.SPOT_ADVISOR_URL
+                    })
+                
+                # Grab instances (e.g., {'c5.large': {'r': 0, 's': 50}})
+                instances = os_types[0]
+                if not instances:
+                    return ("degraded", {
+                        "http_status": 200,
+                        "response_time_ms": round(response_time_ms, 2),
+                        "message": "No instances found",
+                        "url": self.SPOT_ADVISOR_URL
+                    })
+                
+                # Grab first instance data
+                first_instance_key = list(instances.keys())[0]
+                first_instance_data = instances[first_instance_key]
+                
+                # CRITICAL VALIDATION: Check for 'r' and 's' keys
+                if "r" not in first_instance_data or "s" not in first_instance_data:
+                    return ("degraded", {
+                        "http_status": 200,
+                        "response_time_ms": round(response_time_ms, 2),
+                        "message": "Schema changed: Missing 'r' or 's' keys",
+                        "sample_instance": first_instance_key,
+                        "actual_keys": list(first_instance_data.keys()),
+                        "expected_keys": ["r", "s"],
+                        "url": self.SPOT_ADVISOR_URL
+                    })
+                
+                # HEALTHY: All checks passed
+                return ("healthy", {
+                    "http_status": 200,
+                    "response_time_ms": round(response_time_ms, 2),
+                    "message": "Spot Advisor data structure valid",
+                    "sample_instance": first_instance_key,
+                    "sample_data": {
+                        "interruption_rate": first_instance_data["r"],
+                        "savings": first_instance_data["s"]
+                    },
+                    "url": self.SPOT_ADVISOR_URL
+                })
+                
+            except (KeyError, IndexError, TypeError) as e:
                 return ("degraded", {
                     "http_status": 200,
                     "response_time_ms": round(response_time_ms, 2),
-                    "message": "spot_advisor key is empty",
+                    "message": "Data structure navigation failed",
+                    "error": str(e),
                     "url": self.SPOT_ADVISOR_URL
                 })
-            
-            # HEALTHY: All checks passed
-            return ("healthy", {
-                "http_status": 200,
-                "response_time_ms": round(response_time_ms, 2),
-                "message": "Spot Advisor endpoint reachable and valid",
-                "data_keys_found": list(data.keys())[:5],  # First 5 keys as proof
-                "url": self.SPOT_ADVISOR_URL
-            })
             
         except requests.exceptions.Timeout:
-            # CRITICAL: Timeout (network slow or endpoint down)
             return ("critical", {
                 "error": "Request timeout",
                 "timeout_seconds": self.TIMEOUT_SECONDS,
@@ -272,19 +340,18 @@ class PriceScraperCheck(ComponentHealthCheck):
                 "url": self.SPOT_ADVISOR_URL
             })
         except requests.exceptions.ConnectionError as e:
-            # CRITICAL: DNS failure, network down, etc.
             return ("critical", {
                 "error": str(e),
                 "message": "Connection failed (DNS/network issue)",
                 "url": self.SPOT_ADVISOR_URL
             })
         except Exception as e:
-            # CRITICAL: Unexpected error
             return ("critical", {
                 "error": str(e),
                 "message": "Price scraper health check failed unexpectedly",
                 "url": self.SPOT_ADVISOR_URL
             })
+
 
 
 
