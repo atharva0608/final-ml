@@ -209,9 +209,55 @@ class AWSAgentlessExecutor(Executor):
 
     def launch_instance(self, target_spec: TargetSpec) -> str:
         """Launch new instance via EC2 API"""
-        # TODO: Implement instance launching
-        # This would use RunInstances API with spot or on-demand
-        raise NotImplementedError("Instance launch not yet implemented")
+        try:
+            launch_args = {
+                'InstanceType': target_spec.instance_type,
+                'MinCount': 1,
+                'MaxCount': 1,
+                'SubnetId': target_spec.subnet_id,
+            }
+
+            # Optional: AMI or Launch Template
+            if target_spec.launch_template_id:
+                launch_args['LaunchTemplate'] = {
+                    'LaunchTemplateId': target_spec.launch_template_id,
+                    'Version': '$Latest'
+                }
+            elif target_spec.ami_id:
+                launch_args['ImageId'] = target_spec.ami_id
+            else:
+                raise ValueError("TargetSpec must provide either launch_template_id or ami_id")
+
+            # Spot vs On-Demand
+            if target_spec.lifecycle == 'spot':
+                launch_args['InstanceMarketOptions'] = {
+                    'MarketType': 'spot',
+                    'SpotOptions': {
+                        'SpotInstanceType': 'one-time',
+                        'InstanceInterruptionBehavior': 'terminate'
+                    }
+                }
+
+            # Tags
+            if target_spec.tags:
+                tag_spec = [
+                    {
+                        'ResourceType': 'instance',
+                        'Tags': [{'Key': k, 'Value': v} for k, v in target_spec.tags.items()]
+                    }
+                ]
+                launch_args['TagSpecifications'] = tag_spec
+
+            # Launch
+            response = self.ec2_client.run_instances(**launch_args)
+            instance_id = response['Instances'][0]['InstanceId']
+            
+            logger.info(f"Launched instance {instance_id} ({target_spec.instance_type}, {target_spec.lifecycle})")
+            return instance_id
+
+        except ClientError as e:
+            logger.error(f"Failed to launch instance: {e}")
+            raise
 
     def terminate_instance(self, instance_id: str) -> bool:
         """Terminate instance via EC2 API"""

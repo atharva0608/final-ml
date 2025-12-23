@@ -105,4 +105,18 @@
         -   Queries `AWS/EC2` namespace for `CPUUtilization` (Max/Avg) over the last 1 hour.
         -   Attempts to query `CWAgent` namespace for `mem_used_percent` (Memory).
         -   Returns standardized dictionary: `{ "max_cpu": ..., "avg_cpu": ..., "memory_used_percent": ... }`.
-    -   **Purpose**: Allows the "Optimization Pipeline" to see if a Lab instance is underutilized without needing Kubernetes API access.
+
+### 16. The Standalone Pipeline ("The Brain")
+- **Requirement**: Create a simplified optimization loop that performs the optimization math but skips the "K8s Dance" (Cordon/Drain).
+- **Implementation**:
+    -   **File**: `backend/pipelines/standalone_optimizer.py`
+    -   **Class**: `StandaloneOptimizer`
+    -   **Method**: `optimize_node(instance_id)`
+    -   **Workflow**:
+        1.  **Metric Translation**: Calculates `Required_CPU = (Current_vCPU * Load%) * 1.2` (Buffer).
+        2.  **Decision**: calls `engine.decide()` (reusing core ML logic) with the translated requirements.
+        3.  **Execution (Bypass)**:
+            -   Launches new Spot Instance (via modified `aws_agentless.launch_instance`).
+            -   Waits for "running" state.
+            -   Terminates old instance immediately (without K8s cordon/drain).
+    -   **Executor Update**: Implemented `launch_instance` in `aws_agentless.py` to support this flow.
