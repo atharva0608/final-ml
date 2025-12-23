@@ -154,58 +154,97 @@ async def connect_with_credentials(
                 'error_details': error_message
             }
 
-        # Step 2: Encrypt secret key
+        # Step 2: Encrypt credentials
         encrypted_access_key = encrypt_credential(credentials.access_key)
         encrypted_secret_key = encrypt_credential(credentials.secret_key)
 
-        # Step 3: Check if account already exists
-        existing_account = db.query(Account).filter(
-            Account.account_id == aws_account_id,
-            Account.user_id == current_user.id
+        # Step 3: UPSERT Logic - Handle duplicates and pending accounts
+
+        # Check if this AWS account ID already exists globally
+        global_existing = db.query(Account).filter(
+            Account.account_id == aws_account_id
         ).first()
 
-        if existing_account:
-            # Update existing account to use access keys
-            existing_account.connection_method = 'access_keys'
-            existing_account.aws_access_key_id = encrypted_access_key
-            existing_account.aws_secret_access_key = encrypted_secret_key
-            existing_account.region = credentials.region
-            existing_account.status = 'connected'
-            existing_account.is_active = False  # Will be set to True after discovery
-            existing_account.updated_at = datetime.utcnow()
+        if global_existing:
+            # Scenario A: Account exists globally
+            if global_existing.user_id != current_user.id:
+                # Account belongs to another user - conflict
+                logger.warning(
+                    f'AWS account {aws_account_id} already connected to different user',
+                    extra={'component': 'OnboardingAPI', 'existing_user': global_existing.user_id}
+                )
+                raise HTTPException(
+                    status_code=409,
+                    detail=f'AWS account {aws_account_id} is already connected to a different user.'
+                )
+
+            # Account belongs to current user - update credentials (re-connection)
+            account = global_existing
+            account.connection_method = 'access_keys'
+            account.aws_access_key_id = encrypted_access_key
+            account.aws_secret_access_key = encrypted_secret_key
+            account.region = credentials.region
+            account.status = 'connected'
+            account.is_active = False  # Will be set to True after discovery
+            account.updated_at = datetime.utcnow()
 
             db.commit()
-            db.refresh(existing_account)
+            db.refresh(account)
 
-            account = existing_account
             logger.info(
-                f'Updated existing account {aws_account_id} to use access keys',
-                extra={'component': 'OnboardingAPI', 'account_id': existing_account.id}
+                f'Re-connected existing account {aws_account_id} with new credentials',
+                extra={'component': 'OnboardingAPI', 'account_id': account.id}
             )
         else:
-            # Create new account record
-            new_account = Account(
-                user_id=current_user.id,
-                account_id=aws_account_id,
-                account_name=f"AWS Account {aws_account_id}",
-                connection_method='access_keys',
-                aws_access_key_id=encrypted_access_key,
-                aws_secret_access_key=encrypted_secret_key,
-                region=credentials.region,
-                status='connected',  # Will transition to 'active' after discovery
-                is_active=False,  # Will be set to True after discovery
-                environment_type='LAB'
-            )
+            # Scenario B: Check if user has a "pending" placeholder account
+            pending_account = db.query(Account).filter(
+                Account.user_id == current_user.id,
+                Account.account_id.like('pending-%')
+            ).first()
 
-            db.add(new_account)
-            db.commit()
-            db.refresh(new_account)
+            if pending_account:
+                # Overwrite the placeholder with real AWS account details
+                account = pending_account
+                account.account_id = aws_account_id
+                account.account_name = f"AWS Account {aws_account_id}"
+                account.connection_method = 'access_keys'
+                account.aws_access_key_id = encrypted_access_key
+                account.aws_secret_access_key = encrypted_secret_key
+                account.region = credentials.region
+                account.status = 'connected'
+                account.is_active = False  # Will be set to True after discovery
+                account.updated_at = datetime.utcnow()
 
-            account = new_account
-            logger.info(
-                f'Created new account {aws_account_id} with access keys',
-                extra={'component': 'OnboardingAPI', 'account_id': new_account.id}
-            )
+                db.commit()
+                db.refresh(account)
+
+                logger.info(
+                    f'Updated pending account to real AWS account {aws_account_id}',
+                    extra={'component': 'OnboardingAPI', 'account_id': account.id}
+                )
+            else:
+                # Scenario C: Create brand new account
+                account = Account(
+                    user_id=current_user.id,
+                    account_id=aws_account_id,
+                    account_name=f"AWS Account {aws_account_id}",
+                    connection_method='access_keys',
+                    aws_access_key_id=encrypted_access_key,
+                    aws_secret_access_key=encrypted_secret_key,
+                    region=credentials.region,
+                    status='connected',  # Will transition to 'active' after discovery
+                    is_active=False,  # Will be set to True after discovery
+                    environment_type='LAB'
+                )
+
+                db.add(account)
+                db.commit()
+                db.refresh(account)
+
+                logger.info(
+                    f'Created new account {aws_account_id} with access keys',
+                    extra={'component': 'OnboardingAPI', 'account_id': account.id}
+                )
 
         # Step 4: Trigger background discovery
         background_tasks.add_task(run_initial_discovery, account.id)
@@ -289,6 +328,7 @@ async def get_cloudformation_template(
                                     "Version": "2012-10-17",
                                     "Statement": [
                                         {
+                                            "Sid": "EC2SpotOptimization",
                                             "Effect": "Allow",
                                             "Action": [
                                                 "ec2:Describe*",
@@ -302,6 +342,24 @@ async def get_cloudformation_template(
                                                 "ec2:DeleteSnapshot",
                                                 "ec2:RequestSpotInstances",
                                                 "ec2:CancelSpotInstanceRequests"
+                                            ],
+                                            "Resource": "*"
+                                        },
+                                        {
+                                            "Sid": "CloudWatchMetrics",
+                                            "Effect": "Allow",
+                                            "Action": [
+                                                "cloudwatch:GetMetricStatistics",
+                                                "cloudwatch:ListMetrics"
+                                            ],
+                                            "Resource": "*"
+                                        },
+                                        {
+                                            "Sid": "PricingAndCostExplorer",
+                                            "Effect": "Allow",
+                                            "Action": [
+                                                "pricing:GetProducts",
+                                                "ce:GetCostAndUsage"
                                             ],
                                             "Resource": "*"
                                         },

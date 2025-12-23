@@ -271,6 +271,89 @@ const ClientSetup = () => {
                     <div className="bg-white rounded-lg shadow-sm p-6 mb-6">
                         <h2 className="text-lg font-semibold text-gray-900 mb-4">Enter AWS Credentials</h2>
 
+                        {/* IAM Policy Instructions */}
+                        <div className="mb-6 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+                            <h3 className="font-semibold text-blue-900 mb-2">📋 Required IAM Permissions</h3>
+                            <p className="text-sm text-blue-800 mb-3">
+                                Create an IAM user with programmatic access and attach this policy for full functionality:
+                            </p>
+                            <details className="text-sm">
+                                <summary className="cursor-pointer text-blue-700 hover:text-blue-900 font-medium mb-2">
+                                    Click to view IAM Policy JSON (Copy & Paste to AWS IAM)
+                                </summary>
+                                <pre className="bg-gray-900 text-green-400 p-4 rounded overflow-x-auto text-xs mt-2">
+{`{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "EC2Discovery",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:Describe*",
+        "autoscaling:Describe*",
+        "eks:Describe*",
+        "eks:ListClusters"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "CloudWatchMetrics",
+      "Effect": "Allow",
+      "Action": [
+        "cloudwatch:GetMetricStatistics",
+        "cloudwatch:ListMetrics"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "SpotOptimization",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:RunInstances",
+        "ec2:TerminateInstances",
+        "ec2:StopInstances",
+        "ec2:StartInstances",
+        "ec2:CreateTags",
+        "ec2:DeleteTags",
+        "autoscaling:SetDesiredCapacity",
+        "autoscaling:TerminateInstanceInAutoScalingGroup",
+        "autoscaling:AttachInstances",
+        "autoscaling:DetachInstances"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "PassRoleForEC2",
+      "Effect": "Allow",
+      "Action": "iam:PassRole",
+      "Resource": "*",
+      "Condition": {
+        "StringLike": {
+          "iam:PassedToService": "ec2.amazonaws.com"
+        }
+      }
+    },
+    {
+      "Sid": "ServiceLinkedRole",
+      "Effect": "Allow",
+      "Action": "iam:CreateServiceLinkedRole",
+      "Resource": "arn:aws:iam::*:role/aws-service-role/spot.amazonaws.com/*"
+    },
+    {
+      "Sid": "PricingAndCost",
+      "Effect": "Allow",
+      "Action": [
+        "pricing:GetProducts",
+        "ce:GetCostAndUsage"
+      ],
+      "Resource": "*"
+    }
+  ]
+}`}
+                                </pre>
+                            </details>
+                        </div>
+
                         <div className="space-y-4">
                             <div>
                                 <label className="block text-sm font-medium text-gray-700 mb-2">
