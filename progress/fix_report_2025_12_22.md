@@ -143,4 +143,17 @@
         5.  **Output Validation**: Ensures prediction format is valid
     -   **Standalone Check**: Verifies `AWSAgentlessExecutor`, `StandaloneOptimizer`, and `EnhancedDecisionEngine` can be instantiated
     -   **System Monitor**: New endpoint `POST /admin/health/run-checks` triggers all checks and updates ComponentHealth table
-    -   **Status Updates**: Health check results automatically update system monitor with detailed metadata
+
+### 19. Live Connectivity Health Check (Price Scraper)
+- **Requirement**: Implement real-time validation of upstream AWS Spot Advisor API instead of passive database checks.
+- **Implementation**:
+    -   **File**: `backend/utils/component_health_checks.py`
+    -   **Class**: `PriceScraperCheck` (replaced)
+    -   **Tri-State Logic**:
+        -   **HEALTHY**: HTTP 200 + valid JSON with required keys (`spot_advisor`)
+        -   **DEGRADED**: HTTP 200 but missing critical keys or empty (schema changed)
+        -   **CRITICAL**: Request fails (timeout, connection error, DNS) or 4xx/5xx status
+    -   **Endpoint**: `https://spot-bid-advisor.s3.amazonaws.com/spot-advisor-data.json`
+    -   **Timeout**: 5 seconds (prevents system hangs)
+    -   **Response Data**: Returns HTTP status code, response time (ms), and validation details
+    -   **Purpose**: Detects upstream API changes before the scraper crashes, enabling proactive alerts
