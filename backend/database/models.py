@@ -27,9 +27,11 @@ from .system_logs import SystemLog, ComponentHealth, ComponentType, LogLevel, Co
 
 class UserRole(str, enum.Enum):
     """User role enum"""
-    ADMIN = "admin"
-    USER = "user"
-    LAB = "lab"
+    SUPER_ADMIN = "super_admin"  # Full system access
+    ADMIN = "admin"               # Admin access
+    CLIENT = "client"             # Client with AWS account access
+    USER = "user"                 # Regular user
+    LAB = "lab"                   # Lab mode user
 
 
 class User(Base):

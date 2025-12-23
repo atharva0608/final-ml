@@ -120,7 +120,7 @@ def seed_test_users():
                 username='client',
                 email='client@test.com',
                 hashed_password=hash_password('client'),
-                role='user',  # Use 'user' role for client accounts
+                role='client',  # Lowercase 'client' role for client dashboard access
                 full_name='Test Client User',
                 is_active=True
             )
