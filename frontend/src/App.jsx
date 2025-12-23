@@ -239,6 +239,76 @@ const ClientDashboard = () => {
       return <ClientSetup />;
     }
 
+    // Profile view doesn't need AWS account data, just user info
+    if (currentView === 'profile') {
+      return (
+        <div className="max-w-4xl mx-auto space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-500">
+          {/* Client Details */}
+          <div className="bg-white p-8 rounded-xl border border-slate-200 shadow-sm">
+            <div className="flex items-center space-x-4 mb-6">
+              <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center text-blue-600">
+                <User className="w-8 h-8" />
+              </div>
+              <div>
+                <h2 className="text-2xl font-bold text-slate-900">{user?.username || 'Client'}</h2>
+                <p className="text-slate-500">Client Account</p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="space-y-1">
+                <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">Username</label>
+                <div className="flex items-center px-4 py-2 bg-slate-50 rounded-lg border border-slate-200 text-slate-700">
+                  <User className="w-4 h-4 mr-2 text-slate-400" />
+                  {user?.username}
+                </div>
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">Account Type</label>
+                <div className="flex items-center px-4 py-2 bg-slate-50 rounded-lg border border-slate-200 text-slate-700">
+                  <Shield className="w-4 h-4 mr-2 text-slate-400" />
+                  {user?.role}
+                </div>
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">Email</label>
+                <div className="flex items-center px-4 py-2 bg-slate-50 rounded-lg border border-slate-200 text-slate-700">
+                  <Mail className="w-4 h-4 mr-2 text-slate-400" />
+                  {user?.email || 'Not set'}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Password Reset */}
+          <div className="bg-white p-8 rounded-xl border border-slate-200 shadow-sm">
+            <h2 className="text-xl font-bold text-slate-900 mb-6 flex items-center">
+              <Lock className="w-5 h-5 mr-2 text-blue-600" />
+              Security Settings
+            </h2>
+
+            <form className="max-w-md space-y-4" onSubmit={(e) => { e.preventDefault(); alert("Password update feature coming soon"); }}>
+              <div className="space-y-1">
+                <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">Current Password</label>
+                <input type="password" className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" placeholder="••••••••" />
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">New Password</label>
+                <input type="password" className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" placeholder="••••••••" />
+              </div>
+
+              <div className="pt-4">
+                <button className="flex items-center px-6 py-2 bg-slate-900 text-white font-bold rounded-lg hover:bg-slate-800 transition-colors shadow-lg shadow-slate-200">
+                  <Save className="w-4 h-4 mr-2" />
+                  Update Password
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      );
+    }
+
     // For dashboard views, we need clientData
     if (error || !clientData) {
       return (
@@ -262,80 +332,10 @@ const ClientDashboard = () => {
       case 'dashboard':
       case 'live': // Fallback for legacy state
         return <NodeFleet clientMode={true} clientData={clientData} />;
-      case 'connect':
-      case 'onboarding': // Fallback
-        return <ClientSetup />;
       case 'experiments':
         return <ModelExperiments />;
-      case 'profile':
-        return (
-          <div className="max-w-4xl mx-auto space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-500">
-            {/* Client Details */}
-            <div className="bg-white p-8 rounded-xl border border-slate-200 shadow-sm">
-              <div className="flex items-center space-x-4 mb-6">
-                <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center text-blue-600">
-                  <User className="w-8 h-8" />
-                </div>
-                <div>
-                  <h2 className="text-2xl font-bold text-slate-900">{clientData?.name || 'Client'}</h2>
-                  <p className="text-slate-500">Client Account</p>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div className="space-y-1">
-                  <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">Username</label>
-                  <div className="flex items-center px-4 py-2 bg-slate-50 rounded-lg border border-slate-200 text-slate-700">
-                    <User className="w-4 h-4 mr-2 text-slate-400" />
-                    {user?.username}
-                  </div>
-                </div>
-                <div className="space-y-1">
-                  <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">Account Type</label>
-                  <div className="flex items-center px-4 py-2 bg-slate-50 rounded-lg border border-slate-200 text-slate-700">
-                    <Shield className="w-4 h-4 mr-2 text-slate-400" />
-                    {user?.role}
-                  </div>
-                </div>
-                <div className="space-y-1">
-                  <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">Email Support</label>
-                  <div className="flex items-center px-4 py-2 bg-slate-50 rounded-lg border border-slate-200 text-slate-700">
-                    <Mail className="w-4 h-4 mr-2 text-slate-400" />
-                    support@cloudoptimizer.ai
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* Password Reset */}
-            <div className="bg-white p-8 rounded-xl border border-slate-200 shadow-sm">
-              <h2 className="text-xl font-bold text-slate-900 mb-6 flex items-center">
-                <Lock className="w-5 h-5 mr-2 text-blue-600" />
-                Security Settings
-              </h2>
-
-              <form className="max-w-md space-y-4" onSubmit={(e) => { e.preventDefault(); alert("Password update feature coming soon"); }}>
-                <div className="space-y-1">
-                  <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">Current Password</label>
-                  <input type="password" className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" placeholder="••••••••" />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">New Password</label>
-                  <input type="password" className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" placeholder="••••••••" />
-                </div>
-
-                <div className="pt-4">
-                  <button className="flex items-center px-6 py-2 bg-slate-900 text-white font-bold rounded-lg hover:bg-slate-800 transition-colors shadow-lg shadow-slate-200">
-                    <Save className="w-4 h-4 mr-2" />
-                    Update Password
-                  </button>
-                </div>
-              </form>
-            </div>
-          </div>
-        );
       default:
-        return <LiveOperations clientMode={true} clientData={clientData} />;
+        return <NodeFleet clientMode={true} clientData={clientData} />;
     }
   };
 
