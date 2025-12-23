@@ -94,4 +94,15 @@
 - **Implementation**:
     -   **Database**: Added `orchestrator_type` column to `Instance` model (`KUBERNETES` vs `STANDALONE`) to distinguish environment scope at the schema level.
     -   **Safety Guardrail**: Implemented `verify_lab_context(account_id)` dependency in `backend/dependencies.py`.
-    -   **Enforcement**: This validator checks `account.environment_type`. If a Lab action is attempted on a non-LAB account, it raises `403 Forbidden` with a generic safety violation message.
+
+### 15. Data Ingestion (CloudWatch Metric Fetcher)
+- **Requirement**: Swap "Pod Metrics" (Production) with "VM Metrics" (Lab). Lab instances need internal reporting (CPU/RAM) to determine utilization since they don't host Pods.
+- **Implementation**:
+    -   **File**: `backend/executor/aws_agentless.py`
+    -   **Method**: `get_instance_utilization(instance_id, region)`
+    -   **Logic**:
+        -   Initializes `boto3.client('cloudwatch')`.
+        -   Queries `AWS/EC2` namespace for `CPUUtilization` (Max/Avg) over the last 1 hour.
+        -   Attempts to query `CWAgent` namespace for `mem_used_percent` (Memory).
+        -   Returns standardized dictionary: `{ "max_cpu": ..., "avg_cpu": ..., "memory_used_percent": ... }`.
+    -   **Purpose**: Allows the "Optimization Pipeline" to see if a Lab instance is underutilized without needing Kubernetes API access.

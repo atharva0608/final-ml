@@ -114,9 +114,82 @@ class AWSAgentlessExecutor(Executor):
 
             return metrics
 
+            return metrics
+
         except ClientError as e:
             logger.error(f"Failed to get usage metrics: {e}")
             raise
+
+    def get_instance_utilization(self, instance_id: str, region: str = None) -> Dict[str, float]:
+        """
+        Get detailed instance utilization for Lab Mode (replacing Pod metrics).
+        
+        Fetches CPU and Memory (if available) from CloudWatch.
+        Time Window: 1 hour lookback.
+        """
+        end_time = datetime.utcnow()
+        start_time = end_time - timedelta(hours=1)
+        
+        region = region or self.region
+        
+        try:
+            # 1. Fetch CPU Utilization (Standard Metric)
+            cpu_stats = self.cloudwatch_client.get_metric_statistics(
+                Namespace='AWS/EC2',
+                MetricName='CPUUtilization',
+                Dimensions=[{'Name': 'InstanceId', 'Value': instance_id}],
+                StartTime=start_time,
+                EndTime=end_time,
+                Period=300,  # 5-minute data points
+                Statistics=['Average', 'Maximum'],
+                Unit='Percent'
+            )
+            
+            max_cpu = 0.0
+            avg_cpu = 0.0
+            
+            if cpu_stats['Datapoints']:
+                cpu_max_values = [dp['Maximum'] for dp in cpu_stats['Datapoints']]
+                cpu_avg_values = [dp['Average'] for dp in cpu_stats['Datapoints']]
+                
+                max_cpu = max(cpu_max_values)
+                avg_cpu = sum(cpu_avg_values) / len(cpu_avg_values)
+            
+            # 2. Fetch Memory Usage (Custom Metric from CloudWatch Agent)
+            # Namespace: CWAgent, Metric: mem_used_percent
+            mem_used = 0.0
+            try:
+                mem_stats = self.cloudwatch_client.get_metric_statistics(
+                    Namespace='CWAgent',
+                    MetricName='mem_used_percent',
+                    Dimensions=[{'Name': 'InstanceId', 'Value': instance_id}],
+                    StartTime=start_time,
+                    EndTime=end_time,
+                    Period=300,
+                    Statistics=['Maximum'],
+                    Unit='Percent'
+                )
+                if mem_stats['Datapoints']:
+                    mem_used = max(dp['Maximum'] for dp in mem_stats['Datapoints'])
+            except Exception as mem_e:
+                logger.warning(f"Could not fetch memory metrics for {instance_id} (Agent missing?): {mem_e}")
+                # Fallback note: User requirement example showed 60.0. 
+                # Without an agent, we can't know. We'll return 0.0 to indicate missing data.
+            
+            return {
+                "max_cpu": round(max_cpu, 2),
+                "avg_cpu": round(avg_cpu, 2),
+                "memory_used_percent": round(mem_used, 2)
+            }
+            
+        except ClientError as e:
+            logger.error(f"Failed to fetch CloudWatch metrics for {instance_id}: {e}")
+            # Return empty/safe defaults on failure
+            return {
+                "max_cpu": 0.0, 
+                "avg_cpu": 0.0, 
+                "memory_used_percent": 0.0
+            }
 
     def get_pricing_snapshot(
         self,
