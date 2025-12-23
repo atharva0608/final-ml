@@ -145,14 +145,37 @@ async def get_cloudformation_template(
                                             "Action": [
                                                 "ec2:Describe*",
                                                 "ec2:CreateTags",
+                                                "ec2:DeleteTags",
                                                 "ec2:RunInstances",
                                                 "ec2:TerminateInstances",
                                                 "ec2:StopInstances",
                                                 "ec2:StartInstances",
                                                 "ec2:CreateSnapshot",
-                                                "ec2:DeleteSnapshot"
+                                                "ec2:DeleteSnapshot",
+                                                "ec2:RequestSpotInstances",
+                                                "ec2:CancelSpotInstanceRequests"
                                             ],
                                             "Resource": "*"
+                                        },
+                                        {
+                                            "Effect": "Allow",
+                                            "Action": "iam:PassRole",
+                                            "Resource": "*",
+                                            "Condition": {
+                                                "StringLike": {
+                                                    "iam:PassedToService": "ec2.amazonaws.com"
+                                                }
+                                            }
+                                        },
+                                        {
+                                            "Effect": "Allow",
+                                            "Action": "iam:CreateServiceLinkedRole",
+                                            "Resource": "*",
+                                            "Condition": {
+                                                "StringLike": {
+                                                    "iam:AWSServiceName": "spot.amazonaws.com"
+                                                }
+                                            }
                                         },
                                         {
                                             "Effect": "Allow",
@@ -160,7 +183,8 @@ async def get_cloudformation_template(
                                                 "autoscaling:Describe*",
                                                 "autoscaling:AttachInstances",
                                                 "autoscaling:DetachInstances",
-                                                "autoscaling:SetDesiredCapacity"
+                                                "autoscaling:SetDesiredCapacity",
+                                                "autoscaling:UpdateAutoScalingGroup"
                                             ],
                                             "Resource": "*"
                                         },
@@ -168,7 +192,8 @@ async def get_cloudformation_template(
                                             "Effect": "Allow",
                                             "Action": [
                                                 "eks:DescribeCluster",
-                                                "eks:ListClusters"
+                                                "eks:ListClusters",
+                                                "eks:DescribeNodegroup"
                                             ],
                                             "Resource": "*"
                                         },
