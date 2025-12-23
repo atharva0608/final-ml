@@ -266,17 +266,104 @@ async def get_component_logs(
             details=log.details or {},
             timestamp=log.timestamp,
             execution_time_ms=log.execution_time_ms,
-            success=log.success
-        )
-        for log in logs
-    ]
-
     return ComponentLogsResponse(
         component=component,
         health=health_response,
         logs=log_entries,
         total_logs=total_logs
     )
+
+
+@router.post("/health/run-checks")
+async def run_comprehensive_health_checks(
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Run all health checks and update system monitor status.
+    
+    Includes the new Decision Pipeline and Standalone Pipeline checks
+    that validate models are properly loaded and decision logic works with demo data.
+    
+    Requires admin role.
+    """
+    from utils.component_health_checks import run_all_health_checks
+    from database.system_logs import ComponentHealth, ComponentStatus
+    from datetime import datetime, timedelta
+    from sqlalchemy import func
+    
+    # Check admin permission
+    if current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required"
+        )
+    
+    # Run all health checks
+    results = run_all_health_checks(db)
+    
+    # Update or create ComponentHealth records for each check
+    updated_components = []
+    for component_name, (status_str, details) in results.items():
+        # Find or create health record
+        health = db.query(ComponentHealth).filter(
+            ComponentHealth.component == component_name
+        ).first()
+        
+        if not health:
+            health = ComponentHealth(
+                component=component_name,
+                status=ComponentStatus.UNKNOWN.value,
+                component_metadata={}
+            )
+            db.add(health)
+        
+        # Map status string to ComponentStatus
+        status_map = {
+            "healthy": ComponentStatus.HEALTHY.value,
+            "degraded": ComponentStatus.DEGRADED.value,
+            "critical": ComponentStatus.DOWN.value,
+            "down": ComponentStatus.DOWN.value
+        }
+        health.status = status_map.get(status_str, ComponentStatus.UNKNOWN.value)
+        health.component_metadata = details
+        health.last_check = datetime.utcnow()
+        
+        # Update success/failure counts
+        if status_str == "healthy":
+            health.last_success = datetime.utcnow()
+            health.success_count_24h = (health.success_count_24h or 0) + 1
+        else:
+            health.last_failure = datetime.utcnow()
+            health.failure_count_24h = (health.failure_count_24h or 0) + 1
+            if "error" in details:
+                health.error_message = details.get("error", "")[:500]  # Truncate
+        
+        updated_components.append({
+            "component": component_name,
+            "status": status_str,
+            "details": details
+        })
+    
+    db.commit()
+    
+    # Calculate summary
+    healthy = sum(1 for s, _ in results.values() if s == "healthy")
+    degraded = sum(1 for s, _ in results.values() if s == "degraded")
+    critical = sum(1 for s, _ in results.values() if s in ["critical", "down"])
+    
+    return {
+        "status": "completed",
+        "timestamp": datetime.utcnow().isoformat(),
+        "summary": {
+            "total_checks": len(results),
+            "healthy": healthy,
+            "degraded": degraded,
+            "critical": critical
+        },
+        "components": updated_components
+    }
+
 
 
 @router.get("/logs/all/recent", response_model=List[LogEntry])

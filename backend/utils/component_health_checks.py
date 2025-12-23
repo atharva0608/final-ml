@@ -295,7 +295,7 @@ class MLInferenceCheck(ComponentHealthCheck):
 
 def run_all_health_checks(db: Session) -> Dict[str, Tuple[str, Dict]]:
     """
-    Run all component health checks
+    Run all component health checks including the new decision pipeline checks
     
     Args:
         db: Database session
@@ -303,6 +303,8 @@ def run_all_health_checks(db: Session) -> Dict[str, Tuple[str, Dict]]:
     Returns:
         Dict mapping component name to (status, details) tuple
     """
+    from utils.decision_pipeline_health import DecisionPipelineCheck, StandalonePipelineCheck
+    
     checks = {
         "database": DatabaseCheck(db),
         "redis": RedisCheck(db),
@@ -310,7 +312,9 @@ def run_all_health_checks(db: Session) -> Dict[str, Tuple[str, Dict]]:
         "optimizer": OptimizerCheck(db),
         "price_scraper": PriceScraperCheck(db),
         "risk_engine": RiskEngineCheck(db),
-        "ml_inference": MLInferenceCheck(db)
+        "ml_inference": MLInferenceCheck(db),
+        "decision_pipeline": DecisionPipelineCheck(db),
+        "standalone_pipeline": StandalonePipelineCheck(db)
     }
     
     results = {}
@@ -346,6 +350,7 @@ class ComponentHealthEvaluator:
             New status string ("healthy", "degraded", "critical", "down")
         """
         from sqlalchemy.orm import object_session
+        from utils.decision_pipeline_health import DecisionPipelineCheck, StandalonePipelineCheck
         
         # Get DB session from the health record
         db = object_session(health_record)
@@ -370,6 +375,10 @@ class ComponentHealthEvaluator:
             evaluator = RiskEngineCheck(db)
         elif component_name == "ml_inference":
             evaluator = MLInferenceCheck(db)
+        elif component_name == "decision_pipeline":
+            evaluator = DecisionPipelineCheck(db)
+        elif component_name == "standalone_pipeline":
+            evaluator = StandalonePipelineCheck(db)
             
         if evaluator:
             try:

@@ -129,4 +129,18 @@
         -   Checks `instance.orchestrator_type`.
         -   **If `STANDALONE`**: Instantiates `StandaloneOptimizer` and runs `optimize_node()`.
         -   **If `KUBERNETES`**: Returns skipped message (strict separation).
-    -   **Security**: Explicitly calls `verify_lab_context(account_id)` to ensure no production accounts are touched.
+
+### 18. Decision Pipeline Health Check (Demo Data Validation)
+- **Requirement**: Verify uploaded/graduated models are properly loaded and the decision pipeline processes requests correctly.
+- **Implementation**:
+    -   **File**: `backend/utils/decision_pipeline_health.py`
+    -   **Classes**: `DecisionPipelineCheck`, `StandalonePipelineCheck`
+    -   **Validation Steps**:
+        1.  **Model Availability**: Checks if active production model exists
+        2.  **File Existence**: Verifies model file is on disk
+        3.  **Model Loading**: Tests `pickle.load()` succeeds
+        4.  **Demo Prediction**: Runs model with demo data `[[65.0, 24.0, 5.0, 0.08, 2.0]]`
+        5.  **Output Validation**: Ensures prediction format is valid
+    -   **Standalone Check**: Verifies `AWSAgentlessExecutor`, `StandaloneOptimizer`, and `EnhancedDecisionEngine` can be instantiated
+    -   **System Monitor**: New endpoint `POST /admin/health/run-checks` triggers all checks and updates ComponentHealth table
+    -   **Status Updates**: Health check results automatically update system monitor with detailed metadata
