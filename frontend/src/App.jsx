@@ -234,6 +234,12 @@ const ClientDashboard = () => {
       );
     }
 
+    // If in setup/connect view, clientData can be null - that's expected
+    if (currentView === 'connect' || currentView === 'onboarding') {
+      return <ClientSetup />;
+    }
+
+    // For dashboard views, we need clientData
     if (error || !clientData) {
       return (
         <div className="max-w-2xl mx-auto mt-12">
