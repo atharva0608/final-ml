@@ -17,12 +17,26 @@ import './App.css';
 
 // Protected Route Component
 const ProtectedRoute = ({ allowedRoles }) => {
-  const { user } = useAuth();
+  const { user, loading } = useAuth();
 
+  // Show loading while auth is being verified
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-50">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
+          <p className="text-slate-600">Checking authentication...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Redirect to login if not authenticated
   if (!user) {
     return <Navigate to="/login" replace />;
   }
 
+  // Redirect based on role if not allowed
   if (allowedRoles && !allowedRoles.includes(user.role)) {
     return user.role === 'admin' ? <Navigate to="/" /> : <Navigate to="/client" />;
   }
