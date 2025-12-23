@@ -129,6 +129,11 @@ class Instance(Base):
     # Kubernetes cluster membership
     cluster_membership = Column(JSONB)  # {"cluster_name": "prod-eks", "node_group": "workers", "role": "worker"}
 
+    # Orchestrator Type (Prevent Cross-Contamination)
+    # KUBERNETES = Production (Managed by EKS)
+    # STANDALONE = Lab (Managed by our API directly)
+    orchestrator_type = Column(String(20), default='KUBERNETES', nullable=False)  # Enforce schema distinction
+
     # Replica System (Zero-Downtime Safety Net)
     # When rebalance notice (2hr warning) received, launch safety net immediately
     is_replica = Column(Boolean, default=False, nullable=False)  # Distinguishes safety net from production

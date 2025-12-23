@@ -88,4 +88,10 @@
 - **Root Cause**: The `useEffect` intended to sync valid state included `pendingModelId` in its dependency array. This caused a loop where every user selection triggered the effect, resetting the selection back to the current `activeModel` immediately.
 - **Fix**:
     - **Dependency Optimization**: Removed `pendingModelId` from the `useEffect` dependencies in `Controls.jsx`.
-    - **Logic Refinement**: The sync now only runs when the backend's `activeModel.id` actually changes (e.g., after "Apply Changes" succeeds) or on initial load.
+
+### 14. Strict Isolation & Schema Enforcement
+- **Requirement**: Prevent cross-contamination between Lab and Production environments. Lab requests must never touch Production accounts.
+- **Implementation**:
+    -   **Database**: Added `orchestrator_type` column to `Instance` model (`KUBERNETES` vs `STANDALONE`) to distinguish environment scope at the schema level.
+    -   **Safety Guardrail**: Implemented `verify_lab_context(account_id)` dependency in `backend/dependencies.py`.
+    -   **Enforcement**: This validator checks `account.environment_type`. If a Lab action is attempted on a non-LAB account, it raises `403 Forbidden` with a generic safety violation message.

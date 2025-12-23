@@ -17,14 +17,42 @@ from decision_engine_v2.providers import (
     IMDSSignalProvider,
     FamilyStressRiskModel,
 )
-from decision_engine_v2.stages import (
-    SingleInstanceInputAdapter,
-    SpotAdvisorFilter,
-    RiskModelStage,
-    SafetyGateFilter,
     AWSSignalOverride,
     LogActuator,
 )
+
+from fastapi import Depends, HTTPException, status
+from sqlalchemy.orm import Session
+from database.connection import get_db
+from database.models import Account
+
+
+def verify_lab_context(account_id: str, db: Session = Depends(get_db)):
+    """
+    Safety Guardrail: Prevent Lab Logic from touching Production Accounts.
+    
+    This validator ensures that any Lab API call is strictly scoped to a 
+    LAB environment account. If a user tries to run a Lab experiment on a 
+    PROD account, this will raise 403.
+    """
+    account = db.query(Account).filter(Account.account_id == account_id).first()
+    
+    if not account:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Account {account_id} not found"
+        )
+        
+    if account.environment_type != 'LAB':
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, 
+            detail=(
+                f"SAFETY VIOLATION: Account {account_id} is a {account.environment_type} "
+                "environment. Lab operations are strictly prohibited on Production accounts."
+            )
+        )
+    
+    return account
 
 
 @lru_cache()
