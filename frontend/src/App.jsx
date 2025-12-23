@@ -144,10 +144,23 @@ const ClientDashboard = () => {
         setLoading(true);
         setError(null);
         const data = await api.getClientDashboard();
+
+        // Validate data structure before setting
+        if (!data || typeof data !== 'object') {
+          throw new Error('Invalid response from server');
+        }
+
         setClientData(data);
       } catch (err) {
         console.error('Error fetching client data:', err);
-        setError(err.message || 'Failed to load client data');
+        setClientData(null); // Ensure clientData is cleared on error
+
+        // Handle specific error cases
+        if (err.status === 403) {
+          setError('Access denied. Your account role may need to be updated. Please contact support or restart the backend.');
+        } else {
+          setError(err.message || 'Failed to load client data');
+        }
       } finally {
         setLoading(false);
       }
@@ -170,13 +183,13 @@ const ClientDashboard = () => {
       );
     }
 
-    if (error) {
+    if (error || !clientData) {
       return (
         <div className="max-w-2xl mx-auto mt-12">
           <div className="bg-red-50 border border-red-200 rounded-xl p-8 text-center">
             <AlertCircle className="w-16 h-16 text-red-500 mx-auto mb-4" />
             <h3 className="text-xl font-bold text-red-900 mb-2">Unable to Load Dashboard</h3>
-            <p className="text-red-700 mb-4">{error}</p>
+            <p className="text-red-700 mb-4">{error || 'No data available'}</p>
             <button
               onClick={() => window.location.reload()}
               className="px-6 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors"
