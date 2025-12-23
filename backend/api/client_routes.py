@@ -273,6 +273,7 @@ async def get_client_dashboard(
                 "account_name": account.account_name,
                 "aws_account_id": account.account_id,
                 "region": account.region,
+                "connection_method": account.connection_method,
                 "created_at": account.created_at.isoformat(),
                 "last_updated": account.updated_at.isoformat(),
                 "last_scan": last_scan

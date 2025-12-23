@@ -13,6 +13,10 @@ import api from '../services/api';
  * 5. Show resource discovery status
  */
 const ClientSetup = () => {
+    const [showOnboarding, setShowOnboarding] = useState(false); // Controls whether to show onboarding flow
+    const [connectedAccounts, setConnectedAccounts] = useState([]); // List of connected accounts
+    const [isLoadingAccounts, setIsLoadingAccounts] = useState(true); // Loading state for initial check
+
     const [connectionMethod, setConnectionMethod] = useState('cloudformation'); // 'cloudformation' or 'credentials'
     const [currentStep, setCurrentStep] = useState(1);
     const [accountId, setAccountId] = useState(null);
@@ -160,13 +164,208 @@ const ClientSetup = () => {
         alert('Copied to clipboard!');
     };
 
-    // Auto-create onboarding request on mount (only for CloudFormation mode)
+    // Check for existing connected accounts
+    const checkConnectedAccounts = async () => {
+        setIsLoadingAccounts(true);
+        try {
+            const response = await api.getClientDashboard();
+
+            if (response.has_account && response.account_status !== 'pending') {
+                // User has a connected account
+                setConnectedAccounts([{
+                    id: response.account_info?.aws_account_id || response.account_info?.account_id,
+                    name: response.account_info?.account_name || 'AWS Account',
+                    region: response.account_info?.region || 'N/A',
+                    status: response.account_status,
+                    connectionType: response.account_info?.connection_method || 'iam_role',
+                    connectedAt: response.account_info?.created_at,
+                    lastUpdated: response.account_info?.last_updated
+                }]);
+                setShowOnboarding(false);
+            } else {
+                // No connected account or still pending - show onboarding
+                setShowOnboarding(true);
+            }
+        } catch (error) {
+            console.error('Failed to check accounts:', error);
+            // If API fails, show onboarding by default
+            setShowOnboarding(true);
+        } finally {
+            setIsLoadingAccounts(false);
+        }
+    };
+
+    // Disconnect account
+    const handleDisconnect = async (accountId) => {
+        if (!window.confirm('Are you sure you want to disconnect this AWS account?')) {
+            return;
+        }
+
+        try {
+            // TODO: Add disconnect API endpoint
+            alert('Disconnect feature coming soon. For now, please contact support.');
+            // After disconnect, refresh the list
+            // checkConnectedAccounts();
+        } catch (error) {
+            console.error('Failed to disconnect:', error);
+            alert('Failed to disconnect account. Please try again.');
+        }
+    };
+
+    // Start adding a new account
+    const handleAddAccount = () => {
+        setShowOnboarding(true);
+        setCurrentStep(1);
+        setVerificationStatus('pending');
+        setVerificationMessage('');
+    };
+
+    // Auto-check for connected accounts on mount
     useEffect(() => {
-        if (!accountId && connectionMethod === 'cloudformation') {
+        checkConnectedAccounts();
+    }, []);
+
+    // Auto-create onboarding request when entering CloudFormation mode
+    useEffect(() => {
+        if (showOnboarding && !accountId && connectionMethod === 'cloudformation') {
             createOnboardingRequest();
         }
-    }, [connectionMethod]);
+    }, [showOnboarding, connectionMethod]);
 
+    // Loading state
+    if (isLoadingAccounts) {
+        return (
+            <div className="min-h-screen bg-gray-50 py-8 px-4">
+                <div className="max-w-4xl mx-auto text-center py-12">
+                    <RefreshCw className="w-12 h-12 text-blue-600 mx-auto mb-3 animate-spin" />
+                    <p className="text-gray-600">Loading your accounts...</p>
+                </div>
+            </div>
+        );
+    }
+
+    // Show connected accounts management UI
+    if (!showOnboarding && connectedAccounts.length > 0) {
+        return (
+            <div className="min-h-screen bg-gray-50 py-8 px-4">
+                <div className="max-w-4xl mx-auto">
+                    {/* Header */}
+                    <div className="bg-white rounded-lg shadow-sm p-6 mb-6">
+                        <div className="flex items-center justify-between mb-4">
+                            <div className="flex items-center gap-3">
+                                <Cloud className="w-8 h-8 text-green-600" />
+                                <div>
+                                    <h1 className="text-2xl font-bold text-gray-900">Connected AWS Accounts</h1>
+                                    <p className="text-gray-600">Manage your connected AWS accounts</p>
+                                </div>
+                            </div>
+                            <button
+                                onClick={handleAddAccount}
+                                className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors flex items-center gap-2"
+                            >
+                                <Cloud className="w-5 h-5" />
+                                Add Account
+                            </button>
+                        </div>
+                    </div>
+
+                    {/* Connected Accounts List */}
+                    <div className="space-y-4">
+                        {connectedAccounts.map((account, index) => (
+                            <div key={index} className="bg-white rounded-lg shadow-sm p-6">
+                                <div className="flex items-start justify-between">
+                                    <div className="flex-1">
+                                        <div className="flex items-center gap-3 mb-2">
+                                            {account.connectionType === 'iam_role' ? (
+                                                <Cloud className="w-6 h-6 text-green-600" />
+                                            ) : (
+                                                <Server className="w-6 h-6 text-blue-600" />
+                                            )}
+                                            <h3 className="text-lg font-semibold text-gray-900">{account.name}</h3>
+                                            <span className={`px-3 py-1 rounded-full text-xs font-medium ${
+                                                account.status === 'active' ? 'bg-green-100 text-green-800' :
+                                                account.status === 'connected' ? 'bg-blue-100 text-blue-800' :
+                                                account.status === 'discovering' ? 'bg-yellow-100 text-yellow-800' :
+                                                'bg-gray-100 text-gray-800'
+                                            }`}>
+                                                {account.status === 'active' ? 'Active' :
+                                                 account.status === 'connected' ? 'Discovering' :
+                                                 account.status}
+                                            </span>
+                                        </div>
+
+                                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
+                                            <div>
+                                                <p className="text-sm text-gray-500">Account ID</p>
+                                                <p className="text-sm font-mono text-gray-900">{account.id}</p>
+                                            </div>
+                                            <div>
+                                                <p className="text-sm text-gray-500">Region</p>
+                                                <p className="text-sm text-gray-900">{account.region}</p>
+                                            </div>
+                                            <div>
+                                                <p className="text-sm text-gray-500">Connection Type</p>
+                                                <p className="text-sm text-gray-900">
+                                                    {account.connectionType === 'iam_role' ? 'CloudFormation (IAM Role)' : 'Access Keys'}
+                                                </p>
+                                            </div>
+                                        </div>
+
+                                        {account.connectedAt && (
+                                            <div className="mt-4 text-sm text-gray-500">
+                                                Connected: {new Date(account.connectedAt).toLocaleDateString()}
+                                            </div>
+                                        )}
+                                    </div>
+
+                                    <div className="ml-4">
+                                        <button
+                                            onClick={() => handleDisconnect(account.id)}
+                                            className="text-red-600 hover:text-red-700 text-sm font-medium"
+                                        >
+                                            Disconnect
+                                        </button>
+                                    </div>
+                                </div>
+
+                                {account.status === 'connected' && (
+                                    <div className="mt-4 p-4 bg-blue-50 border border-blue-200 rounded-lg flex items-center gap-3">
+                                        <RefreshCw className="w-5 h-5 text-blue-600 animate-spin" />
+                                        <div>
+                                            <p className="text-sm text-blue-900 font-medium">Resource Discovery in Progress</p>
+                                            <p className="text-xs text-blue-700">Scanning your AWS resources...</p>
+                                        </div>
+                                    </div>
+                                )}
+
+                                {account.status === 'active' && (
+                                    <div className="mt-4 p-4 bg-green-50 border border-green-200 rounded-lg flex items-center gap-3">
+                                        <CheckCircle className="w-5 h-5 text-green-600" />
+                                        <div>
+                                            <p className="text-sm text-green-900 font-medium">Account Active & Optimized</p>
+                                            <p className="text-xs text-green-700">Your instances are being monitored</p>
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        ))}
+                    </div>
+
+                    {/* Go to Dashboard Button */}
+                    <div className="mt-6 text-center">
+                        <a
+                            href="/"
+                            className="inline-block bg-green-600 text-white px-8 py-3 rounded-lg hover:bg-green-700 transition-colors font-medium"
+                        >
+                            Go to Dashboard
+                        </a>
+                    </div>
+                </div>
+            </div>
+        );
+    }
+
+    // Show onboarding flow (new account setup)
     return (
         <div className="min-h-screen bg-gray-50 py-8 px-4">
             <div className="max-w-4xl mx-auto">
