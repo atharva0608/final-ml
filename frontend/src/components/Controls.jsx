@@ -25,13 +25,16 @@ const Controls = () => {
     const availableModels = prodModels.filter(m => m.status === 'enabled' || m.id === activeModel?.id);
 
     // Sync pending state when active model loads/changes externally, or default to first available
+    // Sync pending state only when active model ID actually changes (external update)
+    // We intentionally exclude pendingModelId to avoid resetting user selection
     React.useEffect(() => {
-        if (activeModel) {
+        if (activeModel?.id) {
             setPendingModelId(activeModel.id);
-        } else if (availableModels.length > 0 && !pendingModelId) {
+        } else if (availableModels.length > 0 && !activeModel) {
+            // Only default if no active model is known yet
             setPendingModelId(availableModels[0].id);
         }
-    }, [activeModel, availableModels, pendingModelId]);
+    }, [activeModel?.id]);
 
     return (
         <div className="space-y-6 max-w-4xl mx-auto">

@@ -82,4 +82,10 @@
 - **Fix**:
     - **Frontend Guard**: Added `if (!modelId) return;` to `setActiveProdModelId` in `ModelContext.jsx`, preventing invalid API calls at the source.
     - **UI Repair**: Overwrote `Controls.jsx` to fix corruption and ensure the "Apply Changes" button is disabled when no model valid is selected.
-    - **Verification**: Code confirms the guard is present.
+
+### 13. Global Controls Dropdown Freeze
+- **Problem**: User reported "not able to change" the selected model in the dropdown.
+- **Root Cause**: The `useEffect` intended to sync valid state included `pendingModelId` in its dependency array. This caused a loop where every user selection triggered the effect, resetting the selection back to the current `activeModel` immediately.
+- **Fix**:
+    - **Dependency Optimization**: Removed `pendingModelId` from the `useEffect` dependencies in `Controls.jsx`.
+    - **Logic Refinement**: The sync now only runs when the backend's `activeModel.id` actually changes (e.g., after "Apply Changes" succeeds) or on initial load.
