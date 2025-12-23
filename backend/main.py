@@ -57,6 +57,24 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"⚠️  Test user seeding failed: {e}")
 
+    # Fix existing client user role (migration)
+    try:
+        from database.models import User
+        db_gen = get_db()
+        db = next(db_gen, None)
+        if db:
+            client_user = db.query(User).filter(User.username == 'client').first()
+            if client_user and client_user.role != 'client':
+                old_role = client_user.role
+                client_user.role = 'client'
+                db.commit()
+                print(f"✓ Migrated client user role: '{old_role}' → 'client'")
+            elif client_user:
+                print(f"✓ Client user already has correct role: 'client'")
+            db.close()
+    except Exception as e:
+        print(f"⚠️  Client role migration failed: {e}")
+
     # Run real health checks for all components
     try:
         print("✓ Running health checks for all components...")
