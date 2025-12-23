@@ -184,11 +184,13 @@ const ClientSetup = () => {
                 setShowOnboarding(false);
             } else {
                 // No connected account or still pending - show onboarding
+                setConnectedAccounts([]); // CRITICAL: Ensure it's an empty array
                 setShowOnboarding(true);
             }
         } catch (error) {
             console.error('Failed to check accounts:', error);
-            // If API fails, show onboarding by default
+            // If API fails, show onboarding by default and ensure empty array
+            setConnectedAccounts([]); // CRITICAL: Ensure it's an empty array
             setShowOnboarding(true);
         } finally {
             setIsLoadingAccounts(false);
@@ -282,15 +284,14 @@ const ClientSetup = () => {
                                                 <Server className="w-6 h-6 text-blue-600" />
                                             )}
                                             <h3 className="text-lg font-semibold text-gray-900">{account.name}</h3>
-                                            <span className={`px-3 py-1 rounded-full text-xs font-medium ${
-                                                account.status === 'active' ? 'bg-green-100 text-green-800' :
-                                                account.status === 'connected' ? 'bg-blue-100 text-blue-800' :
-                                                account.status === 'discovering' ? 'bg-yellow-100 text-yellow-800' :
-                                                'bg-gray-100 text-gray-800'
-                                            }`}>
+                                            <span className={`px-3 py-1 rounded-full text-xs font-medium ${account.status === 'active' ? 'bg-green-100 text-green-800' :
+                                                    account.status === 'connected' ? 'bg-blue-100 text-blue-800' :
+                                                        account.status === 'discovering' ? 'bg-yellow-100 text-yellow-800' :
+                                                            'bg-gray-100 text-gray-800'
+                                                }`}>
                                                 {account.status === 'active' ? 'Active' :
-                                                 account.status === 'connected' ? 'Discovering' :
-                                                 account.status}
+                                                    account.status === 'connected' ? 'Discovering' :
+                                                        account.status}
                                             </span>
                                         </div>
 
@@ -388,11 +389,10 @@ const ClientSetup = () => {
                                 setVerificationStatus('pending');
                                 setVerificationMessage('');
                             }}
-                            className={`flex-1 px-6 py-4 rounded-lg border-2 transition-all ${
-                                connectionMethod === 'cloudformation'
+                            className={`flex-1 px-6 py-4 rounded-lg border-2 transition-all ${connectionMethod === 'cloudformation'
                                     ? 'border-blue-600 bg-blue-50'
                                     : 'border-gray-200 bg-white hover:border-gray-300'
-                            }`}
+                                }`}
                         >
                             <div className="flex items-center justify-center gap-2 mb-2">
                                 <Cloud className={`w-5 h-5 ${connectionMethod === 'cloudformation' ? 'text-blue-600' : 'text-gray-500'}`} />
@@ -415,11 +415,10 @@ const ClientSetup = () => {
                                 setVerificationStatus('pending');
                                 setVerificationMessage('');
                             }}
-                            className={`flex-1 px-6 py-4 rounded-lg border-2 transition-all ${
-                                connectionMethod === 'credentials'
+                            className={`flex-1 px-6 py-4 rounded-lg border-2 transition-all ${connectionMethod === 'credentials'
                                     ? 'border-blue-600 bg-blue-50'
                                     : 'border-gray-200 bg-white hover:border-gray-300'
-                            }`}
+                                }`}
                         >
                             <div className="flex items-center justify-center gap-2 mb-2">
                                 <Server className={`w-5 h-5 ${connectionMethod === 'credentials' ? 'text-blue-600' : 'text-gray-500'}`} />
@@ -481,7 +480,7 @@ const ClientSetup = () => {
                                     Click to view IAM Policy JSON (Copy & Paste to AWS IAM)
                                 </summary>
                                 <pre className="bg-gray-900 text-green-400 p-4 rounded overflow-x-auto text-xs mt-2">
-{`{
+                                    {`{
   "Version": "2012-10-17",
   "Statement": [
     {
@@ -621,11 +620,10 @@ const ClientSetup = () => {
                             </button>
 
                             {verificationMessage && (
-                                <div className={`mt-4 p-4 rounded-lg ${
-                                    verificationStatus === 'connected' ? 'bg-green-50 border border-green-200 text-green-800' :
-                                    verificationStatus === 'failed' ? 'bg-red-50 border border-red-200 text-red-800' :
-                                    'bg-blue-50 border border-blue-200 text-blue-800'
-                                }`}>
+                                <div className={`mt-4 p-4 rounded-lg ${verificationStatus === 'connected' ? 'bg-green-50 border border-green-200 text-green-800' :
+                                        verificationStatus === 'failed' ? 'bg-red-50 border border-red-200 text-red-800' :
+                                            'bg-blue-50 border border-blue-200 text-blue-800'
+                                    }`}>
                                     {verificationMessage}
                                 </div>
                             )}
@@ -765,11 +763,10 @@ const ClientSetup = () => {
                                 </button>
 
                                 {verificationMessage && (
-                                    <div className={`mt-4 p-4 rounded-lg ${
-                                        verificationStatus === 'connected' ? 'bg-green-50 border border-green-200 text-green-800' :
-                                        verificationStatus === 'failed' ? 'bg-red-50 border border-red-200 text-red-800' :
-                                        'bg-blue-50 border border-blue-200 text-blue-800'
-                                    }`}>
+                                    <div className={`mt-4 p-4 rounded-lg ${verificationStatus === 'connected' ? 'bg-green-50 border border-green-200 text-green-800' :
+                                            verificationStatus === 'failed' ? 'bg-red-50 border border-red-200 text-red-800' :
+                                                'bg-blue-50 border border-blue-200 text-blue-800'
+                                        }`}>
                                         {verificationMessage}
                                     </div>
                                 )}
