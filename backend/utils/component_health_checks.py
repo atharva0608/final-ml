@@ -242,7 +242,7 @@ class PriceScraperCheck(ComponentHealthCheck):
                 })
             
             # STEP 2: Deep Structure Check - Validate 'r' and 's' keys
-            # Navigate: spot_advisor -> region -> AZ -> OS -> instance -> {r, s}
+            # Actual AWS structure: spot_advisor → region → OS → instance_type → {r, s}
             try:
                 spot_advisor = data["spot_advisor"]
                 
@@ -255,57 +255,52 @@ class PriceScraperCheck(ComponentHealthCheck):
                         "url": self.SPOT_ADVISOR_URL
                     })
                 
-                regions = list(spot_advisor.values())
-                if not regions:
+                first_region_key = list(spot_advisor.keys())[0]
+                region_data = spot_advisor[first_region_key]
+                if not region_data:
                     return ("degraded", {
                         "http_status": 200,
                         "response_time_ms": round(response_time_ms, 2),
-                        "message": "No regions found in spot_advisor",
+                        "message": "No data in region",
                         "url": self.SPOT_ADVISOR_URL
                     })
                 
-                # Grab any AZ inside that region
-                azs = list(regions[0].values())
-                if not azs:
+                # Grab OS type (Linux or Windows)
+                first_os_key = list(region_data.keys())[0]
+                os_data = region_data[first_os_key]
+                if not os_data:
                     return ("degraded", {
                         "http_status": 200,
                         "response_time_ms": round(response_time_ms, 2),
-                        "message": "No AZs found in region",
+                        "message": "No data for OS type",
                         "url": self.SPOT_ADVISOR_URL
                     })
                 
-                # Grab OS type (usually 'Linux')
-                os_types = list(azs[0].values())
-                if not os_types:
+                # Grab first instance type (e.g., 'c5.large')
+                first_instance_key = list(os_data.keys())[0]
+                instance_data = os_data[first_instance_key]
+                
+                # instance_data should be a dict like {'r': 0, 's': 50}
+                if not isinstance(instance_data, dict):
                     return ("degraded", {
                         "http_status": 200,
                         "response_time_ms": round(response_time_ms, 2),
-                        "message": "No OS types found in AZ",
+                        "message": "Instance data is not a dictionary",
+                        "sample_instance": first_instance_key,
+                        "data_type": str(type(instance_data)),
                         "url": self.SPOT_ADVISOR_URL
                     })
-                
-                # Grab instances (e.g., {'c5.large': {'r': 0, 's': 50}})
-                instances = os_types[0]
-                if not instances:
-                    return ("degraded", {
-                        "http_status": 200,
-                        "response_time_ms": round(response_time_ms, 2),
-                        "message": "No instances found",
-                        "url": self.SPOT_ADVISOR_URL
-                    })
-                
-                # Grab first instance data
-                first_instance_key = list(instances.keys())[0]
-                first_instance_data = instances[first_instance_key]
                 
                 # CRITICAL VALIDATION: Check for 'r' and 's' keys
-                if "r" not in first_instance_data or "s" not in first_instance_data:
+                if "r" not in instance_data or "s" not in instance_data:
                     return ("degraded", {
                         "http_status": 200,
                         "response_time_ms": round(response_time_ms, 2),
                         "message": "Schema changed: Missing 'r' or 's' keys",
+                        "sample_region": first_region_key,
+                        "sample_os": first_os_key,
                         "sample_instance": first_instance_key,
-                        "actual_keys": list(first_instance_data.keys()),
+                        "actual_keys": list(instance_data.keys()),
                         "expected_keys": ["r", "s"],
                         "url": self.SPOT_ADVISOR_URL
                     })
@@ -315,10 +310,12 @@ class PriceScraperCheck(ComponentHealthCheck):
                     "http_status": 200,
                     "response_time_ms": round(response_time_ms, 2),
                     "message": "Spot Advisor data structure valid",
+                    "sample_region": first_region_key,
+                    "sample_os": first_os_key,
                     "sample_instance": first_instance_key,
                     "sample_data": {
-                        "interruption_rate": first_instance_data["r"],
-                        "savings": first_instance_data["s"]
+                        "interruption_rate": instance_data["r"],
+                        "savings": instance_data["s"]
                     },
                     "url": self.SPOT_ADVISOR_URL
                 })

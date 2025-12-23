@@ -144,16 +144,21 @@
     -   **Standalone Check**: Verifies `AWSAgentlessExecutor`, `StandaloneOptimizer`, and `EnhancedDecisionEngine` can be instantiated
     -   **System Monitor**: New endpoint `POST /admin/health/run-checks` triggers all checks and updates ComponentHealth table
 
-### 19. Live Connectivity Health Check (Price Scraper)
-- **Requirement**: Implement real-time validation of upstream AWS Spot Advisor API instead of passive database checks.
+
+### 19. Live Connectivity Health Check (Price Scraper) - Deep Structure Validation
+- **Requirement**: Validate the actual AWS Spot Advisor data structure, not just top-level keys.
 - **Implementation**:
     -   **File**: `backend/utils/component_health_checks.py`
-    -   **Class**: `PriceScraperCheck` (replaced)
+    -   **Class**: `PriceScraperCheck` (updated with deep validation)
+    -   **Deep Structure Navigation**:
+        1. Top-level: Checks for `spot_advisor` key
+        2. Navigates: `spot_advisor` → region → AZ → OS → instance
+        3. Validates: Presence of `r` (interruption rate) and `s` (savings) keys
     -   **Tri-State Logic**:
-        -   **HEALTHY**: HTTP 200 + valid JSON with required keys (`spot_advisor`)
-        -   **DEGRADED**: HTTP 200 but missing critical keys or empty (schema changed)
-        -   **CRITICAL**: Request fails (timeout, connection error, DNS) or 4xx/5xx status
+        -   **HEALTHY**: HTTP 200 + valid structure with 'r' and 's' keys in instance data
+        -   **DEGRADED**: HTTP 200 but missing 'r'/'s' keys (AWS schema changed)
+        -   **CRITICAL**: Request fails (timeout, connection error) or 4xx/5xx status
     -   **Endpoint**: `https://spot-bid-advisor.s3.amazonaws.com/spot-advisor-data.json`
-    -   **Timeout**: 5 seconds (prevents system hangs)
-    -   **Response Data**: Returns HTTP status code, response time (ms), and validation details
-    -   **Purpose**: Detects upstream API changes before the scraper crashes, enabling proactive alerts
+    -   **Timeout**: 5 seconds
+    -   **Response Data**: HTTP status, response time, sample instance name, and actual r/s values
+    -   **Purpose**: Detects schema changes at the deepest level before scraper crashes during parsing
