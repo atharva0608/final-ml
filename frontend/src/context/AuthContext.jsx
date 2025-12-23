@@ -5,6 +5,7 @@ const AuthContext = createContext(null);
 
 export const AuthProvider = ({ children }) => {
     const [user, setUser] = useState(null);
+    const [loading, setLoading] = useState(true); // Add loading state
     const [accountScope, setAccountScope] = useState('production'); // 'production' | 'lab'
 
     useEffect(() => {
@@ -37,6 +38,8 @@ export const AuthProvider = ({ children }) => {
                     setUser(null);
                 }
             }
+
+            setLoading(false); // Finish loading after validation
         };
 
         validateSession();
@@ -44,6 +47,7 @@ export const AuthProvider = ({ children }) => {
 
     const login = async (identifier, password) => {
         try {
+            setLoading(true);
             // Call real backend API with identifier (can be username or email)
             const response = await api.login(identifier, password);
 
@@ -59,10 +63,12 @@ export const AuthProvider = ({ children }) => {
             };
             setUser(userData);
             localStorage.setItem('ecc_user', JSON.stringify(userData));
+            setLoading(false);
 
             return true;
         } catch (error) {
             console.error("Login failed:", error);
+            setLoading(false);
             return false;
         }
     };
@@ -78,8 +84,20 @@ export const AuthProvider = ({ children }) => {
         setAccountScope(scope);
     };
 
+    // Show loading screen while validating token
+    if (loading) {
+        return (
+            <div className="min-h-screen flex items-center justify-center bg-slate-50">
+                <div className="text-center">
+                    <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
+                    <p className="text-slate-600">Verifying session...</p>
+                </div>
+            </div>
+        );
+    }
+
     return (
-        <AuthContext.Provider value={{ user, login, logout, accountScope, switchScope }}>
+        <AuthContext.Provider value={{ user, loading, login, logout, accountScope, switchScope }}>
             {children}
         </AuthContext.Provider>
     );
