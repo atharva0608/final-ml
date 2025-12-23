@@ -266,6 +266,11 @@ async def get_component_logs(
             details=log.details or {},
             timestamp=log.timestamp,
             execution_time_ms=log.execution_time_ms,
+            success=log.success
+        )
+        for log in logs
+    ]
+
     return ComponentLogsResponse(
         component=component,
         health=health_response,
