@@ -164,6 +164,19 @@ const ClientDashboard = () => {
           throw new Error('Invalid response from server');
         }
 
+        // Handle "no account" or "pending" states - redirect to setup
+        if (data.status === 'no_account' || data.setup_required || !data.has_account) {
+          console.log("No AWS account connected, redirecting to setup...");
+          window.location.href = '/client/connect';
+          return;
+        }
+
+        if (data.status === 'pending_setup' || data.account_status === 'pending') {
+          console.log("Account pending setup, redirecting...");
+          window.location.href = '/client/connect';
+          return;
+        }
+
         // Transform dashboard API response to match NodeFleet's expected format
         const transformedData = {
           // Map account_info fields to top-level fields for NodeFleet compatibility
