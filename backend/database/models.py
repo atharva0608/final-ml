@@ -75,9 +75,17 @@ class Account(Base):
     # Environment type
     environment_type = Column(String(20), default='LAB', nullable=False)  # PROD or LAB
 
+    # Connection method: 'iam_role' (CloudFormation) or 'access_keys' (Direct credentials)
+    connection_method = Column(String(20), default='iam_role', nullable=False)
+
     # Cross-account access (STS AssumeRole with ExternalID for confused deputy protection)
-    role_arn = Column(String(255), nullable=False)  # arn:aws:iam::123456789012:role/SpotOptimizerRole
-    external_id = Column(String(255), nullable=False)  # Mandatory for security
+    # Nullable for access_keys connection method
+    role_arn = Column(String(255), nullable=True)  # arn:aws:iam::123456789012:role/SpotOptimizerRole
+    external_id = Column(String(255), nullable=True)  # Mandatory for security when using IAM role
+
+    # Direct AWS credentials (encrypted, for access_keys connection method)
+    aws_access_key_id = Column(String(255), nullable=True)  # Encrypted access key ID
+    aws_secret_access_key = Column(String(512), nullable=True)  # Encrypted secret access key
 
     # AWS region
     region = Column(String(20), default='ap-south-1', nullable=False)

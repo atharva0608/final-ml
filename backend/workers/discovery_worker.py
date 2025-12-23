@@ -23,6 +23,7 @@ import logging
 from database.connection import SessionLocal
 from database.models import Account, Instance
 from utils.system_logger import SystemLogger
+from utils.crypto import decrypt_credential
 
 logger = logging.getLogger("worker.discovery")
 
@@ -61,6 +62,61 @@ def get_assumed_session(role_arn: str, external_id: str, region: str = 'us-east-
     except ClientError as e:
         logger.error(f"Failed to assume role {role_arn}: {e}")
         raise
+
+
+def get_session_for_account(account: Account) -> boto3.Session:
+    """
+    Get boto3 session for account based on connection method
+
+    Supports both IAM role (CloudFormation) and access keys (direct credentials).
+
+    Args:
+        account: Account database model with connection details
+
+    Returns:
+        boto3.Session configured for the account
+
+    Raises:
+        ValueError: If connection method is invalid
+        ClientError: If authentication fails
+    """
+    region = account.region or 'us-east-1'
+
+    if account.connection_method == 'access_keys':
+        # Direct credentials - decrypt and use
+        if not account.aws_access_key_id or not account.aws_secret_access_key:
+            raise ValueError("Access keys not configured for this account")
+
+        try:
+            access_key = decrypt_credential(account.aws_access_key_id)
+            secret_key = decrypt_credential(account.aws_secret_access_key)
+
+            logger.info(f"Using access keys for account {account.account_id}")
+
+            return boto3.Session(
+                aws_access_key_id=access_key,
+                aws_secret_access_key=secret_key,
+                region_name=region
+            )
+        except Exception as e:
+            logger.error(f"Failed to decrypt credentials for account {account.account_id}: {e}")
+            raise
+
+    elif account.connection_method == 'iam_role':
+        # IAM role - assume role
+        if not account.role_arn or not account.external_id:
+            raise ValueError("IAM role ARN and external ID not configured for this account")
+
+        logger.info(f"Using IAM role {account.role_arn} for account {account.account_id}")
+
+        return get_assumed_session(
+            role_arn=account.role_arn,
+            external_id=account.external_id,
+            region=region
+        )
+
+    else:
+        raise ValueError(f"Invalid connection method: {account.connection_method}")
 
 
 def scan_ec2_instances(session: boto3.Session, account_id: int, db: Session, region: str = 'us-east-1') -> int:
@@ -209,17 +265,13 @@ def run_initial_discovery(account_db_id: int):
             )
             return
 
-        # 3. Assume IAM Role
+        # 3. Get session (supports both IAM role and access keys)
         try:
-            session = get_assumed_session(
-                role_arn=account.role_arn,
-                external_id=account.external_id,
-                region=account.region or 'us-east-1'
-            )
-        except ClientError as e:
+            session = get_session_for_account(account)
+        except (ClientError, ValueError) as e:
             sys_logger.error(
-                f"Failed to assume role: {e}",
-                details={'account_id': account_db_id, 'role_arn': account.role_arn}
+                f"Failed to authenticate with AWS: {e}",
+                details={'account_id': account_db_id, 'connection_method': account.connection_method}
             )
             account.status = 'failed'
             account.updated_at = datetime.utcnow()
@@ -349,12 +401,8 @@ def trigger_rediscovery(account_db_id: int):
             details={'account_id': account_db_id}
         )
 
-        # Assume role and scan
-        session = get_assumed_session(
-            role_arn=account.role_arn,
-            external_id=account.external_id,
-            region=account.region or 'us-east-1'
-        )
+        # Get session and scan
+        session = get_session_for_account(account)
 
         total_instances = scan_ec2_instances(
             session,

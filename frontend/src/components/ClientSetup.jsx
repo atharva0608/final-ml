@@ -13,10 +13,17 @@ import api from '../services/api';
  * 5. Show resource discovery status
  */
 const ClientSetup = () => {
+    const [connectionMethod, setConnectionMethod] = useState('cloudformation'); // 'cloudformation' or 'credentials'
     const [currentStep, setCurrentStep] = useState(1);
     const [accountId, setAccountId] = useState(null);
     const [externalId, setExternalId] = useState('');
     const [roleArn, setRoleArn] = useState('');
+
+    // Credentials mode state
+    const [accessKey, setAccessKey] = useState('');
+    const [secretKey, setSecretKey] = useState('');
+    const [region, setRegion] = useState('us-east-1');
+
     const [verificationStatus, setVerificationStatus] = useState('pending'); // pending, checking, connected, failed
     const [verificationMessage, setVerificationMessage] = useState('');
     const [discoveryStatus, setDiscoveryStatus] = useState(null);
@@ -102,6 +109,41 @@ const ClientSetup = () => {
         }
     };
 
+    // Credentials mode: Connect with access keys
+    const connectWithAccessKeys = async () => {
+        if (!accessKey.trim() || !secretKey.trim()) {
+            alert('Please enter both Access Key ID and Secret Access Key');
+            return;
+        }
+
+        setIsLoading(true);
+        setVerificationStatus('checking');
+        setVerificationMessage('Validating credentials...');
+
+        try {
+            const response = await api.connectWithCredentials(accessKey, secretKey, region);
+
+            if (response.status === 'connected') {
+                setVerificationStatus('connected');
+                setVerificationMessage(`✅ Connected! AWS Account: ${response.aws_account_id}`);
+                setAccountId(response.account_id);
+                setCurrentStep(4);
+
+                // Start checking discovery status
+                checkDiscoveryStatus();
+            } else {
+                setVerificationStatus('failed');
+                setVerificationMessage(`❌ ${response.error || 'Connection failed'}`);
+            }
+        } catch (error) {
+            console.error('Credentials connection failed:', error);
+            setVerificationStatus('failed');
+            setVerificationMessage('❌ Invalid credentials. Please check your Access Key and Secret Key.');
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
     // Step 4: Check resource discovery status
     const checkDiscoveryStatus = async () => {
         try {
@@ -118,12 +160,12 @@ const ClientSetup = () => {
         alert('Copied to clipboard!');
     };
 
-    // Auto-create onboarding request on mount
+    // Auto-create onboarding request on mount (only for CloudFormation mode)
     useEffect(() => {
-        if (!accountId) {
+        if (!accountId && connectionMethod === 'cloudformation') {
             createOnboardingRequest();
         }
-    }, []);
+    }, [connectionMethod]);
 
     return (
         <div className="min-h-screen bg-gray-50 py-8 px-4">
@@ -134,37 +176,191 @@ const ClientSetup = () => {
                         <Cloud className="w-8 h-8 text-blue-600" />
                         <div>
                             <h1 className="text-2xl font-bold text-gray-900">Connect Your AWS Account</h1>
-                            <p className="text-gray-600">Secure, agentless connection via IAM role</p>
+                            <p className="text-gray-600">Choose your preferred connection method</p>
                         </div>
                     </div>
 
-                    {/* Progress Steps */}
-                    <div className="flex items-center gap-2 mt-6">
-                        {[1, 2, 3, 4].map((step) => (
-                            <div key={step} className="flex items-center flex-1">
-                                <div className={`
-                                    flex items-center justify-center w-8 h-8 rounded-full
-                                    ${currentStep >= step ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-500'}
-                                `}>
-                                    {currentStep > step ? <CheckCircle className="w-5 h-5" /> : step}
-                                </div>
-                                {step < 4 && (
-                                    <div className={`flex-1 h-1 mx-2 ${currentStep > step ? 'bg-blue-600' : 'bg-gray-200'}`} />
-                                )}
+                    {/* Connection Method Toggle */}
+                    <div className="flex gap-4 mb-6">
+                        <button
+                            onClick={() => {
+                                setConnectionMethod('cloudformation');
+                                setCurrentStep(1);
+                                setVerificationStatus('pending');
+                                setVerificationMessage('');
+                            }}
+                            className={`flex-1 px-6 py-4 rounded-lg border-2 transition-all ${
+                                connectionMethod === 'cloudformation'
+                                    ? 'border-blue-600 bg-blue-50'
+                                    : 'border-gray-200 bg-white hover:border-gray-300'
+                            }`}
+                        >
+                            <div className="flex items-center justify-center gap-2 mb-2">
+                                <Cloud className={`w-5 h-5 ${connectionMethod === 'cloudformation' ? 'text-blue-600' : 'text-gray-500'}`} />
+                                <h3 className={`font-semibold ${connectionMethod === 'cloudformation' ? 'text-blue-900' : 'text-gray-700'}`}>
+                                    CloudFormation (Secure)
+                                </h3>
                             </div>
-                        ))}
+                            <p className="text-sm text-gray-600">
+                                IAM role with minimal permissions
+                            </p>
+                            <div className="mt-2 text-xs text-green-600 font-medium">
+                                ✓ Recommended for production
+                            </div>
+                        </button>
+
+                        <button
+                            onClick={() => {
+                                setConnectionMethod('credentials');
+                                setCurrentStep(1);
+                                setVerificationStatus('pending');
+                                setVerificationMessage('');
+                            }}
+                            className={`flex-1 px-6 py-4 rounded-lg border-2 transition-all ${
+                                connectionMethod === 'credentials'
+                                    ? 'border-blue-600 bg-blue-50'
+                                    : 'border-gray-200 bg-white hover:border-gray-300'
+                            }`}
+                        >
+                            <div className="flex items-center justify-center gap-2 mb-2">
+                                <Server className={`w-5 h-5 ${connectionMethod === 'credentials' ? 'text-blue-600' : 'text-gray-500'}`} />
+                                <h3 className={`font-semibold ${connectionMethod === 'credentials' ? 'text-blue-900' : 'text-gray-700'}`}>
+                                    Access Keys (Fast)
+                                </h3>
+                            </div>
+                            <p className="text-sm text-gray-600">
+                                Direct connection with AWS credentials
+                            </p>
+                            <div className="mt-2 text-xs text-blue-600 font-medium">
+                                ✓ Quick setup for testing
+                            </div>
+                        </button>
                     </div>
 
-                    <div className="flex justify-between mt-2 text-xs text-gray-600">
-                        <span>Generate ID</span>
-                        <span>Download</span>
-                        <span>Verify</span>
-                        <span>Discovery</span>
-                    </div>
+                    {/* Progress Steps (only show for CloudFormation) */}
+                    {connectionMethod === 'cloudformation' && (
+                        <>
+                            <div className="flex items-center gap-2 mt-6">
+                                {[1, 2, 3, 4].map((step) => (
+                                    <div key={step} className="flex items-center flex-1">
+                                        <div className={`
+                                            flex items-center justify-center w-8 h-8 rounded-full
+                                            ${currentStep >= step ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-500'}
+                                        `}>
+                                            {currentStep > step ? <CheckCircle className="w-5 h-5" /> : step}
+                                        </div>
+                                        {step < 4 && (
+                                            <div className={`flex-1 h-1 mx-2 ${currentStep > step ? 'bg-blue-600' : 'bg-gray-200'}`} />
+                                        )}
+                                    </div>
+                                ))}
+                            </div>
+
+                            <div className="flex justify-between mt-2 text-xs text-gray-600">
+                                <span>Generate ID</span>
+                                <span>Download</span>
+                                <span>Verify</span>
+                                <span>Discovery</span>
+                            </div>
+                        </>
+                    )}
                 </div>
 
+                {/* Credentials Mode Form */}
+                {connectionMethod === 'credentials' && currentStep < 4 && (
+                    <div className="bg-white rounded-lg shadow-sm p-6 mb-6">
+                        <h2 className="text-lg font-semibold text-gray-900 mb-4">Enter AWS Credentials</h2>
+
+                        <div className="space-y-4">
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-2">
+                                    AWS Access Key ID
+                                </label>
+                                <input
+                                    type="text"
+                                    value={accessKey}
+                                    onChange={(e) => setAccessKey(e.target.value)}
+                                    placeholder="AKIA..."
+                                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                                />
+                            </div>
+
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-2">
+                                    AWS Secret Access Key
+                                </label>
+                                <input
+                                    type="password"
+                                    value={secretKey}
+                                    onChange={(e) => setSecretKey(e.target.value)}
+                                    placeholder="Enter your secret key"
+                                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                                />
+                            </div>
+
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-2">
+                                    AWS Region
+                                </label>
+                                <select
+                                    value={region}
+                                    onChange={(e) => setRegion(e.target.value)}
+                                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                                >
+                                    <option value="us-east-1">US East (N. Virginia)</option>
+                                    <option value="us-east-2">US East (Ohio)</option>
+                                    <option value="us-west-1">US West (N. California)</option>
+                                    <option value="us-west-2">US West (Oregon)</option>
+                                    <option value="ap-south-1">Asia Pacific (Mumbai)</option>
+                                    <option value="ap-southeast-1">Asia Pacific (Singapore)</option>
+                                    <option value="ap-southeast-2">Asia Pacific (Sydney)</option>
+                                    <option value="ap-northeast-1">Asia Pacific (Tokyo)</option>
+                                    <option value="eu-west-1">Europe (Ireland)</option>
+                                    <option value="eu-central-1">Europe (Frankfurt)</option>
+                                </select>
+                            </div>
+
+                            <button
+                                onClick={connectWithAccessKeys}
+                                disabled={isLoading || !accessKey.trim() || !secretKey.trim()}
+                                className="w-full bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700 disabled:bg-gray-400 transition-colors flex items-center justify-center gap-2"
+                            >
+                                {isLoading ? (
+                                    <>
+                                        <RefreshCw className="w-5 h-5 animate-spin" />
+                                        Connecting...
+                                    </>
+                                ) : (
+                                    <>
+                                        <CheckCircle className="w-5 h-5" />
+                                        Connect & Verify
+                                    </>
+                                )}
+                            </button>
+
+                            {verificationMessage && (
+                                <div className={`mt-4 p-4 rounded-lg ${
+                                    verificationStatus === 'connected' ? 'bg-green-50 border border-green-200 text-green-800' :
+                                    verificationStatus === 'failed' ? 'bg-red-50 border border-red-200 text-red-800' :
+                                    'bg-blue-50 border border-blue-200 text-blue-800'
+                                }`}>
+                                    {verificationMessage}
+                                </div>
+                            )}
+
+                            <div className="mt-4 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
+                                <p className="text-sm text-yellow-800">
+                                    <strong>Security Note:</strong> Your credentials are encrypted before storage using AES-256 encryption.
+                                    We recommend using IAM users with minimal required permissions.
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                )}
+
+                {/* CloudFormation Mode Steps */}
                 {/* Step 1: ExternalID Display */}
-                {currentStep >= 1 && (
+                {connectionMethod === 'cloudformation' && currentStep >= 1 && (
                     <div className="bg-white rounded-lg shadow-sm p-6 mb-6">
                         <div className="flex items-center justify-between mb-4">
                             <h2 className="text-lg font-semibold text-gray-900">Step 1: Your Unique External ID</h2>
@@ -191,7 +387,7 @@ const ClientSetup = () => {
                 )}
 
                 {/* Step 2: Download Template */}
-                {currentStep >= 2 && (
+                {connectionMethod === 'cloudformation' && currentStep >= 2 && (
                     <div className="bg-white rounded-lg shadow-sm p-6 mb-6">
                         <div className="flex items-center justify-between mb-4">
                             <h2 className="text-lg font-semibold text-gray-900">Step 2: Download CloudFormation Template</h2>
@@ -242,7 +438,7 @@ const ClientSetup = () => {
                 )}
 
                 {/* Step 3: Verify Connection */}
-                {currentStep >= 3 && (
+                {connectionMethod === 'cloudformation' && currentStep >= 3 && (
                     <div className="bg-white rounded-lg shadow-sm p-6 mb-6">
                         <div className="flex items-center justify-between mb-4">
                             <h2 className="text-lg font-semibold text-gray-900">Step 3: Verify Connection</h2>

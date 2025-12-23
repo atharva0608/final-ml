@@ -19,6 +19,7 @@ from database.models import Account
 from utils.system_logger import logger
 from api.auth import get_current_active_user as get_current_user
 from workers.discovery_worker import run_initial_discovery
+from utils.crypto import encrypt_credential
 
 router = APIRouter(
     prefix="",
@@ -28,6 +29,12 @@ router = APIRouter(
 
 class ConnectionVerification(BaseModel):
     role_arn: str
+
+
+class CredentialConnectionRequest(BaseModel):
+    access_key: str
+    secret_key: str
+    region: str = 'us-east-1'
 
 
 @router.post('/create')
@@ -79,6 +86,147 @@ async def create_onboarding_request(
         db.rollback()
         logger.error(
             f'Failed to create onboarding request: {e}',
+            extra={'component': 'OnboardingAPI', 'error': str(e)}
+        )
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post('/connect/credentials')
+async def connect_with_credentials(
+    credentials: CredentialConnectionRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+    """
+    Connect AWS account using direct access keys (faster onboarding)
+
+    Flow:
+    1. Validate credentials immediately using boto3 STS GetCallerIdentity
+    2. Encrypt secret key before storing
+    3. Create account record with connection_method='access_keys'
+    4. Trigger background discovery
+
+    Returns:
+        Connection status and AWS account details
+    """
+    try:
+        logger.info(
+            f'Attempting credentials-based connection for user {current_user.id}',
+            extra={'component': 'OnboardingAPI', 'user_id': current_user.id}
+        )
+
+        # Step 1: Validate credentials immediately
+        try:
+            sts_client = boto3.client(
+                'sts',
+                aws_access_key_id=credentials.access_key,
+                aws_secret_access_key=credentials.secret_key,
+                region_name=credentials.region
+            )
+
+            identity = sts_client.get_caller_identity()
+            aws_account_id = identity['Account']
+            user_arn = identity['Arn']
+
+            logger.info(
+                f'Credentials validated successfully for AWS account {aws_account_id}',
+                extra={
+                    'component': 'OnboardingAPI',
+                    'aws_account_id': aws_account_id,
+                    'user_arn': user_arn
+                }
+            )
+
+        except ClientError as e:
+            error_code = e.response['Error']['Code']
+            error_message = e.response['Error']['Message']
+
+            logger.warning(
+                f'Credential validation failed: {error_code} - {error_message}',
+                extra={'component': 'OnboardingAPI', 'error_code': error_code}
+            )
+
+            return {
+                'status': 'failed',
+                'error': 'Invalid AWS credentials. Please check your Access Key ID and Secret Access Key.',
+                'error_code': error_code,
+                'error_details': error_message
+            }
+
+        # Step 2: Encrypt secret key
+        encrypted_access_key = encrypt_credential(credentials.access_key)
+        encrypted_secret_key = encrypt_credential(credentials.secret_key)
+
+        # Step 3: Check if account already exists
+        existing_account = db.query(Account).filter(
+            Account.account_id == aws_account_id,
+            Account.user_id == current_user.id
+        ).first()
+
+        if existing_account:
+            # Update existing account to use access keys
+            existing_account.connection_method = 'access_keys'
+            existing_account.aws_access_key_id = encrypted_access_key
+            existing_account.aws_secret_access_key = encrypted_secret_key
+            existing_account.region = credentials.region
+            existing_account.status = 'connected'
+            existing_account.is_active = False  # Will be set to True after discovery
+            existing_account.updated_at = datetime.utcnow()
+
+            db.commit()
+            db.refresh(existing_account)
+
+            account = existing_account
+            logger.info(
+                f'Updated existing account {aws_account_id} to use access keys',
+                extra={'component': 'OnboardingAPI', 'account_id': existing_account.id}
+            )
+        else:
+            # Create new account record
+            new_account = Account(
+                user_id=current_user.id,
+                account_id=aws_account_id,
+                account_name=f"AWS Account {aws_account_id}",
+                connection_method='access_keys',
+                aws_access_key_id=encrypted_access_key,
+                aws_secret_access_key=encrypted_secret_key,
+                region=credentials.region,
+                status='connected',  # Will transition to 'active' after discovery
+                is_active=False,  # Will be set to True after discovery
+                environment_type='LAB'
+            )
+
+            db.add(new_account)
+            db.commit()
+            db.refresh(new_account)
+
+            account = new_account
+            logger.info(
+                f'Created new account {aws_account_id} with access keys',
+                extra={'component': 'OnboardingAPI', 'account_id': new_account.id}
+            )
+
+        # Step 4: Trigger background discovery
+        background_tasks.add_task(run_initial_discovery, account.id)
+
+        return {
+            'status': 'connected',
+            'connection_method': 'access_keys',
+            'aws_account_id': aws_account_id,
+            'account_id': str(account.id),
+            'region': credentials.region,
+            'verified_at': datetime.utcnow().isoformat(),
+            'message': 'Credentials verified! Scanning your AWS resources in the background...',
+            'discovery_status': 'in_progress'
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(
+            f'Credentials connection error: {e}',
             extra={'component': 'OnboardingAPI', 'error': str(e)}
         )
         raise HTTPException(status_code=500, detail=str(e))

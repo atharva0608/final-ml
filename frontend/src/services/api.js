@@ -464,6 +464,17 @@ export async function getDiscoveryStatus(accountId) {
     return fetchApi(`/v1/onboarding/${accountId}/discovery`);
 }
 
+export async function connectWithCredentials(accessKey, secretKey, region) {
+    return fetchApi('/v1/onboarding/connect/credentials', {
+        method: 'POST',
+        body: JSON.stringify({
+            access_key: accessKey,
+            secret_key: secretKey,
+            region: region
+        })
+    });
+}
+
 // ============================================================================
 // Helper Functions
 // ============================================================================
@@ -555,6 +566,7 @@ export default {
     getOnboardingTemplate,
     verifyOnboarding,
     getDiscoveryStatus,
+    connectWithCredentials,
 
     // WebSocket
     connectWebSocket,
