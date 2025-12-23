@@ -14,9 +14,10 @@ from typing import List, Optional
 from datetime import datetime, timedelta
 from pydantic import BaseModel, ConfigDict
 from uuid import UUID
+import uuid
 
 from database.connection import get_db
-from database.models import User
+from database.models import User, Account
 from database.system_logs import SystemLog, ComponentHealth, ComponentType, LogLevel, ComponentStatus
 from api.auth import get_current_active_user
 
@@ -719,6 +720,28 @@ async def create_client_user(
     )
 
     db.add(new_user)
+    db.flush()  # Generate ID for new_user
+
+    # CRITICAL FIX: Create placeholder account for client users to prevent "Orphan" state
+    if user_data.role == 'client':
+        # Check if account already exists (paranoid check)
+        existing_account = db.query(Account).filter(Account.user_id == new_user.id).first()
+
+        if not existing_account:
+            placeholder_account = Account(
+                user_id=new_user.id,
+                account_name=f"{user_data.full_name}'s Account",
+                account_id=f"pending-{uuid.uuid4().hex[:8]}",  # Temporary ID
+                external_id=f"spot-optimizer-{uuid.uuid4()}",
+                role_arn="pending",  # Will be updated during onboarding
+                status="pending",
+                connection_method="unknown",
+                region="us-east-1",
+                is_active=False
+            )
+            db.add(placeholder_account)
+            print(f"✓ [Admin] Created placeholder account for user {new_user.username} (ID: {new_user.id})")
+
     db.commit()
     db.refresh(new_user)
 
