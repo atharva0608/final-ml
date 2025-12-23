@@ -164,16 +164,18 @@ const ClientDashboard = () => {
           throw new Error('Invalid response from server');
         }
 
-        // Handle "no account" or "pending" states - redirect to setup
+        // Handle "no account" or "pending" states - show setup view instead of dashboard
         if (data.status === 'no_account' || data.setup_required || !data.has_account) {
-          console.log("No AWS account connected, redirecting to setup...");
-          window.location.href = '/client/connect';
+          console.log("No AWS account connected, switching to setup view...");
+          setCurrentView('connect'); // Switch to connect view, don't redirect
+          setLoading(false);
           return;
         }
 
         if (data.status === 'pending_setup' || data.account_status === 'pending') {
-          console.log("Account pending setup, redirecting...");
-          window.location.href = '/client/connect';
+          console.log("Account pending setup, switching to setup view...");
+          setCurrentView('connect'); // Switch to connect view, don't redirect
+          setLoading(false);
           return;
         }
 
