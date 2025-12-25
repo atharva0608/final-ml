@@ -6,14 +6,47 @@ This document defines the **mandatory step-by-step process** for fixing bugs and
 
 ---
 
+## New Problem Intake Workflow ⭐ NEW
+
+### When User Reports a Problem
+
+1. **User adds problem to `/problems/new_problem` file**
+   - User follows the template provided in the file
+   - Includes all relevant details (severity, steps to reproduce, etc.)
+
+2. **LLM processes new_problem**
+   - Read `/problems/new_problem`
+   - Assign next Problem ID: `P-YYYY-MM-DD-NNN`
+   - Add to `/problems/problems_log.md` as "Active"
+   - Begin investigation
+
+3. **LLM fixes the problem**
+   - Follow Bug Fix Protocol below
+   - Implement fix and test
+
+4. **LLM updates tracking**
+   - **Remove fixed problem from `/problems/new_problem`** (only the fixed portion)
+   - Update `/problems/problems_log.md` → Status: "Fixed"
+   - Add detailed fix to `/progress/fixed_issues_log.md`
+   - User can see remaining problems in `new_problem` file
+
+### Benefits
+- User has clear problem inbox
+- User can track progress (see how many problems remain)
+- No problems are ever lost
+- LLM has clear work queue
+
+---
+
 ## Bug Fix Protocol
 
 ### Step 1: Problem Identification
 
-1. Read the problem description from `/problems/problems_log.md`
-2. Verify the problem ID (format: `P-YYYY-MM-DD-NNN`)
-3. Check if problem is marked as `Fixed` or `Reopened`
-4. If `Fixed`, **STOP** and investigate why it reoccurred
+1. Read the problem description from `/problems/problems_log.md` OR `/problems/new_problem`
+2. If from `new_problem`, assign Problem ID (format: `P-YYYY-MM-DD-NNN`)
+3. Verify problem ID is unique
+4. Check if problem is marked as `Fixed` or `Reopened`
+5. If `Fixed`, **STOP** and investigate why it reoccurred
 
 ### Step 2: Pre-Fix Verification
 

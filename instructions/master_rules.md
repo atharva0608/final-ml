@@ -30,10 +30,29 @@
 
 ### 4. Documentation Discipline
 
-- **ALWAYS** update `info.md` in affected modules
+- **ALWAYS** update `info.md` in affected folders
 - **ALWAYS** update `/index/recent_changes.md` with changes
 - **ALWAYS** cross-reference Problem IDs when fixing issues
 - **NEVER** make silent changes
+
+### 5. info.md File Contract ⭐ NEW
+
+- **EVERY folder** has an `info.md` file (except empty folders)
+- **ALWAYS read** the folder's `info.md` before modifying files
+- **ALWAYS update** the folder's `info.md` after changes
+- **info.md contains**:
+  - File-wise descriptions and purpose
+  - Recent changes with dates
+  - Reason for changes
+  - Impact of changes
+  - Dependencies
+
+**Example**:
+```
+backend/api/info.md     - Describes all API route files
+backend/workers/info.md - Describes all worker files
+frontend/src/components/info.md - Describes all component files
+```
 
 ---
 
@@ -45,13 +64,50 @@ Before any code change:
 2. ✅ Read `/problems/problems_log.md` to understand known issues
 3. ✅ Check `/progress/fixed_issues_log.md` to avoid regressions
 4. ✅ Identify relevant entries in `/index/feature_index.md`
-5. ✅ Read affected module's `info.md` files
+5. ✅ **Read the folder's `info.md` file** (CRITICAL)
+   - Located in same directory as files you'll modify
+   - Contains file-wise details, recent changes, dependencies
+   - Example: Modifying `backend/api/auth.py` → Read `backend/api/info.md`
 6. ✅ Make the change
-7. ✅ Update:
-   - Module `info.md`
-   - `/progress/fixed_issues_log.md` (if fixing)
-   - `/index/recent_changes.md`
+7. ✅ **Update the folder's `info.md`** (MANDATORY)
+   - Add entry to "Recent Changes" section with:
+     - Date (YYYY-MM-DD)
+     - Files modified
+     - Reason for change
+     - Impact of change
+   - Update file descriptions if purpose changed
+8. ✅ Update global metadata:
+   - `/progress/fixed_issues_log.md` (if fixing bug)
+   - `/index/recent_changes.md` (always)
    - `/scenarios/` (if behavior changes)
+9. ✅ **If fixing a problem from `/problems/new_problem`**:
+   - Remove the fixed problem from `/problems/new_problem` file
+   - Update `/problems/problems_log.md` status to "Fixed"
+   - User can see remaining problems in `new_problem`
+
+---
+
+## Problem Intake Workflow ⭐ NEW
+
+### User-Reported Problems
+
+Users report new problems directly to `/problems/new_problem` file using the provided template.
+
+**LLM Responsibilities**:
+1. **Read `/problems/new_problem`** at session start
+2. **Assign Problem ID**: P-YYYY-MM-DD-NNN
+3. **Add to `/problems/problems_log.md`** as "Active"
+4. **Investigate and fix** (follow Bug Fix Protocol)
+5. **Remove from `/problems/new_problem`** (only the fixed portion)
+6. **Update documentation** (fixed_issues_log.md, etc.)
+
+**Benefits**:
+- User has a clear problem inbox
+- User can track fix progress
+- No problems are lost
+- Systematic problem resolution
+
+**See**: `/instructions/fix_protocol.md#new-problem-intake-workflow`
 
 ---
 

@@ -1,0 +1,153 @@
+# Active Problems Inbox
+
+## Purpose
+This file is your direct communication channel with the LLM for reporting new problems. When you discover an issue, add it here. The LLM will:
+1. Assign a Problem ID (P-YYYY-MM-DD-NNN)
+2. Add it to problems_log.md
+3. Investigate and fix the problem
+4. Remove the fixed portion from this file
+5. Document the fix in fixed_issues_log.md
+
+**Status**: No active problems currently
+
+---
+
+## How to Report a Problem
+
+### Template (copy and fill out):
+```markdown
+## Problem: [Short descriptive title]
+**Reported**: YYYY-MM-DD HH:MM
+**Severity**: [CRITICAL / HIGH / MEDIUM / LOW]
+**Component**: [Which part of the system]
+**Reporter**: [Your name or "User"]
+
+**Description**:
+[Detailed description of what's wrong]
+
+**Steps to Reproduce**:
+1. [First step]
+2. [Second step]
+3. [Result that shows the problem]
+
+**Expected Behavior**:
+[What should happen]
+
+**Actual Behavior**:
+[What actually happens]
+
+**Additional Context**:
+- Error messages (if any)
+- Screenshots (if relevant)
+- Logs or stack traces
+- Browser/environment details
+
+---
+```
+
+---
+
+## Severity Guidelines
+
+### CRITICAL
+- Security vulnerabilities
+- Data loss or corruption
+- Complete system failure
+- Authentication broken
+- Database connection failures
+
+### HIGH
+- Major features completely broken
+- Severe user experience degradation
+- Data inconsistency
+- Performance severely degraded
+
+### MEDIUM
+- Feature partially broken
+- Workaround available but inconvenient
+- UI/UX issues affecting usability
+- Minor data inconsistencies
+
+### LOW
+- Cosmetic issues
+- Minor inconveniences
+- Nice-to-have improvements
+- Documentation errors
+
+---
+
+## Example (for reference):
+
+```markdown
+## Problem: Dashboard shows $0 cost after connecting AWS account
+**Reported**: 2025-12-25 10:30
+**Severity**: HIGH
+**Component**: Dashboard / Metrics
+**Reporter**: User
+
+**Description**:
+After connecting a new AWS account via CloudFormation and completing discovery, the dashboard displays "$0 Cost", "0% Usage", and no metrics. Expected to see actual usage data.
+
+**Steps to Reproduce**:
+1. Connect new AWS account via CloudFormation method
+2. Wait for discovery to complete (status becomes 'active')
+3. Navigate to /client dashboard
+4. Observe all metrics show zero
+
+**Expected Behavior**:
+Dashboard should display:
+- Current month cost (e.g., "$45.67")
+- CPU usage percentage (e.g., "23%")
+- Instance count
+- Resource metrics
+
+**Actual Behavior**:
+Dashboard displays:
+- Cost: "$0"
+- Usage: "0%"
+- No instances shown
+- Empty charts
+
+**Additional Context**:
+- Data appears after midnight (next cron job run)
+- Discovery worker completes successfully
+- Instances exist in database
+- No error messages in console
+```
+
+---
+
+## Current Active Problems
+
+*(None - all known problems have been fixed as of 2025-12-25)*
+
+---
+
+## Recently Fixed (Removed from this file)
+
+### ✅ P-2025-12-25-003: DELETE endpoint HTTP 204 error
+**Fixed**: 2025-12-25
+**Summary**: DELETE /client/accounts/{id} returned HTTP 204 without body, causing frontend parsing errors. Fixed by explicitly setting status_code=200.
+
+### ✅ P-2025-12-25-002: Dashboard zero data after fresh connection
+**Fixed**: 2025-12-25
+**Summary**: Dashboard showed $0 after account connection. Fixed by triggering health checks immediately after discovery completion.
+
+### ✅ P-2025-12-25-001: AWS account takeover vulnerability
+**Fixed**: 2025-12-25
+**Summary**: CloudFormation flow lacked global uniqueness check. Fixed by adding account_id uniqueness validation.
+
+---
+
+## Tips for Effective Problem Reports
+
+1. **Be Specific**: Include exact error messages, URLs, and steps
+2. **Include Context**: Browser, OS, user role, account state
+3. **One Problem Per Report**: Don't combine multiple issues
+4. **Check Existing**: Look in problems_log.md first to avoid duplicates
+5. **Severity**: Be honest about severity (don't inflate)
+
+---
+
+_Last Updated: 2025-12-25_
+_This file is actively monitored by the LLM_
