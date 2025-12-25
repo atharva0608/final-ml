@@ -9,7 +9,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Optional, List
+from pydantic import BaseModel
 
 from database.connection import get_db
 from database.models import User, Account, Instance, ExperimentLog, DowntimeLog
@@ -20,6 +21,64 @@ router = APIRouter(
     prefix="",
     tags=["client_dashboard"]
 )
+
+
+# Pydantic model for account summary
+class AccountSummary(BaseModel):
+    id: str
+    account_id: str
+    account_name: str
+    status: str
+    connection_method: str
+    region: str
+    created_at: str
+    updated_at: str
+
+    class Config:
+        from_attributes = True
+
+
+@router.get("/accounts", response_model=List[AccountSummary])
+async def get_connected_accounts(
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """
+    List all accounts connected by this user.
+    Returns accounts with status: connected, active, warning (excludes pending/failed if needed)
+    """
+    try:
+        # Get all accounts for this user (filter out 'pending' if desired)
+        accounts = db.query(Account).filter(
+            Account.user_id == current_user.id,
+            Account.status.in_(["connected", "active", "warning"])
+        ).all()
+
+        # Convert to response format
+        account_summaries = []
+        for acc in accounts:
+            account_summaries.append({
+                "id": str(acc.id),
+                "account_id": acc.account_id,
+                "account_name": acc.account_name,
+                "status": acc.status,
+                "connection_method": acc.connection_method,
+                "region": acc.region,
+                "created_at": acc.created_at.isoformat(),
+                "updated_at": acc.updated_at.isoformat()
+            })
+
+        return account_summaries
+
+    except Exception as e:
+        logger.error(
+            f'Failed to list accounts: {e}',
+            extra={'component': 'ClientAccounts', 'user_id': current_user.id, 'error': str(e)}
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to list accounts: {str(e)}"
+        )
 
 
 @router.get("/dashboard")

@@ -100,6 +100,11 @@ const ClientSetup = () => {
 
                 // Start resource discovery
                 checkDiscoveryStatus();
+
+                // Refresh account list after successful connection
+                setTimeout(() => {
+                    checkConnectedAccounts();
+                }, 2000);
             } else {
                 setVerificationStatus('failed');
                 setVerificationMessage(`❌ ${response.error || 'Connection failed'}`);
@@ -135,6 +140,11 @@ const ClientSetup = () => {
 
                 // Start checking discovery status
                 checkDiscoveryStatus();
+
+                // Refresh account list after successful connection
+                setTimeout(() => {
+                    checkConnectedAccounts();
+                }, 2000);
             } else {
                 setVerificationStatus('failed');
                 setVerificationMessage(`❌ ${response.error || 'Connection failed'}`);
@@ -168,27 +178,31 @@ const ClientSetup = () => {
     const checkConnectedAccounts = async () => {
         setIsLoadingAccounts(true);
         try {
-            const response = await api.getClientDashboard();
+            // Use the new /accounts endpoint to get list of accounts
+            const response = await api.get('/client/accounts');
 
-            if (response.has_account && response.account_status !== 'pending') {
-                // User has a connected account
-                setConnectedAccounts([{
-                    id: response.account_info?.aws_account_id || response.account_info?.account_id,
-                    name: response.account_info?.account_name || 'AWS Account',
-                    region: response.account_info?.region || 'N/A',
-                    status: response.account_status,
-                    connectionType: response.account_info?.connection_method || 'iam_role',
-                    connectedAt: response.account_info?.created_at,
-                    lastUpdated: response.account_info?.last_updated
-                }]);
+            if (response.data && response.data.length > 0) {
+                // User has connected account(s)
+                const accounts = response.data.map(acc => ({
+                    id: acc.account_id,
+                    name: acc.account_name,
+                    region: acc.region,
+                    status: acc.status,
+                    connectionType: acc.connection_method,
+                    connectedAt: acc.created_at,
+                    lastUpdated: acc.updated_at
+                }));
+                setConnectedAccounts(accounts);
                 setShowOnboarding(false);
             } else {
-                // No connected account or still pending - show onboarding
+                // No connected accounts - show onboarding
+                setConnectedAccounts([]);
                 setShowOnboarding(true);
             }
         } catch (error) {
             console.error('Failed to check accounts:', error);
             // If API fails, show onboarding by default
+            setConnectedAccounts([]);
             setShowOnboarding(true);
         } finally {
             setIsLoadingAccounts(false);
@@ -354,7 +368,7 @@ const ClientSetup = () => {
                     {/* Go to Dashboard Button */}
                     <div className="mt-6 text-center">
                         <a
-                            href="/"
+                            href="/client"
                             className="inline-block bg-green-600 text-white px-8 py-3 rounded-lg hover:bg-green-700 transition-colors font-medium"
                         >
                             Go to Dashboard
@@ -837,7 +851,7 @@ const ClientSetup = () => {
                                         Your AWS account is now connected and ready for optimization.
                                     </p>
                                     <a
-                                        href="/"
+                                        href="/client"
                                         className="inline-block bg-green-600 text-white px-6 py-2 rounded-lg hover:bg-green-700 transition-colors"
                                     >
                                         Go to Dashboard

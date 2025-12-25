@@ -8,6 +8,7 @@ import NodeFleet from './components/NodeFleet';
 import Controls from './components/Controls';
 import ClientSetup from './components/ClientSetup';
 import ClientManagement from './components/ClientManagement';
+import AuthGateway from './components/AuthGateway';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import ModelExperiments from './components/Lab/ModelExperiments';
 import SystemMonitor from './pages/SystemMonitor';
@@ -368,7 +369,12 @@ function App() {
 
             {/* Client Routes */}
             <Route element={<ProtectedRoute allowedRoles={['client']} />}>
-              <Route path="/client" element={<ClientDashboard />} />
+              <Route path="/client" element={
+                <AuthGateway>
+                  <ClientDashboard />
+                </AuthGateway>
+              } />
+              <Route path="/onboarding/setup" element={<ClientSetup />} />
             </Route>
 
             <Route path="*" element={<Navigate to="/" />} />
