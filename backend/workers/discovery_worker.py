@@ -330,6 +330,15 @@ def run_initial_discovery(account_db_id: int):
 
         logger.info(f"✅ Discovery Complete for Account {account_db_id}: {total_instances} instances")
 
+        # Trigger immediate health/usage check for discovered instances
+        try:
+            from utils.component_health_checks import run_all_health_checks
+            logger.info(f"Running health checks for newly discovered account {account_db_id}")
+            health_results = run_all_health_checks(db)
+            logger.info(f"Health check results: {health_results}")
+        except Exception as health_error:
+            logger.warning(f"Health check failed (non-critical): {health_error}")
+
     except Exception as e:
         logger.error(f"Discovery worker failed for account {account_db_id}: {e}", exc_info=True)
         if db:

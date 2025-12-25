@@ -81,7 +81,7 @@ async def get_connected_accounts(
         )
 
 
-@router.delete("/accounts/{account_id}")
+@router.delete("/accounts/{account_id}", status_code=200)
 async def disconnect_account(
     account_id: str,
     current_user: User = Depends(get_current_active_user),
@@ -91,6 +91,7 @@ async def disconnect_account(
     Disconnect and delete an AWS account connection.
     Security: Verifies the account belongs to current_user before deletion.
     Cascade: Deletes related instances and experiment logs.
+    Returns: 200 OK with JSON body (not 204 to allow response body)
     """
     try:
         # Find the account
