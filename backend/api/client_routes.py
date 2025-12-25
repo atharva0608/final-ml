@@ -81,6 +81,68 @@ async def get_connected_accounts(
         )
 
 
+@router.delete("/accounts/{account_id}")
+async def disconnect_account(
+    account_id: str,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Disconnect and delete an AWS account connection.
+    Security: Verifies the account belongs to current_user before deletion.
+    Cascade: Deletes related instances and experiment logs.
+    """
+    try:
+        # Find the account
+        account = db.query(Account).filter(
+            Account.account_id == account_id,
+            Account.user_id == current_user.id
+        ).first()
+
+        if not account:
+            raise HTTPException(
+                status_code=404,
+                detail="Account not found or does not belong to you"
+            )
+
+        # Log the disconnection for audit
+        logger.info(
+            f'Disconnecting AWS account {account_id}',
+            extra={
+                'component': 'AccountDisconnect',
+                'user_id': current_user.id,
+                'account_id': account_id,
+                'account_name': account.account_name
+            }
+        )
+
+        # Delete related instances (cascade will handle experiment logs if configured)
+        db.query(Instance).filter(Instance.account_id == account.id).delete()
+
+        # Delete the account record
+        db.delete(account)
+        db.commit()
+
+        return {
+            "success": True,
+            "message": f"AWS account {account.account_name} disconnected successfully",
+            "account_id": account_id
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(
+            f'Failed to disconnect account: {e}',
+            extra={'component': 'AccountDisconnect', 'user_id': current_user.id, 'error': str(e)}
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to disconnect account: {str(e)}"
+        )
+
+
 @router.get("/dashboard")
 async def get_client_dashboard(
     current_user: User = Depends(get_current_active_user),
@@ -115,6 +177,7 @@ async def get_client_dashboard(
                 "status": "no_account",
                 "message": "No AWS account connected. Please complete onboarding.",
                 "has_account": False,
+                "setup_required": True,
                 "stats": {
                     "nodes": 0,
                     "clusters": 0,

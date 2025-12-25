@@ -502,11 +502,29 @@ async def verify_connection(
             identity = assumed_sts.get_caller_identity()
             client_aws_account_id = identity['Account']
 
+            # Global uniqueness check: Prevent AWS account from being claimed by multiple users
+            existing_account = db.query(Account).filter(
+                Account.account_id == client_aws_account_id,
+                Account.id != account.id  # Exclude current account (for re-verification)
+            ).first()
+
+            if existing_account and existing_account.user_id != current_user.id:
+                # AWS account already connected to different user - Security violation
+                logger.warning(
+                    f'AWS account {client_aws_account_id} already connected to different user',
+                    extra={'component': 'OnboardingAPI', 'existing_user': existing_account.user_id}
+                )
+                raise HTTPException(
+                    status_code=409,
+                    detail=f'AWS account {client_aws_account_id} is already connected to a different user.'
+                )
+
             # Update account record with verified information
             # Status: 'connected' = credentials verified, discovery pending
             # Status: 'active' = discovery complete, dashboard unlocked
             account.role_arn = verification.role_arn
             account.account_id = client_aws_account_id
+            account.connection_method = 'iam_role'
             account.status = 'connected'  # Will transition to 'active' after discovery
             account.account_name = f"AWS Account {client_aws_account_id}"
             account.is_active = False  # Will be set to True after discovery

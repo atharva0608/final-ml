@@ -32,6 +32,7 @@ const ClientSetup = () => {
     const [verificationMessage, setVerificationMessage] = useState('');
     const [discoveryStatus, setDiscoveryStatus] = useState(null);
     const [isLoading, setIsLoading] = useState(false);
+    const [pollingIntervalId, setPollingIntervalId] = useState(null);
 
     // Step 1: Create onboarding request and get ExternalID
     const createOnboardingRequest = async () => {
@@ -95,11 +96,14 @@ const ClientSetup = () => {
 
             if (response.status === 'connected') {
                 setVerificationStatus('connected');
-                setVerificationMessage(`✅ Connected! AWS Account: ${response.aws_account_id}`);
+                setVerificationMessage(`✅ Connected! Discovering resources...`);
                 setCurrentStep(4);
 
                 // Start resource discovery
                 checkDiscoveryStatus();
+
+                // Start polling to track activation status
+                startPollingAccountStatus();
 
                 // Refresh account list after successful connection
                 setTimeout(() => {
@@ -134,12 +138,15 @@ const ClientSetup = () => {
 
             if (response.status === 'connected') {
                 setVerificationStatus('connected');
-                setVerificationMessage(`✅ Connected! AWS Account: ${response.aws_account_id}`);
+                setVerificationMessage(`✅ Connected! Discovering resources...`);
                 setAccountId(response.account_id);
                 setCurrentStep(4);
 
                 // Start checking discovery status
                 checkDiscoveryStatus();
+
+                // Start polling to track activation status
+                startPollingAccountStatus();
 
                 // Refresh account list after successful connection
                 setTimeout(() => {
@@ -166,6 +173,56 @@ const ClientSetup = () => {
         } catch (error) {
             console.error('Failed to get discovery status:', error);
         }
+    };
+
+    // Polling function to verify account status
+    const startPollingAccountStatus = () => {
+        // Clear any existing interval
+        if (pollingIntervalId) {
+            clearInterval(pollingIntervalId);
+        }
+
+        let attempts = 0;
+        const maxAttempts = 60; // Poll for up to 3 minutes (60 * 3s = 180s)
+
+        const intervalId = setInterval(async () => {
+            attempts++;
+
+            try {
+                // Check account status via /client/accounts
+                const response = await api.get('/client/accounts');
+
+                if (response.data && response.data.length > 0) {
+                    const account = response.data[0]; // Get the first account
+
+                    // Check if status has changed from 'connected' to 'active'
+                    if (account.status === 'active') {
+                        // Account is now active - stop polling
+                        clearInterval(intervalId);
+                        setPollingIntervalId(null);
+                        setVerificationStatus('connected');
+                        setVerificationMessage(`✅ Account fully activated! AWS Account: ${account.account_id}`);
+
+                        // Update discovery status
+                        checkDiscoveryStatus();
+                    } else if (account.status === 'connected') {
+                        // Still discovering
+                        setVerificationMessage(`🔄 Discovering resources... (${attempts * 3}s elapsed)`);
+                    }
+                }
+            } catch (error) {
+                console.error('Polling error:', error);
+            }
+
+            // Stop polling after max attempts
+            if (attempts >= maxAttempts) {
+                clearInterval(intervalId);
+                setPollingIntervalId(null);
+                setVerificationMessage('⚠️ Discovery is taking longer than expected. Please refresh the page.');
+            }
+        }, 3000); // Poll every 3 seconds
+
+        setPollingIntervalId(intervalId);
     };
 
     // Copy to clipboard helper
@@ -211,18 +268,22 @@ const ClientSetup = () => {
 
     // Disconnect account
     const handleDisconnect = async (accountId) => {
-        if (!window.confirm('Are you sure you want to disconnect this AWS account?')) {
+        if (!window.confirm('Are you sure you want to disconnect this AWS account? All associated data will be removed.')) {
             return;
         }
 
         try {
-            // TODO: Add disconnect API endpoint
-            alert('Disconnect feature coming soon. For now, please contact support.');
-            // After disconnect, refresh the list
-            // checkConnectedAccounts();
+            // Call DELETE /client/accounts/{account_id}
+            await api.delete(`/client/accounts/${accountId}`);
+
+            // Show success message
+            alert(`AWS account disconnected successfully`);
+
+            // Refresh the account list (will show onboarding if no accounts left)
+            checkConnectedAccounts();
         } catch (error) {
             console.error('Failed to disconnect:', error);
-            alert('Failed to disconnect account. Please try again.');
+            alert(`Failed to disconnect account: ${error.response?.data?.detail || error.message}`);
         }
     };
 
@@ -245,6 +306,15 @@ const ClientSetup = () => {
             createOnboardingRequest();
         }
     }, [showOnboarding, connectionMethod]);
+
+    // Cleanup polling interval on unmount
+    useEffect(() => {
+        return () => {
+            if (pollingIntervalId) {
+                clearInterval(pollingIntervalId);
+            }
+        };
+    }, [pollingIntervalId]);
 
     // Loading state
     if (isLoadingAccounts) {
