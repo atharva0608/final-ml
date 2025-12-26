@@ -11,6 +11,7 @@ import ClientManagement from './components/ClientManagement';
 import AuthGateway from './components/AuthGateway';
 import NodeTemplates from './components/NodeTemplates';
 import AvailableSavings from './components/AvailableSavings';
+import ClusterList from './components/ClusterList';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import ModelExperiments from './components/Lab/ModelExperiments';
 import SystemMonitor from './pages/SystemMonitor';
@@ -339,6 +340,8 @@ const ClientDashboard = () => {
       case 'dashboard':
       case 'live': // Fallback for legacy state
         return <NodeFleet clientMode={true} clientData={clientData} />;
+      case 'clusters':
+        return <ClusterList />;
       case 'templates':
         return <NodeTemplates />;
       case 'savings':

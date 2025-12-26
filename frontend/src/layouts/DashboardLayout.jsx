@@ -85,6 +85,7 @@ const DashboardLayout = ({ children, activeView, setActiveView, role = 'admin', 
         if (role === 'client') {
             return [
                 { id: 'dashboard', label: 'Client Dashboard', icon: LayoutDashboard },
+                { id: 'clusters', label: 'Clusters', icon: Server },
                 { id: 'savings', label: 'Available Savings', icon: TrendingDown },
                 { id: 'templates', label: 'Node Templates', icon: FileText },
                 { id: 'connect', label: 'Cloud Connect', icon: Cloud },

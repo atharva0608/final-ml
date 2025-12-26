@@ -1241,7 +1241,338 @@ Currently uses extensive mock data (lines ~21-80):
 
 ---
 
-## 7. Other Components (Summary)
+## 7. ClusterList.jsx ⭐ KUBERNETES CLUSTER MANAGEMENT
+
+**Purpose**: Display and manage Kubernetes cluster connections with 9 canonical states
+**Lines**: ~424
+**Route**: `/client` (view: `clusters`)
+**Status**: ACTIVE
+**Design**: CAST AI inspired design
+**Created**: 2025-12-26
+
+### Component Structure
+
+```
+ClusterList
+├─ Summary Overview Panel
+│  ├─ Total Compute Cost (monthly)
+│  ├─ Total Nodes (Spot/On-Demand/Fallback breakdown)
+│  ├─ Total CPU (vCPU cores)
+│  └─ Total Memory (GB RAM)
+│
+├─ Clusters Table
+│  ├─ Cluster Name + Version
+│  ├─ Status Badge (9 states)
+│  ├─ Provider (AWS EKS, GCP GKE, Azure AKS)
+│  ├─ Region
+│  ├─ Nodes Count (with breakdown)
+│  ├─ Monthly Cost
+│  └─ Actions (Adjust costs, Disconnect)
+│
+└─ Disconnect Modal
+   ├─ Cluster Name Confirmation Input
+   ├─ Delete Nodes Checkbox
+   └─ Cancel/Disconnect Buttons
+```
+
+---
+
+### Cluster States (9 Canonical States)
+
+1. **PENDING**: Cluster created, agent not verified
+   - Color: Gray (bg-gray-100)
+   - Icon: Clock
+   - Label: "Pending"
+
+2. **CONNECTING**: Agent install in progress
+   - Color: Blue (bg-blue-100)
+   - Icon: Clock
+   - Label: "Connecting"
+
+3. **CONNECTED**: Agent fully operational
+   - Color: Green (bg-green-100)
+   - Icon: CheckCircle
+   - Label: "Connected"
+
+4. **READ_ONLY**: Metrics only, optimization disabled
+   - Color: Yellow (bg-yellow-100)
+   - Icon: Shield
+   - Label: "Read-only"
+
+5. **PARTIALLY_CONNECTED**: Missing permissions
+   - Color: Orange (bg-orange-100)
+   - Icon: AlertCircle
+   - Label: "Partial"
+
+6. **DISCONNECTED**: Agent unreachable
+   - Color: Gray (bg-gray-100)
+   - Icon: XCircle
+   - Label: "Disconnected"
+
+7. **ERROR**: Terminal failure
+   - Color: Red (bg-red-100)
+   - Icon: XCircle
+   - Label: "Error"
+
+8. **REMOVING**: Deletion in progress
+   - Color: Purple (bg-purple-100)
+   - Icon: Trash2
+   - Label: "Removing"
+
+9. **REMOVED**: Fully deleted
+   - Color: Gray (bg-gray-50)
+   - Icon: Trash2
+   - Label: "Removed"
+
+---
+
+### 🔘 BUTTONS & FUNCTIONS
+
+#### Button: "Connect Cluster"
+**Location**: Lines ~292, 415
+**Purpose**: Add new Kubernetes cluster connection
+**Design**: Blue primary button
+**Behavior**:
+- Opens cluster connection wizard
+- Supports AWS EKS, GCP GKE, Azure AKS
+- Generates kubectl agent install script
+
+**TODO**: Implement cluster connection wizard
+
+---
+
+#### Button: "Adjust costs" (per cluster)
+**Location**: Line ~375
+**Purpose**: Navigate to cluster optimization settings
+**Visibility**: Only shown for CONNECTED clusters
+**Icon**: Settings (gear icon)
+**Behavior**:
+- Opens optimization page for cluster
+- Allows adjusting autoscaler policies
+- Configure spot instance preferences
+
+**TODO**: Link to optimization page
+
+---
+
+#### Button: "Disconnect" (per cluster)
+**Location**: Line ~382
+**OnClick**: `handleDisconnect(cluster)`
+**Purpose**: Disconnect cluster and optionally delete platform-managed nodes
+**Visibility**: Shown for CONNECTED, READ_ONLY, PARTIALLY_CONNECTED states
+**Icon**: XCircle
+
+**Complete Flow**:
+```javascript
+1. User clicks "Disconnect" on cluster row
+   ↓
+2. handleDisconnect(cluster) called (line ~146)
+   → Opens disconnect modal
+   → setDisconnectModal(cluster)
+   → setConfirmationInput('')
+   → setDeleteNodes(false)
+   ↓
+3. Modal displays:
+   → Warning banner (yellow)
+   → Cluster name confirmation input
+   → "Delete all platform-created nodes" checkbox
+   ↓
+4. User types cluster name to confirm
+   → confirmationInput === cluster.name
+   ↓
+5. User optionally checks "Delete nodes"
+   → deleteNodes = true/false
+   ↓
+6. User clicks "Disconnect Cluster" button
+   ↓
+7. confirmDisconnect() called (line ~155)
+   → Validates confirmation input matches cluster name
+   → if (confirmationInput === disconnectModal.name):
+     → API: DELETE /v1/client/clusters/{cluster_id}
+       Request: { delete_nodes: deleteNodes }
+     → Backend marks cluster as REMOVING
+     → Backend triggers cleanup worker
+     → If delete_nodes=true:
+       - Terminates all platform-created nodes
+       - Drains workloads first
+       - Waits for graceful shutdown
+     → Backend updates cluster status to REMOVED
+   ↓
+8. Success:
+   → Removes cluster from local state
+   → Closes modal
+   → Resets form fields
+   ↓
+9. Error:
+   → Shows error message
+   → Keeps modal open
+```
+
+**API Endpoint**: `DELETE /v1/client/clusters/{cluster_id}`
+**Request Body**:
+```json
+{
+  "delete_nodes": true  // Optional, default: false
+}
+```
+
+**Backend File**: `TODO: backend/api/cluster_routes.py`
+**Database Tables**:
+- `clusters` (UPDATE status to REMOVING/REMOVED)
+- `nodes` (CASCADE DELETE if delete_nodes=true)
+- `workloads` (UPDATE status)
+
+**Security**:
+- Cluster name confirmation prevents accidental deletion
+- Warning for node deletion
+- User must explicitly check box to delete nodes
+- Graceful draining before termination
+
+---
+
+### Data Structure
+
+**Cluster Object**:
+```javascript
+{
+  id: string,
+  name: string,
+  status: 'PENDING' | 'CONNECTING' | 'CONNECTED' | ...,  // 9 states
+  provider: 'AWS EKS' | 'GCP GKE' | 'Azure AKS',
+  region: string,
+  nodes: {
+    total: number,
+    spot: number,
+    onDemand: number,
+    fallback: number
+  },
+  monthlyCost: number,
+  version: string  // Kubernetes version
+}
+```
+
+---
+
+### Summary Metrics Calculation
+
+**Location**: Lines ~135-150
+**Logic**:
+```javascript
+const summary = clusters.reduce((acc, cluster) => ({
+  totalCost: acc.totalCost + cluster.monthlyCost,
+  totalNodes: acc.totalNodes + cluster.nodes.total,
+  spotNodes: acc.spotNodes + cluster.nodes.spot,
+  onDemandNodes: acc.onDemandNodes + cluster.nodes.onDemand,
+  fallbackNodes: acc.fallbackNodes + cluster.nodes.fallback,
+  totalCpu: acc.totalCpu + (cluster.nodes.total * 4),  // 4 vCPU per node
+  totalMemory: acc.totalMemory + (cluster.nodes.total * 16)  // 16GB per node
+}), { ... })
+```
+
+**Assumptions**:
+- Average 4 vCPU per node
+- Average 16GB RAM per node
+- TODO: Replace with real node specs from backend
+
+---
+
+### Design Features
+
+**CAST AI Design Elements**:
+- Summary overview cards with icons
+- Clean table layout
+- Status badges with colored backgrounds
+- Node breakdown badges (Spot/On-Demand/Fallback)
+- Hover states on table rows
+- Modal with confirmation flow
+- Warning banners (yellow for caution, red for danger)
+- Icon-based actions
+
+**Color Scheme**:
+- Primary: Blue (#2563EB)
+- Success/Connected: Green (#10B981)
+- Warning: Yellow (#F59E0B)
+- Error: Red (#EF4444)
+- Info: Purple (#8B5CF6)
+- Background: White/Gray-50
+- Text: Gray-900/Gray-600
+
+---
+
+### Mock Data
+
+Currently uses mock data (lines ~69-133):
+- 5 cluster examples
+- Different providers (AWS EKS, GCP GKE, Azure AKS)
+- Various states (CONNECTED, READ_ONLY, PARTIALLY_CONNECTED, CONNECTING)
+- Realistic cost data ($421.50 - $3,456.75/month)
+- Node distributions with Spot/On-Demand/Fallback breakdowns
+
+**TODO**: Replace with API integration
+**API Endpoint**: `GET /v1/client/clusters`
+
+---
+
+### Disconnect Modal Features
+
+**Location**: Lines ~391-424
+
+**Security Features**:
+1. **Cluster Name Confirmation**:
+   - User must type exact cluster name
+   - Button disabled until match
+   - Prevents accidental deletion
+
+2. **Delete Nodes Warning**:
+   - Red warning box
+   - Explicit checkbox required
+   - Clear messaging about workload disruption
+
+3. **Warning Message**:
+   ```
+   "Disconnecting will stop all optimization and cost-saving
+   features for this cluster."
+   ```
+
+4. **Node Deletion Warning**:
+   ```
+   "This will terminate all nodes created by the platform.
+   Your workloads may be disrupted."
+   ```
+
+**Design**:
+- Fixed overlay with backdrop
+- Centered modal card
+- Two-tone warning (yellow + red)
+- Disabled state for confirm button
+- Gray footer for actions
+
+---
+
+### Future Enhancements
+
+**Phase 1** (Backend Integration):
+- [ ] API integration for cluster list
+- [ ] Real-time cluster status updates
+- [ ] Cluster connection wizard
+- [ ] Backend disconnect endpoint
+
+**Phase 2** (Advanced Features):
+- [ ] Cluster health metrics
+- [ ] Cost trend graphs
+- [ ] Filtering and search
+- [ ] Bulk operations
+- [ ] Export cluster list
+
+**Phase 3** (Optimization):
+- [ ] Per-cluster optimization settings
+- [ ] Autoscaler configuration
+- [ ] Hibernation schedules
+- [ ] Resource quotas
+
+---
+
+## 8. Other Components (Summary)
 
 ### ClientManagement.jsx
 **Purpose**: Admin client management
