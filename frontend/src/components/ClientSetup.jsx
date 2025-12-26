@@ -2,7 +2,13 @@ import { useState, useEffect } from 'react';
 import { Cloud, Copy, CheckCircle, XCircle, Download, RefreshCw, Server, LogOut } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useNavigate } from 'react-router-dom';
-import api from '../services/api';
+import api, {
+    createOnboardingRequest as createOnboarding,
+    getOnboardingTemplate,
+    verifyOnboarding,
+    getDiscoveryStatus,
+    connectWithCredentials
+} from '../services/api';
 
 /**
  * Client Onboarding Wizard
@@ -47,7 +53,7 @@ const ClientSetup = () => {
     const createOnboardingRequest = async () => {
         setIsLoading(true);
         try {
-            const response = await api.createOnboardingRequest();
+            const response = await createOnboarding();
             setAccountId(response.id);
             setExternalId(response.external_id);
             setCurrentStep(2);
@@ -63,7 +69,7 @@ const ClientSetup = () => {
     const downloadTemplate = async () => {
         setIsLoading(true);
         try {
-            const response = await api.getOnboardingTemplate(accountId);
+            const response = await getOnboardingTemplate(accountId);
             const template = response.template;
 
             // Convert template to JSON string
@@ -101,7 +107,7 @@ const ClientSetup = () => {
         setVerificationMessage('Verifying connection...');
 
         try {
-            const response = await api.verifyOnboarding(accountId, roleArn);
+            const response = await verifyOnboarding(accountId, roleArn);
 
             if (response.status === 'connected') {
                 setVerificationStatus('connected');
@@ -143,7 +149,7 @@ const ClientSetup = () => {
         setVerificationMessage('Validating credentials...');
 
         try {
-            const response = await api.connectWithCredentials(accessKey, secretKey, region);
+            const response = await connectWithCredentials(accessKey, secretKey, region);
 
             if (response.status === 'connected') {
                 setVerificationStatus('connected');
@@ -177,7 +183,7 @@ const ClientSetup = () => {
     // Step 4: Check resource discovery status
     const checkDiscoveryStatus = async () => {
         try {
-            const response = await api.getDiscoveryStatus(accountId);
+            const response = await getDiscoveryStatus(accountId);
             setDiscoveryStatus(response);
         } catch (error) {
             console.error('Failed to get discovery status:', error);
@@ -198,8 +204,8 @@ const ClientSetup = () => {
             attempts++;
 
             try {
-                // Check account status via /client/accounts
-                const response = await api.get('/client/accounts');
+                // Check account status via /v1/client/accounts
+                const response = await api.get('/v1/client/accounts');
 
                 if (response.data && response.data.length > 0) {
                     const account = response.data[0]; // Get the first account
@@ -244,8 +250,8 @@ const ClientSetup = () => {
     const checkConnectedAccounts = async () => {
         setIsLoadingAccounts(true);
         try {
-            // Use the new /accounts endpoint to get list of accounts
-            const response = await api.get('/client/accounts');
+            // Use the /v1/client/accounts endpoint to get list of accounts
+            const response = await api.get('/v1/client/accounts');
 
             if (response.data && response.data.length > 0) {
                 // User has connected account(s)
@@ -282,8 +288,8 @@ const ClientSetup = () => {
         }
 
         try {
-            // Call DELETE /client/accounts/{account_id}
-            await api.delete(`/client/accounts/${accountId}`);
+            // Call DELETE /v1/client/accounts/{account_id}
+            await api.delete(`/v1/client/accounts/${accountId}`);
 
             // Show success message
             alert(`AWS account disconnected successfully`);
