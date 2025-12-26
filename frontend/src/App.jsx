@@ -13,6 +13,7 @@ import NodeTemplates from './components/NodeTemplates';
 import AvailableSavings from './components/AvailableSavings';
 import ClusterList from './components/ClusterList';
 import ClusterDashboard from './components/ClusterDashboard';
+import CostMonitoring from './components/CostMonitoring';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import ModelExperiments from './components/Lab/ModelExperiments';
 import SystemMonitor from './pages/SystemMonitor';
@@ -345,6 +346,8 @@ const ClientDashboard = () => {
       case 'fleet':
       case 'live': // Fallback for legacy state
         return <NodeFleet clientMode={true} clientData={clientData} />;
+      case 'costs':
+        return <CostMonitoring />;
       case 'templates':
         return <NodeTemplates />;
       case 'savings':
