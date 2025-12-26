@@ -45,13 +45,14 @@ async def get_connected_accounts(
 ):
     """
     List all accounts connected by this user.
-    Returns accounts with status: connected, active, warning (excludes pending/failed if needed)
+    Returns ALL accounts regardless of status (pending, connected, active, warning, failed).
+    Frontend handles status-specific UI rendering.
     """
     try:
-        # Get all accounts for this user (filter out 'pending' if desired)
+        # Get all accounts for this user (no status filtering)
+        # This ensures admin-created placeholder accounts (status="pending") are visible
         accounts = db.query(Account).filter(
-            Account.user_id == current_user.id,
-            Account.status.in_(["connected", "active", "warning"])
+            Account.user_id == current_user.id
         ).all()
 
         # Convert to response format

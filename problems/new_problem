@@ -251,88 +251,45 @@ Remaining problems will appear here after you paste them below.
 
 ## Your Problem(s) - Add Below This Line:
 
-## INVESTIGATION COMPLETE (2025-12-26)
+## INVESTIGATION COMPLETE (2025-12-26) - Session 2
 
-**Status**: All 5 reported problems were investigated and found to be **INVALID** or **ALREADY FIXED**.
+**Status**: 3 problems investigated, 1 FIXED, 2 NOT CODE BUGS
 
-### Investigation Findings:
+### Investigation Results:
 
-**Problem #1 - "Orphan User"**: ✅ ALREADY FIXED
-- Fix location: `backend/api/admin.py:725-744`
-- Creates placeholder Account for all admin-created client users
-- Status: "pending", prevents orphan state
+**P-2025-12-26-001: "Zombie Database" (Schema Drift)** ⚠️ ENVIRONMENT ISSUE
+- **Investigation**: Reviewed database models.py - schema definition is **CORRECT**
+- **Columns exist**: connection_method (line 81), aws_access_key_id (line 89), aws_secret_access_key (line 90)
+- **Root cause**: User's local Docker database volume has outdated schema
+- **Resolution**: User needs to drop/recreate database OR run migrations
+- **Code change**: NONE - this is an environment/deployment issue
+- **Reference**: `/problems/problems_log.md#P-2025-12-26-001`
 
-**Problem #2 - "Amnesiac Cloud Connect"**: ✅ FEATURE EXISTS
-- Implementation: `frontend/src/components/ClientSetup.jsx:299-301`
-- Auto-fetches connected accounts on component mount via useEffect
-- Shows loading state during fetch
+**P-2025-12-26-002: "Partial Commit Bug"** ❌ NOT A BUG
+- **Investigation**: Reviewed admin.py:722-745
+- **Finding**: Code has SINGLE commit at line 745 for both User and Account
+- **Structure**: `db.add(user)` → `db.flush()` → `db.add(account)` → `db.commit()`
+- **This is CORRECT**: flush() generates ID without committing, final commit saves both atomically
+- **If failures occur**: They're due to P-2025-12-26-001 (schema drift) causing entire transaction to fail
+- **Code change**: NONE - implementation is correct
+- **Reference**: `/problems/problems_log.md#P-2025-12-26-002`
 
-**Problem #3 - "Missing Feedback"**: ✅ FEATURE EXISTS
-- Implementation: `frontend/src/components/ClientSetup.jsx:332-429`
-- Full "Connected AWS Accounts" management UI
-- Color-coded status badges (Active, Discovering, etc)
-- Visual feedback panels with icons and progress indicators
+**P-2025-12-26-003: "Status Filter Mismatch"** ✅ FIXED
+- **Investigation**: Reviewed client_routes.py:52-55
+- **Bug confirmed**: GET /client/accounts filtered by `status.in_(["connected", "active", "warning"])`
+- **Problem**: Admin creates placeholder accounts with status="pending" (admin.py:737)
+- **Impact**: Pending accounts hidden from user, frontend shows onboarding form
+- **Fix applied**: Removed status filter - now returns ALL accounts for user
+- **Code changed**: `backend/api/client_routes.py:46-56`
+- **Reference**: `/progress/fixed_issues_log.md#P-2025-12-26-003`
 
-**Problem #4 - "Hotel California (No Disconnect)"**: ✅ FEATURE EXISTS
-- Backend: `backend/api/client_routes.py:84-119` (DELETE /client/accounts/{id})
-- Frontend: `frontend/src/components/ClientSetup.jsx:270-288` (handleDisconnect)
-- UI: Disconnect button rendered for each account (line 406-412)
-- Includes confirmation dialog and cascade deletion
-
-**Problem #5 - "UX Verdict"**: ❌ BASED ON INVALID PROBLEMS
-- All supporting claims were found to be incorrect
-
-### Conclusion:
-These problems appear to be based on an outdated understanding of the system or were fixed in recent commits. All described functionality exists and is working as expected.
+### Summary:
+- **1 REAL BUG** - Status filter fixed
+- **2 NOT BUGS** - Schema drift (environment) and partial commit (code is correct)
 
 ---
 
 **Note**: No new problems currently pending. Add new problems below this line.
-1. The "Zombie Database" (Schema Drift)
-The Reason: Your code has been updated to include new columns (like connection_method, aws_access_key_id), but your local Docker Database Volume was created weeks ago. It still has the old table structure.
-
-The Crash: When admin.py tries to insert the "Placeholder Account", the database rejects it with Column 'connection_method' not found.
-
-The Silent Failure: If your code has a broad try/except block, it catches this error, ignores the account creation, but still returns "Success" for the User creation.
-
-Result: The User is created (Orphan), but the Account is missing. When you log in, the Dashboard crashes (Blank Page) because it expects an Account.
-
-2. The "Partial Commit" Bug (Why Admin Users are Blank)
-The Reason: In backend/api/admin.py, it is highly likely that the database commit is split.
-
-Scenario:
-
-db.add(new_user) -> db.commit() (User saved successfully).
-
-db.add(placeholder_account) -> db.commit() (FAILS due to Schema Drift above).
-
-Outcome: You have a User record, but 0 Account records. The Dashboard API (GET /dashboard) looks for an account, finds nothing, returns null, and the Frontend crashes trying to read null.status.
-
-✅ The Fix: After resetting the database (Step 1), this will resolve itself. However, to prevent this forever, verify that your admin.py creates both objects before committing.
-
-3. The "Status Filter" Mismatch (Why Connection Doesn't Persist)
-The Reason: You connect successfully, but the form reappears.
-
-Backend: When you connect via credentials, the status is set to connected.
-
-Frontend Check: The ClientSetup.jsx calls GET /client/accounts.
-
-The Bug: If your GET /client/accounts API in backend/api/client_routes.py has a filter like .filter(Account.status == 'active'), it will hide your new account (which is 'connected') from the list.
-
-Result: The list returns [] (empty), so the Frontend thinks "No accounts exist" and shows the connection form again.
-
-✅ The Fix: Open backend/api/client_routes.py and ensure the get_connected_accounts function does NOT strictly filter by 'active'. It should return everything.
-
-Python
-
-# backend/api/client_routes.py
-
-@router.get("/accounts", response_model=List[AccountSummary])
-def get_connected_accounts(...):
-    # BAD: return db.query(Account).filter(Account.status == 'active').all()
-    
-    # GOOD: Return all accounts regardless of status
-    return db.query(Account).filter(Account.user_id == current_user.id).all()
 
 _Last Updated: 2025-12-25_
 _This file is actively monitored by the LLM at every session start_

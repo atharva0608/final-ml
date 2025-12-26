@@ -10,6 +10,28 @@ Chronological timeline of all code changes for quick reference.
 
 ## 2025-12-26
 
+### Fix: Status Filter Excludes Pending Accounts (P-2025-12-26-003)
+
+**Commit**: TBD
+**Module**: backend/api
+**Impact**: Account listing for all users, admin-created user experience
+**Files**: 1 file changed
+
+**Changes**:
+Fixed GET `/client/accounts` to return ALL accounts regardless of status. Previously filtered out "pending" accounts, causing admin-created users to see empty account lists and onboarding forms even when placeholder accounts existed.
+
+**Code Change**:
+Removed status filter from client_routes.py:54 - now returns all accounts for user
+
+**Investigation Results** (3 reported problems):
+1. **P-2025-12-26-001: Zombie Database** ⚠️ Environment issue - schema definition is correct, user needs DB migration
+2. **P-2025-12-26-002: Partial Commit Bug** ❌ Not a bug - code correctly uses single commit
+3. **P-2025-12-26-003: Status Filter** ✅ FIXED - removed restrictive status filter
+
+**Reference**: `/progress/fixed_issues_log.md#P-2025-12-26-003`
+
+---
+
 ### Investigation: UX Problem Reports - All Invalid or Already Fixed
 
 **Session**: claude/aws-dual-mode-connectivity-fvlS3

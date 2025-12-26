@@ -4,7 +4,61 @@
 
 Complete historical record of all bug fixes. **NEVER delete entries.**
 
-**Last Updated**: 2025-12-25
+**Last Updated**: 2025-12-26
+
+---
+
+## P-2025-12-26-003: Status Filter Excludes Pending Accounts
+
+**Date**: 2025-12-26
+**Fixed By**: LLM Session (claude/aws-dual-mode-connectivity-fvlS3)
+
+**Root Cause**:
+GET `/client/accounts` endpoint was filtering accounts by status, only returning accounts with status in ["connected", "active", "warning"]. This excluded "pending" accounts. When admin creates a user, a placeholder account is created with status="pending" (admin.py:737). When the user logs in and the frontend fetches accounts, it receives an empty list because the pending account is filtered out, causing the onboarding form to appear even though an account exists.
+
+**Files Changed**:
+- `backend/api/client_routes.py:46-56` - Removed restrictive status filter
+
+**Behavior Change**:
+- **Before**: GET `/client/accounts` returned only ["connected", "active", "warning"] status accounts
+- **After**: GET `/client/accounts` returns ALL accounts for the user regardless of status
+
+**Code Changed**:
+```python
+# BEFORE (lines 51-55):
+accounts = db.query(Account).filter(
+    Account.user_id == current_user.id,
+    Account.status.in_(["connected", "active", "warning"])
+).all()
+
+# AFTER (lines 54-56):
+accounts = db.query(Account).filter(
+    Account.user_id == current_user.id
+).all()
+```
+
+**Verification Method**:
+1. Admin creates a new client user
+2. Verify placeholder account created with status="pending"
+3. Log in as the new client user
+4. Navigate to Cloud Connect page
+5. Verify GET `/client/accounts` returns the pending account
+6. Verify frontend displays the account with "Pending" status indicator
+
+**Impact Radius**:
+- Account listing for all users
+- Admin-created user experience
+- Frontend account display logic
+
+**Related Scenarios**:
+- `/scenarios/admin_user_creation_flow.md`
+- `/scenarios/client_onboarding_flow.md#existing-account`
+
+**Dependencies Affected**:
+- Frontend must handle "pending" status accounts (already implemented in ClientSetup.jsx)
+
+**Rollback Instructions**:
+If this causes issues with displaying too many accounts, add back the filter but include "pending" in the allowed statuses: `Account.status.in_(["pending", "connected", "active", "warning"])`
 
 ---
 

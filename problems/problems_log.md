@@ -4,7 +4,7 @@
 
 Immutable ledger of all problems discovered. **NEVER delete entries.**
 
-**Last Updated**: 2025-12-25
+**Last Updated**: 2025-12-26
 
 ---
 
@@ -25,6 +25,87 @@ All known problems have been fixed.
 ---
 
 ## Fixed Problems
+
+### P-2025-12-26-003: Status Filter Excludes Pending Accounts
+
+**Status**: ✅ Fixed
+**Reported**: 2025-12-26
+**Fixed**: 2025-12-26
+**Severity**: HIGH
+
+**Description**:
+GET `/client/accounts` endpoint was filtering accounts by status, excluding "pending" accounts. When admin creates a user, a placeholder account is created with status="pending". When the user logs in, the frontend fetches accounts but receives an empty list, causing it to show the onboarding form instead of the pending account.
+
+**Observed Behavior**:
+- Admin creates client user
+- Placeholder account created with status="pending"
+- User logs in and navigates to Cloud Connect
+- Frontend calls GET /client/accounts
+- Backend filters out pending accounts
+- Frontend receives empty list []
+- Onboarding form appears despite account existing
+
+**Expected Behavior**:
+- GET /client/accounts returns ALL accounts for user
+- Frontend displays pending accounts with appropriate status indicator
+- User can see their account in "pending" state
+
+**Root Cause**:
+Status filter in client_routes.py:54 restricted to ["connected", "active", "warning"], excluding "pending"
+
+**Fix Reference**: `/progress/fixed_issues_log.md#P-2025-12-26-003`
+
+---
+
+### P-2025-12-26-002: Partial Commit Bug (Admin Users Blank)
+
+**Status**: ❌ Not a Bug
+**Reported**: 2025-12-26
+**Investigated**: 2025-12-26
+**Severity**: N/A
+
+**Description**:
+Report claimed database commits were split, causing partial saves where User would commit but Account creation would fail.
+
+**Investigation Result**:
+Code review of admin.py:722-745 shows SINGLE commit at line 745:
+- Line 722: `db.add(new_user)`
+- Line 723: `db.flush()` - generates ID without committing
+- Lines 731-742: Create placeholder_account
+- Line 742: `db.add(placeholder_account)`
+- Line 745: `db.commit()` - commits BOTH user and account
+
+**Conclusion**:
+Code is correct. If failures occur, they are due to P-2025-12-26-001 (schema drift) causing the entire transaction to roll back.
+
+**Fix Reference**: No fix needed - code is correct
+
+---
+
+### P-2025-12-26-001: Zombie Database (Schema Drift)
+
+**Status**: ⚠️ Environment Issue (Not a Code Bug)
+**Reported**: 2025-12-26
+**Investigated**: 2025-12-26
+**Severity**: N/A
+
+**Description**:
+Report claimed database schema is missing new columns like `connection_method`, `aws_access_key_id`, causing placeholder account creation to fail.
+
+**Investigation Result**:
+- Schema definition in models.py is **correct** (has all columns)
+- Issue is with **local Docker database volume** having outdated schema
+- User's database was created before schema updates were added
+
+**Resolution**:
+This is a deployment/environment issue, not a code bug. User needs to:
+1. Drop and recreate database, OR
+2. Run database migrations, OR
+3. Remove Docker volume and recreate
+
+**Fix Reference**: No code fix needed - environment configuration issue
+
+---
 
 ### P-2025-12-25-003: Delete Account Returns HTTP 204 Without Body
 
