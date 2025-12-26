@@ -26,6 +26,95 @@ All known problems have been fixed.
 
 ## Fixed Problems
 
+### P-2025-12-26-006: AuthGateway Using Incorrect API Endpoint
+
+**Status**: ✅ Fixed
+**Reported**: 2025-12-26
+**Fixed**: 2025-12-26
+**Severity**: HIGH
+
+**Description**:
+AuthGateway was calling `/client/accounts` instead of `/v1/client/accounts`. The backend routes are mounted at `/api/v1/client/*` but the frontend was missing the `/v1/` prefix, causing 404 errors and login loops.
+
+**Observed Behavior**:
+- AuthGateway checks for connected accounts
+- API call to `/client/accounts` returns 404
+- Frontend thinks no accounts exist
+- Redirects to setup page even after successful connection
+
+**Expected Behavior**:
+- AuthGateway calls correct endpoint `/v1/client/accounts`
+- Receives account list correctly
+- Navigates to dashboard if accounts exist
+
+**Root Cause**:
+Incorrect endpoint path in AuthGateway.jsx:13
+
+**Fix Reference**: `/progress/fixed_issues_log.md#P-2025-12-26-006`
+
+---
+
+### P-2025-12-26-005: API Client Missing Axios-Style Interface
+
+**Status**: ✅ Fixed
+**Reported**: 2025-12-26
+**Fixed**: 2025-12-26
+**Severity**: CRITICAL
+
+**Description**:
+Frontend API client (services/api.js) used named export functions only, without axios-style `.get()`, `.post()`, `.delete()` methods. Components like AuthGateway imported `api` and called `api.get()`, causing `TypeError: de.get is not a function`.
+
+**Observed Behavior**:
+- Component calls `api.get('/endpoint')`
+- JavaScript error: `TypeError: de.get is not a function`
+- Application crashes with blank screen
+
+**Expected Behavior**:
+- API client supports both axios-style and named exports
+- `api.get()`, `api.post()`, etc. work correctly
+- Backward compatible with existing named function imports
+
+**Root Cause**:
+API client only exported individual functions, not an object with HTTP methods
+
+**Fix Reference**: `/progress/fixed_issues_log.md#P-2025-12-26-005`
+
+---
+
+### P-2025-12-26-004: Multiple Conflicting API Client Files
+
+**Status**: ✅ Fixed
+**Reported**: 2025-12-26
+**Fixed**: 2025-12-26
+**Severity**: HIGH
+
+**Description**:
+Multiple API client files existed in the frontend:
+- `/services/api.js` (fetch-based with named exports)
+- `/services/api.jsx` (re-export wrapper)
+- `/services/apiClient.jsx` (class-based client)
+- `/config/api.jsx` (configuration only)
+
+Module bundler could import the wrong file when resolving `import api from '../services/api'`, causing unpredictable behavior.
+
+**Observed Behavior**:
+- Components import `api` from '../services/api'
+- Bundler randomly picks api.js or api.jsx
+- Different components get different API clients
+- Inconsistent behavior and TypeError crashes
+
+**Expected Behavior**:
+- Single source of truth for API client
+- All imports resolve to same file
+- Consistent behavior across all components
+
+**Root Cause**:
+Duplicate files from refactoring without cleanup
+
+**Fix Reference**: `/progress/fixed_issues_log.md#P-2025-12-26-004`
+
+---
+
 ### P-2025-12-26-003: Status Filter Excludes Pending Accounts
 
 **Status**: ✅ Fixed

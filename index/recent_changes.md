@@ -10,6 +10,40 @@ Chronological timeline of all code changes for quick reference.
 
 ## 2025-12-26
 
+### Fix: Login Loop and TypeError Crashes (P-2025-12-26-004, 005, 006)
+
+**Commit**: TBD
+**Module**: frontend/src/services, frontend/src/components
+**Impact**: All frontend components, API client, authentication flows
+**Files**: 4 files changed (2 deleted, 2 modified)
+
+**Changes**:
+Fixed three interconnected frontend issues causing login loops and TypeError crashes:
+
+1. **P-2025-12-26-006**: AuthGateway endpoint path fixed
+   - Changed `/client/accounts` → `/v1/client/accounts`
+   - Prevents 404 errors and login loops
+
+2. **P-2025-12-26-005**: API client rewritten with axios-style interface
+   - Added `.get()`, `.post()`, `.put()`, `.delete()` methods
+   - Fixes `TypeError: de.get is not a function`
+   - Maintains backward compatibility with named exports
+
+3. **P-2025-12-26-004**: Removed conflicting API files
+   - Deleted `api.jsx` and `apiClient.jsx`
+   - Single source of truth: `api.js`
+   - Consistent module resolution
+
+**Files Modified**:
+- `frontend/src/services/api.js` - Complete rewrite with axios interface
+- `frontend/src/components/AuthGateway.jsx` - Fixed endpoint path
+- `frontend/src/services/api.jsx` - DELETED
+- `frontend/src/services/apiClient.jsx` - DELETED
+
+**Reference**: `/progress/fixed_issues_log.md#P-2025-12-26-006`
+
+---
+
 ### Fix: Status Filter Excludes Pending Accounts (P-2025-12-26-003)
 
 **Commit**: TBD

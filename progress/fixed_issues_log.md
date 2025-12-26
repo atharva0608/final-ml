@@ -8,6 +8,89 @@ Complete historical record of all bug fixes. **NEVER delete entries.**
 
 ---
 
+## P-2025-12-26-006: AuthGateway Using Incorrect API Endpoint
+
+**Date**: 2025-12-26
+**Fixed By**: LLM Session (claude/aws-dual-mode-connectivity-fvlS3)
+
+**Root Cause**:
+AuthGateway component was calling `/client/accounts` endpoint, but the backend routes are mounted at `/api/v1/client/*`. The missing `/v1/` prefix caused 404 errors, making the frontend think no accounts exist and creating a login loop.
+
+**Files Changed**:
+- `frontend/src/components/AuthGateway.jsx:13` - Updated endpoint path
+
+**Behavior Change**:
+- **Before**: `api.get('/client/accounts')` → 404 Not Found
+- **After**: `api.get('/v1/client/accounts')` → Returns account list
+
+**Verification Method**:
+1. User connects AWS account successfully
+2. AuthGateway checks for accounts on mount
+3. Verify GET `/api/v1/client/accounts` returns account list
+4. Verify user navigates to dashboard (not redirected back to setup)
+
+**Impact Radius**:
+- AuthGateway routing logic
+- All authenticated client flows
+
+---
+
+## P-2025-12-26-005: API Client Missing Axios-Style Interface
+
+**Date**: 2025-12-26
+**Fixed By**: LLM Session (claude/aws-dual-mode-connectivity-fvlS3)
+
+**Root Cause**:
+Frontend API client (`services/api.js`) only exported named functions, not an axios-style object with `.get()`, `.post()`, `.delete()` methods. Components calling `api.get()` crashed with `TypeError: de.get is not a function`.
+
+**Files Changed**:
+- `frontend/src/services/api.js` - Complete rewrite with axios-style interface
+
+**Behavior Change**:
+- **Before**: Only named exports, no `.get()` method
+- **After**: Default export ApiClient instance with `.get()`, `.post()`, `.put()`, `.delete()` methods
+
+**Verification Method**:
+1. Import `api` as default: `import api from '../services/api'`
+2. Call `await api.get('/v1/client/accounts')`
+3. Verify returns `{ data: [...], status: 200, statusText: 'OK' }`
+
+**Impact Radius**:
+- All frontend components using API client
+- AuthGateway, ClientSetup, Dashboard, etc.
+
+---
+
+## P-2025-12-26-004: Multiple Conflicting API Client Files
+
+**Date**: 2025-12-26
+**Fixed By**: LLM Session (claude/aws-dual-mode-connectivity-fvlS3)
+
+**Root Cause**:
+Multiple API client files existed from incomplete refactoring:
+- `/services/api.js`, `/services/api.jsx`, `/services/apiClient.jsx`
+- Bundler could import wrong file when resolving `import api from '../services/api'`
+
+**Files Changed**:
+- `frontend/src/services/api.jsx` - DELETED
+- `frontend/src/services/apiClient.jsx` - DELETED
+- `frontend/src/services/api.js` - Kept as single source of truth
+
+**Behavior Change**:
+- **Before**: Bundler randomly picked api.js or api.jsx
+- **After**: Only api.js exists, guaranteed consistent resolution
+
+**Verification Method**:
+1. Search: `find frontend/src/services -name "api*"`
+2. Verify only `api.js` exists
+3. All imports resolve to same file
+
+**Impact Radius**:
+- All frontend components
+- Module bundler behavior
+
+---
+
 ## P-2025-12-26-003: Status Filter Excludes Pending Accounts
 
 **Date**: 2025-12-26

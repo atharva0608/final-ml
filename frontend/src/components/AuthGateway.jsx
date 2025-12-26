@@ -9,7 +9,8 @@ export default function AuthGateway({ children }) {
   useEffect(() => {
     const checkAccounts = async () => {
       try {
-        const res = await api.get('/client/accounts');
+        // Use correct API endpoint: /api/v1/client/accounts
+        const res = await api.get('/v1/client/accounts');
         // If we have at least one REAL connected account
         if (res.data && res.data.length > 0) {
           // If the user is currently on the setup page, move them to client dashboard

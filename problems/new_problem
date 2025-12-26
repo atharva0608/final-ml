@@ -289,198 +289,43 @@ Remaining problems will appear here after you paste them below.
 
 ---
 
+---
+
+## INVESTIGATION COMPLETE (2025-12-26) - Session 3
+
+**Status**: 3 interconnected problems FIXED
+
+### Investigation Results:
+
+**P-2025-12-26-006: Login Loop - AuthGateway Endpoint** ✅ FIXED
+- **Problem**: AuthGateway calling `/client/accounts` instead of `/v1/client/accounts`
+- **Impact**: 404 errors, login loop after successful connection
+- **Fix**: Updated endpoint path in AuthGateway.jsx:13
+- **File**: `frontend/src/components/AuthGateway.jsx`
+- **Reference**: `/progress/fixed_issues_log.md#P-2025-12-26-006`
+
+**P-2025-12-26-005: TypeError: de.get is not a function** ✅ FIXED
+- **Problem**: API client lacked axios-style `.get()`, `.post()`, `.delete()` methods
+- **Impact**: JavaScript crashes when components called `api.get()`
+- **Fix**: Rewrote api.js with ApiClient class providing axios interface
+- **File**: `frontend/src/services/api.js` (complete rewrite)
+- **Reference**: `/progress/fixed_issues_log.md#P-2025-12-26-005`
+
+**P-2025-12-26-004: Multiple Conflicting API Files** ✅ FIXED
+- **Problem**: 4 API files existed (api.js, api.jsx, apiClient.jsx, config/api.jsx)
+- **Impact**: Bundler randomly picked wrong file, inconsistent behavior
+- **Fix**: Deleted api.jsx and apiClient.jsx, kept only api.js
+- **Files Deleted**: `api.jsx`, `apiClient.jsx`
+- **Reference**: `/progress/fixed_issues_log.md#P-2025-12-26-004`
+
+### Backend Issue Status:
+
+**Note**: The backend status filter issue mentioned in the problem report was already fixed in P-2025-12-26-003 (previous session). GET `/client/accounts` now returns ALL accounts regardless of status.
+
+---
+
 **Note**: No new problems currently pending. Add new problems below this line.
 
-Here is the comprehensive fix for the **"Login Loop"**, **"Unable to Load"**, and the **`TypeError: de.get`** crash.
-
-These issues are caused by **File Conflicts** (multiple API files confusing the bundler) and **Strict Filtering** (Backend hiding the new account).
-
----
-
-### 🚨 Problem Analysis
-
-1. **`TypeError: de.get is not a function`**: You have **3 different API files** (`api.js`, `api.jsx`, `apiClient.jsx`). The build system is likely importing the **Empty** `api.jsx` instead of the real one, causing the app to crash when it tries to call `.get()`.
-2. **The "Setup Loop"**: When you connect an account, it gets status **"connected"**. However, your Dashboard API only returns accounts with status **"active"**.
-* *Result:* You connect -> Success -> Redirect to Dashboard -> Dashboard asks "Do you have an Active account?" -> API says "No" -> Dashboard kicks you back to Setup.
-
-
-
----
-
-### 🛠️ Step 1: Fix the API Client (The Crash)
-
-You must delete the conflicting files and keep one single source of truth.
-
-**1. DELETE these files (if they exist):**
-
-* `frontend/src/services/api.jsx` (This is likely the empty culprit)
-* `frontend/src/services/apiClient.jsx`
-
-**2. UPDATE `frontend/src/services/api.js` with this robust code:**
-
-```javascript
-// frontend/src/services/api.js
-import axios from 'axios';
-
-// 1. Determine Base URL (Production vs Local)
-const getBaseUrl = () => {
-  if (import.meta.env.VITE_API_URL) {
-    return import.meta.env.VITE_API_URL;
-  }
-  return window.location.hostname === 'localhost' 
-    ? 'http://localhost:8000/api' 
-    : '/api';
-};
-
-// 2. Create Axios Instance
-const api = axios.create({
-  baseURL: getBaseUrl(),
-  headers: {
-    'Content-Type': 'application/json',
-  },
-});
-
-// 3. Request Interceptor (Attach Token)
-api.interceptors.request.use(
-  (config) => {
-    const token = localStorage.getItem('token');
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`;
-    }
-    return config;
-  },
-  (error) => Promise.reject(error)
-);
-
-// 4. Response Interceptor (Handle 401 Logout)
-api.interceptors.response.use(
-  (response) => response,
-  (error) => {
-    if (error.response && error.response.status === 401) {
-      console.warn('Unauthorized - Redirecting to Login');
-      localStorage.removeItem('token');
-      // Optional: window.location.href = '/login'; 
-    }
-    return Promise.reject(error);
-  }
-);
-
-export default api;
-
-```
-
----
-
-### 🛠️ Step 2: Fix the Backend Visibility (The Loop)
-
-We need the Dashboard to see your account *immediately* after connection, even if it's not fully "active" yet.
-
-**Target File:** `backend/api/client_routes.py`
-
-**Update the `get_connected_accounts` function:**
-
-```python
-# backend/api/client_routes.py
-
-@router.get("/accounts", response_model=List[AccountSummary])
-async def get_connected_accounts(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
-):
-    """List all accounts connected by this user (connected, scanning, active, etc)"""
-    
-    # OLD CODE (Likely caused the bug):
-    # return db.query(Account).filter(Account.status == 'active', ...).all()
-
-    # NEW CORRECT CODE:
-    accounts = db.query(Account).filter(
-        Account.user_id == current_user.id
-        # We REMOVED the status filter so "connected" and "pending" accounts show up
-    ).all()
-    
-    # ... (rest of your logic to map to AccountSummary) ...
-    return results
-
-```
-
----
-
-### 🛠️ Step 3: Fix the Frontend Gateway (The Logic)
-
-Your `AuthGateway.jsx` was empty in the upload. This component is critical for deciding where the user goes.
-
-**Update `frontend/src/components/AuthGateway.jsx`:**
-
-```jsx
-import { useEffect, useState } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
-import api from '../services/api'; // Now imports strictly from api.js
-
-export default function AuthGateway({ children }) {
-  const navigate = useNavigate();
-  const location = useLocation();
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    const checkStatus = async () => {
-      try {
-        const token = localStorage.getItem('token');
-        if (!token) {
-            // No token, let the router handle redirect to login
-            setLoading(false);
-            return;
-        }
-
-        // Fetch Accounts
-        const res = await api.get('/client/accounts');
-        const accounts = res.data || [];
-        
-        const hasAccount = accounts.length > 0;
-        const isOnSetup = location.pathname === '/onboarding/setup';
-
-        if (hasAccount && isOnSetup) {
-          // If we have an account but are on setup -> Go Dashboard
-          console.log("Account found, redirecting to Dashboard");
-          navigate('/dashboard');
-        } else if (!hasAccount && !isOnSetup) {
-          // If no account and NOT on setup -> Go Setup
-          console.log("No account found, forcing Setup");
-          navigate('/onboarding/setup');
-        }
-
-      } catch (err) {
-        console.error("Auth Gateway Error:", err);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    checkStatus();
-  }, [navigate, location]);
-
-  if (loading) return <div className="h-screen flex items-center justify-center">Loading...</div>;
-  
-  return children;
-}
-
-```
-
-### 🚀 How to Apply & Verify
-
-1. **Delete** the confusing `api.jsx` / `apiClient.jsx` files.
-2. **Paste** the new `api.js` code.
-3. **Paste** the new `client_routes.py` code (backend).
-4. **Restart** the Backend (`docker-compose restart backend`).
-5. **Refresh Frontend**.
-
-**Expected Behavior:**
-
-1. You login.
-2. Gateway checks `/client/accounts`.
-3. If you previously connected, backend now returns `[ { status: 'connected' } ]`.
-4. Frontend sees `length > 0` -> Redirects to Dashboard.
-5. Dashboard loads (No `de.get` error because `api.js` is fixed).
-
-_Last Updated: 2025-12-25_
+_Last Updated: 2025-12-26_
 _This file is actively monitored by the LLM at every session start_
 _The LLM will process problems from the "PASTE YOUR PROBLEMS HERE" section_
