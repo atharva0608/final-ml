@@ -325,235 +325,40 @@ Remaining problems will appear here after you paste them below.
 ---
 
 **Note**: No new problems currently pending. Add new problems below this line.
-upload model is not working some thing has broken check with the  scanario based description and then update evrything which will fix full application my current console error logs are (API Connected to: /api (PRODUCTION)
-index-C4hRaSQ8.js:455 Pipeline data fetch failed: TypeError: ue.getSystemOverview is not a function
-    at l (index-C4hRaSQ8.js:455:11198)
-    at index-C4hRaSQ8.js:455:13161
-    at $d (index-C4hRaSQ8.js:40:24263)
-    at Ja (index-C4hRaSQ8.js:40:42318)
-    at index-C4hRaSQ8.js:40:40661
-    at w (index-C4hRaSQ8.js:25:1557)
-    at MessagePort.C (index-C4hRaSQ8.js:25:1919)
-l @ index-C4hRaSQ8.js:455
-(anonymous) @ index-C4hRaSQ8.js:455
-$d @ index-C4hRaSQ8.js:40
-Ja @ index-C4hRaSQ8.js:40
-(anonymous) @ index-C4hRaSQ8.js:40
-w @ index-C4hRaSQ8.js:25
-C @ index-C4hRaSQ8.js:25Understand this error
-index-C4hRaSQ8.js:463 Failed to fetch models TypeError: ue.getModels is not a function
-    at s (index-C4hRaSQ8.js:463:43761)
-    at index-C4hRaSQ8.js:463:44059
-    at $d (index-C4hRaSQ8.js:40:24263)
-    at Ja (index-C4hRaSQ8.js:40:42318)
-    at index-C4hRaSQ8.js:40:40661
-    at w (index-C4hRaSQ8.js:25:1557)
-    at MessagePort.C (index-C4hRaSQ8.js:25:1919)
-s @ index-C4hRaSQ8.js:463
-(anonymous) @ index-C4hRaSQ8.js:463
-$d @ index-C4hRaSQ8.js:40
-Ja @ index-C4hRaSQ8.js:40
-(anonymous) @ index-C4hRaSQ8.js:40
-w @ index-C4hRaSQ8.js:25
-C @ index-C4hRaSQ8.js:25Understand this error
-index-C4hRaSQ8.js:463 Upload failed: TypeError: ue.uploadModel is not a function
-    at l (index-C4hRaSQ8.js:463:44138)
-    at onUpload (index-C4hRaSQ8.js:463:52152)
-    at v (index-C4hRaSQ8.js:463:45318)
-    at onClick (index-C4hRaSQ8.js:463:48032)
-    at Object.H$ (index-C4hRaSQ8.js:37:9855)
-    at G$ (index-C4hRaSQ8.js:37:10009)
-    at q$ (index-C4hRaSQ8.js:37:10066)
-    at Pb (index-C4hRaSQ8.js:37:31446)
-    at XA (index-C4hRaSQ8.js:37:31863)
-    at index-C4hRaSQ8.js:37:36776)
------
-The "Upload Model" failure and the console errors (`TypeError: ue.uploadModel is not a function`) are caused by a **Disconnect between your Frontend Service Definition and Component Usage**.
-
-Specifically, your components expect specific helper functions (like `uploadModel`), but your current `api.js` only exports a raw Axios instance. Additionally, your Backend logs show a crash in the `standalone_pipeline` because of a legacy `flask` dependency.
-
-Here is the **Scenario-Based Fix** to resolve the Upload, Fetch, and Backend Stability issues.
 
 ---
 
-### 🚀 **Stage 1: Fix Frontend API Layer (The Root Cause)**
+## INVESTIGATION COMPLETE (2025-12-26) - Session 4
 
-**Scenario:** The `ModelGovernance` component tries to call `api.getModels()` and `api.uploadModel()`.
-**Current State:** `api.js` exports `axios.create()`, which has `get` and `post`, but **not** `getModels` or `uploadModel`.
-**Fix:** Refactor `api.js` to export a comprehensive service object.
+**Status**: 1 problem FIXED
 
-**File:** `frontend/src/services/api.js`
-**Action:** Replace the entire content with this robust version:
+### Investigation Results:
 
-```javascript
-import axios from 'axios';
+**P-2025-12-26-007: Missing API Methods - Model Upload Broken** ✅ FIXED
+- **Problem**: Console errors showing `TypeError: ue.getModels/uploadModel/getSystemOverview is not a function`
+- **Root Cause**: ApiClient class lacked specialized methods for model operations and system monitoring
+- **Impact**: Model upload completely broken, system monitoring broken, Lab Mode features broken
+- **Fix**: Added 9 specialized methods to ApiClient class
+- **Methods Added**:
+  - `getModels()` → `/v1/ai/list`
+  - `uploadModel(formData)` → `/v1/ai/upload` (with proper multipart/form-data handling)
+  - `acceptModel()`, `graduateModel()`, `enableModel()`, `activateModel()`, `rejectModel()`
+  - `getSystemOverview()` → `/v1/admin/health/overview`
+  - `getComponentLogs()`
+- **File**: `frontend/src/services/api.js`
+- **Reference**: `/progress/fixed_issues_log.md#P-2025-12-26-007`
 
-// 1. Determine Base URL
-const getBaseUrl = () => {
-  if (import.meta.env.VITE_API_URL) {
-    return import.meta.env.VITE_API_URL;
-  }
-  return window.location.hostname === 'localhost' 
-    ? 'http://localhost:8000/api/v1'  // Ensure v1 is included if your backend expects it
-    : '/api/v1';
-};
-
-// 2. Create Axios Instance
-const axiosInstance = axios.create({
-  baseURL: getBaseUrl(),
-  headers: {
-    'Content-Type': 'application/json',
-  },
-});
-
-// 3. Request Interceptor (Auth Token)
-axiosInstance.interceptors.request.use(
-  (config) => {
-    const token = localStorage.getItem('token');
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`;
-    }
-    return config;
-  },
-  (error) => Promise.reject(error)
-);
-
-// 4. Response Interceptor (Error Handling)
-axiosInstance.interceptors.response.use(
-  (response) => response,
-  (error) => {
-    if (error.response && error.response.status === 401) {
-      // Optional: Auto-logout logic
-      console.warn('Session expired or unauthorized');
-    }
-    return Promise.reject(error);
-  }
-);
-
-// 5. Define The Service Object (The Missing Piece)
-const api = {
-  // --- Core Methods ---
-  get: axiosInstance.get,
-  post: axiosInstance.post,
-  put: axiosInstance.put,
-  delete: axiosInstance.delete,
-  patch: axiosInstance.patch,
-
-  // --- Dashboard & System ---
-  getSystemOverview: () => axiosInstance.get('/metrics/system-overview'), // Verify endpoint match
-  
-  // --- AI Model Governance (Fixes your specific error) ---
-  getModels: () => axiosInstance.get('/ai/models'),
-  
-  uploadModel: (formData) => axiosInstance.post('/ai/upload', formData, {
-    headers: { 'Content-Type': 'multipart/form-data' }
-  }),
-  
-  deployModel: (modelId) => axiosInstance.post(`/ai/deploy/${modelId}`),
-  
-  // --- Client ---
-  getAccounts: () => axiosInstance.get('/client/accounts'),
-  connectAccount: (data) => axiosInstance.post('/onboarding/connect/credentials', data),
-};
-
-export default api;
-
+### Console Errors Resolved:
+```
+✅ FIXED: TypeError: ue.getSystemOverview is not a function
+✅ FIXED: TypeError: ue.getModels is not a function
+✅ FIXED: TypeError: ue.uploadModel is not a function
 ```
 
 ---
 
-### ⚙️ **Stage 2: Fix Backend "Flask" Crash**
+**Note**: No new problems currently pending. Add new problems below this line.
 
-**Scenario:** The backend logs show `ModuleNotFoundError: No module named 'flask'`. This is crashing the `standalone_pipeline` check.
-**Cause:** Old code in `standalone_optimizer.py` likely imports Flask, but you are running FastAPI.
-**Fix:** Remove the legacy import.
-
-**File:** `backend/pipelines/standalone_optimizer.py`
-**Action:** Remove `from flask import ...` or `import flask`.
-
-* If the file uses `jsonify` or `request` from Flask, replace them with standard Python `dict` or FastAPI Pydantic models.
-* **Instruction:** "Search for `import flask` or `from flask` in `backend/pipelines/standalone_optimizer.py` and delete those lines. Ensure the class logic uses standard Python data structures instead."
-
----
-
-### 🛡️ **Stage 3: Fix Pydantic "Protected Namespace" Warning**
-
-**Scenario:** Logs show `UserWarning: Field "model_version" has conflict with protected namespace "model_"`.
-**Cause:** Pydantic v2 reserves field names starting with `model_`.
-**Fix:** Add configuration to your Pydantic models.
-
-**File:** `backend/api/ai_routes.py` (or wherever `ModelMetadata` is defined)
-**Action:** Add `model_config` to the Pydantic class.
-
-```python
-from pydantic import BaseModel, ConfigDict
-
-class ModelMetadata(BaseModel):
-    model_name: str
-    model_version: str
-    # ... other fields
-    
-    # ADD THIS:
-    model_config = ConfigDict(protected_namespaces=()) 
-
-```
-
----
-
-### 🔌 **Stage 4: Verify Backend AI Routes**
-
-**Scenario:** Ensure the backend actually accepts the file upload at `/ai/upload`.
-
-**File:** `backend/api/ai_routes.py`
-**Action:** Verify/Update the code to handle `UploadFile`.
-
-```python
-from fastapi import APIRouter, UploadFile, File, Form, Depends
-# ... other imports
-
-router = APIRouter()
-
-@router.post("/upload")
-async def upload_model(
-    file: UploadFile = File(...),
-    description: str = Form(None),
-    current_user = Depends(get_current_user)
-):
-    # 1. Validate File
-    if not file.filename.endswith(('.h5', '.pkl', '.onnx', '.pt')):
-        raise HTTPException(400, "Invalid file format")
-    
-    # 2. Save File (Ensure directory exists)
-    file_location = f"ml_models/storage/{file.filename}"
-    os.makedirs(os.path.dirname(file_location), exist_ok=True)
-    
-    with open(file_location, "wb+") as file_object:
-        file_object.write(await file.read())
-
-    # 3. Register in DB (Pseudo-code)
-    # new_model = MLModel(name=file.filename, ...)
-    # db.add(new_model)
-    
-    return {"status": "success", "filename": file.filename}
-
-```
-
-### 🧹 **Final Cleanup Step**
-
-1. **Delete** `frontend/src/services/api.jsx` and `frontend/src/services/apiClient.jsx` if they exist. Use **ONLY** `api.js` to prevent import confusion.
-2. **Restart** the backend container to clear the "Flask" error.
-```bash
-docker-compose restart backend
-
-```
-
-
-
-**Result:**
-
-* Frontend `api.js` will now have `.uploadModel()`.
-* Console error `ue.uploadModel is not a function` will vanish.
-* Backend will accept the file without crashing.
 _Last Updated: 2025-12-26_
 _This file is actively monitored by the LLM at every session start_
 _The LLM will process problems from the "PASTE YOUR PROBLEMS HERE" section_

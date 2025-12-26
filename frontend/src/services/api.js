@@ -84,6 +84,64 @@ class ApiClient {
     async delete(endpoint, config = {}) {
         return this.request('DELETE', endpoint, config);
     }
+
+    // ============================================================================
+    // Lab Mode / AI Model Methods
+    // ============================================================================
+
+    async getModels() {
+        const res = await this.get('/v1/ai/list');
+        return res.data;
+    }
+
+    async uploadModel(formData) {
+        // For FormData uploads, we need to remove Content-Type header
+        // to let browser set it with correct boundary
+        const res = await this.request('POST', '/v1/ai/upload', {
+            body: formData,
+            headers: {} // Override default Content-Type for multipart/form-data
+        });
+        return res.data;
+    }
+
+    async acceptModel(modelId) {
+        const res = await this.put(`/v1/ai/models/${modelId}/accept`);
+        return res.data;
+    }
+
+    async graduateModel(modelId) {
+        const res = await this.put(`/v1/ai/models/${modelId}/graduate`);
+        return res.data;
+    }
+
+    async enableModel(modelId) {
+        const res = await this.put(`/v1/ai/models/${modelId}/enable`);
+        return res.data;
+    }
+
+    async activateModel(modelId) {
+        const res = await this.put(`/v1/ai/models/${modelId}/activate`);
+        return res.data;
+    }
+
+    async rejectModel(modelId) {
+        const res = await this.put(`/v1/ai/models/${modelId}/reject`);
+        return res.data;
+    }
+
+    // ============================================================================
+    // Admin / System Monitoring Methods
+    // ============================================================================
+
+    async getSystemOverview() {
+        const res = await this.get('/v1/admin/health/overview');
+        return res.data;
+    }
+
+    async getComponentLogs(component, limit = 50) {
+        const res = await this.get(`/v1/admin/logs/${component}?limit=${limit}`);
+        return res.data;
+    }
 }
 
 // Create singleton instance
@@ -189,14 +247,42 @@ export async function getInstance(instanceId) {
     return res.data;
 }
 
+// Lab/AI model functions (legacy exports for backward compatibility)
 export async function getModels() {
-    const res = await api.get('/v1/lab/models');
-    return res.data;
+    return api.getModels();
+}
+
+export async function uploadModel(formData) {
+    return api.uploadModel(formData);
 }
 
 export async function activateModel(modelId) {
-    const res = await api.put(`/v1/lab/models/${modelId}/activate`);
-    return res.data;
+    return api.activateModel(modelId);
+}
+
+export async function acceptModel(modelId) {
+    return api.acceptModel(modelId);
+}
+
+export async function graduateModel(modelId) {
+    return api.graduateModel(modelId);
+}
+
+export async function enableModel(modelId) {
+    return api.enableModel(modelId);
+}
+
+export async function rejectModel(modelId) {
+    return api.rejectModel(modelId);
+}
+
+// Admin/System functions
+export async function getSystemOverview() {
+    return api.getSystemOverview();
+}
+
+export async function getComponentLogs(component, limit = 50) {
+    return api.getComponentLogs(component, limit);
 }
 
 // Admin

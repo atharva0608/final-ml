@@ -26,6 +26,41 @@ All known problems have been fixed.
 
 ## Fixed Problems
 
+### P-2025-12-26-007: Missing API Methods Causing TypeError Crashes
+
+**Status**: ✅ Fixed
+**Reported**: 2025-12-26
+**Fixed**: 2025-12-26
+**Severity**: CRITICAL
+
+**Description**:
+API client was missing specialized methods that components expected, causing multiple TypeError crashes:
+- `TypeError: ue.getSystemOverview is not a function`
+- `TypeError: ue.getModels is not a function`
+- `TypeError: ue.uploadModel is not a function`
+
+Components were calling `api.getModels()`, `api.uploadModel()`, `api.getSystemOverview()` but the ApiClient class only had generic HTTP methods (.get, .post, etc.) without these specialized wrappers.
+
+**Observed Behavior**:
+- ModelContext tries to fetch models → crashes with TypeError
+- ModelContext tries to upload model → crashes with TypeError
+- SystemMonitor tries to fetch overview → crashes with TypeError
+- Upload model functionality completely broken
+- System monitoring dashboard broken
+
+**Expected Behavior**:
+- `api.getModels()` returns model list from `/v1/ai/list`
+- `api.uploadModel(formData)` uploads model to `/v1/ai/upload`
+- `api.getSystemOverview()` returns system health from `/v1/admin/health/overview`
+- All model governance methods available (accept, graduate, enable, activate, reject)
+
+**Root Cause**:
+ApiClient class lacked specialized methods - only had generic .get(), .post() methods
+
+**Fix Reference**: `/progress/fixed_issues_log.md#P-2025-12-26-007`
+
+---
+
 ### P-2025-12-26-006: AuthGateway Using Incorrect API Endpoint
 
 **Status**: ✅ Fixed

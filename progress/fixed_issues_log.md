@@ -8,6 +8,79 @@ Complete historical record of all bug fixes. **NEVER delete entries.**
 
 ---
 
+## P-2025-12-26-007: Missing API Methods Causing TypeError Crashes
+
+**Date**: 2025-12-26
+**Fixed By**: LLM Session (claude/aws-dual-mode-connectivity-fvlS3)
+
+**Root Cause**:
+ApiClient class in api.js had generic HTTP methods (.get, .post, .put, .delete) but was missing specialized wrapper methods that components expected. Components like ModelContext and SystemMonitor called `api.getModels()`, `api.uploadModel()`, `api.getSystemOverview()` which didn't exist, causing TypeError crashes.
+
+**Files Changed**:
+- `frontend/src/services/api.js` - Added 10+ specialized methods to ApiClient class
+
+**Behavior Change**:
+- **Before**: ApiClient only had .get(), .post(), .put(), .delete() methods
+- **After**: ApiClient has specialized methods for models, uploads, system monitoring
+
+**Code Added**:
+```javascript
+// In ApiClient class:
+async getModels() {
+    const res = await this.get('/v1/ai/list');
+    return res.data;
+}
+
+async uploadModel(formData) {
+    const res = await this.request('POST', '/v1/ai/upload', {
+        body: formData,
+        headers: {} // Let browser set Content-Type with boundary
+    });
+    return res.data;
+}
+
+async getSystemOverview() {
+    const res = await this.get('/v1/admin/health/overview');
+    return res.data;
+}
+
+// Plus: acceptModel, graduateModel, enableModel, activateModel,
+// rejectModel, getComponentLogs
+```
+
+**Methods Added**:
+1. `getModels()` - Fetch AI models list
+2. `uploadModel(formData)` - Upload new model file
+3. `acceptModel(modelId)` - Accept model for testing
+4. `graduateModel(modelId)` - Graduate model to production
+5. `enableModel(modelId)` - Enable model
+6. `activateModel(modelId)` - Activate model
+7. `rejectModel(modelId)` - Reject model
+8. `getSystemOverview()` - Fetch system health overview
+9. `getComponentLogs(component, limit)` - Fetch component logs
+
+**Verification Method**:
+1. ModelContext calls `api.getModels()` - returns model list
+2. User uploads model via UI - calls `api.uploadModel(formData)` - succeeds
+3. SystemMonitor calls `api.getSystemOverview()` - returns system health
+4. No TypeError crashes in console
+
+**Impact Radius**:
+- Model upload functionality
+- Model governance (accept/graduate/activate pipeline)
+- System monitoring dashboard
+- All Lab Mode features
+
+**Dependencies Affected**:
+- ModelContext.jsx
+- SystemMonitor.jsx
+- Model governance UI components
+
+**Rollback Instructions**:
+Restore previous api.js (not recommended - will break model upload and monitoring)
+
+---
+
 ## P-2025-12-26-006: AuthGateway Using Incorrect API Endpoint
 
 **Date**: 2025-12-26

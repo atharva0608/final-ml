@@ -10,6 +10,33 @@ Chronological timeline of all code changes for quick reference.
 
 ## 2025-12-26
 
+### Fix: Missing API Methods Breaking Model Upload (P-2025-12-26-007)
+
+**Commit**: TBD
+**Module**: frontend/src/services
+**Impact**: Model upload, model governance, system monitoring
+**Files**: 1 file modified
+
+**Changes**:
+Added 9 specialized methods to ApiClient class to fix TypeError crashes:
+- `getModels()` - Fetch AI models list from `/v1/ai/list`
+- `uploadModel(formData)` - Upload model files to `/v1/ai/upload`
+- `acceptModel()`, `graduateModel()`, `enableModel()`, `activateModel()`, `rejectModel()` - Model governance
+- `getSystemOverview()` - Fetch system health from `/v1/admin/health/overview`
+- `getComponentLogs()` - Fetch component logs
+
+**Console Errors Fixed**:
+- `TypeError: ue.getSystemOverview is not a function`
+- `TypeError: ue.getModels is not a function`
+- `TypeError: ue.uploadModel is not a function`
+
+**File Modified**:
+- `frontend/src/services/api.js` - Added specialized methods to ApiClient class
+
+**Reference**: `/progress/fixed_issues_log.md#P-2025-12-26-007`
+
+---
+
 ### Fix: Login Loop and TypeError Crashes (P-2025-12-26-004, 005, 006)
 
 **Commit**: TBD
