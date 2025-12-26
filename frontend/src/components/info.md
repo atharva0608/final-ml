@@ -50,6 +50,36 @@ setCurrentStep(1)
 
 ---
 
+#### Button: "Logout" ⭐ NEW (2025-12-26)
+**Location**: Lines 363-369 (Connected Accounts view), Lines 475-481 (Onboarding view)
+**OnClick**: `handleLogout`
+**Purpose**: Allow users to logout and return to login page
+**Recent Fix**: Added to prevent users from being stuck on onboarding page
+**Function**: `handleLogout` (lines 41-44)
+
+**Complete Flow**:
+```javascript
+1. User clicks "Logout" button in header
+   ↓
+2. handleLogout() called
+   → Calls logout() from AuthContext
+   → Clears localStorage (auth_token, ecc_user)
+   → Clears user state
+   ↓
+3. Navigate to /login
+   → User is redirected to login page
+   → Can login with different credentials
+```
+
+**Use Cases**:
+- User wants to switch to a different account
+- User is on onboarding page but wants to go back to login
+- User has no AWS accounts and is stuck in redirect loop
+
+**Visual**: Gray button with logout icon, positioned in header next to "Add Account" button
+
+---
+
 #### Button: "Disconnect" (for each account)
 **Location**: Line ~406
 **OnClick**: `handleDisconnect(account.id)`
@@ -716,6 +746,24 @@ API: GET /client/accounts
 - Password never sent in plaintext (bcrypt verification on backend)
 - JWT token with 24-hour expiration ⚠️ PROTECTED
 - Token stored in localStorage (consider HTTP-only cookie for production)
+
+**Recent Fix (2025-12-26)**: Added automatic redirect for already-logged-in users
+**Location**: Lines 18-27 (useEffect hook)
+**Purpose**: Prevents login page from showing when user is already authenticated
+**Logic**:
+```javascript
+useEffect(() => {
+  if (user) {
+    if (user.role === 'admin') {
+      navigate('/', { replace: true });
+    } else {
+      navigate('/client', { replace: true });
+    }
+  }
+}, [user, navigate]);
+```
+
+**Issue Fixed**: Users with stored auth tokens were seeing login page briefly before being redirected, or getting stuck in redirect loops
 
 ---
 
