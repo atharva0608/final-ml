@@ -1,900 +1,909 @@
-# AWS Cloud Optimization Platform - Complete Application Guide
-
-## Purpose
-
-This document provides a **complete, human-readable, scenario-based description** of the entire application. It explains what the application does, how users interact with it, and how all components work together.
-
-**Last Updated**: 2025-12-25
-**Authority**: HIGH (Master application reference)
-
----
-
-## Table of Contents
+In client side we have 
+
+1. Dashboard-
+Purpose
+The Dashboard provides a real-time operational overview of a selected cluster, combining cluster health, capacity, autoscaler status, workload distribution, and hibernation visibility in a single view.
+This is the default landing page after selecting a cluster
+Dashboard Layout
+The dashboard is divided into four logical zones:
+Cluster Details (left)
+Nodes & Workloads Summary (top center)
+Autoscaler & Hibernation Controls (middle)
+Resource Utilization (bottom)
+1. Cluster Details Panel
+
+Location Top-left section of the dashboard.
+
+Fields Displayed
+Cluster Status
+Connected / Disconnected / Read-only
+Status badge with icon
+Kubernetes Provider
+Cloud provider + Kubernetes service (e.g., GKE)
+Region
+Primary cluster region
+Kubernetes Version
+Connected
+Relative time since last successful agent heartbeat
+Cluster ID
+Copy-to-clipboard action
+Behavior
+Status updates in near real-time
+If disconnected, dashboard becomes read-only
+Clicking cluster name navigates back to Cluster List
+2. Nodes Summary Panel
+
+Location
+Top-right section of the dashboard.
+Metrics Displayed
+Nodes Overview
+Total Nodes
+Split by:
+On-Demand
+Spot
+Fallback
+Node Ownership Breakdown
+Table with:
+Managed by
+Platform-managed nodes
+Cloud-managed (native) nodes
+Count
+CPU utilization percentage
+Behavior
+Reflects autoscaler decisions
+Shows coexistence of platform and cloud nodes
+Helps users understand who controls what
+
+3. Workloads Summary
+Location
+Below Nodes Summary.
+Metrics
+Total Pods
+Scheduled Pods
+Behavior
+If scheduled < total pods:
+Indicates capacity or scheduling issue
+Used as a quick health signal for the cluster
+4. Autoscaler Policies Summary
+Section Title
+Autoscaler Policies
+Display
+Shows count of enabled autoscaler policies
+Example: 2 / 3 enabled
+Interaction
+Clicking opens Autoscaler Settings
+Acts as a status indicator, not configuration panel
+5. Hibernation Schedules Summary
+Section Title
+Hibernation Schedules
+Display
+Shows number of active schedules
+Example: 1
+Interaction
+Clicking opens Cluster Hibernation page
+If no schedules exist:
+Shows empty state
+Prompts user to create a schedule
+Purpose
+Makes time-based cost controls visible directly on dashboard
+Prevents “hidden automation” surprises
+6. Resource Utilization (Visual)
+Location
+Bottom section of the dashboard.
+Resource Donut Charts
+CPU
+Total CPU provisioned
+Used vs unused capacity
+Visual indicator of over/under-provisioning
+Memory
+Total memory provisioned
+Used vs unused capacity
+Storage (if available)
+Allocated vs consumed storage
+Behavior
+Charts are informational, not interactive
+Used to visually confirm optimization impact
+Updates dynamically as nodes are added/removed
+Dashboard Design Principles (Implicit)
+Read-heavy, action-light
+No destructive actions directly on dashboard
+Operational confidence
+Everything needed to answer: “Is my cluster healthy and optimized?”
+Fast navigation
+Each section links to its detailed configuration page
+Safe by default
+No hidden automation without visibility
+What the Dashboard Does NOT Do (By Design)
+No configuration editing
+No autoscaler tuning
+No workload mutation
+No security remediation
+Those actions are intentionally routed to their dedicated sections.
+Summary
+The Dashboard acts as:
+A single source of truth for cluster state
+A visibility layer for automation
+A navigation hub to deeper controls
+A trust-building surface for users
+2. Cluster List-
+Purpose-This section displays all Kubernetes clusters that our read-only agent is monitoring and provides controls to connect, disconnect, or manage clusters.
+Cluster Summary Overview:
+At the top of the Cluster List page, a summary section displays aggregated metrics across all connected clusters, including total compute cost (monthly), total number of nodes (split by Spot, Fallback, and On-Demand), total CPU, and total memory. This overview provides a quick, organization-level snapshot before drilling down into individual cluster details.
+Canonical Cluster States
+State
+Description
+PENDING
+Cluster created in platform, agent not yet verified
+CONNECTING
+Agent install script executed, verification in progress
+CONNECTED
+Agent verified, cluster fully operational
+READ_ONLY
+Metrics available, optimization disabled
+PARTIALLY_CONNECTED
+Agent heartbeat present, incomplete permissions
+DISCONNECTED
+Agent unreachable or intentionally disconnected
+ERROR
+Terminal error during onboarding
+REMOVING
+Cluster removal in progress
+REMOVED
+Cluster fully deleted
+
+State Definitions & Transitions
+1. PENDING
+Description
+Cluster record exists in backend
+Agent has not yet connected
+Created immediately after user clicks Connect Cluster
+Entry Conditions
+User initiates cluster connection
+Cluster name & provider registered
+Allowed Transitions
+PENDING → CONNECTING
+PENDING → REMOVED
+UI Behavior
+Cluster visible in list
+Status: Pending
+Actions:
+Remove cluster
+2. CONNECTING
+Description
+Agent install script executed
+Backend awaiting:
+Agent registration
+Heartbeat
+Permission validation
+Entry Conditions
+User clicks “I ran the script”
+Backend Checks
+Agent pod exists
+Initial heartbeat received
+API connectivity validated
+Permission scope verified
+Allowed Transitions
+CONNECTING → CONNECTED
+CONNECTING → PARTIALLY_CONNECTED
+CONNECTING → ERROR
+UI Behavior
+Status: Connecting
+Spinner indicator
+No destructive actions allowed
+3. CONNECTED
+Description
+Agent fully functional
+All required permissions validated
+Metrics, cost data, and optimization enabled
+Entry Conditions
+Successful verification of:
+Heartbeat
+Metrics ingestion
+Required RBAC permissions
+Allowed Transitions
+CONNECTED → READ_ONLY
+CONNECTED → DISCONNECTED
+CONNECTED → PARTIALLY_CONNECTED
+CONNECTED → REMOVING
+UI Behavior
+Status: Connected
+All features enabled
+Actions:
+Adjust costs
+Disconnect cluster
+Remove cluster
+4. READ_ONLY
+Description
+Agent connected
+Optimization permissions disabled or revoked
+Monitoring remains active
+Entry Conditions
+User disables optimization
+Permission downgrade detected
+Allowed Transitions
+READ_ONLY → CONNECTED
+READ_ONLY → DISCONNECTED
+READ_ONLY → REMOVING
+UI Behavior
+Status badge: Read-only
+Metrics visible
+Optimization actions disabled
+Action:
+Enable optimization
+5. PARTIALLY_CONNECTED (Error-Recoverable State)
+Description
+Agent heartbeat present
+One or more required capabilities missing
+Common Causes
+Missing cloud permissions
+Cost API access denied
+Metrics server unreachable
+Node-level RBAC missing
+Entry Conditions
+Partial verification success during CONNECTING or CONNECTED
+Allowed Transitions
+PARTIALLY_CONNECTED → CONNECTED
+PARTIALLY_CONNECTED → READ_ONLY
+PARTIALLY_CONNECTED → DISCONNECTED
+PARTIALLY_CONNECTED → ERROR
+UI Behavior
+Status: Degraded / Partial
+Warning banner displayed
+Feature availability reduced
+Action:
+View error details
+Retry verification
+Reconnect cluster
+6. ERROR (Terminal Onboarding Failure)
+Description
+Agent installation or verification failed
+Cluster not usable
+Common Causes
+Script failed to execute
+Agent pod crash-looping
+Invalid cluster credentials
+Network egress blocked
+Entry Conditions
+Hard failure during CONNECTING
+Allowed Transitions
+ERROR → CONNECTING (retry)
+ERROR → REMOVED
+UI Behavior
+Status: Error
+Error message displayed
+Copyable error logs
+Actions:
+Retry connection
+Remove cluster
+7. DISCONNECTED
+Description
+Agent intentionally removed or unreachable
+No live data ingestion
+Entry Conditions
+User disconnects cluster
+Heartbeat timeout exceeded
+Allowed Transitions
+DISCONNECTED → CONNECTING
+DISCONNECTED → REMOVED
+UI Behavior
+Status: Disconnected
+Historical data visible
+Actions:
+Reconnect cluster
+Remove cluster
+8. REMOVING
+Description
+Cluster deletion in progress
+Platform-managed resources being cleaned up
+Entry Conditions
+User confirms removal
+Disconnect with “delete nodes” selected
+Allowed Transitions
+REMOVING → REMOVED
+UI Behavior
+Status: Removing
+Actions disabled
+Progress indicator
+9. REMOVED
+Description
+Cluster fully deleted
+No backend records remain
+Entry Conditions
+Successful completion of removal process
+UI Behavior
+Cluster removed from list
+No recovery possible
+Error Handling & Recovery Model
+Retry Logic
+Agent heartbeat rechecked periodically
+Manual retry available in UI
+Automatic recovery for transient failures
+Timeouts
+CONNECTING timeout → ERROR
+Heartbeat timeout → DISCONNECTED
+Audit Logging
+All transitions generate audit events:
+Previous state
+New state
+Trigger (user / system)
+Timestamp
+Failure reason (if any)
+Why This Model Works
+Prevents undefined states
+Supports safe retries
+Allows partial functionality
+Enables clear UI behavior mapping
+Scales to multi-provider support
+Summary
+This lifecycle model ensures:
+Clear separation of user intent vs system health
+Safe onboarding and offboarding
+Graceful degradation instead of hard failures
+Predictable UI behavior
+
+
+Disconnect Cluster Flow (Pop-up Modal)
+Popup Title
+Disconnect your cluster
+Popup Description / Warning Text
+This action will remove all platform-managed resources managing your cluster.
+The platform-created cloud user cannot be deleted automatically and must be removed manually from the cloud provider IAM.
+A “Full list of resources” link is provided for reference.
+Confirmation Section
+Instruction text:
+Please confirm that you want to disconnect from the platform by entering the cluster name below.
+Input field:
+Cluster name must be typed exactly (text validation required)
+Paste support enabled
+Optional Destructive Action
+Checkbox (enabled by default):
+Delete all platform-created nodes
+Warning badge displayed inline:
+Might cause downtime
+Helper text:
+All platform-created nodes will be drained and deleted.
+Depending on application configuration, this action may cause downtime.
+Footer Actions
+Cancel (secondary action, closes modal)
+Disconnect (primary destructive action, disabled until cluster name matches)
+
+
+
+ 
+3.Optimization
+Purpose
+The Optimization section is the central place where users define how the platform should optimize costs and resources for a cluster.
+It exposes policy-driven controls that determine what optimizations are allowed, how aggressively they are applied, and what savings can be achieved.
+This section does not directly change infrastructure on its own; instead, it configures the optimization behavior used by features such as Available Savings, Rebalancer, and Autoscaler.
+Workload Optimization Preferences
+
+Workload Rightsizing
+Toggle
+Enable / Disable workload rightsizing
+Description
+Automatically applies CPU and memory request recommendations based on actual workload usage.
+Uses historical utilization data to prevent over-provisioning while maintaining workload stability.
+Metrics Displayed
+Current efficiency (%)
+Represents how efficiently allocated resources are being used.
+Waste
+Displays wasted CPU and memory (e.g., unused requests).
+$ Saved by rightsizing
+Actual cost savings already achieved.
+Additional savings (%)
+Potential additional savings if remaining recommendations are applied.
+View Action
+Opens the Workloads Efficiency report for workload-level details.
+Behavior
+When enabled:
+Rightsizing recommendations are applied automatically.
+When disabled:
+Recommendations remain visible but are not enforced.
+Configuration Preferences
+Use Spot Instances
+Toggle
+Enable / Disable Spot instance usage
+Description
+Enables the platform to recommend and provision Spot instances to reduce compute costs.
+Options
+All workloads
+All workloads are considered eligible for Spot, unless explicitly restricted.
+Spot-friendly workloads
+Only workloads marked as interruption-tolerant are considered.
+Metrics Displayed
+Workloads to run on Spot
+Shows count and percentage of workloads eligible for Spot (e.g., 12 / 12, 100%).
+Additional actions
+Indicates how many workloads need configuration changes (e.g., tolerations) to become Spot-friendly.
+Available savings (%)
+Estimated savings achievable through Spot adoption.
+View Action
+Opens detailed Spot eligibility and recommendations view.
+ARM Support
+Toggle
+Enable / Disable ARM-based nodes
+Description
+Allows the platform to include ARM-based instances in the optimized cluster configuration to improve price-performance.
+Controls
+Slider to define percentage of CPUs to run on ARM
+Range: 0% to 100%
+Metrics Displayed
+Available savings (%)
+Estimated savings achievable through ARM migration.
+Behavior
+Gradually migrates workloads to ARM nodes based on the configured percentage.
+Supports mixed-architecture clusters (ARM + x86).
+Optimization Behavior (System-Level)
+All optimization settings are cluster-scoped.
+Changes here affect:
+Available Savings calculations
+Rebalance decisions
+Node replacement strategies
+No immediate infrastructure changes occur unless:
+Rebalance is triggered
+Autoscaler actions are enabled
+Design Intent
+Shift optimization from manual tuning to policy-based automation
+Allow users to:
+Start conservatively
+Gradually increase optimization scope
+Ensure transparency by always showing:
+Current impact
+Achieved savings
+Remaining potential
+Summary
+The Optimization section acts as:
+A policy configuration layer
+A safety boundary for automation
+A savings potential indicator
+It defines what the platform is allowed to optimize, while execution happens through controlled workflows like Available Savings and Rebalancer.
+
+4.Cost Monitoring
+Purpose
+The Cost Monitoring section provides continuous visibility into infrastructure spend across clusters, nodes, and workloads.
+It enables users to understand where money is being spent, detect inefficiencies early, and track the impact of optimization actions over time.
+This section is observational and analytical by design—it does not make changes, but it informs decisions taken in Optimization and Available Savings.
+Cost Monitoring Dashboard
+Overview Metrics
+At the top of the page, high-level cost indicators are displayed for the selected scope (organization or cluster):
+Total Compute Cost
+Monthly aggregated cost
+Includes all active nodes and workloads
+Cost Trend Indicator
+Percentage increase or decrease compared to the previous period
+Time Range Selector
+Daily / Weekly / Monthly views
+Cost Breakdown Views
+Cost by Cluster
+Displays cost distribution across all connected clusters
+Helps identify:
+Most expensive clusters
+Underutilized clusters
+Supports sorting by total cost
+Cost by Node / Instance Type
+Shows spend per node group or instance type
+Includes:
+Instance family
+Pricing model (On-Demand / Spot / Fallback)
+Hourly and monthly cost
+Useful for identifying:
+Expensive instance types
+Inefficient node sizing
+Cost by Workload
+Attributes infrastructure cost to individual workloads (deployments, services)
+Helps teams understand:
+Which applications drive cost
+Cost per workload over time
+Enables accountability at the application level
+Resource Utilization vs Cost
+CPU & Memory Cost Correlation
+Visual comparison between:
+Allocated resources
+Actual utilization
+Associated cost
+Highlights:
+Over-provisioned workloads
+Idle but expensive resources
+Filters & Controls
+Filters
+Cluster
+Namespace
+Workload
+Resource type (CPU / Memory)
+Pricing model (Spot / On-Demand)
+Time range
+Search
+Keyword-based search for clusters, workloads, or nodes
+Historical Analysis
+Time-Series Cost Trends
+Line and bar charts showing cost evolution
+Supports:
+Day-over-day
+Month-over-month comparisons
+Used to:
+Track optimization impact
+Detect sudden cost spikes
+Integration with Optimization
+Cost Monitoring feeds data into:
+Available Savings
+Workload Rightsizing
+Rebalance decisions
+Any optimization action taken is later reflected here as:
+Reduced spend
+Improved cost efficiency
+Read-Only by Design
+No destructive or mutating actions are available
+Ensures:
+Safe access for finance and management users
+Separation between visibility and control
+Design Intent
+Provide financial transparency without operational risk
+Enable collaboration between:
+Engineering
+DevOps
+Finance (FinOps)
+Make cost data:
+Actionable
+Traceable
+Easy to correlate with infrastructure changes
+Summary
+The Cost Monitoring section acts as:
+A single source of truth for spend
+A diagnostic tool for inefficiencies
+A feedback loop for optimization efforts
+It bridges the gap between raw cloud billing data and intelligent optimization workflows.
+
+
+
+4.Available Savings
+
+Purpose - The Available Savings section provides a centralized cost-optimization control plane for a selected cluster. It shows current compute spend, optimization progress, actionable savings opportunities, and safe automation controls to move the cluster toward its most cost-efficient configuration.
+This section answers one core question for the user:
+“How much am I spending today, how much can I save, and what action should I take next?”
+Top Summary Panel
+Current Compute Cost
+Displays the current monthly compute cost for the selected cluster.
+This value reflects:
+Active nodes
+Instance pricing
+CPU and memory allocations
+Progress to Optimal Setup
+A percentage indicator (e.g., 82.9%) showing how close the cluster is to its optimal cost configuration.
+Visual progress bar:
+Left side = current state
+Right side = optimal state
+Serves as a continuous optimization score, not a static metric.
+
+Rebalance Recommendation Section
+Section Title
+Rebalance to reach optimal configuration
+Description
+Explains that the platform can automatically:
+Replace suboptimal nodes
+Provision more cost-efficient alternatives
+Migrate workloads safely
+Primary Action
+Rebalance button
+Initiates automated infrastructure optimization
+Performs node replacement and workload migration
+Aims to reach the optimal configuration shown above
+This action is guided and reversible, not destructive by default.
+
+Workload Optimization Preferences
+This section defines policy-level optimization controls that influence how savings are achieved.
+
+Workload Rightsizing
+Toggle
+ON / OFF
+Description
+Automatically adjusts CPU and memory requests based on actual workload usage.
+Prevents over-provisioning while maintaining workload stability.
+Metrics Displayed
+Current efficiency percentage
+Wasted CPU and memory
+Dollar amount saved by rightsizing
+Additional savings potential (percentage)
+Behavior
+When enabled:
+Rightsizing recommendations are automatically applied
+When disabled:
+Recommendations remain visible but are not enforced
+Configuration Comparison
+Purpose
+Provides a transparent, side-by-side comparison between the current cluster configuration and the optimized configuration.
+
+Current Cluster Configuration
+Shows:
+Instance type(s)
+CPU and memory allocation
+Hourly cost
+Total monthly compute cost
+This represents the existing state of the cluster.
+
+Optimized Cluster Configuration
+Shows:
+Proposed instance types
+Optimized CPU and memory allocation
+Reduced hourly cost
+Reduced total monthly compute cost (highlighted)
+This represents the post-optimization state if recommended actions are applied.
+
+Highlighted Outcome
+Optimized monthly compute cost is visually emphasized
+Makes savings immediately understandable and confidence-building
+Allows users to see exactly what will change before taking action
+Navigation & Context
+The Available Savings page is:
+Accessible from the left navigation
+Also reachable via “Adjust costs” from the Cluster List
+All data shown is scoped to the selected cluster
+Actions taken here are reflected in:
+Dashboard
+Cost monitoring
+Audit log
+Design Intent (Implicit)
+Focused on outcomes, not configuration complexity
+Encourages safe automation over manual tuning
+Makes cost optimization:
+Measurable
+Incremental
+Transparent
+Summary
+The Available Savings section acts as:
+A cost health report
+An optimization progress tracker
+A decision surface for automation
+A trust layer that shows impact before execution
+It is the primary interface where users move from cost visibility to cost action.
+
+6.Security & Compliance
+Overview
+The Security & Compliance feature provides automated security assessment, runtime threat detection, and compliance reporting for Kubernetes clusters connected to CAST AI. It continuously evaluates cluster posture against industry standards (e.g., CIS Benchmarks), identifies vulnerabilities, and highlights configuration issues that could increase security risk. 
+Primary UI Elements
+Security Dashboard: Summary of overall security posture with key metrics such as compliance score, vulnerabilities count, and non-compliant resources.
+Compliance Report: Lists security best practice violations with severity levels and remediation guidance. Cast AI
+Vulnerabilities Report: Shows container image vulnerabilities across clusters with severity and affected resources. Cast AI
+Attack Paths: Visualization of possible exploit vectors through misconfigurations or exposed services. Cast AI
+Node OS Update Monitoring: Tracks outdated node OS images and schedules updates to improve security and compliance posture. Cast AI
+Agent & Controls
+Kvisor Security Agent
+Installed in the cluster to enable enhanced security features.
+Performs container image scanning, configuration assessment, and runtime anomaly detection.
+Status Indicators
+Ready to enable
+Enabled
+Activating
+Update needed
+These indicators show current security feature state and installation progress. Cast AI
+Configuration & Customization
+Users can enable or disable specific security controls (e.g., vulnerability scanning, compliance scanning, runtime detection) per cluster. Cast AI
+Filtering in reports allows narrowing findings by severity, resource type, cluster, and namespace. Cast AI
+7.Autoscaler
+Overview
+The Autoscaler feature manages cluster capacity automatically to match workload demand and reduce costs by scaling node counts up or down based on actual utilization. Cast AI
+Key UI Settings
+Unscheduled Pods Policy
+Automatically adds nodes when unschedulable pods are detected.
+Node Deletion Policy
+Removes idle nodes after a configurable TTL.
+Evictor Mode
+Continuously compacts pods into fewer nodes to maximize utilization and free up empty nodes.
+Optional Aggressive Mode considers applications with single replicas.
+Scoped Mode (API/Terraform Only)
+Limits autoscaling activity to nodes managed by CAST AI (Pods must tolerate specific taints). Cast AI
+Behavior & Policies
+Policies can be toggled on/off using switches in the Autoscaler settings UI.
+Advanced policies include CPU limits, minimum/maximum resource bounds, and selective scaling constraints. Cast AI
+8.Node Templates
+Overview
+Node Templates define how new nodes should be provisioned by the autoscaler — essentially acting as virtual autoscaler profiles separate from cluster default settings. They determine what kind of nodes CAST AI will add for scaling operations. Cast AI
+Primary Concepts
+Template Name & Status Switch:
+Each template has a descriptive name and an enable/disable switch in UI.
+Node Selection Properties:
+Custom taints and labels can be applied so workloads with matching scheduling constraints land on templated nodes. Cast AI
+Linked Node Configuration:
+Each template can be associated with a Node Configuration that defines specifics like disk size, image version, network subnets, etc. Cast AI
+Resource Offering & Architecture:
+Templates can target different instance types (On-Demand, Spot) and CPU architectures (x86, ARM). Cast AI
+Generated Templates & Management
+UI provides a “Generate Templates” option to auto-create common templates for the cluster based on current utilization.
+Templates are added in a disabled state so operators can review before enabling. Cast AI
+
+
+
+9.Cluster Hibernation
+Purpose
+The Cluster Hibernation feature enables organizations to automatically pause and resume Kubernetes clusters based on predefined schedules, helping reduce infrastructure costs during periods of inactivity such as nights, weekends, or non-working hours.
+This feature is especially useful for development, testing, staging, and non-production clusters that do not require 24/7 availability.
+
+Cluster Hibernation Overview
+When enabled, Cluster Hibernation allows users to:
+Schedule when clusters should hibernate (scale down)
+Automatically resume clusters at specified times
+Reduce cloud spend without manual intervention
+Maintain predictable cluster availability aligned with business hours
+Hibernation Schedules View
+Main Page Elements
+Create Schedule Section
+Primary CTA:
+Add hibernation schedule
+Opens the schedule creation flow
+Quickstart Option:
+Quickstart with workday schedule
+Pre-configured weekday (business hours) hibernation template
+Schedule List Panel
+Displays all configured hibernation schedules for the selected cluster.
+Each schedule includes:
+Schedule Name
+Enable / Disable Toggle
+Allows temporarily turning schedules on or off without deleting them
+Status Indicator
+Active / Disabled
+
+Schedule Configuration (Conceptual)
+A hibernation schedule defines:
+Active Periods
+Time ranges when the cluster should remain running
+Hibernate Periods
+Time ranges when the cluster should be scaled down
+Days of the Week
+Weekdays, weekends, or custom day selections
+Timezone Awareness
+Schedules respect the configured cluster or organization timezone
+Cluster Behavior During Hibernation
+When a cluster enters hibernation:
+Worker nodes are scaled down or removed
+Compute resources are released
+Cluster control plane remains reachable (depending on provider)
+No workloads are scheduled or running
+When resuming:
+Nodes are re-provisioned automatically
+Workloads resume normal scheduling
+Autoscaler policies re-apply
+Cost Optimization Impact
+Visual Cost Insight
+The UI highlights:
+Total cluster cost (monthly)
+Estimated savings percentage
+Before vs after cost trend
+Clear indication of cost reduction during hibernation periods
+This helps users directly correlate hibernation schedules with cost savings.
+Safety & Usage Guidelines
+Recommended primarily for non-production clusters
+Production clusters should use hibernation only if:
+Workloads are stateless
+Downtime is acceptable
+Users should ensure:
+No critical jobs are scheduled during hibernation windows
+External dependencies tolerate cluster downtime
+Integration with Other Features
+Cluster Hibernation works in coordination with:
+Autoscaler
+Autoscaler resumes normal operation after wake-up
+Cost Monitoring
+Cost reductions are reflected in cost dashboards
+Available Savings
+Hibernation contributes to overall savings metrics
+Audit Log
+All hibernation and resume events are recorded
+Design Intent
+The Cluster Hibernation feature is designed to:
+Eliminate manual cluster shutdown/startup workflows
+Enforce cost discipline automatically
+Align infrastructure availability with real usage patterns
+Provide predictable and transparent cost savings
+Summary
+Cluster Hibernation is a scheduling-based cost optimization feature that:
+Automatically pauses clusters during idle periods
+Resumes them when needed
+Reduces unnecessary cloud spend
+Requires minimal ongoing management
+It is a key component of a cost-aware Kubernetes operating model, especially for organizations managing multiple environments.
+
+10.Audit Log
+Purpose
+The Audit Log section provides a centralized, chronological record of all actions and events that occur within a cluster managed by the platform. It is designed to support:
+Change tracking
+Troubleshooting
+Security and compliance auditing
+Operational transparency
+Audit logging captures both user-initiated actions and automated system behaviors triggered by policies or internal workflows.
+
+Accessing the Audit Log
+Navigation
+Users can access the Audit Log via:
+Left sidebar menu under the selected cluster
+Audit log item
+Entry point from related sections (e.g., Hibernation events, Rebalance actions)
+Once opened, the audit log loads a scrollable table of events for the cluster.
+Audit Log Interface
+Table Columns
+Each entry in the Audit Log displays:
+Timestamp
+When the action or event occurred. Cast AI
+Operation Name
+A short description of the action performed (e.g., “Cluster hibernated”, “Node template updated”). Cast AI
+Initiated By
+Identifies the actor:
+User email (for manual actions)
+Policy name (for automated actions) Cast AI
+Event Details
+Expandable Entries
+Clicking an audit row expands the entry.
+Expanded view shows:
+Detailed metadata
+Resource IDs
+Parameters passed
+Before/after values (if applicable) Cast AI
+JSON/YAML View
+An icon ({}) allows switching the detail view into:
+JSON
+YAML
+This supports programmatic inspection or export. Cast AI
+Filtering & Search
+Built-in Filters
+Text search: Filter by arbitrary keywords (operation name, resource, etc.). Cast AI
+Time range: Choose preset ranges or custom windows. Cast AI
+Initiated by: Filter events by user identity or policy trigger. Cast AI
+Advanced Criteria
+Rebalance ID
+Node ID
+Node status
+Policy applied
+Node template & version
+Configuration version
+These criteria help locate precise operational events. Cast AI
+Recent Searches
+History of recent filters/search queries is retained for ease of reuse. Cast AI
+Event Types
+Audit log entries include, but are not limited to:
+User actions
+Cluster disconnect/reconnect
+Template creation or removal
+Hibernation schedule CRUD
+Policy actions
+Autoscaler events
+Rightsizing applied
+Rebalance operations
+System events
+Cluster hibernated/resumed
+Hibernation failures
+Autoscaler scale up/down
+Hibernation Audit Events
+Cluster hibernation operations generate specific audit events, including:
+Cluster hibernated
+Cluster hibernation failed
+Cluster resumed
+Cluster resumption failed
+These events help correlate automation actions with cost impact and user intentions. 
+Retention & Export
+Retention Policy
+Audit logs are retained directly in the console for 90 days by default.
+After 90 days, older log data is archived and not directly visible in the UI.
+Users can request archived logs for long-term retention or compliance.
+Audit Log Exporter
+For organizations with long-term compliance requirements, logs can be exported externally using an Audit Log Exporter:
+Built on OpenTelemetry
+Streams audit events to external systems (SIEM, ELK, Grafana, Loki, etc.)
+Ensures unlimited retention outside the console UI 
+Use Cases
+Operational Troubleshooting
+Determine why an automated action occurred
+Understand sequencing of events leading to a failure
+Security & Compliance
+Track user actions for audit trails
+Demonstrate policy enforcement history
+Change History
+Review infrastructure and policy changes over time
+Tie configuration changes to cost optimization outcomes
+Design Intent
+The Audit Log is built to be:
+Readable: Clear timestamped events and actor identification
+Queryable: Powerful filtering and search
+Integrable: Compatible with external systems for retention and SIEM purposes
+Actionable: Helps teams trace behaviors, errors, and policy impacts
+Summary
+The Audit Log is a critical feature for governance, operational visibility, and compliance. It captures all actions and events (manual and automated), supports rich filtering, and is exportable for long-term retention or integration into enterprise logging systems
 
-1. [Application Overview](#application-overview)
-2. [User Scenarios](#user-scenarios)
-3. [Feature Catalog](#feature-catalog)
-4. [Technical Architecture](#technical-architecture)
-5. [Data Flow](#data-flow)
-6. [Security](#security)
-7. [Deployment](#deployment)
 
----
-
-## Application Overview
-
-### What is This Application?
-
-**AWS Cloud Optimization Platform** is a SaaS application that helps businesses optimize their AWS infrastructure costs and performance. It connects to users' AWS accounts, discovers resources, analyzes usage patterns, and provides ML-powered recommendations for cost savings and performance improvements.
-
-### Core Value Proposition
-
-- **Save 30-50% on AWS costs** through automated optimization recommendations
-- **Prevent waste** by identifying idle and underutilized resources
-- **ML-powered decisions** using predictive models for spot instance stability, pricing, and right-sizing
-- **Multi-account support** for managing multiple AWS accounts from one dashboard
-- **Real-time monitoring** with live updates and notifications
-
-### Target Users
-
-1. **Engineering Teams** - Optimize infrastructure costs without sacrificing performance
-2. **DevOps Engineers** - Automate resource management and waste reduction
-3. **Finance/FinOps Teams** - Track and control cloud spending
-4. **Data Scientists** - Run ML experiments cost-effectively on optimized instances
-
----
-
-## User Scenarios
-
-### Scenario 1: New User Onboarding
-
-**User Story**: As a new user, I want to connect my AWS account and see cost savings opportunities.
-
-#### Steps:
-1. **Sign Up & Login**
-   - User creates account at /signup
-   - Enters email, password, organization name
-   - Receives verification email (if email verification enabled)
-   - Logs in at /login
-
-2. **Account Connection** (Two Methods)
-
-   **Method A: CloudFormation (Recommended)**
-   - User clicks "Connect AWS Account"
-   - Selects "CloudFormation" method
-   - System generates CloudFormation template
-   - User clicks "Deploy to AWS" (opens AWS Console)
-   - User creates stack in AWS
-   - Returns to platform, enters AWS Account ID
-   - System verifies IAM role connection
-   - Success: Account status → 'connected'
-
-   **Method B: Access Keys (Quick Setup)**
-   - User clicks "Connect AWS Account"
-   - Selects "Access Keys" method
-   - Enters AWS Access Key ID and Secret Access Key
-   - System validates credentials via AWS STS
-   - Success: Account status → 'connected'
-
-3. **Resource Discovery**
-   - Background worker automatically discovers:
-     - EC2 instances (all regions)
-     - EBS volumes
-     - Snapshots
-     - Security groups
-     - Tags and metadata
-   - Discovery takes 30-120 seconds
-   - User sees progress: "Discovering resources... 45s elapsed"
-   - Account status → 'active' when complete
-
-4. **Dashboard View**
-   - User redirected to /client dashboard
-   - Sees metrics:
-     - Current month cost: $1,234.56
-     - Projected savings: $450.00 (36%)
-     - Instance count: 23 instances
-     - Idle instances: 5
-     - Utilization: 42%
-   - Charts: Cost trend, usage patterns, instance distribution
-
-5. **First Recommendations**
-   - Platform shows top 5 optimization opportunities:
-     1. Stop 3 idle instances → Save $120/month
-     2. Resize 2 over-provisioned instances → Save $200/month
-     3. Use Spot instances for dev/test → Save $100/month
-     4. Delete 10 unused snapshots → Save $15/month
-     5. Consolidate 2 underutilized instances → Save $80/month
-
-**See**: `/scenarios/client_onboarding_flow.md`
-
----
-
-### Scenario 2: Daily Usage - Managing AWS Resources
-
-**User Story**: As an existing user, I want to monitor my AWS resources and implement optimization recommendations.
-
-#### Steps:
-1. **Login & Dashboard**
-   - User logs in
-   - AuthGateway checks connected accounts
-   - Routes to /client dashboard
-   - Sees updated metrics (refreshed via health checks)
-
-2. **View Instance Details**
-   - User clicks on an instance (e.g., "i-1234567890abcdef0")
-   - Sees detailed view:
-     - Instance type: t3.large
-     - State: running
-     - CPU utilization (7 days): avg 15%, max 22%
-     - Memory utilization: avg 18%
-     - Cost: $60.74/month (on-demand)
-     - Tags: Environment=dev, Owner=john@example.com
-
-3. **Receive Recommendation**
-   - Platform shows optimization card:
-     - **Recommendation**: Resize to t3.medium
-     - **Reason**: Average CPU 15%, consistently underutilized
-     - **Savings**: $30.37/month (50% reduction)
-     - **Risk Score**: 20/100 (Low risk)
-     - **Confidence**: 92%
-
-4. **Implement Optimization**
-   - User clicks "Resize Instance"
-   - Confirmation dialog shows:
-     - Action: Resize i-1234567890abcdef0
-     - From: t3.large → To: t3.medium
-     - Expected downtime: ~2 minutes
-     - Rollback available: Yes
-   - User confirms
-   - System executes:
-     1. Stop instance
-     2. Modify instance type
-     3. Start instance
-     4. Update database
-     5. Log action
-   - Success notification: "Instance resized successfully!"
-
-5. **Track Savings**
-   - Dashboard "Implemented Savings" updates
-   - Shows cumulative savings: $30.37/month added
-   - Total savings this month: $180.45
-   - Projected annual savings: $2,165.40
-
-**See**: Main dashboard and optimization features
-
----
-
-### Scenario 3: Multi-Account Management
-
-**User Story**: As a large organization, I want to manage multiple AWS accounts from one dashboard.
-
-#### Steps:
-1. **Connect Additional Account**
-   - User clicks "Add Account" button
-   - Follows onboarding flow (CloudFormation or Access Keys)
-   - New account added to account list
-   - Discovery runs for new account
-
-2. **Switch Between Accounts**
-   - User sees account dropdown in header:
-     - Production (AWS: 123456789012)
-     - Staging (AWS: 234567890123)
-     - Development (AWS: 345678901234)
-   - User selects "Staging"
-   - Dashboard refreshes with Staging account data
-   - All actions now apply to Staging account
-
-3. **Cross-Account View**
-   - User navigates to "All Accounts" view
-   - Sees aggregated metrics:
-     - Total cost across all accounts: $5,432.10
-     - Total instances: 67
-     - Accounts with alerts: 2
-   - Can drill down into specific account
-
-4. **Disconnect Account**
-   - User clicks "Manage Accounts"
-   - Sees list of connected accounts
-   - Clicks "Disconnect" on old Development account
-   - Confirmation: "Are you sure? This will remove all data for this account."
-   - User confirms
-   - System deletes:
-     - Account record
-     - All instances for that account
-     - All logs and metrics
-   - Success: "Account disconnected"
-
-**See**: `/progress/fixed_issues_log.md#P-2025-12-25-003` (delete endpoint fix)
-
----
-
-### Scenario 4: ML Experiment Tracking
-
-**User Story**: As a data scientist, I want to track ML experiments on my AWS instances.
-
-#### Steps:
-1. **Navigate to Lab**
-   - User clicks "Lab" in sidebar
-   - Sees experiment dashboard
-
-2. **View Running Experiments**
-   - User sees list of experiments:
-     - Experiment: "BERT fine-tuning v3"
-       - Instance: i-abc123 (p3.2xlarge)
-       - Status: Running (GPU: 87%)
-       - Progress: 45% (epoch 3/7)
-       - Cost: $3.06/hour
-       - Estimated completion: 2h 15m
-
-3. **Create New Experiment**
-   - User clicks "New Experiment"
-   - Fills form:
-     - Name: "ResNet image classification"
-     - Instance: Select from available GPU instances
-     - Training script: Upload .py file
-     - Dataset: S3 path
-   - User submits
-   - System:
-     - Starts instance (if stopped)
-     - Uploads training script
-     - Begins training
-     - Streams logs to dashboard
-
-4. **Track Metrics**
-   - User sees real-time metrics:
-     - Training loss: 0.234 (decreasing)
-     - Validation accuracy: 89.3%
-     - GPU utilization: 92%
-     - Cost so far: $8.45
-   - Charts update every 30 seconds
-
-5. **Experiment Completion**
-   - Training completes
-   - System:
-     - Saves model to S3
-     - Records final metrics
-     - Stops instance (if configured)
-     - Logs total cost: $24.18
-   - User downloads trained model
-
-**See**: `/frontend/src/components/Lab/` components
-
----
-
-### Scenario 5: Security & Compliance
-
-**User Story**: As a security engineer, I want to ensure AWS resources comply with security policies.
-
-#### Steps:
-1. **Security Dashboard**
-   - User navigates to "Security" tab
-   - Sees security findings:
-     - 🔴 3 Critical issues
-     - 🟠 7 High issues
-     - 🟡 12 Medium issues
-
-2. **Review Findings**
-   - **Critical: Unencrypted EBS volumes**
-     - 3 volumes without encryption
-     - Instances: i-abc123, i-def456, i-ghi789
-     - Risk: Data exposure if volume compromised
-     - Action: Enable encryption or delete
-
-   - **High: Security group allows 0.0.0.0/0 on port 22**
-     - Security group: sg-12345
-     - Rule: SSH from anywhere
-     - Risk: Unauthorized access
-     - Action: Restrict to specific IP ranges
-
-3. **Auto-Remediation**
-   - User enables "Auto-Remediate" for specific rules
-   - System automatically:
-     - Enables encryption on new volumes
-     - Alerts on overly permissive security groups
-     - Enforces tagging policies
-     - Rotates access keys >90 days old
-
-4. **Compliance Reports**
-   - User generates compliance report
-   - Selects framework: "CIS AWS Foundations Benchmark"
-   - Report shows:
-     - 85% compliance score
-     - 45/53 controls passing
-     - 8 controls failing
-     - Remediation steps for each failure
-
-**See**: `/backend/jobs/security_enforcer.py`
-
----
-
-### Scenario 6: Cost Forecasting & Budgets
-
-**User Story**: As a FinOps manager, I want to forecast AWS costs and set budgets.
-
-#### Steps:
-1. **View Cost Trends**
-   - User navigates to "Cost Analysis"
-   - Sees charts:
-     - Last 30 days: Actual vs predicted costs
-     - Cost breakdown by service (EC2 70%, EBS 15%, S3 10%, Other 5%)
-     - Cost breakdown by environment (Prod 60%, Dev 25%, Test 15%)
-
-2. **Cost Forecast**
-   - ML model predicts next month costs:
-     - Predicted: $1,850 ± $120
-     - Current trend: +12% month-over-month
-     - Key drivers: 3 new production instances, increased data transfer
-
-3. **Set Budget Alerts**
-   - User sets budget: $2,000/month
-   - Configures alerts:
-     - 80% of budget ($1,600): Email notification
-     - 100% of budget ($2,000): Email + Slack notification
-     - 120% of budget ($2,400): Email + Slack + Stop non-production instances
-
-4. **Receive Alert**
-   - Month-to-date spend reaches $1,620 (81%)
-   - User receives email:
-     - "Budget Alert: 81% of monthly budget consumed"
-     - Current spend: $1,620
-     - Projected month-end: $1,985
-     - Days remaining: 8
-     - Recommendations to stay under budget
-
-**See**: Cost prediction features
-
----
-
-## Feature Catalog
-
-### Authentication & User Management
-
-**Components**:
-- Frontend: Login, Signup, AuthContext
-- Backend: `/api/auth/login`, `/api/auth/me`, JWT tokens
-- Database: `users` table
-
-**Features**:
-- Email/password authentication
-- JWT tokens (24-hour expiration)
-- Role-based access control (client, admin, super_admin)
-- Session persistence
-- Logout
-
-**Security**:
-- Bcrypt password hashing (12 rounds)
-- HS256 JWT signing
-- HTTP-only cookies (optional)
-- HTTPS-only in production
-
-**See**: `/scenarios/auth_flow.md`, `/backend/auth/info.md`
-
----
-
-### AWS Account Connection
-
-**Components**:
-- Frontend: ClientSetup component
-- Backend: `/api/client/onboarding/*` routes
-- Database: `accounts` table, `onboarding_requests` table (temporary)
-
-**Features**:
-- **CloudFormation Method**:
-  - Generate CloudFormation template
-  - Create IAM role with minimal permissions
-  - Verify role via AWS STS AssumeRole
-  - Global uniqueness check (prevent account takeover)
-
-- **Access Keys Method**:
-  - Validate credentials via STS GetCallerIdentity
-  - Encrypt credentials with AES-256 (Fernet)
-  - Store encrypted in database
-  - Global uniqueness check
-
-**Security**:
-- AWS account IDs are globally unique (one user per account)
-- Credentials encrypted at rest
-- IAM permissions: read-only + limited write (stop/start/modify instances)
-- Ownership verification on all account operations
-
-**See**: `/scenarios/client_onboarding_flow.md`, `/progress/fixed_issues_log.md#P-2025-12-25-001`
-
----
-
-### Resource Discovery
-
-**Components**:
-- Backend: `discovery_worker.py`
-- Database: `instances` table, `accounts` table (status updates)
-
-**Process**:
-1. Triggered after account connection
-2. Runs in background (FastAPI BackgroundTasks)
-3. Discovers:
-   - EC2 instances (all regions)
-   - EBS volumes
-   - Snapshots
-   - Instance tags
-4. Stores in database
-5. Updates account status: 'connected' → 'active'
-6. Triggers health checks immediately
-
-**Frequency**:
-- Initial discovery: On account connection
-- Periodic refresh: Every 6 hours (scheduled job)
-
-**See**: `/backend/workers/info.md`, `/progress/fixed_issues_log.md#P-2025-12-25-002`
-
----
-
-### Dashboard & Metrics
-
-**Components**:
-- Frontend: ClientDashboard component
-- Backend: `/api/client/dashboard` endpoint
-- Background: Health check worker
-
-**Metrics Displayed**:
-- Total monthly cost
-- Instance count (running, stopped, total)
-- CPU utilization average
-- Memory utilization average
-- Storage usage
-- Cost trend chart (last 30 days)
-- Top 5 expensive instances
-
-**Data Sources**:
-- Database (instances, accounts)
-- AWS CloudWatch (metrics)
-- Cost calculation engine
-
-**Refresh Rate**:
-- Frontend: 30 seconds (polling)
-- Health checks: Hourly + after discovery
-- Cost data: Daily (midnight UTC)
-
-**See**: `/frontend/src/components/info.md`, `/backend/utils/component_health_checks.py`
-
----
-
-### Optimization Recommendations
-
-**Components**:
-- Backend: Decision engine, scoring algorithms
-- ML Models: Cost prediction, waste detection
-- Frontend: Recommendations dashboard
-
-**Recommendation Types**:
-
-1. **Right-Sizing**
-   - Detect: CPU/memory < 20% for 7+ days
-   - Recommend: Resize to smaller instance type
-   - Savings: 30-50% cost reduction
-   - Risk: Low (20-30/100)
-
-2. **Idle Instance Stop/Termination**
-   - Detect: CPU < 5% for 7+ days
-   - Recommend: Stop (if dev/test) or terminate (if unused)
-   - Savings: 100% for terminated, 70% for stopped
-   - Risk: Medium (40-50/100) - requires confirmation
-
-3. **Spot Instance Migration**
-   - Detect: Non-production instances on on-demand
-   - Recommend: Switch to Spot instances
-   - Savings: 60-80% cost reduction
-   - Risk: Medium (50-60/100) - spot interruptions
-
-4. **Reserved Instance Recommendations**
-   - Detect: Steady-state workloads (>80% uptime for 30+ days)
-   - Recommend: Purchase 1-year or 3-year RIs
-   - Savings: 40-60% cost reduction
-   - Risk: Low (10-20/100) - commitment
-
-5. **Storage Optimization**
-   - Detect: Unattached volumes, old snapshots
-   - Recommend: Delete or archive
-   - Savings: $0.10/GB/month
-   - Risk: Low (if backups exist)
-
-**Scoring Algorithm**:
-```
-Optimization Score =
-  (Cost Savings × 0.4) +
-  (Waste Level × 0.3) +
-  (Risk Inverse × 0.15) +
-  (Urgency × 0.15)
-```
-
-**See**: `/backend/decision_engine/info.md`, `/backend/pipelines/info.md`
-
----
-
-### Action Execution
-
-**Components**:
-- Backend: Executor module, AWS API integration
-- Frontend: Action confirmation dialogs
-
-**Supported Actions**:
-- **Instance Lifecycle**:
-  - Stop instance
-  - Start instance
-  - Terminate instance (requires confirmation)
-
-- **Instance Modification**:
-  - Resize (change instance type)
-  - Modify security groups
-  - Update tags
-
-- **Storage**:
-  - Delete volumes
-  - Delete snapshots
-  - Create snapshots (before risky actions)
-
-**Safety Mechanisms**:
-1. **Ownership Verification**: User must own the account
-2. **Dry-Run**: AWS dry-run API to validate before execution
-3. **Confirmation**: Critical actions require explicit confirmation
-4. **Audit Logging**: All actions logged to SystemLog
-5. **Rollback**: Ability to revert some actions (e.g., resize back)
-
-**See**: `/backend/executor/info.md`
-
----
-
-### Multi-Account Management
-
-**Components**:
-- Frontend: Account switcher, account list
-- Backend: `/api/client/accounts` endpoints
-- Database: `accounts` table (one-to-many with users)
-
-**Features**:
-- Connect multiple AWS accounts
-- Switch between accounts via dropdown
-- Aggregate view across all accounts
-- Disconnect accounts (with cascade delete)
-
-**Recent Enhancement (2025-12-25)**:
-- Added DELETE endpoint for account disconnection
-- Fixed HTTP 204 → 200 status code issue
-- Cascade delete instances when account deleted
-
-**See**: `/progress/fixed_issues_log.md#P-2025-12-25-003`
-
----
-
-### Real-Time Updates (WebSocket)
-
-**Components**:
-- Backend: WebSocket manager
-- Frontend: WebSocket client
-
-**Events**:
-- Instance state changes
-- Discovery progress
-- Cost updates
-- Alerts and notifications
-
-**Protocol**:
-```javascript
-// Client connects
-ws = new WebSocket('ws://api.example.com/ws/user123');
-
-// Subscribe to channel
-ws.send({
-  type: 'subscribe',
-  channel: 'instance_status',
-  filters: { account_id: '123456789012' }
-});
-
-// Receive updates
-ws.onmessage = (event) => {
-  // { type: 'update', data: { instance_id, status, ... } }
-};
-```
-
-**See**: `/backend/websocket/info.md`
-
----
-
-### ML Experiment Tracking
-
-**Components**:
-- Frontend: Lab components (ModelExperiments, ModelGovernance)
-- Backend: Experiment tracking APIs
-- Database: `experiment_logs` table
-
-**Features**:
-- Track ML experiments on EC2 instances
-- Record metrics (loss, accuracy, etc.)
-- Monitor GPU utilization
-- Cost tracking per experiment
-- Model versioning and governance
-- Compare experiments (A/B testing)
-
-**See**: `/frontend/src/components/Lab/info.md`
-
----
-
-### Security & Compliance
-
-**Components**:
-- Backend: Security enforcer job
-- Frontend: Security dashboard
-
-**Checks**:
-- Unencrypted EBS volumes
-- Public instances (0.0.0.0/0 ingress)
-- Overly permissive security groups
-- Missing required tags
-- Outdated AMIs
-
-**Enforcement**:
-- Automated tagging
-- Alert on violations
-- Auto-remediation (optional)
-
-**See**: `/backend/jobs/info.md`
-
----
-
-## Technical Architecture
-
-### System Components
-
-```
-┌──────────────────┐
-│   React Frontend │ (Port 5173 dev, nginx prod)
-│   - Vite build   │
-│   - React 18     │
-└────────┬─────────┘
-         │ HTTP/WebSocket
-         ↓
-┌──────────────────┐
-│  FastAPI Backend │ (Port 8000)
-│  - Python 3.8+   │
-│  - RESTful API   │
-└────────┬─────────┘
-         │ SQL
-         ↓
-┌──────────────────┐
-│   PostgreSQL DB  │ (Port 5432)
-│   - SQLAlchemy   │
-└──────────────────┘
-
-         ↓ boto3
-┌──────────────────┐
-│    AWS Services  │
-│  - EC2, STS      │
-│  - CloudWatch    │
-└──────────────────┘
-```
-
-### Key Technologies
-
-**Backend**:
-- FastAPI (web framework)
-- SQLAlchemy (ORM)
-- boto3 (AWS SDK)
-- python-jose (JWT)
-- passlib (password hashing)
-- cryptography (AES-256 encryption)
-
-**Frontend**:
-- React 18
-- Vite (build tool)
-- React Router (routing)
-- Axios (HTTP client)
-- Context API (state management)
-
-**Database**:
-- PostgreSQL 12+
-- 6 main tables (users, accounts, instances, experiment_logs, system_logs, onboarding_requests)
-
-**Infrastructure**:
-- Linux (Ubuntu/Debian)
-- Nginx (reverse proxy)
-- Systemd (service management)
-- Docker (optional deployment)
-
-**See**: `/index/system_index.md`, `/backend/info.md`, `/frontend/info.md`
-
----
-
-## Data Flow
-
-### Authentication Flow
-```
-User → Login Form → POST /api/auth/login
-  → Verify credentials (bcrypt)
-  → Generate JWT (24h expiration)
-  → Return token + user data
-  → Frontend stores token
-  → All requests include Authorization header
-```
-
-### Onboarding Flow
-```
-User → ClientSetup → POST /client/onboarding/create-request
-  → Generate CloudFormation template
-  → User deploys in AWS
-  → POST /client/onboarding/verify-connection
-  → AssumeRole verification
-  → Create Account record
-  → Trigger discovery worker (background)
-  → Discover instances (30-120s)
-  → Update account status → 'active'
-  → Trigger health checks
-  → Dashboard displays metrics
-```
-
-### Optimization Flow
-```
-Scheduled Job (6h interval)
-  → Waste Scanner
-  → Query instances + CloudWatch metrics
-  → Decision Engine evaluates
-  → Scoring algorithm ranks opportunities
-  → Store recommendations
-  → User views recommendations
-  → User approves action
-  → Executor performs AWS API call
-  → Update database
-  → Log action
-  → Recalculate metrics
-```
-
-**See**: `/scenarios/*.md` for detailed flows
-
----
-
-## Security
-
-### Authentication & Authorization
-
-- **Password Storage**: Bcrypt with salt (12 rounds)
-- **Session Management**: JWT tokens, 24-hour expiration
-- **Token Secret**: Stored in environment variable (never in code)
-- **HTTPS**: Required in production
-- **Role-Based Access**: client, admin, super_admin roles
-
-**Protected Zones**: See `/progress/regression_guard.md`
-
-### AWS Credential Security
-
-- **CloudFormation Method**: Uses IAM roles (no credentials stored)
-- **Access Keys Method**:
-  - Encrypted with AES-256 (Fernet)
-  - Encryption key in environment variable
-  - Decrypted only in memory, never logged
-- **Account Uniqueness**: Global check prevents account takeover
-
-**Critical Security Fixes**:
-- P-2025-12-25-001: AWS account takeover vulnerability (CRITICAL)
-
-### Data Protection
-
-- **Database**: PostgreSQL with authentication required
-- **Backups**: Daily automated backups (recommended)
-- **Encryption at Rest**: Database encryption (optional)
-- **Encryption in Transit**: HTTPS for all API calls
-
----
-
-## Deployment
-
-### Development Environment
-
-```bash
-# Backend
-cd backend
-python -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-uvicorn main:app --reload --port 8000
-
-# Frontend
-cd frontend
-npm install
-npm run dev  # Runs on port 5173
-```
-
-### Production Deployment
-
-```bash
-# Run setup script
-./scripts/setup.sh
-
-# Deploy
-./scripts/deploy.sh production
-
-# Or Docker
-./scripts/deploy_docker.sh
-```
-
-**See**: `/scripts/info.md`
-
----
-
-## Governance & Documentation
-
-This application uses a **comprehensive governance structure** to maintain code quality and prevent regressions:
-
-### Documentation Hierarchy
-
-1. **Instructions** (`/instructions/`) - How to work with the codebase
-2. **Index** (`/index/`) - System maps and feature catalog
-3. **Progress** (`/progress/`) - Current state and fixed issues
-4. **Problems** (`/problems/`) - Issue tracking and problem inbox
-5. **Scenarios** (`/scenarios/`) - User flows and business logic
-6. **Module info.md** - Folder-level documentation
-
-### Key Governance Files
-
-- `/instructions/master_rules.md` - Mandatory workflow
-- `/progress/regression_guard.md` - Protected zones
-- `/progress/fixed_issues_log.md` - All bug fixes (immutable)
-- `/problems/problems_log.md` - All problems (immutable)
-- `/problems/new_problem` - Active problem inbox
-
-### Problem Reporting
-
-Users can report problems directly to `/problems/new_problem` using the provided template. The LLM will:
-1. Assign a Problem ID
-2. Investigate and fix
-3. Remove from new_problem when fixed
-4. Document in fixed_issues_log.md
-
-**See**: `/instructions/info.md`, `/problems/info.md`
-
----
-
-## Recent Major Updates
-
-### 2025-12-25: Comprehensive Governance Structure
-- Created complete governance system
-- 16 governance files across 5 folders
-- info.md in every non-empty folder (40+ files)
-- Problem inbox system (new_problem file)
-- This scenario-based application guide
-
-### 2025-12-25: Client Experience Improvements
-- Multi-account support
-- Account disconnect functionality
-- AuthGateway smart routing
-- Live polling for discovery progress
-- Immediate health checks after discovery
-
-### Critical Bug Fixes
-- P-2025-12-25-001: AWS account takeover (SECURITY)
-- P-2025-12-25-002: Dashboard zero data
-- P-2025-12-25-003: DELETE endpoint HTTP 204 error
-
-**See**: `/progress/fixed_issues_log.md`, `/index/recent_changes.md`
-
----
-
-## Future Roadmap
-
-### Planned Features
-1. **Cost Anomaly Detection**: ML-based alerts for unusual spending
-2. **Auto-Optimization**: Automated implementation of low-risk optimizations
-3. **Multi-Cloud Support**: Extend to Azure, GCP
-4. **Kubernetes Optimization**: Deep integration with EKS/K8s
-5. **Mobile App**: iOS/Android companion apps
-6. **API for Third-Party Integrations**: Public API for custom integrations
-
-### Technical Debt
-- TypeScript migration for frontend
-- Automated testing (unit, integration, E2E)
-- CI/CD pipeline
-- Enhanced monitoring (Prometheus/Grafana)
-
-**See**: `/progress/progress_tracker.md`
-
----
-
-_Last Updated: 2025-12-25_
-_Authority: HIGH - Complete application reference_
-_This document is automatically updated when new features are added_
