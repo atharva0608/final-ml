@@ -582,7 +582,23 @@ const ClientDetailView = ({ client, onBack, onSelectCluster }) => {
                         <div className="lg:col-span-2 space-y-6">
                             {/* Savings Chart Placeholder */}
                             <div className="bg-white border border-slate-200 rounded-lg shadow-sm p-6">
-                                <h3 className="text-sm font-bold text-slate-900 mb-4">Cost Savings Overview</h3>
+                                <div className="flex justify-between items-center mb-4">
+                                    <h3 className="text-sm font-bold text-slate-900">Cost Savings Overview</h3>
+                                    <button
+                                        onClick={async () => {
+                                            try {
+                                                await api.exportCostsCsv();
+                                                alert('CSV export started. Check your downloads!');
+                                            } catch (error) {
+                                                alert('Failed to export CSV: ' + error.message);
+                                            }
+                                        }}
+                                        className="flex items-center space-x-2 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-medium transition-colors shadow-sm"
+                                    >
+                                        <Download className="w-3.5 h-3.5" />
+                                        <span>Export CSV</span>
+                                    </button>
+                                </div>
                                 <div className="h-64 flex items-center justify-center bg-slate-50 rounded text-slate-400 text-xs">Chart Visualization Check</div>
                             </div>
                         </div>

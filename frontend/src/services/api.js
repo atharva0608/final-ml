@@ -142,6 +142,47 @@ class ApiClient {
         const res = await this.get(`/v1/admin/logs/${component}?limit=${limit}`);
         return res.data;
     }
+
+    // ============================================================================
+    // Cost Export Methods
+    // ============================================================================
+
+    async exportCostsCsv() {
+        // For file downloads, we need to handle the response differently
+        const token = localStorage.getItem('auth_token');
+        const url = `${this.baseURL}/v1/client/costs/export?format=csv`;
+
+        const response = await fetch(url, {
+            method: 'GET',
+            headers: {
+                'Authorization': `Bearer ${token}`
+            }
+        });
+
+        if (!response.ok) {
+            throw new Error(`Failed to export costs: ${response.statusText}`);
+        }
+
+        // Get the blob and create download
+        const blob = await response.blob();
+        const downloadUrl = window.URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = downloadUrl;
+
+        // Extract filename from Content-Disposition header if available
+        const contentDisposition = response.headers.get('Content-Disposition');
+        const filename = contentDisposition
+            ? contentDisposition.split('filename=')[1].replace(/"/g, '')
+            : `cost_export_${new Date().toISOString().split('T')[0]}.csv`;
+
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        window.URL.revokeObjectURL(downloadUrl);
+
+        return { success: true, filename };
+    }
 }
 
 // Create singleton instance

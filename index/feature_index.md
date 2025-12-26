@@ -238,6 +238,71 @@ Complete catalog of all features, their locations, and dependencies.
 
 ---
 
+## Data Export & Reporting
+
+### CSV Cost Export
+
+**Module**: `backend/api/client_routes.py`, `frontend/src/components/NodeFleet.jsx`
+**Added**: 2025-12-26
+
+**API Endpoints**:
+- `GET /client/costs/export?format=csv` - Export cost data as CSV file
+
+**Database Tables**:
+- `experiment_logs` (cost optimization data)
+- `instances` (instance metadata)
+- `accounts` (user account lookup)
+
+**Frontend Components**:
+- `NodeFleet.jsx` - Export CSV button (line ~584-601)
+- `services/api.js` - exportCostsCsv() method (line ~150-185)
+
+**Dependencies**:
+- Requires: Authentication, Account Management, Cost Data
+- Required by: Financial reporting, external analysis
+
+**Scenario**: None (straightforward feature)
+
+**Key Functions**:
+- `export_costs_csv()` - backend/api/client_routes.py:383
+- `exportCostsCsv()` - frontend/src/services/api.js:150
+- Export button onClick handler - frontend/src/components/NodeFleet.jsx:584
+
+**Business Logic**:
+- Queries last 30 days of cost optimization data
+- Joins experiment_logs with instances table
+- Calculates monthly projected savings (hourly × 730 hours)
+- Generates CSV in-memory using io.StringIO
+- Returns StreamingResponse with downloadable file
+- Includes summary row with total savings
+
+**CSV Structure**:
+```csv
+Date,Instance ID,Instance Type,Availability Zone,Old Spot Price,New Spot Price,Hourly Savings,Monthly Projected,Decision,Reason
+2025-12-26 10:30:00,i-abc123,t3.medium,us-east-1a,$0.0416,$0.0312,$0.0104,$7.59,SWITCH,Cost savings
+...
+TOTAL,,,,,,,$1234.56,,
+```
+
+**File Download**:
+- Browser-side blob creation and download
+- Filename from Content-Disposition header
+- Default format: `cost_savings_export_YYYY-MM-DD.csv`
+- Automatic cleanup of object URLs
+
+**Security**:
+- Requires JWT authentication
+- Only exports data for current user's accounts
+- Backend validates ownership via account_id filter
+
+**Use Cases**:
+- Financial reporting and audit trails
+- External analysis in Excel/Google Sheets
+- Historical cost tracking
+- Budget planning and forecasting
+
+---
+
 ## Health Monitoring
 
 ### Component Health Checks
@@ -365,5 +430,5 @@ Complete catalog of all features, their locations, and dependencies.
 
 ---
 
-_Last Updated: 2025-12-25_
-_Entries: 11 features_
+_Last Updated: 2025-12-26_
+_Entries: 12 features_

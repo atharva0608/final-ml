@@ -719,12 +719,166 @@ API: GET /client/accounts
 
 ---
 
-## 4. Other Components (Summary)
+## 4. NodeFleet.jsx ⭐ FLEET MANAGEMENT & COST VISUALIZATION
 
-### NodeFleet.jsx
-**Purpose**: EC2 instance fleet visualization
+**Purpose**: EC2 instance fleet visualization with cost savings analytics
 **Lines**: ~811
-**Key Features**: Instance cards, filters, optimization recommendations
+**Route**: `/client` (embedded in ClientDashboard)
+**Status**: ACTIVE
+
+### Component Structure
+
+```
+NodeFleet
+├─ Filters & Controls (Account selector, Status filters)
+├─ Instance Cards (List of EC2 instances)
+├─ Cost Savings Overview Section
+│  ├─ Cost metrics chart
+│  └─ Export CSV Button ⭐ NEW (2025-12-26)
+└─ Optimization Recommendations
+```
+
+---
+
+### 🔘 BUTTONS & FUNCTIONS
+
+#### Button: "Export CSV"
+**Location**: Line ~584-601
+**OnClick**: Inline async function calling `api.exportCostsCsv()`
+**Purpose**: Download cost savings data for last 30 days as CSV file
+**Icon**: `Download` from lucide-react
+
+**Complete Flow**:
+```javascript
+1. User clicks "Export CSV" button in Cost Savings Overview section
+   ↓
+2. Inline async function called:
+   → try { await api.exportCostsCsv(); }
+   ↓
+3. API call:
+   → API: GET /client/costs/export?format=csv
+   → Backend queries experiment_logs + instances tables
+   → Backend filters last 30 days of cost data
+   → Backend generates CSV in memory using io.StringIO
+   → Backend calculates monthly projected savings (hourly × 730)
+   → Backend returns StreamingResponse with CSV file
+   ↓
+4. Browser download triggered:
+   → api.exportCostsCsv() creates blob from response
+   → Creates temporary <a> element
+   → Extracts filename from Content-Disposition header
+   → Default filename: "cost_savings_export_YYYY-MM-DD.csv"
+   → Triggers browser download
+   → Cleans up blob URL and DOM element
+   ↓
+5. Success:
+   → Shows alert: "CSV export started. Check your downloads!"
+   → CSV file appears in browser downloads folder
+   ↓
+6. Error:
+   → Shows alert: "Failed to export CSV: [error message]"
+```
+
+**CSV File Structure**:
+```csv
+Date,Instance ID,Instance Type,Availability Zone,Old Spot Price,New Spot Price,Hourly Savings,Monthly Projected,Decision,Reason
+2025-12-26 10:30:00,i-abc123,t3.medium,us-east-1a,$0.0416,$0.0312,$0.0104,$7.59,SWITCH,Cost savings
+2025-12-26 09:15:00,i-def456,t3.large,us-east-1b,$0.0832,$0.0624,$0.0208,$15.18,SWITCH,Better pricing
+...
+TOTAL,,,,,,,$1234.56,,
+```
+
+**API Endpoint**: `GET /client/costs/export?format=csv`
+**API Method**: `api.exportCostsCsv()` in `services/api.js` (line ~150-185)
+**Backend File**: `backend/api/client_routes.py:383-531`
+
+**Database Tables Queried**:
+- `experiment_logs` (cost optimization data for last 30 days)
+  - Columns: execution_time, old_spot_price, new_spot_price, projected_hourly_savings, decision, decision_reason
+- `instances` (instance metadata)
+  - Columns: instance_id, instance_type, availability_zone, account_id
+- `accounts` (user account lookup)
+  - Filter: WHERE user_id = current_user.id
+
+**Technical Details**:
+- Uses browser Blob API for file download
+- No page reload or navigation
+- Filename extracted from Content-Disposition header
+- Automatic cleanup of object URLs to prevent memory leaks
+- Monthly savings calculated as: hourly_savings × 730 hours/month
+
+**Frontend Code** (line ~584-601):
+```javascript
+<button
+  onClick={async () => {
+    try {
+      await api.exportCostsCsv();
+      alert('CSV export started. Check your downloads!');
+    } catch (error) {
+      alert('Failed to export CSV: ' + error.message);
+    }
+  }}
+  className="flex items-center space-x-2 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-medium transition-colors shadow-sm"
+>
+  <Download className="w-3.5 h-3.5" />
+  <span>Export CSV</span>
+</button>
+```
+
+**API Service Method** (`services/api.js:150-185`):
+```javascript
+async exportCostsCsv() {
+  const token = localStorage.getItem('auth_token');
+  const url = `${this.baseURL}/v1/client/costs/export?format=csv`;
+
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: { 'Authorization': `Bearer ${token}` }
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to export costs: ${response.statusText}`);
+  }
+
+  // Create blob and trigger download
+  const blob = await response.blob();
+  const downloadUrl = window.URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = downloadUrl;
+
+  // Extract filename from Content-Disposition header
+  const contentDisposition = response.headers.get('Content-Disposition');
+  const filename = contentDisposition
+    ? contentDisposition.split('filename=')[1].replace(/"/g, '')
+    : `cost_export_${new Date().toISOString().split('T')[0]}.csv`;
+
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  window.URL.revokeObjectURL(downloadUrl);
+
+  return { success: true, filename };
+}
+```
+
+**Security**:
+- Requires JWT authentication
+- Only exports data for current user's accounts
+- Backend validates user ownership via account_id filter
+
+**Use Cases**:
+- Financial reporting and audit trails
+- External analysis in Excel/Sheets
+- Historical cost tracking
+- Budget planning and forecasting
+
+**Feature Added**: 2025-12-26
+**Reference**: CSV Cost Export feature implementation
+
+---
+
+## 5. Other Components (Summary)
 
 ### ClientManagement.jsx
 **Purpose**: Admin client management

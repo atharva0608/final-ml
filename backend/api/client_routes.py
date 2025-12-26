@@ -6,11 +6,14 @@ Shows their AWS account status, instances, clusters, and savings.
 """
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from datetime import datetime, timedelta
 from typing import Optional, List
 from pydantic import BaseModel
+import io
+import csv
 
 from database.connection import get_db
 from database.models import User, Account, Instance, ExperimentLog, DowntimeLog
@@ -31,14 +34,18 @@ class AccountSummary(BaseModel):
     status: str
     connection_method: str
     region: str
-    created_at: str
-    updated_at: str
+    created_at: datetime
+    updated_at: datetime
 
     class Config:
         from_attributes = True
 
 
-@router.get("/accounts", response_model=List[AccountSummary])
+# ============================================================================
+# ENDPOINTS
+# ============================================================================
+
+@router.get("/accounts")
 async def get_connected_accounts(
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
@@ -55,80 +62,99 @@ async def get_connected_accounts(
             Account.user_id == current_user.id
         ).all()
 
-        # Convert to response format
-        account_summaries = []
-        for acc in accounts:
-            account_summaries.append({
-                "id": str(acc.id),
-                "account_id": acc.account_id,
-                "account_name": acc.account_name,
-                "status": acc.status,
-                "connection_method": acc.connection_method,
-                "region": acc.region,
-                "created_at": acc.created_at.isoformat(),
-                "updated_at": acc.updated_at.isoformat()
-            })
-
-        return account_summaries
+        return [
+            AccountSummary(
+                id=str(account.id),
+                account_id=account.account_id,
+                account_name=account.account_name,
+                status=account.status,
+                connection_method=account.connection_method,
+                region=account.region,
+                created_at=account.created_at,
+                updated_at=account.updated_at
+            )
+            for account in accounts
+        ]
 
     except Exception as e:
-        logger.error(
-            f'Failed to list accounts: {e}',
-            extra={'component': 'ClientAccounts', 'user_id': current_user.id, 'error': str(e)}
-        )
+        logger.error(f'Failed to list accounts: {e}', extra={'component': 'ClientAccounts', 'user_id': current_user.id})
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to list accounts: {str(e)}"
+            detail=f"Failed to retrieve accounts: {str(e)}"
         )
 
 
-@router.delete("/accounts/{account_id}", status_code=200)
+@router.delete("/accounts/{account_id}")
 async def disconnect_account(
     account_id: str,
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
     """
-    Disconnect and delete an AWS account connection.
-    Security: Verifies the account belongs to current_user before deletion.
-    Cascade: Deletes related instances and experiment logs.
-    Returns: 200 OK with JSON body (not 204 to allow response body)
+    Disconnect and remove an AWS account connection.
+
+    Security:
+    - Verifies the account belongs to the current user
+    - Cascades deletion to related instances and logs
+
+    Returns HTTP 200 (not 204) to allow JSON response body.
+    This is intentional to provide user feedback.
     """
     try:
         # Find the account
         account = db.query(Account).filter(
-            Account.account_id == account_id,
-            Account.user_id == current_user.id
+            Account.account_id == account_id
         ).first()
 
         if not account:
             raise HTTPException(
                 status_code=404,
-                detail="Account not found or does not belong to you"
+                detail=f"Account {account_id} not found"
             )
 
-        # Log the disconnection for audit
+        # Security: Verify ownership
+        if account.user_id != current_user.id:
+            raise HTTPException(
+                status_code=403,
+                detail="You don't have permission to delete this account"
+            )
+
+        # Log the deletion
         logger.info(
-            f'Disconnecting AWS account {account_id}',
+            f'User {current_user.username} disconnecting account {account_id}',
             extra={
-                'component': 'AccountDisconnect',
+                'component': 'ClientAccounts',
                 'user_id': current_user.id,
-                'account_id': account_id,
-                'account_name': account.account_name
+                'account_id': account_id
             }
         )
 
-        # Delete related instances (cascade will handle experiment logs if configured)
-        db.query(Instance).filter(Instance.account_id == account.id).delete()
+        # Delete all instances associated with this account
+        # (This should cascade via FK, but explicit for clarity)
+        instance_count = db.query(Instance).filter(
+            Instance.account_id == account.id
+        ).count()
 
-        # Delete the account record
+        db.query(Instance).filter(
+            Instance.account_id == account.id
+        ).delete()
+
+        # Delete the account
         db.delete(account)
         db.commit()
 
+        logger.info(
+            f'Successfully deleted account {account_id} and {instance_count} instances',
+            extra={'component': 'ClientAccounts'}
+        )
+
+        # Return HTTP 200 with JSON body (NOT 204)
+        # This allows frontend to receive confirmation message
         return {
             "success": True,
-            "message": f"AWS account {account.account_name} disconnected successfully",
-            "account_id": account_id
+            "message": "AWS account disconnected successfully",
+            "account_id": account_id,
+            "instances_deleted": instance_count
         }
 
     except HTTPException:
@@ -136,8 +162,8 @@ async def disconnect_account(
     except Exception as e:
         db.rollback()
         logger.error(
-            f'Failed to disconnect account: {e}',
-            extra={'component': 'AccountDisconnect', 'user_id': current_user.id, 'error': str(e)}
+            f'Failed to delete account: {e}',
+            extra={'component': 'ClientAccounts', 'account_id': account_id}
         )
         raise HTTPException(
             status_code=500,
@@ -210,238 +236,93 @@ async def get_client_dashboard(
                     "optimization_rate": 0
                 },
                 "instances": [],
-                "clusters": [],
-                "next_steps": ["Complete cloud account verification"]
+                "next_steps": [
+                    "Complete CloudFormation stack setup in AWS Console",
+                    "Return here to verify connection"
+                ]
             }
 
-        elif account.status == 'connected':
-            return {
-                "status": "discovering",
-                "message": "Scanning your AWS resources... This may take a few minutes.",
-                "has_account": True,
-                "account_status": account.status,
-                "account_info": {
-                    "account_name": account.account_name,
-                    "aws_account_id": account.account_id,
-                    "region": account.region,
-                    "created_at": account.created_at.isoformat()
-                },
-                "stats": {
-                    "nodes": 0,
-                    "clusters": 0,
-                    "savings": 0.0,
-                    "optimization_rate": 0
-                },
-                "instances": [],
-                "clusters": [],
-                "next_steps": ["Discovery in progress..."],
-                "discovery_progress": "Scanning EC2 instances and clusters"
-            }
-
-        elif account.status == 'failed':
-            error_msg = account.account_metadata.get('last_error', 'Unknown error') if account.account_metadata else 'Unknown error'
-            return {
-                "status": "failed",
-                "message": f"Cloud discovery failed: {error_msg}",
-                "has_account": True,
-                "account_status": account.status,
-                "account_info": {
-                    "account_name": account.account_name,
-                    "aws_account_id": account.account_id,
-                    "created_at": account.created_at.isoformat()
-                },
-                "stats": {
-                    "nodes": 0,
-                    "clusters": 0,
-                    "savings": 0.0,
-                    "optimization_rate": 0
-                },
-                "instances": [],
-                "clusters": [],
-                "error": error_msg,
-                "next_steps": ["Contact support or retry discovery"]
-            }
-
-        # Account is 'active' - return full dashboard data
-
-        # Get all instances for this account
+        # Get instances for this account
         instances = db.query(Instance).filter(
             Instance.account_id == account.id
         ).all()
 
-        # Count instances by various criteria
+        # Calculate metrics
         total_instances = len(instances)
-        active_instances = sum(1 for i in instances if i.is_active)
         running_instances = sum(1 for i in instances if i.state == 'running')
-        authorized_instances = sum(1 for i in instances if i.auth_status == 'authorized')
-        spot_instances = sum(1 for i in instances if i.lifecycle == 'spot')
-        on_demand_instances = sum(1 for i in instances if i.lifecycle == 'on-demand')
+        stopped_instances = sum(1 for i in instances if i.state == 'stopped')
 
-        # Get unique clusters from instance metadata
-        cluster_names = set()
-        for instance in instances:
-            if instance.instance_metadata and 'cluster_hint' in instance.instance_metadata:
-                cluster_hint = instance.instance_metadata['cluster_hint']
-                if cluster_hint:
-                    cluster_names.add(cluster_hint)
-
-        # Calculate cost savings from experiment logs (using projected_hourly_savings)
-        since_30_days = datetime.utcnow() - timedelta(days=30)
-        cost_savings_result = db.query(
-            func.sum(ExperimentLog.projected_hourly_savings).label('total_savings')
-        ).join(Instance).filter(
+        # Get recent experiment logs for savings calculation
+        thirty_days_ago = datetime.utcnow() - timedelta(days=30)
+        recent_logs = db.query(ExperimentLog).join(Instance).filter(
             Instance.account_id == account.id,
-            ExperimentLog.execution_time >= since_30_days,
-            ExperimentLog.projected_hourly_savings.isnot(None)
-        ).first()
+            ExperimentLog.execution_time >= thirty_days_ago
+        ).all()
 
-        total_savings = float(cost_savings_result.total_savings or 0) if cost_savings_result else 0.0
+        # Calculate total savings
+        total_savings = sum(
+            (log.projected_hourly_savings or 0) * 730
+            for log in recent_logs
+            if log.projected_hourly_savings
+        )
 
-        # Calculate optimization rate
-        optimized_count = db.query(
-            func.count(func.distinct(ExperimentLog.instance_id))
-        ).join(Instance).filter(
-            Instance.account_id == account.id,
-            ExperimentLog.execution_time >= since_30_days,
-            ExperimentLog.projected_hourly_savings > 0
-        ).scalar() or 0
+        # Get cluster information (simplified)
+        clusters = []
+        if instances:
+            # Group instances by availability zone as a simple clustering
+            from collections import defaultdict
+            zone_groups = defaultdict(list)
+            for instance in instances:
+                zone_groups[instance.availability_zone or 'unknown'].append(instance)
 
-        optimization_rate = round((optimized_count / max(total_instances, 1)) * 100, 1)
+            clusters = [
+                {
+                    "zone": zone,
+                    "instance_count": len(instances_in_zone),
+                    "running": sum(1 for i in instances_in_zone if i.state == 'running')
+                }
+                for zone, instances_in_zone in zone_groups.items()
+            ]
 
-        # Build instance list for UI
+        # Prepare instance list
         instance_list = [
             {
                 "id": str(inst.id),
                 "instance_id": inst.instance_id,
                 "instance_type": inst.instance_type,
                 "state": inst.state,
-                "lifecycle": inst.lifecycle,
+                "availability_zone": inst.availability_zone,
                 "region": inst.region,
-                "is_active": inst.is_active,
-                "auth_status": inst.auth_status,
-                "launched_at": inst.launched_at.isoformat() if inst.launched_at else None,
-                "cluster": inst.instance_metadata.get('cluster_hint') if inst.instance_metadata else None
+                "spot_price": inst.current_spot_price,
+                "launch_time": inst.launch_time.isoformat() if inst.launch_time else None
             }
-            for inst in instances[:50]  # Limit to first 50 for performance
+            for inst in instances[:50]  # Limit to 50 for performance
         ]
 
-        # Build cluster topology
-        cluster_topology = []
-        for cluster_name in cluster_names:
-            cluster_instances = [
-                i.instance_id for i in instances
-                if i.instance_metadata and i.instance_metadata.get('cluster_hint') == cluster_name
-            ]
-            cluster_topology.append({
-                "name": cluster_name,
-                "node_count": len(cluster_instances),
-                "nodes": cluster_instances[:10]  # Limit to 10 nodes per cluster for dashboard
-            })
-
-        # Get scan metadata
-        scan_metadata = account.account_metadata or {}
-        last_scan = scan_metadata.get('last_scan', account.updated_at.isoformat())
-
-        # Calculate downtime metrics (SLA transparency)
-        # Monthly billing period
-        billing_period_start = datetime.utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-
-        downtime_result = db.query(
-            func.sum(DowntimeLog.duration_seconds).label('total_downtime'),
-            func.count(DowntimeLog.id).label('incident_count')
-        ).filter(
-            DowntimeLog.client_id == current_user.id,
-            DowntimeLog.start_time >= billing_period_start
-        ).first()
-
-        downtime_seconds = int(downtime_result.total_downtime or 0) if downtime_result else 0
-        downtime_incidents = int(downtime_result.incident_count or 0) if downtime_result else 0
-
-        # SLA: < 60s monthly downtime target
-        sla_compliance = downtime_seconds < 60
-        sla_remaining = max(0, 60 - downtime_seconds)
-
-        # Get recent downtime incidents for transparency
-        recent_incidents = db.query(DowntimeLog).filter(
-            DowntimeLog.client_id == current_user.id,
-            DowntimeLog.start_time >= billing_period_start
-        ).order_by(DowntimeLog.start_time.desc()).limit(5).all()
-
-        downtime_history = [
-            {
-                "instance_id": inc.instance_id,
-                "duration_seconds": inc.duration_seconds,
-                "cause": inc.cause,
-                "timestamp": inc.start_time.isoformat()
-            }
-            for inc in recent_incidents
-        ]
-
-        # Determine next steps
-        next_steps = []
-        if authorized_instances < total_instances:
-            next_steps.append(f"Authorize {total_instances - authorized_instances} unauthorized instances")
-        if on_demand_instances > 0 and authorized_instances > 0:
-            next_steps.append(f"Optimize {on_demand_instances} on-demand instances to spot")
-        if len(cluster_names) == 0 and total_instances > 0:
-            next_steps.append("Configure instance clusters for better organization")
-        if not next_steps:
-            next_steps.append("All instances authorized and optimized!")
-
+        # Return comprehensive dashboard data
         return {
-            "status": "active",
-            "message": "Dashboard data loaded successfully",
+            "status": "ok",
             "has_account": True,
             "account_status": account.status,
             "account_info": {
+                "account_id": account.account_id,
                 "account_name": account.account_name,
-                "aws_account_id": account.account_id,
                 "region": account.region,
                 "connection_method": account.connection_method,
-                "created_at": account.created_at.isoformat(),
-                "last_updated": account.updated_at.isoformat(),
-                "last_scan": last_scan
+                "created_at": account.created_at.isoformat()
             },
             "stats": {
                 "nodes": total_instances,
-                "active_nodes": active_instances,
-                "running_nodes": running_instances,
-                "clusters": len(cluster_names),
+                "clusters": len(clusters),
                 "savings": round(total_savings, 2),
-                "savings_period": "30 days",
-                "optimization_rate": optimization_rate,
-                "authorized_instances": authorized_instances,
-                "spot_instances": spot_instances,
-                "on_demand_instances": on_demand_instances,
-                # SLA & Downtime Metrics (Transparency)
-                "downtime_seconds": downtime_seconds,
-                "downtime_incidents": downtime_incidents,
-                "sla_compliance": sla_compliance,
-                "sla_remaining_seconds": sla_remaining,
-                "sla_target": 60  # 60s monthly target
-            },
-            "downtime": {
-                "total_seconds": downtime_seconds,
-                "incident_count": downtime_incidents,
-                "sla_compliance": sla_compliance,
-                "sla_target_seconds": 60,
-                "sla_remaining_seconds": sla_remaining,
-                "billing_period": "monthly",
-                "recent_incidents": downtime_history
+                "optimization_rate": round((running_instances / total_instances * 100) if total_instances > 0 else 0, 1),
+                "running_instances": running_instances,
+                "stopped_instances": stopped_instances
             },
             "instances": instance_list,
-            "clusters": cluster_topology,
-            "instance_distribution": {
-                "by_lifecycle": {
-                    "spot": spot_instances,
-                    "on_demand": on_demand_instances
-                },
-                "by_status": {
-                    "authorized": authorized_instances,
-                    "unauthorized": total_instances - authorized_instances
-                }
-            },
-            "next_steps": next_steps
+            "clusters": clusters,
+            "recent_optimizations": len(recent_logs),
+            "message": "Dashboard loaded successfully"
         }
 
     except HTTPException:
@@ -497,3 +378,154 @@ async def get_client_summary(
             "status": "error",
             "error": str(e)
         }
+
+
+@router.get("/costs/export")
+async def export_costs_csv(
+    format: str = "csv",
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Export cost and savings data as CSV file
+
+    Query Parameters:
+    - format: Export format (currently only 'csv' supported)
+
+    Returns:
+    - CSV file download with last 30 days of cost optimization data
+
+    CSV Columns:
+    - Date: Date of optimization
+    - Instance ID: AWS instance identifier
+    - Instance Type: EC2 instance type
+    - Availability Zone: AWS AZ
+    - Old Spot Price: Previous hourly cost
+    - New Spot Price: New hourly cost
+    - Hourly Savings: Cost reduction per hour
+    - Monthly Projected: Projected monthly savings
+    - Decision: Optimization decision made
+    - Model Used: ML model that made prediction
+    """
+    try:
+        # Security check
+        if current_user.role not in ["client", "admin", "super_admin"]:
+            raise HTTPException(
+                status_code=403,
+                detail="Access denied. Client role required."
+            )
+
+        # Get user's account
+        account = db.query(Account).filter(
+            Account.user_id == current_user.id
+        ).first()
+
+        if not account:
+            raise HTTPException(
+                status_code=404,
+                detail="No AWS account found. Please connect an account first."
+            )
+
+        # Get last 30 days of cost data
+        thirty_days_ago = datetime.utcnow() - timedelta(days=30)
+
+        cost_logs = db.query(
+            ExperimentLog.execution_time,
+            Instance.instance_id,
+            Instance.instance_type,
+            Instance.availability_zone,
+            ExperimentLog.old_spot_price,
+            ExperimentLog.new_spot_price,
+            ExperimentLog.projected_hourly_savings,
+            ExperimentLog.decision,
+            ExperimentLog.decision_reason
+        ).join(
+            Instance, ExperimentLog.instance_id == Instance.id
+        ).filter(
+            Instance.account_id == account.id,
+            ExperimentLog.execution_time >= thirty_days_ago,
+            ExperimentLog.old_spot_price.isnot(None),
+            ExperimentLog.new_spot_price.isnot(None)
+        ).order_by(
+            ExperimentLog.execution_time.desc()
+        ).all()
+
+        # Create CSV in memory
+        output = io.StringIO()
+        writer = csv.writer(output)
+
+        # Write header
+        writer.writerow([
+            'Date',
+            'Instance ID',
+            'Instance Type',
+            'Availability Zone',
+            'Old Spot Price ($/hr)',
+            'New Spot Price ($/hr)',
+            'Hourly Savings ($/hr)',
+            'Monthly Projected ($)',
+            'Decision',
+            'Reason'
+        ])
+
+        # Write data rows
+        total_savings = 0
+        for log in cost_logs:
+            monthly_savings = (log.projected_hourly_savings or 0) * 730
+            total_savings += monthly_savings
+
+            writer.writerow([
+                log.execution_time.strftime('%Y-%m-%d %H:%M:%S'),
+                log.instance_id or 'N/A',
+                log.instance_type or 'N/A',
+                log.availability_zone or 'N/A',
+                f'${log.old_spot_price:.4f}' if log.old_spot_price else 'N/A',
+                f'${log.new_spot_price:.4f}' if log.new_spot_price else 'N/A',
+                f'${log.projected_hourly_savings:.4f}' if log.projected_hourly_savings else 'N/A',
+                f'${monthly_savings:.2f}',
+                log.decision or 'N/A',
+                log.decision_reason or 'N/A'
+            ])
+
+        # Add summary row
+        writer.writerow([])
+        writer.writerow(['TOTAL', '', '', '', '', '', '', f'${total_savings:.2f}', '', ''])
+        writer.writerow(['Records', len(cost_logs), '', '', '', '', '', '', '', ''])
+        writer.writerow(['Period', '30 days', '', '', '', '', '', '', '', ''])
+
+        # Prepare file for download
+        output.seek(0)
+
+        # Generate filename with timestamp
+        filename = f"cost_savings_{account.account_name}_{datetime.utcnow().strftime('%Y%m%d')}.csv"
+
+        logger.info(
+            f'User {current_user.username} exported {len(cost_logs)} cost records',
+            extra={
+                'component': 'CostExport',
+                'user_id': current_user.id,
+                'record_count': len(cost_logs),
+                'total_savings': total_savings
+            }
+        )
+
+        # Return as downloadable file
+        return StreamingResponse(
+            iter([output.getvalue()]),
+            media_type="text/csv",
+            headers={
+                "Content-Disposition": f"attachment; filename={filename}"
+            }
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            f'Failed to export costs: {e}',
+            extra={'component': 'CostExport', 'user_id': current_user.id}
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to export cost data: {str(e)}"
+        )

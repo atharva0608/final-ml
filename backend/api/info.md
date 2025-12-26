@@ -158,7 +158,63 @@ RESTful API endpoints for all application features using FastAPI framework.
 
 **Database Tables**: `accounts`, `instances`
 
-**Lines**: 459-end
+**Lines**: 459-531
+
+---
+
+#### GET /client/costs/export
+**Purpose**: Export cost and savings data as CSV file (last 30 days)
+**Authentication**: Required (JWT)
+**Query Parameters**:
+- `format` (default: "csv"): Export format
+
+**Response Type**: StreamingResponse (text/csv)
+**Response**: CSV file download with following columns:
+```csv
+Date,Instance ID,Instance Type,Availability Zone,Old Spot Price,New Spot Price,Hourly Savings,Monthly Projected,Decision,Reason
+2025-12-26 10:30:00,i-abc123,t3.medium,us-east-1a,$0.0416,$0.0312,$0.0104,$7.59,SWITCH,Cost savings
+...
+TOTAL,,,,,,,$1234.56,,
+```
+
+**CSV Structure**:
+- Header row with column names
+- Data rows (one per experiment log entry from last 30 days)
+- Summary row with total monthly projected savings
+- Filename format: `cost_savings_export_YYYY-MM-DD.csv`
+
+**Database Query**:
+```sql
+SELECT
+  el.execution_time, i.instance_id, i.instance_type, i.availability_zone,
+  el.old_spot_price, el.new_spot_price, el.projected_hourly_savings,
+  el.decision, el.decision_reason
+FROM experiment_logs el
+JOIN instances i ON el.instance_id = i.id
+WHERE i.account_id = <user's account>
+  AND el.execution_time >= NOW() - INTERVAL '30 days'
+  AND el.old_spot_price IS NOT NULL
+  AND el.new_spot_price IS NOT NULL
+ORDER BY el.execution_time DESC
+```
+
+**Database Tables**:
+- `experiment_logs` (cost optimization data)
+- `instances` (instance metadata)
+- `accounts` (user account lookup)
+
+**Frontend Components**:
+- `NodeFleet.jsx` - Export CSV button (line ~584-601)
+- `services/api.js` - `exportCostsCsv()` method (line ~150-185)
+
+**Technical Details**:
+- Uses FastAPI StreamingResponse for file download
+- CSV generated in-memory using io.StringIO
+- Monthly projected savings = hourly_savings × 730 hours
+- Content-Disposition header sets download filename
+- Handles missing cost data gracefully
+
+**Lines**: 383-531
 
 ---
 

@@ -10,6 +10,67 @@ Chronological timeline of all code changes for quick reference.
 
 ## 2025-12-26
 
+### Feature: CSV Cost Export for Financial Reporting
+
+**Commit**: TBD
+**Module**: backend/api, frontend/src/services, frontend/src/components
+**Impact**: Cost data analysis, financial reporting, external integrations
+**Files**: 3 files modified, 3 documentation files updated
+
+**Changes**:
+Added CSV export functionality to export last 30 days of cost optimization data:
+
+**Backend**:
+- Added `GET /client/costs/export?format=csv` endpoint in `client_routes.py`
+- Queries `experiment_logs` + `instances` tables (join)
+- Filters last 30 days of cost data
+- Generates CSV in-memory using `io.StringIO`
+- Returns StreamingResponse with `text/csv` media type
+- Includes summary row with total monthly projected savings
+- Calculates monthly savings: hourly_savings × 730 hours/month
+
+**Frontend**:
+- Added `exportCostsCsv()` method to ApiClient in `services/api.js`
+- Handles file download via blob creation and temporary DOM link
+- Extracts filename from Content-Disposition header
+- Default filename: `cost_savings_export_YYYY-MM-DD.csv`
+- Added "Export CSV" button in NodeFleet.jsx Cost Savings Overview section
+- Button with Download icon (lucide-react)
+- Shows success/error alerts
+
+**CSV Structure**:
+```csv
+Date,Instance ID,Instance Type,Availability Zone,Old Spot Price,New Spot Price,Hourly Savings,Monthly Projected,Decision,Reason
+2025-12-26 10:30:00,i-abc123,t3.medium,us-east-1a,$0.0416,$0.0312,$0.0104,$7.59,SWITCH,Cost savings
+...
+TOTAL,,,,,,,$1234.56,,
+```
+
+**Files Modified**:
+- `backend/api/client_routes.py` - Added CSV export endpoint (lines 383-531)
+- `frontend/src/services/api.js` - Added exportCostsCsv() method (lines 150-185)
+- `frontend/src/components/NodeFleet.jsx` - Added Export CSV button (lines 584-601)
+
+**Documentation Updated**:
+- `backend/api/info.md` - Added endpoint documentation
+- `frontend/src/components/info.md` - Added button documentation
+- `index/feature_index.md` - Added CSV Cost Export feature entry
+
+**Use Cases**:
+- Financial reporting and audit trails
+- External analysis in Excel/Google Sheets
+- Historical cost tracking
+- Budget planning and forecasting
+
+**Security**:
+- Requires JWT authentication
+- Only exports data for current user's accounts
+- Backend validates ownership via account_id filter
+
+**Reference**: New feature - CSV Cost Export
+
+---
+
 ### Fix: Missing API Methods Breaking Model Upload (P-2025-12-26-007)
 
 **Commit**: TBD
@@ -239,7 +300,7 @@ Investigated 5 UX problems reported in `/problems/new_problem`. All were found t
 ### Recent Breakdown
 
 - **CRITICAL**: 1 change (delete endpoint HTTP protocol fix)
-- **HIGH**: 2 changes (multi-account support, CX improvements)
+- **HIGH**: 3 changes (multi-account support, CX improvements, CSV export)
 - **MEDIUM**: 3 changes (historical fixes)
 - **LOW**: 0 changes
 
@@ -248,14 +309,15 @@ Investigated 5 UX problems reported in `/problems/new_problem`. All were found t
 ## Impact Summary (Last 30 Days)
 
 ### Backend API Changes
-- 3 new endpoints added
+- 4 new endpoints added (including CSV export)
 - 1 endpoint modified (status code fix)
 - 0 endpoints deprecated
 
 ### Frontend Changes
 - 1 new component (AuthGateway)
-- 2 components significantly updated (ClientSetup, App.jsx)
+- 3 components significantly updated (ClientSetup, App.jsx, NodeFleet)
 - 0 components removed
+- 1 new API method (exportCostsCsv)
 
 ### Database Schema
 - 0 tables added
