@@ -12,6 +12,7 @@ import AuthGateway from './components/AuthGateway';
 import NodeTemplates from './components/NodeTemplates';
 import AvailableSavings from './components/AvailableSavings';
 import ClusterList from './components/ClusterList';
+import ClusterDashboard from './components/ClusterDashboard';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import ModelExperiments from './components/Lab/ModelExperiments';
 import SystemMonitor from './pages/SystemMonitor';
@@ -338,10 +339,12 @@ const ClientDashboard = () => {
 
     switch (currentView) {
       case 'dashboard':
-      case 'live': // Fallback for legacy state
-        return <NodeFleet clientMode={true} clientData={clientData} />;
+        return <ClusterDashboard />;
       case 'clusters':
         return <ClusterList />;
+      case 'fleet':
+      case 'live': // Fallback for legacy state
+        return <NodeFleet clientMode={true} clientData={clientData} />;
       case 'templates':
         return <NodeTemplates />;
       case 'savings':
@@ -349,7 +352,7 @@ const ClientDashboard = () => {
       case 'experiments':
         return <ModelExperiments />;
       default:
-        return <NodeFleet clientMode={true} clientData={clientData} />;
+        return <ClusterDashboard />;
     }
   };
 
