@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import {
     LayoutDashboard, Server, Settings, Activity, Menu,
-    Users, ChevronDown, FlaskConical, Radio, Globe, Check, X, Cloud, LogOut
+    Users, ChevronDown, FlaskConical, Radio, Globe, Check, X, Cloud, LogOut,
+    FileText, TrendingDown
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
@@ -84,6 +85,8 @@ const DashboardLayout = ({ children, activeView, setActiveView, role = 'admin', 
         if (role === 'client') {
             return [
                 { id: 'dashboard', label: 'Client Dashboard', icon: LayoutDashboard },
+                { id: 'savings', label: 'Available Savings', icon: TrendingDown },
+                { id: 'templates', label: 'Node Templates', icon: FileText },
                 { id: 'connect', label: 'Cloud Connect', icon: Cloud },
                 { id: 'profile', label: 'Profile Settings', icon: Settings },
             ];
@@ -94,6 +97,8 @@ const DashboardLayout = ({ children, activeView, setActiveView, role = 'admin', 
             return [
                 { id: 'live', label: 'Live Operations', icon: Radio },
                 { id: 'fleet', label: 'Node Fleet', icon: Server },
+                { id: 'savings', label: 'Available Savings', icon: TrendingDown },
+                { id: 'templates', label: 'Node Templates', icon: FileText },
                 { id: 'monitor', label: 'System Monitor', icon: Globe },
                 { id: 'controls', label: 'Global Controls', icon: Settings },
                 { id: 'clients', label: 'Client Management', icon: Users },

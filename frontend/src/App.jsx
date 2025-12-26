@@ -9,6 +9,8 @@ import Controls from './components/Controls';
 import ClientSetup from './components/ClientSetup';
 import ClientManagement from './components/ClientManagement';
 import AuthGateway from './components/AuthGateway';
+import NodeTemplates from './components/NodeTemplates';
+import AvailableSavings from './components/AvailableSavings';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import ModelExperiments from './components/Lab/ModelExperiments';
 import SystemMonitor from './pages/SystemMonitor';
@@ -57,6 +59,10 @@ const AdminDashboard = () => {
         return <LiveOperations />;
       case 'fleet':
         return <NodeFleet externalSelectedClientId={selectedClientId} />;
+      case 'templates':
+        return <NodeTemplates />;
+      case 'savings':
+        return <AvailableSavings />;
       case 'controls':
         return <Controls />;
       case 'experiments':
@@ -333,6 +339,10 @@ const ClientDashboard = () => {
       case 'dashboard':
       case 'live': // Fallback for legacy state
         return <NodeFleet clientMode={true} clientData={clientData} />;
+      case 'templates':
+        return <NodeTemplates />;
+      case 'savings':
+        return <AvailableSavings />;
       case 'experiments':
         return <ModelExperiments />;
       default:

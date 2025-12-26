@@ -4,7 +4,7 @@
 
 Installation, deployment, and utility scripts for the application.
 
-**Last Updated**: 2025-12-25
+**Last Updated**: 2025-12-26
 **Authority Level**: MEDIUM-HIGH
 
 ---
@@ -187,6 +187,63 @@ pip install -r scripts/requirements_ml.txt
 
 **Reference**: Read before training ML models
 
+### inject_demo_data.py ⭐ NEW (2025-12-26)
+**Purpose**: Inject realistic demo data for UI development and testing
+**Lines**: ~450
+**Capabilities**:
+- Create demo user account (demo@example.com / demo123)
+- Create demo AWS account with active status
+- Generate 15 EC2 instances with realistic configurations
+- Create 30 days of cost optimization data (~400 logs)
+- Support for multiple environments (prod, dev, staging, ml, legacy, test)
+- Idempotent execution (safe to run multiple times)
+
+**Usage**:
+```bash
+# From project root
+python scripts/inject_demo_data.py
+
+# Or from backend directory
+cd backend
+python ../scripts/inject_demo_data.py
+```
+
+**Requirements**:
+- Backend dependencies installed (sqlalchemy, passlib)
+- Database initialized (migrations run)
+- PostgreSQL running and accessible
+
+**Demo Data Created**:
+1. **User**: demo@example.com (password: demo123)
+2. **Account**: Demo Production Account (123456789012)
+3. **Instances** (15 total):
+   - Production (3): Well-optimized instances
+   - Development (3): Optimization opportunities
+   - Staging (2): Spot instance candidates
+   - ML/Data (2): GPU and batch processing
+   - Database (2): PostgreSQL instances
+   - Legacy (2): Termination candidates
+   - Test (1): Integration testing
+
+4. **Cost Data**: 30 days of optimization logs with:
+   - Spot price variations (5-20% cheaper)
+   - Optimization decisions (SWITCH/TERMINATE/KEEP)
+   - Monthly savings projections
+
+**Instance Tags**:
+- Environment, Name, Team tags for all instances
+- Realistic team assignments (platform, engineering, data-science, etc.)
+
+**Exit Codes**:
+- `0`: Success
+- `1`: Error occurred
+
+**Dependencies**: sqlalchemy, passlib, uuid, backend models
+
+**Recent Changes**: Created 2025-12-26
+
+**See Also**: Demo credentials in output message
+
 ---
 
 ## Common Usage Patterns
@@ -250,6 +307,13 @@ python ml-model/family_stress_model.py
 ---
 
 ## Recent Changes
+
+### 2025-12-26: Demo Data Injection Script
+**Files Added**: `inject_demo_data.py`
+**Reason**: Enable UI development and testing with realistic data
+**Impact**: Developers can now test frontend without AWS connections
+**Lines**: 450
+**Reference**: CAST AI UI redesign project
 
 ### 2025-12-25: Governance Structure Establishment
 **Files Changed**: None (metadata only)

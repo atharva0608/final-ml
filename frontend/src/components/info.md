@@ -878,7 +878,322 @@ async exportCostsCsv() {
 
 ---
 
-## 5. Other Components (Summary)
+## 5. NodeTemplates.jsx ⭐ CAST AI STYLE NODE TEMPLATES
+
+**Purpose**: Manage instance templates for autoscaling and optimization
+**Lines**: ~270
+**Route**: `/client` (view: `templates`)
+**Status**: ACTIVE
+**Design**: CAST AI inspired design
+
+### Component Structure
+
+```
+NodeTemplates
+├─ Header with Search and Create Button
+├─ Templates Table
+│  ├─ Toggle Switch (enable/disable)
+│  ├─ Favorite Star Icon
+│  ├─ Template Name (linked)
+│  ├─ Node Configuration
+│  ├─ Resource Offering
+│  ├─ Node Count
+│  ├─ CPU Progress Bar
+│  ├─ Memory Progress Bar
+│  └─ Actions Menu
+└─ Create Template Dropdown
+   ├─ Custom template
+   └─ Generate templates (NEW badge)
+```
+
+---
+
+### 🔘 BUTTONS & FUNCTIONS
+
+#### Button: "Create template" (Dropdown)
+**Location**: Line ~75
+**Purpose**: Create new node template
+**Options**:
+- **Custom template**: Manual template creation
+- **Generate templates**: AI-powered template generation (NEW feature)
+
+**UI Features**:
+- Blue primary button
+- Dropdown chevron icon
+- "NEW" badge on generate option
+- Click outside to close
+
+---
+
+#### Toggle: Template Enable/Disable
+**Location**: Line ~226 (per row)
+**Purpose**: Enable or disable a node template
+**State**: Boolean (enabled/disabled)
+**Behavior**:
+- Blue background when enabled
+- Gray background when disabled
+- Smooth sliding animation
+- Updates template state
+
+---
+
+#### Button: Favorite Star
+**Location**: Line ~237 (per row)
+**Purpose**: Mark template as favorite
+**Icon**: Star (filled when favorited)
+**Behavior**:
+- Click to toggle favorite status
+- Blue color when favorited
+- Gray when not favorited
+
+---
+
+### Data Structure
+
+**Template Object**:
+```javascript
+{
+  id: string,
+  name: string,
+  isDefault: boolean,
+  isFavorite: boolean,
+  enabled: boolean,
+  nodeConfiguration: string,
+  resourceOffering: string,
+  nodeCount: number,
+  cpu: {
+    value: number,
+    utilization: number  // percentage
+  },
+  memory: {
+    value: number,
+    unit: string,  // 'TiB', 'GiB'
+    utilization: number  // percentage
+  }
+}
+```
+
+---
+
+### Design Features
+
+**CAST AI Design Elements**:
+- Clean white background
+- Table layout with sortable columns
+- Toggle switches (blue active state)
+- Star icons for favorites
+- Progress bars for CPU/Memory utilization
+- Percentage indicators (89% shown)
+- Search bar with placeholder
+- Dropdown button with "NEW" badge
+- "EFFICIENCY" tag in header
+- Hover states on table rows
+
+**Color Scheme**:
+- Primary: Blue (#2563EB)
+- Background: White/Gray-50
+- Text: Gray-900/Gray-600
+- Progress bars: Blue-500
+- Active states: Blue-600
+
+---
+
+### Mock Data
+
+Currently uses mock data (lines ~45-90):
+- 4 template examples
+- Default configurations
+- 89% CPU/Memory utilization
+- 8 CPU, 5.72 TiB memory specs
+
+**TODO**: Replace with API integration when backend is ready
+
+---
+
+## 6. AvailableSavings.jsx ⭐ COST OPTIMIZATION DASHBOARD
+
+**Purpose**: Display cost optimization opportunities and savings potential
+**Lines**: ~390
+**Route**: `/client` (view: `savings`)
+**Status**: ACTIVE
+**Design**: CAST AI inspired design
+
+### Component Structure
+
+```
+AvailableSavings
+├─ Header
+│  ├─ Cluster Name + Status Badge
+│  ├─ Timestamp
+│  └─ Action Buttons (Download, More)
+│
+├─ Main Cost Card (Green gradient)
+│  ├─ Current Compute Cost ($7,143.71/mo)
+│  ├─ Progress to Optimal (82.9% bar)
+│  └─ Rebalance Action Card
+│
+├─ Workload Optimization Preferences
+│  ├─ Rightsizing Toggle
+│  └─ Efficiency Metrics Grid
+│     ├─ Current Efficiency (19.98%)
+│     ├─ $ Saved by Rightsizing ($2,557.08)
+│     └─ Additional Savings (35.8%)
+│
+└─ Configuration Comparison Table
+   ├─ Current Cluster Configuration
+   │  └─ Cost Summary Card
+   └─ Optimized Cluster Configuration
+      └─ Optimized Cost Card (green)
+```
+
+---
+
+### 🔘 BUTTONS & FUNCTIONS
+
+#### Button: "Rebalance"
+**Location**: Line ~156
+**Purpose**: Execute cost optimization rebalancing
+**Design**: Green button (emerald-600)
+**Behavior**:
+- Triggers cluster rebalancing
+- Replaces suboptimal nodes
+- Moves workloads automatically
+- Shows confirmation before execution
+
+---
+
+#### Toggle: "Workload Rightsizing"
+**Location**: Line ~191
+**Purpose**: Enable/disable workload rightsizing
+**State**: Boolean
+**Effect**:
+- Applies rightsizing recommendations
+- Increases savings potential
+- Links to Efficiency report
+
+**Current State**:
+- Enabled: Green background
+- Disabled: Gray background
+- Smooth toggle animation
+
+---
+
+#### Button: "Download" (Icon)
+**Location**: Line ~130
+**Purpose**: Export savings report
+**Icon**: Download icon
+**Format**: Likely CSV or PDF export
+
+---
+
+#### Button: "More" (Icon)
+**Location**: Line ~133
+**Purpose**: Additional actions menu
+**Icon**: MoreVertical (3 dots)
+
+---
+
+### Data Structure
+
+**Savings Data Object**:
+```javascript
+{
+  cluster: {
+    name: string,
+    status: 'Connected' | 'Disconnected'
+  },
+  currentCost: {
+    amount: number,
+    currency: 'USD',
+    period: 'mo'
+  },
+  progressToOptimal: number,  // percentage
+  efficiency: {
+    current: number,
+    waste: {
+      cpu: number,
+      memory: number
+    },
+    additionalSavings: number  // percentage
+  },
+  currentConfiguration: {
+    nodes: Array<NodeConfig>,
+    summary: {
+      hours: number,
+      cpu: number,
+      memory: number
+    }
+  },
+  optimizedConfiguration: {
+    nodes: Array<NodeConfig>,
+    summary: {
+      hours: number,
+      cpu: number,
+      memory: number
+    }
+  },
+  recommendedActions: Array<Action>
+}
+```
+
+---
+
+### Design Features
+
+**CAST AI Design Elements**:
+- Large, prominent cost metrics ($7,143.71/mo)
+- Green gradient background for cost card
+- Progress bar with "OPTIMAL" marker
+- Side-by-side comparison tables
+- Green highlighting for optimized config
+- Status badges with colored dots
+- Metric cards with big numbers
+- Waste breakdown (CPU/Memory)
+- Clean card layouts with borders
+
+**Color Scheme**:
+- Primary: Green (#10B981, #059669)
+- Success: Emerald shades
+- Background: Green-50 gradient
+- Text: Gray-900/Gray-600
+- Borders: Green-200
+- Warning/Info: Gray tones
+
+---
+
+### Metrics Displayed
+
+**Cost Metrics**:
+- Current Compute Cost: $7,143.71/mo
+- Optimized Cost: $5,921.76/mo
+- Potential Savings: $1,221.95/mo
+
+**Efficiency Metrics**:
+- Current Efficiency: 19.98%
+- Saved by Rightsizing: $2,557.08
+- Additional Savings: 35.8%
+- CPU Waste: 1.47 CPU
+- Memory Waste: 6.43 GiB
+
+**Configuration**:
+- Current: 730 hours, 4 CPU, 15.09 GiB
+- Optimized: 730 hours, 6 CPU, 12 GiB
+
+---
+
+### Mock Data
+
+Currently uses extensive mock data (lines ~21-80):
+- Cluster info (mycluster-fra02-b3c4x16)
+- Cost calculations
+- Configuration comparisons
+- Node specifications
+
+**TODO**: Replace with API integration
+
+---
+
+## 7. Other Components (Summary)
 
 ### ClientManagement.jsx
 **Purpose**: Admin client management
