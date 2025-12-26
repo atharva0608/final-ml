@@ -288,6 +288,51 @@ These problems appear to be based on an outdated understanding of the system or 
 ---
 
 **Note**: No new problems currently pending. Add new problems below this line.
+1. The "Zombie Database" (Schema Drift)
+The Reason: Your code has been updated to include new columns (like connection_method, aws_access_key_id), but your local Docker Database Volume was created weeks ago. It still has the old table structure.
+
+The Crash: When admin.py tries to insert the "Placeholder Account", the database rejects it with Column 'connection_method' not found.
+
+The Silent Failure: If your code has a broad try/except block, it catches this error, ignores the account creation, but still returns "Success" for the User creation.
+
+Result: The User is created (Orphan), but the Account is missing. When you log in, the Dashboard crashes (Blank Page) because it expects an Account.
+
+2. The "Partial Commit" Bug (Why Admin Users are Blank)
+The Reason: In backend/api/admin.py, it is highly likely that the database commit is split.
+
+Scenario:
+
+db.add(new_user) -> db.commit() (User saved successfully).
+
+db.add(placeholder_account) -> db.commit() (FAILS due to Schema Drift above).
+
+Outcome: You have a User record, but 0 Account records. The Dashboard API (GET /dashboard) looks for an account, finds nothing, returns null, and the Frontend crashes trying to read null.status.
+
+✅ The Fix: After resetting the database (Step 1), this will resolve itself. However, to prevent this forever, verify that your admin.py creates both objects before committing.
+
+3. The "Status Filter" Mismatch (Why Connection Doesn't Persist)
+The Reason: You connect successfully, but the form reappears.
+
+Backend: When you connect via credentials, the status is set to connected.
+
+Frontend Check: The ClientSetup.jsx calls GET /client/accounts.
+
+The Bug: If your GET /client/accounts API in backend/api/client_routes.py has a filter like .filter(Account.status == 'active'), it will hide your new account (which is 'connected') from the list.
+
+Result: The list returns [] (empty), so the Frontend thinks "No accounts exist" and shows the connection form again.
+
+✅ The Fix: Open backend/api/client_routes.py and ensure the get_connected_accounts function does NOT strictly filter by 'active'. It should return everything.
+
+Python
+
+# backend/api/client_routes.py
+
+@router.get("/accounts", response_model=List[AccountSummary])
+def get_connected_accounts(...):
+    # BAD: return db.query(Account).filter(Account.status == 'active').all()
+    
+    # GOOD: Return all accounts regardless of status
+    return db.query(Account).filter(Account.user_id == current_user.id).all()
 
 _Last Updated: 2025-12-25_
 _This file is actively monitored by the LLM at every session start_
