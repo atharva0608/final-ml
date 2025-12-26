@@ -14,6 +14,7 @@ import AvailableSavings from './components/AvailableSavings';
 import ClusterList from './components/ClusterList';
 import ClusterDashboard from './components/ClusterDashboard';
 import CostMonitoring from './components/CostMonitoring';
+import OptimizationSettings from './components/OptimizationSettings';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import ModelExperiments from './components/Lab/ModelExperiments';
 import SystemMonitor from './pages/SystemMonitor';
@@ -343,6 +344,8 @@ const ClientDashboard = () => {
         return <ClusterDashboard />;
       case 'clusters':
         return <ClusterList />;
+      case 'optimization':
+        return <OptimizationSettings />;
       case 'fleet':
       case 'live': // Fallback for legacy state
         return <NodeFleet clientMode={true} clientData={clientData} />;

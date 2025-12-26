@@ -86,6 +86,7 @@ const DashboardLayout = ({ children, activeView, setActiveView, role = 'admin', 
             return [
                 { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
                 { id: 'clusters', label: 'Clusters', icon: Server },
+                { id: 'optimization', label: 'Optimization', icon: Settings },
                 { id: 'costs', label: 'Cost Monitoring', icon: TrendingDown },
                 { id: 'fleet', label: 'Node Fleet', icon: Activity },
                 { id: 'savings', label: 'Available Savings', icon: TrendingDown },
