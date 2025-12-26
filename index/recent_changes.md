@@ -4,7 +4,44 @@
 
 Chronological timeline of all code changes for quick reference.
 
-**Last Updated**: 2025-12-25
+**Last Updated**: 2025-12-26
+
+---
+
+## 2025-12-26
+
+### Investigation: UX Problem Reports - All Invalid or Already Fixed
+
+**Session**: claude/aws-dual-mode-connectivity-fvlS3
+**Module**: Investigation only (no code changes)
+**Impact**: Problem intake process validation
+
+**Investigation Results**:
+Investigated 5 UX problems reported in `/problems/new_problem`. All were found to be invalid or already fixed in recent commits:
+
+1. **"Orphan User" Problem** ✅ ALREADY FIXED
+   - Admin user creation already creates placeholder Account (admin.py:725-744)
+   - Fix includes comment: "CRITICAL FIX: Create placeholder account for client users to prevent 'Orphan' state"
+
+2. **"Amnesiac Cloud Connect"** ✅ FEATURE EXISTS
+   - ClientSetup already fetches accounts on mount (ClientSetup.jsx:299-301)
+   - Proper loading states and error handling in place
+
+3. **"Missing Feedback"** ✅ FEATURE EXISTS
+   - Comprehensive connected accounts UI exists (ClientSetup.jsx:332-429)
+   - Color-coded status badges, visual feedback panels, progress indicators
+
+4. **"No Disconnect Option"** ✅ FEATURE EXISTS
+   - DELETE endpoint: client_routes.py:84-119
+   - Frontend handler: ClientSetup.jsx:270-288
+   - UI button: ClientSetup.jsx:406-412
+   - Fixed in P-2025-12-25-003 (returns HTTP 200)
+
+5. **"UX Verdict"** ❌ BASED ON INVALID PROBLEMS
+
+**Action Taken**: Removed invalid problems from `/problems/new_problem` and documented investigation findings.
+
+**Reference**: All features documented in `/index/feature_index.md`
 
 ---
 
