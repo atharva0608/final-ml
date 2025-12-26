@@ -201,6 +201,74 @@ See: `/progress/regression_guard.md#2`, P-2025-12-25-001
 
 ---
 
+## Database Seeding Functions
+
+### seed_test_users() - Development Users
+**File**: `connection.py:80-137`
+**Environment Variable**: `ENABLE_TEST_USERS=true` (default: true)
+
+**Creates**:
+- Admin user: username=`admin`, password=`admin`, role=`admin`
+- Client user: username=`client`, password=`client`, role=`client`
+
+**Usage**:
+- Called automatically on application startup
+- Idempotent: Checks if users exist before creating
+- Uses bcrypt password hashing (12 rounds)
+
+**Purpose**: Provides test accounts for local development and UI testing
+
+---
+
+### seed_demo_data() - Demo Client Account
+**File**: `connection.py:140-354`
+**Environment Variable**: `ENABLE_DEMO_DATA=true` (default: false)
+
+**Creates**:
+- Demo client user: username=`democlient`, password=`demo123`, role=`client`
+- AWS Account: account_id=`123456789012`, name=`Demo AWS Production`
+  - Region: `us-east-1`
+  - Connection method: `iam_role`
+  - Status: `active`
+  - Environment: `PROD`
+- 15 EC2 Instances across 3 availability zones:
+  - Production workloads: t3.medium, t3.large, t3.xlarge, c5.large, c5.xlarge
+  - Memory-optimized: r5.large, r5.xlarge, r5.2xlarge
+  - Compute-optimized: c5.2xlarge, c5.4xlarge
+  - Lab instances: t3.small, t3.medium
+  - GPU workloads: g4dn.xlarge, g4dn.2xlarge
+  - General purpose: m5.large
+- ~1,200 Experiment Logs (30 days of data):
+  - 10 instances × 3-5 logs/day × 30 days
+  - 30% SWITCH decisions (cost optimization opportunities)
+  - 70% HOLD decisions (optimal configuration)
+  - Realistic CPU/Memory utilization (40-90%)
+  - Spot price ranges: $0.05-$0.50/hour
+  - Savings range: 15-40% per switch
+
+**Usage**:
+```bash
+# Enable demo data seeding
+export ENABLE_DEMO_DATA=true
+
+# Start the application
+python backend/main.py
+```
+
+**Purpose**: Provides realistic data for UI testing and demonstrations matching CAST AI design patterns
+
+**Login Credentials**:
+- Username: `democlient`
+- Password: `demo123`
+
+**Frontend Features Enabled**:
+- NodeTemplates.jsx - View instance template configurations
+- AvailableSavings.jsx - View cost optimization opportunities
+- NodeFleet - View 15 connected instances
+- Dashboard - See cluster health and metrics
+
+---
+
 ## APIs Using Database
 
 | Model | Primary APIs | Workers | Frontend |

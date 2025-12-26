@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react';
-import { Cloud, Copy, CheckCircle, XCircle, Download, RefreshCw, Server } from 'lucide-react';
+import { Cloud, Copy, CheckCircle, XCircle, Download, RefreshCw, Server, LogOut } from 'lucide-react';
+import { useAuth } from '../context/AuthContext';
+import { useNavigate } from 'react-router-dom';
 import api from '../services/api';
 
 /**
@@ -13,6 +15,8 @@ import api from '../services/api';
  * 5. Show resource discovery status
  */
 const ClientSetup = () => {
+    const { logout } = useAuth();
+    const navigate = useNavigate();
     const [showOnboarding, setShowOnboarding] = useState(false); // Controls whether to show onboarding flow
     const [connectedAccounts, setConnectedAccounts] = useState([]); // List of connected accounts
     const [isLoadingAccounts, setIsLoadingAccounts] = useState(true); // Loading state for initial check
@@ -33,6 +37,11 @@ const ClientSetup = () => {
     const [discoveryStatus, setDiscoveryStatus] = useState(null);
     const [isLoading, setIsLoading] = useState(false);
     const [pollingIntervalId, setPollingIntervalId] = useState(null);
+
+    const handleLogout = () => {
+        logout();
+        navigate('/login');
+    };
 
     // Step 1: Create onboarding request and get ExternalID
     const createOnboardingRequest = async () => {
@@ -343,13 +352,22 @@ const ClientSetup = () => {
                                     <p className="text-gray-600">Manage your connected AWS accounts</p>
                                 </div>
                             </div>
-                            <button
-                                onClick={handleAddAccount}
-                                className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors flex items-center gap-2"
-                            >
-                                <Cloud className="w-5 h-5" />
-                                Add Account
-                            </button>
+                            <div className="flex items-center gap-3">
+                                <button
+                                    onClick={handleAddAccount}
+                                    className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors flex items-center gap-2"
+                                >
+                                    <Cloud className="w-5 h-5" />
+                                    Add Account
+                                </button>
+                                <button
+                                    onClick={handleLogout}
+                                    className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors flex items-center gap-2"
+                                >
+                                    <LogOut className="w-4 h-4" />
+                                    Logout
+                                </button>
+                            </div>
                         </div>
                     </div>
 
@@ -455,12 +473,21 @@ const ClientSetup = () => {
             <div className="max-w-4xl mx-auto">
                 {/* Header */}
                 <div className="bg-white rounded-lg shadow-sm p-6 mb-6">
-                    <div className="flex items-center gap-3 mb-4">
-                        <Cloud className="w-8 h-8 text-blue-600" />
-                        <div>
-                            <h1 className="text-2xl font-bold text-gray-900">Connect Your AWS Account</h1>
-                            <p className="text-gray-600">Choose your preferred connection method</p>
+                    <div className="flex items-center justify-between mb-4">
+                        <div className="flex items-center gap-3">
+                            <Cloud className="w-8 h-8 text-blue-600" />
+                            <div>
+                                <h1 className="text-2xl font-bold text-gray-900">Connect Your AWS Account</h1>
+                                <p className="text-gray-600">Choose your preferred connection method</p>
+                            </div>
                         </div>
+                        <button
+                            onClick={handleLogout}
+                            className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors flex items-center gap-2"
+                        >
+                            <LogOut className="w-4 h-4" />
+                            Logout
+                        </button>
                     </div>
 
                     {/* Connection Method Toggle */}

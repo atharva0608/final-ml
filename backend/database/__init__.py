@@ -8,13 +8,14 @@ Contains database models, connection management, and utilities for:
 - Experiment logging
 """
 
-from .connection import engine, SessionLocal, get_db
+from .connection import engine, SessionLocal, get_db, seed_demo_data
 from .models import Base, User, Account, Instance, MLModel, ExperimentLog
 
 __all__ = [
     'engine',
     'SessionLocal',
     'get_db',
+    'seed_demo_data',
     'Base',
     'User',
     'Account',

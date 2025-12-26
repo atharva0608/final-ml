@@ -24,7 +24,7 @@ from api.admin import router as admin_router
 from api.websocket_routes import router as websocket_router
 # V3.1 Production Features
 from api import waste_routes, governance_routes, approval_routes, onboarding_routes, ai_routes, metrics_routes, pipeline_routes, storage_routes, client_routes
-from database.connection import init_db, seed_test_users
+from database.connection import init_db, seed_test_users, seed_demo_data
 from jobs.scheduler import start_scheduler, stop_scheduler
 from utils.system_logger import SystemLogger, Component
 from database.connection import get_db
@@ -56,6 +56,12 @@ async def lifespan(app: FastAPI):
         seed_test_users()
     except Exception as e:
         print(f"⚠️  Test user seeding failed: {e}")
+
+    # Seed demo data (democlient/demo123 with AWS account and instances)
+    try:
+        seed_demo_data()
+    except Exception as e:
+        print(f"⚠️  Demo data seeding failed: {e}")
 
     # Fix existing client user role (migration)
     try:
