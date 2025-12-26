@@ -1,82 +1,104 @@
-# Active Problems Inbox
+# Active Problems Inbox - New Problem Reporting
 
-## Purpose
-This file is your direct communication channel with the LLM for reporting new problems. When you discover an issue, add it here. The LLM will:
-1. Assign a Problem ID (P-YYYY-MM-DD-NNN)
-2. Add it to problems_log.md
-3. Investigate and fix the problem
-4. Remove the fixed portion from this file
-5. Document the fix in fixed_issues_log.md
+## 📋 Instructions for Reporting Problems
 
-**Status**: No active problems currently
+This file is your **direct communication channel** with the LLM for reporting new problems, issues, bugs, or requests.
+
+### How It Works
+
+When you discover an issue or have a request:
+
+1. **Scroll to the bottom** of this file to the section marked "PASTE YOUR PROBLEMS HERE ↓"
+2. **Paste your problem description** (can be plain text, structured, or use the template below)
+3. **Save this file**
+4. **Start a new LLM session** or continue an existing one
+
+The LLM will automatically:
+1. ✅ Read this file at session start
+2. ✅ Assign a Problem ID (format: `P-YYYY-MM-DD-NNN`)
+3. ✅ Add it to `/problems/problems_log.md` as "Active"
+4. ✅ Investigate and fix the problem
+5. ✅ Remove the fixed portion from this file
+6. ✅ Document the fix in `/progress/fixed_issues_log.md`
+7. ✅ Update all relevant documentation
 
 ---
 
-## How to Report a Problem
+## 📝 Problem Reporting Template (Optional - Use if Helpful)
 
-### Template (copy and fill out):
+You can use this structured template or just paste plain text below. Both work!
+
 ```markdown
 ## Problem: [Short descriptive title]
 **Reported**: YYYY-MM-DD HH:MM
 **Severity**: [CRITICAL / HIGH / MEDIUM / LOW]
-**Component**: [Which part of the system]
+**Component**: [Which part of the system - e.g., Dashboard, API, Auth, etc.]
 **Reporter**: [Your name or "User"]
 
 **Description**:
-[Detailed description of what's wrong]
+[Detailed description of what's wrong - be as specific as possible]
 
 **Steps to Reproduce**:
 1. [First step]
 2. [Second step]
-3. [Result that shows the problem]
+3. [Third step - where problem occurs]
 
 **Expected Behavior**:
 [What should happen]
 
 **Actual Behavior**:
-[What actually happens]
+[What actually happens - include error messages if any]
 
 **Additional Context**:
-- Error messages (if any)
-- Screenshots (if relevant)
+- Error messages (copy/paste exact text)
+- Screenshots (describe or reference)
 - Logs or stack traces
 - Browser/environment details
+- Any other relevant information
 
 ---
 ```
 
 ---
 
-## Severity Guidelines
+## 🚨 Severity Guidelines
 
-### CRITICAL
-- Security vulnerabilities
-- Data loss or corruption
-- Complete system failure
-- Authentication broken
-- Database connection failures
+Use these guidelines to determine severity level:
 
-### HIGH
-- Major features completely broken
-- Severe user experience degradation
-- Data inconsistency
-- Performance severely degraded
+### CRITICAL ⚠️
+- **Security vulnerabilities** (data exposure, authentication bypass, XSS, SQL injection)
+- **Data loss or corruption** (user data deleted, database inconsistency)
+- **Complete system failure** (app won't start, total crash, 500 errors)
+- **Authentication broken** (can't log in, unauthorized access)
+- **Database connection failures** (can't connect to DB)
+- **Payment/billing issues** (incorrect charges, failed payments)
 
-### MEDIUM
-- Feature partially broken
-- Workaround available but inconvenient
-- UI/UX issues affecting usability
-- Minor data inconsistencies
+### HIGH 🔴
+- **Major features completely broken** (can't connect AWS account, discovery fails)
+- **Severe user experience degradation** (extremely slow, constant errors)
+- **Data inconsistency** (wrong data displayed, calculations incorrect)
+- **Performance severely degraded** (page takes >30 seconds to load)
+- **Critical workflow blocked** (can't complete essential task)
 
-### LOW
-- Cosmetic issues
-- Minor inconveniences
-- Nice-to-have improvements
-- Documentation errors
+### MEDIUM 🟡
+- **Feature partially broken** (works sometimes, inconsistent behavior)
+- **Workaround available** but inconvenient (can achieve goal via alternate method)
+- **UI/UX issues** affecting usability (confusing interface, poor layout)
+- **Minor data inconsistencies** (stale data, minor calculation errors)
+- **Performance issues** (slow but usable, 5-10 second delays)
+
+### LOW 🟢
+- **Cosmetic issues** (styling problems, alignment issues, typos)
+- **Minor inconveniences** (extra clicks needed, suboptimal flow)
+- **Nice-to-have improvements** (feature requests, enhancements)
+- **Documentation errors** (outdated docs, missing examples)
+- **Edge case bugs** (rarely occurs, specific conditions)
 
 ---
 
-## Example (for reference):
+## 💡 Example Problem Report (For Reference)
+
+This is an example of a well-formatted problem report:
 
 ```markdown
 ## Problem: Dashboard shows $0 cost after connecting AWS account
@@ -86,68 +108,179 @@ This file is your direct communication channel with the LLM for reporting new pr
 **Reporter**: User
 
 **Description**:
-After connecting a new AWS account via CloudFormation and completing discovery, the dashboard displays "$0 Cost", "0% Usage", and no metrics. Expected to see actual usage data.
+After connecting a new AWS account via CloudFormation method and successfully
+completing resource discovery (status shows 'active'), the dashboard displays
+"$0 Cost", "0% Usage", and shows no metrics or resource data. Expected to see
+actual AWS usage and cost data immediately after discovery completes.
 
 **Steps to Reproduce**:
-1. Connect new AWS account via CloudFormation method
-2. Wait for discovery to complete (status becomes 'active')
-3. Navigate to /client dashboard
-4. Observe all metrics show zero
+1. Log in to platform as client user
+2. Navigate to "Connect AWS Account"
+3. Select CloudFormation method
+4. Deploy stack in AWS Console
+5. Verify connection (status becomes 'connected')
+6. Wait for discovery to complete (status becomes 'active')
+7. Navigate to /client dashboard
+8. Observe all metrics show zero/empty
 
 **Expected Behavior**:
-Dashboard should display:
+Dashboard should immediately display:
 - Current month cost (e.g., "$45.67")
-- CPU usage percentage (e.g., "23%")
-- Instance count
-- Resource metrics
+- CPU/memory usage percentages (e.g., "23% CPU")
+- Instance count (e.g., "5 instances")
+- Resource utilization charts with data
+- Spot vs On-Demand breakdown
 
 **Actual Behavior**:
 Dashboard displays:
-- Cost: "$0"
-- Usage: "0%"
-- No instances shown
-- Empty charts
+- Cost: "$0.00"
+- Usage: "0% CPU, 0% Memory"
+- Instances: "No instances found"
+- All charts are empty
+- No resource data visible
+
+Data DOES appear after midnight when the scheduled cron job runs, indicating
+the health check system is not being triggered immediately after discovery.
 
 **Additional Context**:
-- Data appears after midnight (next cron job run)
-- Discovery worker completes successfully
-- Instances exist in database
-- No error messages in console
+- Discovery worker completes successfully (logs show "Discovery completed")
+- Instances ARE created in database (verified via SQL query)
+- account.status transitions correctly: pending → connected → active
+- No JavaScript errors in browser console
+- Issue occurs consistently on fresh account connections
+- Workaround: Wait until midnight OR manually trigger health checks
+- Browser: Chrome 120, Firefox 121 (both affected)
+- Environment: Production
+
+**Suspected Root Cause**:
+Health checks may only run on scheduled cron (midnight), not immediately
+after discovery completion. Need to trigger component_health_checks()
+right after discovery_worker finishes.
 ```
 
 ---
 
-## Current Active Problems
+## ✅ Tips for Effective Problem Reports
 
-*(None - all known problems have been fixed as of 2025-12-25)*
+1. **Be Specific**:
+   - ✅ "DELETE /client/accounts/123 returns HTTP 204 causing JSON parse error"
+   - ❌ "Delete doesn't work"
+
+2. **Include Context**:
+   - Browser and version (Chrome 120, Firefox 121, Safari 17)
+   - User role (Admin, Client, Lab user)
+   - Account state (fresh connection, existing account, specific AWS region)
+   - Timestamp when issue occurred
+
+3. **One Problem Per Report**:
+   - Don't combine "Dashboard is slow AND delete button is broken"
+   - Submit separate reports for separate issues
+
+4. **Check Existing Issues First**:
+   - Look in `/problems/problems_log.md` to see if already reported
+   - Check `/progress/fixed_issues_log.md` to see if already fixed
+
+5. **Be Honest About Severity**:
+   - Don't mark everything as CRITICAL
+   - Use the severity guidelines above
+   - LLM will prioritize accordingly
+
+6. **Plain Text is Fine**:
+   - Don't worry about perfect formatting
+   - Just describe the problem clearly
+   - Template is optional, not required
 
 ---
 
-## Recently Fixed (Removed from this file)
+## 📚 Related Documentation
+
+- **Problem Log**: `/problems/problems_log.md` - All problems (active & fixed)
+- **Fixed Issues**: `/progress/fixed_issues_log.md` - Detailed fix documentation
+- **Bug Fix Protocol**: `/instructions/fix_protocol.md` - How LLM handles fixes
+- **Master Rules**: `/instructions/master_rules.md` - LLM workflow
+
+---
+
+## 🔍 Recently Fixed Problems (Reference)
+
+These problems were reported here and have been fixed:
 
 ### ✅ P-2025-12-25-003: DELETE endpoint HTTP 204 error
 **Fixed**: 2025-12-25
-**Summary**: DELETE /client/accounts/{id} returned HTTP 204 without body, causing frontend parsing errors. Fixed by explicitly setting status_code=200.
+**Summary**: DELETE /client/accounts/{id} returned HTTP 204 (No Content) without
+response body, causing frontend JSON parsing errors. Fixed by explicitly setting
+status_code=200 with success message body.
+**File**: backend/api/client_routes.py:84-143
 
 ### ✅ P-2025-12-25-002: Dashboard zero data after fresh connection
 **Fixed**: 2025-12-25
-**Summary**: Dashboard showed $0 after account connection. Fixed by triggering health checks immediately after discovery completion.
+**Summary**: Dashboard showed $0 and no metrics immediately after account connection.
+Fixed by triggering component_health_checks() immediately after discovery_worker
+completion instead of waiting for midnight cron.
+**File**: backend/workers/discovery_worker.py:334-340
 
 ### ✅ P-2025-12-25-001: AWS account takeover vulnerability
 **Fixed**: 2025-12-25
-**Summary**: CloudFormation flow lacked global uniqueness check. Fixed by adding account_id uniqueness validation.
+**Summary**: CloudFormation onboarding flow lacked global account_id uniqueness check,
+allowing one AWS account to be connected to multiple users. Fixed by adding uniqueness
+validation before account creation.
+**File**: backend/api/onboarding_routes.py:495
 
 ---
 
-## Tips for Effective Problem Reports
+## 🎯 Current Active Problems
 
-1. **Be Specific**: Include exact error messages, URLs, and steps
-2. **Include Context**: Browser, OS, user role, account state
-3. **One Problem Per Report**: Don't combine multiple issues
-4. **Check Existing**: Look in problems_log.md first to avoid duplicates
-5. **Severity**: Be honest about severity (don't inflate)
+**Status**: ✅ No active problems currently (all known issues resolved as of 2025-12-25)
 
+Remaining problems will appear here after you paste them below.
+
+---
+---
+---
+
+# ⬇️ PASTE YOUR PROBLEMS HERE ⬇️
+
+## Instructions:
+- Paste your problem description below this line
+- Can be plain text, bullet points, or use the template above
+- Multiple problems? Add them one after another, separated by "---"
+- Don't worry about formatting - just describe the issue clearly
+- Save this file when done
+
+---
+
+## Your Problem(s) - Add Below This Line:
+
+[Your problem description goes here - plain text is fine!]
+
+Example plain text format (delete this before adding your problem):
+"The dashboard is loading very slowly - takes about 45 seconds to show data after
+clicking on the Dashboard link. This happens every time I log in. I'm using Chrome
+on Mac. The API seems slow because I can see the loading spinner for a long time.
+Not sure if this is normal or a bug but it's really annoying."
+
+Or use structured format:
+Problem: Dashboard extremely slow to load
+When: Every time I navigate to /client/dashboard
+Severity: Medium (it works, just slow)
+Details: Takes 45+ seconds to display data, loading spinner shows entire time
+Browser: Chrome 120 on macOS
+
+---
+
+[Add another problem here if you have multiple issues]
+
+---
+
+[Keep adding problems as needed, separated by "---"]
+
+
+
+
+---
+---
 ---
 
 _Last Updated: 2025-12-25_
-_This file is actively monitored by the LLM_
+_This file is actively monitored by the LLM at every session start_
+_The LLM will process problems from the "PASTE YOUR PROBLEMS HERE" section_
