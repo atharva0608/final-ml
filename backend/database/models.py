@@ -483,3 +483,238 @@ class DowntimeLog(Base):
 
     def __repr__(self):
         return f"<DowntimeLog(instance={self.instance_id}, duration={self.duration_seconds}s, cause={self.cause})>"
+
+
+# ============================================================================
+# Kubernetes Cluster Management (CAST AI Features)
+# ============================================================================
+
+class ClusterStatus(str, enum.Enum):
+    """Kubernetes cluster connection states"""
+    PENDING = "PENDING"                          # Cluster created, agent not verified
+    CONNECTING = "CONNECTING"                    # Agent install in progress
+    CONNECTED = "CONNECTED"                      # Agent fully operational
+    READ_ONLY = "READ_ONLY"                      # Metrics only, optimization disabled
+    PARTIALLY_CONNECTED = "PARTIALLY_CONNECTED"  # Missing permissions
+    DISCONNECTED = "DISCONNECTED"                # Agent unreachable
+    ERROR = "ERROR"                              # Terminal failure
+    REMOVING = "REMOVING"                        # Deletion in progress
+    REMOVED = "REMOVED"                          # Fully deleted
+
+
+class Cluster(Base):
+    """
+    Kubernetes cluster tracking and management
+
+    Supports: AWS EKS, GCP GKE, Azure AKS
+    """
+    __tablename__ = "clusters"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey('users.id', ondelete='CASCADE'), nullable=False, index=True)
+    account_id = Column(UUID(as_uuid=True), ForeignKey('accounts.id', ondelete='CASCADE'), nullable=True, index=True)
+
+    # Cluster identification
+    name = Column(String(100), nullable=False, index=True)
+    provider = Column(String(50), nullable=False)  # 'AWS EKS', 'GCP GKE', 'Azure AKS'
+    region = Column(String(50), nullable=False)
+    version = Column(String(20))  # Kubernetes version (e.g., '1.28')
+
+    # Connection status
+    status = Column(String(30), default=ClusterStatus.PENDING.value, nullable=False, index=True)
+
+    # Agent configuration
+    agent_token = Column(String(255))  # Authentication token for cluster agent
+    agent_last_heartbeat = Column(DateTime)  # Last agent check-in
+
+    # Cluster metrics
+    total_nodes = Column(Integer, default=0)
+    spot_nodes = Column(Integer, default=0)
+    on_demand_nodes = Column(Integer, default=0)
+    fallback_nodes = Column(Integer, default=0)
+    platform_managed_nodes = Column(Integer, default=0)
+    cloud_managed_nodes = Column(Integer, default=0)
+
+    # Resource totals
+    total_cpu = Column(Integer, default=0)  # vCPU cores
+    total_memory = Column(Integer, default=0)  # GB
+    total_storage = Column(Integer, default=0)  # GB
+
+    # Workload counts
+    total_pods = Column(Integer, default=0)
+    scheduled_pods = Column(Integer, default=0)
+    pending_pods = Column(Integer, default=0)
+
+    # Cost tracking
+    monthly_cost = Column(Float, default=0.0)
+
+    # Metadata
+    cluster_metadata = Column(JSONB)  # Additional cluster info
+
+    # Timestamps
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    connected_at = Column(DateTime)  # When agent first connected
+    disconnected_at = Column(DateTime)  # When cluster was disconnected
+
+    # Relationships
+    user = relationship("User")
+    account = relationship("Account")
+    optimization_policies = relationship("OptimizationPolicy", back_populates="cluster", cascade="all, delete-orphan")
+    hibernation_schedules = relationship("HibernationSchedule", back_populates="cluster", cascade="all, delete-orphan")
+    autoscaler_policies = relationship("AutoscalerPolicy", back_populates="cluster", cascade="all, delete-orphan")
+
+    def __repr__(self):
+        return f"<Cluster(id={self.id}, name={self.name}, status={self.status}, provider={self.provider})>"
+
+
+class OptimizationPolicy(Base):
+    """
+    Cluster optimization policies and settings
+    """
+    __tablename__ = "optimization_policies"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    cluster_id = Column(UUID(as_uuid=True), ForeignKey('clusters.id', ondelete='CASCADE'), nullable=False, index=True)
+
+    # Workload Rightsizing
+    rightsizing_enabled = Column(Boolean, default=False)
+    current_efficiency = Column(Float)  # Percentage
+    waste_cpu = Column(Float)  # CPU cores wasted
+    waste_memory = Column(Float)  # GB wasted
+    savings_from_rightsizing = Column(Float)  # USD/month
+
+    # Spot Instances
+    spot_instances_enabled = Column(Boolean, default=False)
+    spot_mode = Column(String(20))  # 'all' or 'friendly_only'
+    spot_workloads_count = Column(Integer, default=0)
+    additional_actions_needed = Column(Integer, default=0)
+    spot_savings_percentage = Column(Float)  # Percentage
+
+    # ARM Support
+    arm_enabled = Column(Boolean, default=False)
+    arm_cpu_percentage = Column(Integer, default=0)  # 0-100
+    arm_savings_percentage = Column(Float)  # Percentage
+
+    # Timestamps
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationships
+    cluster = relationship("Cluster", back_populates="optimization_policies")
+
+    def __repr__(self):
+        return f"<OptimizationPolicy(cluster_id={self.cluster_id}, rightsizing={self.rightsizing_enabled}, spot={self.spot_instances_enabled})>"
+
+
+class HibernationSchedule(Base):
+    """
+    Cluster hibernation schedules for cost savings
+    """
+    __tablename__ = "hibernation_schedules"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    cluster_id = Column(UUID(as_uuid=True), ForeignKey('clusters.id', ondelete='CASCADE'), nullable=False, index=True)
+
+    # Schedule configuration
+    name = Column(String(100), nullable=False)
+    enabled = Column(Boolean, default=True)
+
+    # Active periods (when cluster runs)
+    # Format: [{"day": "Monday", "start_time": "08:00", "end_time": "18:00"}, ...]
+    active_periods = Column(JSONB)
+
+    # Timezone
+    timezone = Column(String(50), default='UTC')
+
+    # Next action
+    next_action = Column(String(20))  # 'hibernate' or 'resume'
+    next_action_time = Column(DateTime)
+
+    # Estimated savings
+    estimated_monthly_savings = Column(Float)  # USD/month
+
+    # Timestamps
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationships
+    cluster = relationship("Cluster", back_populates="hibernation_schedules")
+
+    def __repr__(self):
+        return f"<HibernationSchedule(id={self.id}, name={self.name}, enabled={self.enabled})>"
+
+
+class AutoscalerPolicy(Base):
+    """
+    Cluster autoscaler policies
+    """
+    __tablename__ = "autoscaler_policies"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    cluster_id = Column(UUID(as_uuid=True), ForeignKey('clusters.id', ondelete='CASCADE'), nullable=False, index=True)
+
+    # Policy type
+    policy_name = Column(String(100), nullable=False)  # 'Unscheduled Pods', 'Node Deletion', 'Evictor', 'Scoped Mode'
+    enabled = Column(Boolean, default=False)
+
+    # Unscheduled Pods Policy
+    add_nodes_for_unschedulable_pods = Column(Boolean, default=True)
+
+    # Node Deletion Policy
+    remove_idle_nodes = Column(Boolean, default=False)
+    node_ttl_seconds = Column(Integer)  # Time to live for idle nodes
+
+    # Evictor Mode
+    compact_pods = Column(Boolean, default=False)
+    aggressive_mode = Column(Boolean, default=False)  # Include single-replica apps
+
+    # Scoped Mode
+    scoped_to_platform_nodes = Column(Boolean, default=False)
+
+    # Policy metadata
+    policy_metadata = Column(JSONB)
+
+    # Timestamps
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationships
+    cluster = relationship("Cluster", back_populates="autoscaler_policies")
+
+    def __repr__(self):
+        return f"<AutoscalerPolicy(cluster_id={self.cluster_id}, name={self.policy_name}, enabled={self.enabled})>"
+
+
+class AuditLog(Base):
+    """
+    Audit log for tracking user and system actions
+
+    90-day retention policy
+    """
+    __tablename__ = "audit_logs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey('users.id'), nullable=True, index=True)  # Null for system actions
+    cluster_id = Column(UUID(as_uuid=True), ForeignKey('clusters.id', ondelete='SET NULL'), nullable=True, index=True)
+
+    # Action details
+    operation = Column(String(100), nullable=False, index=True)  # 'disconnect', 'reconnect', 'template_create', etc.
+    initiated_by = Column(String(100))  # User email or "system"
+
+    # Event details
+    details = Column(JSONB)  # Full event details, parameters, before/after values
+
+    # Audit metadata
+    ip_address = Column(String(50))
+    user_agent = Column(String(255))
+
+    # Timestamp
+    timestamp = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+    # Relationships
+    user = relationship("User")
+    cluster = relationship("Cluster")
+
+    def __repr__(self):
+        return f"<AuditLog(id={self.id}, operation={self.operation}, initiated_by={self.initiated_by}, timestamp={self.timestamp})>"

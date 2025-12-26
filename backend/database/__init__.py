@@ -9,7 +9,11 @@ Contains database models, connection management, and utilities for:
 """
 
 from .connection import engine, SessionLocal, get_db, seed_demo_data
-from .models import Base, User, Account, Instance, MLModel, ExperimentLog
+from .models import (
+    Base, User, Account, Instance, MLModel, ExperimentLog,
+    Cluster, ClusterStatus, OptimizationPolicy, HibernationSchedule,
+    AutoscalerPolicy, AuditLog
+)
 
 __all__ = [
     'engine',
@@ -22,4 +26,10 @@ __all__ = [
     'Instance',
     'MLModel',
     'ExperimentLog',
+    'Cluster',
+    'ClusterStatus',
+    'OptimizationPolicy',
+    'HibernationSchedule',
+    'AutoscalerPolicy',
+    'AuditLog',
 ]

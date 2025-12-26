@@ -23,7 +23,7 @@ from api.auth import router as auth_router
 from api.admin import router as admin_router
 from api.websocket_routes import router as websocket_router
 # V3.1 Production Features
-from api import waste_routes, governance_routes, approval_routes, onboarding_routes, ai_routes, metrics_routes, pipeline_routes, storage_routes, client_routes
+from api import waste_routes, governance_routes, approval_routes, onboarding_routes, ai_routes, metrics_routes, pipeline_routes, storage_routes, client_routes, cluster_routes
 from database.connection import init_db, seed_test_users, seed_demo_data
 from jobs.scheduler import start_scheduler, stop_scheduler
 from utils.system_logger import SystemLogger, Component
@@ -283,6 +283,13 @@ app.include_router(
     client_routes.router,
     prefix='/api/v1/client',
     tags=['Client Dashboard']
+)
+
+# Kubernetes Cluster Management
+app.include_router(
+    cluster_routes.router,
+    prefix='/api',
+    tags=['Cluster Management']
 )
 
 
