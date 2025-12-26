@@ -14,29 +14,37 @@ export const AuthProvider = ({ children }) => {
             const storedUser = localStorage.getItem('ecc_user');
             const storedToken = localStorage.getItem('auth_token');
 
-            if (storedUser && storedToken) {
-                try {
-                    // Parse stored user
-                    const parsedUser = JSON.parse(storedUser);
+            // If no stored credentials, immediately finish loading
+            if (!storedUser || !storedToken) {
+                setLoading(false);
+                return;
+            }
 
-                    // Validate token with backend
-                    try {
-                        await api.verifyToken();
-                        // Token is valid, restore session
-                        setUser(parsedUser);
-                    } catch (error) {
-                        // Token is invalid or expired, clear session
-                        console.warn("Stored token is invalid or expired, clearing session");
-                        localStorage.removeItem('ecc_user');
-                        localStorage.removeItem('auth_token');
-                        setUser(null);
-                    }
+            try {
+                // Parse stored user
+                const parsedUser = JSON.parse(storedUser);
+
+                // Validate token with backend (with timeout)
+                const timeoutPromise = new Promise((_, reject) =>
+                    setTimeout(() => reject(new Error('Token validation timeout')), 3000)
+                );
+
+                try {
+                    await Promise.race([api.verifyToken(), timeoutPromise]);
+                    // Token is valid, restore session
+                    setUser(parsedUser);
                 } catch (error) {
-                    console.error("Failed to parse user session:", error);
+                    // Token is invalid, expired, or backend unavailable - clear session
+                    console.warn("Token validation failed, clearing session:", error.message);
                     localStorage.removeItem('ecc_user');
                     localStorage.removeItem('auth_token');
                     setUser(null);
                 }
+            } catch (error) {
+                console.error("Failed to parse user session:", error);
+                localStorage.removeItem('ecc_user');
+                localStorage.removeItem('auth_token');
+                setUser(null);
             }
 
             setLoading(false); // Finish loading after validation
