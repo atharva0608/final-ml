@@ -1,831 +1,615 @@
-Kubernetes Optimization Platform - Complete Component Documentation
-Table of Contents
-Dashboard Components
-Authentication & Onboarding Flow
-Cluster Management
-Node Templates
-Optimization Policies
-Hibernation Manager
-Account Management
-Audit Logs
+This feature manages the secure entry of new clients into the platform, handling identity verification, organization creation, and the critical initial connection to AWS infrastructure.
+1. Authentication & Account Provisioning
+The entry point is a unified Login/Sign-Up Portal (LoginPage.jsx) that serves both Administrators and Clients.
+Sign Up Flow (New Clients):
+Input: The user provides an Organization Name, Email, and Password.
+Backend Logic: Upon submission to /api/auth/signup, the system performs an atomic transaction:
+User Creation: A new record is created in the users table with a hashed password (bcrypt).
+Placeholder Account: Crucially, the system immediately generates a "Placeholder" row in the accounts table with status='pending' and a temporary account_id.
+Purpose: This prevents the "Orphan User" state, ensuring that when a new user logs in, the dashboard query never returns null.
+Sign In Flow:
+Authentication: The user authenticates via /api/auth/token. The server returns a JWT (JSON Web Token) containing the user's ID and Role.
+Routing (The Gateway): The frontend AuthGateway component intercepts the navigation. It queries /api/client/accounts.
+If accounts.length == 0 or status is pending: Redirects to Onboarding.
+If accounts.length > 0 and status is active: Redirects to Dashboard.
+2. The Cloud Connect Interface
+Once authenticated, new users are presented with the Cloud Connect interface (ClientSetup.jsx). This UI offers two distinct methods for linking an AWS environment, designed to balance security constraints with ease of use.
+Option A: CloudFormation (Role-Based Access) 🛡️
+Best For: Production environments and Enterprise clients requiring strict security governance.
+Mechanism:
+The user enters their AWS Account ID and Target Region.
+The system generates a unique External ID (UUID) to prevent "Confused Deputy" attacks.
+The user is provided with a pre-generated CloudFormation Template URL.
+Backend Verification: When the user clicks "Verify", the backend assumes the created IAM Role using boto3.sts and validates access permissions without ever storing permanent credentials.
+Option B: Direct Credentials (Access Keys) 🔑
+Best For: Lab environments, testing, or rapid prototyping.
+Mechanism:
+The user inputs an AWS Access Key ID and Secret Access Key.
+Encryption: Before saving to the database, the Secret Key is encrypted using AES-256 (via fernet in utils/crypto.py). The raw key is never stored in plain text.
+Validation: The backend immediately attempts a sts.get_caller_identity() call to verify the keys are active and valid.
+3. Connection Persistence & State Management
+To ensure a stable "Connected" experience, the system implements robust state handling:
+Global Uniqueness Check: Before linking, the API checks if the AWS Account ID is already claimed by another user in the system to prevent data collisions.
+The "Upsert" Strategy: If the user creates a connection, the system finds the pending placeholder account created during signup and updates it with the new AWS details, rather than creating a duplicate row.
+Live Status Feedback:
+Once connected, the Account status transitions from 'pending' → 'scanning'.
+The DiscoveryWorker is triggered immediately to fetch EC2 instances.
+The frontend polls the status endpoint and displays a "Connection Established" success message before transitioning to the full dashboard.
+4. Security Architecture
+Data in Transit: All inputs (keys, passwords) are transmitted over HTTPS.
+Data at Rest: AWS Secret Keys are encrypted at the application layer before database insertion.
+Scope Isolation: Each Client sees only the AWS accounts linked to their User ID, enforced by filter(Account.user_id == current_user.id) on every API read operation.
+ 
 
-Dashboard Components
-1. Add Client Button (Primary Action)
-Component ID: dash-topbar-btn-addclient-primary
-Detailed Description
-The Add Client Button is a primary call-to-action element positioned prominently in the top-right corner of the dashboard's navigation bar. This button serves as the primary entry point for administrators to onboard new client organizations into the platform. The button maintains a consistent presence across all dashboard views, ensuring that administrators can initiate the client creation process from any page without navigating back to a specific section. The design follows modern SaaS patterns with a bold primary color (typically blue or purple gradient) that distinguishes it from secondary actions, making it immediately recognizable and accessible.
-The button's implementation includes sophisticated state management that prevents duplicate submissions and provides real-time feedback during the creation process. When clicked, it triggers a modal overlay system that temporarily suspends interaction with the main dashboard while maintaining visual context through a blurred backdrop effect. The button is permission-gated, appearing only for users with administrative privileges, and includes analytics tracking to monitor conversion rates and identify potential UX improvements in the client onboarding funnel.
-Key Characteristics
-Visual Design:
+ Now client dashboard will have  side menu the first feature will be dashboard 
 
+Here is the feature description for the Unified Cluster Observability & Savings Dashboard.
+This design focuses strictly on Monitoring & Assessment (Phase 1), allowing users to visualize inefficiency, potential savings, and health risks without triggering active changes to the infrastructure.
 
-Rectangular button with rounded corners (8px border-radius)
-Primary gradient background (blue-to-purple or brand colors)
-White text with "+" icon prefix
-Fixed width: 140px, Height: 40px
-Drop shadow on hover for elevation effect
-Smooth transition animations (0.3s ease-in-out)
-Location & Positioning:
+📊 Feature: Unified Cluster Observability Dashboard
+This feature serves as the "Single Pane of Glass" for all connected Kubernetes clusters (EKS) and AWS fleets. It aggregates real-time telemetry to calculate financial waste and stability risks.
+1. Multi-Cluster List & Metadata
+The View: A high-level inventory table.
+Columns: Cluster Name, Region, Kubernetes Version, Total Nodes, Monthly Run Rate ($), and Efficiency Score (A-F grade).
+Logic:
+Aggregates data from Account and Instance tables.
+Monthly Run Rate = SUM(current_instance_price * 730 hours) for all nodes in the cluster.
+Efficiency Score is a weighted average of CPU Allocation vs. Usage.
+2. Bin Packing & Waste Analysis
+The View: A "Resource Gap" Area Chart.
+What it shows: Two lines plotted over time:
+Red Line: Actual Capacity (Total CPU/RAM available on nodes).
+Green Line: Requested Capacity (Total CPU/RAM needed by pods).
+The Insight (Bin Packing Opportunity): The gap between the Red and Green lines represents "Waste"—empty space on servers that you are paying for.
+Calculation:
+Potential_Bin_Packing_Savings = Current_Cost - (Cost_of_Perfectly_Packed_Nodes).
+It simulates rescheduling pods onto fewer, larger nodes to eliminate fragmentation.
+3. Karpenter & Spot Optimization Monitor
+The View: A "Fleet Composition" Sunburst Chart.
+What it shows: Breakdown of the fleet by Instance Lifecycle (Spot vs. On-Demand) and Instance Family (m5, c6, etc.).
+Karpenter Insight:
+Identifies workloads running on expensive "General Purpose" On-Demand nodes that could run on cheaper "Spot" nodes managed by Karpenter.
+Metric: "Spot Readiness Score" – percentage of pods that are stateless and interruption-tolerant.
+Calculation:
+Karpenter_Savings = (OnDemand_Price - Spot_Price) for all "Spot Ready" workloads.
+4. Hibernation Schedule Opportunities
+The View: An "Activity Heatmap" (24x7 Grid).
+What it shows: A grid representing every hour of the week.
+Red Blocks: High Cluster Activity (User logins, CI/CD jobs).
+Blue Blocks: Idle Time (No API calls, low CPU).
+The Insight: Automatically highlights "Blue Zones" (e.g., Sat/Sun, Nights) where the cluster effectively does nothing but costs money.
+Calculation:
+Hibernation_Savings = Hourly_Cluster_Cost * Count_of_Blue_Blocks_per_Month.
+5. Cluster Health & Stability Index
+The View: A "Stability Gauge" (0 - 100%).
+What it shows: A real-time score indicating if the cluster is under stress.
+Components:
+Pressure Events: Frequency of DiskPressure or MemoryPressure events on nodes.
+Spot Stability: Probability of interruption for the current instance types (derived from the ML model).
+Control Plane Latency: Response time of the AWS EKS API.
+Goal: To reassure the user that "Saving Money" is not degrading "Performance". If the score drops below 80%, the gauge turns Orange/Red.
 
-
-Parent Container: Dashboard Header Component
-Position: Top-right corner of navigation bar
-Z-index: 100 (appears above content but below modals)
-Spacing: 16px margin from notification bell icon
-Alignment: Vertically centered within 64px header height
-Responsive: On mobile (<768px), transforms to icon-only floating button
-Interaction States:
-
-
-Idle State: Standard appearance with primary colors
-Hover State: Background darkens 10%, shadow elevation increases, cursor: pointer
-Active/Click State: Brief scale-down animation (0.95x) for tactile feedback
-Loading State: Button disabled, spinner replaces icon, text changes to "Opening..."
-Disabled State: Opacity 0.5, cursor: not-allowed, grayscale filter applied
-Dependencies:
-
-
-Frontend Components:
-AddClientWizard.jsx - The modal component it triggers
-ClientList.jsx - Updated after successful client creation
-ClientCountCard.jsx - Metric card that reflects new count
-DashboardLayout.jsx - Parent layout component
-Backend Endpoints:
-POST /api/admin/clients - Creates new client record
-GET /api/admin/permissions - Checks if user can add clients
-State Management:
-Global modal state (Redux/Context)
-Client list refresh trigger
-Toast notification system
-Functionality Flow:
-
- Initial Click:
-
-
-User clicks "Add Client" button
-Button enters loading state (0.2s)
-Permission check occurs (cached if recent)
-Modal state updates to "opening"
-Backdrop overlay fades in (0.3s)
-Modal slides up from bottom (0.4s ease-out)
-Focus shifts to first input field in modal
-Main dashboard content receives aria-hidden="true"
-Modal Interaction:
-
-
-User completes wizard steps (see AddClientWizard section)
-Form validation occurs at each step
-Backend API calls happen on final submission
-Real-time feedback provided throughout
-Success Path:
-
-
-API returns 201 Created with client data
-Modal displays success animation (checkmark)
-Toast notification appears: "Client created successfully"
-Modal auto-closes after 2 seconds
-Client list component refreshes (fetches new data)
-New client appears at top with "NEW" badge
-Client count card animates from old to new value
-Activity feed adds "Client added" entry
-Button returns to idle state
-Focus returns to button or newly created row
-Error Path:
-
-
-API returns error (400, 409, 500)
-Modal remains open
-Error message displays inline in form
-Specific field highlighted if applicable
-Submit button re-enables for retry
-Error toast appears with details
-User can correct and resubmit or cancel
-Cancel Path:
+📝 Summary of "Read-Only" Logic
+No Actions: There are NO buttons for "Rebalance Now", "Apply Schedule", or "Enable Karpenter".
+Forecasts Only: All dollar values are labeled as "Potential Savings" or "Projected Waste".
+Data Source: All data is derived from read-only AWS APIs (DescribeInstances, GetMetricStatistics) and Kubernetes Metrics Server.
 
 
-User clicks "Cancel" button or X icon
-If form has data: Confirmation dialog appears
-"Are you sure? All entered data will be lost."
-Options: "Discard" (red) or "Keep Editing" (gray)
-If no data: Modal closes immediately
-Modal slides down and fades out (0.3s)
-Backdrop fades out simultaneously
-No database changes occur
-No notifications shown
-Focus returns to Add Client button
-Button returns to idle state
-Similar Components
-Component ID: clients-section-btn-addclient-secondary
-This is a functionally identical button located within the Clients section of the sidebar navigation. The key differences include:
-Visual Style: Secondary button styling (white background, blue border, blue text)
-Location: Clients page header, left-aligned
-Text: "Add New Client" (full text, no truncation on desktop)
-Icon Position: Icon appears before text
-Size: Slightly larger (160px width, 44px height)
-Context: Appears only when viewing the clients section
-Priority: Secondary action (less prominent than primary topbar button)
-Both components share:
-Same modal trigger (AddClientWizard)
-Same backend API endpoints
-Same validation logic
-Same success/error handling
-Same state management hooks
-Same keyboard shortcuts (Ctrl/Cmd + K to open)
+Here is the detailed functional description for the Node Templates Frontend UI. This describes exactly how the feature will look, behave, and interact with the user within the Dashboard.
 
-2. Client List Table Component
-Component ID: dash-main-table-clientlist-data
-Detailed Description
-The Client List Table is a sophisticated data grid component that serves as the central interface for viewing and managing all registered client organizations within the platform. This table implements advanced features including real-time updates, server-side pagination, multi-column sorting, advanced filtering, and inline editing capabilities. The component is designed to handle large datasets efficiently, utilizing virtual scrolling when displaying more than 100 rows to maintain smooth performance even with thousands of clients.
-The table architecture follows a responsive design pattern that adapts its layout based on viewport size. On desktop displays, all columns are visible with horizontal scrolling available for overflow. On tablet devices (768px-1024px), less critical columns collapse into expandable row details. On mobile devices (<768px), the table transforms into a card-based layout where each client is represented as an individual card with key information prominently displayed and additional details accessible via tap-to-expand interactions.
-The component maintains its own local state for UI interactions (sorting, filtering, selection) while synchronizing with global application state for data mutations. It implements optimistic UI updates, meaning when a client is added or modified, the UI updates immediately before the server response, providing instant feedback to users. If the server request fails, the component gracefully rolls back the change and notifies the user.
-Key Characteristics
-Visual Structure:
-
-
+🎨 Feature Description: Node Templates UI
+Location: Sidebar Menu → Node Templates
+This interface serves as the "Blueprint Manager" for your infrastructure. It allows users to define reusable configurations (Constraints) that the AI Optimizer and Karpenter autoscaler must follow when launching new nodes.
+1. The Main List View (Landing Page)
+When the user clicks "Node Templates", they see a clean, data-rich table listing all defined blueprints.
 Header Section:
-Section title: "Clients" (24px font, semi-bold)
-Total count badge: "(127 clients)" in gray text
-Search input: Full-width on mobile, 320px on desktop
-Filter dropdown: Multi-select with categories
-Action buttons: Export CSV, Refresh, Add Client
-Bulk action toolbar: Appears when rows selected
-Table Structure:
-Fixed header row (sticky position during scroll)
-Zebra-striped rows for readability
-Row height: 64px (comfortable for interaction)
-Hover effect: Subtle gray background (slate-50)
-Selected rows: Blue background tint (blue-50)
-Column dividers: 1px light gray borders
-Column Configuration:
-
-
-Selection Checkbox Column (40px width)
-Master checkbox in header (select/deselect all)
-Individual checkboxes per row
-Tri-state support (all, some, none selected)
-Keyboard navigation: Space to toggle
-Organization Name (200px min-width, flex-grow)
-Primary identifier, left-aligned
-Font: 14px, semi-bold
-Clickable link to client detail page
-Truncates with ellipsis if too long
-Hover shows full name in tooltip
-Admin Email (220px min-width)
-Secondary identifier
-Font: 14px, regular, gray-700
-Includes copy-to-clipboard icon on hover
-Email validation indicator (verified badge)
-Total Clusters (120px width, center-aligned)
-Numeric count with icon
-Color-coded: Green (>0), Gray (0)
-Clickable to view cluster list
-Sortable column
-Status (100px width, center-aligned)
-Badge component with color coding
-🟢 Active: Green badge, "Active" text
-🟡 Setup: Yellow badge, "Setting Up" text
-🔴 Suspended: Red badge, "Suspended" text
-🟠 Trial: Orange badge, "Trial" text with days remaining
-Created Date (140px width, right-aligned)
-Relative time format: "2 days ago"
-Hover shows exact timestamp tooltip
-Sortable (default sort: newest first)
-Actions Menu (60px width, right-aligned)
-Three-dot menu button
-Opens dropdown with options:
-View Details
-Edit Information
-View Clusters
-Suspend Account
-Delete Client (requires confirmation)
-Interactive Features:
-
- Real-Time Updates:
-
-
-WebSocket connection for live data streaming
-Polling fallback every 30 seconds if WebSocket unavailable
-Optimistic updates for user actions
-Background sync indicator in header
-Conflict resolution for concurrent edits
-Sorting:
-
-
-Click column header to sort ascending
-Second click toggles to descending
-Third click removes sort (returns to default)
-Multi-column sort: Hold Shift + click
-Visual indicators: Arrow icons in header
-Persisted in URL parameters (?sort=name:asc)
-Filtering:
-
-
-Text search: Searches name, email, and metadata
-Debounced input (300ms delay before query)
-Advanced filters panel:
-Status filter: Multi-select checkbox
-Cluster count: Range slider (0-100+)
-Date range: Calendar picker
-Plan type: Dropdown selection
-Active filters shown as removable pills
-"Clear All Filters" button appears when active
-Filter state persisted in URL
-Pagination:
-
-
-Server-side pagination (50 items per page default)
-Page size options: 25, 50, 100, 200
-Pagination controls at bottom:
-Previous/Next buttons
-Page number buttons (with ellipsis for many pages)
-Jump to page input field
-Total count display: "Showing 1-50 of 127"
-Keyboard shortcuts: ← → for navigation
-Preserves scroll position when returning from detail view
-Bulk Actions:
-
-
-Select all checkbox (master control)
-Individual row selection
-Bulk action toolbar slides up when items selected
-Available actions:
-Export Selected (CSV/JSON)
-Bulk Edit (opens modal)
-Bulk Delete (requires confirmation with count)
-Send Notification (email/in-app)
-Selection count badge: "3 clients selected"
-Clear selection button
-Row Interactions:
-
-
-Single click on name: Navigate to detail view
-Double click on row: Opens edit modal
-Right-click: Context menu with actions
-Keyboard navigation:
-Tab: Navigate between rows
-Enter: Open detail view
-Space: Toggle selection
-Delete: Delete selected (with confirmation)
-State Management & Data Flow:
-
- Initial Load:
-
-
-Component mounts and shows skeleton loader
-Fetches data from GET /api/admin/clients?page=1&limit=50
-Response includes: { clients: [], total: 127, page: 1, pages: 3 }
-Data stored in component state
-Loading state cleared, table renders
-Total duration: ~500-800ms
-Add Client Flow:
-
-
-User adds client via wizard
-POST request succeeds with new client data
-Component receives update event (WebSocket or callback)
-New row data prepended to array (optimistic update)
-New row animates in with slide-down effect (0.4s)
-Row background flashes green (pulse animation, 2s)
-"NEW" badge appears on row (fades after 5s)
-Total count increments
-If on page 2+, shows notification: "New client added. Return to page 1?"
-Background refresh ensures data consistency
-Delete Client Flow:
-
-
-User clicks delete in actions menu
-Confirmation modal appears:
-Title: "Delete Client?"
-Message: "This will permanently delete [Org Name] and all associated data."
-Warning: "This action cannot be undone."
-Buttons: "Cancel" (gray) and "Delete" (red)
-User confirms deletion
-DELETE request sent to /api/admin/clients/{client_id}
-Row immediately fades out (0.3s opacity transition)
-Row collapses vertically (0.3s height transition)
-Adjacent rows smoothly move up to fill space
-Success toast: "Client deleted successfully"
-Total count decrements
-If last item on page, navigates to previous page
-Activity log updated with deletion event
-Edit Client Flow:
-
-
-User clicks "Edit" in actions menu
-Inline editing mode activates:
-Editable fields transform to inputs
-Save/Cancel buttons appear
-Rest of table dims slightly
-User modifies fields (validation in real-time)
-User clicks "Save"
-PATCH request to /api/admin/clients/{client_id}
-Request body: Only changed fields
-Optimistic update: Row updates immediately
-Success: Save button shows checkmark briefly
-Error: Changes revert, error message displays
-Row returns to normal view mode
-Error Handling:
-
-
-Network errors: Retry button appears with countdown
-404 errors: "Client not found" message with refresh option
-403 errors: "Permission denied" notification
-500 errors: "Server error" with support contact
-Stale data: Warning banner with refresh button
-Concurrent modification: Conflict resolution dialog
-Responsive Behavior:
-
- Desktop (>1024px):
-
-
-Full table layout with all columns visible
-Horizontal scroll for overflow
-Fixed table header during vertical scroll
-Row hover effects enabled
-Context menus available
-Tablet (768px - 1024px):
-
-
-Removes "Created Date" column
-Collapses less important columns
-Expandable row details
-Tap to expand secondary information
-Simplified filters (drawer vs inline)
-Mobile (<768px):
-
-
-Transforms to card layout
-Each client = individual card
-Card structure:
-Top: Organization name + status badge
-Middle: Email, cluster count
-Bottom: Action buttons row
-Swipe gestures: Swipe right reveals delete, swipe left reveals edit
-Pull-to-refresh enabled
-Simplified search (full-screen overlay)
-Performance Optimizations:
-
- Virtual Scrolling:
-
-
-Activated when >100 rows
-Only renders visible rows + buffer
-Smooth scrolling maintained
-Reduces DOM nodes by ~95%
-Memoization:
-
-
-Row components memoized (React.memo)
-Prevents unnecessary re-renders
-Only re-renders when row data changes
-Debouncing:
-
-
-Search input debounced (300ms)
-Filter changes debounced (200ms)
-Reduces API calls significantly
-Caching:
-
-
-Client list cached for 60 seconds
-Stale-while-revalidate pattern
-Background refresh for freshness
-Cache invalidated on mutations
-Progressive Loading:
-
-
-Initial load: First 50 rows
-Infinite scroll: Load next 50 as user scrolls
-Lazy load images/avatars
-Skeleton loaders for perceived performance
-
-3. Client Count Card (Metric Widget)
-Component ID: dash-sidebar-card-clientcount-metric
-Detailed Description
-The Client Count Card is a key performance indicator (KPI) widget that provides administrators with at-a-glance visibility into the total number of client organizations registered on the platform. This metric card is part of a dashboard metrics suite that includes other critical statistics such as total revenue, active clusters, and system health scores. The card follows a minimalist design philosophy, presenting the most important information prominently while relegating contextual details to secondary text and hover states.
-The component implements sophisticated animation techniques to make numerical changes highly visible and engaging. When the count changes (due to new client additions or deletions), the number animates using a "count-up" effect that draws the user's attention to the change. This is coupled with subtle visual cues like background color flashes and icon animations that reinforce the nature of the change (green for additions, yellow for deletions).
-Beyond its primary display function, the card serves as an interactive navigation element. Clicking anywhere on the card navigates the user to the full client list view, providing a natural discovery path from high-level metrics to detailed data. The card also includes a mini sparkline chart showing the trend over the past 30 days, giving administrators quick insight into growth patterns without requiring navigation to a separate analytics view.
-Key Characteristics
-Visual Design:
-
-
-Card Container:
-
-
-Width: 100% of sidebar column (260px typical)
-Height: 160px (fixed)
-Background: White with subtle shadow
-Border-radius: 12px
-Border: 1px solid gray-200
-Padding: 24px
-Hover: Shadow elevation increases, border color changes to blue
-Cursor: pointer (entire card clickable)
-Content Layout:
-
- ┌──────────────────────┐
-│  📊 (Icon)           │
-│  Total Clients       │  ← Label (12px, gray-600, uppercase)
-│                      │
-│      127             │  ← Value (48px, bold, blue-600)
-│      ↑ +12%          │  ← Trend (14px, green-600 if positive)
-│                      │
-│  ▁▂▃▅▆▇█             │  ← Sparkline chart (30 days)
-│  vs last month       │  ← Context (10px, gray-500)
-└──────────────────────┘
-
-
-Typography:
-
-
-Label: 12px, font-weight: 600, uppercase, letter-spacing: 0.5px
-Value: 48px, font-weight: 700, number font (tabular-nums)
-Trend: 14px, font-weight: 600
-Context: 10px, font-weight: 400, italic
-Color Scheme:
-
-
-Default state: Blue primary (#3b82f6)
-Positive trend: Green (#22c55e)
-Negative trend: Red (#ef4444)
-Neutral: Gray (#64748b)
-Data Points Displayed:
-
-
-Primary Metric: Total Client Count
-
-
-Large number display
-Format: Comma-separated for large numbers (1,234)
-Updates: Real-time via WebSocket or polling
-Animation: CountUp effect on change
-Trend Indicator
-
-
-Shows change vs previous period
-Format: Arrow + percentage (↑ +12%)
-Colors: Green (increase), Red (decrease), Gray (no change)
-Calculation: ((current - previous) / previous) * 100
-Time period: Configurable (week/month/quarter)
-Absolute Change
-
-
-Shown in tooltip on hover
-Format: "+14 clients since last month"
-Provides context to percentage
-Sparkline Chart
-
-
-Mini line chart (width: 100%, height: 30px)
-Shows last 30 days of data
-Simple line, no axes or labels
-Gradient fill under line
-Hover shows tooltip with exact date and value
-Comparison Period
-
-
-Text label: "vs last month" (or week/quarter)
-Helps interpret the trend percentage
-Clickable to change period (dropdown)
-Update Mechanisms:
-
- Real-Time Updates (WebSocket):
-
- // Pseudo-code for real-time update
-websocket.on('client:created', (data) => {
-  // 1. Animate from old count to new count
-  animateCountUp(currentCount, currentCount + 1, 1000); // 1 second duration
-  
-  // 2. Flash background green
-  cardBackground.flashColor('#22c55e', 200); // 200ms
-  
-  // 3. Update trend calculation
-  const newTrend = calculateTrend(currentCount + 1, previousPeriodCount);
-  updateTrendIndicator(newTrend);
-  
-  // 4. Add point to sparkline
-  sparklineData.push({ date: new Date(), count: currentCount + 1 });
-  updateSparkline(sparklineData);
-  
-  // 5. Update stored state
-  setCurrentCount(currentCount + 1);
-});
-
-websocket.on('client:deleted', (data) => {
-  // Similar flow but with different visual feedback
-  animateCountUp(currentCount, currentCount - 1, 1000);
-  cardBackground.flashColor('#facc15', 200); // Yellow for caution
-  // ... rest of updates
-});
- Polling Fallback:
-
-
-Checks every 30 seconds if WebSocket unavailable
-Fetches from GET /api/admin/dashboard/stats
-Compares with current state
-Only animates if value changed
-Prevents animation spam during initial load
-Manual Refresh:
-
-
-Click refresh icon in card header
-Triggers immediate data fetch
-Shows loading spinner during fetch
-Animates any changes detected
-Animation Specifications:
-
- CountUp Animation:
-
- // CountUp configuration
-const countUpOptions = {
-  startVal: previousValue,      // Starting number
-  endVal: newValue,              // Ending number
-  duration: 1.5,                 // 1.5 seconds
-  separator: ',',                // Thousand separator
-  decimal: '.',                  // Decimal separator
-  prefix: '',                    // No prefix
-  suffix: '',                    // No suffix
-  useEasing: true,               // Easing function
-  easingFn: easeOutCubic,        // Smooth deceleration
-};
- Background Flash:
-
-
-Initial color: Component background
-Flash color: Green (#22c55e) for addition, Yellow (#facc15) for deletion
-Duration: 200ms fade in, 400ms hold, 400ms fade out
-Timing function: ease-in-out
-Total duration: 1000ms
-Trend Arrow:
-
-
-Slides in from left with fade (0.3s)
-Rotates to point up or down
-Color transitions (0.2s)
-Sparkline Update:
-
-
-New point fades in (0.4s)
-Line extends smoothly
-Chart scrolls left if >30 points
-Subtle bounce animation on addition
-Interactive Behaviors:
-
- Click Interaction:
-
-
-User clicks anywhere on card
-Card scales down slightly (0.98x) for 100ms
-Ripple effect emanates from click point
-Navigation initiated to /clients page
-URL parameter added: ?highlight=count
-Clients page loads with count metric highlighted
-Smooth scroll to client list table
-Brief yellow highlight on total count in table header
-Hover States:
-
-
-Card elevation increases (shadow grows)
-Border color transitions to blue
-Cursor changes to pointer
-Tooltip appears after 500ms delay:
- ┌─────────────────────────────┐│ Client Count Details        │├─────────────────────────────┤│ Current: 127 clients        ││ Last Month: 113 clients     ││ Change: +14 clients (+12%)  ││                             ││ Click to view full list     │└─────────────────────────────┘
-
-
-Keyboard Navigation:
-
-
-Tab: Focus on card (blue outline appears)
-Enter/Space: Activate click action
-Escape: Clear focus
-Data Source & API:
-
- Endpoint:
-
- GET /api/admin/dashboard/stats
-Authorization: Bearer {admin_token}
- Response Format:
-
- {
-  "total_clients": 127,
-  "clients_change": {
-    "absolute": 14,
-    "percent": 12.5,
-    "direction": "up"
-  },
-  "previous_period": {
-    "count": 113,
-    "period": "month",
-    "start_date": "2024-12-01",
-    "end_date": "2024-12-31"
-  },
-  "sparkline_data": [
-    { "date": "2024-12-01", "count": 113 },
-    { "date": "2024-12-02", "count": 114 },
-    // ... 30 days of data
-    { "date": "2024-12-31", "count": 127 }
-  ],
-  "last_updated": "2025-01-15T14:32:00Z"
-}
- Caching Strategy:
-
-
-Client-side cache: 60 seconds
-Stale-while-revalidate: Shows cached data immediately, fetches fresh in background
-Cache invalidation: Manual refresh or real-time update
-Error handling: Shows last known value with stale indicator
-Error States:
-
- Loading State:
-
-
-Skeleton loader with pulsing animation
-Placeholder bars for text
-Duration: Visible until data arrives
-Error State:
-
-
-Icon changes to ⚠️
-Value shows "—" (em dash)
-Error message in small text: "Unable to load"
-Retry button appears
-Card border turns red
-No Data State:
-
-
-Value shows "0"
-Message: "No clients yet"
-CTA button: "Add Your First Client"
-Different visual treatment (lighter, less emphasis)
-Accessibility Features:
-
-
-ARIA label: "Total clients metric card"
-Role: "button" (since clickable)
-ARIA-live: "polite" (announces changes to screen readers)
-Keyboard navigable
-Focus indicator visible
-Color contrast ratios meet WCAG AA standards
-Number changes announced: "Client count increased to 127"
-Related Components:
-
- Sibling Cards:
-
-
-Revenue Card: dash-sidebar-card-revenue-metric
-Active Clusters: dash-sidebar-card-clusters-metric
-Monthly Savings: dash-sidebar-card-savings-metric
-System Health: dash-sidebar-card-health-metric
-All cards share:
-
-
-Same dimensions and layout structure
-Same animation patterns
-Same interaction behaviors
-Same API response format (different endpoints)
-Same error handling logic
-
-Authentication & Onboarding Flow
-4. Add Client Wizard Modal
-Component ID: modal-wizard-addclient-multistep
-Detailed Description
-The Add Client Wizard is a sophisticated multi-step modal interface that guides administrators through the process of creating new client accounts on the platform. This wizard employs progressive disclosure principles, breaking down a potentially complex form into digestible steps that reduce cognitive load and improve completion rates. The modal's architecture is built around a state machine pattern that manages step transitions, validation states, and data persistence across the entire workflow.
-The wizard implements intelligent validation that adapts to user behavior. Rather than showing all errors at once (which can be overwhelming), it validates fields progressively as users interact with them, providing immediate feedback for individual fields while deferring form-level validation until submission. This approach reduces user frustration and creates a more conversational, guided experience. The wizard also includes auto-save functionality that stores draft data in browser session storage, allowing users to close the modal and resume later without losing their progress.
-The component is designed with flexibility in mind, allowing different entry points (dashboard button, clients page button, keyboard shortcut) while maintaining consistent behavior. It includes comprehensive accessibility features, ensuring that users who rely on keyboard navigation or assistive technologies can complete the wizard efficiently. The wizard also tracks analytics events at each step, providing administrators with insights into where users might be struggling or abandoning the process.
-Key Characteristics
-Modal Structure:
-
- Overall Dimensions:
-
-
-Width: 600px on desktop, 95vw on mobile
-Max-height: 90vh with internal scrolling
-Position: Centered on viewport
-Z-index: 1000 (above all content)
-Backdrop: rgba(0,0,0,0.4) with 8px blur
-Layout Components:
-
-
-Header Section (80px height)
-
-
-Title: "Add New Client"
-Step indicator: "Step 1 of 3"
-Close button (X): Top-right corner
-Progress dots: Visual step indicator
-Body Section (Flexible height, scrollable)
-
-
-Content area for current step
-Minimum height: 400px
-Padding: 32px
-Background: White
-Footer Section (80px height)
-
-
-Navigation buttons: "Back" and "Next/Submit"
-Button alignment: Space-between
-Sticky position (always visible)
-Step Configuration:
-
- Step 1: Basic Information
-
- Purpose: Collect essential client identification details
-
- Fields:
-
-
-Organization Name (Required)
-
-
-Input type: Text
-Max length: 100 characters
-Validation:
-Must be 2+ characters
-Must be unique (checked in real-time)
-Cannot contain special characters except spaces, hyphens, apostrophes
-Real-time feedback:
-✓ Green checkmark when valid and unique
-✗ Red X with error message if taken
-🔄 Loading spinner during uniqueness check
-Debounce: 500ms before checking uniqueness
-Error messages:
-"Organization name is required"
-"Name must be at least 2 characters"
-"This organization name is already taken"
-Help text: "This will be visible to the client"
-Admin Email (Required)
-
-
-Input type: Email with validation
-Max length: 255 characters
-Validation:
-Must be valid email format
-Must be unique across all clients
-Cannot be a disposable email domain
-Real-time validation:
-Format check: Immediate
-Uniqueness check: Debounced (500ms)
-Domain verification: Optional strict mode
-Error messages:
-
-
-1. Authentication & Entry Flow
-A. Login/Signup Portal (LoginPage.jsx)
-Visual Design
-Layout: Split-screen design
-Left Panel (40% width):
-Gradient background (blue to purple)
-Platform logo at top
-Animated illustration of cloud infrastructure
-Rotating testimonial cards
-Value propositions: "Save up to 70% on cloud costs"
-Right Panel (60% width):
-Clean white background
-Centered form container (max-width: 420px)
-Toggle tabs: "Sign In" | "Sign Up"
-Sign Up Flow - Detailed Steps
-Step 1: Initial View
-jsx
-UI Elements:
-┌─────────────────────────────────┐
-│  Organization Name              │
-│  ┌───────────────────────────┐ │
-│  │ [Enter company name...]   │ │
-│  └───────────────────────────┘ │
-│                                 │
-│  Email Address                  │
-│  ┌───────────────────────────┐ │
-│  │ [your@company.com...]     │ │
-│  └───────────────────────────┘ │
-│                                 │
-│  Password                       │
-│  ┌───────────────────────────┐ │
-│  │ [8+ characters...]  [👁]  │ │
-│  └───────────────────────────┘ │
-│                                 │
-│  ⚠ Must contain: 1 uppercase,  │
-│     1 number, 1 special char    │
-│                                 │
-│  ┌───────────────────────────┐ │
-│  │   Create Account [→]      │ │
-│  └───────────────────────────┘ │
-└─────────────────────────────────┘
-Step 2: User Interaction
-Field Validation (Real-time):
-Organization Name:
-Validates as user types
-Shows ✓ green checkmark when valid
-Shows ✗ red X with error: "Name already taken" if duplicate
-Email:
-Validates format: name@domain.com
-Shows loading spinner while checking uniqueness
-Displays error: "Email already registered. Try signing in?"
-Password:
-Shows strength meter (Weak → Fair → Strong)
-Real-time indicators:
-🟢 8+ characters
-🟢 1 uppercase letter
-🟢 1 number
-🟢 1 special character
-
-
+Title: "Node Provisioning Templates".
+Search Bar: A real-time filter to find templates by name (e.g., "GPU Workloads").
+Primary Action Button: A prominent blue "+ Create New Template" button on the top right.
+The Template Grid (Table):
+Column 1: Template Name & Status:
+Displays the name (e.g., Production-General).
+⭐ Default Badge: If a template is the global default, a gold star or "DEFAULT" badge appears next to the name.
+Column 2: Compute Constraints:
+A summarized pill view, e.g., [ m5, c5, r5 ] • x86_64.
+Column 3: Purchasing Strategy:
+Color-coded badges: SPOT (Orange), ON-DEMAND (Blue), or HYBRID (Purple).
+Column 4: Storage:
+Summary of disk config, e.g., gp3 (100GB).
+Column 5: Actions:
+A "Three-Dot" menu for every row containing: Edit, Clone, Set as Default, and Delete.
+Real-Time Interaction:
+"Set as Default" Toggle: Users can click the star icon directly on the table. The UI updates instantly (Optimistic UI), moving the star to the new row before the backend confirms, making the app feel incredibly fast.
+
+2. The "Create Template" Wizard
+Clicking "+ Create New Template" opens a Slide-Over Panel or a Modal with a Multi-Step Wizard to guide the user through complex configurations without overwhelming them.
+Step 1: General Information
+Input: "Template Name" (with live validation to prevent duplicates).
+Input: "Description" (for team documentation).
+Toggle: "Make this the default template for my organization".
+Step 2: Compute & Architecture (The Brains)
+Family Selector: A visual multi-select grid.
+Users see icons for General Purpose, Compute Optimized, Memory Optimized, GPU.
+Action: Selecting "Compute Optimized" auto-checks c5, c6i, c7i.
+Architecture Toggle: A simple switch between x86 (Intel/AMD) and ARM64 (Graviton).
+Size Exclusions: A dropdown to "Blacklist" specific sizes.
+Example: User selects nano, micro, small to ensure production pods never land on tiny nodes.
+Step 3: Spot & Purchasing Strategy (The Savings)
+Capacity Type: Three large cards to choose from:
+Spot Only: Maximum savings, higher risk.
+On-Demand: Zero interruption risk, full price.
+Hybrid: Uses Spot for stateless pods, On-Demand for persistent DBs.
+Spot Allocation Strategy (If Spot is selected):
+Lowest Price: The AI picks the absolute cheapest node.
+Capacity Optimized: The AI picks the node least likely to be interrupted by AWS.
+Step 4: Storage & Networking
+Disk Type: Dropdown (gp2, gp3, io1, ephemeral).
+Disk Size: Slider or Input (e.g., 50 GB).
+Security Groups: A searchable dropdown fetching real Security Group IDs from the connected AWS account.
+
+3. Visual Feedback & Validation
+Live Cost Estimator: As the user selects instance families (e.g., adding m5.large), a small widget in the corner updates to show: "Avg. Spot Price: $0.04/hr".
+Conflict Detection: If a user selects ARM64 architecture but adds a g4dn (Intel-only GPU) instance family, the UI immediately shows a warning: "Instance type g4dn is incompatible with ARM64."
+4. Summary & Save
+The final step shows a JSON-like summary of the policy.
+"Create" Action: Saves the template to the backend and immediately adds it to the List View without a page reload.
+
+Here is the detailed feature description for the Multi-Account Cloud Connect & Onboarding Wizard.
+This design splits the functionality into two parts:
+Persistent Management: A dedicated section to manage multiple accounts anytime.
+First-Run Wizard: A friendly, skippable pop-up guide for new users.
+
+☁️ Feature: Connected Cloud Accounts Manager
+Location: Sidebar Menu → Settings → Cloud Integrations
+This is the central hub where clients can view, manage, and add multiple AWS accounts (e.g., "Production", "Staging", "Dev-Lab").
+1. The Accounts List View
+A clean, card-based or tabular layout listing all linked accounts.
+Visual Layout:
+Header: "Connected Accounts" with a large "+ Connect New Account" button.
+Account Cards: Each connected account appears as a summary card containing:
+Account Name: (e.g., "Acme Corp Production")
+AWS Account ID: Masked for security (e.g., 1234-****-****).
+Region: The primary region (e.g., us-east-1).
+Connection Method: Badge showing "Role-Based" (Secure) or "Access Key" (Lab).
+Live Status:
+🟢 Active: Data syncing perfectly.
+🟡 Scanning: Discovery in progress.
+🔴 Error: Credentials invalid or permission denied.
+Action Menu (Three Dots):
+"Re-Sync": Force a fresh scan of the account.
+"Edit Name": Rename the account alias.
+"Disconnect": Remove the account (requires confirmation modal).
+2. Multi-Account Support
+Organization View: Users can add as many accounts as they want. The backend automatically tags instances with their source account_id, allowing the Dashboard to show a "Global View" (All Accounts) or filter by a specific one.
+
+🪄 Feature: First-Run Onboarding Wizard
+Trigger: Pops up automatically only when a user logs in for the very first time.
+This is a "Hand-Holding" experience designed to get the user to value quickly without forcing them.
+1. The Wizard UI Structure
+A centered, modal-like experience that dims the background.
+Step 1: Welcome & Value Prop
+Image: Friendly illustration of a cloud cluster.
+Text: "Welcome to Spot Optimizer! Let's connect your AWS infrastructure to start saving costs immediately."
+Action: "Start Setup" button.
+Skip: A subtle "Skip for now" button at the top right.
+Step 2: Connection Method (The "Fork")
+User Choice: Two large clickable cards.
+** Production (Recommended):** Uses CloudFormation (Secure, Read-only access).
+** Lab / Dev (Fast):** Uses Access Keys (Immediate connection).
+Selection moves to Step 3.
+Step 3: Credentials Input
+If "Lab" was chosen: Shows the Access Key/Secret Key form.
+If "Production" was chosen: Shows the CloudFormation Template URL and a "Verify" button.
+Validation: Clicking "Connect" triggers a live backend check. If successful, it auto-advances.
+Step 4: Success & Sync
+Visual: A green checkmark animation.
+Text: "Account Connected! We are now scanning your fleet. This typically takes 2-3 minutes."
+Action: "Go to Dashboard" button.
+2. The "Skippable" Logic
+Behavior: If the user clicks "Skip for now":
+The wizard closes immediately.
+The user lands on the Dashboard.
+Empty State: Since no account is connected, the Dashboard shows a placeholder illustration (e.g., "No Data Yet") with a prominent "Connect AWS Account" button in the center.
+Persistence: The wizard will NOT pop up again on the next login (to avoid annoyance), but the "Empty State" remains until they manually connect via the Settings page.
+
+🎨 Frontend UI Component Breakdown
+To implement this, you need these specific components:
+AccountList.jsx: The management page.
+Logic: Fetches GET /api/client/accounts. Renders a grid of cards. Handles the DELETE action.
+OnboardingWizard.jsx: The pop-up modal.
+Logic: Uses internal state (step 1 to 4). Handles the API call to POST /connect.
+Prop: onClose() (called when skipped or finished).
+EmptyDashboard.jsx: The fallback view.
+Logic: Displayed inside DashboardLayout when total_instances === 0. Contains a button that redirects to /settings/cloud-integrations.
+📝 Summary of Flow
+User Logs In.
+Check: Does user have any accounts?
+No: Show OnboardingWizard overlay.
+Yes: Show Dashboard directly.
+User Actions in Wizard:
+Connects: Success -> Wizard closes -> Dashboard loads real data.
+Skips: Wizard closes -> Dashboard loads "Empty State" with manual connect button.
+User goes to Settings: Can add Account B, Account C, etc., via AccountList.
+Here is the detailed feature description for the Optimization Policies section.
+This design consolidates all automation rules into a single, clean interface using a Tabbed Layout. It separates "Infrastructure Operations" (managing EC2 nodes) from "Application Tuning" (managing Kubernetes Pods).
+
+⚙️ Feature: Optimization Policies & Automation
+Location: Sidebar Menu → Optimization Policies
+This is the "Control Room" for the autoscaler. Instead of manually deleting nodes, the user sets high-level rules here, and the AI (Backend) enforces them continuously.
+1. The Layout Strategy
+To prevent information overload, the page is divided into two distinct tabs:
+🏗️ Infrastructure Layer: Controls Physical Nodes (EC2), Karpenter settings, and Cluster-wide schedules.
+📦 Workload Layer: Controls Pod sizing, Request/Limit recommendations, and Scheduling affinity.
+
+Here is the updated, detailed, and feature-rich description for Tab 1: Infrastructure Layer. I have expanded the explanations to clarify exactly how the backend behaves when these configurations are changed.
+
+🟢 Tab 1: Infrastructure Layer (Node Scaling)
+This tab serves as the Command Center for the Autoscaler. It manages the lifecycle of physical EC2 instances, determining when to add capacity (Provisioning) and when to remove it (Deprovisioning/Bin-Packing).
+Card 1: Intelligent Autoscaling (Karpenter Integration)
+Purpose: Replaces the standard AWS Autoscaler with an AI-driven engine that selects the "Perfect Instance" for pending pods in real-time.
+How it works: When a pod cannot fit on existing nodes, this engine queries AWS pricing and capacity APIs to launch a new node specifically tailored to that pod's requirements.
+Controls & Configuration:
+Master Toggle: [ ON / OFF ]
+Action: Controls the active provisioner loop.
+Impact: When OFF, the cluster will never add new nodes, even if pods are pending (stuck in Pending state). When ON, it reacts to pending pods within roughly 1-2 seconds.
+Provisioning Strategy:
+🔘 Lowest Cost Strategy:
+Logic: The AI scans the Spot market and strictly selects the instance type with the lowest price per vCPU that fits the workload.
+Use Case: Best for fault-tolerant batch processing, CI/CD runners, or non-critical dev environments.
+🔘 Capacity Optimized (Recommended):
+Logic: The AI analyzes the Spot Placement Score (SPS) and selects instances with the deepest capacity pools, even if they are slightly more expensive (e.g., +5%).
+Use Case: Essential for Production. It dramatically reduces the chance of a "Spot Interruption" (node termination).
+Constraint Boundary (Node Template):
+UI: A dropdown linked to the "Node Templates" feature.
+Configuration: Selects a specific template (e.g., Production-General containing only m5, c5, r5).
+Impact: The Autoscaler is strictly forbidden from launching any instance type not listed in the selected template. This prevents "weird" hardware (like unintended GPUs or tiny nano instances) from entering the cluster.
+Spot Fallback Protection: [ Checkbox ]
+Configuration: "Auto-fallback to On-Demand if Spot is unavailable."
+How it works: If the Autoscaler tries to launch a Spot node and gets an InsufficientInstanceCapacity error from AWS, it immediately retries with an On-Demand instance.
+Impact: Ensures 100% application uptime during Black Friday or AWS outages, at the cost of higher temporary billing.
+
+Card 2: Bin Packing & Consolidation (Waste Removal)
+Purpose: Actively fights "Cluster Fragmentation." It identifies nodes that are underutilized (e.g., running at 10%) and moves their pods to other nodes so the empty server can be terminated.
+How it works: The system continuously simulates "Tetris" with your pods. If it finds a way to fit the workloads of 3 nodes onto 2 nodes, it triggers the migration.
+Controls & Configuration:
+Aggressiveness Slider: [ Conservative ---|--- Balanced ---|--- Aggressive ]
+Conservative:
+Threshold: Only considers a node for deletion if it is < 20% utilized.
+Behavior: Very stable. Rarely moves pods. Savings are moderate.
+Balanced (Default):
+Threshold: Considers deletion if < 50% utilized AND moving pods costs less than the node.
+Behavior: Good mix of cost savings and stability.
+Aggressive:
+Threshold: Considers deletion if < 80% utilized. It will actively replace expensive nodes (e.g., c5.2xlarge) with cheaper, smaller nodes (e.g., c5.xlarge) continuously.
+Behavior: Maximum savings (up to 70%), but causes frequent pod restarts/rescheduling.
+Consolidation Method:
+🔘 Delete Empty: Only deletes nodes that have become completely empty naturally. Zero risk.
+🔘 Replace & Move: Actively evicts pods to force a node to become empty.
+Stabilization Window (Grace Period):
+Input: Number (Minutes) (e.g., 10).
+Impact: A node must remain "eligible for deletion" for this many minutes before the action is taken.
+Why use it? Prevents "Flapping"—where a node is deleted, and 1 minute later a new pod requests it back. Increasing this value increases stability but decreases savings speed.
+
+Card 3: Smart Hibernation Schedule
+Purpose: To reduce costs by 90%+ on non-production clusters by shutting them down completely when no engineers are working.
+How it works: It scales the Auto Scaling Group (ASG) minimum and maximum counts to 0 during "Sleep" hours and restores them to original values during "Wake" hours.
+Controls & Configuration:
+Timezone Selector:
+UI: Dropdown (e.g., (UTC-05:00) America/New_York).
+Impact: Aligns the scheduler with the team's working hours.
+Visual Weekly Planner:
+UI: A grid representing 24 hours x 7 days.
+Action: Click-and-drag to paint blocks.
+🟩 Green (Active): Cluster runs normally. Node count is determined by Autoscaler.
+⬜ Grey (Hibernating): Cluster forces 0 nodes. All pods are effectively paused (stateful data persists on EBS volumes, but compute stops).
+Excluded Resources:
+UI: Multi-select box for Tags or Namespaces.
+Configuration: "Keep running if tag env=critical exists."
+Impact: Allows specific maintenance pods (like backup jobs or security agents) to keep a single node running even during hibernation.
+Manual Override:
+UI: Button [ Wake Up for 2 Hours ].
+Use Case: If a developer needs to deploy a hotfix on a Saturday night (during hibernation), this button temporarily overrides the schedule without needing to edit the complex calendar.
+
+
+
+🔵 Tab 2: Workload Layer (Pod Tuning)
+This tab focuses on the Application Layer. While Tab 1 ensures you have the right servers, this tab ensures the applications running on them are efficient, correctly sized, and placed in the safest zones.
+Card 1: Smart Pod Rightsizing (Vertical Pod Autoscaling)
+Purpose: Automatically detects and fixes "Over-Provisioning"—where developers request 4 vCPUs for a container that actually uses only 0.2 vCPU.
+How it works: The AI analyzes historical Prometheus metrics (CPU/RAM usage over the last 14 days). It calculates the "Real Usage" (usually p95 or p99 percentile) and recommends new resources.requests and resources.limits values.
+Controls & Configuration:
+Operating Mode:
+🔘 Off: The Rightsizer is completely disabled.
+🔘 Recommendations Only (Read-Only):
+Behavior: The dashboard will show a "Gold Bar" indicating potential savings (e.g., "You can save $500/mo by resizing").
+Action: It generates a diff report but never touches the Kubernetes API.
+Use Case: Best for day-1 onboarding or strict change-control environments.
+🔘 Automatic Apply (Active):
+Behavior: The system proactively patches the Kubernetes Deployment or StatefulSet manifests with the new, lower values.
+Action: This triggers a "Rolling Update" of the pods to apply the new sizing.
+Use Case: Best for Development, Staging, or stateless Production microservices.
+Safety Buffer (Headroom):
+Input: Slider [ 10% -----|----- 50% ] (Default: 20%).
+Configuration: "Add this much buffer on top of actual p95 usage."
+How it works: If a pod uses 100MB RAM peak, and buffer is 20%, the system sets the limit to 120MB.
+Impact: Higher buffer = Lower risk of "OOM Kill" (Out of Memory crashes) but Lower financial savings.
+Severity Threshold:
+Input: Dropdown (e.g., "Only apply if savings > $10/month").
+Impact: Prevents the system from restarting pods just to save 2 cents.
+
+Card 2: Spot Affinity & Deployment Rules
+Purpose: Defines the rules for where specific workloads are allowed to physically land in the cluster. It acts as a policy engine for Kubernetes Scheduling.
+How it works: It applies nodeAffinity, nodeSelector, and tolerations to pods automatically via a Mutating Webhook or by patching deployments.
+Controls & Configuration:
+Spot Preference Strategy:
+🔘 Force Spot (Hard Constraint):
+Technical: Adds nodeSelector: lifecycle=spot.
+Behavior: Pods will ONLY run on Spot instances. If no Spot is available, the pod remains in Pending state.
+Use Case: CI/CD runners, Batch jobs, Development environments.
+🔘 Prefer Spot (Soft Constraint):
+Technical: Adds preferredDuringSchedulingIgnoredDuringExecution affinity.
+Behavior: Kubernetes tries to find a Spot node first. If none exist (or Spot is sold out), it silently falls back to an On-Demand node.
+Use Case: Production microservices, Web servers.
+Burstable Instance Handling:
+Control: [ Checkbox ] "Block Burstable Instances (t3/t4g/t3a)".
+Configuration: Adds a constraint to strictly avoid the t instance family.
+Why use it? Burstable instances use "CPU Credits". If a production app exhausts credits, performance degrades significantly. Checking this ensures consistent performance by forcing use of m (General) or c (Compute) families.
+Availability Zone (AZ) Spread:
+Control: [ Checkbox ] "Enforce Multi-AZ High Availability".
+Behavior: Adds topologySpreadConstraints to ensure that if you run 3 replicas of an app, they never land in the same Availability Zone.
+Impact: Increases resilience against AWS Zone failures.
+
+Card 3: Governance & Exemptions
+Purpose: A "Safety Net" to prevent the Optimizer from touching critical system components or stateful databases that are sensitive to restarts.
+How it works: Any resource matching these rules is completely ignored by the DiscoveryWorker and OptimizerTask.
+Controls & Configuration:
+Namespace Exclusion List:
+UI: Multi-select Search Box (e.g., kube-system, monitoring, payment-gateway).
+Configuration: "Never evict, resize, or move pods in these namespaces."
+Impact: Essential for system stability. For example, moving coredns or aws-node (CNI) can cause network outages. These should always be excluded.
+Label Selectors:
+UI: Key-Value Input pairs (e.g., karpenter.sh/do-not-evict = true).
+Configuration: Allows granular exclusion of specific deployments within a non-excluded namespace.
+Use Case: You want to optimize the default namespace, but skip the single legacy database pod running there.
+Behavior on Exemption:
+The dashboard will mark these resources as "Unmanaged".
+Their costs are still tracked in "Total Spend", but they show 0 "Potential Savings" because the system is forbidden from acting on them.
+
+
+3. Visual Feedback & UX
+To make this feel like a modern SaaS:
++"Estimated Impact" Badge:
+On the top right of every card, a small calculator icon appears.
+Example: If the user turns Bin Packing to "Aggressive", the badge updates: "Potential Savings: +$150/mo".
+Unsaved Changes Bar:
+If the user toggles a setting, a sticky bar appears at the bottom: "You have unsaved changes. [Reset] [Save Policy]".
+Audit Trail:
+A small text link at the bottom: "Last updated by Admin 2 hours ago".
+4. Database Integration
+These settings are stored in a cluster_policies table (JSONB column), linked to the specific AWS Account/Cluster ID. The backend OptimizerTask reads this configuration before running any logic.
+
+Here is the comprehensive feature description for the dedicated Cluster Hibernation module.
+This design elevates Hibernation from a simple setting to a full-featured "Cost Control Center," giving users granular control over when their infrastructure runs and how much they save.
+
+💤 Feature: Smart Cluster Hibernation Manager
+Location: Sidebar Menu → Cluster Hibernation
+This dedicated module automates the startup and shutdown of cluster resources. By treating non-production environments like office lights (turning them off when no one is home), this feature delivers the highest ROI of any tool in the platform, capable of reducing monthly bills by ~65%.
+1. The "Command Center" Header
+The top section provides instant visibility and emergency control.
+Live Status Indicator:
+Visual: A large pulsing badge.
+🟢 ACTIVE: "Cluster is Running. Next sleep scheduled for Friday 8:00 PM."
+💤 HIBERNATING: "Cluster is Sleeping. Estimated savings rate: $12.50/hour."
+Countdown: "Time until wake up: 08h 12m."
+Manual Override (The "Panic Button"):
+Button: [ ⚡ Wake Up Now ] or [ 🛌 Hibernate Now ].
+Smart Duration: Clicking "Wake Up" opens a quick modal: "Keep awake for: [ 1 Hour | 4 Hours | Until Monday ]".
+Use Case: A developer needs to deploy a hotfix at 2:00 AM on a Saturday. They don't need to edit the schedule; they just hit this button.
+Savings Ticker:
+Metric: "This Month's Savings: $4,250.00" (Calculated by comparing actual uptime vs. 24/7 baseline).
+
+2. The Interactive Weekly Scheduler (Recurring Routine)
+This serves as the "Base Schedule" that repeats every week.
+UI Component: A highly responsive 24-Hour x 7-Day Grid.
+Interaction: Users click and drag efficiently to "paint" time blocks.
+Color Coding:
+🟩 Green (Active): Cluster runs at normal capacity.
+⬜ Grey (Sleep): Auto Scaling Groups (ASGs) are set to 0.
+🟨 Yellow (Ramp Up): The "Warm-up" period (see below).
+Smart Feature: "Soft Start" (Pre-Warming):
+Control: [ Checkbox ] "Enable 30-minute Pre-warm".
+Logic: If work starts at 9:00 AM, the system actually starts booting nodes at 8:30 AM.
+Benefit: Prevents the "Monday Morning Lag" where developers wait 15 minutes for pods to schedule. The cluster is ready before they login.
+Global Timezone Sync:
+Dropdown: Selects the cluster's operating region (e.g., America/New_York).
+Visual Aid: Shows "Your Local Time" vs "Cluster Time" to prevent scheduling errors.
+
+3. The Annual Calendar (Holidays & Exceptions)
+A standard calendar view to handle irregularities without breaking the weekly routine.
+UI Component: A scrolling Monthly Calendar (Jan, Feb, Mar...).
+One-Click Holidays:
+Feature: [ Import National Holidays ] button.
+Action: Automatically marks days like "Christmas" or "Thanksgiving" as Force Sleep (Grey).
+Custom Overrides:
+Interaction: Click any specific date (e.g., Nov 15th).
+Context Menu:
+Set as Holiday (Sleep 24h)
+Set as Sprint Day (Active 24h) – Useful for "Hackathons" or "Black Friday" where dev clusters must stay up.
+Persistence: These overrides apply only to the specific date and do not alter the recurring weekly grid.
+
+4. Advanced Configuration & Rules
+Fine-tune exactly what happens when the cluster sleeps.
+Targeting Scope (The "Blast Radius"):
+Options:
+🔘 Full Hibernation: Scales ALL worker node groups to 0. (Cheapest).
+🔘 Selective Hibernation: Keep specific Node Groups running.
+List: [x] worker-spot, [ ] worker-databases, [x] worker-gpu.
+Critical Namespace Protection (Allow-List):
+UI: Multi-select search box.
+Logic: "If a node is running pods from monitoring or vault, DO NOT terminate it."
+Benefit: Ensures your logging pipelines and security tools remain online 24/7 while the expensive application nodes sleep.
+Notification Integration:
+Trigger: "Send alert 30 minutes before hibernation."
+Channel: Slack Webhook / Email.
+Message: "⚠️ Dev-Cluster-01 is going to sleep in 30 mins. Save your work! [Click here to Snooze]".
+
+5. Technical Implementation Notes (Backend)
+State Management: The backend uses a cron job (via APScheduler) running every minute to check the hibernation_schedules table.
+Execution: It uses the AWS autoscaling:UpdateAutoScalingGroup API to change MinSize and DesiredCapacity.
+Data Preservation: It does NOT delete EBS volumes (unless configured). Stateful data persists; only the compute billing stops.
+
+
+📜 Feature: Audit Logs & Compliance Center
+Location: Sidebar Menu → Audit Logs
+This section acts as the "Black Box Recorder" for your entire infrastructure. Every single action taken by a user (e.g., "Manual Scale Up") or by the AI System (e.g., "Spot Instance Replacement") is immutably recorded here.
+1. The Audit Trail (The "Single Source of Truth")
+The main view is a dense, information-rich table designed for security officers and DevOps leads.
+The Data Grid:
+Timestamp: Precision to the millisecond (e.g., Oct 24, 14:32:01.455 UTC).
+Actor (Who): Displays the profile picture and name of the user (e.g., "Alice Admin") OR the system component (e.g., "🤖 Autoscaler Bot").
+Event (What): A clear, human-readable summary (e.g., "Modified Hibernation Schedule").
+Target (Where): The specific resource affected (e.g., Cluster prod-us-east-1 / Node i-0123456789abcdef).
+Outcome: Status badge: 🟢 Success, 🔴 Failed, or 🟡 Denied (Permission Error).
+Deep Dive Drawer:
+Interaction: Clicking any row slides out a "Details Panel."
+"Before & After" Diff: Visualizes exactly what changed.
+Example: "Changed Max Nodes from 10 → 15."
+Metadata: Shows the Source IP Address, User Agent (Browser), and Request ID for forensic analysis.
+
+2. Export & Reporting (The "Auditor's Friend")
+This section allows users to extract data for external compliance audits (SOC2, ISO 27001, HIPAA).
+Export Controls:
+Format Selection: Dropdown for CSV (Excel analysis) or JSON (SIEM ingestion).
+Time Range: "Last 30 Days", "Last Quarter", or "Custom Range".
+Action: A prominent [ ⬇️ Download Audit Report ] button.
+Immutable Checksums (Security Feature):
+When a log file is downloaded, the system generates a SHA-256 Checksum.
+Purpose: Prove to auditors that the logs have not been tampered with since they were generated.
+
+3. Compliance Settings & Retention
+A "Settings" tab within this page allows admins to configure governance rules.
+Data Retention Policy:
+Slider: [ 30 Days ----|---- 1 Year ----|---- Indefinite ].
+Cost Warning: "Retaining logs for > 1 year may incur additional storage fees."
+SIEM Integration (Enterprise):
+Feature: "Stream logs to external destination."
+Configuration: Input fields for Datadog API Key, Splunk HEC URL, or AWS S3 Bucket.
+Benefit: Allows the client to view these logs in their own centralized security tools.
+
+🛠️ Technical Implementation Requirements
+To make this work, you need to add these backend components:
+New Database Model (AuditLog): You need a new table in backend/database/models.py:
+Python
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+    id = Column(UUID, primary_key=True, default=uuid.uuid4)
+    account_id = Column(UUID, ForeignKey("accounts.id"))
+    actor_id = Column(UUID, ForeignKey("users.id")) # Nullable (if system action)
+    actor_type = Column(String) # "user" or "system"
+    action = Column(String)     # "create", "update", "delete"
+    resource_type = Column(String) # "node_template", "schedule", "instance"
+    details = Column(JSONB)     # Stores the diff { "old": 10, "new": 15 }
+    ip_address = Column(String)
+    status = Column(String)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+Middleware Hook: Instead of writing db.add(log) in every single function, create a FastAPI Middleware or a Python Decorator (@log_activity) that automatically captures requests to sensitive endpoints (like POST /templates) and saves the log in the background.
+
+Feature: Multi-Cluster Command Center
+Location: Sidebar Menu → Clusters
+This module acts as the central inventory and control plane for all Kubernetes infrastructure. It is designed to move beyond simple listing, providing a "Single Pane of Glass" for health, cost, and configuration management across hundreds of clusters, regions, and accounts.
+
+1. The Cluster Registry (Main Landing View)
+The primary interface is a high-density, interactive data grid designed for clarity and quick decision-making.
+A. Global Status Bar (The "Heads Up" Display)
+Located at the very top, offering an aggregate view of the entire organization.
+Total Managed Clusters: (e.g., 45)
+Total vCPU / Memory: (e.g., 12,400 vCPU / 48 TB RAM)
+Global Efficiency Score: An aggregated grade (A-F) across all infrastructure.
+Monthly Run Rate: Total projected spend for all clusters combined.
+Critical Alerts: A ticker showing urgent issues (e.g., "3 Clusters have API High Latency").
+B. Smart Filter & Search
+Unified Search: Instantly filters by Cluster Name, ID, Tags, or Region.
+Quick Filters (Pills): One-click filtering for:
+Prod vs Dev environments.
+Healthy vs Degraded status.
+EKS (AWS) vs GKE (Google) vs AKS (Azure) (Future-proofing).
+High Cost (Top 10% spenders).
+C. The Cluster Data Grid
+The core table allows sorting by any column.
+Column
+Visual Element
+Interaction & Detail
+Cluster Identity
+Name, Provider Icon (AWS/GCP), and Environment Tag (Prod/Staging).
+Clicking the name opens the Cluster Detail Dashboard.
+Region
+Flag icon + Region Code (e.g., 🇺🇸 us-east-1).
+Hovering displays the specific Availability Zones used.
+K8s Version
+Version Number (e.g., 1.29).
+Smart Badge: Visual warning if the version is End-of-Life (EOL) or if an upgrade is available.
+Fleet Size
+Node Count / Pod Count.
+Sparkline Graph: A mini line chart showing scaling trends (up/down) over the last 24h.
+Financials
+Monthly Cost + "% Savings" achieved.
+Trend Arrow: ⬆️ or ⬇️ indicating if costs are rising or falling compared to last week.
+Health Score
+Circular Gauge (0-100%).
+Factors in Control Plane latency, Error rates, and Agent heartbeat.
+Compliance
+Shield Icon.
+🟢 = CIS Compliant, 🔴 = Policy Violations Detected.
+Actions
+"Manage" Button + Context Menu.
+Quick access to Settings, Logs, or Remote Console.
+
+D. Bulk Actions Toolbar
+Appears when one or more rows are selected:
+Compare Clusters: Opens a side-by-side view to analyze config differences between selected clusters.
+Apply Policy: Pushes a "Node Template" or "Hibernation Schedule" to multiple clusters simultaneously.
+Upgrade Agent: Batch updates the optimization agent on all selected clusters.
+
+2. The "Add Cluster" Wizard (Onboarding Experience)
+Trigger: [ + Connect Cluster ] Button.
+Design: A guided, step-by-step modal flow with validation at every stage.
+Step 1: Connection Method
+Option A: Auto-Discovery (Recommended): Connects via Cloud Provider API to list all existing clusters.
+Option B: Manual Kubeconfig: Upload a kubeconfig file for restricted environments.
+Option C: Terraform/IaC: Generates a code snippet to add the agent via Infrastructure-as-Code.
+Step 2: Discovery & Selection
+Region Scanner: Users select target regions. The system scans and presents a list of "Unmanaged Clusters".
+Metadata Import: The system automatically fetches tags (e.g., Team, Owner) from the cloud provider to pre-fill cluster details.
+Step 3: Agent Installation Strategy
+Helm Chart: Generates a pre-signed, copy-pasteable Helm command.
+Direct Manifest: Generates a kubectl apply -f ... URL.
+Pre-Flight Check: A proactive feature that runs a script to verify the user has sufficient IAM permissions before attempting installation.
+Step 4: Connection Verification
+Real-Time Ping: A visual "Sonar" animation waiting for the first heartbeat from the agent.
+Success Celebration: Once connected, the modal displays "Success! 14 Nodes Discovered" and offers to "Configure Optimization Now" or "Go to Dashboard".
+
+3. Cluster Detail View (The Deep Dive)
+Trigger: Clicking a specific cluster name.
+Design: A dedicated dashboard page for that specific cluster.
+Header Area
+Breadcrumbs: Clusters > production-us-east-1.
+Sync Status: "Last synced: 12s ago" with a [Sync Now] button.
+Maintenance Mode Toggle: A master switch to pause all automated actions (useful during upgrades).
+Tab 1: Overview & Health
+Topology Map: A visual graph showing Node Groups and the nodes inside them, color-coded by Spot/On-Demand.
+Cost Burndown: A graph showing actual spend vs. budget.
+Alert Feed: List of active warnings (e.g., "Spot Instance Reclaim Risk High in zone 1a").
+Tab 2: Node Groups & Capacity
+Inventory Table: Lists every Auto Scaling Group (ASG) or Karpenter Provisioner.
+Features:
+Toggle "Spot Mode" per group.
+Set Min/Max node limits directly from the UI.
+View "Spot Readiness" score for the workloads running on these nodes.
+Tab 3: Workloads & Namespaces
+Efficiency Report: Lists namespaces by cost.
+Insight: "Namespace analytics is requesting 100 CPUs but using 12. Recommendation: Right-size."
+Top Spenders: A breakdown of the most expensive Deployments or StatefulSets.
+Tab 4: Compliance & Drift
+Drift Detection: Compares current cluster state against the defined "Node Templates". Alerts if someone manually launched a prohibited instance type.
+Security Scan: Results of automated CIS Benchmark checks (e.g., "Root access enabled on 3 pods").

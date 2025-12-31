@@ -106,12 +106,28 @@ old-version/backend/
 ```
 □ All 5 documentation files reviewed and updated
 □ CHANGELOG.md has new entry with timestamp
-□ All affected INFO.md files updated
+□ All affected INFO.md files updated (EVERY folder touched)
 □ All cross-references are consistent
 □ No broken links in documentation
 □ All feature IDs follow naming convention
 □ All schema versions are correct
 □ Git commit message is descriptive
+```
+
+**🚨 CRITICAL INFO.md REQUIREMENT**:
+```
+EVERY folder that contains a modified file MUST have its INFO.md updated.
+
+Example: If you modify backend/services/cluster_service.py:
+✅ MUST update: backend/services/INFO.md
+✅ MUST update: backend/INFO.md (parent folder)
+✅ MUST update: docs/CHANGELOG.md (global)
+
+If you create a new file in frontend/src/components/clusters/:
+✅ MUST create/update: frontend/src/components/clusters/INFO.md
+✅ MUST update: frontend/src/components/INFO.md (parent)
+✅ MUST update: frontend/INFO.md (grandparent)
+✅ MUST update: docs/CHANGELOG.md (global)
 ```
 
 **If ANY checkbox is unchecked → Task is NOT complete**
@@ -252,23 +268,188 @@ Files to check and update:
 ⚠️ FAILURE TO UPDATE ALL FILES = INCOMPLETE TASK
 ```
 
-**Step 4.2**: Update folder INFO.md files (MANDATORY)
+**Step 4.2**: Update folder INFO.md files (MANDATORY - NO EXCEPTIONS)
 ```
-For each affected folder:
-1. Open INFO.md (create if doesn't exist)
-2. Update component table with new/modified entries
-3. Add change log entry with:
-   - Timestamp (YYYY-MM-DD HH:MM:SS)
-   - Changed By: LLM Agent
-   - Reason for change
-   - Impact description
-   - Files modified list
-   - Feature IDs affected
-   - Breaking changes (Yes/No)
-4. Update "Last Updated" timestamp
-5. List all affected feature IDs
+🚨 CRITICAL RULE: EVERY folder containing a modified/created/deleted file MUST have its INFO.md updated.
 
+INFO.md Update Protocol:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+STEP 1: Identify ALL affected folders
+─────────────────────────────────────
+For each file you modify/create/delete, identify:
+- The immediate parent folder
+- All ancestor folders up to project root
+- Related folders (e.g., if backend changes, check if frontend needs update)
+
+STEP 2: Update or Create INFO.md in EACH folder
+────────────────────────────────────────────────
+For EACH affected folder:
+
+A. If INFO.md exists:
+   1. Open the file
+   2. Update "Last Updated" timestamp at top
+   3. Update Component Table if structure changed
+   4. Add new entry to "Recent Changes" section
+
+B. If INFO.md does NOT exist:
+   1. Create INFO.md using template from folder_structure.md
+   2. Populate component table with all files in folder
+   3. Add initial change log entry
+   4. Set "Last Updated" to current timestamp
+
+STEP 3: Write the Change Log Entry
+───────────────────────────────────
+EVERY INFO.md update MUST include this entry format:
+
+### [YYYY-MM-DD HH:MM:SS] - [Concise Change Description]
+**Changed By**: LLM Agent  
+**Task**: [Task ID or description from task.md]  
+**Reason**: [Why this change was necessary]  
+**Impact**: [What this affects - be specific]  
+**Files Modified**: 
+- [filename1] - [what changed]
+- [filename2] - [what changed]
+**Feature IDs Affected**: 
+- [feature-id-1@SCHEMA-Name]
+- [feature-id-2@SCHEMA-Name]
+**API Endpoints Affected**: 
+- [GET/POST/etc] [/endpoint/path]
+**Schemas Affected**: 
+- [SCHEMA-NAME-Version]
+**Breaking Changes**: [Yes/No - if yes, explain what breaks]
+
+STEP 4: Update Component Table (if applicable)
+───────────────────────────────────────────────
+If you added/modified/deleted a file, update the Component Table:
+
+For NEW files:
+| [filename] | [Component ID] | [Type] | [Purpose] | [Feature IDs] | [Dependencies] |
+
+For MODIFIED files:
+- Update the row with new information
+- Update "Feature IDs" column if new features added
+- Update "Dependencies" if imports changed
+
+For DELETED files:
+- Mark row with ~~strikethrough~~ or move to "Deprecated" section
+- Add note: "Deleted on YYYY-MM-DD - Reason: [why]"
+
+STEP 5: Verify Completeness
+────────────────────────────
+Before moving to next folder, verify:
+□ "Last Updated" timestamp is current
+□ Change log entry is complete and detailed
+□ Component table is accurate
+□ All cross-references are valid
+□ No placeholder text remains
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+⚠️ FAILURE TO UPDATE INFO.md = INCOMPLETE TASK
 ⚠️ Every folder touched MUST have INFO.md updated
+⚠️ No exceptions - even for "small" changes
+```
+
+**Step 4.2.1**: INFO.md Update Examples
+```
+EXAMPLE 1: Adding a new backend service function
+─────────────────────────────────────────────────
+File Modified: backend/services/cluster_service.py
+Function Added: export_cluster_report()
+
+Folders to Update:
+✅ backend/services/INFO.md
+✅ backend/INFO.md
+✅ docs/CHANGELOG.md
+
+backend/services/INFO.md entry:
+───────────────────────────────
+### [2025-12-31 17:50:00] - Added Cluster Report Export Function
+**Changed By**: LLM Agent  
+**Task**: Add export cluster report feature  
+**Reason**: User requested ability to export cluster data as PDF  
+**Impact**: New export functionality available for all clusters  
+**Files Modified**: 
+- cluster_service.py - Added export_cluster_report() function
+**Feature IDs Affected**: 
+- client-cluster-button-unique-indep-click-export@SCHEMA-CLUSTER-ReportExport
+**API Endpoints Affected**: 
+- GET /clusters/{id}/export
+**Schemas Affected**: 
+- SCHEMA-CLUSTER-ReportExport-v1
+**Breaking Changes**: No
+
+Component Table Update:
+| cluster_service.py | CORE-API | Service | Cluster management | client-cluster-button-unique-indep-click-export | boto3, jinja2 |
+
+
+EXAMPLE 2: Creating a new frontend component
+─────────────────────────────────────────────
+File Created: frontend/src/components/reports/ReportExporter.jsx
+
+Folders to Update:
+✅ frontend/src/components/reports/INFO.md (CREATE if not exists)
+✅ frontend/src/components/INFO.md
+✅ frontend/src/INFO.md
+✅ frontend/INFO.md
+✅ docs/CHANGELOG.md
+
+frontend/src/components/reports/INFO.md entry:
+──────────────────────────────────────────────
+# Reports Components - Component Information
+
+> **Last Updated**: 2025-12-31 17:50:00  
+> **Maintainer**: LLM Agent
+
+## Folder Purpose
+Contains React components for generating and exporting reports.
+
+## Component Table
+
+| File Name | Component Name | Feature IDs | APIs Used | Schemas |
+|-----------|---------------|-------------|-----------|---------|
+| ReportExporter.jsx | ReportExporter | client-cluster-button-unique-indep-click-export | GET /clusters/{id}/export | SCHEMA-CLUSTER-ReportExport |
+
+## Recent Changes
+
+### [2025-12-31 17:50:00] - Created Report Exporter Component
+**Changed By**: LLM Agent  
+**Task**: Add export cluster report feature  
+**Reason**: New component needed for report export UI  
+**Impact**: Users can now export cluster reports from UI  
+**Files Modified**: 
+- ReportExporter.jsx - New component created
+**Feature IDs Affected**: 
+- client-cluster-button-unique-indep-click-export@SCHEMA-CLUSTER-ReportExport
+**Breaking Changes**: No
+
+
+EXAMPLE 3: Modifying a database model
+──────────────────────────────────────
+File Modified: backend/models/cluster.py
+Change: Added 'export_count' field
+
+Folders to Update:
+✅ backend/models/INFO.md
+✅ backend/INFO.md
+✅ docs/CHANGELOG.md
+
+backend/models/INFO.md entry:
+─────────────────────────────
+### [2025-12-31 17:50:00] - Added Export Count Field to Cluster Model
+**Changed By**: LLM Agent  
+**Task**: Track cluster export statistics  
+**Reason**: Need to track how many times each cluster has been exported  
+**Impact**: Database schema change - requires migration  
+**Files Modified**: 
+- cluster.py - Added export_count Integer field with default=0
+**Feature IDs Affected**: 
+- client-cluster-button-unique-indep-click-export@SCHEMA-CLUSTER-ReportExport
+**Schemas Affected**: 
+- SCHEMA-CLUSTER-ClusterDetail-v1 (non-breaking addition)
+**Breaking Changes**: No (new field is optional with default value)
+**Migration Required**: Yes - run: alembic revision --autogenerate -m "Add export_count to clusters"
 ```
 
 **Step 4.3**: Update global CHANGELOG.md (MANDATORY)
@@ -620,6 +801,14 @@ If cross-reference broken:
 
 ---
 
-**Document Version**: 1.0  
+**Document Version**: 2.0  
 **Last Updated**: 2025-12-31  
-**Status**: Ready for Automation
+**Status**: Production Ready - Enhanced with Comprehensive INFO.md Protocol
+
+**Key Enhancements in v2.0**:
+- ✅ Explicit INFO.md update requirements with examples
+- ✅ Step-by-step INFO.md update protocol
+- ✅ Mandatory folder hierarchy updates
+- ✅ Detailed change log entry format
+- ✅ Component table update instructions
+- ✅ Three comprehensive real-world examples
