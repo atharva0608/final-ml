@@ -1,6 +1,9 @@
 # LLM Instructions for Automated Task Management
 
 > **Purpose**: This document provides step-by-step instructions for an LLM agent to autonomously process tasks, make changes, update documentation, and log all modifications.
+>
+> **GitHub Repository**: [atharva0608/final-ml](https://github.com/atharva0608/final-ml)  
+> **Active Branch**: `testinglocal`
 
 ---
 
@@ -9,10 +12,109 @@
 You are an autonomous LLM agent responsible for:
 1. Reading tasks from `task.md`
 2. Executing fixes and changes
-3. Updating all relevant documentation files
+3. **Updating ALL relevant documentation files (MANDATORY)**
 4. Logging changes in `CHANGELOG.md`
 5. Updating `INFO.md` files in affected folders
 6. Marking tasks as complete
+
+---
+
+## Legacy File References (READ-ONLY)
+
+### ⚠️ IMPORTANT: Legacy Files are for REFERENCE ONLY
+
+The repository contains legacy implementation in `old-version/` folder. These files are **ARCHIVED** and should **NEVER be modified**. They serve as reference for:
+
+**Frontend Design Patterns** (Reference Only):
+```
+old-version/frontend/
+├── src/
+│   ├── components/
+│   │   ├── Dashboard.jsx          # Reference for dashboard layout
+│   │   ├── ClusterRegistry.jsx    # Reference for table designs
+│   │   ├── NodeTemplates.jsx      # Reference for card layouts
+│   │   └── Charts/                # Reference for chart implementations
+│   │       ├── SavingsChart.jsx
+│   │       ├── PieChart.jsx
+│   │       └── ActivityFeed.jsx
+│   └── styles/
+│       └── theme.css               # Reference for color schemes & styling
+```
+
+**Backend Patterns** (Reference Only):
+```
+old-version/backend/
+├── api/
+│   ├── routes.py                   # Reference for API structure
+│   └── middleware.py               # Reference for auth patterns
+├── services/
+│   ├── cluster_service.py          # Reference for service layer patterns
+│   └── metrics_service.py          # Reference for calculation logic
+└── models/
+    └── database.py                 # Reference for ORM patterns
+```
+
+### How to Use Legacy Files
+
+**DO**:
+- ✅ Reference UI component structure and layout patterns
+- ✅ Reference chart configurations and data visualization approaches
+- ✅ Reference backend service layer architecture
+- ✅ Reference API endpoint naming conventions
+- ✅ Reference database schema patterns
+
+**DON'T**:
+- ❌ Modify any files in `old-version/`
+- ❌ Copy code directly without adapting to new architecture
+- ❌ Use deprecated dependencies or patterns
+- ❌ Reference outdated API endpoints
+
+---
+
+## STRICT UPDATE REQUIREMENTS
+
+### 🚨 CRITICAL: Every Change MUST Update ALL Affected Files
+
+**Mandatory Update Checklist** (For EVERY change):
+
+1. **Code Files**:
+   - ✅ Modify the actual implementation file(s)
+   - ✅ Update related utility/helper files
+   - ✅ Update configuration files (if applicable)
+
+2. **Documentation Files** (ALL 5 MUST be checked):
+   - ✅ `feature_mapping.md` - Add/update feature rows
+   - ✅ `api_reference.md` - Add/update API endpoints
+   - ✅ `schema_reference.md` - Add/update schemas
+   - ✅ `backend_architecture.md` - Add/update modules/flows
+   - ✅ `application_scenario.md` - Add/update user flows
+
+3. **Metadata Files**:
+   - ✅ `CHANGELOG.md` - Log the change with timestamp
+   - ✅ `INFO.md` in affected folder(s) - Add change log entry
+   - ✅ `task.md` - Mark task as complete
+
+4. **Cross-References**:
+   - ✅ Update all feature ID references
+   - ✅ Update all schema references
+   - ✅ Update all API endpoint references
+   - ✅ Update all module ID references
+
+### Validation Before Marking Complete
+
+**Before marking ANY task as [x], verify**:
+```
+□ All 5 documentation files reviewed and updated
+□ CHANGELOG.md has new entry with timestamp
+□ All affected INFO.md files updated
+□ All cross-references are consistent
+□ No broken links in documentation
+□ All feature IDs follow naming convention
+□ All schema versions are correct
+□ Git commit message is descriptive
+```
+
+**If ANY checkbox is unchecked → Task is NOT complete**
 
 ---
 
@@ -115,40 +217,93 @@ If APIs change:
 
 ---
 
-### Phase 4: Documentation Updates
+### Phase 4: Documentation Updates (MANDATORY - NO EXCEPTIONS)
 
-**Step 4.1**: Update primary documentation
+**Step 4.1**: Update ALL primary documentation files
 ```
+🚨 CRITICAL: ALL 5 files MUST be reviewed for EVERY change
+
 Files to check and update:
 ✅ feature_mapping.md - Add/modify feature rows
+   → Add new row if new feature
+   → Update existing row if feature modified
+   → Mark as deprecated if feature removed
+
 ✅ application_scenario.md - Update user flows
+   → Add new user journey steps
+   → Update existing flows with new behavior
+   → Add backend process descriptions
+
 ✅ backend_architecture.md - Update module mappings
+   → Add new modules/functions
+   → Update execution flows
+   → Update module dependencies
+
 ✅ api_reference.md - Update API definitions
+   → Add new endpoints with full documentation
+   → Update request/response schemas
+   → Update "Used By" component lists
+
 ✅ schema_reference.md - Update schema definitions
+   → Add new schemas with TypeScript definitions
+   → Update existing schemas (version bump)
+   → Update component mappings
+
+⚠️ FAILURE TO UPDATE ALL FILES = INCOMPLETE TASK
 ```
 
-**Step 4.2**: Update folder INFO.md files
+**Step 4.2**: Update folder INFO.md files (MANDATORY)
 ```
 For each affected folder:
-1. Open INFO.md
-2. Update component table
-3. Add change log entry
+1. Open INFO.md (create if doesn't exist)
+2. Update component table with new/modified entries
+3. Add change log entry with:
+   - Timestamp (YYYY-MM-DD HH:MM:SS)
+   - Changed By: LLM Agent
+   - Reason for change
+   - Impact description
+   - Files modified list
+   - Feature IDs affected
+   - Breaking changes (Yes/No)
 4. Update "Last Updated" timestamp
-5. List affected feature IDs
+5. List all affected feature IDs
+
+⚠️ Every folder touched MUST have INFO.md updated
 ```
 
-**Step 4.3**: Update global CHANGELOG.md
+**Step 4.3**: Update global CHANGELOG.md (MANDATORY)
 ```
-File: /docs/CHANGELOG.md
+File: CHANGELOG.md
 
-Add entry:
+ALWAYS add entry with:
 ### [YYYY-MM-DD HH:MM:SS] - [Task Description]
 **Changed By**: LLM Agent  
-**Reason**: [Why]  
-**Impact**: [What changed]  
-**Files Modified**: [List]  
-**Feature IDs Affected**: [List]  
-**Breaking Changes**: [Yes/No]
+**Reason**: [Why the change was made]  
+**Impact**: [What was affected - be specific]  
+**Files Modified**: 
+- file1.py (added function X)
+- file2.jsx (updated component Y)
+- feature_mapping.md (added row for feature Z)
+**Feature IDs Affected**: 
+- feature-id-1@SCHEMA-Name
+- feature-id-2@SCHEMA-Name
+**Breaking Changes**: [Yes/No - if yes, explain]
+
+⚠️ NO change is complete without CHANGELOG.md entry
+```
+
+**Step 4.4**: Verify documentation consistency (MANDATORY)
+```
+Cross-check:
+□ Feature ID in feature_mapping.md matches application_scenario.md
+□ API in api_reference.md matches backend_architecture.md
+□ Schema in schema_reference.md matches api_reference.md
+□ Module ID in backend_architecture.md is unique
+□ All links are valid and not broken
+□ All timestamps are current
+□ All tables are properly formatted
+
+⚠️ If ANY check fails → Fix before proceeding
 ```
 
 ---
