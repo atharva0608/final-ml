@@ -296,6 +296,133 @@
 **Feature IDs Affected**: N/A (Database layer)
 **Breaking Changes**: No (New implementation)
 
+### [2025-12-31 12:51:00] - Phase 2.2: Database Migrations (Alembic) COMPLETED
+**Changed By**: LLM Agent
+**Reason**: Complete Phase 2.2 - Set up Alembic for database migrations with initial schema and seed data
+**Impact**: Production-ready database migration system with version control and rollback capability
+
+**Phase 2.2: Database Migrations (Alembic)** ✅
+- Created `alembic.ini`:
+  - Alembic configuration file
+  - Database URL: postgresql://postgres:password@localhost:5432/spot_optimizer
+  - File template for migration versioning
+  - Logging configuration (root, sqlalchemy, alembic loggers)
+  - Timezone: UTC
+
+- Created `migrations/env.py`:
+  - Alembic environment configuration
+  - Imports all 13 models from backend.models
+  - Sets target_metadata to Base.metadata for autogenerate
+  - Overrides database URL from DATABASE_URL environment variable
+  - Implements run_migrations_offline() for offline SQL generation
+  - Implements run_migrations_online() for online migrations
+
+- Created `migrations/script.py.mako`:
+  - Template for generating new migration files
+  - Standard structure with upgrade() and downgrade() functions
+  - Imports for Alembic operations and SQLAlchemy types
+
+- Created `migrations/versions/001_initial_schema.py`:
+  - **Complete initial schema migration** with all tables
+  - Creates all 13 tables:
+    1. users (id, email, password_hash, role)
+    2. accounts (id, user_id FK, aws_account_id, role_arn, status)
+    3. clusters (id, account_id FK, name, region, vpc_id, api_endpoint, k8s_version, status, agent_installed, last_heartbeat)
+    4. instances (id, cluster_id FK, instance_id, instance_type, lifecycle, az, price, cpu_util, memory_util)
+    5. node_templates (id, user_id FK, name, families ARRAY, architecture, strategy, disk_type, disk_size, is_default)
+    6. cluster_policies (id, cluster_id FK unique, config JSONB)
+    7. hibernation_schedules (id, cluster_id FK unique, schedule_matrix JSONB, timezone, prewarm_enabled, prewarm_minutes)
+    8. audit_logs (id, timestamp, actor_id, actor_name, event, resource, resource_type, outcome, ip_address, user_agent, diff_before JSONB, diff_after JSONB)
+    9. ml_models (id, version unique, file_path, status, performance_metrics JSONB, uploaded_at, validated_at, promoted_at)
+    10. optimization_jobs (id, cluster_id FK, status, results JSONB, created_at, started_at, completed_at)
+    11. lab_experiments (id, model_id FK, instance_id, test_type, telemetry JSONB, created_at)
+    12. agent_actions (id, cluster_id FK, action_type, payload JSONB, status, created_at, expires_at, picked_up_at, completed_at, result JSONB, error_message)
+    13. api_keys (id, cluster_id FK, key_hash unique, key_prefix, description, last_used_at, created_at, expires_at)
+  - Creates all 12 enums:
+    - userrole (CLIENT, SUPER_ADMIN)
+    - accountstatus (PENDING, SCANNING, ACTIVE, ERROR)
+    - clusterstatus (PENDING, ACTIVE, INACTIVE, ERROR)
+    - instancelifecycle (SPOT, ON_DEMAND)
+    - templatestrategy (CHEAPEST, BALANCED, PERFORMANCE)
+    - disktype (GP3, GP2, IO1, IO2)
+    - resourcetype (CLUSTER, INSTANCE, TEMPLATE, POLICY, HIBERNATION, USER, ACCOUNT)
+    - auditoutcome (SUCCESS, FAILURE)
+    - mlmodelstatus (TESTING, PRODUCTION, DEPRECATED)
+    - optimizationjobstatus (QUEUED, RUNNING, COMPLETED, FAILED)
+    - agentactiontype (EVICT_POD, CORDON_NODE, DRAIN_NODE, LABEL_NODE, UPDATE_DEPLOYMENT)
+    - agentactionstatus (PENDING, PICKED_UP, COMPLETED, FAILED, EXPIRED)
+  - Creates all indexes:
+    - idx_users_email (users.email)
+    - idx_cluster_lifecycle (instances.cluster_id, lifecycle)
+    - idx_cluster_instance_type (instances.cluster_id, instance_type)
+    - idx_audit_timestamp_desc (audit_logs.timestamp DESC)
+    - idx_audit_actor_timestamp (audit_logs.actor_id, timestamp DESC)
+    - idx_audit_resource_type_timestamp (audit_logs.resource_type, timestamp DESC)
+    - idx_optimization_cluster_status (optimization_jobs.cluster_id, status)
+    - idx_optimization_created_desc (optimization_jobs.created_at DESC)
+    - idx_agent_action_cluster_status (agent_actions.cluster_id, status)
+    - idx_agent_action_expires (agent_actions.expires_at)
+  - Creates constraints:
+    - Unique constraints (email, instance_id, version, key_hash, etc.)
+    - Foreign key constraints with CASCADE deletes
+    - Check constraint: expires_at > created_at (agent_actions)
+    - Unique composite constraint: (user_id, name) on node_templates
+  - Implements downgrade() to drop all tables and enums
+
+- Created `migrations/versions/002_seed_data.py`:
+  - **Seed data migration** with default admin user and node templates
+  - Creates default super admin user:
+    - Email: admin@spotoptimizer.com
+    - Password: admin123 (bcrypt hashed: $2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewY5PqgZ1y6zGjWG)
+    - Role: SUPER_ADMIN
+    - Note: Password should be changed immediately in production
+  - Creates 4 default node templates for admin user:
+    1. **General Purpose - Balanced**:
+       - Families: m5, m6i, m7i
+       - Architecture: x86_64
+       - Strategy: BALANCED
+       - Disk: GP3, 100GB
+       - is_default: Y
+    2. **Compute Optimized - High Performance**:
+       - Families: c5, c6i, c7i
+       - Architecture: x86_64
+       - Strategy: PERFORMANCE
+       - Disk: GP3, 100GB
+       - is_default: N
+    3. **Memory Optimized - Large Workloads**:
+       - Families: r5, r6i, r7i
+       - Architecture: x86_64
+       - Strategy: BALANCED
+       - Disk: GP3, 200GB
+       - is_default: N
+    4. **ARM-Based - Cost Efficient**:
+       - Families: t4g, m6g, c6g
+       - Architecture: arm64
+       - Strategy: CHEAPEST
+       - Disk: GP3, 100GB
+       - is_default: N
+  - Implements downgrade() to remove seed data
+
+**Files Created**:
+1. `alembic.ini` - Alembic configuration
+2. `migrations/env.py` - Alembic environment
+3. `migrations/script.py.mako` - Migration template
+4. `migrations/versions/001_initial_schema.py` - Complete schema migration
+5. `migrations/versions/002_seed_data.py` - Seed data migration
+
+**Migration Features**:
+- Version control for database schema
+- Rollback capability (upgrade/downgrade)
+- Environment variable override for DATABASE_URL
+- Autogenerate support with target_metadata
+- Offline SQL generation support
+- Timezone-aware timestamps
+- Default admin user for initial setup
+- Production-ready node templates
+
+**Feature IDs Affected**: N/A (Database infrastructure)
+**Breaking Changes**: No (New implementation)
+
 ### Changed
 - Moved all documentation files from `new-version/` root to `docs/` directory
 - Reorganized repository structure to match expected architecture
