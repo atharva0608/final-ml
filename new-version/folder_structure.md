@@ -1,6 +1,9 @@
 # Folder Structure Reference
 
 > **Purpose**: This document defines the current and expected folder structure for the Spot Optimizer platform repository, including mandatory `INFO.md` files in each directory for component tracking and change logging.
+>
+> **GitHub Repository**: [atharva0608/final-ml](https://github.com/atharva0608/final-ml)  
+> **Branch**: `claude/aws-dual-mode-connectivity-fvlS3`
 
 ---
 
@@ -15,42 +18,35 @@
 
 ## Current Folder Structure
 
+**GitHub Repository Structure**:
+
 ```
-/Users/atharvapudale/Desktop/backend-ecc/Atharva Repo/github/v1/
+atharva0608/final-ml (GitHub)
 │
-├── final-ml/                               # Old version (keep as-is)
+├── README.md                               # Repository README
+│
+├── old-version/                            # Legacy implementation (archived)
 │   └── [legacy files]
 │
 └── new-version/                            # 🎯 ACTIVE DEVELOPMENT (Root for all new work)
-    ├── docs/
-    │   ├── feature_mapping.md
-    │   ├── application_scenario.md
-    │   ├── backend_architecture.md
-    │   ├── api_reference.md
-    │   ├── schema_reference.md
-    │   ├── folder_structure.md
-    │   ├── README_DOCUMENTATION.md
-    │   ├── LLM_INSTRUCTIONS.md
-    │   └── CHANGELOG.md
     │
-    ├── backend/
-    │   ├── api/
-    │   ├── services/
-    │   ├── workers/
-    │   ├── modules/
-    │   └── models/
+    ├── feature_mapping.md                 # Master feature table (131 features)
+    ├── application_scenario.md            # User journey narratives (8 phases)
+    ├── backend_architecture.md            # Backend modules & flows (15 modules)
+    ├── api_reference.md                   # Complete API catalog (78 endpoints)
+    ├── schema_reference.md                # Data schemas (25 schemas)
+    ├── folder_structure.md                # This file
+    ├── README_DOCUMENTATION.md            # Documentation system guide
+    ├── LLM_INSTRUCTIONS.md                # Automated task workflow
+    ├── CHANGELOG.md                       # Global change log
+    ├── task.md                            # Task management file
     │
-    ├── frontend/
-    │   └── src/
-    │       ├── components/
-    │       ├── services/
-    │       └── utils/
-    │
-    └── scripts/
-        └── aws/
+    ├── description.txt                    # Original functional spec
+    ├── description.md                     # Markdown functional spec
+    └── backenddecription.txt              # Backend description
 ```
 
-**Note**: The `new-version/` folder is the root for all active development. The old `final-ml/` folder remains for reference but is not actively maintained.
+**Note**: All documentation files are currently in `new-version/` root. They will be organized into the expected structure below.
 
 ---
 
@@ -500,26 +496,39 @@ done
 
 ## Migration Guide
 
-### Moving from Current to Expected Structure
+### Organizing Documentation into Expected Structure
 
-**Step 1**: Create folder structure (from new-version/ directory)
+**Current State**: All documentation files are in `new-version/` root  
+**Target State**: Organized into `docs/` folder with proper backend/frontend structure
+
+**Step 1**: Create folder structure (from repository root)
 ```bash
+cd new-version/
 mkdir -p docs backend/{api,services,workers,modules,scrapers,core,models,schemas,utils}
 mkdir -p frontend/src/{components/{auth,dashboard,clusters,templates,policies,hibernation,audit,settings,admin},services,hooks,utils}
 mkdir -p scripts/{aws,deployment} config docker
 ```
 
-**Step 2**: Move existing documentation files
+**Step 2**: Move documentation files to docs/ folder
 ```bash
 mv *.md docs/
+# Keep task.md in root for easy access
+mv docs/task.md .
 ```
 
 **Step 3**: Create INFO.md in each folder
 ```bash
-find . -type d -not -path "*/node_modules/*" -exec touch {}/INFO.md \;
+find . -type d -not -path "*/node_modules/*" -not -path "*/.git/*" -exec touch {}/INFO.md \;
 ```
 
 **Step 4**: Populate INFO.md files using template (see section above)
+
+**Step 5**: Commit and push changes
+```bash
+git add .
+git commit -m "Organize documentation into folder structure"
+git push origin claude/aws-dual-mode-connectivity-fvlS3
+```
 
 ---
 
