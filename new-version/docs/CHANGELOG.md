@@ -563,6 +563,173 @@
 **Feature IDs Affected**: N/A (API validation layer)
 **Breaking Changes**: No (New implementation)
 
+### [2025-12-31 13:00:00] - Phase 3: Backend Core Utilities COMPLETED
+**Changed By**: LLM Agent
+**Reason**: Complete Phase 3 - Implement foundational core utilities for configuration, security, validation, and logging
+**Impact**: Production-ready core infrastructure with 6 utility modules supporting all backend services
+
+**Phase 3: Backend Core Utilities** ✅
+- Created comprehensive core utility modules
+- **Total**: 6 core utility files + 1 package init
+
+**1. config.py** - Configuration Management:
+- Pydantic Settings for environment variables
+- 80+ configuration parameters organized by category
+- Field validators for environment, log level, log format
+- Helper functions: is_production(), is_development(), is_testing()
+- Categories:
+  - Application settings
+  - Database configuration (pool size, overflow)
+  - Redis configuration
+  - Celery (broker, result backend)
+  - JWT authentication (secret, algorithm, expiration)
+  - AWS credentials
+  - API configuration (rate limit, timeout)
+  - CORS settings
+  - Email service (SendGrid/SES)
+  - Stripe billing (optional)
+  - System configuration
+  - Logging
+  - Development/testing flags
+  - Kubernetes Agent settings
+  - Prometheus monitoring
+  - Feature flags
+  - Security settings (bcrypt rounds, password min length)
+
+**2. crypto.py** - Cryptography Utilities:
+- Password hashing with bcrypt (configurable rounds)
+- JWT token creation and validation:
+  - create_access_token() - Access tokens with expiration
+  - create_refresh_token() - Long-lived refresh tokens
+  - decode_token() - Token validation and decoding
+  - verify_token_type() - Token type verification
+- API key generation and hashing:
+  - generate_api_key() - Secure random keys with prefix
+  - hash_api_key() - SHA-256 hashing for storage
+- Security utilities:
+  - generate_reset_token() - Password reset tokens
+  - generate_verification_code() - Numeric codes
+  - constant_time_compare() - Timing attack prevention
+  - hash_data() - Generic SHA-256 hashing
+
+**3. validators.py** - Custom Validation Functions:
+- AWS resource validation:
+  - validate_aws_account_id() - 12-digit format
+  - validate_aws_role_arn() - IAM role ARN format
+  - validate_aws_region() - 30+ valid AWS regions
+  - validate_instance_id() - EC2 instance ID format
+  - validate_vpc_id() - VPC ID format
+- Kubernetes validation:
+  - validate_cluster_name() - K8s naming rules
+  - validate_k8s_version() - Version format
+  - validate_instance_type() - EC2 instance type format
+- Hibernation validation:
+  - validate_timezone() - Using pytz
+  - validate_schedule_matrix() - 168-element array validation
+  - validate_cron_expression() - 5-field cron format
+- Percentage and spot validation:
+  - validate_percentage() - Range validation
+  - validate_spot_percentage() - 0-100 with warning >90%
+- Network validation:
+  - validate_ip_address() - IPv4 format
+  - validate_cidr_block() - CIDR notation
+- Security validation:
+  - validate_password_strength() - Uppercase, lowercase, digit, special char
+  - validate_email_domain() - Domain whitelist
+  - validate_uuid() - UUID format
+
+**4. exceptions.py** - Custom Exception Classes:
+- Base exception: SpotOptimizerException with status_code and details
+- Authentication exceptions (7):
+  - AuthenticationError, InvalidCredentialsError
+  - TokenExpiredError, InvalidTokenError
+  - AuthorizationError, InsufficientPermissionsError
+- Resource exceptions (3):
+  - ResourceNotFoundError, ResourceAlreadyExistsError
+  - ResourceConflictError
+- Validation exceptions (2):
+  - ValidationError, InvalidInputError
+- AWS exceptions (5):
+  - AWSError, AWSAuthenticationError
+  - AWSResourceNotFoundError, AWSAccessDeniedError
+  - AWSRateLimitError
+- Cluster exceptions (4):
+  - ClusterError, ClusterNotFoundError
+  - ClusterNotActiveError, AgentNotInstalledError
+  - AgentTimeoutError
+- Database exceptions (3):
+  - DatabaseError, DatabaseConnectionError
+  - DatabaseIntegrityError
+- Optimization exceptions (3):
+  - OptimizationError, OptimizationJobNotFoundError
+  - OptimizationJobFailedError
+- Policy exceptions (2):
+  - PolicyError, InvalidPolicyError
+- Rate limiting: RateLimitError with retry_after
+- External service exceptions (3):
+  - ExternalServiceError, EmailServiceError, StripeError
+- File exceptions (3):
+  - FileError, FileTooLargeError, InvalidFileTypeError
+- ML exceptions (4):
+  - MLModelError, MLModelNotFoundError
+  - MLModelVersionConflictError, InvalidModelError
+- **Total**: 40+ custom exception classes
+
+**5. dependencies.py** - FastAPI Dependencies:
+- Authentication dependencies:
+  - get_current_user_context() - Extract user from JWT
+  - get_current_user() - Get User model from database
+  - get_optional_user() - Optional authentication
+  - require_super_admin() - Role verification
+- Authorization dependencies:
+  - verify_cluster_ownership() - Cluster access control
+  - verify_template_ownership() - Template ownership
+  - verify_account_ownership() - AWS account ownership
+- Agent authentication:
+  - get_api_key_cluster() - Validate Agent API key
+- Database:
+  - get_database_session() - Database session injection
+- Rate limiting:
+  - verify_rate_limit() - Rate limit check (Redis-based)
+
+**6. logger.py** - Structured Logging:
+- JSON and text formatters
+- StructuredLogger class with context support
+- Logging functions:
+  - log_request() - HTTP request logging
+  - log_database_query() - Database query logging
+  - log_aws_api_call() - AWS API call logging
+  - log_optimization_job() - Optimization job logging
+  - log_audit_event() - Audit event logging
+- setup_logging() - Configure logging based on environment
+- get_logger() - Get logger instance
+- Third-party library log level management
+
+**Files Created**:
+1. `backend/core/__init__.py` - Package exports
+2. `backend/core/config.py` - Configuration management
+3. `backend/core/crypto.py` - Cryptography utilities
+4. `backend/core/validators.py` - Custom validators
+5. `backend/core/exceptions.py` - Custom exceptions
+6. `backend/core/dependencies.py` - FastAPI dependencies
+7. `backend/core/logger.py` - Structured logging
+
+**Core Features**:
+- Environment-based configuration (development/staging/production)
+- Secure password hashing with bcrypt
+- JWT authentication with access/refresh tokens
+- API key generation for Kubernetes Agent
+- Comprehensive AWS resource validation
+- Custom exception hierarchy with HTTP status codes
+- FastAPI dependency injection for auth and authorization
+- Structured JSON logging for production
+- Timezone validation with pytz
+- Password strength validation
+- Timing attack prevention (constant_time_compare)
+
+**Feature IDs Affected**: N/A (Core infrastructure)
+**Breaking Changes**: No (New implementation)
+
 ### Changed
 - Moved all documentation files from `new-version/` root to `docs/` directory
 - Reorganized repository structure to match expected architecture

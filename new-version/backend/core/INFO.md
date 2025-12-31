@@ -14,6 +14,12 @@ Contains core system components including the decision engine, action executor, 
 
 | File Name | Component ID | Purpose | Key Functions | Dependencies | Status |
 |-----------|-------------|---------|---------------|--------------|--------|
+| config.py | CORE-CONFIG | Configuration management | settings, get_settings(), is_production() | pydantic-settings | Complete |
+| crypto.py | CORE-CRYPTO | Cryptography utilities | hash_password(), create_access_token(), generate_api_key() | passlib, jose | Complete |
+| validators.py | CORE-VALID | Custom validation functions | validate_aws_*(), validate_cluster_name(), validate_password_strength() | pytz, re | Complete |
+| exceptions.py | CORE-EXCEPT | Custom exception classes | All custom exceptions | fastapi | Complete |
+| dependencies.py | CORE-DEPS | FastAPI dependencies | get_current_user(), verify_cluster_ownership() | fastapi, models/* | Complete |
+| logger.py | CORE-LOG | Structured logging | setup_logging(), StructuredLogger, log_*() | logging, json | Complete |
 | decision_engine.py | CORE-DECIDE | Conflict resolution and decision making | resolve_conflicts() | modules/*, services/* | Pending |
 | action_executor.py | CORE-EXEC | Execute optimization actions via AWS/K8s | execute_action_plan(), route_action_execution() | scripts/aws/*, models/agent_action.py | Pending |
 | api_gateway.py | CORE-API | FastAPI application and middleware | app, configure_cors(), configure_auth() | api/*, FastAPI | Pending |
@@ -30,6 +36,21 @@ Contains core system components including the decision engine, action executor, 
 - Created backend/core/
 - Created backend/core/INFO.md (this file)
 **Feature IDs Affected**: N/A (Infrastructure setup)
+**Breaking Changes**: No
+
+### [2025-12-31 13:00:00] - Phase 3: Core Utilities Implemented
+**Changed By**: LLM Agent
+**Reason**: Complete Phase 3 - Implement foundational core utilities
+**Impact**: Complete set of core utilities for configuration, security, validation, and logging
+**Files Modified**:
+- Created backend/core/__init__.py
+- Created backend/core/config.py
+- Created backend/core/crypto.py
+- Created backend/core/validators.py
+- Created backend/core/exceptions.py
+- Created backend/core/dependencies.py
+- Created backend/core/logger.py
+**Feature IDs Affected**: N/A (Core infrastructure)
 **Breaking Changes**: No
 
 ---
