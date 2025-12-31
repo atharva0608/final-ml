@@ -1,0 +1,831 @@
+Kubernetes Optimization Platform - Complete Component Documentation
+Table of Contents
+Dashboard Components
+Authentication & Onboarding Flow
+Cluster Management
+Node Templates
+Optimization Policies
+Hibernation Manager
+Account Management
+Audit Logs
+
+Dashboard Components
+1. Add Client Button (Primary Action)
+Component ID: dash-topbar-btn-addclient-primary
+Detailed Description
+The Add Client Button is a primary call-to-action element positioned prominently in the top-right corner of the dashboard's navigation bar. This button serves as the primary entry point for administrators to onboard new client organizations into the platform. The button maintains a consistent presence across all dashboard views, ensuring that administrators can initiate the client creation process from any page without navigating back to a specific section. The design follows modern SaaS patterns with a bold primary color (typically blue or purple gradient) that distinguishes it from secondary actions, making it immediately recognizable and accessible.
+The button's implementation includes sophisticated state management that prevents duplicate submissions and provides real-time feedback during the creation process. When clicked, it triggers a modal overlay system that temporarily suspends interaction with the main dashboard while maintaining visual context through a blurred backdrop effect. The button is permission-gated, appearing only for users with administrative privileges, and includes analytics tracking to monitor conversion rates and identify potential UX improvements in the client onboarding funnel.
+Key Characteristics
+Visual Design:
+
+
+Rectangular button with rounded corners (8px border-radius)
+Primary gradient background (blue-to-purple or brand colors)
+White text with "+" icon prefix
+Fixed width: 140px, Height: 40px
+Drop shadow on hover for elevation effect
+Smooth transition animations (0.3s ease-in-out)
+Location & Positioning:
+
+
+Parent Container: Dashboard Header Component
+Position: Top-right corner of navigation bar
+Z-index: 100 (appears above content but below modals)
+Spacing: 16px margin from notification bell icon
+Alignment: Vertically centered within 64px header height
+Responsive: On mobile (<768px), transforms to icon-only floating button
+Interaction States:
+
+
+Idle State: Standard appearance with primary colors
+Hover State: Background darkens 10%, shadow elevation increases, cursor: pointer
+Active/Click State: Brief scale-down animation (0.95x) for tactile feedback
+Loading State: Button disabled, spinner replaces icon, text changes to "Opening..."
+Disabled State: Opacity 0.5, cursor: not-allowed, grayscale filter applied
+Dependencies:
+
+
+Frontend Components:
+AddClientWizard.jsx - The modal component it triggers
+ClientList.jsx - Updated after successful client creation
+ClientCountCard.jsx - Metric card that reflects new count
+DashboardLayout.jsx - Parent layout component
+Backend Endpoints:
+POST /api/admin/clients - Creates new client record
+GET /api/admin/permissions - Checks if user can add clients
+State Management:
+Global modal state (Redux/Context)
+Client list refresh trigger
+Toast notification system
+Functionality Flow:
+
+ Initial Click:
+
+
+User clicks "Add Client" button
+Button enters loading state (0.2s)
+Permission check occurs (cached if recent)
+Modal state updates to "opening"
+Backdrop overlay fades in (0.3s)
+Modal slides up from bottom (0.4s ease-out)
+Focus shifts to first input field in modal
+Main dashboard content receives aria-hidden="true"
+Modal Interaction:
+
+
+User completes wizard steps (see AddClientWizard section)
+Form validation occurs at each step
+Backend API calls happen on final submission
+Real-time feedback provided throughout
+Success Path:
+
+
+API returns 201 Created with client data
+Modal displays success animation (checkmark)
+Toast notification appears: "Client created successfully"
+Modal auto-closes after 2 seconds
+Client list component refreshes (fetches new data)
+New client appears at top with "NEW" badge
+Client count card animates from old to new value
+Activity feed adds "Client added" entry
+Button returns to idle state
+Focus returns to button or newly created row
+Error Path:
+
+
+API returns error (400, 409, 500)
+Modal remains open
+Error message displays inline in form
+Specific field highlighted if applicable
+Submit button re-enables for retry
+Error toast appears with details
+User can correct and resubmit or cancel
+Cancel Path:
+
+
+User clicks "Cancel" button or X icon
+If form has data: Confirmation dialog appears
+"Are you sure? All entered data will be lost."
+Options: "Discard" (red) or "Keep Editing" (gray)
+If no data: Modal closes immediately
+Modal slides down and fades out (0.3s)
+Backdrop fades out simultaneously
+No database changes occur
+No notifications shown
+Focus returns to Add Client button
+Button returns to idle state
+Similar Components
+Component ID: clients-section-btn-addclient-secondary
+This is a functionally identical button located within the Clients section of the sidebar navigation. The key differences include:
+Visual Style: Secondary button styling (white background, blue border, blue text)
+Location: Clients page header, left-aligned
+Text: "Add New Client" (full text, no truncation on desktop)
+Icon Position: Icon appears before text
+Size: Slightly larger (160px width, 44px height)
+Context: Appears only when viewing the clients section
+Priority: Secondary action (less prominent than primary topbar button)
+Both components share:
+Same modal trigger (AddClientWizard)
+Same backend API endpoints
+Same validation logic
+Same success/error handling
+Same state management hooks
+Same keyboard shortcuts (Ctrl/Cmd + K to open)
+
+2. Client List Table Component
+Component ID: dash-main-table-clientlist-data
+Detailed Description
+The Client List Table is a sophisticated data grid component that serves as the central interface for viewing and managing all registered client organizations within the platform. This table implements advanced features including real-time updates, server-side pagination, multi-column sorting, advanced filtering, and inline editing capabilities. The component is designed to handle large datasets efficiently, utilizing virtual scrolling when displaying more than 100 rows to maintain smooth performance even with thousands of clients.
+The table architecture follows a responsive design pattern that adapts its layout based on viewport size. On desktop displays, all columns are visible with horizontal scrolling available for overflow. On tablet devices (768px-1024px), less critical columns collapse into expandable row details. On mobile devices (<768px), the table transforms into a card-based layout where each client is represented as an individual card with key information prominently displayed and additional details accessible via tap-to-expand interactions.
+The component maintains its own local state for UI interactions (sorting, filtering, selection) while synchronizing with global application state for data mutations. It implements optimistic UI updates, meaning when a client is added or modified, the UI updates immediately before the server response, providing instant feedback to users. If the server request fails, the component gracefully rolls back the change and notifies the user.
+Key Characteristics
+Visual Structure:
+
+
+Header Section:
+Section title: "Clients" (24px font, semi-bold)
+Total count badge: "(127 clients)" in gray text
+Search input: Full-width on mobile, 320px on desktop
+Filter dropdown: Multi-select with categories
+Action buttons: Export CSV, Refresh, Add Client
+Bulk action toolbar: Appears when rows selected
+Table Structure:
+Fixed header row (sticky position during scroll)
+Zebra-striped rows for readability
+Row height: 64px (comfortable for interaction)
+Hover effect: Subtle gray background (slate-50)
+Selected rows: Blue background tint (blue-50)
+Column dividers: 1px light gray borders
+Column Configuration:
+
+
+Selection Checkbox Column (40px width)
+Master checkbox in header (select/deselect all)
+Individual checkboxes per row
+Tri-state support (all, some, none selected)
+Keyboard navigation: Space to toggle
+Organization Name (200px min-width, flex-grow)
+Primary identifier, left-aligned
+Font: 14px, semi-bold
+Clickable link to client detail page
+Truncates with ellipsis if too long
+Hover shows full name in tooltip
+Admin Email (220px min-width)
+Secondary identifier
+Font: 14px, regular, gray-700
+Includes copy-to-clipboard icon on hover
+Email validation indicator (verified badge)
+Total Clusters (120px width, center-aligned)
+Numeric count with icon
+Color-coded: Green (>0), Gray (0)
+Clickable to view cluster list
+Sortable column
+Status (100px width, center-aligned)
+Badge component with color coding
+🟢 Active: Green badge, "Active" text
+🟡 Setup: Yellow badge, "Setting Up" text
+🔴 Suspended: Red badge, "Suspended" text
+🟠 Trial: Orange badge, "Trial" text with days remaining
+Created Date (140px width, right-aligned)
+Relative time format: "2 days ago"
+Hover shows exact timestamp tooltip
+Sortable (default sort: newest first)
+Actions Menu (60px width, right-aligned)
+Three-dot menu button
+Opens dropdown with options:
+View Details
+Edit Information
+View Clusters
+Suspend Account
+Delete Client (requires confirmation)
+Interactive Features:
+
+ Real-Time Updates:
+
+
+WebSocket connection for live data streaming
+Polling fallback every 30 seconds if WebSocket unavailable
+Optimistic updates for user actions
+Background sync indicator in header
+Conflict resolution for concurrent edits
+Sorting:
+
+
+Click column header to sort ascending
+Second click toggles to descending
+Third click removes sort (returns to default)
+Multi-column sort: Hold Shift + click
+Visual indicators: Arrow icons in header
+Persisted in URL parameters (?sort=name:asc)
+Filtering:
+
+
+Text search: Searches name, email, and metadata
+Debounced input (300ms delay before query)
+Advanced filters panel:
+Status filter: Multi-select checkbox
+Cluster count: Range slider (0-100+)
+Date range: Calendar picker
+Plan type: Dropdown selection
+Active filters shown as removable pills
+"Clear All Filters" button appears when active
+Filter state persisted in URL
+Pagination:
+
+
+Server-side pagination (50 items per page default)
+Page size options: 25, 50, 100, 200
+Pagination controls at bottom:
+Previous/Next buttons
+Page number buttons (with ellipsis for many pages)
+Jump to page input field
+Total count display: "Showing 1-50 of 127"
+Keyboard shortcuts: ← → for navigation
+Preserves scroll position when returning from detail view
+Bulk Actions:
+
+
+Select all checkbox (master control)
+Individual row selection
+Bulk action toolbar slides up when items selected
+Available actions:
+Export Selected (CSV/JSON)
+Bulk Edit (opens modal)
+Bulk Delete (requires confirmation with count)
+Send Notification (email/in-app)
+Selection count badge: "3 clients selected"
+Clear selection button
+Row Interactions:
+
+
+Single click on name: Navigate to detail view
+Double click on row: Opens edit modal
+Right-click: Context menu with actions
+Keyboard navigation:
+Tab: Navigate between rows
+Enter: Open detail view
+Space: Toggle selection
+Delete: Delete selected (with confirmation)
+State Management & Data Flow:
+
+ Initial Load:
+
+
+Component mounts and shows skeleton loader
+Fetches data from GET /api/admin/clients?page=1&limit=50
+Response includes: { clients: [], total: 127, page: 1, pages: 3 }
+Data stored in component state
+Loading state cleared, table renders
+Total duration: ~500-800ms
+Add Client Flow:
+
+
+User adds client via wizard
+POST request succeeds with new client data
+Component receives update event (WebSocket or callback)
+New row data prepended to array (optimistic update)
+New row animates in with slide-down effect (0.4s)
+Row background flashes green (pulse animation, 2s)
+"NEW" badge appears on row (fades after 5s)
+Total count increments
+If on page 2+, shows notification: "New client added. Return to page 1?"
+Background refresh ensures data consistency
+Delete Client Flow:
+
+
+User clicks delete in actions menu
+Confirmation modal appears:
+Title: "Delete Client?"
+Message: "This will permanently delete [Org Name] and all associated data."
+Warning: "This action cannot be undone."
+Buttons: "Cancel" (gray) and "Delete" (red)
+User confirms deletion
+DELETE request sent to /api/admin/clients/{client_id}
+Row immediately fades out (0.3s opacity transition)
+Row collapses vertically (0.3s height transition)
+Adjacent rows smoothly move up to fill space
+Success toast: "Client deleted successfully"
+Total count decrements
+If last item on page, navigates to previous page
+Activity log updated with deletion event
+Edit Client Flow:
+
+
+User clicks "Edit" in actions menu
+Inline editing mode activates:
+Editable fields transform to inputs
+Save/Cancel buttons appear
+Rest of table dims slightly
+User modifies fields (validation in real-time)
+User clicks "Save"
+PATCH request to /api/admin/clients/{client_id}
+Request body: Only changed fields
+Optimistic update: Row updates immediately
+Success: Save button shows checkmark briefly
+Error: Changes revert, error message displays
+Row returns to normal view mode
+Error Handling:
+
+
+Network errors: Retry button appears with countdown
+404 errors: "Client not found" message with refresh option
+403 errors: "Permission denied" notification
+500 errors: "Server error" with support contact
+Stale data: Warning banner with refresh button
+Concurrent modification: Conflict resolution dialog
+Responsive Behavior:
+
+ Desktop (>1024px):
+
+
+Full table layout with all columns visible
+Horizontal scroll for overflow
+Fixed table header during vertical scroll
+Row hover effects enabled
+Context menus available
+Tablet (768px - 1024px):
+
+
+Removes "Created Date" column
+Collapses less important columns
+Expandable row details
+Tap to expand secondary information
+Simplified filters (drawer vs inline)
+Mobile (<768px):
+
+
+Transforms to card layout
+Each client = individual card
+Card structure:
+Top: Organization name + status badge
+Middle: Email, cluster count
+Bottom: Action buttons row
+Swipe gestures: Swipe right reveals delete, swipe left reveals edit
+Pull-to-refresh enabled
+Simplified search (full-screen overlay)
+Performance Optimizations:
+
+ Virtual Scrolling:
+
+
+Activated when >100 rows
+Only renders visible rows + buffer
+Smooth scrolling maintained
+Reduces DOM nodes by ~95%
+Memoization:
+
+
+Row components memoized (React.memo)
+Prevents unnecessary re-renders
+Only re-renders when row data changes
+Debouncing:
+
+
+Search input debounced (300ms)
+Filter changes debounced (200ms)
+Reduces API calls significantly
+Caching:
+
+
+Client list cached for 60 seconds
+Stale-while-revalidate pattern
+Background refresh for freshness
+Cache invalidated on mutations
+Progressive Loading:
+
+
+Initial load: First 50 rows
+Infinite scroll: Load next 50 as user scrolls
+Lazy load images/avatars
+Skeleton loaders for perceived performance
+
+3. Client Count Card (Metric Widget)
+Component ID: dash-sidebar-card-clientcount-metric
+Detailed Description
+The Client Count Card is a key performance indicator (KPI) widget that provides administrators with at-a-glance visibility into the total number of client organizations registered on the platform. This metric card is part of a dashboard metrics suite that includes other critical statistics such as total revenue, active clusters, and system health scores. The card follows a minimalist design philosophy, presenting the most important information prominently while relegating contextual details to secondary text and hover states.
+The component implements sophisticated animation techniques to make numerical changes highly visible and engaging. When the count changes (due to new client additions or deletions), the number animates using a "count-up" effect that draws the user's attention to the change. This is coupled with subtle visual cues like background color flashes and icon animations that reinforce the nature of the change (green for additions, yellow for deletions).
+Beyond its primary display function, the card serves as an interactive navigation element. Clicking anywhere on the card navigates the user to the full client list view, providing a natural discovery path from high-level metrics to detailed data. The card also includes a mini sparkline chart showing the trend over the past 30 days, giving administrators quick insight into growth patterns without requiring navigation to a separate analytics view.
+Key Characteristics
+Visual Design:
+
+
+Card Container:
+
+
+Width: 100% of sidebar column (260px typical)
+Height: 160px (fixed)
+Background: White with subtle shadow
+Border-radius: 12px
+Border: 1px solid gray-200
+Padding: 24px
+Hover: Shadow elevation increases, border color changes to blue
+Cursor: pointer (entire card clickable)
+Content Layout:
+
+ ┌──────────────────────┐
+│  📊 (Icon)           │
+│  Total Clients       │  ← Label (12px, gray-600, uppercase)
+│                      │
+│      127             │  ← Value (48px, bold, blue-600)
+│      ↑ +12%          │  ← Trend (14px, green-600 if positive)
+│                      │
+│  ▁▂▃▅▆▇█             │  ← Sparkline chart (30 days)
+│  vs last month       │  ← Context (10px, gray-500)
+└──────────────────────┘
+
+
+Typography:
+
+
+Label: 12px, font-weight: 600, uppercase, letter-spacing: 0.5px
+Value: 48px, font-weight: 700, number font (tabular-nums)
+Trend: 14px, font-weight: 600
+Context: 10px, font-weight: 400, italic
+Color Scheme:
+
+
+Default state: Blue primary (#3b82f6)
+Positive trend: Green (#22c55e)
+Negative trend: Red (#ef4444)
+Neutral: Gray (#64748b)
+Data Points Displayed:
+
+
+Primary Metric: Total Client Count
+
+
+Large number display
+Format: Comma-separated for large numbers (1,234)
+Updates: Real-time via WebSocket or polling
+Animation: CountUp effect on change
+Trend Indicator
+
+
+Shows change vs previous period
+Format: Arrow + percentage (↑ +12%)
+Colors: Green (increase), Red (decrease), Gray (no change)
+Calculation: ((current - previous) / previous) * 100
+Time period: Configurable (week/month/quarter)
+Absolute Change
+
+
+Shown in tooltip on hover
+Format: "+14 clients since last month"
+Provides context to percentage
+Sparkline Chart
+
+
+Mini line chart (width: 100%, height: 30px)
+Shows last 30 days of data
+Simple line, no axes or labels
+Gradient fill under line
+Hover shows tooltip with exact date and value
+Comparison Period
+
+
+Text label: "vs last month" (or week/quarter)
+Helps interpret the trend percentage
+Clickable to change period (dropdown)
+Update Mechanisms:
+
+ Real-Time Updates (WebSocket):
+
+ // Pseudo-code for real-time update
+websocket.on('client:created', (data) => {
+  // 1. Animate from old count to new count
+  animateCountUp(currentCount, currentCount + 1, 1000); // 1 second duration
+  
+  // 2. Flash background green
+  cardBackground.flashColor('#22c55e', 200); // 200ms
+  
+  // 3. Update trend calculation
+  const newTrend = calculateTrend(currentCount + 1, previousPeriodCount);
+  updateTrendIndicator(newTrend);
+  
+  // 4. Add point to sparkline
+  sparklineData.push({ date: new Date(), count: currentCount + 1 });
+  updateSparkline(sparklineData);
+  
+  // 5. Update stored state
+  setCurrentCount(currentCount + 1);
+});
+
+websocket.on('client:deleted', (data) => {
+  // Similar flow but with different visual feedback
+  animateCountUp(currentCount, currentCount - 1, 1000);
+  cardBackground.flashColor('#facc15', 200); // Yellow for caution
+  // ... rest of updates
+});
+ Polling Fallback:
+
+
+Checks every 30 seconds if WebSocket unavailable
+Fetches from GET /api/admin/dashboard/stats
+Compares with current state
+Only animates if value changed
+Prevents animation spam during initial load
+Manual Refresh:
+
+
+Click refresh icon in card header
+Triggers immediate data fetch
+Shows loading spinner during fetch
+Animates any changes detected
+Animation Specifications:
+
+ CountUp Animation:
+
+ // CountUp configuration
+const countUpOptions = {
+  startVal: previousValue,      // Starting number
+  endVal: newValue,              // Ending number
+  duration: 1.5,                 // 1.5 seconds
+  separator: ',',                // Thousand separator
+  decimal: '.',                  // Decimal separator
+  prefix: '',                    // No prefix
+  suffix: '',                    // No suffix
+  useEasing: true,               // Easing function
+  easingFn: easeOutCubic,        // Smooth deceleration
+};
+ Background Flash:
+
+
+Initial color: Component background
+Flash color: Green (#22c55e) for addition, Yellow (#facc15) for deletion
+Duration: 200ms fade in, 400ms hold, 400ms fade out
+Timing function: ease-in-out
+Total duration: 1000ms
+Trend Arrow:
+
+
+Slides in from left with fade (0.3s)
+Rotates to point up or down
+Color transitions (0.2s)
+Sparkline Update:
+
+
+New point fades in (0.4s)
+Line extends smoothly
+Chart scrolls left if >30 points
+Subtle bounce animation on addition
+Interactive Behaviors:
+
+ Click Interaction:
+
+
+User clicks anywhere on card
+Card scales down slightly (0.98x) for 100ms
+Ripple effect emanates from click point
+Navigation initiated to /clients page
+URL parameter added: ?highlight=count
+Clients page loads with count metric highlighted
+Smooth scroll to client list table
+Brief yellow highlight on total count in table header
+Hover States:
+
+
+Card elevation increases (shadow grows)
+Border color transitions to blue
+Cursor changes to pointer
+Tooltip appears after 500ms delay:
+ ┌─────────────────────────────┐│ Client Count Details        │├─────────────────────────────┤│ Current: 127 clients        ││ Last Month: 113 clients     ││ Change: +14 clients (+12%)  ││                             ││ Click to view full list     │└─────────────────────────────┘
+
+
+Keyboard Navigation:
+
+
+Tab: Focus on card (blue outline appears)
+Enter/Space: Activate click action
+Escape: Clear focus
+Data Source & API:
+
+ Endpoint:
+
+ GET /api/admin/dashboard/stats
+Authorization: Bearer {admin_token}
+ Response Format:
+
+ {
+  "total_clients": 127,
+  "clients_change": {
+    "absolute": 14,
+    "percent": 12.5,
+    "direction": "up"
+  },
+  "previous_period": {
+    "count": 113,
+    "period": "month",
+    "start_date": "2024-12-01",
+    "end_date": "2024-12-31"
+  },
+  "sparkline_data": [
+    { "date": "2024-12-01", "count": 113 },
+    { "date": "2024-12-02", "count": 114 },
+    // ... 30 days of data
+    { "date": "2024-12-31", "count": 127 }
+  ],
+  "last_updated": "2025-01-15T14:32:00Z"
+}
+ Caching Strategy:
+
+
+Client-side cache: 60 seconds
+Stale-while-revalidate: Shows cached data immediately, fetches fresh in background
+Cache invalidation: Manual refresh or real-time update
+Error handling: Shows last known value with stale indicator
+Error States:
+
+ Loading State:
+
+
+Skeleton loader with pulsing animation
+Placeholder bars for text
+Duration: Visible until data arrives
+Error State:
+
+
+Icon changes to ⚠️
+Value shows "—" (em dash)
+Error message in small text: "Unable to load"
+Retry button appears
+Card border turns red
+No Data State:
+
+
+Value shows "0"
+Message: "No clients yet"
+CTA button: "Add Your First Client"
+Different visual treatment (lighter, less emphasis)
+Accessibility Features:
+
+
+ARIA label: "Total clients metric card"
+Role: "button" (since clickable)
+ARIA-live: "polite" (announces changes to screen readers)
+Keyboard navigable
+Focus indicator visible
+Color contrast ratios meet WCAG AA standards
+Number changes announced: "Client count increased to 127"
+Related Components:
+
+ Sibling Cards:
+
+
+Revenue Card: dash-sidebar-card-revenue-metric
+Active Clusters: dash-sidebar-card-clusters-metric
+Monthly Savings: dash-sidebar-card-savings-metric
+System Health: dash-sidebar-card-health-metric
+All cards share:
+
+
+Same dimensions and layout structure
+Same animation patterns
+Same interaction behaviors
+Same API response format (different endpoints)
+Same error handling logic
+
+Authentication & Onboarding Flow
+4. Add Client Wizard Modal
+Component ID: modal-wizard-addclient-multistep
+Detailed Description
+The Add Client Wizard is a sophisticated multi-step modal interface that guides administrators through the process of creating new client accounts on the platform. This wizard employs progressive disclosure principles, breaking down a potentially complex form into digestible steps that reduce cognitive load and improve completion rates. The modal's architecture is built around a state machine pattern that manages step transitions, validation states, and data persistence across the entire workflow.
+The wizard implements intelligent validation that adapts to user behavior. Rather than showing all errors at once (which can be overwhelming), it validates fields progressively as users interact with them, providing immediate feedback for individual fields while deferring form-level validation until submission. This approach reduces user frustration and creates a more conversational, guided experience. The wizard also includes auto-save functionality that stores draft data in browser session storage, allowing users to close the modal and resume later without losing their progress.
+The component is designed with flexibility in mind, allowing different entry points (dashboard button, clients page button, keyboard shortcut) while maintaining consistent behavior. It includes comprehensive accessibility features, ensuring that users who rely on keyboard navigation or assistive technologies can complete the wizard efficiently. The wizard also tracks analytics events at each step, providing administrators with insights into where users might be struggling or abandoning the process.
+Key Characteristics
+Modal Structure:
+
+ Overall Dimensions:
+
+
+Width: 600px on desktop, 95vw on mobile
+Max-height: 90vh with internal scrolling
+Position: Centered on viewport
+Z-index: 1000 (above all content)
+Backdrop: rgba(0,0,0,0.4) with 8px blur
+Layout Components:
+
+
+Header Section (80px height)
+
+
+Title: "Add New Client"
+Step indicator: "Step 1 of 3"
+Close button (X): Top-right corner
+Progress dots: Visual step indicator
+Body Section (Flexible height, scrollable)
+
+
+Content area for current step
+Minimum height: 400px
+Padding: 32px
+Background: White
+Footer Section (80px height)
+
+
+Navigation buttons: "Back" and "Next/Submit"
+Button alignment: Space-between
+Sticky position (always visible)
+Step Configuration:
+
+ Step 1: Basic Information
+
+ Purpose: Collect essential client identification details
+
+ Fields:
+
+
+Organization Name (Required)
+
+
+Input type: Text
+Max length: 100 characters
+Validation:
+Must be 2+ characters
+Must be unique (checked in real-time)
+Cannot contain special characters except spaces, hyphens, apostrophes
+Real-time feedback:
+✓ Green checkmark when valid and unique
+✗ Red X with error message if taken
+🔄 Loading spinner during uniqueness check
+Debounce: 500ms before checking uniqueness
+Error messages:
+"Organization name is required"
+"Name must be at least 2 characters"
+"This organization name is already taken"
+Help text: "This will be visible to the client"
+Admin Email (Required)
+
+
+Input type: Email with validation
+Max length: 255 characters
+Validation:
+Must be valid email format
+Must be unique across all clients
+Cannot be a disposable email domain
+Real-time validation:
+Format check: Immediate
+Uniqueness check: Debounced (500ms)
+Domain verification: Optional strict mode
+Error messages:
+
+
+1. Authentication & Entry Flow
+A. Login/Signup Portal (LoginPage.jsx)
+Visual Design
+Layout: Split-screen design
+Left Panel (40% width):
+Gradient background (blue to purple)
+Platform logo at top
+Animated illustration of cloud infrastructure
+Rotating testimonial cards
+Value propositions: "Save up to 70% on cloud costs"
+Right Panel (60% width):
+Clean white background
+Centered form container (max-width: 420px)
+Toggle tabs: "Sign In" | "Sign Up"
+Sign Up Flow - Detailed Steps
+Step 1: Initial View
+jsx
+UI Elements:
+┌─────────────────────────────────┐
+│  Organization Name              │
+│  ┌───────────────────────────┐ │
+│  │ [Enter company name...]   │ │
+│  └───────────────────────────┘ │
+│                                 │
+│  Email Address                  │
+│  ┌───────────────────────────┐ │
+│  │ [your@company.com...]     │ │
+│  └───────────────────────────┘ │
+│                                 │
+│  Password                       │
+│  ┌───────────────────────────┐ │
+│  │ [8+ characters...]  [👁]  │ │
+│  └───────────────────────────┘ │
+│                                 │
+│  ⚠ Must contain: 1 uppercase,  │
+│     1 number, 1 special char    │
+│                                 │
+│  ┌───────────────────────────┐ │
+│  │   Create Account [→]      │ │
+│  └───────────────────────────┘ │
+└─────────────────────────────────┘
+Step 2: User Interaction
+Field Validation (Real-time):
+Organization Name:
+Validates as user types
+Shows ✓ green checkmark when valid
+Shows ✗ red X with error: "Name already taken" if duplicate
+Email:
+Validates format: name@domain.com
+Shows loading spinner while checking uniqueness
+Displays error: "Email already registered. Try signing in?"
+Password:
+Shows strength meter (Weak → Fair → Strong)
+Real-time indicators:
+🟢 8+ characters
+🟢 1 uppercase letter
+🟢 1 number
+🟢 1 special character
+
+
