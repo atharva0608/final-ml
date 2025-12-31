@@ -11,7 +11,17 @@ import time
 from backend.core.config import settings, get_cors_origins
 from backend.core.exceptions import SpotOptimizerException
 from backend.core.logger import StructuredLogger, log_request
-from backend.api import auth_router, template_router, audit_router
+from backend.api import (
+    auth_router,
+    template_router,
+    audit_router,
+    cluster_router,
+    policy_router,
+    hibernation_router,
+    metrics_router,
+    admin_router,
+    lab_router,
+)
 
 logger = StructuredLogger(__name__)
 
@@ -276,12 +286,23 @@ app.include_router(template_router, prefix="/api/v1")
 # Audit routes
 app.include_router(audit_router, prefix="/api/v1")
 
-# Additional routers will be added here as they are implemented
-# app.include_router(cluster_router, prefix="/api/v1")
-# app.include_router(policy_router, prefix="/api/v1")
-# app.include_router(hibernation_router, prefix="/api/v1")
-# app.include_router(admin_router, prefix="/api/v1")
-# app.include_router(lab_router, prefix="/api/v1")
+# Cluster routes
+app.include_router(cluster_router, prefix="/api/v1")
+
+# Policy routes
+app.include_router(policy_router, prefix="/api/v1")
+
+# Hibernation routes
+app.include_router(hibernation_router, prefix="/api/v1")
+
+# Metrics routes
+app.include_router(metrics_router, prefix="/api/v1")
+
+# Admin routes
+app.include_router(admin_router, prefix="/api/v1")
+
+# Lab routes
+app.include_router(lab_router, prefix="/api/v1")
 
 
 # Startup and shutdown events
