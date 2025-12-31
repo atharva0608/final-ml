@@ -186,6 +186,116 @@
 **Feature IDs Affected**: N/A (Infrastructure setup)
 **Breaking Changes**: No
 
+### [2025-12-31 12:45:00] - Phase 2.1: Database Layer Implementation COMPLETED
+**Changed By**: LLM Agent
+**Reason**: Complete Phase 2.1 - Create all SQLAlchemy ORM models for database layer
+**Impact**: Complete database schema with 13 models covering all platform entities
+
+**Phase 2.1: Database Models (SQLAlchemy)** ✅
+- Created `backend/models/base.py`:
+  - SQLAlchemy Base class configuration
+  - Database engine and session factory
+  - UUID generation helper
+  - get_db() dependency for FastAPI
+
+- Created **13 database models** with relationships:
+
+1. **user.py** - User authentication and authorization
+   - Fields: id (UUID), email (unique), password_hash, role (client/super_admin)
+   - Relationships: → accounts, → node_templates
+   - Methods: verify_password(), hash_password()
+
+2. **account.py** - AWS Account connections
+   - Fields: id, user_id (FK), aws_account_id, role_arn, external_id, status
+   - Relationships: → user, → clusters
+   - Status: pending/scanning/active/error
+
+3. **cluster.py** - Kubernetes Clusters
+   - Fields: id, account_id (FK), name, region, vpc_id, api_endpoint, k8s_version, status
+   - Relationships: → account, → instances, → cluster_policy, → hibernation_schedule, → optimization_jobs, → agent_actions, → api_keys
+   - Agent tracking: agent_installed, last_heartbeat
+
+4. **instance.py** - EC2 Instances
+   - Fields: id, cluster_id (FK), instance_id (unique), instance_type, lifecycle (spot/on_demand), az, price, cpu_util, memory_util
+   - Relationships: → cluster
+   - Indexes: cluster_lifecycle, cluster_instance_type
+
+5. **node_template.py** - Node configuration templates
+   - Fields: id, user_id (FK), name, families (ARRAY), architecture, strategy, disk_type, disk_size, is_default
+   - Relationships: → user
+   - Unique constraint: (user_id, name)
+   - Enums: TemplateStrategy (cheapest/balanced/performance), DiskType (gp3/gp2/io1/io2)
+
+6. **cluster_policy.py** - Optimization policies
+   - Fields: id, cluster_id (FK, unique), config (JSONB)
+   - Relationships: → cluster (one-to-one)
+   - JSONB structure: karpenter_enabled, strategy, binpack settings, fallback, exclusions
+
+7. **hibernation_schedule.py** - Weekly hibernation schedules
+   - Fields: id, cluster_id (FK, unique), schedule_matrix (JSONB - 168 elements), timezone, prewarm_enabled, prewarm_minutes
+   - Relationships: → cluster (one-to-one)
+   - Schedule matrix: [0,0,0,...] for Mon 00:00 to Sun 23:00
+
+8. **audit_log.py** - Immutable audit trail
+   - Fields: id, timestamp, actor_id, actor_name, event, resource, resource_type, outcome, ip_address, user_agent, diff_before (JSONB), diff_after (JSONB)
+   - Indexes: timestamp_desc, actor_timestamp, resource_type_timestamp
+   - Immutable: No update operations allowed
+
+9. **ml_model.py** - ML model registry
+   - Fields: id, version (unique), file_path, status (testing/production/deprecated), performance_metrics (JSONB)
+   - Relationships: → lab_experiments
+   - Timestamps: uploaded_at, validated_at, promoted_at
+
+10. **optimization_job.py** - Optimization run tracking
+    - Fields: id, cluster_id (FK), status (queued/running/completed/failed), results (JSONB)
+    - Relationships: → cluster
+    - Indexes: cluster_status, created_desc
+
+11. **lab_experiment.py** - A/B testing experiments
+    - Fields: id, model_id (FK), instance_id, test_type, telemetry (JSONB)
+    - Relationships: → ml_model
+
+12. **agent_action.py** - Kubernetes action queue (Hybrid routing)
+    - Fields: id, cluster_id (FK), action_type (evict_pod/cordon_node/drain_node/label_node/update_deployment), payload (JSONB), status (pending/picked_up/completed/failed/expired)
+    - Timestamps: created_at, expires_at, picked_up_at, completed_at
+    - Indexes: cluster_status (for Agent polling), expires_at (for cleanup)
+    - Constraint: expires_at > created_at
+
+13. **api_key.py** - Agent authentication tokens
+    - Fields: id, cluster_id (FK), key_hash (SHA-256, unique), key_prefix (display), description, last_used_at, expires_at
+    - Relationships: → cluster
+    - Methods: generate_api_key(), hash_key()
+
+**Files Created**:
+1. `backend/models/__init__.py` - Model exports
+2. `backend/models/base.py` - Base class and database configuration
+3. `backend/models/user.py`
+4. `backend/models/account.py`
+5. `backend/models/cluster.py`
+6. `backend/models/instance.py`
+7. `backend/models/node_template.py`
+8. `backend/models/cluster_policy.py`
+9. `backend/models/hibernation_schedule.py`
+10. `backend/models/audit_log.py`
+11. `backend/models/ml_model.py`
+12. `backend/models/optimization_job.py`
+13. `backend/models/lab_experiment.py`
+14. `backend/models/agent_action.py`
+15. `backend/models/api_key.py`
+
+**Database Features**:
+- UUID primary keys for all models
+- Automatic timestamps (created_at, updated_at)
+- JSONB columns for flexible configuration
+- Proper foreign key relationships with cascade deletes
+- Strategic indexes for query performance
+- Enums for type safety
+- Check constraints for data integrity
+- One-to-many and one-to-one relationships
+
+**Feature IDs Affected**: N/A (Database layer)
+**Breaking Changes**: No (New implementation)
+
 ### Changed
 - Moved all documentation files from `new-version/` root to `docs/` directory
 - Reorganized repository structure to match expected architecture
