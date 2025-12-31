@@ -14,7 +14,7 @@ Contains business logic layer for the Spot Optimizer platform. Services implemen
 
 | File Name | Service ID | Purpose | Key Functions | Dependencies | Status |
 |-----------|-----------|---------|---------------|--------------|--------|
-| auth_service.py | SVC-AUTH | Authentication and authorization | create_user_org_txn(), authenticate_user(), determine_route_logic() | models/user.py, bcrypt, JWT | Pending |
+| auth_service.py | SVC-AUTH | Authentication and authorization | signup(), login(), refresh_token(), change_password() | models/user.py, bcrypt, JWT | Complete |
 | cluster_service.py | SVC-CLUSTER | Cluster management operations | list_managed_clusters(), get_cluster_details(), generate_agent_install() | models/cluster.py, boto3 | Pending |
 | template_service.py | SVC-TEMPLATE | Node template management | list_node_templates(), create_node_template(), set_global_default_template() | models/node_template.py | Pending |
 | policy_service.py | SVC-POLICY | Optimization policy management | update_karpenter_state(), update_binpack_settings(), update_fallback_policy() | models/cluster_policy.py | Pending |
@@ -35,6 +35,16 @@ Contains business logic layer for the Spot Optimizer platform. Services implemen
 - Created backend/services/
 - Created backend/services/INFO.md (this file)
 **Feature IDs Affected**: N/A (Infrastructure setup)
+**Breaking Changes**: No
+
+### [2025-12-31 13:05:00] - Authentication Service Implemented
+**Changed By**: LLM Agent
+**Reason**: Complete Phase 4 - Implement authentication service
+**Impact**: Full authentication system with signup, login, token management
+**Files Modified**:
+- Created backend/services/__init__.py
+- Created backend/services/auth_service.py
+**Feature IDs Affected**: any-auth-*
 **Breaking Changes**: No
 
 ---

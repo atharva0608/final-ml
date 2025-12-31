@@ -14,7 +14,7 @@ Contains FastAPI route handlers for all HTTP endpoints. Routes delegate business
 
 | File Name | Module ID | Endpoints | Schemas | Feature IDs | Status |
 |-----------|-----------|-----------|---------|-------------|--------|
-| auth_routes.py | CORE-API | POST /api/auth/signup, POST /api/auth/token, POST /api/auth/logout, GET /api/auth/me | SCHEMA-AUTH-* | any-auth-* | Pending |
+| auth_routes.py | CORE-API | POST /auth/signup, POST /auth/login, POST /auth/refresh, POST /auth/change-password, POST /auth/logout, GET /auth/me | SCHEMA-AUTH-* | any-auth-* | Complete |
 | cluster_routes.py | CORE-API | GET /clusters, GET /clusters/{id}, POST /clusters/connect, POST /clusters/{id}/optimize | SCHEMA-CLUSTER-* | client-cluster-* | Pending |
 | template_routes.py | CORE-API | GET /templates, POST /templates, PATCH /templates/{id}/default, DELETE /templates/{id} | SCHEMA-TEMPLATE-* | client-tmpl-* | Pending |
 | policy_routes.py | CORE-API | PATCH /policies/* | SCHEMA-POLICY-* | client-pol-* | Pending |
@@ -35,6 +35,16 @@ Contains FastAPI route handlers for all HTTP endpoints. Routes delegate business
 - Created backend/api/
 - Created backend/api/INFO.md (this file)
 **Feature IDs Affected**: N/A (Infrastructure setup)
+**Breaking Changes**: No
+
+### [2025-12-31 13:05:00] - Authentication Routes Implemented
+**Changed By**: LLM Agent
+**Reason**: Complete Phase 4 - Implement authentication API routes
+**Impact**: Complete authentication endpoints with 6 routes
+**Files Modified**:
+- Created backend/api/__init__.py
+- Created backend/api/auth_routes.py
+**Feature IDs Affected**: any-auth-*
 **Breaking Changes**: No
 
 ---
