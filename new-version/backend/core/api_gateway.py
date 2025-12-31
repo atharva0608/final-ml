@@ -270,9 +270,11 @@ async def root() -> dict:
 # Authentication routes
 app.include_router(auth_router, prefix="/api/v1")
 
+# Template routes
+app.include_router(template_router, prefix="/api/v1")
+
 # Additional routers will be added here as they are implemented
 # app.include_router(cluster_router, prefix="/api/v1")
-# app.include_router(template_router, prefix="/api/v1")
 # app.include_router(policy_router, prefix="/api/v1")
 # app.include_router(hibernation_router, prefix="/api/v1")
 # app.include_router(audit_router, prefix="/api/v1")
