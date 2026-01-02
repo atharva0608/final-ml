@@ -23,16 +23,43 @@ All 10 core services built with ~4,500 lines of business logic:
 ### API Routes Implemented (backend/api/)
 9 route modules exposing 58 total endpoints - see API Reference for full list
 
-### Missing Components (To Be Implemented)
-- **Workers**: `backend/workers/` directory exists but is empty (Celery tasks needed)
-  - discovery_worker.py - AWS scanning automation
-  - optimizer_worker.py - Optimization job processing
-  - event_processor.py - Hive Mind event handling
-  - health_monitor.py - System health checks
-- **Kubernetes Agent**: Phase 9.5 agent implementation (critical blocker)
+### Recently Implemented Components (2026-01-02)
+
+#### ✅ Intelligence Modules (backend/modules/) - Phase 4
+- **spot_optimizer.py** (MOD-SPOT-01) - Risk-weighted Spot instance selection
+- **bin_packer.py** (MOD-PACK-01) - Cluster fragmentation analysis
+- **rightsizer.py** (MOD-SIZE-01) - Resource usage analysis
+- **ml_model_server.py** (MOD-AI-01) - ML-based interruption predictions
+- **model_validator.py** (MOD-VAL-01) - Template validation
+- **risk_tracker.py** (SVC-RISK-GLB) - Global risk intelligence ("Hive Mind")
+
+#### ✅ Background Workers (backend/workers/tasks/) - Phase 5
+- **discovery.py** (WORK-DISC-01) - Multi-account AWS discovery (every 5 min)
+- **optimization.py** (WORK-OPT-01) - Optimization pipeline orchestration
+- **hibernation_worker.py** (WORK-HIB-01) - Schedule enforcement (every 1 min)
+- **report_worker.py** (WORK-RPT-01) - Weekly email reports
+- **event_processor.py** (WORK-EVT-01) - Real-time event processing
+
+#### ✅ Data Collection (backend/scrapers/) - Phase 6
+- **spot_advisor_scraper.py** (SVC-SCRAPE-01) - Interruption frequency data (daily)
+- **pricing_collector.py** (SVC-PRICE-01) - Real-time Spot/On-Demand pricing (every 5 min)
+
+#### ✅ Core System Components (backend/core/) - Phase 7
+- **decision_engine.py** (CORE-DECIDE) - Conflict resolution & action prioritization
+- **action_executor.py** (CORE-EXEC) - AWS/K8s action execution
+- **health_service.py** (CORE-HEALTH) - System health monitoring
+
+#### ✅ AWS Automation Scripts (scripts/aws/) - Phase 9
+- **terminate_instance.py** (SCRIPT-TERM-01) - Graceful instance termination
+- **launch_spot.py** (SCRIPT-SPOT-01) - Spot instance launching with fallback
+- **detach_volume.py** (SCRIPT-VOL-01) - EBS volume management
+- **update_asg.py** (SCRIPT-ASG-01) - ASG capacity updates
+
+#### ⏳ Pending Implementation
+- **Kubernetes Agent** (Phase 9.5) - In-cluster metrics collection and action execution
 
 ### Module Mappings
-All module IDs referenced in this document (MOD-*, SVC-*, CORE-*, WORK-*, SCRIPT-*) have corresponding implementations except for workers and agent.
+All module IDs referenced in this document (MOD-*, SVC-*, CORE-*, WORK-*, SCRIPT-*) now have corresponding implementations. Only the Kubernetes Agent (Phase 9.5) remains to be implemented.
 
 ---
 

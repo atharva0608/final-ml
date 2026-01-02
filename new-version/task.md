@@ -663,40 +663,40 @@
 ## Phase 8: API Routes Implementation
 
 ### 8.1 Authentication Routes
-- [ ] Create `backend/api/auth_routes.py`
-  - [ ] POST `/api/auth/signup` - User registration
-  - [ ] POST `/api/auth/token` - Login
-  - [ ] POST `/api/auth/logout` - Logout
-  - [ ] GET `/api/auth/me` - Current user context
+- [x] Create `backend/api/auth_routes.py`
+  - [x] POST `/api/auth/signup` - User registration
+  - [x] POST `/api/auth/token` - Login
+  - [x] POST `/api/auth/logout` - Logout
+  - [x] GET `/api/auth/me` - Current user context
 
 ### 8.2 Cluster Routes
-- [ ] Create `backend/api/cluster_routes.py`
-  - [ ] GET `/clusters` - List clusters
-  - [ ] GET `/clusters/{id}` - Cluster details
-  - [ ] GET `/clusters/discover` - Discover EKS clusters
-  - [ ] POST `/clusters/connect` - Generate agent install
-  - [ ] POST `/clusters/install` - Alternative install endpoint
-  - [ ] GET `/clusters/{id}/verify` - Heartbeat check
-  - [ ] POST `/clusters/{id}/optimize` - Manual optimization
-  - [ ] WS `/clusters/heartbeat` - Heartbeat WebSocket
-  - [ ] **POST `/clusters/{id}/heartbeat`** - Agent heartbeat (HTTP endpoint)
-    - [ ] Update Redis with agent heartbeat timestamp
-    - [ ] Include agent health metrics in request body
-  - [ ] **POST `/clusters/{id}/agent/register`** - Agent self-registration
-    - [ ] Called by Agent on startup
-    - [ ] Receive agent version, K8s version, node count
-    - [ ] Return configuration from backend
+- [x] Create `backend/api/cluster_routes.py`
+  - [x] GET `/clusters` - List clusters
+  - [x] GET `/clusters/{id}` - Cluster details
+  - [x] GET `/clusters/discover` - Discover EKS clusters
+  - [x] POST `/clusters/connect` - Generate agent install
+  - [x] POST `/clusters/install` - Alternative install endpoint
+  - [x] GET `/clusters/{id}/verify` - Heartbeat check
+  - [x] POST `/clusters/{id}/optimize` - Manual optimization
+  - [x] WS `/clusters/heartbeat` - Heartbeat WebSocket
+  - [x] **POST `/clusters/{id}/heartbeat`** - Agent heartbeat (HTTP endpoint)
+    - [x] Update Redis with agent heartbeat timestamp
+    - [x] Include agent health metrics in request body
+  - [x] **POST `/clusters/{id}/agent/register`** - Agent self-registration
+    - [x] Called by Agent on startup
+    - [x] Receive agent version, K8s version, node count
+    - [x] Return configuration from backend
 
 ### 8.2.1 Agent Action Queue Endpoints (CRITICAL - Completes Worker-to-Agent Loop)
 > **Purpose**: Enables Agent to fetch pending actions and report results
 
-- [ ] **GET `/clusters/{id}/actions/pending`** - Fetch pending actions for Agent
-  - [ ] **Authentication**: Require cluster-specific API token
-  - [ ] **Query**: `SELECT * FROM agent_action WHERE cluster_id = {id} AND status = 'pending' ORDER BY created_at ASC`
-  - [ ] **Atomic Lock**: Update status to 'picked_up' for returned actions
-    - [ ] Use database transaction to prevent double-pickup
-    - [ ] Set picked_up_at = current timestamp
-  - [ ] **Response**: Array of action objects
+- [x] **GET `/clusters/{id}/actions/pending`** - Fetch pending actions for Agent
+  - [x] **Authentication**: Require cluster-specific API token
+  - [x] **Query**: `SELECT * FROM agent_action WHERE cluster_id = {id} AND status = 'pending' ORDER BY created_at ASC`
+  - [x] **Atomic Lock**: Update status to 'picked_up' for returned actions
+    - [x] Use database transaction to prevent double-pickup
+    - [x] Set picked_up_at = current timestamp
+  - [x] **Response**: Array of action objects
     ```json
     [
       {
@@ -712,12 +712,12 @@
       }
     ]
     ```
-  - [ ] **Limit**: Return max 10 actions per request to prevent overload
-  - [ ] **Filter expired**: Exclude actions where expires_at < now()
+  - [x] **Limit**: Return max 10 actions per request to prevent overload
+  - [x] **Filter expired**: Exclude actions where expires_at < now()
 
-- [ ] **POST `/clusters/{id}/actions/{action_id}/result`** - Agent reports action result
-  - [ ] **Authentication**: Require cluster-specific API token
-  - [ ] **Request Body**:
+- [x] **POST `/clusters/{id}/actions/{action_id}/result`** - Agent reports action result
+  - [x] **Authentication**: Require cluster-specific API token
+  - [x] **Request Body**:
     ```json
     {
       "status": "completed",  // or "failed"
@@ -729,22 +729,22 @@
       "error_message": null  // or error string if failed
     }
     ```
-  - [ ] **Update agent_action table**:
-    - [ ] Set status = request.status
-    - [ ] Set result = request.result (JSONB)
-    - [ ] Set error_message = request.error_message
-    - [ ] Set completed_at = current timestamp
-  - [ ] **Update parent optimization_job** (if applicable):
-    - [ ] If all actions completed: mark job as 'completed'
-    - [ ] If any action failed: mark job as 'failed'
-  - [ ] **Emit WebSocket event** to notify frontend:
-    - [ ] Channel: `cluster:events:{cluster_id}`
-    - [ ] Payload: `{"type": "action_completed", "action_id": action_id, "status": status}`
-  - [ ] **Response**: `{"success": true, "acknowledged_at": timestamp}`
+  - [x] **Update agent_action table**:
+    - [x] Set status = request.status
+    - [x] Set result = request.result (JSONB)
+    - [x] Set error_message = request.error_message
+    - [x] Set completed_at = current timestamp
+  - [x] **Update parent optimization_job** (if applicable):
+    - [x] If all actions completed: mark job as 'completed'
+    - [x] If any action failed: mark job as 'failed'
+  - [x] **Emit WebSocket event** to notify frontend:
+    - [x] Channel: `cluster:events:{cluster_id}`
+    - [x] Payload: `{"type": "action_completed", "action_id": action_id, "status": status}`
+  - [x] **Response**: `{"success": true, "acknowledged_at": timestamp}`
 
-- [ ] **POST `/clusters/{id}/metrics`** - Agent sends collected metrics and events
-  - [ ] Called by Agent every 30 seconds (from Phase 9.5.3)
-  - [ ] **Request Body** (separated into metrics and events):
+- [x] **POST `/clusters/{id}/metrics`** - Agent sends collected metrics and events
+  - [x] Called by Agent every 30 seconds (from Phase 9.5.3)
+  - [x] **Request Body** (separated into metrics and events):
     ```json
     {
       "metrics": {
@@ -761,133 +761,133 @@
       ]
     }
     ```
-  - [ ] **Process Metrics** (Time-series data):
-    - [ ] Store in time-series DB or instances table
-    - [ ] Update instances table with latest CPU/memory utilization
-  - [ ] **Process Events** (CRITICAL - Powers Hive Mind):
-    - [ ] **Do NOT block API response** waiting for event processing
-    - [ ] Push events to `event_processing_queue` (Celery/Redis)
-    - [ ] Trigger `WORK-EVT-01` (Event Processor Worker) asynchronously
-    - [ ] Return immediately
-  - [ ] **Response**: `{"success": true, "metrics_stored": 15, "events_queued": 1}`
+  - [x] **Process Metrics** (Time-series data):
+    - [x] Store in time-series DB or instances table
+    - [x] Update instances table with latest CPU/memory utilization
+  - [x] **Process Events** (CRITICAL - Powers Hive Mind):
+    - [x] **Do NOT block API response** waiting for event processing
+    - [x] Push events to `event_processing_queue` (Celery/Redis)
+    - [x] Trigger `WORK-EVT-01` (Event Processor Worker) asynchronously
+    - [x] Return immediately
+  - [x] **Response**: `{"success": true, "metrics_stored": 15, "events_queued": 1}`
 
-- [ ] **POST `/clusters/{id}/events`** - Dedicated events endpoint (optional)
-  - [ ] For high-priority events that need immediate processing
-  - [ ] Same logic as events section above
+- [x] **POST `/clusters/{id}/events`** - Dedicated events endpoint (optional)
+  - [x] For high-priority events that need immediate processing
+  - [x] Same logic as events section above
 
 ### 8.3 Template Routes
-- [ ] Create `backend/api/template_routes.py`
-  - [ ] GET `/templates` - List templates
-  - [ ] POST `/templates` - Create template
-  - [ ] PATCH `/templates/{id}/default` - Set default
-  - [ ] POST `/templates/validate` - Validate template
-  - [ ] DELETE `/templates/{id}` - Delete template
+- [x] Create `backend/api/template_routes.py`
+  - [x] GET `/templates` - List templates
+  - [x] POST `/templates` - Create template
+  - [x] PATCH `/templates/{id}/default` - Set default
+  - [x] POST `/templates/validate` - Validate template
+  - [x] DELETE `/templates/{id}` - Delete template
 
 ### 8.4 Policy Routes
-- [ ] Create `backend/api/policy_routes.py`
-  - [ ] PATCH `/policies/karpenter` - Karpenter toggle
-  - [ ] PATCH `/policies/strategy` - Provisioning strategy
-  - [ ] PATCH `/policies/binpack` - Bin packing settings
-  - [ ] PATCH `/policies/fallback` - Spot fallback
-  - [ ] PATCH `/policies/spread` - AZ spread
-  - [ ] PATCH `/policies/rightsize` - Right-sizing mode
-  - [ ] PATCH `/policies/buffer` - Safety buffer
-  - [ ] PATCH `/policies/constraints` - Instance constraints
-  - [ ] PATCH `/policies/exclusions` - Namespace exclusions
+- [x] Create `backend/api/policy_routes.py`
+  - [x] PATCH `/policies/karpenter` - Karpenter toggle
+  - [x] PATCH `/policies/strategy` - Provisioning strategy
+  - [x] PATCH `/policies/binpack` - Bin packing settings
+  - [x] PATCH `/policies/fallback` - Spot fallback
+  - [x] PATCH `/policies/spread` - AZ spread
+  - [x] PATCH `/policies/rightsize` - Right-sizing mode
+  - [x] PATCH `/policies/buffer` - Safety buffer
+  - [x] PATCH `/policies/constraints` - Instance constraints
+  - [x] PATCH `/policies/exclusions` - Namespace exclusions
 
 ### 8.5 Hibernation Routes
-- [ ] Create `backend/api/hibernation_routes.py`
-  - [ ] POST `/hibernation/schedule` - Save schedule
-  - [ ] POST `/hibernation/exception` - Calendar exception
-  - [ ] POST `/hibernation/override` - Manual wake
-  - [ ] PATCH `/hibernation/tz` - Timezone update
-  - [ ] PATCH `/hibernation/prewarm` - Pre-warm toggle
+- [x] Create `backend/api/hibernation_routes.py`
+  - [x] POST `/hibernation/schedule` - Save schedule
+  - [x] POST `/hibernation/exception` - Calendar exception
+  - [x] POST `/hibernation/override` - Manual wake
+  - [x] PATCH `/hibernation/tz` - Timezone update
+  - [x] PATCH `/hibernation/prewarm` - Pre-warm toggle
 
 ### 8.6 Metrics Routes
-- [ ] Create `backend/api/metrics_routes.py`
-  - [ ] GET `/metrics/kpi` - Dashboard KPIs
-  - [ ] GET `/metrics/projection` - Savings projection
-  - [ ] GET `/metrics/composition` - Fleet composition
-  - [ ] GET `/activity/live` - Activity feed
+- [x] Create `backend/api/metrics_routes.py`
+  - [x] GET `/metrics/kpi` - Dashboard KPIs
+  - [x] GET `/metrics/projection` - Savings projection
+  - [x] GET `/metrics/composition` - Fleet composition
+  - [x] GET `/activity/live` - Activity feed
 
 ### 8.7 Audit Routes
-- [ ] Create `backend/api/audit_routes.py`
-  - [ ] GET `/audit` - Audit logs
-  - [ ] GET `/audit/export` - Export with checksum
-  - [ ] GET `/audit/{id}/diff` - Diff viewer
-  - [ ] PATCH `/audit/retention` - Retention policy
+- [x] Create `backend/api/audit_routes.py`
+  - [x] GET `/audit` - Audit logs
+  - [x] GET `/audit/export` - Export with checksum
+  - [x] GET `/audit/{id}/diff` - Diff viewer
+  - [x] PATCH `/audit/retention` - Retention policy
 
 ### 8.8 Admin Routes
-- [ ] Create `backend/api/admin_routes.py`
-  - [ ] GET `/admin/clients` - Client registry
-  - [ ] GET `/admin/stats` - Global stats
-  - [ ] GET `/admin/health` - System health
-  - [ ] GET `/admin/health/workers` - Worker status
-  - [ ] POST `/admin/impersonate` - Impersonate client
-  - [ ] PATCH `/clients/{id}/flags` - Feature flags
-  - [ ] POST `/admin/reset-pass` - Password reset
-  - [ ] DELETE `/admin/clients/{id}` - Delete client
-  - [ ] WS `/admin/logs` - System log stream
-  - [ ] WS `/admin/logs/live` - Live logs
+- [x] Create `backend/api/admin_routes.py`
+  - [x] GET `/admin/clients` - Client registry
+  - [x] GET `/admin/stats` - Global stats
+  - [x] GET `/admin/health` - System health
+  - [x] GET `/admin/health/workers` - Worker status
+  - [x] POST `/admin/impersonate` - Impersonate client
+  - [x] PATCH `/clients/{id}/flags` - Feature flags
+  - [x] POST `/admin/reset-pass` - Password reset
+  - [x] DELETE `/admin/clients/{id}` - Delete client
+  - [x] WS `/admin/logs` - System log stream
+  - [x] WS `/admin/logs/live` - Live logs
 
 ### 8.9 Lab Routes
-- [ ] Create `backend/api/lab_routes.py`
-  - [ ] POST `/lab/live-switch` - Single instance switch
-  - [ ] POST `/lab/parallel` - A/B test configuration
-  - [ ] POST `/lab/parallel-config` - Save A/B config
-  - [ ] GET `/lab/parallel-results` - A/B results
-  - [ ] POST `/lab/graduate` - Promote model
-  - [ ] GET `/admin/models` - Model registry
-  - [ ] POST `/admin/models/upload` - Upload model
-  - [ ] WS `/lab/stream/{id}` - Live telemetry stream
+- [x] Create `backend/api/lab_routes.py`
+  - [x] POST `/lab/live-switch` - Single instance switch
+  - [x] POST `/lab/parallel` - A/B test configuration
+  - [x] POST `/lab/parallel-config` - Save A/B config
+  - [x] GET `/lab/parallel-results` - A/B results
+  - [x] POST `/lab/graduate` - Promote model
+  - [x] GET `/admin/models` - Model registry
+  - [x] POST `/admin/models/upload` - Upload model
+  - [x] WS `/lab/stream/{id}` - Live telemetry stream
 
 ### 8.10 Settings Routes
-- [ ] Create `backend/api/settings_routes.py`
-  - [ ] GET `/settings/accounts` - List accounts
-  - [ ] DELETE `/settings/accounts` - Disconnect account
-  - [ ] PATCH `/settings/context` - Switch account context
-  - [ ] GET `/settings/team` - Team members
-  - [ ] POST `/settings/invite` - Invite team member
-  - [ ] POST `/connect/verify` - Verify AWS connection
-  - [ ] GET `/connect/stream` - Discovery stream
-  - [ ] POST `/connect/link` - Link account
-  - [ ] POST `/onboard/skip` - Skip onboarding
+- [x] Create `backend/api/settings_routes.py`
+  - [x] GET `/settings/accounts` - List accounts
+  - [x] DELETE `/settings/accounts` - Disconnect account
+  - [x] PATCH `/settings/context` - Switch account context
+  - [x] GET `/settings/team` - Team members
+  - [x] POST `/settings/invite` - Invite team member
+  - [x] POST `/connect/verify` - Verify AWS connection
+  - [x] GET `/connect/stream` - Discovery stream
+  - [x] POST `/connect/link` - Link account
+  - [x] POST `/onboard/skip` - Skip onboarding
 
 ### 8.11 Billing Webhooks
-- [ ] Create `backend/api/webhook_routes.py`
-  - [ ] POST `/webhooks/stripe` - Handle Stripe webhook events
-    - [ ] Implement Stripe signature verification middleware
-    - [ ] Verify webhook signature using `stripe.Webhook.construct_event()`
-    - [ ] Return 400 if signature invalid
-  - [ ] Implement `handle_checkout_completed()` - Subscription created
-    - [ ] Event: `checkout.session.completed`
-    - [ ] Update user's plan in database
-    - [ ] Send welcome email
-    - [ ] Log to audit_logs
-  - [ ] Implement `handle_subscription_updated()` - Plan changed
-    - [ ] Event: `customer.subscription.updated`
-    - [ ] Update plan tier and limits
-    - [ ] Notify user of change
-  - [ ] Implement `handle_subscription_deleted()` - Subscription cancelled
-    - [ ] Event: `customer.subscription.deleted`
-    - [ ] Downgrade to free plan
-    - [ ] Lock premium features
-    - [ ] Send cancellation confirmation email
-  - [ ] Implement `handle_invoice_payment_succeeded()` - Payment successful
-    - [ ] Event: `invoice.payment_succeeded`
-    - [ ] Update payment status
-    - [ ] Generate invoice PDF
-    - [ ] Send receipt email
-  - [ ] Implement `handle_invoice_payment_failed()` - Payment failed
-    - [ ] Event: `invoice.payment_failed`
-    - [ ] Notify user via email
-    - [ ] Set grace period (7 days)
-    - [ ] Log failed payment attempt
-  - [ ] Implement idempotency handling
-    - [ ] Store processed event IDs in database
-    - [ ] Skip duplicate webhook events
-  - [ ] Add webhook endpoint to CORS whitelist
-  - [ ] Configure webhook URL in Stripe dashboard
+- [x] Create `backend/api/webhook_routes.py`
+  - [x] POST `/webhooks/stripe` - Handle Stripe webhook events
+    - [x] Implement Stripe signature verification middleware
+    - [x] Verify webhook signature using `stripe.Webhook.construct_event()`
+    - [x] Return 400 if signature invalid
+  - [x] Implement `handle_checkout_completed()` - Subscription created
+    - [x] Event: `checkout.session.completed`
+    - [x] Update user's plan in database
+    - [x] Send welcome email
+    - [x] Log to audit_logs
+  - [x] Implement `handle_subscription_updated()` - Plan changed
+    - [x] Event: `customer.subscription.updated`
+    - [x] Update plan tier and limits
+    - [x] Notify user of change
+  - [x] Implement `handle_subscription_deleted()` - Subscription cancelled
+    - [x] Event: `customer.subscription.deleted`
+    - [x] Downgrade to free plan
+    - [x] Lock premium features
+    - [x] Send cancellation confirmation email
+  - [x] Implement `handle_invoice_payment_succeeded()` - Payment successful
+    - [x] Event: `invoice.payment_succeeded`
+    - [x] Update payment status
+    - [x] Generate invoice PDF
+    - [x] Send receipt email
+  - [x] Implement `handle_invoice_payment_failed()` - Payment failed
+    - [x] Event: `invoice.payment_failed`
+    - [x] Notify user via email
+    - [x] Set grace period (7 days)
+    - [x] Log failed payment attempt
+  - [x] Implement idempotency handling
+    - [x] Store processed event IDs in database
+    - [x] Skip duplicate webhook events
+  - [x] Add webhook endpoint to CORS whitelist
+  - [x] Configure webhook URL in Stripe dashboard
 
 ---
 
@@ -1190,163 +1190,163 @@
 ## Phase 10: Frontend Implementation
 
 ### 10.1 Core Frontend Setup
-- [ ] Create `frontend/src/App.jsx` - Root component
-  - [ ] Setup React Router
-  - [ ] Setup User Context Provider
-  - [ ] Setup authentication state management
-  - [ ] Define route structure
-- [ ] Create `frontend/src/index.css` - Global styles
-  - [ ] Define CSS variables for colors
-  - [ ] Define typography system
-  - [ ] Define spacing system
-  - [ ] Define animation utilities
-  - [ ] Implement dark mode support
+- [x] Create `frontend/src/App.jsx` - Root component
+  - [x] Setup React Router
+  - [x] Setup User Context Provider
+  - [x] Setup authentication state management
+  - [x] Define route structure
+- [x] Create `frontend/src/index.css` - Global styles
+  - [x] Define CSS variables for colors
+  - [x] Define typography system
+  - [x] Define spacing system
+  - [x] Define animation utilities
+  - [x] Implement dark mode support
 
 ### 10.2 Authentication Components
-- [ ] Create `frontend/src/components/auth/LoginPage.jsx`
-  - [ ] Sign-up form with validation
-  - [ ] Sign-in form with validation
-  - [ ] Toggle between sign-up and sign-in
-  - [ ] Call POST `/api/auth/signup` and POST `/api/auth/token`
-  - [ ] Store JWT in localStorage
-  - [ ] Feature IDs: `any-auth-form-reuse-dep-submit-signup`, `any-auth-form-reuse-dep-submit-signin`
-- [ ] Create `frontend/src/components/auth/AuthGateway.jsx`
-  - [ ] Call GET `/api/auth/me` on mount
-  - [ ] Redirect based on account status
-  - [ ] Feature ID: `any-auth-gateway-unique-indep-run-route`
-- [ ] Create `frontend/src/components/auth/ClientSetup.jsx` - Onboarding wizard
-  - [ ] Welcome screen with value proposition
-  - [ ] Production/Lab mode selection cards
-  - [ ] AWS connection form
-  - [ ] Test connection button → POST `/connect/verify`
-  - [ ] Discovery progress bar → GET `/connect/stream` (WebSocket)
-  - [ ] Skip wizard button
-  - [ ] Feature IDs: `client-onboard-wizard-unique-indep-view-step1`, `client-onboard-button-reuse-dep-click-verify`, `client-onboard-bar-reuse-indep-view-scan`
+- [x] Create `frontend/src/components/auth/LoginPage.jsx`
+  - [x] Sign-up form with validation
+  - [x] Sign-in form with validation
+  - [x] Toggle between sign-up and sign-in
+  - [x] Call POST `/api/auth/signup` and POST `/api/auth/token`
+  - [x] Store JWT in localStorage
+  - [x] Feature IDs: `any-auth-form-reuse-dep-submit-signup`, `any-auth-form-reuse-dep-submit-signin`
+- [x] Create `frontend/src/components/auth/AuthGateway.jsx`
+  - [x] Call GET `/api/auth/me` on mount
+  - [x] Redirect based on account status
+  - [x] Feature ID: `any-auth-gateway-unique-indep-run-route`
+- [x] Create `frontend/src/components/auth/ClientSetup.jsx` - Onboarding wizard
+  - [x] Welcome screen with value proposition
+  - [x] Production/Lab mode selection cards
+  - [x] AWS connection form
+  - [x] Test connection button → POST `/connect/verify`
+  - [x] Discovery progress bar → GET `/connect/stream` (WebSocket)
+  - [x] Skip wizard button
+  - [x] Feature IDs: `client-onboard-wizard-unique-indep-view-step1`, `client-onboard-button-reuse-dep-click-verify`, `client-onboard-bar-reuse-indep-view-scan`
 
 ### 10.3 Dashboard Components
-- [ ] Create `frontend/src/components/dashboard/Dashboard.jsx`
-  - [ ] KPI cards (Monthly Spend, Net Savings, Fleet Health, Active Nodes)
-  - [ ] Call GET `/metrics/kpi`
-  - [ ] Savings projection bar chart → GET `/metrics/projection`
-  - [ ] Fleet composition pie chart → GET `/metrics/composition`
-  - [ ] Real-time activity feed → GET `/activity/live`
-  - [ ] Feature IDs: `client-home-kpi-reuse-indep-view-spend`, `client-home-chart-unique-indep-view-proj`, `client-home-feed-unique-indep-view-live`
-- [ ] Create `frontend/src/components/dashboard/KPICard.jsx` - Reusable KPI card
-- [ ] Create `frontend/src/components/dashboard/ActivityFeed.jsx` - Activity feed component
+- [x] Create `frontend/src/components/dashboard/Dashboard.jsx`
+  - [x] KPI cards (Monthly Spend, Net Savings, Fleet Health, Active Nodes)
+  - [x] Call GET `/metrics/kpi`
+  - [x] Savings projection bar chart → GET `/metrics/projection`
+  - [x] Fleet composition pie chart → GET `/metrics/composition`
+  - [x] Real-time activity feed → GET `/activity/live`
+  - [x] Feature IDs: `client-home-kpi-reuse-indep-view-spend`, `client-home-chart-unique-indep-view-proj`, `client-home-feed-unique-indep-view-live`
+- [x] Create `frontend/src/components/dashboard/KPICard.jsx` - Reusable KPI card
+- [x] Create `frontend/src/components/dashboard/ActivityFeed.jsx` - Activity feed component
 
 ### 10.4 Cluster Components
-- [ ] Create `frontend/src/components/clusters/ClusterRegistry.jsx`
-  - [ ] Cluster table → GET `/clusters`
-  - [ ] Add cluster button → modal with GET `/clusters/discover`
-  - [ ] Connect cluster button → POST `/clusters/connect`
-  - [ ] Cluster detail drawer → GET `/clusters/{id}`
-  - [ ] Optimize now button → POST `/clusters/{id}/optimize`
-  - [ ] Heartbeat status indicator → GET `/clusters/{id}/verify`
-  - [ ] Feature IDs: `client-cluster-table-unique-indep-view-list`, `client-cluster-button-reuse-dep-click-connect`, `client-cluster-button-reuse-dep-click-opt`
-- [ ] Create `frontend/src/components/clusters/ClusterDetailDrawer.jsx` - Drawer component
+- [x] Create `frontend/src/components/clusters/ClusterRegistry.jsx`
+  - [x] Cluster table → GET `/clusters`
+  - [x] Add cluster button → modal with GET `/clusters/discover`
+  - [x] Connect cluster button → POST `/clusters/connect`
+  - [x] Cluster detail drawer → GET `/clusters/{id}`
+  - [x] Optimize now button → POST `/clusters/{id}/optimize`
+  - [x] Heartbeat status indicator → GET `/clusters/{id}/verify`
+  - [x] Feature IDs: `client-cluster-table-unique-indep-view-list`, `client-cluster-button-reuse-dep-click-connect`, `client-cluster-button-reuse-dep-click-opt`
+- [x] Create `frontend/src/components/clusters/ClusterDetailDrawer.jsx` - Drawer component
 
 ### 10.5 Template Components
-- [ ] Create `frontend/src/components/templates/NodeTemplates.jsx`
-  - [ ] Template grid → GET `/templates`
-  - [ ] Set default star → PATCH `/templates/{id}/default`
-  - [ ] Delete template → DELETE `/templates/{id}`
-  - [ ] Create template wizard
-  - [ ] Feature IDs: `client-tmpl-list-unique-indep-view-grid`, `client-tmpl-toggle-reuse-dep-click-default`
-- [ ] Create `frontend/src/components/templates/TemplateWizard.jsx`
-  - [ ] Step 1: Family selector
-  - [ ] Step 2: Purchasing strategy
-  - [ ] Step 3: Storage configuration
-  - [ ] Live validation → POST `/templates/validate`
-  - [ ] Feature ID: `client-tmpl-logic-unique-indep-run-validate`
+- [x] Create `frontend/src/components/templates/NodeTemplates.jsx`
+  - [x] Template grid → GET `/templates`
+  - [x] Set default star → PATCH `/templates/{id}/default`
+  - [x] Delete template → DELETE `/templates/{id}`
+  - [x] Create template wizard
+  - [x] Feature IDs: `client-tmpl-list-unique-indep-view-grid`, `client-tmpl-toggle-reuse-dep-click-default`
+- [x] Create `frontend/src/components/templates/TemplateWizard.jsx`
+  - [x] Step 1: Family selector
+  - [x] Step 2: Purchasing strategy
+  - [x] Step 3: Storage configuration
+  - [x] Live validation → POST `/templates/validate`
+  - [x] Feature ID: `client-tmpl-logic-unique-indep-run-validate`
 
 ### 10.6 Policy Components
-- [ ] Create `frontend/src/components/policies/OptimizationPolicies.jsx`
-  - [ ] Infrastructure tab with Karpenter toggle → PATCH `/policies/karpenter`
-  - [ ] Strategy selector → PATCH `/policies/strategy`
-  - [ ] Bin pack slider → PATCH `/policies/binpack`
-  - [ ] Workload tab with right-sizing mode
-  - [ ] Safety buffer slider
-  - [ ] Namespace exclusions input
-  - [ ] Spot fallback checkbox
-  - [ ] AZ spread checkbox
-  - [ ] Feature IDs: `client-pol-toggle-reuse-dep-click-karpenter`, `client-pol-slider-reuse-dep-drag-binpack`
+- [x] Create `frontend/src/components/policies/OptimizationPolicies.jsx`
+  - [x] Infrastructure tab with Karpenter toggle → PATCH `/policies/karpenter`
+  - [x] Strategy selector → PATCH `/policies/strategy`
+  - [x] Bin pack slider → PATCH `/policies/binpack`
+  - [x] Workload tab with right-sizing mode
+  - [x] Safety buffer slider
+  - [x] Namespace exclusions input
+  - [x] Spot fallback checkbox
+  - [x] AZ spread checkbox
+  - [x] Feature IDs: `client-pol-toggle-reuse-dep-click-karpenter`, `client-pol-slider-reuse-dep-drag-binpack`
 
 ### 10.7 Hibernation Components
-- [ ] Create `frontend/src/components/hibernation/Hibernation.jsx`
-  - [ ] Weekly schedule grid (24x7) with drag-to-paint → POST `/hibernation/schedule`
-  - [ ] Calendar exceptions picker
-  - [ ] Wake up now button → POST `/hibernation/override`
-  - [ ] Timezone selector → PATCH `/hibernation/tz`
-  - [ ] Pre-warm checkbox → PATCH `/hibernation/prewarm`
-  - [ ] Feature IDs: `client-hib-grid-unique-indep-drag-paint`, `client-hib-button-unique-indep-click-wake`
+- [x] Create `frontend/src/components/hibernation/Hibernation.jsx`
+  - [x] Weekly schedule grid (24x7) with drag-to-paint → POST `/hibernation/schedule`
+  - [x] Calendar exceptions picker
+  - [x] Wake up now button → POST `/hibernation/override`
+  - [x] Timezone selector → PATCH `/hibernation/tz`
+  - [x] Pre-warm checkbox → PATCH `/hibernation/prewarm`
+  - [x] Feature IDs: `client-hib-grid-unique-indep-drag-paint`, `client-hib-button-unique-indep-click-wake`
 
 ### 10.8 Audit Components
-- [ ] Create `frontend/src/components/audit/AuditLogs.jsx`
-  - [ ] Audit logs table → GET `/audit`
-  - [ ] Export button → GET `/audit/export`
-  - [ ] Diff viewer drawer → GET `/audit/{id}/diff`
-  - [ ] Retention policy slider
-  - [ ] Feature IDs: `client-audit-table-unique-indep-view-ledger`, `client-audit-drawer-unique-dep-view-diff`
+- [x] Create `frontend/src/components/audit/AuditLogs.jsx`
+  - [x] Audit logs table → GET `/audit`
+  - [x] Export button → GET `/audit/export`
+  - [x] Diff viewer drawer → GET `/audit/{id}/diff`
+  - [x] Retention policy slider
+  - [x] Feature IDs: `client-audit-table-unique-indep-view-ledger`, `client-audit-drawer-unique-dep-view-diff`
 
 ### 10.9 Settings Components
-- [ ] Create `frontend/src/components/settings/Settings.jsx`
-  - [ ] Multi-account list → GET `/settings/accounts`
-  - [ ] Disconnect account button → DELETE `/settings/accounts`
-  - [ ] Link new account button
-  - [ ] Account context switcher → PATCH `/settings/context`
-  - [ ] Team members list → GET `/settings/team`
-  - [ ] Invite team member → POST `/settings/invite`
-  - [ ] Feature IDs: `client-set-list-unique-indep-view-accts`, `client-set-button-reuse-dep-click-link`
-- [ ] Create `frontend/src/components/settings/CloudIntegrations.jsx` - Cloud account management
+- [x] Create `frontend/src/components/settings/Settings.jsx`
+  - [x] Multi-account list → GET `/settings/accounts`
+  - [x] Disconnect account button → DELETE `/settings/accounts`
+  - [x] Link new account button
+  - [x] Account context switcher → PATCH `/settings/context`
+  - [x] Team members list → GET `/settings/team`
+  - [x] Invite team member → POST `/settings/invite`
+  - [x] Feature IDs: `client-set-list-unique-indep-view-accts`, `client-set-button-reuse-dep-click-link`
+- [x] Create `frontend/src/components/settings/CloudIntegrations.jsx` - Cloud account management
 
 ### 10.10 Admin Components
-- [ ] Create `frontend/src/components/admin/AdminDashboard.jsx`
-  - [ ] Global business metrics → GET `/admin/stats`
-  - [ ] System health lights → GET `/admin/health`
-  - [ ] Client registry → GET `/admin/clients`
-  - [ ] Feature flag toggles → PATCH `/clients/{id}/flags`
-  - [ ] Impersonate button → POST `/admin/impersonate`
-  - [ ] Feature IDs: `admin-dash-kpi-reuse-indep-view-global`, `admin-client-list-unique-indep-view-reg`
-- [ ] Create `frontend/src/components/admin/TheLab.jsx`
-  - [ ] Single-instance live switch form → POST `/lab/live-switch`
-  - [ ] A/B test configuration → POST `/lab/parallel`
-  - [ ] Comparison graphs → WS `/lab/stream/{id}`
-  - [ ] Graduate to production button → POST `/lab/graduate`
-  - [ ] Model registry → GET `/admin/models`
-  - [ ] Feature IDs: `admin-lab-form-reuse-dep-submit-live`, `admin-lab-chart-unique-indep-view-abtest`
-- [ ] Create `frontend/src/components/admin/SystemHealth.jsx`
-  - [ ] Worker status traffic lights → GET `/admin/health/workers`
-  - [ ] Live logs button → WS `/admin/logs/live`
-  - [ ] Feature ID: `admin-health-traffic-unique-indep-view-workers`
+- [x] Create `frontend/src/components/admin/AdminDashboard.jsx`
+  - [x] Global business metrics → GET `/admin/stats`
+  - [x] System health lights → GET `/admin/health`
+  - [x] Client registry → GET `/admin/clients`
+  - [x] Feature flag toggles → PATCH `/clients/{id}/flags`
+  - [x] Impersonate button → POST `/admin/impersonate`
+  - [x] Feature IDs: `admin-dash-kpi-reuse-indep-view-global`, `admin-client-list-unique-indep-view-reg`
+- [x] Create `frontend/src/components/admin/TheLab.jsx`
+  - [x] Single-instance live switch form → POST `/lab/live-switch`
+  - [x] A/B test configuration → POST `/lab/parallel`
+  - [x] Comparison graphs → WS `/lab/stream/{id}`
+  - [x] Graduate to production button → POST `/lab/graduate`
+  - [x] Model registry → GET `/admin/models`
+  - [x] Feature IDs: `admin-lab-form-reuse-dep-submit-live`, `admin-lab-chart-unique-indep-view-abtest`
+- [x] Create `frontend/src/components/admin/SystemHealth.jsx`
+  - [x] Worker status traffic lights → GET `/admin/health/workers`
+  - [x] Live logs button → WS `/admin/logs/live`
+  - [x] Feature ID: `admin-health-traffic-unique-indep-view-workers`
 
 ### 10.11 API Services
-- [ ] Create `frontend/src/services/api.js` - Axios configuration
-  - [ ] Base URL configuration
-  - [ ] Request interceptor for JWT token
-  - [ ] Response interceptor for error handling
-  - [ ] Refresh token logic
-- [ ] Create `frontend/src/services/authService.js` - Auth API calls
-- [ ] Create `frontend/src/services/clusterService.js` - Cluster API calls
-- [ ] Create `frontend/src/services/metricsService.js` - Metrics API calls
+- [x] Create `frontend/src/services/api.js` - Axios configuration
+  - [x] Base URL configuration
+  - [x] Request interceptor for JWT token
+  - [x] Response interceptor for error handling
+  - [x] Refresh token logic
+- [x] Create `frontend/src/services/authService.js` - Auth API calls
+- [x] Create `frontend/src/services/clusterService.js` - Cluster API calls
+- [x] Create `frontend/src/services/metricsService.js` - Metrics API calls
 
 ### 10.12 Custom Hooks
-- [ ] Create `frontend/src/hooks/useAuth.js` - Authentication hook
-  - [ ] Login, logout, token management
-  - [ ] User context state
-- [ ] Create `frontend/src/hooks/useClusters.js` - Cluster data hook
-  - [ ] Fetch clusters, cache, refresh
-- [ ] Create `frontend/src/hooks/useMetrics.js` - Metrics data hook
-  - [ ] Fetch KPIs, auto-refresh
+- [x] Create `frontend/src/hooks/useAuth.js` - Authentication hook
+  - [x] Login, logout, token management
+  - [x] User context state
+- [x] Create `frontend/src/hooks/useClusters.js` - Cluster data hook
+  - [x] Fetch clusters, cache, refresh
+- [x] Create `frontend/src/hooks/useMetrics.js` - Metrics data hook
+  - [x] Fetch KPIs, auto-refresh
 
 ### 10.13 Utilities
-- [ ] Create `frontend/src/utils/formatters.js` - Data formatters
-  - [ ] Currency formatter
-  - [ ] Date/time formatter
-  - [ ] Number formatter
-- [ ] Create `frontend/src/utils/validators.js` - Form validators
-  - [ ] Email validation
-  - [ ] Password strength
-  - [ ] AWS ARN validation
+- [x] Create `frontend/src/utils/formatters.js` - Data formatters
+  - [x] Currency formatter
+  - [x] Date/time formatter
+  - [x] Number formatter
+- [x] Create `frontend/src/utils/validators.js` - Form validators
+  - [x] Email validation
+  - [x] Password strength
+  - [x] AWS ARN validation
 
 ---
 
