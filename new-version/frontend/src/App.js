@@ -18,6 +18,12 @@ import Signup from './components/auth/Signup';
 // Main Pages
 import Dashboard from './components/dashboard/Dashboard';
 import ClusterList from './components/clusters/ClusterList';
+import TemplateList from './components/templates/TemplateList';
+import PolicyConfig from './components/policies/PolicyConfig';
+import HibernationSchedule from './components/hibernation/HibernationSchedule';
+import AuditLog from './components/audit/AuditLog';
+import AccountSettings from './components/settings/AccountSettings';
+import CloudIntegrations from './components/settings/CloudIntegrations';
 
 // Protected Route Component
 const ProtectedRoute = ({ children }) => {
@@ -101,15 +107,16 @@ function App() {
             <Route index element={<Navigate to="/dashboard" replace />} />
             <Route path="dashboard" element={<Dashboard />} />
             <Route path="clusters" element={<ClusterList />} />
+            <Route path="templates" element={<TemplateList />} />
+            <Route path="policies" element={<PolicyConfig />} />
+            <Route path="hibernation" element={<HibernationSchedule />} />
+            <Route path="audit" element={<AuditLog />} />
+            <Route path="settings/account" element={<AccountSettings />} />
+            <Route path="settings/integrations" element={<CloudIntegrations />} />
 
-            {/* Placeholder routes for other features */}
-            <Route path="templates" element={<div className="text-2xl font-bold text-gray-900">Templates - Coming Soon</div>} />
-            <Route path="policies" element={<div className="text-2xl font-bold text-gray-900">Policies - Coming Soon</div>} />
-            <Route path="hibernation" element={<div className="text-2xl font-bold text-gray-900">Hibernation - Coming Soon</div>} />
-            <Route path="metrics" element={<div className="text-2xl font-bold text-gray-900">Metrics - Coming Soon</div>} />
+            {/* Placeholder routes for remaining features */}
             <Route path="lab" element={<div className="text-2xl font-bold text-gray-900">Lab Experiments - Coming Soon</div>} />
             <Route path="admin" element={<div className="text-2xl font-bold text-gray-900">Admin Portal - Coming Soon</div>} />
-            <Route path="settings" element={<div className="text-2xl font-bold text-gray-900">Settings - Coming Soon</div>} />
           </Route>
 
           {/* Catch All - 404 */}

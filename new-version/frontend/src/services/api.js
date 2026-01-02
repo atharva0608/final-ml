@@ -148,6 +148,18 @@ export const metricsAPI = {
 export const auditAPI = {
   list: (params) => apiClient.get('/audit', { params }),
   get: (id) => apiClient.get(`/audit/${id}`),
+  exportLogs: (params) => apiClient.get('/audit/export', { params }),
+};
+
+// Account API
+export const accountAPI = {
+  create: (data) => apiClient.post('/accounts', data),
+  list: (params) => apiClient.get('/accounts', { params }),
+  get: (id) => apiClient.get(`/accounts/${id}`),
+  update: (id, data) => apiClient.patch(`/accounts/${id}`, data),
+  delete: (id) => apiClient.delete(`/accounts/${id}`),
+  validate: (id) => apiClient.post(`/accounts/${id}/validate`),
+  setDefault: (id) => apiClient.post(`/accounts/${id}/set-default`),
 };
 
 // Admin API
