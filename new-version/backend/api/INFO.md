@@ -1,6 +1,6 @@
 # API Routes - Component Information
 
-> **Last Updated**: 2025-12-31 12:36:00
+> **Last Updated**: 2025-12-31 19:50:00
 > **Maintainer**: LLM Agent
 
 ---
@@ -12,20 +12,52 @@ Contains FastAPI route handlers for all HTTP endpoints. Routes delegate business
 
 ## Component Table
 
-| File Name | Module ID | Endpoints | Schemas | Feature IDs | Status |
-|-----------|-----------|-----------|---------|-------------|--------|
-| auth_routes.py | CORE-API | POST /auth/signup, POST /auth/login, POST /auth/refresh, POST /auth/change-password, POST /auth/logout, GET /auth/me | SCHEMA-AUTH-* | any-auth-* | Complete |
-| cluster_routes.py | CORE-API | GET /clusters, GET /clusters/{id}, POST /clusters/connect, POST /clusters/{id}/optimize | SCHEMA-CLUSTER-* | client-cluster-* | Pending |
-| template_routes.py | CORE-API | GET /templates, POST /templates, PATCH /templates/{id}/default, DELETE /templates/{id} | SCHEMA-TEMPLATE-* | client-tmpl-* | Pending |
-| policy_routes.py | CORE-API | PATCH /policies/* | SCHEMA-POLICY-* | client-pol-* | Pending |
-| hibernation_routes.py | CORE-API | POST /hibernation/schedule, POST /hibernation/override | SCHEMA-HIBERNATION-* | client-hib-* | Pending |
-| audit_routes.py | CORE-API | GET /audit, GET /audit/export, GET /audit/{id}/diff | SCHEMA-AUDIT-* | client-audit-* | Pending |
-| admin_routes.py | CORE-API | GET /admin/clients, POST /admin/impersonate, GET /admin/health | SCHEMA-ADMIN-* | admin-* | Pending |
-| lab_routes.py | CORE-API | POST /lab/parallel, POST /lab/graduate, WS /lab/stream/{id} | SCHEMA-LAB-* | admin-lab-* | Pending |
+| File Name | Module ID | Endpoints Count | Key Routes | Schemas | Status |
+|-----------|-----------|-----------------|------------|---------|--------|
+| auth_routes.py | CORE-API | 6 | POST /signup, POST /login, POST /refresh, GET /me, POST /change-password, POST /logout | SCHEMA-AUTH-* | Complete |
+| template_routes.py | CORE-API | 6 | GET /templates, POST /templates, GET /{id}, PATCH /{id}, DELETE /{id}, POST /{id}/set-default | SCHEMA-TEMPLATE-* | Complete |
+| audit_routes.py | CORE-API | 2 | GET /audit, GET /audit/{id} | SCHEMA-AUDIT-* | Complete |
+| cluster_routes.py | CORE-API | 9 | POST /discover, POST /clusters, GET /clusters, GET /{id}, PATCH /{id}, DELETE /{id}, GET /{id}/agent-install, POST /{id}/heartbeat | SCHEMA-CLUSTER-* | Complete |
+| policy_routes.py | CORE-API | 8 | POST /policies, GET /policies, GET /{id}, GET /cluster/{id}, PATCH /{id}, DELETE /{id}, POST /{id}/toggle | SCHEMA-POLICY-* | Complete |
+| hibernation_routes.py | CORE-API | 8 | POST /hibernation, GET /hibernation, GET /{id}, GET /cluster/{id}, PATCH /{id}, DELETE /{id}, POST /{id}/toggle | SCHEMA-HIBERNATION-* | Complete |
+| metrics_routes.py | CORE-API | 5 | GET /dashboard, GET /cost, GET /instances, GET /cost/timeseries, GET /cluster/{id} | SCHEMA-METRIC-* | Complete |
+| admin_routes.py | CORE-API | 5 | GET /clients, GET /clients/{id}, POST /clients/{id}/toggle, POST /clients/{id}/reset-password, GET /stats | SCHEMA-ADMIN-* | Complete |
+| lab_routes.py | CORE-API | 9 | POST /experiments, GET /experiments, GET /{id}, PATCH /{id}, DELETE /{id}, POST /{id}/start, POST /{id}/stop, GET /{id}/results | SCHEMA-LAB-* | Complete |
+
+**Total Endpoints**: 58 endpoints across 9 route modules
 
 ---
 
 ## Recent Changes
+
+### [2025-12-31 19:50:00] - All API Routes Completed
+**Changed By**: LLM Agent
+**Reason**: Complete Phase 5-13 - Implement all remaining API routes
+**Impact**: Complete REST API with 58 endpoints across 9 route modules
+**Files Modified**:
+- Created/Updated backend/api/__init__.py with all router exports
+- Created backend/api/template_routes.py (6 endpoints)
+- Created backend/api/audit_routes.py (2 endpoints)
+- Created backend/api/cluster_routes.py (9 endpoints)
+- Created backend/api/policy_routes.py (8 endpoints)
+- Created backend/api/hibernation_routes.py (8 endpoints)
+- Created backend/api/metrics_routes.py (5 endpoints)
+- Created backend/api/admin_routes.py (5 endpoints)
+- Created backend/api/lab_routes.py (9 endpoints)
+- Updated backend/core/api_gateway.py with all router registrations
+**Feature IDs Affected**: All client-*, admin-*, lab-* features
+**Breaking Changes**: No
+**API Documentation**: Available at /docs (Swagger UI)
+
+### [2025-12-31 13:05:00] - Authentication Routes Implemented
+**Changed By**: LLM Agent
+**Reason**: Complete Phase 4 - Implement authentication API routes
+**Impact**: Complete authentication endpoints with 6 routes
+**Files Modified**:
+- Created backend/api/__init__.py
+- Created backend/api/auth_routes.py (6 endpoints)
+**Feature IDs Affected**: any-auth-*
+**Breaking Changes**: No
 
 ### [2025-12-31 12:36:00] - Initial API Routes Structure Created
 **Changed By**: LLM Agent
@@ -35,16 +67,6 @@ Contains FastAPI route handlers for all HTTP endpoints. Routes delegate business
 - Created backend/api/
 - Created backend/api/INFO.md (this file)
 **Feature IDs Affected**: N/A (Infrastructure setup)
-**Breaking Changes**: No
-
-### [2025-12-31 13:05:00] - Authentication Routes Implemented
-**Changed By**: LLM Agent
-**Reason**: Complete Phase 4 - Implement authentication API routes
-**Impact**: Complete authentication endpoints with 6 routes
-**Files Modified**:
-- Created backend/api/__init__.py
-- Created backend/api/auth_routes.py
-**Feature IDs Affected**: any-auth-*
 **Breaking Changes**: No
 
 ---
