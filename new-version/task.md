@@ -112,99 +112,99 @@
 
 ### 2.1 Database Models (SQLAlchemy)
 - [x] Create `backend/models/user.py` - User model
-  - [ ] Fields: id (UUID), email (unique), password_hash, role (enum: client/super_admin), created_at, updated_at
-  - [ ] Relationship to accounts table
-  - [ ] Password hashing methods
+  - [x] Fields: id (UUID), email (unique), password_hash, role (enum: client/super_admin), created_at, updated_at
+  - [x] Relationship to accounts table
+  - [x] Password hashing methods
 - [x] Create `backend/models/account.py` - AWS Account model
-  - [ ] Fields: id (UUID), user_id (FK), aws_account_id, role_arn, external_id, status (enum: pending/scanning/active), created_at
-  - [ ] Relationship to users and clusters
+  - [x] Fields: id (UUID), user_id (FK), aws_account_id, role_arn, external_id, status (enum: pending/scanning/active), created_at
+  - [x] Relationship to users and clusters
 - [x] Create `backend/models/cluster.py` - Kubernetes Cluster model
-  - [ ] Fields: id (UUID), account_id (FK), name, region, vpc_id, api_endpoint, k8s_version, status, created_at
-  - [ ] Relationship to instances and policies
+  - [x] Fields: id (UUID), account_id (FK), name, region, vpc_id, api_endpoint, k8s_version, status, created_at
+  - [x] Relationship to instances and policies
 - [x] Create `backend/models/instance.py` - EC2 Instance model
-  - [ ] Fields: id (UUID), cluster_id (FK), instance_id, instance_type, lifecycle (spot/on_demand), az, price, cpu_util, memory_util, created_at
-  - [ ] Indexes on cluster_id and instance_id
+  - [x] Fields: id (UUID), cluster_id (FK), instance_id, instance_type, lifecycle (spot/on_demand), az, price, cpu_util, memory_util, created_at
+  - [x] Indexes on cluster_id and instance_id
 - [x] Create `backend/models/node_template.py` - Node Template model
-  - [ ] Fields: id (UUID), user_id (FK), name, families (ARRAY), architecture, strategy, disk_type, disk_size, is_default, created_at
-  - [ ] Unique constraint on (user_id, name)
+  - [x] Fields: id (UUID), user_id (FK), name, families (ARRAY), architecture, strategy, disk_type, disk_size, is_default, created_at
+  - [x] Unique constraint on (user_id, name)
 - [x] Create `backend/models/cluster_policy.py` - Cluster Policy model
-  - [ ] Fields: id (UUID), cluster_id (FK), config (JSONB), updated_at
-  - [ ] JSONB structure for karpenter, binpack, fallback, exclusions
+  - [x] Fields: id (UUID), cluster_id (FK), config (JSONB), updated_at
+  - [x] JSONB structure for karpenter, binpack, fallback, exclusions
 - [x] Create `backend/models/hibernation_schedule.py` - Hibernation Schedule model
-  - [ ] Fields: id (UUID), cluster_id (FK), schedule_matrix (JSONB - 168 elements), timezone, prewarm_enabled, prewarm_minutes
-  - [ ] Unique constraint on cluster_id
+  - [x] Fields: id (UUID), cluster_id (FK), schedule_matrix (JSONB - 168 elements), timezone, prewarm_enabled, prewarm_minutes
+  - [x] Unique constraint on cluster_id
 - [x] Create `backend/models/audit_log.py` - Audit Log model
-  - [ ] Fields: id (UUID), timestamp (with milliseconds), actor_id, actor_name, event, resource, resource_type, outcome, ip_address, user_agent, diff_before (JSONB), diff_after (JSONB)
-  - [ ] Indexes on timestamp, actor_id, resource_type
-  - [ ] Immutable (no updates allowed)
+  - [x] Fields: id (UUID), timestamp (with milliseconds), actor_id, actor_name, event, resource, resource_type, outcome, ip_address, user_agent, diff_before (JSONB), diff_after (JSONB)
+  - [x] Indexes on timestamp, actor_id, resource_type
+  - [x] Immutable (no updates allowed)
 - [x] Create `backend/models/ml_model.py` - ML Model Registry
-  - [ ] Fields: id (UUID), version, file_path, status (enum: testing/production), uploaded_at, validated_at, performance_metrics (JSONB)
+  - [x] Fields: id (UUID), version, file_path, status (enum: testing/production), uploaded_at, validated_at, performance_metrics (JSONB)
 - [x] Create `backend/models/optimization_job.py` - Optimization Job model
-  - [ ] Fields: id (UUID), cluster_id (FK), status (enum: queued/running/completed/failed), created_at, completed_at, results (JSONB)
+  - [x] Fields: id (UUID), cluster_id (FK), status (enum: queued/running/completed/failed), created_at, completed_at, results (JSONB)
 - [x] Create `backend/models/lab_experiment.py` - Lab Experiment model
-  - [ ] Fields: id (UUID), model_id (FK), instance_id, test_type, telemetry (JSONB), created_at
+  - [x] Fields: id (UUID), model_id (FK), instance_id, test_type, telemetry (JSONB), created_at
 - [x] Create `backend/models/agent_action.py` - Pending Agent Actions Queue
-  - [ ] **Purpose**: Queue for Kubernetes actions that must be executed by the Agent (not Boto3)
-  - [ ] Fields: id (UUID), cluster_id (FK), action_type (enum: evict_pod/cordon_node/drain_node/label_node/update_deployment), payload (JSONB), status (enum: pending/picked_up/completed/failed), created_at, expires_at, picked_up_at, completed_at, result (JSONB), error_message
-  - [ ] Indexes:
-    - [ ] Composite index on (cluster_id, status) for fast polling by Agent
-    - [ ] Index on expires_at for cleanup of stale actions
-    - [ ] Index on created_at for ordering
-  - [ ] Constraints:
-    - [ ] expires_at must be > created_at
-    - [ ] Default expires_at = created_at + 5 minutes
-  - [ ] Relationships:
-    - [ ] Foreign key to clusters table
-    - [ ] Optional foreign key to optimization_jobs table (if triggered by optimizer)
-  - [ ] **Critical for Worker-to-Agent communication loop**
+  - [x] **Purpose**: Queue for Kubernetes actions that must be executed by the Agent (not Boto3)
+  - [x] Fields: id (UUID), cluster_id (FK), action_type (enum: evict_pod/cordon_node/drain_node/label_node/update_deployment), payload (JSONB), status (enum: pending/picked_up/completed/failed), created_at, expires_at, picked_up_at, completed_at, result (JSONB), error_message
+  - [x] Indexes:
+    - [x] Composite index on (cluster_id, status) for fast polling by Agent
+    - [x] Index on expires_at for cleanup of stale actions
+    - [x] Index on created_at for ordering
+  - [x] Constraints:
+    - [x] expires_at must be > created_at
+    - [x] Default expires_at = created_at + 5 minutes
+  - [x] Relationships:
+    - [x] Foreign key to clusters table
+    - [x] Optional foreign key to optimization_jobs table (if triggered by optimizer)
+  - [x] **Critical for Worker-to-Agent communication loop**
 - [x] Create `backend/models/api_key.py` - Agent API Key Management
-  - [ ] **Purpose**: Secure storage and management of Agent authentication tokens
-  - [ ] Fields: id (UUID), cluster_id (FK), key_hash (SHA-256), prefix (first 8 chars for display), name (optional label), created_at, last_used_at, expires_at (optional), revoked (boolean), revoked_at, revoked_reason
-  - [ ] Indexes:
-    - [ ] Index on cluster_id for listing keys per cluster
-    - [ ] Index on key_hash for authentication lookup
-    - [ ] Index on prefix for display/search
-  - [ ] Methods:
-    - [ ] `generate_key()` - Creates new API key with secure random token
-    - [ ] `verify_key()` - Validates key hash
-    - [ ] `revoke()` - Marks key as revoked
-    - [ ] `update_last_used()` - Updates last_used_at timestamp
-  - [ ] **Security**: Store only SHA-256 hash, never plaintext
-  - [ ] **Best Practice**: Allows revoking compromised Agent tokens without deleting cluster
+  - [x] **Purpose**: Secure storage and management of Agent authentication tokens
+  - [x] Fields: id (UUID), cluster_id (FK), key_hash (SHA-256), prefix (first 8 chars for display), name (optional label), created_at, last_used_at, expires_at (optional), revoked (boolean), revoked_at, revoked_reason
+  - [x] Indexes:
+    - [x] Index on cluster_id for listing keys per cluster
+    - [x] Index on key_hash for authentication lookup
+    - [x] Index on prefix for display/search
+  - [x] Methods:
+    - [x] `generate_key()` - Creates new API key with secure random token
+    - [x] `verify_key()` - Validates key hash
+    - [x] `revoke()` - Marks key as revoked
+    - [x] `update_last_used()` - Updates last_used_at timestamp
+  - [x] **Security**: Store only SHA-256 hash, never plaintext
+  - [x] **Best Practice**: Allows revoking compromised Agent tokens without deleting cluster
 
 ### 2.2 Database Migrations
 - [x] Initialize Alembic for database migrations
-  - [ ] Create `alembic.ini` configuration
-  - [ ] Create `migrations/` directory structure
+  - [x] Create `alembic.ini` configuration
+  - [x] Create `migrations/` directory structure
 - [x] Create initial migration for all models
-  - [ ] Generate migration script: `alembic revision --autogenerate -m "Initial schema"`
-  - [ ] Review and adjust migration script
-  - [ ] Add indexes for performance
-  - [ ] Add constraints and foreign keys
+  - [x] Generate migration script: `alembic revision --autogenerate -m "Initial schema"`
+  - [x] Review and adjust migration script
+  - [x] Add indexes for performance
+  - [x] Add constraints and foreign keys
 - [x] Create seed data migration
-  - [ ] Default super_admin user
-  - [ ] Sample node templates
-  - [ ] Default cluster policies
+  - [x] Default super_admin user
+  - [x] Sample node templates
+  - [x] Default cluster policies
 
 ### 2.3 Pydantic Schemas
 - [x] Create `backend/schemas/auth_schemas.py`
-  - [ ] SignupRequest, LoginRequest, TokenResponse, UserContext schemas
+  - [x] SignupRequest, LoginRequest, TokenResponse, UserContext schemas
 - [x] Create `backend/schemas/cluster_schemas.py`
-  - [ ] ClusterList, ClusterDetail, AgentCmd, Heartbeat, JobId schemas
+  - [x] ClusterList, ClusterDetail, AgentCmd, Heartbeat, JobId schemas
 - [x] Create `backend/schemas/template_schemas.py`
-  - [ ] TmplList, NodeTemplate, TemplateValidation schemas
+  - [x] TmplList, NodeTemplate, TemplateValidation schemas
 - [x] Create `backend/schemas/policy_schemas.py`
-  - [ ] PolState, PolicyUpdate schemas
+  - [x] PolState, PolicyUpdate schemas
 - [x] Create `backend/schemas/hibernation_schemas.py`
-  - [ ] ScheduleMatrix, Override schemas
+  - [x] ScheduleMatrix, Override schemas
 - [x] Create `backend/schemas/metric_schemas.py`
-  - [ ] KPISet, ChartData, PieData, FeedData schemas
+  - [x] KPISet, ChartData, PieData, FeedData schemas
 - [x] Create `backend/schemas/audit_schemas.py`
-  - [ ] AuditLogList, AuditLog, DiffData schemas
+  - [x] AuditLogList, AuditLog, DiffData schemas
 - [x] Create `backend/schemas/admin_schemas.py`
-  - [ ] ClientList, ClientOrg schemas
+  - [x] ClientList, ClientOrg schemas
 - [x] Create `backend/schemas/lab_schemas.py`
-  - [ ] TelemetryData, ABTestConfig, ABResults schemas
+  - [x] TelemetryData, ABTestConfig, ABResults schemas
 
 ---
 
@@ -212,141 +212,141 @@
 
 ### 3.1 Authentication Service (CORE-API)
 - [x] Create `backend/services/auth_service.py`
-  - [ ] Implement `create_user_org_txn()` - Atomic user + org creation
-    - [ ] Validate email format and password strength
-    - [ ] Hash password with bcrypt
-    - [ ] Create user record
-    - [ ] Create placeholder account record
-    - [ ] Return user_id and JWT token
-  - [ ] Implement `authenticate_user()` - Login validation
-    - [ ] Query user by email
-    - [ ] Verify password hash
-    - [ ] Generate JWT token with 24h expiry
-    - [ ] Include role in token payload
-  - [ ] Implement `determine_route_logic()` - Smart routing
-    - [ ] Decode JWT token
-    - [ ] Query account status
-    - [ ] Return redirect path based on status (pending → /onboarding, active → /dashboard)
-  - [ ] Implement `invalidate_session()` - Logout
-    - [ ] Add JWT to Redis blacklist with TTL
-  - [ ] Implement JWT middleware for route protection
-    - [ ] Verify token signature
-    - [ ] Check blacklist
-    - [ ] Extract user context
+  - [x] Implement `create_user_org_txn()` - Atomic user + org creation
+    - [x] Validate email format and password strength
+    - [x] Hash password with bcrypt
+    - [x] Create user record
+    - [x] Create placeholder account record
+    - [x] Return user_id and JWT token
+  - [x] Implement `authenticate_user()` - Login validation
+    - [x] Query user by email
+    - [x] Verify password hash
+    - [x] Generate JWT token with 24h expiry
+    - [x] Include role in token payload
+  - [x] Implement `determine_route_logic()` - Smart routing
+    - [x] Decode JWT token
+    - [x] Query account status
+    - [x] Return redirect path based on status (pending → /onboarding, active → /dashboard)
+  - [x] Implement `invalidate_session()` - Logout
+    - [x] Add JWT to Redis blacklist with TTL
+  - [x] Implement JWT middleware for route protection
+    - [x] Verify token signature
+    - [x] Check blacklist
+    - [x] Extract user context
 
 ### 3.2 Cloud Connection Service
 - [x] Create `backend/services/cloud_connect.py`
-  - [ ] Implement `validate_aws_connection()` - IAM role verification
-    - [ ] Use boto3 STS to assume role
-    - [ ] Validate permissions (ec2:Describe*, eks:List*)
-    - [ ] Update account status to 'scanning'
-    - [ ] Trigger discovery worker
-  - [ ] Implement `initiate_account_link()` - Multi-account support
-    - [ ] Generate unique external_id (UUID)
-    - [ ] Create CloudFormation template URL
-    - [ ] Return setup instructions
+  - [x] Implement `validate_aws_connection()` - IAM role verification
+    - [x] Use boto3 STS to assume role
+    - [x] Validate permissions (ec2:Describe*, eks:List*)
+    - [x] Update account status to 'scanning'
+    - [x] Trigger discovery worker
+  - [x] Implement `initiate_account_link()` - Multi-account support
+    - [x] Generate unique external_id (UUID)
+    - [x] Create CloudFormation template URL
+    - [x] Return setup instructions
 
 ### 3.3 Cluster Service
 - [x] Create `backend/services/cluster_service.py`
-  - [ ] Implement `list_managed_clusters()` - Cluster registry
-    - [ ] Query clusters by user's account_id
-    - [ ] Join with instances for node count
-    - [ ] Calculate monthly cost
-    - [ ] Return ClusterList schema
-  - [ ] Implement `get_cluster_details()` - Detailed view
-    - [ ] Query cluster with relationships
-    - [ ] Fetch health metrics from CloudWatch
-    - [ ] Return ClusterDetail schema
-  - [ ] Implement `generate_agent_install()` - Helm command generation
-    - [ ] Create cluster-specific API token
-    - [ ] Generate Helm install command with values
-    - [ ] Return AgentCmd schema
-  - [ ] Implement `verify_agent_connection()` - Heartbeat check
-    - [ ] Query Redis for agent heartbeat timestamp
-    - [ ] Calculate time since last seen
-    - [ ] Return connection status (connected if <60s)
+  - [x] Implement `list_managed_clusters()` - Cluster registry
+    - [x] Query clusters by user's account_id
+    - [x] Join with instances for node count
+    - [x] Calculate monthly cost
+    - [x] Return ClusterList schema
+  - [x] Implement `get_cluster_details()` - Detailed view
+    - [x] Query cluster with relationships
+    - [x] Fetch health metrics from CloudWatch
+    - [x] Return ClusterDetail schema
+  - [x] Implement `generate_agent_install()` - Helm command generation
+    - [x] Create cluster-specific API token
+    - [x] Generate Helm install command with values
+    - [x] Return AgentCmd schema
+  - [x] Implement `verify_agent_connection()` - Heartbeat check
+    - [x] Query Redis for agent heartbeat timestamp
+    - [x] Calculate time since last seen
+    - [x] Return connection status (connected if <60s)
 
 ### 3.4 Template Service
 - [x] Create `backend/services/template_service.py`
-  - [ ] Implement `list_node_templates()` - Template grid
-  - [ ] Implement `create_node_template()` - Template creation
-  - [ ] Implement `set_global_default_template()` - Default management
-  - [ ] Implement `delete_node_template()` - Soft delete with usage check
+  - [x] Implement `list_node_templates()` - Template grid
+  - [x] Implement `create_node_template()` - Template creation
+  - [x] Implement `set_global_default_template()` - Default management
+  - [x] Implement `delete_node_template()` - Soft delete with usage check
 
 ### 3.5 Policy Service
 - [x] Create `backend/services/policy_service.py`
-  - [ ] Implement `update_karpenter_state()` - Karpenter toggle
-    - [ ] Update JSONB config in cluster_policies
-    - [ ] Broadcast to agents via Redis pub/sub
-  - [ ] Implement `update_binpack_settings()` - Bin packing configuration
-  - [ ] Implement `update_fallback_policy()` - Spot fallback
-  - [ ] Implement `update_exclusion_list()` - Namespace exclusions
+  - [x] Implement `update_karpenter_state()` - Karpenter toggle
+    - [x] Update JSONB config in cluster_policies
+    - [x] Broadcast to agents via Redis pub/sub
+  - [x] Implement `update_binpack_settings()` - Bin packing configuration
+  - [x] Implement `update_fallback_policy()` - Spot fallback
+  - [x] Implement `update_exclusion_list()` - Namespace exclusions
 
 ### 3.6 Hibernation Service
 - [x] Create `backend/services/hibernation_service.py`
-  - [ ] Implement `save_weekly_schedule()` - Schedule matrix storage
-    - [ ] Validate 168-element array
-    - [ ] Store in JSONB format
-  - [ ] Implement `trigger_manual_wakeup()` - Override logic
-    - [ ] Create override record
-    - [ ] Call AWS ASG update script
-  - [ ] Implement `update_prewarm_status()` - Pre-warm configuration
-  - [ ] Implement `update_cluster_timezone()` - Timezone management
+  - [x] Implement `save_weekly_schedule()` - Schedule matrix storage
+    - [x] Validate 168-element array
+    - [x] Store in JSONB format
+  - [x] Implement `trigger_manual_wakeup()` - Override logic
+    - [x] Create override record
+    - [x] Call AWS ASG update script
+  - [x] Implement `update_prewarm_status()` - Pre-warm configuration
+  - [x] Implement `update_cluster_timezone()` - Timezone management
 
 ### 3.7 Metrics Service
 - [x] Create `backend/services/metrics_service.py`
-  - [ ] Implement `calculate_current_spend()` - Monthly spend KPI
-    - [ ] Query all instances for user
-    - [ ] Calculate: SUM(instance_price * 730 hours)
-  - [ ] Implement `calculate_net_savings()` - Savings calculation
-    - [ ] Compare baseline cost vs optimized cost
-  - [ ] Implement `get_fleet_composition()` - Pie chart data
-    - [ ] Group instances by family and lifecycle
-  - [ ] Implement `get_activity_feed()` - Recent actions
-    - [ ] Query audit_logs with limit
-    - [ ] Format for activity feed
+  - [x] Implement `calculate_current_spend()` - Monthly spend KPI
+    - [x] Query all instances for user
+    - [x] Calculate: SUM(instance_price * 730 hours)
+  - [x] Implement `calculate_net_savings()` - Savings calculation
+    - [x] Compare baseline cost vs optimized cost
+  - [x] Implement `get_fleet_composition()` - Pie chart data
+    - [x] Group instances by family and lifecycle
+  - [x] Implement `get_activity_feed()` - Recent actions
+    - [x] Query audit_logs with limit
+    - [x] Format for activity feed
 
 ### 3.8 Audit Service
 - [x] Create `backend/services/audit_service.py`
-  - [ ] Implement `fetch_audit_logs()` - Paginated logs
-  - [ ] Implement `generate_audit_checksum_export()` - Compliance export
-    - [ ] Generate CSV with SHA-256 checksum
-  - [ ] Implement `fetch_audit_diff()` - JSON diff viewer
-  - [ ] Implement audit logging decorator for all write operations
+  - [x] Implement `fetch_audit_logs()` - Paginated logs
+  - [x] Implement `generate_audit_checksum_export()` - Compliance export
+    - [x] Generate CSV with SHA-256 checksum
+  - [x] Implement `fetch_audit_diff()` - JSON diff viewer
+  - [x] Implement audit logging decorator for all write operations
 
 ### 3.9 Admin Service
 - [x] Create `backend/services/admin_service.py`
-  - [ ] Implement `list_all_clients()` - Client registry
-  - [ ] Implement `generate_impersonation_token()` - Impersonation
-    - [ ] Create temporary JWT with client's org_id
-    - [ ] Include admin's identity in audit trail
-  - [ ] Implement `check_worker_queue_depth()` - System health
+  - [x] Implement `list_all_clients()` - Client registry
+  - [x] Implement `generate_impersonation_token()` - Impersonation
+    - [x] Create temporary JWT with client's org_id
+    - [x] Include admin's identity in audit trail
+  - [x] Implement `check_worker_queue_depth()` - System health
 
 ### 3.10 WebSocket Infrastructure (CORE-WS)
-- [ ] Create `backend/core/websocket_manager.py`
-  - [ ] Implement `ConnectionManager` class
-    - [ ] Handle WebSocket connection upgrades
-    - [ ] Authenticate connections via query param token
-    - [ ] Maintain active connection pool by client_id
-    - [ ] Implement connection cleanup on disconnect
-  - [ ] Implement `broadcast_to_client()` - Send message to specific client
-  - [ ] Implement `broadcast_to_all()` - Send message to all connected clients
-  - [ ] Implement heartbeat/ping-pong mechanism to detect dead connections
-- [ ] Create `backend/core/redis_pubsub.py`
-  - [ ] Implement async Redis listener
-  - [ ] Create pub/sub channels:
-    - [ ] `system:logs` - System log stream for admin console
-    - [ ] `lab:telemetry:{test_id}` - Live lab experiment telemetry
-    - [ ] `cluster:events:{cluster_id}` - Cluster-specific events
-    - [ ] `agent:heartbeat:{cluster_id}` - Agent heartbeat updates
-  - [ ] Implement `subscribe_to_channel()` - Subscribe to Redis channel
-  - [ ] Implement `publish_to_channel()` - Publish message to Redis channel
-  - [ ] Implement message routing: Redis → WebSocket clients
-  - [ ] Handle reconnection logic with exponential backoff
-- [ ] Integrate WebSocket manager with FastAPI
-  - [ ] Add WebSocket route handlers to API gateway
-  - [ ] Implement connection authentication middleware
-  - [ ] Add error handling for WebSocket failures
+- [x] Create `backend/core/websocket_manager.py`
+  - [x] Implement `ConnectionManager` class
+    - [x] Handle WebSocket connection upgrades
+    - [x] Authenticate connections via query param token
+    - [x] Maintain active connection pool by client_id
+    - [x] Implement connection cleanup on disconnect
+  - [x] Implement `broadcast_to_client()` - Send message to specific client
+  - [x] Implement `broadcast_to_all()` - Send message to all connected clients
+  - [x] Implement heartbeat/ping-pong mechanism to detect dead connections
+- [x] Create `backend/core/redis_pubsub.py`
+  - [x] Implement async Redis listener
+  - [x] Create pub/sub channels:
+    - [x] `system:logs` - System log stream for admin console
+    - [x] `lab:telemetry:{test_id}` - Live lab experiment telemetry
+    - [x] `cluster:events:{cluster_id}` - Cluster-specific events
+    - [x] `agent:heartbeat:{cluster_id}` - Agent heartbeat updates
+  - [x] Implement `subscribe_to_channel()` - Subscribe to Redis channel
+  - [x] Implement `publish_to_channel()` - Publish message to Redis channel
+  - [x] Implement message routing: Redis → WebSocket clients
+  - [x] Handle reconnection logic with exponential backoff
+- [x] Integrate WebSocket manager with FastAPI
+  - [x] Add WebSocket route handlers to API gateway
+  - [x] Implement connection authentication middleware
+  - [x] Add error handling for WebSocket failures
 
 ---
 
@@ -920,270 +920,270 @@
 > **CRITICAL**: This is the agent that runs inside the customer's Kubernetes cluster. Without this, the system cannot collect metrics or execute actions.
 
 ### 9.5.1 Agent Core Architecture
-- [ ] Create `agent/` directory structure
-  - [ ] `agent/main.py` - Entry point
-  - [ ] `agent/config.py` - Configuration loader
-  - [ ] `agent/collector.py` - Metrics collection
-  - [ ] `agent/actuator.py` - Command execution
-  - [ ] `agent/heartbeat.py` - Health reporting
-  - [ ] `agent/websocket_client.py` - Real-time communication
-  - [ ] `agent/utils/` - Utility functions
-  - [ ] `agent/models/` - Data models
+- [x] Create `agent/` directory structure
+  - [x] `agent/main.py` - Entry point
+  - [x] `agent/config.py` - Configuration loader
+  - [x] `agent/collector.py` - Metrics collection
+  - [x] `agent/actuator.py` - Command execution
+  - [x] `agent/heartbeat.py` - Health reporting
+  - [x] `agent/websocket_client.py` - Real-time communication
+  - [x] `agent/utils/` - Utility functions
+  - [x] `agent/models/` - Data models
 
 ### 9.5.2 Agent Entry Point & Configuration
-- [ ] Create `agent/main.py`
-  - [ ] Implement startup sequence
-    - [ ] Load configuration from environment variables
-    - [ ] Required env vars: `API_URL`, `CLUSTER_ID`, `API_TOKEN`, `NAMESPACE`
-    - [ ] Optional env vars: `LOG_LEVEL`, `COLLECTION_INTERVAL`, `HEARTBEAT_INTERVAL`
-  - [ ] Implement self-registration/handshake with backend
-    - [ ] POST to `/clusters/{cluster_id}/agent/register`
-    - [ ] Send agent version, K8s version, node count
-    - [ ] Receive configuration from backend
-  - [ ] Start background tasks (collector, heartbeat, actuator)
-  - [ ] Implement graceful shutdown handler
-  - [ ] Setup structured logging (JSON format)
-- [ ] Create `agent/config.py`
-  - [ ] Implement `Config` class with validation
-  - [ ] Validate API_URL format
-  - [ ] Validate API_TOKEN is not empty
-  - [ ] Set default values for optional configs
-  - [ ] Implement config reload on SIGHUP
+- [x] Create `agent/main.py`
+  - [x] Implement startup sequence
+    - [x] Load configuration from environment variables
+    - [x] Required env vars: `API_URL`, `CLUSTER_ID`, `API_TOKEN`, `NAMESPACE`
+    - [x] Optional env vars: `LOG_LEVEL`, `COLLECTION_INTERVAL`, `HEARTBEAT_INTERVAL`
+  - [x] Implement self-registration/handshake with backend
+    - [x] POST to `/clusters/{cluster_id}/agent/register`
+    - [x] Send agent version, K8s version, node count
+    - [x] Receive configuration from backend
+  - [x] Start background tasks (collector, heartbeat, actuator)
+  - [x] Implement graceful shutdown handler
+  - [x] Setup structured logging (JSON format)
+- [x] Create `agent/config.py`
+  - [x] Implement `Config` class with validation
+  - [x] Validate API_URL format
+  - [x] Validate API_TOKEN is not empty
+  - [x] Set default values for optional configs
+  - [x] Implement config reload on SIGHUP
 
 ### 9.5.3 Metrics Collector
-- [ ] Create `agent/collector.py`
-  - [ ] Initialize Kubernetes client using `kubernetes` Python library
-    - [ ] Use in-cluster config (ServiceAccount)
-    - [ ] Fallback to kubeconfig for local testing
-  - [ ] Implement `collect_pod_metrics()` - Pod-level metrics
-    - [ ] Query Metrics Server API for CPU/RAM usage
-    - [ ] Collect pod status (Running, Pending, Failed)
-    - [ ] Collect pod resource requests and limits
-    - [ ] Group by namespace and node
-  - [ ] Implement `collect_node_metrics()` - Node-level metrics
-    - [ ] Query node allocatable resources
-    - [ ] Calculate node utilization (requested / allocatable)
-    - [ ] Collect node conditions (Ready, DiskPressure, MemoryPressure)
-    - [ ] Identify Spot vs On-Demand nodes (via labels)
-  - [ ] Implement `collect_cluster_events()` - Event watcher
-    - [ ] Watch for Pod events (Pending, Evicted, OOMKilled)
-    - [ ] Watch for Node events (NodeNotReady, NodeScaleUp)
-    - [ ] Watch for Spot interruption warnings (if available)
-    - [ ] Filter events by timestamp (only new events)
-  - [ ] Implement `send_metrics_to_backend()`
-    - [ ] Batch metrics into JSON payload
-    - [ ] POST to `/clusters/{cluster_id}/metrics`
-    - [ ] Include timestamp and agent_id
-    - [ ] Retry on failure with exponential backoff
-  - [ ] Run collection loop every 30 seconds (configurable)
-  - [ ] Handle Kubernetes API errors gracefully
+- [x] Create `agent/collector.py`
+  - [x] Initialize Kubernetes client using `kubernetes` Python library
+    - [x] Use in-cluster config (ServiceAccount)
+    - [x] Fallback to kubeconfig for local testing
+  - [x] Implement `collect_pod_metrics()` - Pod-level metrics
+    - [x] Query Metrics Server API for CPU/RAM usage
+    - [x] Collect pod status (Running, Pending, Failed)
+    - [x] Collect pod resource requests and limits
+    - [x] Group by namespace and node
+  - [x] Implement `collect_node_metrics()` - Node-level metrics
+    - [x] Query node allocatable resources
+    - [x] Calculate node utilization (requested / allocatable)
+    - [x] Collect node conditions (Ready, DiskPressure, MemoryPressure)
+    - [x] Identify Spot vs On-Demand nodes (via labels)
+  - [x] Implement `collect_cluster_events()` - Event watcher
+    - [x] Watch for Pod events (Pending, Evicted, OOMKilled)
+    - [x] Watch for Node events (NodeNotReady, NodeScaleUp)
+    - [x] Watch for Spot interruption warnings (if available)
+    - [x] Filter events by timestamp (only new events)
+  - [x] Implement `send_metrics_to_backend()`
+    - [x] Batch metrics into JSON payload
+    - [x] POST to `/clusters/{cluster_id}/metrics`
+    - [x] Include timestamp and agent_id
+    - [x] Retry on failure with exponential backoff
+  - [x] Run collection loop every 30 seconds (configurable)
+  - [x] Handle Kubernetes API errors gracefully
 
 ### 9.5.4 Action Actuator
-- [ ] Create `agent/actuator.py`
-  - [ ] Implement polling mechanism for action plans
-    - [ ] GET `/clusters/{cluster_id}/actions/pending` every 60 seconds
-    - [ ] Parse action plan JSON from backend
-  - [ ] Implement command execution handlers
-    - [ ] `evict_pod()` - Gracefully evict pod
-      - [ ] Check PodDisruptionBudget before eviction
-      - [ ] Use Kubernetes Eviction API
-      - [ ] Wait for pod to terminate
-      - [ ] Report success/failure to backend
-    - [ ] `cordon_node()` - Mark node as unschedulable
-      - [ ] Use `kubectl cordon` equivalent
-      - [ ] Prevent new pods from scheduling
-    - [ ] `drain_node()` - Drain node for replacement
-      - [ ] Evict all pods respecting PDBs
-      - [ ] Wait for all pods to be rescheduled
-      - [ ] Report drain completion
-    - [ ] `label_node()` - Add/remove node labels
-      - [ ] Used for targeting specific workloads
-    - [ ] `update_deployment()` - Update deployment spec
-      - [ ] Change resource requests/limits (right-sizing)
-      - [ ] Trigger rolling update
-  - [ ] Implement security: Signature verification for commands
-    - [ ] Each action plan includes HMAC signature
-    - [ ] Verify signature using shared secret (API_TOKEN)
-    - [ ] Reject unsigned or invalid commands
-  - [ ] Implement dry-run mode
-    - [ ] If `DRY_RUN=true`, log actions without executing
-    - [ ] Report what would have been done
-  - [ ] Report action results to backend
-    - [ ] POST `/clusters/{cluster_id}/actions/{action_id}/result`
-    - [ ] Include success/failure status
-    - [ ] Include error message if failed
-    - [ ] Include execution duration
+- [x] Create `agent/actuator.py`
+  - [x] Implement polling mechanism for action plans
+    - [x] GET `/clusters/{cluster_id}/actions/pending` every 60 seconds
+    - [x] Parse action plan JSON from backend
+  - [x] Implement command execution handlers
+    - [x] `evict_pod()` - Gracefully evict pod
+      - [x] Check PodDisruptionBudget before eviction
+      - [x] Use Kubernetes Eviction API
+      - [x] Wait for pod to terminate
+      - [x] Report success/failure to backend
+    - [x] `cordon_node()` - Mark node as unschedulable
+      - [x] Use `kubectl cordon` equivalent
+      - [x] Prevent new pods from scheduling
+    - [x] `drain_node()` - Drain node for replacement
+      - [x] Evict all pods respecting PDBs
+      - [x] Wait for all pods to be rescheduled
+      - [x] Report drain completion
+    - [x] `label_node()` - Add/remove node labels
+      - [x] Used for targeting specific workloads
+    - [x] `update_deployment()` - Update deployment spec
+      - [x] Change resource requests/limits (right-sizing)
+      - [x] Trigger rolling update
+  - [x] Implement security: Signature verification for commands
+    - [x] Each action plan includes HMAC signature
+    - [x] Verify signature using shared secret (API_TOKEN)
+    - [x] Reject unsigned or invalid commands
+  - [x] Implement dry-run mode
+    - [x] If `DRY_RUN=true`, log actions without executing
+    - [x] Report what would have been done
+  - [x] Report action results to backend
+    - [x] POST `/clusters/{cluster_id}/actions/{action_id}/result`
+    - [x] Include success/failure status
+    - [x] Include error message if failed
+    - [x] Include execution duration
 
 ### 9.5.5 Heartbeat & Health Reporting
-- [ ] Create `agent/heartbeat.py`
-  - [ ] Implement heartbeat sender
-    - [ ] POST to `/clusters/{cluster_id}/heartbeat` every 30 seconds
-    - [ ] Include local health metrics:
-      - [ ] Agent memory usage
-      - [ ] Agent CPU usage
-      - [ ] Number of errors in last minute
-      - [ ] Last successful metric collection timestamp
-      - [ ] Kubernetes API connectivity status
-    - [ ] Include agent version and uptime
-  - [ ] Implement health check endpoint (for K8s liveness probe)
-    - [ ] HTTP server on port 8080
-    - [ ] GET `/healthz` - Returns 200 if healthy
-    - [ ] GET `/readyz` - Returns 200 if ready to serve
-  - [ ] Implement self-healing
-    - [ ] Restart collector if it crashes
-    - [ ] Reconnect to backend if connection lost
-    - [ ] Exponential backoff for retries
+- [x] Create `agent/heartbeat.py`
+  - [x] Implement heartbeat sender
+    - [x] POST to `/clusters/{cluster_id}/heartbeat` every 30 seconds
+    - [x] Include local health metrics:
+      - [x] Agent memory usage
+      - [x] Agent CPU usage
+      - [x] Number of errors in last minute
+      - [x] Last successful metric collection timestamp
+      - [x] Kubernetes API connectivity status
+    - [x] Include agent version and uptime
+  - [x] Implement health check endpoint (for K8s liveness probe)
+    - [x] HTTP server on port 8080
+    - [x] GET `/healthz` - Returns 200 if healthy
+    - [x] GET `/readyz` - Returns 200 if ready to serve
+  - [x] Implement self-healing
+    - [x] Restart collector if it crashes
+    - [x] Reconnect to backend if connection lost
+    - [x] Exponential backoff for retries
 
 ### 9.5.6 WebSocket Client for Real-Time Communication
-- [ ] Create `agent/websocket_client.py`
-  - [ ] Implement WebSocket connection to backend
-    - [ ] Connect to `wss://{API_URL}/clusters/{cluster_id}/stream`
-    - [ ] Include API_TOKEN in connection headers
-    - [ ] Authenticate connection on upgrade
-  - [ ] Implement message handlers
-    - [ ] `on_action_command` - Receive real-time action commands
-      - [ ] Trigger actuator immediately (don't wait for polling)
-    - [ ] `on_config_update` - Receive configuration updates
-      - [ ] Update collection interval
-      - [ ] Update enabled features
-    - [ ] `on_ping` - Respond to keep-alive pings
-  - [ ] Implement reconnection logic
-    - [ ] Detect connection loss
-    - [ ] Reconnect with exponential backoff (1s, 2s, 4s, 8s, max 60s)
-    - [ ] Resume from last known state
-  - [ ] Implement message queue for offline buffering
-    - [ ] Buffer metrics if WebSocket disconnected
-    - [ ] Send buffered data when reconnected
-    - [ ] Limit buffer size to prevent memory issues
+- [x] Create `agent/websocket_client.py`
+  - [x] Implement WebSocket connection to backend
+    - [x] Connect to `wss://{API_URL}/clusters/{cluster_id}/stream`
+    - [x] Include API_TOKEN in connection headers
+    - [x] Authenticate connection on upgrade
+  - [x] Implement message handlers
+    - [x] `on_action_command` - Receive real-time action commands
+      - [x] Trigger actuator immediately (don't wait for polling)
+    - [x] `on_config_update` - Receive configuration updates
+      - [x] Update collection interval
+      - [x] Update enabled features
+    - [x] `on_ping` - Respond to keep-alive pings
+  - [x] Implement reconnection logic
+    - [x] Detect connection loss
+    - [x] Reconnect with exponential backoff (1s, 2s, 4s, 8s, max 60s)
+    - [x] Resume from last known state
+  - [x] Implement message queue for offline buffering
+    - [x] Buffer metrics if WebSocket disconnected
+    - [x] Send buffered data when reconnected
+    - [x] Limit buffer size to prevent memory issues
 
 ### 9.5.7 Agent Packaging - Docker Image
-- [ ] Create `agent/Dockerfile`
-  - [ ] Base image: `python:3.11-slim`
-  - [ ] Install system dependencies
-    - [ ] `curl` for health checks
-    - [ ] `ca-certificates` for HTTPS
-  - [ ] Copy `requirements.txt` and install Python packages
-    - [ ] `kubernetes` - Kubernetes Python client
-    - [ ] `websockets` - WebSocket client
-    - [ ] `requests` - HTTP client
-    - [ ] `prometheus-client` - Metrics export (optional)
-  - [ ] Copy agent source code
-  - [ ] Set working directory to `/app`
-  - [ ] Create non-root user `agent` (UID 1000)
-  - [ ] Switch to non-root user
-  - [ ] Expose port 8080 for health checks
-  - [ ] Set entrypoint: `python main.py`
-  - [ ] Add health check: `HEALTHCHECK CMD curl -f http://localhost:8080/healthz || exit 1`
-- [ ] Build and tag Docker image
-  - [ ] Tag: `spotoptimizer/agent:v1.0.0`
-  - [ ] Tag: `spotoptimizer/agent:latest`
-- [ ] Push to container registry
-  - [ ] Docker Hub or private registry
-  - [ ] Ensure image is publicly accessible (or provide pull secrets)
+- [x] Create `agent/Dockerfile`
+  - [x] Base image: `python:3.11-slim`
+  - [x] Install system dependencies
+    - [x] `curl` for health checks
+    - [x] `ca-certificates` for HTTPS
+  - [x] Copy `requirements.txt` and install Python packages
+    - [x] `kubernetes` - Kubernetes Python client
+    - [x] `websockets` - WebSocket client
+    - [x] `requests` - HTTP client
+    - [x] `prometheus-client` - Metrics export (optional)
+  - [x] Copy agent source code
+  - [x] Set working directory to `/app`
+  - [x] Create non-root user `agent` (UID 1000)
+  - [x] Switch to non-root user
+  - [x] Expose port 8080 for health checks
+  - [x] Set entrypoint: `python main.py`
+  - [x] Add health check: `HEALTHCHECK CMD curl -f http://localhost:8080/healthz || exit 1`
+- [x] Build and tag Docker image
+  - [x] Tag: `spotoptimizer/agent:v1.0.0`
+  - [x] Tag: `spotoptimizer/agent:latest`
+- [x] Push to container registry
+  - [x] Docker Hub or private registry
+  - [x] Ensure image is publicly accessible (or provide pull secrets)
 
 ### 9.5.8 Agent Packaging - Helm Chart
-- [ ] Create `charts/spot-optimizer-agent/` directory structure
-- [ ] Create `charts/spot-optimizer-agent/Chart.yaml`
-  - [ ] Chart name: `spot-optimizer-agent`
-  - [ ] Version: `1.0.0`
-  - [ ] App version: `1.0.0`
-  - [ ] Description: "Kubernetes agent for Spot Optimizer platform"
-  - [ ] Maintainers information
-- [ ] Create `charts/spot-optimizer-agent/values.yaml`
-  - [ ] Default values:
-    - [ ] `image.repository`: `spotoptimizer/agent`
-    - [ ] `image.tag`: `latest`
-    - [ ] `image.pullPolicy`: `IfNotPresent`
-    - [ ] `replicaCount`: `1`
-    - [ ] `resources.requests.memory`: `128Mi`
-    - [ ] `resources.requests.cpu`: `100m`
-    - [ ] `resources.limits.memory`: `256Mi`
-    - [ ] `resources.limits.cpu`: `200m`
-    - [ ] `config.apiUrl`: `https://api.spotoptimizer.com`
-    - [ ] `config.clusterId`: `""` (user must provide)
-    - [ ] `config.apiToken`: `""` (user must provide)
-    - [ ] `config.namespace`: `spot-optimizer`
-    - [ ] `config.collectionInterval`: `30`
-    - [ ] `config.heartbeatInterval`: `30`
-    - [ ] `config.logLevel`: `INFO`
-- [ ] Create `charts/spot-optimizer-agent/templates/deployment.yaml`
-  - [ ] Deployment spec with 1 replica
-  - [ ] Container spec with image from values
-  - [ ] Environment variables from ConfigMap and Secret
-  - [ ] Resource requests and limits
-  - [ ] Liveness probe: `GET /healthz` every 30s
-  - [ ] Readiness probe: `GET /readyz` every 10s
-  - [ ] Security context: run as non-root
-  - [ ] Volume mounts for ServiceAccount token
-- [ ] Create `charts/spot-optimizer-agent/templates/configmap.yaml`
-  - [ ] ConfigMap with non-sensitive configuration
-    - [ ] API_URL
-    - [ ] CLUSTER_ID
-    - [ ] NAMESPACE
-    - [ ] COLLECTION_INTERVAL
-    - [ ] HEARTBEAT_INTERVAL
-    - [ ] LOG_LEVEL
-- [ ] Create `charts/spot-optimizer-agent/templates/secret.yaml`
-  - [ ] Secret with sensitive data
-    - [ ] API_TOKEN (base64 encoded)
-  - [ ] Note: User must provide this value during installation
-- [ ] Create `charts/spot-optimizer-agent/templates/serviceaccount.yaml`
-  - [ ] ServiceAccount: `spot-optimizer-agent`
-  - [ ] Used by agent pod for Kubernetes API access
-- [ ] Create `charts/spot-optimizer-agent/templates/rbac.yaml`
-  - [ ] ClusterRole: `spot-optimizer-agent`
-    - [ ] Permissions:
-      - [ ] `get`, `list`, `watch` on `pods`, `nodes`, `events`
-      - [ ] `get`, `list` on `deployments`, `replicasets`, `statefulsets`
-      - [ ] `create` on `pods/eviction` (for pod eviction)
-      - [ ] `patch`, `update` on `nodes` (for cordon/drain)
-      - [ ] `get` on `poddisruptionbudgets` (to respect PDBs)
-  - [ ] ClusterRoleBinding: `spot-optimizer-agent`
-    - [ ] Bind ClusterRole to ServiceAccount
-- [ ] Create `charts/spot-optimizer-agent/templates/service.yaml`
-  - [ ] Service for health check endpoint (optional)
-  - [ ] Type: ClusterIP
-  - [ ] Port: 8080
-- [ ] Create `charts/spot-optimizer-agent/templates/NOTES.txt`
-  - [ ] Post-installation instructions
-  - [ ] How to verify agent is running
-  - [ ] How to check logs: `kubectl logs -n spot-optimizer deployment/spot-optimizer-agent`
-  - [ ] How to verify connection: Check backend dashboard for heartbeat
+- [x] Create `charts/spot-optimizer-agent/` directory structure
+- [x] Create `charts/spot-optimizer-agent/Chart.yaml`
+  - [x] Chart name: `spot-optimizer-agent`
+  - [x] Version: `1.0.0`
+  - [x] App version: `1.0.0`
+  - [x] Description: "Kubernetes agent for Spot Optimizer platform"
+  - [x] Maintainers information
+- [x] Create `charts/spot-optimizer-agent/values.yaml`
+  - [x] Default values:
+    - [x] `image.repository`: `spotoptimizer/agent`
+    - [x] `image.tag`: `latest`
+    - [x] `image.pullPolicy`: `IfNotPresent`
+    - [x] `replicaCount`: `1`
+    - [x] `resources.requests.memory`: `128Mi`
+    - [x] `resources.requests.cpu`: `100m`
+    - [x] `resources.limits.memory`: `256Mi`
+    - [x] `resources.limits.cpu`: `200m`
+    - [x] `config.apiUrl`: `https://api.spotoptimizer.com`
+    - [x] `config.clusterId`: `""` (user must provide)
+    - [x] `config.apiToken`: `""` (user must provide)
+    - [x] `config.namespace`: `spot-optimizer`
+    - [x] `config.collectionInterval`: `30`
+    - [x] `config.heartbeatInterval`: `30`
+    - [x] `config.logLevel`: `INFO`
+- [x] Create `charts/spot-optimizer-agent/templates/deployment.yaml`
+  - [x] Deployment spec with 1 replica
+  - [x] Container spec with image from values
+  - [x] Environment variables from ConfigMap and Secret
+  - [x] Resource requests and limits
+  - [x] Liveness probe: `GET /healthz` every 30s
+  - [x] Readiness probe: `GET /readyz` every 10s
+  - [x] Security context: run as non-root
+  - [x] Volume mounts for ServiceAccount token
+- [x] Create `charts/spot-optimizer-agent/templates/configmap.yaml`
+  - [x] ConfigMap with non-sensitive configuration
+    - [x] API_URL
+    - [x] CLUSTER_ID
+    - [x] NAMESPACE
+    - [x] COLLECTION_INTERVAL
+    - [x] HEARTBEAT_INTERVAL
+    - [x] LOG_LEVEL
+- [x] Create `charts/spot-optimizer-agent/templates/secret.yaml`
+  - [x] Secret with sensitive data
+    - [x] API_TOKEN (base64 encoded)
+  - [x] Note: User must provide this value during installation
+- [x] Create `charts/spot-optimizer-agent/templates/serviceaccount.yaml`
+  - [x] ServiceAccount: `spot-optimizer-agent`
+  - [x] Used by agent pod for Kubernetes API access
+- [x] Create `charts/spot-optimizer-agent/templates/rbac.yaml`
+  - [x] ClusterRole: `spot-optimizer-agent`
+    - [x] Permissions:
+      - [x] `get`, `list`, `watch` on `pods`, `nodes`, `events`
+      - [x] `get`, `list` on `deployments`, `replicasets`, `statefulsets`
+      - [x] `create` on `pods/eviction` (for pod eviction)
+      - [x] `patch`, `update` on `nodes` (for cordon/drain)
+      - [x] `get` on `poddisruptionbudgets` (to respect PDBs)
+  - [x] ClusterRoleBinding: `spot-optimizer-agent`
+    - [x] Bind ClusterRole to ServiceAccount
+- [x] Create `charts/spot-optimizer-agent/templates/service.yaml`
+  - [x] Service for health check endpoint (optional)
+  - [x] Type: ClusterIP
+  - [x] Port: 8080
+- [x] Create `charts/spot-optimizer-agent/templates/NOTES.txt`
+  - [x] Post-installation instructions
+  - [x] How to verify agent is running
+  - [x] How to check logs: `kubectl logs -n spot-optimizer deployment/spot-optimizer-agent`
+  - [x] How to verify connection: Check backend dashboard for heartbeat
 
 ### 9.5.9 Agent Testing
-- [ ] Create unit tests for agent components
-  - [ ] Test collector with mocked Kubernetes API
-  - [ ] Test actuator command handlers
-  - [ ] Test heartbeat sender
-  - [ ] Test WebSocket reconnection logic
-- [ ] Create integration tests
-  - [ ] Deploy agent to test cluster (kind or minikube)
-  - [ ] Verify metrics collection
-  - [ ] Verify heartbeat reception
-  - [ ] Test action execution (evict pod, cordon node)
-- [ ] Create end-to-end test
-  - [ ] Install agent via Helm
-  - [ ] Verify agent registers with backend
-  - [ ] Trigger manual optimization from UI
-  - [ ] Verify agent executes action
-  - [ ] Verify results reported to backend
+- [x] Create unit tests for agent components
+  - [x] Test collector with mocked Kubernetes API
+  - [x] Test actuator command handlers
+  - [x] Test heartbeat sender
+  - [x] Test WebSocket reconnection logic
+- [x] Create integration tests
+  - [x] Deploy agent to test cluster (kind or minikube)
+  - [x] Verify metrics collection
+  - [x] Verify heartbeat reception
+  - [x] Test action execution (evict pod, cordon node)
+- [x] Create end-to-end test
+  - [x] Install agent via Helm
+  - [x] Verify agent registers with backend
+  - [x] Trigger manual optimization from UI
+  - [x] Verify agent executes action
+  - [x] Verify results reported to backend
 
 ### 9.5.10 Agent Documentation
-- [ ] Create `agent/README.md`
-  - [ ] Architecture overview
-  - [ ] Installation instructions
-  - [ ] Configuration reference
-  - [ ] Troubleshooting guide
-- [ ] Create `charts/spot-optimizer-agent/README.md`
-  - [ ] Helm chart documentation
-  - [ ] Values reference
-  - [ ] Installation examples
-  - [ ] Upgrade guide
-- [ ] Create agent deployment guide
-  - [ ] Prerequisites (Metrics Server, RBAC)
-  - [ ] Step-by-step installation
-  - [ ] Verification steps
-  - [ ] Uninstallation steps
+- [x] Create `agent/README.md`
+  - [x] Architecture overview
+  - [x] Installation instructions
+  - [x] Configuration reference
+  - [x] Troubleshooting guide
+- [x] Create `charts/spot-optimizer-agent/README.md`
+  - [x] Helm chart documentation
+  - [x] Values reference
+  - [x] Installation examples
+  - [x] Upgrade guide
+- [x] Create agent deployment guide
+  - [x] Prerequisites (Metrics Server, RBAC)
+  - [x] Step-by-step installation
+  - [x] Verification steps
+  - [x] Uninstallation steps
 
 ---
 
