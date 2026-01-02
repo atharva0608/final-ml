@@ -1,6 +1,6 @@
 # Scrapers - Component Information
 
-> **Last Updated**: 2025-12-31 12:36:00
+> **Last Updated**: 2026-01-02 15:00:00
 > **Maintainer**: LLM Agent
 
 ---
@@ -14,12 +14,33 @@ Contains data collection services for scraping AWS Spot Advisor data and real-ti
 
 | File Name | Scraper ID | Schedule | Purpose | Data Source | Status |
 |-----------|-----------|----------|---------|-------------|--------|
-| spot_advisor_scraper.py | SVC-SCRAPE-01 | Every 6 hours | Scrape Spot interruption frequency data | AWS Spot Advisor API | Pending |
-| pricing_collector.py | SVC-PRICE-01 | Every 5 minutes | Collect real-time Spot and On-Demand prices | AWS Price List API | Pending |
+| spot_advisor_scraper.py | SVC-SCRAPE-01 | Daily at 2:00 AM UTC | Scrape Spot interruption frequency data | AWS Spot Advisor API | ✅ Complete |
+| pricing_collector.py | SVC-PRICE-01 | Every 5 minutes | Collect real-time Spot and On-Demand prices | AWS Price List API + EC2 API | ✅ Complete |
 
 ---
 
 ## Recent Changes
+
+### [2026-01-02 15:00:00] - Phase 6: Data Collection Services Implementation Complete
+**Changed By**: LLM Agent
+**Reason**: Complete all 2 data collection scrapers for Phase 6
+**Impact**: Full scraper implementation totaling ~1,100 lines of code
+**Files Modified**:
+- Created backend/scrapers/spot_advisor_scraper.py (~550 lines) - AWS Spot Advisor data collection
+- Created backend/scrapers/pricing_collector.py (~650 lines) - Real-time Spot/On-Demand pricing
+- Created backend/scrapers/__init__.py - Exported all scraper functions
+- Updated backend/scrapers/INFO.md (this file)
+**Feature IDs Affected**: SVC-SCRAPE-01, SVC-PRICE-01
+**Breaking Changes**: No
+**Key Features Implemented**:
+- Automated daily Spot Advisor data scraping from AWS S3 JSON endpoint
+- Region-specific interruption frequency ratings (<5% to >20%)
+- Real-time Spot price collection with 5-minute updates
+- On-Demand pricing via AWS Price List API
+- Redis caching for sub-millisecond price lookups
+- Historical price tracking in database
+- Parallel multi-region collection with ThreadPoolExecutor
+- Price comparison and savings calculations
 
 ### [2025-12-31 12:36:00] - Initial Scrapers Structure Created
 **Changed By**: LLM Agent

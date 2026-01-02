@@ -1,6 +1,6 @@
 # Workers - Component Information
 
-> **Last Updated**: 2025-12-31 12:36:00
+> **Last Updated**: 2026-01-02 14:30:00
 > **Maintainer**: LLM Agent
 
 ---
@@ -14,15 +14,36 @@ Contains Celery background workers for asynchronous task processing including AW
 
 | File Name | Worker ID | Schedule | Purpose | Dependencies | Status |
 |-----------|-----------|----------|---------|--------------|--------|
-| discovery_worker.py | WORK-DISC-01 | Every 5 minutes | Discover AWS resources (EC2, EKS) | boto3, models/cluster.py, models/instance.py | Pending |
-| optimizer_worker.py | WORK-OPT-01 | Manual trigger | Run optimization pipeline | modules/spot_optimizer.py, core/decision_engine.py | Pending |
-| hibernation_worker.py | WORK-HIB-01 | Every 1 minute | Check hibernation schedules and execute | models/hibernation_schedule.py, scripts/aws/update_asg.py | Pending |
-| report_worker.py | WORK-RPT-01 | Weekly (cron) | Generate and email weekly reports | services/metrics_service.py, SendGrid/SES | Pending |
-| event_processor.py | WORK-EVT-01 | High priority queue | Process cluster events (Spot interruptions, OOMKilled) | modules/risk_tracker.py, Redis pub/sub | Pending |
+| tasks/discovery.py | WORK-DISC-01 | Every 5 minutes | Discover AWS resources (EC2, EKS) | boto3, models/cluster.py, models/instance.py | ✅ Complete |
+| tasks/optimization.py | WORK-OPT-01 | Manual trigger | Run optimization pipeline | modules/spot_optimizer.py, core/decision_engine.py | ✅ Complete |
+| tasks/hibernation_worker.py | WORK-HIB-01 | Every 1 minute | Check hibernation schedules and execute | models/hibernation_schedule.py, scripts/aws/update_asg.py | ✅ Complete |
+| tasks/report_worker.py | WORK-RPT-01 | Weekly (cron) | Generate and email weekly reports | services/metrics_service.py, SendGrid/SES | ✅ Complete |
+| tasks/event_processor.py | WORK-EVT-01 | High priority queue | Process cluster events (Spot interruptions, OOMKilled) | modules/risk_tracker.py, Redis pub/sub | ✅ Complete |
 
 ---
 
 ## Recent Changes
+
+### [2026-01-02 14:30:00] - Phase 5: Background Workers Implementation Complete
+**Changed By**: LLM Agent
+**Reason**: Complete all 5 background workers for Phase 5
+**Impact**: Full worker implementation with 5 Celery tasks totaling ~2,800 lines of code
+**Files Modified**:
+- Created backend/workers/tasks/discovery.py (~550 lines) - AWS account/cluster discovery
+- Created backend/workers/tasks/optimization.py (~200 lines) - Optimization pipeline
+- Created backend/workers/tasks/hibernation_worker.py (~550 lines) - Schedule-based hibernation
+- Created backend/workers/tasks/report_worker.py (~650 lines) - Weekly/monthly reporting
+- Created backend/workers/tasks/event_processor.py (~550 lines) - Real-time event processing
+- Updated backend/workers/tasks/__init__.py - Exported all worker functions
+- Updated backend/workers/INFO.md (this file)
+**Feature IDs Affected**: WORK-DISC-01, WORK-OPT-01, WORK-HIB-01, WORK-RPT-01, WORK-EVT-01
+**Breaking Changes**: No
+**Key Features Implemented**:
+- Multi-account AWS discovery with STS role assumption
+- Spot interruption event processing with Global Risk Tracker integration
+- Timezone-aware hibernation scheduling with 168-hour matrix support
+- HTML email reports with savings breakdown
+- Event deduplication using Redis
 
 ### [2025-12-31 12:36:00] - Initial Workers Structure Created
 **Changed By**: LLM Agent

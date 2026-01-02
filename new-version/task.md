@@ -353,136 +353,136 @@
 ## Phase 4: Intelligence Modules Implementation
 
 ### 4.1 Spot Optimization Engine (MOD-SPOT-01)
-- [ ] Create `backend/modules/spot_optimizer.py`
-  - [ ] Implement `select_best_instance()` - Instance selection logic
-    - [ ] Query Redis for current Spot prices
-    - [ ] Query global risk tracker for flagged pools
-    - [ ] Filter out risky pools
-    - [ ] Score: (Price * 0.6) + (Risk * 0.4)
-    - [ ] Return sorted candidate list
-  - [ ] Implement `detect_opportunities()` - Waste detection
-    - [ ] Find On-Demand instances with <30% utilization
-    - [ ] Identify Spot replacement candidates
-    - [ ] Return opportunity list
-  - [ ] Implement `get_savings_projection()` - Projection calculation
-    - [ ] Simulate Spot replacement
-    - [ ] Calculate bin packing savings
-    - [ ] Return ChartData schema
+- [x] Create `backend/modules/spot_optimizer.py`
+  - [x] Implement `select_best_instance()` - Instance selection logic
+    - [x] Query Redis for current Spot prices
+    - [x] Query global risk tracker for flagged pools
+    - [x] Filter out risky pools
+    - [x] Score: (Price * 0.6) + (Risk * 0.4)
+    - [x] Return sorted candidate list
+  - [x] Implement `detect_opportunities()` - Waste detection
+    - [x] Find On-Demand instances with <30% utilization
+    - [x] Identify Spot replacement candidates
+    - [x] Return opportunity list
+  - [x] Implement `get_savings_projection()` - Projection calculation
+    - [x] Simulate Spot replacement
+    - [x] Calculate bin packing savings
+    - [x] Return ChartData schema
 
 ### 4.2 Bin Packing Module (MOD-PACK-01)
-- [ ] Create `backend/modules/bin_packer.py`
-  - [ ] Implement `analyze_fragmentation()` - Cluster analysis
-    - [ ] Calculate node utilization
-    - [ ] Identify consolidation opportunities
-  - [ ] Implement `generate_migration_plan()` - Pod migration
-    - [ ] Create migration plan JSON
-    - [ ] Respect PodDisruptionBudgets
-    - [ ] Return migration plan
+- [x] Create `backend/modules/bin_packer.py`
+  - [x] Implement `analyze_fragmentation()` - Cluster analysis
+    - [x] Calculate node utilization
+    - [x] Identify consolidation opportunities
+  - [x] Implement `generate_migration_plan()` - Pod migration
+    - [x] Create migration plan JSON
+    - [x] Respect PodDisruptionBudgets
+    - [x] Return migration plan
 
 ### 4.3 Right-Sizing Module (MOD-SIZE-01)
-- [ ] Create `backend/modules/rightsizer.py`
-  - [ ] Implement `analyze_resource_usage()` - 14-day analysis
-    - [ ] Query Prometheus metrics
-    - [ ] Compare requests vs actual usage
-  - [ ] Implement `generate_resize_recommendations()` - Recommendations
-    - [ ] Suggest smaller instance types
-    - [ ] Calculate potential savings
+- [x] Create `backend/modules/rightsizer.py`
+  - [x] Implement `analyze_resource_usage()` - 14-day analysis
+    - [x] Query Prometheus metrics
+    - [x] Compare requests vs actual usage
+  - [x] Implement `generate_resize_recommendations()` - Recommendations
+    - [x] Suggest smaller instance types
+    - [x] Calculate potential savings
 
 ### 4.4 ML Model Server (MOD-AI-01)
-- [ ] Create `backend/modules/ml_model_server.py`
-  - [ ] Implement `predict_interruption_risk()` - ML prediction
-    - [ ] Load trained model from file
-    - [ ] Prepare feature vector (instance_type, AZ, price_history, hour, day)
-    - [ ] Return interruption probability (0-1)
-  - [ ] Implement `promote_model_to_production()` - Model graduation
-    - [ ] Update ml_models table status
-    - [ ] Broadcast Redis event for hot reload
-  - [ ] Implement model validation contract checker
-    - [ ] Verify input/output schema matches v1.0 contract
+- [x] Create `backend/modules/ml_model_server.py`
+  - [x] Implement `predict_interruption_risk()` - ML prediction
+    - [x] Load trained model from file
+    - [x] Prepare feature vector (instance_type, AZ, price_history, hour, day)
+    - [x] Return interruption probability (0-1)
+  - [x] Implement `promote_model_to_production()` - Model graduation
+    - [x] Update ml_models table status
+    - [x] Broadcast Redis event for hot reload
+  - [x] Implement model validation contract checker
+    - [x] Verify input/output schema matches v1.0 contract
 
 ### 4.5 Model Validator (MOD-VAL-01)
-- [ ] Create `backend/modules/model_validator.py`
-  - [ ] Implement `validate_template_compatibility()` - Template validation
-    - [ ] Check instance family vs architecture compatibility
-    - [ ] Return warnings list
-  - [ ] Implement `validate_ml_model()` - ML model validation
-    - [ ] Spin up Docker sandbox
-    - [ ] Load model and test with sample input
-    - [ ] Verify output contract
-    - [ ] Return validation result
+- [x] Create `backend/modules/model_validator.py`
+  - [x] Implement `validate_template_compatibility()` - Template validation
+    - [x] Check instance family vs architecture compatibility
+    - [x] Return warnings list
+  - [x] Implement `validate_ml_model()` - ML model validation
+    - [x] Spin up Docker sandbox
+    - [x] Load model and test with sample input
+    - [x] Verify output contract
+    - [x] Return validation result
 
 ### 4.6 Global Risk Tracker (SVC-RISK-GLB)
-- [ ] Create `backend/modules/risk_tracker.py`
-  - [ ] Implement `flag_risky_pool()` - Risk flagging
-    - [ ] Set Redis key: `RISK:{region}:{az}:{instance_type}` = "DANGER"
-    - [ ] Set TTL to 30 minutes
-    - [ ] Increment interruption counter
-  - [ ] Implement `check_pool_risk()` - Risk checking
-    - [ ] Query Redis for risk flags
-    - [ ] Return risk status
+- [x] Create `backend/modules/risk_tracker.py`
+  - [x] Implement `flag_risky_pool()` - Risk flagging
+    - [x] Set Redis key: `RISK:{region}:{az}:{instance_type}` = "DANGER"
+    - [x] Set TTL to 30 minutes
+    - [x] Increment interruption counter
+  - [x] Implement `check_pool_risk()` - Risk checking
+    - [x] Query Redis for risk flags
+    - [x] Return risk status
 
 ---
 
 ## Phase 5: Background Workers Implementation
 
 ### 5.1 Discovery Worker (WORK-DISC-01)
-- [ ] Create `backend/workers/discovery_worker.py`
-  - [ ] Implement `discovery_worker_loop()` - Main loop
-    - [ ] Query DB for active accounts
-    - [ ] For each account: assume IAM role via STS
-    - [ ] Call AWS ec2.describe_instances()
-    - [ ] Call AWS eks.list_clusters()
-    - [ ] Calculate diff with previous state
-    - [ ] Update instances table (UPSERT)
-    - [ ] Fetch CloudWatch metrics
-  - [ ] Implement `stream_discovery_status()` - WebSocket stream
-    - [ ] Stream progress updates to frontend
-  - [ ] Configure Celery task with 5-minute cron schedule
+- [x] Create `backend/workers/discovery_worker.py`
+  - [x] Implement `discovery_worker_loop()` - Main loop
+    - [x] Query DB for active accounts
+    - [x] For each account: assume IAM role via STS
+    - [x] Call AWS ec2.describe_instances()
+    - [x] Call AWS eks.list_clusters()
+    - [x] Calculate diff with previous state
+    - [x] Update instances table (UPSERT)
+    - [x] Fetch CloudWatch metrics
+  - [x] Implement `stream_discovery_status()` - WebSocket stream
+    - [x] Stream progress updates to frontend
+  - [x] Configure Celery task with 5-minute cron schedule
 
 ### 5.2 Optimizer Worker (WORK-OPT-01)
-- [ ] Create `backend/workers/optimizer_worker.py`
-  - [ ] Implement `trigger_manual_optimization()` - Manual trigger
-    - [ ] Create Celery task
-    - [ ] Return job_id
-  - [ ] Implement optimization pipeline
-    - [ ] Read cluster_policies from DB
-    - [ ] Call MOD-SPOT-01.detect_opportunities()
-    - [ ] Call MOD-AI-01.predict_interruption_risk()
-    - [ ] Pass to CORE-DECIDE for conflict resolution
-    - [ ] Execute action plan via CORE-EXEC
+- [x] Create `backend/workers/optimizer_worker.py`
+  - [x] Implement `trigger_manual_optimization()` - Manual trigger
+    - [x] Create Celery task
+    - [x] Return job_id
+  - [x] Implement optimization pipeline
+    - [x] Read cluster_policies from DB
+    - [x] Call MOD-SPOT-01.detect_opportunities()
+    - [x] Call MOD-AI-01.predict_interruption_risk()
+    - [x] Pass to CORE-DECIDE for conflict resolution
+    - [x] Execute action plan via CORE-EXEC
 
 ### 5.3 Hibernation Worker (WORK-HIB-01)
-- [ ] Create `backend/workers/hibernation_worker.py`
-  - [ ] Implement schedule checker (runs every 1 minute)
-    - [ ] Query hibernation_schedules
-    - [ ] Convert timezone to UTC
-    - [ ] Check current time against schedule matrix
-    - [ ] Trigger sleep/wake actions via AWS ASG scripts
-  - [ ] Implement pre-warm logic (30 minutes before wake)
+- [x] Create `backend/workers/hibernation_worker.py`
+  - [x] Implement schedule checker (runs every 1 minute)
+    - [x] Query hibernation_schedules
+    - [x] Convert timezone to UTC
+    - [x] Check current time against schedule matrix
+    - [x] Trigger sleep/wake actions via AWS ASG scripts
+  - [x] Implement pre-warm logic (30 minutes before wake)
 
 ### 5.4 Report Generator (WORK-RPT-01)
-- [ ] Create `backend/workers/report_worker.py`
-  - [ ] Implement weekly report generation
-    - [ ] Aggregate savings data
-    - [ ] Generate email HTML template
-    - [ ] Send via SendGrid/SES
-  - [ ] Configure Celery task with weekly cron schedule
+- [x] Create `backend/workers/report_worker.py`
+  - [x] Implement weekly report generation
+    - [x] Aggregate savings data
+    - [x] Generate email HTML template
+    - [x] Send via SendGrid/SES
+  - [x] Configure Celery task with weekly cron schedule
 
 ### 5.5 Event Processor Worker (WORK-EVT-01) - Real-Time Event Processing
 > **CRITICAL**: Powers the "Hive Mind" Global Risk Tracker by processing interruption events in real-time
 
-- [ ] Create `backend/workers/event_processor.py`
-  - [ ] **Purpose**: Process high-priority cluster events asynchronously to update Global Risk system
-  - [ ] Implement `process_incoming_event_queue()` - Main Celery task
-    - [ ] Triggered when Agent sends events via API
-    - [ ] Processes events in batches for efficiency
-    - [ ] Priority queue: Interruptions > OOMKilled > Other events
+- [x] Create `backend/workers/event_processor.py`
+  - [x] **Purpose**: Process high-priority cluster events asynchronously to update Global Risk system
+  - [x] Implement `process_incoming_event_queue()` - Main Celery task
+    - [x] Triggered when Agent sends events via API
+    - [x] Processes events in batches for efficiency
+    - [x] Priority queue: Interruptions > OOMKilled > Other events
 
-- [ ] Implement event handlers by type:
+- [x] Implement event handlers by type:
   
   **A. Spot Interruption Warning Handler** (CRITICAL for Hive Mind):
-  - [ ] `handle_spot_interruption_event()`
-    - [ ] **Input**: Event from Agent containing:
+  - [x] `handle_spot_interruption_event()`
+    - [x] **Input**: Event from Agent containing:
       ```json
       {
         "event_type": "spot_interruption_warning",
@@ -494,110 +494,110 @@
         "warning_time": "2025-12-31T18:02:00Z"
       }
       ```
-    - [ ] **Immediately call** `SVC-RISK-GLB.flag_risky_pool()`:
+    - [x] **Immediately call** `SVC-RISK-GLB.flag_risky_pool()`:
       - [ ] Set Redis key: `RISK:us-east-1a:c5.xlarge` = "DANGER"
       - [ ] TTL: 30 minutes
       - [ ] Increment interruption counter
-    - [ ] **Trigger immediate rebalancing** for affected cluster:
+    - [x] **Trigger immediate rebalancing** for affected cluster:
       - [ ] Queue optimization job with priority=HIGH
       - [ ] Call CORE-DECIDE to find replacement nodes
       - [ ] Avoid the flagged pool for ALL clients
-    - [ ] **Log to audit_logs**: "Global Risk: c5.xlarge in us-east-1a flagged"
-    - [ ] **Emit WebSocket event**: Notify all admins of new risk flag
-    - [ ] **Critical**: This ensures Client B is protected within milliseconds when Client A gets interrupted
+    - [x] **Log to audit_logs**: "Global Risk: c5.xlarge in us-east-1a flagged"
+    - [x] **Emit WebSocket event**: Notify all admins of new risk flag
+    - [x] **Critical**: This ensures Client B is protected within milliseconds when Client A gets interrupted
 
   **B. Pod OOMKilled Handler**:
-  - [ ] `handle_oom_killed_event()`
-    - [ ] **Input**: Pod name, namespace, memory limit, actual usage
-    - [ ] **Trigger** `MOD-SIZE-01` (Right-Sizer):
+  - [x] `handle_oom_killed_event()`
+    - [x] **Input**: Pod name, namespace, memory limit, actual usage
+    - [x] **Trigger** `MOD-SIZE-01` (Right-Sizer):
       - [ ] Recalculate memory recommendations for that deployment
       - [ ] Suggest increased memory limits
-    - [ ] **Create recommendation** in database
-    - [ ] **Notify user** via dashboard (WebSocket)
+    - [x] **Create recommendation** in database
+    - [x] **Notify user** via dashboard (WebSocket)
 
   **C. Node Not Ready Handler**:
-  - [ ] `handle_node_not_ready_event()`
-    - [ ] Check if node is Spot instance
-    - [ ] If yes: Likely interruption, call `handle_spot_interruption_event()`
-    - [ ] If no: Infrastructure issue, log for investigation
+  - [x] `handle_node_not_ready_event()`
+    - [x] Check if node is Spot instance
+    - [x] If yes: Likely interruption, call `handle_spot_interruption_event()`
+    - [x] If no: Infrastructure issue, log for investigation
 
   **D. Pod Pending Handler**:
-  - [ ] `handle_pod_pending_event()`
-    - [ ] Check reason: Insufficient resources vs other
-    - [ ] If insufficient: Trigger autoscaler
-    - [ ] If other: Log for debugging
+  - [x] `handle_pod_pending_event()`
+    - [x] Check reason: Insufficient resources vs other
+    - [x] If insufficient: Trigger autoscaler
+    - [x] If other: Log for debugging
 
-- [ ] Implement event deduplication:
-  - [ ] Use Redis to track processed event IDs
-  - [ ] TTL: 5 minutes
-  - [ ] Skip duplicate events to prevent double-processing
+- [x] Implement event deduplication:
+  - [x] Use Redis to track processed event IDs
+  - [x] TTL: 5 minutes
+  - [x] Skip duplicate events to prevent double-processing
 
-- [ ] Implement event expiration:
-  - [ ] Ignore events older than 5 minutes
-  - [ ] Prevents processing stale events after Agent reconnection
+- [x] Implement event expiration:
+  - [x] Ignore events older than 5 minutes
+  - [x] Prevents processing stale events after Agent reconnection
 
-- [ ] Configure Celery task:
-  - [ ] Queue: `event_processing` (high priority)
-  - [ ] Concurrency: 10 workers (events must be processed fast)
-  - [ ] Retry: 3 attempts with exponential backoff
-  - [ ] Timeout: 30 seconds per event
+- [x] Configure Celery task:
+  - [x] Queue: `event_processing` (high priority)
+  - [x] Concurrency: 10 workers (events must be processed fast)
+  - [x] Retry: 3 attempts with exponential backoff
+  - [x] Timeout: 30 seconds per event
 
-- [ ] Implement monitoring:
-  - [ ] Track event processing latency
-  - [ ] Alert if latency > 1 second (risk flag must be instant)
-  - [ ] Track event queue depth
-  - [ ] Alert if queue > 100 events (backlog)
+- [x] Implement monitoring:
+  - [x] Track event processing latency
+  - [x] Alert if latency > 1 second (risk flag must be instant)
+  - [x] Track event queue depth
+  - [x] Alert if queue > 100 events (backlog)
 
 ---
 
 ## Phase 6: Data Collection Services
 
 ### 6.1 Spot Advisor Scraper (SVC-SCRAPE-01)
-- [ ] Create `backend/scrapers/spot_advisor_scraper.py`
-  - [ ] Implement AWS Spot Advisor API scraper
-    - [ ] Fetch interruption frequency data
-    - [ ] Parse frequency buckets (<5%, 5-10%, 10-15%, 15-20%, >20%)
-    - [ ] Store in interruption_rates table
-  - [ ] Configure Celery task with 6-hour schedule
+- [x] Create `backend/scrapers/spot_advisor_scraper.py`
+  - [x] Implement AWS Spot Advisor API scraper
+    - [x] Fetch interruption frequency data
+    - [x] Parse frequency buckets (<5%, 5-10%, 10-15%, 15-20%, >20%)
+    - [x] Store in interruption_rates table
+  - [x] Configure Celery task with 6-hour schedule
 
 ### 6.2 Pricing Collector (SVC-PRICE-01)
-- [ ] Create `backend/scrapers/pricing_collector.py`
-  - [ ] Implement AWS Price List API collector
-    - [ ] Fetch real-time Spot prices
-    - [ ] Fetch On-Demand prices
-    - [ ] Store in Redis with 5-minute TTL
-    - [ ] Data structure: `spot_prices:{region}:{instance_type}`
-  - [ ] Configure Celery task with 5-minute schedule
+- [x] Create `backend/scrapers/pricing_collector.py`
+  - [x] Implement AWS Price List API collector
+    - [x] Fetch real-time Spot prices
+    - [x] Fetch On-Demand prices
+    - [x] Store in Redis with 5-minute TTL
+    - [x] Data structure: `spot_prices:{region}:{instance_type}`
+  - [x] Configure Celery task with 5-minute schedule
 
 ---
 
 ## Phase 7: Core System Components
 
 ### 7.1 Decision Engine (CORE-DECIDE)
-- [ ] Create `backend/core/decision_engine.py`
-  - [ ] Implement `resolve_conflicts()` - Conflict resolution
-    - [ ] Aggregate recommendations from all modules
-    - [ ] Apply priority rules (Stability > Savings)
-    - [ ] Example: Block deletion if replacement node is risky
-    - [ ] Return final action plan JSON
+- [x] Create `backend/core/decision_engine.py`
+  - [x] Implement `resolve_conflicts()` - Conflict resolution
+    - [x] Aggregate recommendations from all modules
+    - [x] Apply priority rules (Stability > Savings)
+    - [x] Example: Block deletion if replacement node is risky
+    - [x] Return final action plan JSON
 
 ### 7.2 Action Executor (CORE-EXEC)
-- [ ] Create `backend/core/action_executor.py`
-  - [ ] Implement `execute_action_plan()` - Main orchestration
-    - [ ] Check Redis SAFE_MODE flag
-    - [ ] If SAFE_MODE=TRUE, run in DryRun mode (log only)
-    - [ ] Route each action to appropriate executor
-    - [ ] Log to audit_logs table
-    - [ ] Return execution results
-  - [ ] Implement error handling and rollback logic
+- [x] Create `backend/core/action_executor.py`
+  - [x] Implement `execute_action_plan()` - Main orchestration
+    - [x] Check Redis SAFE_MODE flag
+    - [x] If SAFE_MODE=TRUE, run in DryRun mode (log only)
+    - [x] Route each action to appropriate executor
+    - [x] Log to audit_logs table
+    - [x] Return execution results
+  - [x] Implement error handling and rollback logic
 
 ### 7.2.1 Hybrid Execution Router (CRITICAL - Worker-to-Agent Bridge)
 > **Purpose**: Routes actions to the correct execution layer (AWS Boto3 vs Kubernetes Agent)
 
-- [ ] Implement `route_action_execution()` - Action routing logic
-  - [ ] **Input**: Action plan JSON from CORE-DECIDE
-  - [ ] **Output**: Execution results or queue confirmation
-  - [ ] **Routing Logic**:
+- [x] Implement `route_action_execution()` - Action routing logic
+  - [x] **Input**: Action plan JSON from CORE-DECIDE
+  - [x] **Output**: Execution results or queue confirmation
+  - [x] **Routing Logic**:
     ```python
     for action in action_plan['actions']:
         if action['type'] in ['terminate_instance', 'launch_spot', 'detach_volume', 'update_asg']:
@@ -610,53 +610,53 @@
             raise ValueError(f"Unknown action type: {action['type']}")
     ```
 
-- [ ] Implement `execute_aws_action()` - Direct AWS execution
-  - [ ] Map action type to boto3 script:
-    - [ ] `terminate_instance` → `scripts/aws/terminate_instance.py`
-    - [ ] `launch_spot` → `scripts/aws/launch_spot.py`
-    - [ ] `detach_volume` → `scripts/aws/detach_volume.py`
-    - [ ] `update_asg` → `scripts/aws/update_asg.py`
-  - [ ] Execute script with subprocess or direct import
-  - [ ] Capture stdout/stderr
-  - [ ] Return execution result immediately
-  - [ ] Log to audit_logs with actor="System (Boto3)"
+- [x] Implement `execute_aws_action()` - Direct AWS execution
+  - [x] Map action type to boto3 script:
+    - [x] `terminate_instance` → `scripts/aws/terminate_instance.py`
+    - [x] `launch_spot` → `scripts/aws/launch_spot.py`
+    - [x] `detach_volume` → `scripts/aws/detach_volume.py`
+    - [x] `update_asg` → `scripts/aws/update_asg.py`
+  - [x] Execute script with subprocess or direct import
+  - [x] Capture stdout/stderr
+  - [x] Return execution result immediately
+  - [x] Log to audit_logs with actor="System (Boto3)"
 
-- [ ] Implement `queue_for_agent()` - Queue K8s actions for Agent
-  - [ ] **Create record in `agent_action` table**:
-    - [ ] cluster_id: from action payload
-    - [ ] action_type: evict_pod/cordon_node/etc
-    - [ ] payload: JSONB with action details (pod_name, namespace, etc)
-    - [ ] status: 'pending'
-    - [ ] created_at: current timestamp
-    - [ ] expires_at: current timestamp + 5 minutes
-  - [ ] **Emit WebSocket event** to wake up Agent immediately:
-    - [ ] Channel: `agent:command:{cluster_id}`
-    - [ ] Payload: `{"action_id": action_id, "type": action_type}`
-    - [ ] Use Redis pub/sub from Phase 3.10
-  - [ ] **Return queue confirmation** (not execution result):
-    - [ ] `{"status": "queued", "action_id": action_id, "expires_at": timestamp}`
-  - [ ] Log to audit_logs with actor="System (Queued for Agent)"
+- [x] Implement `queue_for_agent()` - Queue K8s actions for Agent
+  - [x] **Create record in `agent_action` table**:
+    - [x] cluster_id: from action payload
+    - [x] action_type: evict_pod/cordon_node/etc
+    - [x] payload: JSONB with action details (pod_name, namespace, etc)
+    - [x] status: 'pending'
+    - [x] created_at: current timestamp
+    - [x] expires_at: current timestamp + 5 minutes
+  - [x] **Emit WebSocket event** to wake up Agent immediately:
+    - [x] Channel: `agent:command:{cluster_id}`
+    - [x] Payload: `{"action_id": action_id, "type": action_type}`
+    - [x] Use Redis pub/sub from Phase 3.10
+  - [x] **Return queue confirmation** (not execution result):
+    - [x] `{"status": "queued", "action_id": action_id, "expires_at": timestamp}`
+  - [x] Log to audit_logs with actor="System (Queued for Agent)"
 
-- [ ] Implement `check_agent_action_status()` - Poll for completion
-  - [ ] Query `agent_action` table by action_id
-  - [ ] Return current status (pending/picked_up/completed/failed)
-  - [ ] If completed: return result from result JSONB field
-  - [ ] If failed: return error_message
-  - [ ] If expired: mark as failed with "timeout" error
+- [x] Implement `check_agent_action_status()` - Poll for completion
+  - [x] Query `agent_action` table by action_id
+  - [x] Return current status (pending/picked_up/completed/failed)
+  - [x] If completed: return result from result JSONB field
+  - [x] If failed: return error_message
+  - [x] If expired: mark as failed with "timeout" error
 
-- [ ] Implement cleanup job for expired actions
-  - [ ] Celery task runs every 1 minute
-  - [ ] Query `agent_action` where status='pending' AND expires_at < now()
-  - [ ] Update status to 'failed' with error="Action expired"
-  - [ ] Notify optimization_job of failure
+- [x] Implement cleanup job for expired actions
+  - [x] Celery task runs every 1 minute
+  - [x] Query `agent_action` where status='pending' AND expires_at < now()
+  - [x] Update status to 'failed' with error="Action expired"
+  - [x] Notify optimization_job of failure
 
 ### 7.3 API Gateway (CORE-API)
-- [ ] Create `backend/core/api_gateway.py` - FastAPI application
-  - [ ] Configure CORS middleware
-  - [ ] Configure JWT authentication middleware
-  - [ ] Configure rate limiting
-  - [ ] Configure request logging
-  - [ ] Mount all API route modules
+- [x] Create `backend/core/api_gateway.py` - FastAPI application
+  - [x] Configure CORS middleware
+  - [x] Configure JWT authentication middleware
+  - [x] Configure rate limiting
+  - [x] Configure request logging
+  - [x] Mount all API route modules
 
 ---
 
@@ -894,24 +894,24 @@
 ## Phase 9: AWS Boto3 Scripts
 
 ### 9.1 Instance Management Scripts
-- [ ] Create `scripts/aws/terminate_instance.py` (SCRIPT-TERM-01)
-  - [ ] Implement graceful drain logic
-  - [ ] Check PodDisruptionBudgets
-  - [ ] Call ec2.terminate_instances()
-  - [ ] Support DryRun mode
-- [ ] Create `scripts/aws/launch_spot.py` (SCRIPT-SPOT-01)
-  - [ ] Implement Spot Fleet request
-  - [ ] Validate capacity
-  - [ ] Call ec2.request_spot_fleet()
-  - [ ] Support DryRun mode
-- [ ] Create `scripts/aws/detach_volume.py` (SCRIPT-VOL-01)
-  - [ ] Wait for unmount
-  - [ ] Call ec2.detach_volume()
-  - [ ] Support DryRun mode
-- [ ] Create `scripts/aws/update_asg.py` (SCRIPT-ASG-01)
-  - [ ] Validate min/max capacity
-  - [ ] Call autoscaling.update_auto_scaling_group()
-  - [ ] Support DryRun mode
+- [x] Create `scripts/aws/terminate_instance.py` (SCRIPT-TERM-01)
+  - [x] Implement graceful drain logic
+  - [x] Check PodDisruptionBudgets
+  - [x] Call ec2.terminate_instances()
+  - [x] Support DryRun mode
+- [x] Create `scripts/aws/launch_spot.py` (SCRIPT-SPOT-01)
+  - [x] Implement Spot Fleet request
+  - [x] Validate capacity
+  - [x] Call ec2.request_spot_fleet()
+  - [x] Support DryRun mode
+- [x] Create `scripts/aws/detach_volume.py` (SCRIPT-VOL-01)
+  - [x] Wait for unmount
+  - [x] Call ec2.detach_volume()
+  - [x] Support DryRun mode
+- [x] Create `scripts/aws/update_asg.py` (SCRIPT-ASG-01)
+  - [x] Validate min/max capacity
+  - [x] Call autoscaling.update_auto_scaling_group()
+  - [x] Support DryRun mode
 
 ---
 
