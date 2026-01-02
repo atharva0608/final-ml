@@ -24,6 +24,10 @@ import HibernationSchedule from './components/hibernation/HibernationSchedule';
 import AuditLog from './components/audit/AuditLog';
 import AccountSettings from './components/settings/AccountSettings';
 import CloudIntegrations from './components/settings/CloudIntegrations';
+import ExperimentLab from './components/lab/ExperimentLab';
+import AdminDashboard from './components/admin/AdminDashboard';
+import AdminClients from './components/admin/AdminClients';
+import AdminHealth from './components/admin/AdminHealth';
 
 // Protected Route Component
 const ProtectedRoute = ({ children }) => {
@@ -111,12 +115,14 @@ function App() {
             <Route path="policies" element={<PolicyConfig />} />
             <Route path="hibernation" element={<HibernationSchedule />} />
             <Route path="audit" element={<AuditLog />} />
+            <Route path="lab" element={<ExperimentLab />} />
             <Route path="settings/account" element={<AccountSettings />} />
             <Route path="settings/integrations" element={<CloudIntegrations />} />
 
-            {/* Placeholder routes for remaining features */}
-            <Route path="lab" element={<div className="text-2xl font-bold text-gray-900">Lab Experiments - Coming Soon</div>} />
-            <Route path="admin" element={<div className="text-2xl font-bold text-gray-900">Admin Portal - Coming Soon</div>} />
+            {/* Admin Routes (role-protected) */}
+            <Route path="admin" element={<AdminDashboard />} />
+            <Route path="admin/clients" element={<AdminClients />} />
+            <Route path="admin/health" element={<AdminHealth />} />
           </Route>
 
           {/* Catch All - 404 */}
