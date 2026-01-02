@@ -111,39 +111,39 @@
 ## Phase 2: Database Layer Implementation
 
 ### 2.1 Database Models (SQLAlchemy)
-- [ ] Create `backend/models/user.py` - User model
+- [x] Create `backend/models/user.py` - User model
   - [ ] Fields: id (UUID), email (unique), password_hash, role (enum: client/super_admin), created_at, updated_at
   - [ ] Relationship to accounts table
   - [ ] Password hashing methods
-- [ ] Create `backend/models/account.py` - AWS Account model
+- [x] Create `backend/models/account.py` - AWS Account model
   - [ ] Fields: id (UUID), user_id (FK), aws_account_id, role_arn, external_id, status (enum: pending/scanning/active), created_at
   - [ ] Relationship to users and clusters
-- [ ] Create `backend/models/cluster.py` - Kubernetes Cluster model
+- [x] Create `backend/models/cluster.py` - Kubernetes Cluster model
   - [ ] Fields: id (UUID), account_id (FK), name, region, vpc_id, api_endpoint, k8s_version, status, created_at
   - [ ] Relationship to instances and policies
-- [ ] Create `backend/models/instance.py` - EC2 Instance model
+- [x] Create `backend/models/instance.py` - EC2 Instance model
   - [ ] Fields: id (UUID), cluster_id (FK), instance_id, instance_type, lifecycle (spot/on_demand), az, price, cpu_util, memory_util, created_at
   - [ ] Indexes on cluster_id and instance_id
-- [ ] Create `backend/models/node_template.py` - Node Template model
+- [x] Create `backend/models/node_template.py` - Node Template model
   - [ ] Fields: id (UUID), user_id (FK), name, families (ARRAY), architecture, strategy, disk_type, disk_size, is_default, created_at
   - [ ] Unique constraint on (user_id, name)
-- [ ] Create `backend/models/cluster_policy.py` - Cluster Policy model
+- [x] Create `backend/models/cluster_policy.py` - Cluster Policy model
   - [ ] Fields: id (UUID), cluster_id (FK), config (JSONB), updated_at
   - [ ] JSONB structure for karpenter, binpack, fallback, exclusions
-- [ ] Create `backend/models/hibernation_schedule.py` - Hibernation Schedule model
+- [x] Create `backend/models/hibernation_schedule.py` - Hibernation Schedule model
   - [ ] Fields: id (UUID), cluster_id (FK), schedule_matrix (JSONB - 168 elements), timezone, prewarm_enabled, prewarm_minutes
   - [ ] Unique constraint on cluster_id
-- [ ] Create `backend/models/audit_log.py` - Audit Log model
+- [x] Create `backend/models/audit_log.py` - Audit Log model
   - [ ] Fields: id (UUID), timestamp (with milliseconds), actor_id, actor_name, event, resource, resource_type, outcome, ip_address, user_agent, diff_before (JSONB), diff_after (JSONB)
   - [ ] Indexes on timestamp, actor_id, resource_type
   - [ ] Immutable (no updates allowed)
-- [ ] Create `backend/models/ml_model.py` - ML Model Registry
+- [x] Create `backend/models/ml_model.py` - ML Model Registry
   - [ ] Fields: id (UUID), version, file_path, status (enum: testing/production), uploaded_at, validated_at, performance_metrics (JSONB)
-- [ ] Create `backend/models/optimization_job.py` - Optimization Job model
+- [x] Create `backend/models/optimization_job.py` - Optimization Job model
   - [ ] Fields: id (UUID), cluster_id (FK), status (enum: queued/running/completed/failed), created_at, completed_at, results (JSONB)
-- [ ] Create `backend/models/lab_experiment.py` - Lab Experiment model
+- [x] Create `backend/models/lab_experiment.py` - Lab Experiment model
   - [ ] Fields: id (UUID), model_id (FK), instance_id, test_type, telemetry (JSONB), created_at
-- [ ] Create `backend/models/agent_action.py` - Pending Agent Actions Queue
+- [x] Create `backend/models/agent_action.py` - Pending Agent Actions Queue
   - [ ] **Purpose**: Queue for Kubernetes actions that must be executed by the Agent (not Boto3)
   - [ ] Fields: id (UUID), cluster_id (FK), action_type (enum: evict_pod/cordon_node/drain_node/label_node/update_deployment), payload (JSONB), status (enum: pending/picked_up/completed/failed), created_at, expires_at, picked_up_at, completed_at, result (JSONB), error_message
   - [ ] Indexes:
@@ -157,7 +157,7 @@
     - [ ] Foreign key to clusters table
     - [ ] Optional foreign key to optimization_jobs table (if triggered by optimizer)
   - [ ] **Critical for Worker-to-Agent communication loop**
-- [ ] Create `backend/models/api_key.py` - Agent API Key Management
+- [x] Create `backend/models/api_key.py` - Agent API Key Management
   - [ ] **Purpose**: Secure storage and management of Agent authentication tokens
   - [ ] Fields: id (UUID), cluster_id (FK), key_hash (SHA-256), prefix (first 8 chars for display), name (optional label), created_at, last_used_at, expires_at (optional), revoked (boolean), revoked_at, revoked_reason
   - [ ] Indexes:
@@ -173,37 +173,37 @@
   - [ ] **Best Practice**: Allows revoking compromised Agent tokens without deleting cluster
 
 ### 2.2 Database Migrations
-- [ ] Initialize Alembic for database migrations
+- [x] Initialize Alembic for database migrations
   - [ ] Create `alembic.ini` configuration
   - [ ] Create `migrations/` directory structure
-- [ ] Create initial migration for all models
+- [x] Create initial migration for all models
   - [ ] Generate migration script: `alembic revision --autogenerate -m "Initial schema"`
   - [ ] Review and adjust migration script
   - [ ] Add indexes for performance
   - [ ] Add constraints and foreign keys
-- [ ] Create seed data migration
+- [x] Create seed data migration
   - [ ] Default super_admin user
   - [ ] Sample node templates
   - [ ] Default cluster policies
 
 ### 2.3 Pydantic Schemas
-- [ ] Create `backend/schemas/auth_schemas.py`
+- [x] Create `backend/schemas/auth_schemas.py`
   - [ ] SignupRequest, LoginRequest, TokenResponse, UserContext schemas
-- [ ] Create `backend/schemas/cluster_schemas.py`
+- [x] Create `backend/schemas/cluster_schemas.py`
   - [ ] ClusterList, ClusterDetail, AgentCmd, Heartbeat, JobId schemas
-- [ ] Create `backend/schemas/template_schemas.py`
+- [x] Create `backend/schemas/template_schemas.py`
   - [ ] TmplList, NodeTemplate, TemplateValidation schemas
-- [ ] Create `backend/schemas/policy_schemas.py`
+- [x] Create `backend/schemas/policy_schemas.py`
   - [ ] PolState, PolicyUpdate schemas
-- [ ] Create `backend/schemas/hibernation_schemas.py`
+- [x] Create `backend/schemas/hibernation_schemas.py`
   - [ ] ScheduleMatrix, Override schemas
-- [ ] Create `backend/schemas/metric_schemas.py`
+- [x] Create `backend/schemas/metric_schemas.py`
   - [ ] KPISet, ChartData, PieData, FeedData schemas
-- [ ] Create `backend/schemas/audit_schemas.py`
+- [x] Create `backend/schemas/audit_schemas.py`
   - [ ] AuditLogList, AuditLog, DiffData schemas
-- [ ] Create `backend/schemas/admin_schemas.py`
+- [x] Create `backend/schemas/admin_schemas.py`
   - [ ] ClientList, ClientOrg schemas
-- [ ] Create `backend/schemas/lab_schemas.py`
+- [x] Create `backend/schemas/lab_schemas.py`
   - [ ] TelemetryData, ABTestConfig, ABResults schemas
 
 ---
@@ -211,7 +211,7 @@
 ## Phase 3: Backend Core Services Implementation
 
 ### 3.1 Authentication Service (CORE-API)
-- [ ] Create `backend/services/auth_service.py`
+- [x] Create `backend/services/auth_service.py`
   - [ ] Implement `create_user_org_txn()` - Atomic user + org creation
     - [ ] Validate email format and password strength
     - [ ] Hash password with bcrypt
@@ -235,7 +235,7 @@
     - [ ] Extract user context
 
 ### 3.2 Cloud Connection Service
-- [ ] Create `backend/services/cloud_connect.py`
+- [x] Create `backend/services/cloud_connect.py`
   - [ ] Implement `validate_aws_connection()` - IAM role verification
     - [ ] Use boto3 STS to assume role
     - [ ] Validate permissions (ec2:Describe*, eks:List*)
@@ -247,7 +247,7 @@
     - [ ] Return setup instructions
 
 ### 3.3 Cluster Service
-- [ ] Create `backend/services/cluster_service.py`
+- [x] Create `backend/services/cluster_service.py`
   - [ ] Implement `list_managed_clusters()` - Cluster registry
     - [ ] Query clusters by user's account_id
     - [ ] Join with instances for node count
@@ -267,14 +267,14 @@
     - [ ] Return connection status (connected if <60s)
 
 ### 3.4 Template Service
-- [ ] Create `backend/services/template_service.py`
+- [x] Create `backend/services/template_service.py`
   - [ ] Implement `list_node_templates()` - Template grid
   - [ ] Implement `create_node_template()` - Template creation
   - [ ] Implement `set_global_default_template()` - Default management
   - [ ] Implement `delete_node_template()` - Soft delete with usage check
 
 ### 3.5 Policy Service
-- [ ] Create `backend/services/policy_service.py`
+- [x] Create `backend/services/policy_service.py`
   - [ ] Implement `update_karpenter_state()` - Karpenter toggle
     - [ ] Update JSONB config in cluster_policies
     - [ ] Broadcast to agents via Redis pub/sub
@@ -283,7 +283,7 @@
   - [ ] Implement `update_exclusion_list()` - Namespace exclusions
 
 ### 3.6 Hibernation Service
-- [ ] Create `backend/services/hibernation_service.py`
+- [x] Create `backend/services/hibernation_service.py`
   - [ ] Implement `save_weekly_schedule()` - Schedule matrix storage
     - [ ] Validate 168-element array
     - [ ] Store in JSONB format
@@ -294,7 +294,7 @@
   - [ ] Implement `update_cluster_timezone()` - Timezone management
 
 ### 3.7 Metrics Service
-- [ ] Create `backend/services/metrics_service.py`
+- [x] Create `backend/services/metrics_service.py`
   - [ ] Implement `calculate_current_spend()` - Monthly spend KPI
     - [ ] Query all instances for user
     - [ ] Calculate: SUM(instance_price * 730 hours)
@@ -307,7 +307,7 @@
     - [ ] Format for activity feed
 
 ### 3.8 Audit Service
-- [ ] Create `backend/services/audit_service.py`
+- [x] Create `backend/services/audit_service.py`
   - [ ] Implement `fetch_audit_logs()` - Paginated logs
   - [ ] Implement `generate_audit_checksum_export()` - Compliance export
     - [ ] Generate CSV with SHA-256 checksum
@@ -315,7 +315,7 @@
   - [ ] Implement audit logging decorator for all write operations
 
 ### 3.9 Admin Service
-- [ ] Create `backend/services/admin_service.py`
+- [x] Create `backend/services/admin_service.py`
   - [ ] Implement `list_all_clients()` - Client registry
   - [ ] Implement `generate_impersonation_token()` - Impersonation
     - [ ] Create temporary JWT with client's org_id
