@@ -120,7 +120,7 @@ const Login = () => {
           <div className="mt-6 p-4 bg-gray-50 rounded-lg border border-gray-200">
             <p className="text-xs font-semibold text-gray-700 mb-2">Demo Credentials:</p>
             <p className="text-xs text-gray-600">Email: admin@spotoptimizer.com</p>
-            <p className="text-xs text-gray-600">Password: admin123</p>
+            <p className="text-xs text-gray-600">Password: Admin@123</p>
           </div>
         </Card>
 

@@ -4,7 +4,7 @@
  * Global state management for the application
  */
 import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
+import { persist, createJSONStorage } from 'zustand/middleware';
 
 // Auth Store
 export const useAuthStore = create(
@@ -35,7 +35,7 @@ export const useAuthStore = create(
     }),
     {
       name: 'auth-storage',
-      getStorage: () => localStorage,
+      storage: createJSONStorage(() => localStorage),
     }
   )
 );
