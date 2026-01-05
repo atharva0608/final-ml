@@ -2431,6 +2431,141 @@ docker-compose -f docker/docker-compose.yml build frontend
 
 ---
 
+### Issue 13: JWT_SECRET_KEY Required Field Missing ✅ FIXED
+**Discovered**: 2026-01-02
+**Severity**: Critical - All backend services fail to start
+
+**Problem**:
+All backend services (backend, celery-worker, celery-beat) crashed immediately with validation error:
+
+```
+pydantic_core._pydantic_core.ValidationError: 1 validation error for Settings
+JWT_SECRET_KEY
+  Field required [type=missing, input_value={'ENVIRONMENT': 'developm...}, input_type=dict]
+```
+
+**Root Cause**:
+- backend/core/config.py defined JWT_SECRET_KEY as: `Field(..., description="JWT secret key")`
+- The `...` means required with no default value
+- No JWT_SECRET_KEY in .env file
+- All services importing settings module failed during startup
+
+**Impact**:
+Complete backend failure - no services could start:
+- ❌ backend (uvicorn)
+- ❌ celery-worker
+- ❌ celery-beat
+
+**Fix Applied**:
+Added default value for development in config.py:
+
+```python
+# Before
+JWT_SECRET_KEY: str = Field(..., description="JWT secret key for signing tokens")
+
+# After
+JWT_SECRET_KEY: str = Field(default="dev-secret-key-change-in-production", description="JWT secret key for signing tokens")
+```
+
+**Files Modified**:
+- backend/core/config.py - Added default value for JWT_SECRET_KEY
+
+**Impact**: Critical fix - Backend services can now start successfully
+
+**Security Note**: Users should override this in production with a secure secret key via .env file.
+
+---
+
+### Issue 14: NameError - 'Organization' Not Defined in report_worker.py ✅ FIXED
+**Discovered**: 2026-01-02
+**Severity**: Critical - Celery workers fail to start
+
+**Problem**:
+Celery worker and beat services crashed with NameError:
+
+```
+File "/app/backend/workers/tasks/report_worker.py", line 130, in <module>
+    org: Organization,
+         ^^^^^^^^^^^^
+NameError: name 'Organization' is not defined
+```
+
+**Root Cause**:
+- report_worker.py used incorrect import paths: `from app.database.models import Organization`
+- Should be: `from backend.database.models import Organization`
+- Wrong module prefix throughout imports (app vs backend)
+- Module structure uses 'backend' as root package, not 'app'
+
+**Incorrect Imports**:
+```python
+from app.core.celery_app import app
+from app.database.session import get_db
+from app.database.models import Organization, Account, Cluster, ...
+from app.core.redis_client import get_redis_client
+```
+
+**Fix Applied**:
+Corrected all import paths in report_worker.py:
+
+```python
+# After (FIXED)
+from backend.workers.app import app
+from backend.database.session import get_db
+from backend.database.models import Organization, Account, Cluster, ...
+from backend.core.redis_client import get_redis_client
+```
+
+**Files Modified**:
+- backend/workers/tasks/report_worker.py - Fixed 4 import statements
+
+**Impact**: Critical fix - Celery workers can now import and start
+
+---
+
+### Issue 15: ImportError - 'ClusterFilter' Not Exported from cluster_schemas ✅ FIXED
+**Discovered**: 2026-01-02
+**Severity**: Critical - Backend service fails to import cluster_service
+
+**Problem**:
+Backend service crashed during import with ImportError:
+
+```
+ImportError: cannot import name 'ClusterFilter' from 'backend.schemas.cluster_schemas'
+```
+
+**Root Cause**:
+- cluster_service.py imported 5 schemas that didn't exist in cluster_schemas.py
+- Missing schemas: ClusterFilter, ClusterCreate, ClusterUpdate, ClusterResponse, AgentInstallCommand
+- These schemas were used throughout cluster_service.py but never defined
+
+**Missing Imports**:
+```python
+from backend.schemas.cluster_schemas import (
+    ClusterCreate,      # ❌ Missing
+    ClusterUpdate,      # ❌ Missing
+    ClusterResponse,    # ❌ Missing
+    ClusterList,        # ✅ Exists
+    ClusterFilter,      # ❌ Missing
+    AgentInstallCommand,# ❌ Missing
+)
+```
+
+**Fix Applied**:
+Created all 5 missing schema classes in cluster_schemas.py:
+
+1. **ClusterFilter** - Filter criteria for listing clusters (account_id, region, cluster_type, status, search, page, page_size)
+2. **ClusterCreate** - Schema for creating new cluster (account_id, name, arn, region, cluster_type, version, endpoint, tags)
+3. **ClusterUpdate** - Schema for updating cluster (name, tags, status)
+4. **ClusterResponse** - Full cluster response (id, account_id, name, arn, region, cluster_type, version, endpoint, status, last_heartbeat, tags, created_at, updated_at)
+5. **AgentInstallCommand** - Agent installation details (cluster_id, install_command, yaml_manifest, instructions)
+
+**Files Modified**:
+- backend/schemas/cluster_schemas.py - Added 5 missing Pydantic schema classes (~60 lines)
+
+**Impact**: Critical fix - Backend can now import cluster_service and start successfully
+
+---
+
 ### Summary of Fixes (Updated 2026-01-02)
 - ✅ **Issue 1**: Critical fix - start.sh now correctly references docker/docker-compose.yml
 - ✅ **Issue 2**: Verification - Dockerfiles exist and are properly configured
@@ -2444,8 +2579,11 @@ docker-compose -f docker/docker-compose.yml build frontend
 - ✅ **Issue 10**: Critical fix - Removed --production flag to include devDependencies for build
 - ✅ **Issue 11**: Critical fix - Fixed directory structure to copy frontend contents correctly
 - ✅ **Issue 12**: Critical fix - Replaced invalid FiFlask icon with FiActivity
+- ✅ **Issue 13**: Critical fix - Added default value for JWT_SECRET_KEY in config.py
+- ✅ **Issue 14**: Critical fix - Fixed import paths in report_worker.py (app → backend)
+- ✅ **Issue 15**: Critical fix - Added 5 missing schema classes to cluster_schemas.py
 
-**Total Issues Fixed**: 8 critical/major fixes
+**Total Issues Fixed**: 11 critical/major fixes
 **Total Verifications**: 2 confirmed working
 **Total Warnings**: 2 documented for user awareness
 
@@ -2458,6 +2596,9 @@ docker-compose -f docker/docker-compose.yml build frontend
 6. Removed --production flag to install devDependencies needed for React build
 7. Fixed COPY command to copy frontend contents, not as subdirectory
 8. Fixed invalid icon import (FiFlask → FiActivity) in MainLayout
+9. Added default JWT_SECRET_KEY value for development
+10. Fixed import paths in report_worker.py (app → backend)
+11. Created 5 missing Pydantic schemas (ClusterFilter, ClusterCreate, ClusterUpdate, ClusterResponse, AgentInstallCommand)
 
-**Application Status**: ✅ Fully Fixed - Ready to start all 6 services
+**Application Status**: ✅ Fully Fixed - All services should now start successfully
 

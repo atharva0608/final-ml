@@ -252,3 +252,57 @@ class OptimizationJobResult(BaseModel):
             }
         }
     }
+
+class ClusterFilter(BaseModel):
+    """Filter criteria for listing clusters"""
+    account_id: Optional[str] = Field(None, description="Filter by account ID")
+    region: Optional[str] = Field(None, description="Filter by AWS region")
+    cluster_type: Optional[str] = Field(None, description="Filter by cluster type")
+    status: Optional[str] = Field(None, description="Filter by status")
+    search: Optional[str] = Field(None, description="Search by name or ARN")
+    page: int = Field(default=1, ge=1, description="Page number")
+    page_size: int = Field(default=20, ge=1, le=100, description="Items per page")
+
+
+class ClusterCreate(BaseModel):
+    """Schema for creating a new cluster"""
+    account_id: str = Field(..., description="Account UUID")
+    name: str = Field(..., min_length=1, max_length=255, description="Cluster name")
+    arn: str = Field(..., description="AWS ARN")
+    region: str = Field(..., description="AWS region")
+    cluster_type: str = Field(..., description="Cluster type (EKS, ECS, EMR, etc.)")
+    version: Optional[str] = Field(None, description="Cluster version")
+    endpoint: Optional[str] = Field(None, description="API endpoint")
+    tags: Optional[Dict[str, str]] = Field(default_factory=dict, description="Resource tags")
+
+
+class ClusterUpdate(BaseModel):
+    """Schema for updating cluster details"""
+    name: Optional[str] = Field(None, min_length=1, max_length=255, description="Cluster name")
+    tags: Optional[Dict[str, str]] = Field(None, description="Resource tags")
+    status: Optional[str] = Field(None, description="Cluster status")
+
+
+class ClusterResponse(BaseModel):
+    """Schema for cluster response"""
+    id: str = Field(..., description="Cluster UUID")
+    account_id: str = Field(..., description="Account UUID")
+    name: str = Field(..., description="Cluster name")
+    arn: str = Field(..., description="AWS ARN")
+    region: str = Field(..., description="AWS region")
+    cluster_type: str = Field(..., description="Cluster type")
+    version: Optional[str] = Field(None, description="Cluster version")
+    endpoint: Optional[str] = Field(None, description="API endpoint")
+    status: str = Field(..., description="Cluster status")
+    last_heartbeat: Optional[datetime] = Field(None, description="Last heartbeat timestamp")
+    tags: Optional[Dict[str, str]] = Field(default_factory=dict, description="Resource tags")
+    created_at: datetime = Field(..., description="Creation timestamp")
+    updated_at: datetime = Field(..., description="Last update timestamp")
+
+
+class AgentInstallCommand(BaseModel):
+    """Agent installation command and script"""
+    cluster_id: str = Field(..., description="Cluster UUID")
+    install_command: str = Field(..., description="kubectl apply command")
+    yaml_manifest: str = Field(..., description="Full YAML manifest content")
+    instructions: List[str] = Field(..., description="Step-by-step installation instructions")

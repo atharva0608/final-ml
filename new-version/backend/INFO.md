@@ -66,6 +66,22 @@ Contains all backend services including API routes, business logic services, bac
 
 ## Recent Changes
 
+### [2026-01-02 16:00:00] - Critical Fixes: Container Startup Errors (Issues #13-15)
+**Changed By**: LLM Agent
+**Reason**: Fix 3 critical runtime errors preventing all backend services from starting
+**Impact**: All backend services (backend, celery-worker, celery-beat) can now start successfully
+**Files Modified**:
+- backend/core/config.py - Added default value for JWT_SECRET_KEY
+- backend/workers/tasks/report_worker.py - Fixed import paths (app → backend)
+- backend/schemas/cluster_schemas.py - Added 5 missing Pydantic schemas
+**Problems Fixed**:
+1. **Issue #13**: JWT_SECRET_KEY required field missing - all services crashed on startup
+2. **Issue #14**: NameError: 'Organization' not defined - wrong import paths in report_worker.py
+3. **Issue #15**: ImportError: ClusterFilter not found - 5 schemas missing from cluster_schemas.py
+**Feature IDs Affected**: N/A (Runtime fixes)
+**Breaking Changes**: No
+**Severity**: Critical - Complete backend failure without these fixes
+
 ### [2026-01-02] - Phases 5-14 Backend Implementation COMPLETE
 **Changed By**: LLM Agent
 **Reason**: Complete all backend services, API routes, and schemas

@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     CELERY_TASK_ALWAYS_EAGER: bool = Field(default=False, description="Execute tasks synchronously")
 
     # JWT Authentication
-    JWT_SECRET_KEY: str = Field(..., description="JWT secret key for signing tokens")
+    JWT_SECRET_KEY: str = Field(default="dev-secret-key-change-in-production", description="JWT secret key for signing tokens")
     JWT_ALGORITHM: str = Field(default="HS256", description="JWT algorithm")
     JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(default=60, ge=5, le=1440, description="Access token expiration")
     JWT_REFRESH_TOKEN_EXPIRE_DAYS: int = Field(default=30, ge=1, le=90, description="Refresh token expiration")
