@@ -32,16 +32,14 @@ from botocore.exceptions import ClientError
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, func, desc
 
-from backend.workers.app import app
-from backend.database.session import get_db
-from backend.database.models import (
-    Organization,
-    Account,
-    Cluster,
-    OptimizationJob,
-    ActionLog,
-    User
-)
+from backend.workers import app
+from backend.models.base import get_db
+from backend.models.organization import Organization
+from backend.models.account import Account
+from backend.models.cluster import Cluster
+from backend.models.optimization_job import OptimizationJob
+from backend.models.audit_log import AuditLog
+from backend.models.user import User
 from backend.core.redis_client import get_redis_client
 
 logger = logging.getLogger(__name__)
