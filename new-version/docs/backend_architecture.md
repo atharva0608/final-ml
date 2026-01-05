@@ -55,11 +55,30 @@ All 10 core services built with ~4,500 lines of business logic:
 - **detach_volume.py** (SCRIPT-VOL-01) - EBS volume management
 - **update_asg.py** (SCRIPT-ASG-01) - ASG capacity updates
 
-#### ⏳ Pending Implementation
-- **Kubernetes Agent** (Phase 9.5) - In-cluster metrics collection and action execution
+#### ✅ Kubernetes Agent (agent/) - Phase 9.5
+- **config.py** (AGENT-CFG-01) - Configuration management (~170 lines)
+- **collector.py** (AGENT-COLLECT-01) - Metrics collection (~420 lines)
+- **actuator.py** (AGENT-ACT-01) - Action execution (~460 lines)
+- **heartbeat.py** (AGENT-HEALTH-01) - Health reporting (~310 lines)
+- **websocket_client.py** (AGENT-WS-01) - Real-time communication (~350 lines)
+- **main.py** (AGENT-MAIN-01) - Entry point & orchestrator (~390 lines)
+- **Helm Chart** (charts/spot-optimizer-agent/) - Complete K8s deployment
+
+#### ✅ Deployment Automation (scripts/deployment/) - Phase 12.2
+- **deploy.sh** (DEPLOY-SH-01) - Automated deployment with health checks (~300 lines)
+- **setup.sh** (SETUP-SH-01) - Initial server setup (~400 lines)
 
 ### Module Mappings
-All module IDs referenced in this document (MOD-*, SVC-*, CORE-*, WORK-*, SCRIPT-*) now have corresponding implementations. Only the Kubernetes Agent (Phase 9.5) remains to be implemented.
+✅ **All module IDs referenced in this document now have corresponding implementations.**
+- Backend Services: 10/10 complete
+- API Routes: 9/9 complete (58 endpoints)
+- Intelligence Modules: 6/6 complete
+- Background Workers: 5/5 complete
+- Data Collection: 2/2 complete
+- Core Components: 3/3 complete
+- AWS Scripts: 4/4 complete
+- Kubernetes Agent: 6/6 modules + Helm chart complete
+- Deployment Scripts: 2/2 complete
 
 ---
 

@@ -1414,17 +1414,17 @@
   - [ ] Deploy to production (manual approval)
 
 ### 12.2 Deployment Scripts
-- [ ] Create `scripts/deployment/deploy.sh`
-  - [ ] Pull latest code
-  - [ ] Build Docker images
-  - [ ] Run database migrations
-  - [ ] Start services with docker-compose
-  - [ ] Health check verification
-- [ ] Create `scripts/deployment/setup.sh`
-  - [ ] Initial server setup
-  - [ ] Install Docker and docker-compose
-  - [ ] Configure firewall
-  - [ ] Setup SSL certificates
+- [x] Create `scripts/deployment/deploy.sh`
+  - [x] Pull latest code
+  - [x] Build Docker images
+  - [x] Run database migrations
+  - [x] Start services with docker-compose
+  - [x] Health check verification
+- [x] Create `scripts/deployment/setup.sh`
+  - [x] Initial server setup
+  - [x] Install Docker and docker-compose
+  - [x] Configure firewall
+  - [x] Setup SSL certificates
 
 ### 12.3 Infrastructure as Code
 - [ ] Create Terraform configuration for AWS resources

@@ -2,6 +2,104 @@
 
 ### Added
 
+#### Phase 9.5: Kubernetes Agent Implementation (~2,800 lines + Helm chart) ✅
+**Changed By**: LLM Agent
+**Reason**: Complete Phase 9.5 - Implement Kubernetes agent ("The Probe") for in-cluster metrics collection and action execution
+**Impact**: Critical component that enables the platform to collect metrics from customer clusters and execute optimization actions
+
+**Files Created**:
+- `agent/config.py` (170 lines) - Configuration management with env var validation and SIGHUP reload
+- `agent/collector.py` (420 lines) - Metrics collection from K8s API and Metrics Server
+- `agent/actuator.py` (460 lines) - Action execution (evict, cordon, drain, label, update)
+- `agent/heartbeat.py` (310 lines) - Health reporting with HTTP endpoints (/healthz, /readyz)
+- `agent/websocket_client.py` (350 lines) - Real-time WebSocket communication with backend
+- `agent/main.py` (390 lines) - Entry point and orchestrator
+- `agent/Dockerfile` - Multi-stage build with non-root user
+- `agent/requirements.txt` - Dependencies (kubernetes, websockets, requests, psutil)
+- `agent/README.md` - Comprehensive installation and usage guide
+- `charts/spot-optimizer-agent/` - Complete Helm chart with:
+  - Chart.yaml, values.yaml
+  - Deployment, ServiceAccount, RBAC (ClusterRole/Binding)
+  - ConfigMap, Secret, Service
+  - Liveness/Readiness probes
+  - NOTES.txt with post-install verification steps
+
+**Key Features**:
+- Pod/node metrics collection with Metrics Server integration
+- Cluster events monitoring (evictions, OOMKills, Spot interruptions)
+- Action execution with HMAC signature verification for security
+- Dry-run mode for safe testing
+- WebSocket for real-time communication with exponential backoff
+- Offline message buffering (queue up to 100 messages)
+- Health monitoring with Kubernetes probes
+- Self-healing and automatic reconnection
+
+**Security**:
+- HMAC signature verification on all actions (prevents unauthorized commands)
+- Bearer token authentication
+- Minimal RBAC permissions (read-only + specific actions)
+- Non-root container user (UID 1000)
+- Read-only root filesystem support
+
+**Module IDs**: AGENT-CFG-01, AGENT-COLLECT-01, AGENT-ACT-01, AGENT-HEALTH-01, AGENT-WS-01, AGENT-MAIN-01
+**Breaking Changes**: None - New component
+
+---
+
+#### Phase 12.2: Deployment Scripts Implementation (~700 lines) ✅
+**Changed By**: LLM Agent
+**Reason**: Complete Phase 12.2 - Create automated deployment and server setup scripts
+**Impact**: Enables automated deployment with health checks and initial server configuration
+
+**Files Created**:
+- `scripts/deployment/deploy.sh` (~300 lines) - Automated deployment with health checks
+- `scripts/deployment/setup.sh` (~400 lines) - Initial server setup and configuration
+
+**deploy.sh Features**:
+- Pull latest code from git repository
+- Automated database backup before deployment (7-day retention, gzip compressed)
+- Docker image building with docker-compose
+- Database migration execution (Alembic upgrade head)
+- Service startup with docker-compose up -d
+- Comprehensive health checks:
+  - Backend API health endpoint (http://localhost:8000/health)
+  - Frontend availability (http://localhost:3000)
+  - PostgreSQL connectivity (pg_isready)
+  - Redis connectivity (redis-cli ping)
+- Max 30 attempts × 5s interval = 150s total health check timeout
+- Cleanup of old Docker images (docker image prune)
+- Colored output for errors, warnings, and success messages
+
+**setup.sh Features**:
+- OS detection (Ubuntu, Debian, CentOS, RHEL, Fedora)
+- System package updates
+- Docker and Docker Compose installation
+- Firewall configuration (UFW for Debian/Ubuntu, firewalld for CentOS/RHEL)
+  - Allows: SSH (22), HTTP (80), HTTPS (443), Backend (8000), Frontend (3000)
+- Project directory structure creation
+- SSL certificate setup with Let's Encrypt (optional, via DOMAIN_NAME env var)
+- Environment file initialization (.env.example → .env)
+- System limits configuration:
+  - File descriptor limits: 65536
+  - vm.max_map_count: 262144
+- Systemd service creation for auto-start on boot
+- Log rotation setup (/etc/logrotate.d/spot-optimizer)
+  - Daily rotation, 14-day retention, compression enabled
+
+**Usage**:
+```bash
+# Initial server setup
+sudo DOMAIN_NAME=spotoptimizer.com EMAIL=admin@example.com ./setup.sh
+
+# Deploy application
+./deploy.sh
+```
+
+**Module IDs**: DEPLOY-SH-01, SETUP-SH-01
+**Breaking Changes**: None - New component
+
+---
+
 #### Phase 4: Intelligence Modules Implementation (~2,100 lines) ✅
 **Changed By**: LLM Agent
 **Reason**: Complete Phase 4 - Implement all 6 intelligence modules for optimization logic
