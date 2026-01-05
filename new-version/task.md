@@ -2290,6 +2290,84 @@ docker-compose -f docker/docker-compose.yml build frontend
 
 ---
 
+### Issue 11: index.html Not Found - Incorrect Directory Structure in Docker Build ✅ FIXED
+**Discovered**: 2026-01-02
+**Severity**: Critical - Frontend Docker build fails with missing index.html
+
+**Problem**:
+Frontend Docker build failed when react-scripts tried to build:
+
+```
+ERROR [builder 6/6] RUN npm run build
+Could not find a required file.
+  Name: index.html
+  Searched in: /app/public
+exit code: 1
+```
+
+**Root Cause**:
+- Dockerfile copied `frontend/` as a subdirectory: `COPY frontend/ ./frontend/`
+- This created structure: `/app/frontend/public/index.html`
+- But package.json in `/app` expects standard CRA structure: `/app/public/index.html`
+- react-scripts looks for files relative to package.json location
+- Mismatch between expected and actual directory structure
+
+**Expected vs Actual Structure**:
+```
+# Expected by react-scripts:
+/app
+  ├── package.json
+  ├── public/
+  │   └── index.html
+  └── src/
+
+# Actual (BROKEN):
+/app
+  ├── package.json
+  └── frontend/
+      ├── public/
+      │   └── index.html
+      └── src/
+```
+
+**Fix Applied**:
+Changed COPY command to copy contents directly, not as subdirectory:
+
+```dockerfile
+# Before
+COPY frontend/ ./frontend/
+
+# After
+COPY frontend/. ./
+```
+
+**Explanation**:
+- `COPY frontend/. ./` copies the **contents** of frontend/ into /app
+- Results in: `/app/public/`, `/app/src/`, etc.
+- react-scripts now finds index.html at expected location `/app/public/index.html`
+- This is the correct pattern for Create React App Docker builds
+
+**Verification**:
+```bash
+docker-compose -f docker/docker-compose.yml build frontend
+# Build now succeeds:
+# 1. npm install ✅
+# 2. react-scripts finds /app/public/index.html ✅
+# 3. npm run build creates /app/build ✅
+# 4. nginx copies /app/build to /usr/share/nginx/html ✅
+```
+
+**Files Modified**:
+- docker/Dockerfile.frontend - Changed `COPY frontend/ ./frontend/` to `COPY frontend/. ./`
+
+**Impact**: Critical fix - Frontend build now finds all required files and builds successfully
+
+**Related Issues**:
+- Issue #7 removed `COPY public/ ./public/` which was incorrect
+- Issue #11 fixes the root cause by copying frontend contents correctly
+
+---
+
 ### Summary of Fixes (Updated 2026-01-02)
 - ✅ **Issue 1**: Critical fix - start.sh now correctly references docker/docker-compose.yml
 - ✅ **Issue 2**: Verification - Dockerfiles exist and are properly configured
@@ -2301,8 +2379,9 @@ docker-compose -f docker/docker-compose.yml build frontend
 - ⚠️ **Issue 8**: Expected - Environment variable warnings are normal
 - ✅ **Issue 9**: Critical fix - Changed npm ci to npm install in Dockerfile.frontend
 - ✅ **Issue 10**: Critical fix - Removed --production flag to include devDependencies for build
+- ✅ **Issue 11**: Critical fix - Fixed directory structure to copy frontend contents correctly
 
-**Total Issues Fixed**: 6 critical/major fixes
+**Total Issues Fixed**: 7 critical/major fixes
 **Total Verifications**: 2 confirmed working
 **Total Warnings**: 2 documented for user awareness
 
@@ -2313,6 +2392,7 @@ docker-compose -f docker/docker-compose.yml build frontend
 4. Docker Compose version attribute removal
 5. npm ci command changed to npm install (missing package-lock.json)
 6. Removed --production flag to install devDependencies needed for React build
+7. Fixed COPY command to copy frontend contents, not as subdirectory
 
 **Application Status**: ✅ Fully Fixed - Ready to start all 6 services
 

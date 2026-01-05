@@ -23,6 +23,24 @@ Contains Docker configuration files including Dockerfiles for backend and fronte
 
 ## Recent Changes
 
+### [2026-01-02 14:45:00] - Critical Fix: index.html Not Found - Incorrect Directory Structure
+**Changed By**: LLM Agent
+**Reason**: Fix frontend Docker build failure due to incorrect directory structure
+**Impact**: Frontend Docker image can now find all required files and build successfully
+**Files Modified**:
+- Updated docker/Dockerfile.frontend (changed COPY command to copy contents correctly)
+- Updated task.md with Issue #11 documentation
+- Updated docker/INFO.md (this file)
+**Problem**: `COPY frontend/ ./frontend/` created wrong structure - react-scripts expected /app/public/ but got /app/frontend/public/
+**Solution**: Changed to `COPY frontend/. ./` to copy contents of frontend/ directly into /app
+**Explanation**:
+  - Before: /app/package.json + /app/frontend/public/index.html (BROKEN)
+  - After: /app/package.json + /app/public/index.html (CORRECT)
+  - react-scripts looks for files relative to package.json location
+**Feature IDs Affected**: N/A (Infrastructure fix)
+**Breaking Changes**: No
+**Severity**: Critical - Frontend build completely failed with "index.html not found" error
+
 ### [2026-01-02 14:30:00] - Critical Fix: react-scripts Not Found - npm install --production Issue
 **Changed By**: LLM Agent
 **Reason**: Fix frontend Docker build failure due to missing devDependencies
