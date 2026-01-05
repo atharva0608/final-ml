@@ -11,9 +11,8 @@ COPY package.json package-lock.json* ./
 # Install dependencies
 RUN npm ci --only=production
 
-# Copy frontend source code
+# Copy frontend source code (public is inside frontend directory)
 COPY frontend/ ./frontend/
-COPY public/ ./public/
 
 # Build production bundle
 RUN npm run build
