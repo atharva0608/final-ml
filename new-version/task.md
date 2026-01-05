@@ -2157,6 +2157,64 @@ vim .env
 
 ---
 
+### Issue 9: npm ci Failure - Missing package-lock.json ✅ FIXED
+**Discovered**: 2026-01-02
+**Severity**: Critical - Frontend Docker build fails
+
+**Problem**:
+Frontend Docker build failed with npm ci error:
+
+```
+ERROR [frontend builder 4/6] RUN npm ci --only=production
+npm error code EUSAGE
+npm error `npm ci` can only install with an existing package-lock.json or
+npm-shrinkwrap.json with lockfileVersion >= 1. Run an install with npm@6 or
+later to generate a package-lock.json file, then try again.
+```
+
+**Root Cause**:
+- Dockerfile.frontend used `npm ci --only=production` command
+- npm ci requires an existing package-lock.json file for reproducible installs
+- The repository doesn't have a package-lock.json committed
+- npm ci is meant for CI/CD environments with locked dependencies
+
+**Fix Applied**:
+Changed npm ci to npm install in Dockerfile.frontend:
+
+```dockerfile
+# Before
+COPY package.json package-lock.json* ./
+RUN npm ci --only=production
+
+# After
+COPY package.json package-lock.json* ./
+RUN npm install --production
+```
+
+**Rationale**:
+- `npm install` works with or without package-lock.json
+- `--production` flag ensures only production dependencies are installed
+- Still maintains small Docker image size
+- Package-lock.json is copied if available (package-lock.json*)
+
+**Verification**:
+```bash
+docker-compose -f docker/docker-compose.yml build frontend
+# Build now succeeds and installs dependencies correctly
+```
+
+**Files Modified**:
+- docker/Dockerfile.frontend - Changed `npm ci --only=production` to `npm install --production`
+
+**Impact**: Critical fix - Frontend Docker image now builds successfully
+
+**Alternative Solutions Considered**:
+1. Generate package-lock.json locally and commit it (rejected - adds unnecessary file)
+2. Use npm ci with different flags (rejected - still requires lock file)
+3. Use yarn instead (rejected - changes dependency manager)
+
+---
+
 ### Summary of Fixes (Updated 2026-01-02)
 - ✅ **Issue 1**: Critical fix - start.sh now correctly references docker/docker-compose.yml
 - ✅ **Issue 2**: Verification - Dockerfiles exist and are properly configured
@@ -2166,8 +2224,9 @@ vim .env
 - ✅ **Issue 6**: Minor fix - Removed obsolete docker-compose version attribute
 - ✅ **Issue 7**: Critical fix - Fixed Dockerfile.frontend public/ directory error
 - ⚠️ **Issue 8**: Expected - Environment variable warnings are normal
+- ✅ **Issue 9**: Critical fix - Changed npm ci to npm install in Dockerfile.frontend
 
-**Total Issues Fixed**: 4 critical/major fixes
+**Total Issues Fixed**: 5 critical/major fixes
 **Total Verifications**: 2 confirmed working
 **Total Warnings**: 2 documented for user awareness
 
@@ -2176,6 +2235,7 @@ vim .env
 2. PostgreSQL port conflict (5432 → 5433)
 3. Dockerfile.frontend public/ directory path
 4. Docker Compose version attribute removal
+5. npm ci command changed to npm install (missing package-lock.json)
 
 **Application Status**: ✅ Fully Fixed - Ready to start all 6 services
 

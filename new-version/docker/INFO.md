@@ -23,6 +23,20 @@ Contains Docker configuration files including Dockerfiles for backend and fronte
 
 ## Recent Changes
 
+### [2026-01-02 14:15:00] - Critical Fix: npm ci Failure in Dockerfile.frontend
+**Changed By**: LLM Agent
+**Reason**: Fix frontend Docker build failure due to missing package-lock.json
+**Impact**: Frontend Docker image now builds successfully
+**Files Modified**:
+- Updated docker/Dockerfile.frontend (changed npm ci to npm install)
+- Updated task.md with Issue #9 documentation
+- Updated docker/INFO.md (this file)
+**Problem**: `npm ci` requires package-lock.json but repository doesn't have one
+**Solution**: Changed to `npm install --production` which works with or without lock file
+**Feature IDs Affected**: N/A (Infrastructure fix)
+**Breaking Changes**: No
+**Severity**: Critical - Frontend couldn't build without this fix
+
 ### [2026-01-02 13:30:00] - Critical Fix: Docker Compose Path Configuration
 **Changed By**: LLM Agent
 **Reason**: Fix start.sh to correctly reference docker/docker-compose.yml path

@@ -9,7 +9,7 @@ WORKDIR /app
 COPY package.json package-lock.json* ./
 
 # Install dependencies
-RUN npm ci --only=production
+RUN npm install --production
 
 # Copy frontend source code (public is inside frontend directory)
 COPY frontend/ ./frontend/
