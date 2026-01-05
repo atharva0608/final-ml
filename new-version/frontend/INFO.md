@@ -88,6 +88,21 @@ Contains the React-based frontend application for the Spot Optimizer platform, i
 
 ## Recent Changes
 
+### [2026-01-02 15:00:00] - Critical Fix: Invalid Icon Import (FiFlask) in MainLayout
+**Changed By**: LLM Agent
+**Reason**: Fix frontend compilation error due to invalid icon import
+**Impact**: Frontend build now compiles successfully without import errors
+**Files Modified**:
+- Updated frontend/src/components/layout/MainLayout.jsx (replaced FiFlask with FiActivity)
+- Updated task.md with Issue #12 documentation
+- Updated frontend/INFO.md (this file)
+**Problem**: Code imported `FiFlask` from `react-icons/fi` but that icon doesn't exist in Feather Icons
+**Solution**: Replaced `FiFlask` with `FiActivity` (valid icon) for Experiments navigation
+**Error**: "Attempted import error: 'FiFlask' is not exported from 'react-icons/fi'"
+**Feature IDs Affected**: N/A (Bug fix - layout component)
+**Breaking Changes**: No
+**Severity**: Critical - Build failed during compilation step
+
 ### [2026-01-02] - Phase 14 COMPLETE - All 21 Components Implemented (100%)
 **Changed By**: LLM Agent
 **Reason**: Complete Phase 14 - Final frontend implementation with all remaining components

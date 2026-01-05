@@ -7,7 +7,7 @@ import React from 'react';
 import { Outlet, Link, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../../hooks/useAuth';
 import { Button } from '../shared';
-import { FiHome, FiServer, FiFileText, FiSettings, FiTarget, FiClock, FiBarChart2, FiUsers, FiFlask, FiLogOut } from 'react-icons/fi';
+import { FiHome, FiServer, FiFileText, FiSettings, FiTarget, FiClock, FiBarChart2, FiUsers, FiActivity, FiLogOut } from 'react-icons/fi';
 
 const MainLayout = () => {
   const { user, logout } = useAuth();
@@ -21,7 +21,7 @@ const MainLayout = () => {
     { name: 'Policies', path: '/policies', icon: FiTarget },
     { name: 'Hibernation', path: '/hibernation', icon: FiClock },
     { name: 'Metrics', path: '/metrics', icon: FiBarChart2 },
-    { name: 'Experiments', path: '/lab', icon: FiFlask },
+    { name: 'Experiments', path: '/lab', icon: FiActivity },
   ];
 
   const adminNavigation = [

@@ -2368,6 +2368,69 @@ docker-compose -f docker/docker-compose.yml build frontend
 
 ---
 
+### Issue 12: Import Error - FiFlask Not Exported from react-icons/fi ✅ FIXED
+**Discovered**: 2026-01-02
+**Severity**: Critical - Frontend compilation fails
+
+**Problem**:
+Frontend build failed during React compilation:
+
+```
+Failed to compile.
+Attempted import error: 'FiFlask' is not exported from 'react-icons/fi' (imported as 'FiFlask').
+exit code: 1
+```
+
+**Root Cause**:
+- Code tried to import `FiFlask` from `react-icons/fi` package
+- `FiFlask` icon does not exist in Feather Icons (react-icons/fi)
+- This caused a compilation error during the build step
+- The icon was used for the "Experiments" navigation menu item
+
+**Location**:
+File: `frontend/src/components/layout/MainLayout.jsx`
+- Line 10: Import statement included `FiFlask`
+- Line 24: Used `FiFlask` for Experiments icon
+
+**Fix Applied**:
+Replaced `FiFlask` with `FiActivity` (a valid Feather Icon):
+
+```jsx
+// Before
+import { ..., FiFlask, ... } from 'react-icons/fi';
+{ name: 'Experiments', path: '/lab', icon: FiFlask },
+
+// After
+import { ..., FiActivity, ... } from 'react-icons/fi';
+{ name: 'Experiments', path: '/lab', icon: FiActivity },
+```
+
+**Why FiActivity**:
+- `FiActivity` is a valid icon in react-icons/fi package
+- Represents activity/experiments appropriately
+- Visually suitable for "Experiments" / "Lab" menu item
+- Maintains design consistency with other Feather Icons
+
+**Verification**:
+```bash
+# Check no more FiFlask references
+grep -r "FiFlask" frontend/
+# (No results - confirmed removed)
+
+# Build should now succeed
+docker-compose -f docker/docker-compose.yml build frontend
+# Compilation successful ✅
+```
+
+**Files Modified**:
+- frontend/src/components/layout/MainLayout.jsx - Replaced FiFlask with FiActivity (2 locations)
+
+**Impact**: Critical fix - Frontend compilation now succeeds, all imports valid
+
+**Note**: This was a code error, not a Docker/infrastructure issue. The previous 11 issues were all infrastructure/configuration related.
+
+---
+
 ### Summary of Fixes (Updated 2026-01-02)
 - ✅ **Issue 1**: Critical fix - start.sh now correctly references docker/docker-compose.yml
 - ✅ **Issue 2**: Verification - Dockerfiles exist and are properly configured
@@ -2380,8 +2443,9 @@ docker-compose -f docker/docker-compose.yml build frontend
 - ✅ **Issue 9**: Critical fix - Changed npm ci to npm install in Dockerfile.frontend
 - ✅ **Issue 10**: Critical fix - Removed --production flag to include devDependencies for build
 - ✅ **Issue 11**: Critical fix - Fixed directory structure to copy frontend contents correctly
+- ✅ **Issue 12**: Critical fix - Replaced invalid FiFlask icon with FiActivity
 
-**Total Issues Fixed**: 7 critical/major fixes
+**Total Issues Fixed**: 8 critical/major fixes
 **Total Verifications**: 2 confirmed working
 **Total Warnings**: 2 documented for user awareness
 
@@ -2393,6 +2457,7 @@ docker-compose -f docker/docker-compose.yml build frontend
 5. npm ci command changed to npm install (missing package-lock.json)
 6. Removed --production flag to install devDependencies needed for React build
 7. Fixed COPY command to copy frontend contents, not as subdirectory
+8. Fixed invalid icon import (FiFlask → FiActivity) in MainLayout
 
 **Application Status**: ✅ Fully Fixed - Ready to start all 6 services
 
