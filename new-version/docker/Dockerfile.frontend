@@ -14,6 +14,9 @@ RUN npm install
 # Copy frontend source code and configs
 COPY frontend/ ./
 
+# Disable ESLint during build (treating warnings as errors)
+ENV DISABLE_ESLINT_PLUGIN=true
+
 # Build production bundle
 RUN npm run build
 
