@@ -59,7 +59,7 @@ case "$MODE" in
 
         # Run database migrations first
         echo -e "${YELLOW}📦 Running database migrations...${NC}"
-        docker-compose run --rm backend alembic upgrade head || {
+        docker-compose -f docker/docker-compose.yml run --rm backend alembic upgrade head || {
             echo -e "${YELLOW}⚠️  Migrations failed. This is normal on first run if DB is not ready.${NC}"
         }
         echo ""
@@ -67,15 +67,15 @@ case "$MODE" in
         # Start all services
         echo -e "${BLUE}🐳 Starting Docker containers...${NC}"
         if [ "$DETACH" = "-d" ]; then
-            docker-compose up -d
+            docker-compose -f docker/docker-compose.yml up -d
             echo ""
             echo -e "${GREEN}✅ All services started in detached mode!${NC}"
             echo ""
             echo -e "${BLUE}📊 Service Status:${NC}"
-            docker-compose ps
+            docker-compose -f docker/docker-compose.yml ps
         else
             echo -e "${YELLOW}⚠️  Starting in foreground mode (Ctrl+C to stop)${NC}"
-            docker-compose up
+            docker-compose -f docker/docker-compose.yml up
         fi
 
         echo ""
@@ -91,35 +91,35 @@ case "$MODE" in
         echo -e "  Redis:       localhost:6379"
         echo ""
         echo -e "${BLUE}🔧 Useful Commands:${NC}"
-        echo -e "  View logs:        docker-compose logs -f"
-        echo -e "  Stop services:    docker-compose down"
-        echo -e "  Restart:          docker-compose restart"
-        echo -e "  Shell (backend):  docker-compose exec backend bash"
+        echo -e "  View logs:        docker-compose -f docker/docker-compose.yml logs -f"
+        echo -e "  Stop services:    docker-compose -f docker/docker-compose.yml down"
+        echo -e "  Restart:          docker-compose -f docker/docker-compose.yml restart"
+        echo -e "  Shell (backend):  docker-compose -f docker/docker-compose.yml exec backend bash"
         echo ""
         ;;
 
     down)
         echo -e "${YELLOW}🛑 Stopping Spot Optimizer Platform...${NC}"
-        docker-compose down
+        docker-compose -f docker/docker-compose.yml down
         echo -e "${GREEN}✅ All services stopped${NC}"
         ;;
 
     restart)
         echo -e "${YELLOW}🔄 Restarting Spot Optimizer Platform...${NC}"
-        docker-compose restart
+        docker-compose -f docker/docker-compose.yml restart
         echo -e "${GREEN}✅ All services restarted${NC}"
         echo ""
-        docker-compose ps
+        docker-compose -f docker/docker-compose.yml ps
         ;;
 
     logs)
         echo -e "${BLUE}📋 Showing logs (Ctrl+C to exit)...${NC}"
-        docker-compose logs -f
+        docker-compose -f docker/docker-compose.yml logs -f
         ;;
 
     build)
         echo -e "${BLUE}🔨 Rebuilding Docker images...${NC}"
-        docker-compose build --no-cache
+        docker-compose -f docker/docker-compose.yml build --no-cache
         echo -e "${GREEN}✅ Build complete${NC}"
         ;;
 
@@ -128,7 +128,7 @@ case "$MODE" in
         echo -e "${YELLOW}⚠️  This will DELETE all data. Are you sure? (y/N)${NC}"
         read -r response
         if [[ "$response" =~ ^([yY][eE][sS]|[yY])$ ]]; then
-            docker-compose down -v --rmi all
+            docker-compose -f docker/docker-compose.yml down -v --rmi all
             echo -e "${GREEN}✅ Cleanup complete${NC}"
         else
             echo -e "${YELLOW}Cancelled${NC}"
@@ -137,19 +137,19 @@ case "$MODE" in
 
     migrate)
         echo -e "${BLUE}📦 Running database migrations...${NC}"
-        docker-compose run --rm backend alembic upgrade head
+        docker-compose -f docker/docker-compose.yml run --rm backend alembic upgrade head
         echo -e "${GREEN}✅ Migrations complete${NC}"
         ;;
 
     shell)
         SERVICE="${2:-backend}"
         echo -e "${BLUE}🐚 Opening shell in $SERVICE container...${NC}"
-        docker-compose exec "$SERVICE" bash
+        docker-compose -f docker/docker-compose.yml exec "$SERVICE" bash
         ;;
 
     test)
         echo -e "${BLUE}🧪 Running tests...${NC}"
-        docker-compose run --rm backend pytest
+        docker-compose -f docker/docker-compose.yml run --rm backend pytest
         ;;
 
     *)

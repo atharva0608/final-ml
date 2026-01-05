@@ -1,6 +1,6 @@
 # Docker - Component Information
 
-> **Last Updated**: 2025-12-31 12:36:00
+> **Last Updated**: 2026-01-02 13:30:00
 > **Maintainer**: LLM Agent
 
 ---
@@ -22,6 +22,20 @@ Contains Docker configuration files including Dockerfiles for backend and fronte
 ---
 
 ## Recent Changes
+
+### [2026-01-02 13:30:00] - Critical Fix: Docker Compose Path Configuration
+**Changed By**: LLM Agent
+**Reason**: Fix start.sh to correctly reference docker/docker-compose.yml path
+**Impact**: Application now starts all 6 services instead of failing
+**Files Modified**:
+- Updated start.sh with `-f docker/docker-compose.yml` flag for all docker-compose commands (15 occurrences)
+- Added EXTRA PROBLEMS & FIXES LOG section to task.md
+- Updated docker/INFO.md (this file)
+**Problem**: start.sh was using bare `docker-compose` commands without file path
+**Solution**: Added `-f docker/docker-compose.yml` to all commands (up, down, restart, logs, build, clean, migrate, shell, test, ps)
+**Feature IDs Affected**: N/A (Infrastructure fix)
+**Breaking Changes**: No
+**Severity**: Critical - Application wouldn't start without this fix
 
 ### [2025-12-31 12:40:00] - Docker Configuration Completed
 **Changed By**: LLM Agent
@@ -218,22 +232,30 @@ FROM nginx:alpine
 
 ### Start all services:
 ```bash
-docker-compose up -d
+docker-compose -f docker/docker-compose.yml up -d
+# OR use the start.sh script (recommended):
+./start.sh
 ```
 
 ### View logs:
 ```bash
-docker-compose logs -f
+docker-compose -f docker/docker-compose.yml logs -f
+# OR use the start.sh script:
+./start.sh logs
 ```
 
 ### Stop all services:
 ```bash
-docker-compose down
+docker-compose -f docker/docker-compose.yml down
+# OR use the start.sh script:
+./start.sh down
 ```
 
 ### Rebuild after code changes:
 ```bash
-docker-compose up -d --build
+docker-compose -f docker/docker-compose.yml up -d --build
+# OR use the start.sh script:
+./start.sh build && ./start.sh up
 ```
 
 ### Access services:

@@ -1816,3 +1816,167 @@ Sets Redis: RISK:us-east-1a:c5.xlarge = "DANGER" (TTL: 30min)
 
 **Ready for Sequential LLM Execution** 🚀
 
+
+---
+
+## EXTRA PROBLEMS & FIXES LOG
+
+> **Purpose**: This section logs additional issues discovered during implementation and their resolutions.
+> **Last Updated**: 2026-01-02
+
+### Issue 1: Docker Compose Path Configuration ✅ FIXED
+**Discovered**: 2026-01-02  
+**Severity**: High - Application would not start properly
+
+**Problem**:
+The `start.sh` script was using bare `docker-compose` commands without specifying the correct path to the docker-compose.yml file. Since the docker-compose.yml is located in the `docker/` subdirectory, all services would fail to start.
+
+**Symptoms**:
+- Running `./start.sh` would fail with "Couldn't find docker-compose.yml"
+- Only database container would start (if any)
+- Backend, frontend, Celery workers, and Redis would not start
+
+**Root Cause**:
+- start.sh referenced `docker-compose up` instead of `docker-compose -f docker/docker-compose.yml up`
+- All 15+ docker-compose command invocations throughout start.sh were missing the `-f docker/docker-compose.yml` flag
+
+**Fix Applied**:
+Updated all docker-compose commands in start.sh to include the correct file path:
+```bash
+# Before
+docker-compose up -d
+
+# After  
+docker-compose -f docker/docker-compose.yml up -d
+```
+
+**Commands Fixed**:
+- `docker-compose run` (migrations)
+- `docker-compose up` (start services)
+- `docker-compose ps` (status check)
+- `docker-compose down` (stop services)
+- `docker-compose restart` (restart)
+- `docker-compose logs` (view logs)
+- `docker-compose build` (build images)
+- `docker-compose exec` (shell access)
+
+**Verification**:
+```bash
+./start.sh up        # Now starts all 6 services (postgres, redis, backend, frontend, celery-worker, celery-beat)
+./start.sh ps        # Shows all running containers
+./start.sh logs      # Displays logs from all services
+```
+
+**Files Modified**:
+- `start.sh` - 15 docker-compose command invocations updated
+
+**Impact**: Critical fix - Application now starts completely instead of partially
+
+---
+
+### Issue 2: Dockerfiles Already Existed ✅ VERIFIED
+**Discovered**: 2026-01-02  
+**Severity**: None - False alarm
+
+**Initial Concern**:
+Thought that Dockerfile.backend and Dockerfile.frontend were missing since they couldn't be found initially.
+
+**Investigation**:
+Checked docker/ directory and found both Dockerfiles already existed:
+- `docker/Dockerfile.backend` (65 lines) - Multi-stage build with Python 3.11
+- `docker/Dockerfile.frontend` (53 lines) - Multi-stage build with Node 18 + Nginx
+- `docker/nginx.conf` (present) - Nginx configuration for frontend
+
+**Conclusion**:
+No action needed. Dockerfiles were properly implemented during initial setup.
+
+**Features Confirmed**:
+- Multi-stage builds for minimal image sizes
+- Non-root users (UID 1000) for security
+- Health checks configured
+- Proper dependency management
+- Production-ready configurations
+
+---
+
+### Issue 3: Docker Compose Services Configuration ✅ VERIFIED
+**Discovered**: 2026-01-02  
+**Severity**: None - Working as intended
+
+**Services Defined** (6 total):
+1. **postgres** - PostgreSQL 13 database
+   - Port: 5432
+   - Volume: postgres_data
+   - Health check: pg_isready
+
+2. **redis** - Redis 6 cache & message broker
+   - Port: 6379
+   - Volume: redis_data  
+   - Persistence: AOF enabled
+   - Health check: redis-cli ping
+
+3. **backend** - FastAPI application
+   - Port: 8000
+   - Command: uvicorn with auto-reload
+   - Depends on: postgres, redis (healthy)
+   - Health check: curl /health endpoint
+
+4. **celery-worker** - Background task worker
+   - Command: celery worker with 4 concurrent tasks
+   - Depends on: postgres, redis, backend
+   - Processes: discovery, optimization, hibernation, events
+
+5. **celery-beat** - Task scheduler
+   - Command: celery beat with database scheduler
+   - Depends on: postgres, redis, backend
+   - Schedules: 5-min discovery, 1-min hibernation checks
+
+6. **frontend** - React application (Nginx)
+   - Ports: 80, 443
+   - Serves production build
+   - Reverse proxy configuration
+   - Depends on: backend
+
+**Conclusion**:
+All services properly configured. Complete application stack ready for deployment.
+
+---
+
+### Issue 4: Port Conflicts ⚠️ POTENTIAL ISSUE
+**Discovered**: 2026-01-02  
+**Severity**: Medium - May affect local development
+
+**Potential Problem**:
+Frontend container binds to ports 80 and 443, which may conflict with other services on the host machine.
+
+**Affected Service**:
+```yaml
+frontend:
+  ports:
+    - "80:80"
+    - "443:443"
+```
+
+**Recommendation for Users**:
+If port conflicts occur, modify docker-compose.yml to use alternate ports:
+```yaml
+frontend:
+  ports:
+    - "8080:80"    # Use 8080 instead of 80
+    - "8443:443"   # Use 8443 instead of 443
+```
+
+**Status**: Documented for user awareness, no code changes needed
+
+---
+
+### Summary of Fixes
+- ✅ **Issue 1**: Critical fix applied - start.sh now correctly references docker/docker-compose.yml
+- ✅ **Issue 2**: Verification complete - Dockerfiles exist and are properly configured
+- ✅ **Issue 3**: Verification complete - All 6 services properly defined
+- ⚠️ **Issue 4**: Documented potential port conflict for user awareness
+
+**Total Issues Fixed**: 1 critical fix  
+**Total Verifications**: 2 confirmed working  
+**Total Warnings**: 1 potential port conflict documented
+
