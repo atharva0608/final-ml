@@ -23,6 +23,21 @@ Contains Docker configuration files including Dockerfiles for backend and fronte
 
 ## Recent Changes
 
+### [2026-01-02 14:30:00] - Critical Fix: react-scripts Not Found - npm install --production Issue
+**Changed By**: LLM Agent
+**Reason**: Fix frontend Docker build failure due to missing devDependencies
+**Impact**: Frontend Docker image can now build React production bundle successfully
+**Files Modified**:
+- Updated docker/Dockerfile.frontend (removed --production flag from npm install)
+- Updated task.md with Issue #10 documentation
+- Updated docker/INFO.md (this file)
+**Problem**: `npm install --production` excluded devDependencies like react-scripts needed for build
+**Solution**: Changed to `npm install` to include all dependencies in builder stage
+**Rationale**: Multi-stage build - devDependencies only in builder, final image still small (nginx + static files)
+**Feature IDs Affected**: N/A (Infrastructure fix)
+**Breaking Changes**: No
+**Severity**: Critical - Frontend build completely failed without this fix
+
 ### [2026-01-02 14:15:00] - Critical Fix: npm ci Failure in Dockerfile.frontend
 **Changed By**: LLM Agent
 **Reason**: Fix frontend Docker build failure due to missing package-lock.json

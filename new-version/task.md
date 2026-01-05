@@ -2215,6 +2215,81 @@ docker-compose -f docker/docker-compose.yml build frontend
 
 ---
 
+### Issue 10: react-scripts Not Found - npm install --production Excludes devDependencies ✅ FIXED
+**Discovered**: 2026-01-02
+**Severity**: Critical - Frontend Docker build fails at npm run build step
+
+**Problem**:
+Frontend Docker build failed when trying to run the React build command:
+
+```
+ERROR [frontend builder 6/6] RUN npm run build
+sh: react-scripts: not found
+exit code: 127
+```
+
+**Root Cause**:
+- Previous fix (Issue #9) used `npm install --production` to install dependencies
+- The `--production` flag excludes devDependencies
+- `react-scripts` is typically a devDependency in React projects
+- Build tools (react-scripts, webpack, babel, etc.) are in devDependencies
+- Without devDependencies, `npm run build` cannot find the build tools
+
+**Why This Happens**:
+In React projects, the dependency structure is:
+- `dependencies`: Runtime dependencies (react, react-dom, etc.)
+- `devDependencies`: Build-time tools (react-scripts, webpack, babel, etc.)
+
+Using `--production` skips devDependencies, which are essential for building the app.
+
+**Fix Applied**:
+Removed `--production` flag from npm install in Dockerfile.frontend:
+
+```dockerfile
+# Before
+RUN npm install --production
+
+# After
+RUN npm install  # Installs both dependencies and devDependencies
+```
+
+**Why This Fix is Correct**:
+- Multi-stage Docker build: builder stage needs ALL dependencies
+- Build tools (devDependencies) are only in the builder stage
+- Final nginx stage only contains built static files, no node_modules
+- Image size is NOT affected - devDependencies don't reach final image
+- This is the standard pattern for React multi-stage Docker builds
+
+**Multi-stage Build Explanation**:
+```dockerfile
+# Stage 1: Builder (includes devDependencies)
+FROM node:18-alpine AS builder
+RUN npm install              # ALL dependencies needed here
+RUN npm run build           # Build with react-scripts
+
+# Stage 2: Serve (only built files, no node_modules)
+FROM nginx:alpine
+COPY --from=builder /app/build /usr/share/nginx/html  # Only static files
+```
+
+Result: Final image is small (only nginx + static files), no devDependencies included.
+
+**Verification**:
+```bash
+docker-compose -f docker/docker-compose.yml build frontend
+# Build now succeeds through all stages:
+# 1. npm install (with devDependencies) ✅
+# 2. npm run build (react-scripts found) ✅
+# 3. Copy build to nginx ✅
+```
+
+**Files Modified**:
+- docker/Dockerfile.frontend - Removed `--production` flag from npm install
+
+**Impact**: Critical fix - Frontend can now build React production bundle successfully
+
+---
+
 ### Summary of Fixes (Updated 2026-01-02)
 - ✅ **Issue 1**: Critical fix - start.sh now correctly references docker/docker-compose.yml
 - ✅ **Issue 2**: Verification - Dockerfiles exist and are properly configured
@@ -2225,8 +2300,9 @@ docker-compose -f docker/docker-compose.yml build frontend
 - ✅ **Issue 7**: Critical fix - Fixed Dockerfile.frontend public/ directory error
 - ⚠️ **Issue 8**: Expected - Environment variable warnings are normal
 - ✅ **Issue 9**: Critical fix - Changed npm ci to npm install in Dockerfile.frontend
+- ✅ **Issue 10**: Critical fix - Removed --production flag to include devDependencies for build
 
-**Total Issues Fixed**: 5 critical/major fixes
+**Total Issues Fixed**: 6 critical/major fixes
 **Total Verifications**: 2 confirmed working
 **Total Warnings**: 2 documented for user awareness
 
@@ -2236,6 +2312,7 @@ docker-compose -f docker/docker-compose.yml build frontend
 3. Dockerfile.frontend public/ directory path
 4. Docker Compose version attribute removal
 5. npm ci command changed to npm install (missing package-lock.json)
+6. Removed --production flag to install devDependencies needed for React build
 
 **Application Status**: ✅ Fully Fixed - Ready to start all 6 services
 

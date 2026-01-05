@@ -8,8 +8,8 @@ WORKDIR /app
 # Copy package files
 COPY package.json package-lock.json* ./
 
-# Install dependencies
-RUN npm install --production
+# Install dependencies (including devDependencies needed for build)
+RUN npm install
 
 # Copy frontend source code (public is inside frontend directory)
 COPY frontend/ ./frontend/
