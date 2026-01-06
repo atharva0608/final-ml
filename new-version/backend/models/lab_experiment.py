@@ -5,7 +5,16 @@ from sqlalchemy import Column, String, DateTime, ForeignKey
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 from datetime import datetime
+import enum
 from backend.models.base import Base, generate_uuid
+
+
+class ExperimentStatus(enum.Enum):
+    """Lab experiment status enumeration"""
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
 
 
 class LabExperiment(Base):

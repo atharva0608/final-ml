@@ -106,7 +106,7 @@ services:
       context: ..
       dockerfile: docker/Dockerfile.backend
     container_name: spot-optimizer-celery-beat
-    command: celery -A backend.workers beat -l info --scheduler django_celery_beat.schedulers:DatabaseScheduler
+    command: celery -A backend.workers beat -l info
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-password}@postgres:5432/${POSTGRES_DB:-spot_optimizer}
       REDIS_URL: redis://redis:6379/0
