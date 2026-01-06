@@ -25,6 +25,9 @@ class LabExperiment(Base):
     """
     __tablename__ = "lab_experiments"
 
+    # Suppress Pydantic warning about model_id field
+    model_config = {'protected_namespaces': ()}
+
     # Primary key
     id = Column(String(36), primary_key=True, default=generate_uuid, index=True)
 
