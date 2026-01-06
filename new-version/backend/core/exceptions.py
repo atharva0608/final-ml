@@ -66,6 +66,10 @@ class InsufficientPermissionsError(AuthorizationError):
         super().__init__(message)
 
 
+# Alias for backward compatibility
+UnauthorizedError = AuthorizationError
+
+
 # Resource Exceptions
 
 class ResourceNotFoundError(SpotOptimizerException):
