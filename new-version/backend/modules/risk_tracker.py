@@ -3,7 +3,7 @@ Global Risk Tracker (SVC-RISK-GLB)
 Shared intelligence system across all clients (The "Hive Mind")
 """
 import logging
-from typing import Dict, Any, Optional
+from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta
 from redis import Redis
 
