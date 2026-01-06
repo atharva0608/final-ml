@@ -81,15 +81,72 @@ new-version/
 
 ## Installation
 
-### Prerequisites
+### Quick Start with Docker (Recommended)
+
+The easiest way to get started is using Docker with the provided start script:
+
+**Prerequisites:**
+- Docker Desktop (includes Docker Compose)
+- 4GB+ RAM available
+- 10GB+ disk space
+
+**Quick Start:**
+
+```bash
+cd new-version
+
+# First time setup - builds images, runs migrations, starts all services
+./start.sh fresh
+```
+
+That's it! The platform will be available at:
+- **Frontend**: http://localhost
+- **Backend API**: http://localhost:8000
+- **API Docs**: http://localhost:8000/docs
+
+**Common Commands:**
+
+```bash
+# Start services
+./start.sh up
+
+# Check service health
+./start.sh status
+
+# View logs
+./start.sh logs              # All services
+./start.sh logs backend      # Specific service
+
+# Stop services
+./start.sh down
+
+# Rebuild after code changes
+./start.sh build
+
+# Access container shell
+./start.sh shell backend
+./start.sh shell frontend
+
+# Run database migrations
+./start.sh migrate
+
+# Get help
+./start.sh help
+```
+
+### Manual Installation (Development)
+
+If you prefer to run services individually without Docker:
+
+**Prerequisites:**
 - Python 3.11+
 - PostgreSQL 13+
 - Redis 6+
 - Node.js 18+ (for frontend)
 
-### Setup
+**Setup:**
 
-1. **Clone the repository**
+1. **Clone and navigate**
    ```bash
    cd new-version
    ```
