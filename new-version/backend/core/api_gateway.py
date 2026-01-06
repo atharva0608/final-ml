@@ -36,6 +36,27 @@ app = FastAPI(
 )
 
 
+# Custom middleware to ensure CORS headers on all responses (including errors)
+@app.middleware("http")
+async def add_cors_headers(request: Request, call_next):
+    """Ensure CORS headers are present on all responses, including errors"""
+    response = await call_next(request)
+
+    # Get origin from request
+    origin = request.headers.get("origin")
+    allowed_origins = get_cors_origins()
+
+    # Check if origin is allowed
+    if origin and (origin in allowed_origins or "*" in allowed_origins):
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = str(settings.CORS_ALLOW_CREDENTIALS).lower()
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "*"
+        response.headers["Access-Control-Expose-Headers"] = "X-Total-Count, X-Page, X-Page-Size"
+
+    return response
+
+
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
@@ -312,6 +333,8 @@ async def startup_event():
     """
     Application startup tasks
     """
+    from backend.models.base import create_tables, seed_default_admin
+
     logger.info(
         "Application starting",
         service=settings.APP_NAME,
@@ -320,6 +343,17 @@ async def startup_event():
         cors_origins=settings.CORS_ORIGINS,
         cors_allow_credentials=settings.CORS_ALLOW_CREDENTIALS
     )
+
+    # Auto-create database tables
+    try:
+        logger.info("Creating database tables...")
+        create_tables()
+        logger.info("✅ Database tables created/verified")
+
+        # Seed default admin user
+        seed_default_admin()
+    except Exception as e:
+        logger.error(f"❌ Failed to initialize database: {e}")
 
 
 @app.on_event("shutdown")
