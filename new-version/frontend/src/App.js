@@ -52,6 +52,28 @@ const PublicRoute = ({ children }) => {
 };
 
 function App() {
+  const { accessToken, logout } = useAuthStore();
+
+  // Validate token on app mount - auto logout if token is expired/invalid
+  React.useEffect(() => {
+    if (accessToken) {
+      try {
+        // Decode JWT payload
+        const payload = JSON.parse(atob(accessToken.split('.')[1]));
+        // Check if token is expired
+        const isExpired = payload.exp * 1000 < Date.now();
+        if (isExpired) {
+          console.log('Token expired, logging out...');
+          logout();
+        }
+      } catch (error) {
+        // Token is malformed or invalid
+        console.log('Invalid token, logging out...');
+        logout();
+      }
+    }
+  }, [accessToken, logout]);
+
   return (
     <BrowserRouter>
       <div className="App">
