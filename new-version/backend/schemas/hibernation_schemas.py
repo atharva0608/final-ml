@@ -141,6 +141,18 @@ class HibernationScheduleResponse(BaseModel):
     }
 
 
+class HibernationScheduleList(BaseModel):
+    """List of hibernation schedules"""
+    schedules: List[HibernationScheduleResponse] = Field(..., description="List of schedules")
+    total: int = Field(..., description="Total number of schedules")
+
+
+class HibernationScheduleFilter(BaseModel):
+    """Filter criteria for hibernation schedules"""
+    cluster_id: Optional[str] = Field(None, description="Filter by cluster UUID")
+    is_active: Optional[bool] = Field(None, description="Filter by active status")
+
+
 class ScheduleOverride(BaseModel):
     """One-time schedule override"""
     cluster_id: str = Field(..., description="Cluster UUID")
