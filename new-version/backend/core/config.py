@@ -103,6 +103,17 @@ class Settings(BaseSettings):
     PASSWORD_MIN_LENGTH: int = Field(default=8, ge=6, le=32, description="Minimum password length")
     API_KEY_PREFIX: str = Field(default="sk-", description="API key prefix")
 
+    @field_validator('CORS_ORIGINS', mode='before')
+    @classmethod
+    def parse_cors_origins(cls, v) -> List[str]:
+        """Parse CORS origins from comma-separated string or list"""
+        if isinstance(v, str):
+            # Split by comma and strip whitespace
+            return [origin.strip() for origin in v.split(',') if origin.strip()]
+        elif isinstance(v, list):
+            return v
+        return []
+
     @field_validator('ENVIRONMENT')
     @classmethod
     def validate_environment(cls, v: str) -> str:

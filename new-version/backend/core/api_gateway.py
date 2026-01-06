@@ -316,7 +316,9 @@ async def startup_event():
         "Application starting",
         service=settings.APP_NAME,
         version=settings.APP_VERSION,
-        environment=settings.ENVIRONMENT
+        environment=settings.ENVIRONMENT,
+        cors_origins=settings.CORS_ORIGINS,
+        cors_allow_credentials=settings.CORS_ALLOW_CREDENTIALS
     )
 
 
