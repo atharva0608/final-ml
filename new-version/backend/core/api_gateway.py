@@ -120,7 +120,7 @@ async def spot_optimizer_exception_handler(
     logger.error(
         "Application exception",
         exception=exc.__class__.__name__,
-        message=exc.message,
+        error_message=exc.message,
         status_code=exc.status_code,
         details=exc.details,
         path=request.url.path
