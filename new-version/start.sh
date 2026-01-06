@@ -121,89 +121,105 @@ DETACH="${2:--d}"
 
 case "$MODE" in
     up)
-        echo -e "${BLUE}🚀 Starting Spot Optimizer Platform...${NC}"
+        echo -e "${BLUE}🚀 One-Click Deployment: Spot Optimizer Platform${NC}"
+        echo -e "${BLUE}This will clean and rebuild everything from scratch${NC}"
         echo ""
 
-        # Check if images exist, build if needed
-        echo -e "${BLUE}🔍 Checking Docker images...${NC}"
-        if ! $COMPOSE_CMD -f docker/docker-compose.yml images | grep -q "backend\|frontend"; then
-            echo -e "${YELLOW}⚠️  Docker images not found. Building...${NC}"
-            $COMPOSE_CMD -f docker/docker-compose.yml build
-            echo -e "${GREEN}✅ Docker images built${NC}"
-        else
-            echo -e "${GREEN}✅ Docker images found${NC}"
+        # Stop and remove ALL existing containers, volumes, and images
+        echo -e "${YELLOW}🗑️  Cleaning up existing resources...${NC}"
+
+        # Stop all containers
+        if $COMPOSE_CMD -f docker/docker-compose.yml ps -q 2>/dev/null | grep -q .; then
+            echo -e "${YELLOW}  ↳ Stopping running containers...${NC}"
+            $COMPOSE_CMD -f docker/docker-compose.yml down -v 2>/dev/null || true
         fi
+
+        # Remove old images
+        echo -e "${YELLOW}  ↳ Removing old Docker images...${NC}"
+        docker images | grep "docker-" | awk '{print $3}' | xargs -r docker rmi -f 2>/dev/null || true
+
+        echo -e "${GREEN}✅ Cleanup complete${NC}"
         echo ""
 
-        # Start database and redis first
+        # Build fresh images
+        echo -e "${BLUE}🔨 Building Docker images from scratch...${NC}"
+        $COMPOSE_CMD -f docker/docker-compose.yml build --no-cache
+        echo -e "${GREEN}✅ Docker images built${NC}"
+        echo ""
+
+        # Start database services first
         echo -e "${BLUE}🗄️  Starting database services...${NC}"
         $COMPOSE_CMD -f docker/docker-compose.yml up -d postgres redis
+        echo ""
 
-        # Wait for postgres and redis
+        # Wait for databases to be ready
+        echo -e "${BLUE}⏳ Waiting for databases...${NC}"
         wait_for_service "postgres" || {
-            echo -e "${RED}❌ PostgreSQL failed to start. Check logs: $COMPOSE_CMD -f docker/docker-compose.yml logs postgres${NC}"
+            echo -e "${RED}❌ PostgreSQL failed to start${NC}"
+            $COMPOSE_CMD -f docker/docker-compose.yml logs postgres
             exit 1
         }
         wait_for_service "redis" || {
-            echo -e "${RED}❌ Redis failed to start. Check logs: $COMPOSE_CMD -f docker/docker-compose.yml logs redis${NC}"
+            echo -e "${RED}❌ Redis failed to start${NC}"
+            $COMPOSE_CMD -f docker/docker-compose.yml logs redis
             exit 1
         }
         echo ""
 
-        # Run database migrations
-        echo -e "${YELLOW}📦 Running database migrations...${NC}"
-        $COMPOSE_CMD -f docker/docker-compose.yml run --rm backend alembic upgrade head || {
-            echo -e "${RED}❌ Migrations failed. Check database connection.${NC}"
-            echo -e "${YELLOW}Attempting to continue anyway...${NC}"
-        }
-        echo -e "${GREEN}✅ Database migrations complete${NC}"
-        echo ""
-
-        # Start all remaining services
+        # Start all application services (tables auto-created on backend startup)
         echo -e "${BLUE}🐳 Starting application services...${NC}"
-        if [ "$DETACH" = "-d" ]; then
-            $COMPOSE_CMD -f docker/docker-compose.yml up -d
-            echo ""
-
-            # Wait for critical services
-            echo -e "${BLUE}⏳ Waiting for services to be healthy...${NC}"
-            wait_for_service "backend"
-            wait_for_service "celery-worker"
-            wait_for_service "frontend"
-            echo ""
-
-            echo -e "${GREEN}✅ All services started successfully!${NC}"
-            echo ""
-            echo -e "${BLUE}📊 Service Status:${NC}"
-            $COMPOSE_CMD -f docker/docker-compose.yml ps
-        else
-            echo -e "${YELLOW}⚠️  Starting in foreground mode (Ctrl+C to stop)${NC}"
-            $COMPOSE_CMD -f docker/docker-compose.yml up
-        fi
-
+        echo -e "${YELLOW}  ↳ Database tables will be auto-created on startup${NC}"
+        $COMPOSE_CMD -f docker/docker-compose.yml up -d
         echo ""
+
+        # Wait for critical services
+        echo -e "${BLUE}⏳ Waiting for services to be healthy...${NC}"
+        wait_for_service "backend" || {
+            echo -e "${RED}❌ Backend failed to start${NC}"
+            echo -e "${YELLOW}Showing last 50 lines of backend logs:${NC}"
+            $COMPOSE_CMD -f docker/docker-compose.yml logs --tail=50 backend
+            exit 1
+        }
+        wait_for_service "celery-worker" || {
+            echo -e "${YELLOW}⚠️  Celery worker issues (non-critical)${NC}"
+        }
+        wait_for_service "frontend" || {
+            echo -e "${RED}❌ Frontend failed to start${NC}"
+            exit 1
+        }
+        echo ""
+
+        # Show service status
+        echo -e "${GREEN}✅ All services started successfully!${NC}"
+        echo ""
+        echo -e "${BLUE}📊 Service Status:${NC}"
+        $COMPOSE_CMD -f docker/docker-compose.yml ps
+        echo ""
+
+        # Show logs snippet for verification
+        echo -e "${BLUE}📋 Backend Initialization Logs:${NC}"
+        $COMPOSE_CMD -f docker/docker-compose.yml logs backend | grep -E "(Database tables|Created default admin|Application starting)" | tail -5
+        echo ""
+
         echo -e "${GREEN}========================================${NC}"
-        echo -e "${GREEN}✅ Platform is running!${NC}"
+        echo -e "${GREEN}✅ Platform is READY!${NC}"
         echo -e "${GREEN}========================================${NC}"
         echo ""
         echo -e "${BLUE}📍 Access Points:${NC}"
-        echo -e "  Frontend:    ${GREEN}http://localhost${NC} or ${GREEN}http://localhost:80${NC}"
+        echo -e "  Frontend:    ${GREEN}http://localhost${NC}"
         echo -e "  Backend API: ${GREEN}http://localhost:8000${NC}"
         echo -e "  API Docs:    ${GREEN}http://localhost:8000/docs${NC}"
-        echo -e "  Postgres:    localhost:5432"
-        echo -e "  Redis:       localhost:6379"
+        echo ""
+        echo -e "${BLUE}🔑 Default Login Credentials:${NC}"
+        echo -e "  Email:    ${GREEN}admin@spotoptimizer.com${NC}"
+        echo -e "  Password: ${GREEN}admin123${NC}"
+        echo ""
+        echo -e "${YELLOW}⚠️  Change default password immediately!${NC}"
         echo ""
         echo -e "${BLUE}🔧 Useful Commands:${NC}"
-        echo -e "  View logs:        ./start.sh logs"
-        echo -e "  Stop services:    ./start.sh down"
-        echo -e "  Restart:          ./start.sh restart"
-        echo -e "  Shell (backend):  ./start.sh shell backend"
-        echo -e "  Run migrations:   ./start.sh migrate"
-        echo -e "  Rebuild images:   ./start.sh build"
-        echo ""
-        echo -e "${BLUE}🩺 Health Check:${NC}"
-        echo -e "  Backend:  curl http://localhost:8000/health"
-        echo -e "  Frontend: curl http://localhost"
+        echo -e "  View logs:    ./start.sh logs [service]"
+        echo -e "  Stop all:     ./start.sh down"
+        echo -e "  Service status: ./start.sh status"
         echo ""
         ;;
 

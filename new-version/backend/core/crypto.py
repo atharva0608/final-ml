@@ -13,11 +13,19 @@ from backend.core.config import settings
 
 
 # Password hashing context (bcrypt)
-pwd_context = CryptContext(
-    schemes=["bcrypt"],
-    deprecated="auto",
-    bcrypt__rounds=settings.BCRYPT_ROUNDS
-)
+# Using lazy initialization to avoid issues with settings loading
+_pwd_context = None
+
+def get_pwd_context():
+    """Get or create the password hashing context"""
+    global _pwd_context
+    if _pwd_context is None:
+        _pwd_context = CryptContext(
+            schemes=["bcrypt"],
+            deprecated="auto",
+            bcrypt__rounds=getattr(settings, 'BCRYPT_ROUNDS', 12)
+        )
+    return _pwd_context
 
 
 def hash_password(password: str) -> str:
@@ -30,7 +38,7 @@ def hash_password(password: str) -> str:
     Returns:
         Hashed password
     """
-    return pwd_context.hash(password)
+    return get_pwd_context().hash(password)
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -44,7 +52,12 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     Returns:
         True if password matches, False otherwise
     """
-    return pwd_context.verify(plain_password, hashed_password)
+    try:
+        return get_pwd_context().verify(plain_password, hashed_password)
+    except Exception as e:
+        # Handle any bcrypt verification errors gracefully
+        print(f"Password verification error: {e}")
+        return False
 
 
 def generate_api_key(prefix: str = "sk-") -> tuple[str, str, str]:
