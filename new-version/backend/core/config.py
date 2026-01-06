@@ -5,7 +5,7 @@ Centralized configuration using Pydantic Settings for environment variables
 """
 from pydantic_settings import BaseSettings
 from pydantic import Field, field_validator
-from typing import Optional, List
+from typing import Optional, List, Union
 import os
 
 
@@ -49,9 +49,9 @@ class Settings(BaseSettings):
     API_TIMEOUT_SECONDS: int = Field(default=30, ge=5, le=300, description="API timeout in seconds")
 
     # CORS
-    CORS_ORIGINS: List[str] = Field(
-        default=["http://localhost:3000", "http://localhost:5173"],
-        description="CORS allowed origins"
+    CORS_ORIGINS: Union[str, List[str]] = Field(
+        default="http://localhost:3000,http://localhost:5173",
+        description="CORS allowed origins (comma-separated string or list)"
     )
     CORS_ALLOW_CREDENTIALS: bool = Field(default=True, description="CORS allow credentials")
 
@@ -198,5 +198,12 @@ def get_redis_url() -> str:
 
 
 def get_cors_origins() -> List[str]:
-    """Get CORS allowed origins"""
-    return settings.CORS_ORIGINS
+    """
+    Get CORS allowed origins as a list
+
+    Handles both string (comma-separated) and list formats
+    """
+    cors = settings.CORS_ORIGINS
+    if isinstance(cors, str):
+        return [origin.strip() for origin in cors.split(',') if origin.strip()]
+    return cors
