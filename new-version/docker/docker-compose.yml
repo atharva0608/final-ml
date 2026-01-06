@@ -138,10 +138,13 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile.frontend
+      args:
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
+        VITE_WS_URL: ${VITE_WS_URL:-ws://localhost:8000}
     container_name: spot-optimizer-frontend
     environment:
-      REACT_APP_API_URL: ${REACT_APP_API_URL:-http://localhost:8000}
-      REACT_APP_WS_URL: ${REACT_APP_WS_URL:-ws://localhost:8000}
+      VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
+      VITE_WS_URL: ${VITE_WS_URL:-ws://localhost:8000}
     ports:
       - "80:80"
       - "443:443"

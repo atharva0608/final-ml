@@ -2,6 +2,10 @@
 # Stage 1: Builder - Build React application
 FROM node:18-alpine AS builder
 
+# Accept build arguments
+ARG VITE_API_URL=http://localhost:8000
+ARG VITE_WS_URL=ws://localhost:8000
+
 # Set working directory
 WORKDIR /app
 
@@ -13,6 +17,10 @@ RUN npm install
 
 # Copy frontend source code and configs
 COPY frontend/ ./
+
+# Set environment variables for Vite build
+ENV VITE_API_URL=$VITE_API_URL
+ENV VITE_WS_URL=$VITE_WS_URL
 
 # Disable ESLint during build (treating warnings as errors)
 ENV DISABLE_ESLINT_PLUGIN=true

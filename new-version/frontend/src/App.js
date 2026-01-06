@@ -42,9 +42,14 @@ const ProtectedRoute = ({ children }) => {
 
 // Public Route Component (redirect if authenticated)
 const PublicRoute = ({ children }) => {
-  const { isAuthenticated } = useAuthStore();
+  const { isAuthenticated, user } = useAuthStore();
 
   if (isAuthenticated) {
+    // Redirect SUPER_ADMIN to admin dashboard
+    if (user?.role === 'SUPER_ADMIN') {
+      return <Navigate to="/admin" replace />;
+    }
+    // Redirect regular users to dashboard
     return <Navigate to="/dashboard" replace />;
   }
 
