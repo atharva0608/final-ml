@@ -274,3 +274,31 @@ class DashboardMetrics(BaseModel):
             }
         }
     }
+
+
+
+# Alias for backward compatibility
+PieData = PieChartData
+DashboardKPIs = KPISet
+CostMetrics = CostBreakdown
+InstanceMetrics = PieChartData
+SavingsBreakdown = CostBreakdown
+TimeSeriesData = ChartData
+TimeSeriesPoint = ChartDataPoint
+
+
+class MetricFilter(BaseModel):
+    """Filter parameters for metrics queries"""
+    start_date: Optional[datetime] = Field(None, description="Start date for metrics")
+    end_date: Optional[datetime] = Field(None, description="End date for metrics")
+    cluster_id: Optional[str] = Field(None, description="Filter by cluster ID")
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "start_date": "2025-12-01T00:00:00Z",
+                "end_date": "2025-12-31T23:59:59Z",
+                "cluster_id": "550e8400-e29b-41d4-a716-446655440000"
+            }
+        }
+    }

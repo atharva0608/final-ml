@@ -79,6 +79,27 @@ class PolicyConfig(BaseModel):
     }
 
 
+class PolicyCreate(BaseModel):
+    """Create policy request"""
+    cluster_id: str = Field(..., description="Cluster UUID")
+    config: PolicyConfig = Field(..., description="Policy configuration")
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "cluster_id": "550e8400-e29b-41d4-a716-446655440000",
+                "config": {
+                    "karpenter_enabled": True,
+                    "strategy": "BALANCED",
+                    "spot_percentage": 80,
+                    "binpack_enabled": True,
+                    "fallback_on_demand": True
+                }
+            }
+        }
+    }
+
+
 class PolicyUpdate(BaseModel):
     """Update policy configuration request"""
     karpenter_enabled: Optional[bool] = Field(None, description="Enable Karpenter integration")
@@ -158,3 +179,51 @@ class PolicyValidationResult(BaseModel):
             }
         }
     }
+
+
+class PolicyFilter(BaseModel):
+    """Filter criteria for listing policies"""
+    cluster_id: Optional[str] = Field(None, description="Filter by cluster UUID")
+    karpenter_enabled: Optional[bool] = Field(None, description="Filter by Karpenter status")
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "cluster_id": "550e8400-e29b-41d4-a716-446655440000",
+                "karpenter_enabled": True
+            }
+        }
+    }
+
+
+class PolicyList(BaseModel):
+    """List of policies response"""
+    items: List[PolicyState] = Field(..., description="List of policies")
+    total: int = Field(..., ge=0, description="Total count")
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "items": [
+                    {
+                        "id": "aa0e8400-e29b-41d4-a716-446655440000",
+                        "cluster_id": "550e8400-e29b-41d4-a716-446655440000",
+                        "config": {
+                            "karpenter_enabled": True,
+                            "strategy": "BALANCED",
+                            "spot_percentage": 80,
+                            "binpack_enabled": True,
+                            "fallback_on_demand": True
+                        },
+                        "created_at": "2025-12-31T10:00:00Z",
+                        "updated_at": "2025-12-31T10:00:00Z"
+                    }
+                ],
+                "total": 1
+            }
+        }
+    }
+
+
+# Alias for backward compatibility
+PolicyResponse = PolicyState

@@ -36,19 +36,8 @@ class TelemetryData(BaseModel):
 
 class LabExperimentCreate(BaseModel):
     """Create lab experiment request"""
-    model_id: str = Field(..., description="ML model UUID")
-    instance_id: str = Field(..., description="AWS instance ID for testing")
-    test_type: str = Field(..., description="Test type (A/B, CANARY, SHADOW)")
-    telemetry: TelemetryData = Field(..., description="Telemetry data from experiment")
-
-    @field_validator('test_type')
-    @classmethod
-    def validate_test_type(cls, v: str) -> str:
-        if v not in ['A/B', 'CANARY', 'SHADOW']:
-            raise ValueError('Test type must be A/B, CANARY, or SHADOW')
-        return v
-
     model_config = {
+        "protected_namespaces": (),
         "json_schema_extra": {
             "example": {
                 "model_id": "ff0e8400-e29b-41d4-a716-446655440000",
@@ -66,17 +55,23 @@ class LabExperimentCreate(BaseModel):
         }
     }
 
+    model_id: str = Field(..., description="ML model UUID")
+    instance_id: str = Field(..., description="AWS instance ID for testing")
+    test_type: str = Field(..., description="Test type (A/B, CANARY, SHADOW)")
+    telemetry: TelemetryData = Field(..., description="Telemetry data from experiment")
+
+    @field_validator('test_type')
+    @classmethod
+    def validate_test_type(cls, v: str) -> str:
+        if v not in ['A/B', 'CANARY', 'SHADOW']:
+            raise ValueError('Test type must be A/B, CANARY, or SHADOW')
+        return v
+
 
 class LabExperimentResponse(BaseModel):
     """Lab experiment response"""
-    id: str = Field(..., description="Experiment UUID")
-    model_id: str = Field(..., description="ML model UUID")
-    instance_id: str = Field(..., description="AWS instance ID")
-    test_type: str = Field(..., description="Test type")
-    telemetry: TelemetryData = Field(..., description="Telemetry data")
-    created_at: datetime = Field(..., description="Experiment creation timestamp")
-
     model_config = {
+        "protected_namespaces": (),
         "json_schema_extra": {
             "example": {
                 "id": "000e8400-e29b-41d4-a716-446655440000",
@@ -95,6 +90,13 @@ class LabExperimentResponse(BaseModel):
             }
         }
     }
+
+    id: str = Field(..., description="Experiment UUID")
+    model_id: str = Field(..., description="ML model UUID")
+    instance_id: str = Field(..., description="AWS instance ID")
+    test_type: str = Field(..., description="Test type")
+    telemetry: TelemetryData = Field(..., description="Telemetry data")
+    created_at: datetime = Field(..., description="Experiment creation timestamp")
 
 
 class MLModelUpload(BaseModel):
@@ -203,13 +205,8 @@ class ABTestConfig(BaseModel):
 
 class ABTestVariant(BaseModel):
     """A/B test variant results"""
-    model_id: str = Field(..., description="Model UUID")
-    model_version: str = Field(..., description="Model version")
-    sample_size: int = Field(..., ge=0, description="Number of samples")
-    metrics: Dict[str, float] = Field(..., description="Variant metrics")
-    confidence_interval: Optional[Dict[str, Any]] = Field(None, description="Confidence intervals")
-
     model_config = {
+        "protected_namespaces": (),
         "json_schema_extra": {
             "example": {
                 "model_id": "ff0e8400-e29b-41d4-a716-446655440000",
@@ -226,6 +223,12 @@ class ABTestVariant(BaseModel):
             }
         }
     }
+
+    model_id: str = Field(..., description="Model UUID")
+    model_version: str = Field(..., description="Model version")
+    sample_size: int = Field(..., ge=0, description="Number of samples")
+    metrics: Dict[str, float] = Field(..., description="Variant metrics")
+    confidence_interval: Optional[Dict[str, Any]] = Field(None, description="Confidence intervals")
 
 
 class ABTestResults(BaseModel):
@@ -280,3 +283,43 @@ class ModelPromoteRequest(BaseModel):
             }
         }
     }
+
+
+class LabExperimentUpdate(BaseModel):
+    """Update lab experiment"""
+    name: Optional[str] = Field(None, min_length=1, max_length=255)
+    description: Optional[str] = Field(None, max_length=1000)
+    control_percentage: Optional[int] = Field(None, ge=0, le=100)
+    variant_percentage: Optional[int] = Field(None, ge=0, le=100)
+    status: Optional[str] = Field(None, description="Experiment status")
+    
+    model_config = {
+        "protected_namespaces": ()
+    }
+
+
+class LabExperimentFilter(BaseModel):
+    """Filter for experiments"""
+    search: Optional[str] = Field(None)
+    status: Optional[str] = Field(None)
+    model_id: Optional[str] = Field(None)
+    page: int = Field(1, ge=1)
+    page_size: int = Field(50, ge=1, le=100)
+
+
+class LabExperimentList(BaseModel):
+    """List of experiments"""
+    experiments: List[LabExperimentResponse] = Field(..., description="List of experiments")
+    total: int = Field(..., ge=0)
+    page: int = Field(..., ge=1)
+    page_size: int = Field(..., ge=1)
+
+
+# Aliases for backward compatibility
+ExperimentCreate = LabExperimentCreate
+ExperimentUpdate = LabExperimentUpdate
+ExperimentResponse = LabExperimentResponse
+ExperimentList = LabExperimentList
+ExperimentFilter = LabExperimentFilter
+ExperimentResults = ABTestResults
+VariantPerformance = ABTestVariant

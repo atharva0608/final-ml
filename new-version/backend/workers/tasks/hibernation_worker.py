@@ -30,16 +30,16 @@ from botocore.exceptions import ClientError
 from sqlalchemy.orm import Session
 from sqlalchemy import and_
 
-from app.core.celery_app import app
-from app.database.session import get_db
-from app.database.models import (
+from backend.workers import app
+from backend.models.base import get_db
+from backend.models import (
     Cluster,
     HibernationSchedule,
     Account,
     ClusterPolicy,
     ActionLog
 )
-from app.core.redis_client import get_redis_client
+from backend.core.redis_client import get_redis_client
 
 logger = logging.getLogger(__name__)
 

@@ -5,7 +5,7 @@ Centralized configuration using Pydantic Settings for environment variables
 """
 from pydantic_settings import BaseSettings
 from pydantic import Field, field_validator
-from typing import Optional, List
+from typing import Optional, List, Any, Union
 import os
 
 
@@ -49,10 +49,17 @@ class Settings(BaseSettings):
     API_TIMEOUT_SECONDS: int = Field(default=30, ge=5, le=300, description="API timeout in seconds")
 
     # CORS
-    CORS_ORIGINS: List[str] = Field(
+    CORS_ORIGINS: Union[List[str], str] = Field(
         default=["http://localhost:3000", "http://localhost:5173"],
         description="CORS allowed origins"
     )
+
+    @field_validator("CORS_ORIGINS", mode="before")
+    @classmethod
+    def assemble_cors_origins(cls, v: Any) -> Any:
+        if isinstance(v, str) and not v.startswith("["):
+            return [i.strip() for i in v.split(",")]
+        return v
     CORS_ALLOW_CREDENTIALS: bool = Field(default=True, description="CORS allow credentials")
 
     # Frontend
@@ -126,6 +133,10 @@ class Settings(BaseSettings):
         if v not in ['json', 'text']:
             raise ValueError('LOG_FORMAT must be json or text')
         return v
+
+    def is_production(self) -> bool:
+        """Check if environment is production"""
+        return self.ENVIRONMENT.lower() == "production"
 
     model_config = {
         "env_file": ".env",

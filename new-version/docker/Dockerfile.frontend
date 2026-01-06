@@ -17,6 +17,14 @@ COPY frontend/ ./
 # Disable ESLint during build (treating warnings as errors)
 ENV DISABLE_ESLINT_PLUGIN=true
 
+# Accept build arguments for Vite
+ARG VITE_API_URL=http://localhost:8000/api/v1
+ARG VITE_WS_URL=ws://localhost:8000
+
+# Set as environment variables for Vite build
+ENV VITE_API_URL=$VITE_API_URL
+ENV VITE_WS_URL=$VITE_WS_URL
+
 # Build production bundle
 RUN npm run build
 

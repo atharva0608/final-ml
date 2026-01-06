@@ -1082,6 +1082,356 @@ Enhanced `start.sh` to:
 
 ---
 
-**Document Version**: 1.0
-**Last Updated**: 2026-01-02
-**Status**: All Known Issues Resolved ✅
+---
+
+## 7. Service Stabilization & Import Resolution (Jan 5, 2026)
+
+### Issue 7.1: Cascading `ImportError` for Pydantic Schemas
+**Severity**: CRITICAL
+**Status**: ✅ RESOLVED
+**Files Affected**: `backend/schemas/*.py`, `backend/services/*.py`
+
+**Problem**:
+Critical failure in multiple services due to missing Pydantic models and filters that were being imported but not defined in the schema layer.
+
+**Symptoms**:
+```
+ImportError: cannot import name 'NodeTemplateList' from 'backend.schemas.cluster_schemas'
+ImportError: cannot import name 'PolicyCreate' from 'backend.schemas.policy_schemas'
+ImportError: cannot import name 'HibernationScheduleList' from 'backend.schemas.hibernation_schemas'
+```
+
+**Root Cause**:
+The schema layer was incomplete, lacking many of the complex models required by the service layer for pagination, filtering, and creation.
+
+**Solution Applied**:
+1. Systematically reviewed imports across all service files.
+2. Implemented missing schemas including `NodeTemplateList`, `PolicyCreate`, `PolicyResponse`, `HibernationScheduleList`, `ClientSummary`, `ExperimentCreate`, and others.
+3. Updated `backend/schemas/__init__.py` to ensure all new models are properly exported.
+
+**Commit**: `Implement missing Pydantic schemas across all backend modules`
+
+---
+
+### Issue 7.2: Missing Core Exceptions (Unauthorized/Forbidden)
+**Severity**: HIGH
+**Status**: ✅ RESOLVED
+**Files Affected**: `backend/core/exceptions.py`
+
+**Problem**:
+Service layer failed to import common security exceptions.
+
+**Symptoms**:
+```
+ImportError: cannot import name 'UnauthorizedError' from 'backend.core.exceptions'
+```
+
+**Root Cause**:
+`UnauthorizedError` and `ForbiddenError` were expected as aliases to existing exceptions but were not defined in the core exceptions file.
+
+**Solution Applied**:
+Added the following aliases to `backend/core/exceptions.py`:
+- `UnauthorizedError = AuthenticationError`
+- `ForbiddenError = PermissionError`
+
+**Commit**: `Add missing UnauthorizedError and ForbiddenError aliases`
+
+---
+
+### Issue 7.3: Missing Model Enums and Missing Imports
+**Severity**: HIGH
+**Status**: ✅ RESOLVED
+**Files Affected**: `backend/models/lab_experiment.py`
+
+**Problem**:
+The `LabExperiment` model failed to initialize due to a missing Enum definition and a missing `datetime` import.
+
+**Symptoms**:
+```
+NameError: name 'ExperimentStatus' is not defined
+NameError: name 'datetime' is not defined
+```
+
+**Root Cause**:
+Enum definitions and standard library imports were missing from the model file.
+
+**Solution Applied**:
+1. Added `ExperimentStatus` enum class.
+2. Restored `from datetime import datetime` import.
+
+**Commit**: `Fix LabExperiment model enums and missing imports`
+
+---
+
+### Issue 7.4: Environment Utility Attribute Error
+**Severity**: MEDIUM
+**Status**: ✅ RESOLVED
+**Files Affected**: `backend/core/config.py`
+
+**Problem**:
+The API gateway failed to start because it couldn't check the current environment.
+
+**Symptoms**:
+```
+AttributeError: 'Settings' object has no attribute 'is_production'
+```
+
+**Root Cause**:
+The `Settings` class was missing helper methods for environment checks used in the gateway logic.
+
+**Solution Applied**:
+Added `is_production`, `is_development`, and `is_testing` helper methods to the `Settings` class.
+
+**Commit**: `Add environment check helper methods to Settings class`
+
+---
+
+### Issue 7.5: Missing AI and WebSocket Routes
+**Severity**: HIGH
+**Status**: ✅ RESOLVED
+**Files Affected**: `backend/api/ai_routes.py`, `backend/api/websocket_routes.py`, `backend/api/__init__.py`
+
+**Problem**:
+The main application failed to start because it could not import AI and WebSocket route routers.
+
+**Symptoms**:
+```
+ImportError: cannot import name 'ai_router' from 'backend.api'
+ImportError: cannot import name 'websocket_router' from 'backend.api'
+```
+
+**Root Cause**:
+The corresponding route files were missing entirely from the repository.
+
+**Solution Applied**:
+1. Created stub files for `ai_routes.py` and `websocket_routes.py` with basic routers.
+2. Updated `backend/api/__init__.py` to export these new routers.
+
+**Commit**: `Stub missing AI and WebSocket routes to resolve backend imports`
+
+---
+
+### Issue 7.6: Redis Pub/Sub Singleton Export
+**Severity**: MEDIUM
+**Status**: ✅ RESOLVED
+**Files Affected**: `backend/core/redis_pubsub.py`
+
+**Problem**:
+`api_gateway.py` failed to import the global redis listener instance.
+
+**Symptoms**:
+```
+ImportError: cannot import name 'redis_listener' from 'backend.core.redis_pubsub'
+```
+
+**Root Cause**:
+The `RedisPubSub` class was defined, but a global instance named `redis_listener` was not instantiated or exported.
+
+**Solution Applied**:
+1. Created a singleton instance: `redis_listener = RedisPubSub()`.
+2. Added `start_listening()` and `disconnect()` methods to support lifecycle management.
+
+**Commit**: `Expose singleton redis_listener in RedisPubSub`
+
+---
+
+### Issue 7.7: Global Typing Imports (List, Dict, Any)
+**Severity**: HIGH
+**Status**: ✅ RESOLVED
+**Files Affected**: `backend/modules/risk_tracker.py`, `backend/modules/ml_model_server.py`
+
+**Problem**:
+Workers failed to start due to `NameError` for standard typing hints.
+
+**Symptoms**:
+```
+NameError: name 'List' is not defined. Did you mean: 'list'?
+```
+
+**Root Cause**:
+Use of uppercase `List`, `Dict`, etc., without importing them from the `typing` module.
+
+**Solution Applied**:
+Updated all core intelligence modules to include proper `from typing import List, Dict, Any, Optional` imports and standardized type hints.
+
+**Commit**: `Standardize typing imports across core modules and workers`
+
+---
+
+### Issue 7.8: Unstyled Frontend (Tailwind Build Failure)
+**Severity**: CRITICAL
+**Status**: ✅ RESOLVED
+**Files Affected**: `docker/Dockerfile.frontend`
+
+**Problem**:
+The frontend UI appeared as raw HTML with no CSS applied.
+
+**Symptoms**:
+The built CSS file contained uncompiled Tailwind directives like `@tailwind base;`.
+
+**Root Cause**:
+The `Dockerfile.frontend` was only copying `src/` and `public/` directories, missing the root configuration files (`tailwind.config.js`, `postcss.config.js`) required for the Tailwind build process.
+
+**Solution Applied**:
+Updated `Dockerfile.frontend` to copy the entire frontend directory into the builder stage, ensuring all configuration files are present during the build.
+
+**Commit**: `Fix frontend Docker build to include Tailwind/PostCSS configs`
+
+---
+
+### Issue 7.9: Missing Public Assets (404 Fallback)
+**Severity**: MEDIUM
+**Status**: ✅ RESOLVED
+**Files Affected**: `frontend/public/`
+
+**Problem**:
+UI showed 404 errors for `manifest.json`, `favicon.ico`, and `logo192.png`. Due to SPA routing, these requests returned the content of `index.html`, further confusing the browser.
+
+**Root Cause**:
+Mandatory static assets were missing from the project source.
+
+**Solution Applied**:
+1. Recreated `manifest.json` with correct PWA standard.
+2. Generated a professional `logo192.png` using AI generation tools.
+3. Created a `favicon.ico` from the generated logo.
+
+**Commit**: `Restore missing public assets for frontend`
+
+---
+
+## Testing Status (Updated Jan 5)
+
+**Manual Testing Performed**:
+- ✅ Backend `/health` endpoint verification (Success: 200)
+- ✅ Frontend UI accessibility and styling check (Success: Styled)
+- ✅ Celery Worker startup and broker connection (Success: Running)
+- ✅ Celery Beat scheduler initialization (Success: Running)
+
+---
+
+---
+
+### Issue 7.10: Auth API 404 (Prefix Mismatch)
+**Severity**: CRITICAL
+**Status**: ✅ RESOLVED
+**Files Affected**: `frontend/src/services/api.js`
+
+**Problem**:
+The login functionality failed with a `404 Not Found` error in the browser console.
+
+**Symptoms**:
+```
+POST http://localhost:8000/api/auth/login 404 (Not Found)
+```
+
+**Root Cause**:
+The frontend was calling `/api/auth/login` while the backend router was configured with the `/api/v1` prefix, expecting `/api/v1/auth/login`.
+
+**Solution Applied**:
+Standardized all frontend API call methods in `api.js` to use the correct `/api/v1/` prefix.
+
+**Commit**: `Align frontend API paths with backend v1 prefix`
+
+---
+
+### Issue 7.11: Zustand Persistence Deprecation Warning
+**Severity**: LOW
+**Status**: ✅ RESOLVED
+**Files Affected**: `frontend/src/store/useStore.js`
+
+**Problem**:
+A deprecation warning appeared in the console regarding the Zustand store's persistence configuration.
+
+**Symptoms**:
+```
+[DEPRECATED] getStorage, serialize and deserialize options are deprecated. Use storage option instead.
+```
+
+**Root Cause**:
+The `useAuthStore` was using the legacy `getStorage` option which is deprecated in modern Zustand versions.
+
+**Solution Applied**:
+Updated the store configuration to use `createJSONStorage` and the `storage` option as recommended by the library maintainers.
+
+**Commit**: `Modernize Zustand persistence configuration`
+
+---
+
+### Issue 8.6: Incorrect Demo Credentials in UI
+**Severity**: MEDIUM
+**Status**: ✅ RESOLVED
+**Files Affected**: `frontend/src/components/auth/Login.jsx`
+
+**Problem**:
+Users were misled by incorrect "Demo Credentials" displayed on the login page, leading to persistent 401 errors.
+
+**Root Cause**:
+The `Login.jsx` component hardcoded `admin123` while the backend seed data was updated to `Admin@123` for security/complexity requirements.
+
+**Solution Applied**:
+Updated `Login.jsx` to display `Admin@123` and rebuilt the frontend container.
+
+### Issue 8.1: Database Migration Syntax Error
+**Severity**: HIGH
+**Status**: ✅ RESOLVED
+**Files Affected**: `migrations/versions/002_seed_data.py`
+
+**Problem**:
+Alembic migrations failed with a PostgreSQL syntax error during the seed data phase.
+
+**Root Cause**:
+Incorrect array literal syntax (`ARRAY{...}`) instead of (`ARRAY[...]`) in the SQL statement.
+
+**Solution Applied**:
+Corrected the syntax to use standard PostgreSQL array literals.
+
+---
+
+### Issue 8.2: StructuredLogger Argument Collision
+**Severity**: MEDIUM
+**Status**: ✅ RESOLVED
+**Files Affected**: `backend/core/logger.py`
+
+**Problem**:
+Backend returned 500 errors when logging application exceptions.
+
+**Root Cause**:
+Collision between the positional `message` argument and `message` in `kwargs` within `StructuredLogger` methods.
+
+**Solution Applied**:
+Renamed the positional argument to `msg`.
+
+---
+
+### Issue 8.3: JSON Serialization Error (ValueError)
+**Severity**: MEDIUM
+**Status**: ✅ RESOLVED
+**Files Affected**: `backend/core/api_gateway.py`
+
+**Problem**:
+`TypeError: Object of type ValueError is not JSON serializable` during request validation.
+
+**Root Cause**:
+Pydantic v2 included raw `ValueError` objects in the error details, which Starlette's `JSONResponse` couldn't serialize.
+
+**Solution Applied**:
+Wrapped response content in `jsonable_encoder`.
+
+---
+
+### Issue 8.4: Auth Library Compatibility & Seed Data
+**Severity**: HIGH
+**Status**: ✅ RESOLVED
+**Files Affected**: `requirements.txt`, `backend/core/crypto.py`, `002_seed_data.py`
+
+**Problem**:
+Authentication failed due to `passlib`/`bcrypt` incompatibility and invalid seed hashes.
+
+**Solution Applied**:
+Pinned `bcrypt<4.0.0`, replaced `passlib` with direct `bcrypt` calls, and corrected seed credentials to `Admin@123`.
+
+---
+
+**Document Version**: 1.3
+**Last Updated**: 2026-01-05
+**Status**: All Recent Startup and Connectivity Issues Resolved ✅

@@ -45,6 +45,8 @@ RUN groupadd -r spotoptimizer && \
 COPY --chown=spotoptimizer:spotoptimizer backend/ /app/backend/
 COPY --chown=spotoptimizer:spotoptimizer scripts/ /app/scripts/
 COPY --chown=spotoptimizer:spotoptimizer config/ /app/config/
+COPY --chown=spotoptimizer:spotoptimizer alembic.ini /app/
+COPY --chown=spotoptimizer:spotoptimizer migrations/ /app/migrations/
 
 # Switch to non-root user
 USER spotoptimizer

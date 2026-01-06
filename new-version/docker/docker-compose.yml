@@ -10,11 +10,11 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
-      - "${POSTGRES_PORT:-5433}:5432"  # Changed to 5433 to avoid conflicts with local PostgreSQL
+      - "${POSTGRES_PORT:-5433}:5432" # Changed to 5433 to avoid conflicts with local PostgreSQL
     networks:
       - app-network
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      test: [ "CMD-SHELL", "pg_isready -U postgres" ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -32,7 +32,7 @@ services:
     networks:
       - app-network
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: [ "CMD", "redis-cli", "ping" ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -106,7 +106,7 @@ services:
       context: ..
       dockerfile: docker/Dockerfile.backend
     container_name: spot-optimizer-celery-beat
-    command: celery -A backend.workers beat -l info --scheduler django_celery_beat.schedulers:DatabaseScheduler
+    command: celery -A backend.workers beat -l info
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-password}@postgres:5432/${POSTGRES_DB:-spot_optimizer}
       REDIS_URL: redis://redis:6379/0

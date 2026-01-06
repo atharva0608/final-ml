@@ -66,6 +66,16 @@ class InsufficientPermissionsError(AuthorizationError):
         super().__init__(message)
 
 
+class UnauthorizedError(AuthorizationError):
+    """
+    Raised when user is not authorized to access resource.
+    Note: Sometimes used interchangeably with Forbidden, but typically implies 401/403.
+    Mapped to 403 here as it's often used for role checks.
+    """
+    def __init__(self, message: str = "Unauthorized access"):
+        super().__init__(message)
+
+
 # Resource Exceptions
 
 class ResourceNotFoundError(SpotOptimizerException):

@@ -9,7 +9,7 @@ from celery import Task
 from sqlalchemy.orm import Session
 
 from backend.workers import app
-from backend.core.database import get_db
+from backend.models.base import get_db
 from backend.core.redis_client import get_redis_client
 from backend.models.optimization_job import OptimizationJob
 from backend.models.cluster_policy import ClusterPolicy

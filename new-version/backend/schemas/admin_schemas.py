@@ -230,3 +230,81 @@ class ImpersonateResponse(BaseModel):
             }
         }
     }
+
+
+class PasswordReset(BaseModel):
+    """Password reset request (admin)"""
+    new_password: str = Field(..., min_length=8, max_length=128, description="New password")
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "new_password": "NewSecurePassword123!"
+            }
+        }
+    }
+
+
+class ClientStats(BaseModel):
+    """Client usage statistics"""
+    total_accounts: int = Field(..., ge=0, description="Number of cloud accounts")
+    total_clusters: int = Field(..., ge=0, description="Number of clusters")
+    total_instances: int = Field(..., ge=0, description="Total instances tracked")
+    running_instances: int = Field(..., ge=0, description="Currently running instances")
+    total_cost: float = Field(..., ge=0, description="Estimated monthly cost")
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "total_accounts": 2,
+                "total_clusters": 5,
+                "total_instances": 50,
+                "running_instances": 45,
+                "total_cost": 4500.50
+            }
+        }
+    }
+
+
+class UserManagement(BaseModel):
+    """Detailed user management view with stats"""
+    id: str = Field(..., description="User UUID")
+    email: str = Field(..., description="User email")
+    role: str = Field(..., description="User role")
+    is_active: bool = Field(..., description="Is user active")
+    created_at: datetime = Field(..., description="Creation timestamp")
+    updated_at: Optional[datetime] = Field(None, description="Last update timestamp")
+    last_login: Optional[datetime] = Field(None, description="Last login timestamp")
+    stats: ClientStats = Field(..., description="User usage statistics")
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "id": "550e8400-e29b-41d4-a716-446655440000",
+                "email": "client@example.com",
+                "role": "CLIENT",
+                "is_active": True,
+                "created_at": "2025-11-01T10:00:00Z",
+                "last_login": "2025-12-31T08:30:00Z",
+                "stats": {
+                    "total_accounts": 2,
+                    "total_clusters": 5,
+                    "total_instances": 50,
+                    "running_instances": 45,
+                    "total_cost": 4500.50
+                }
+            }
+        }
+    }
+
+
+class ClientFilter(BaseModel):
+    """Filter for checking client list"""
+    search: Optional[str] = Field(None, description="Search by email or ID")
+    is_active: Optional[bool] = Field(None, description="Filter by active status")
+    created_after: Optional[datetime] = Field(None, description="Filter by creation date (after)")
+    created_before: Optional[datetime] = Field(None, description="Filter by creation date (before)")
+
+
+# Alias for backward compatibility or different views
+ClientSummary = ClientListItem

@@ -13,11 +13,16 @@ from backend.models.ml_model import MLModel
 from backend.models.optimization_job import OptimizationJob
 from backend.models.lab_experiment import LabExperiment
 from backend.models.agent_action import AgentAction
+from backend.models.action_log import ActionLog
+from backend.models.cluster_event import ClusterEvent
 from backend.models.api_key import APIKey
 
 __all__ = [
     "User",
     "Account",
+    "Cluster",
+    "ActionLog",
+    "ClusterEvent",
     "Cluster",
     "Instance",
     "NodeTemplate",

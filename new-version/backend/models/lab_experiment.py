@@ -1,11 +1,20 @@
 """
 LabExperiment model - ML model A/B testing experiments
 """
-from sqlalchemy import Column, String, DateTime, ForeignKey
+from sqlalchemy import Column, String, DateTime, ForeignKey, Enum
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 from datetime import datetime
+import enum
 from backend.models.base import Base, generate_uuid
+
+
+class ExperimentStatus(str, enum.Enum):
+    DRAFT = "DRAFT"
+    RUNNING = "RUNNING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    STOPPED = "STOPPED"
 
 
 class LabExperiment(Base):
@@ -25,6 +34,7 @@ class LabExperiment(Base):
     # Test configuration
     instance_id = Column(String(20), nullable=False)  # EC2 instance used for test
     test_type = Column(String(50), nullable=False)  # e.g., "interruption_prediction", "bin_packing"
+    status = Column(Enum(ExperimentStatus), default=ExperimentStatus.DRAFT, nullable=False)
 
     # Telemetry data (JSONB)
     # Structure:

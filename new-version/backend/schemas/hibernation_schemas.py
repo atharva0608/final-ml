@@ -204,3 +204,43 @@ class SchedulePreviewResponse(BaseModel):
             }
         }
     }
+
+
+class HibernationScheduleFilter(BaseModel):
+    """Filter criteria for listing schedules"""
+    cluster_id: Optional[str] = Field(None, description="Filter by cluster UUID")
+    is_active: Optional[bool] = Field(None, description="Filter by active status")
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "cluster_id": "550e8400-e29b-41d4-a716-446655440000",
+                "is_active": True
+            }
+        }
+    }
+
+
+class HibernationScheduleList(BaseModel):
+    """List of hibernation schedules"""
+    items: List[HibernationScheduleResponse] = Field(..., description="List of schedules")
+    total: int = Field(..., ge=0, description="Total count")
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "items": [
+                    {
+                        "id": "880e8400-e29b-41d4-a716-446655440000",
+                        "name": "Weekend Hibernation",
+                        "cluster_id": "550e8400-e29b-41d4-a716-446655440000",
+                        "is_active": True,
+                        "schedule_type": "WEEKLY",
+                        "cron_expression": "0 20 * * 5",
+                        "duration_minutes": 3840
+                    }
+                ],
+                "total": 1
+            }
+        }
+    }
