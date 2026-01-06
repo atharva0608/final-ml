@@ -79,31 +79,60 @@ class PolicyConfig(BaseModel):
     }
 
 
+class PolicyCreate(BaseModel):
+    """Create policy request"""
+    cluster_id: str = Field(..., description="Cluster UUID")
+    template_id: str = Field(..., description="Node template UUID")
+    spot_percentage: int = Field(default=80, ge=0, le=100, description="Target spot percentage")
+    fallback_to_on_demand: bool = Field(default=True, description="Fallback to on-demand if spot unavailable")
+    max_price_per_hour: Optional[float] = Field(None, description="Maximum price per hour")
+    diversification_enabled: bool = Field(default=True, description="Enable instance type diversification")
+    min_nodes: int = Field(default=1, ge=0, description="Minimum number of nodes")
+    max_nodes: int = Field(default=10, ge=1, description="Maximum number of nodes")
+    target_cpu_utilization: int = Field(default=70, ge=0, le=100, description="Target CPU utilization percentage")
+    target_memory_utilization: int = Field(default=70, ge=0, le=100, description="Target memory utilization percentage")
+    scale_down_cooldown_minutes: int = Field(default=15, ge=0, description="Cooldown period before scaling down")
+    is_active: bool = Field(default=True, description="Whether policy is active")
+
+
 class PolicyUpdate(BaseModel):
     """Update policy configuration request"""
-    karpenter_enabled: Optional[bool] = Field(None, description="Enable Karpenter integration")
-    strategy: Optional[str] = Field(None, description="Optimization strategy")
+    template_id: Optional[str] = Field(None, description="Node template UUID")
     spot_percentage: Optional[int] = Field(None, ge=0, le=100, description="Target spot percentage")
-    binpack_enabled: Optional[bool] = Field(None, description="Enable bin packing")
-    binpack_settings: Optional[BinpackSettings] = Field(None, description="Bin packing settings")
-    fallback_on_demand: Optional[bool] = Field(None, description="Fallback to on-demand")
-    exclusions: Optional[ExclusionRules] = Field(None, description="Exclusion rules")
+    fallback_to_on_demand: Optional[bool] = Field(None, description="Fallback to on-demand")
+    max_price_per_hour: Optional[float] = Field(None, description="Maximum price per hour")
+    diversification_enabled: Optional[bool] = Field(None, description="Enable diversification")
+    min_nodes: Optional[int] = Field(None, ge=0, description="Minimum nodes")
+    max_nodes: Optional[int] = Field(None, ge=1, description="Maximum nodes")
+    target_cpu_utilization: Optional[int] = Field(None, ge=0, le=100, description="Target CPU utilization")
+    target_memory_utilization: Optional[int] = Field(None, ge=0, le=100, description="Target memory utilization")
+    scale_down_cooldown_minutes: Optional[int] = Field(None, ge=0, description="Scale down cooldown")
+    is_active: Optional[bool] = Field(None, description="Whether policy is active")
 
-    @field_validator('strategy')
-    @classmethod
-    def validate_strategy(cls, v: Optional[str]) -> Optional[str]:
-        if v is not None and v not in ['CHEAPEST', 'BALANCED', 'PERFORMANCE']:
-            raise ValueError('Strategy must be CHEAPEST, BALANCED, or PERFORMANCE')
-        return v
 
-    model_config = {
-        "json_schema_extra": {
-            "example": {
-                "strategy": "PERFORMANCE",
-                "spot_percentage": 70
-            }
-        }
-    }
+class PolicyResponse(PolicyCreate):
+    """Policy response model"""
+    id: str = Field(..., description="Policy UUID")
+    created_at: datetime = Field(..., description="Creation timestamp")
+    updated_at: datetime = Field(..., description="Last update timestamp")
+
+
+class PolicyList(BaseModel):
+    """List of policies with pagination"""
+    policies: List[PolicyResponse] = Field(..., description="List of policies")
+    total: int = Field(..., description="Total number of policies")
+    page: int = Field(..., description="Current page number")
+    page_size: int = Field(..., description="Number of items per page")
+
+
+class PolicyFilter(BaseModel):
+    """Filter criteria for policies"""
+    cluster_id: Optional[str] = Field(None, description="Filter by cluster UUID")
+    template_id: Optional[str] = Field(None, description="Filter by template UUID")
+    is_active: Optional[bool] = Field(None, description="Filter by active status")
+    min_spot_percentage: Optional[int] = Field(None, ge=0, le=100, description="Minimum spot percentage")
+    page: int = Field(default=1, ge=1, description="Page number")
+    page_size: int = Field(default=50, ge=1, le=100, description="Items per page")
 
 
 class PolicyState(BaseModel):

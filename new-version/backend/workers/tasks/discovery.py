@@ -11,7 +11,7 @@ import boto3
 from botocore.exceptions import ClientError
 
 from backend.workers import app
-from backend.core.database import get_db
+from backend.models.base import get_db
 from backend.models.account import Account
 from backend.models.cluster import Cluster
 from backend.models.instance import Instance
