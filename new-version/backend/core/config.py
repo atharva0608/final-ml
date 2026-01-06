@@ -127,6 +127,18 @@ class Settings(BaseSettings):
             raise ValueError('LOG_FORMAT must be json or text')
         return v
 
+    def is_production(self) -> bool:
+        """Check if running in production environment"""
+        return self.ENVIRONMENT == "production"
+
+    def is_development(self) -> bool:
+        """Check if running in development environment"""
+        return self.ENVIRONMENT == "development"
+
+    def is_testing_env(self) -> bool:
+        """Check if running in testing mode"""
+        return self.TESTING
+
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",
