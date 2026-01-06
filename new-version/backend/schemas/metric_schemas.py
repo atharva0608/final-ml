@@ -131,6 +131,12 @@ class PieChartData(BaseModel):
     }
 
 
+# Alias for backward compatibility
+class PieData(PieChartData):
+    """Alias for PieChartData"""
+    pass
+
+
 class ActivityFeedItem(BaseModel):
     """Single activity feed item"""
     id: str = Field(..., description="Activity UUID")
