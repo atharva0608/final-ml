@@ -46,10 +46,29 @@ const PublicRoute = ({ children }) => {
 
   if (isAuthenticated) {
     // Redirect SUPER_ADMIN to admin dashboard
-    if (user?.role === 'SUPER_ADMIN') {
+    if (user?.role === 'SUPER_ADMIN' || user?.role === 'super_admin') {
       return <Navigate to="/admin" replace />;
     }
     // Redirect regular users to dashboard
+    return <Navigate to="/dashboard" replace />;
+  }
+
+  return children;
+};
+
+// Admin Route Component (require SUPER_ADMIN role)
+const AdminRoute = ({ children }) => {
+  const { isAuthenticated, user } = useAuthStore();
+
+  if (!isAuthenticated) {
+    return <Navigate to="/login" replace />;
+  }
+
+  // Check if user has SUPER_ADMIN role (handles both cases: SUPER_ADMIN and super_admin)
+  const isSuperAdmin = user?.role === 'SUPER_ADMIN' || user?.role === 'super_admin';
+
+  if (!isSuperAdmin) {
+    // Redirect non-admin users back to dashboard
     return <Navigate to="/dashboard" replace />;
   }
 
@@ -146,10 +165,10 @@ function App() {
             <Route path="settings/account" element={<AccountSettings />} />
             <Route path="settings/integrations" element={<CloudIntegrations />} />
 
-            {/* Admin Routes (role-protected) */}
-            <Route path="admin" element={<AdminDashboard />} />
-            <Route path="admin/clients" element={<AdminClients />} />
-            <Route path="admin/health" element={<AdminHealth />} />
+            {/* Admin Routes (SUPER_ADMIN only) */}
+            <Route path="admin" element={<AdminRoute><AdminDashboard /></AdminRoute>} />
+            <Route path="admin/clients" element={<AdminRoute><AdminClients /></AdminRoute>} />
+            <Route path="admin/health" element={<AdminRoute><AdminHealth /></AdminRoute>} />
           </Route>
 
           {/* Catch All - 404 */}

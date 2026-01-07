@@ -11,7 +11,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from backend.models.base import SessionLocal, create_tables
-from backend.models.user import User
+from backend.models.user import User, UserRole
 from backend.core.crypto import hash_password
 
 
@@ -38,7 +38,7 @@ def seed_admin():
         admin_user = User(
             email="admin@spotoptimizer.com",
             password_hash=hash_password("admin123"),
-            role="SUPER_ADMIN"
+            role=UserRole.SUPER_ADMIN
         )
         db.add(admin_user)
         db.commit()

@@ -118,9 +118,19 @@ const Login = () => {
 
           {/* Demo Credentials */}
           <div className="mt-6 p-4 bg-gray-50 rounded-lg border border-gray-200">
-            <p className="text-xs font-semibold text-gray-700 mb-2">Demo Credentials:</p>
-            <p className="text-xs text-gray-600">Email: admin@spotoptimizer.com</p>
-            <p className="text-xs text-gray-600">Password: Admin@123</p>
+            <p className="text-xs font-semibold text-gray-700 mb-3">Demo Credentials:</p>
+
+            <div className="mb-3">
+              <p className="text-xs font-medium text-blue-700 mb-1">Super Admin:</p>
+              <p className="text-xs text-gray-600">📧 admin@spotoptimizer.com</p>
+              <p className="text-xs text-gray-600">🔑 admin123</p>
+            </div>
+
+            <div>
+              <p className="text-xs font-medium text-green-700 mb-1">Demo Client:</p>
+              <p className="text-xs text-gray-600">📧 demo@client.com</p>
+              <p className="text-xs text-gray-600">🔑 demo123</p>
+            </div>
           </div>
         </Card>
 
