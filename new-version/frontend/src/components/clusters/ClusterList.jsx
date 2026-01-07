@@ -9,12 +9,14 @@ import { Card, Button, Badge } from '../shared';
 import { formatDateTime, getStatusColor, formatClusterType } from '../../utils/formatters';
 import { FiPlus, FiRefreshCw, FiExternalLink } from 'react-icons/fi';
 import toast from 'react-hot-toast';
+import ClusterConnectModal from './ClusterConnectModal';
 
 const ClusterList = () => {
   const navigate = useNavigate();
   const { clusters, setClusters, setLoading, loading } = useClusterStore();
   const [searchTerm, setSearchTerm] = useState('');
   const [filterStatus, setFilterStatus] = useState('all');
+  const [showConnectModal, setShowConnectModal] = useState(false);
 
   useEffect(() => {
     fetchClusters();
@@ -61,9 +63,9 @@ const ClusterList = () => {
           <Button
             variant="primary"
             icon={<FiPlus />}
-            onClick={() => navigate('/clusters/new')}
+            onClick={() => setShowConnectModal(true)}
           >
-            Register Cluster
+            Connect Cluster
           </Button>
         </div>
       </div>
@@ -97,13 +99,13 @@ const ClusterList = () => {
         <Card>
           <div className="text-center py-12">
             <p className="text-gray-500 text-lg">No clusters found</p>
-            <p className="text-gray-400 mt-2">Register a cluster to get started</p>
+            <p className="text-gray-400 mt-2">Connect a cluster to get started</p>
             <Button
               variant="primary"
               className="mt-4"
-              onClick={() => navigate('/clusters/new')}
+              onClick={() => setShowConnectModal(true)}
             >
-              Register Your First Cluster
+              Connect Your First Cluster
             </Button>
           </div>
         </Card>
@@ -177,6 +179,16 @@ const ClusterList = () => {
           ))}
         </div>
       )}
+
+      {/* Cluster Connect Modal */}
+      <ClusterConnectModal
+        isOpen={showConnectModal}
+        onClose={() => setShowConnectModal(false)}
+        onSuccess={() => {
+          setShowConnectModal(false);
+          fetchClusters();
+        }}
+      />
     </div>
   );
 };
