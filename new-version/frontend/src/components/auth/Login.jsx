@@ -129,7 +129,7 @@ const Login = () => {
             <div>
               <p className="text-xs font-medium text-green-700 mb-1">Demo Client:</p>
               <p className="text-xs text-gray-600">📧 demo@client.com</p>
-              <p className="text-xs text-gray-600">🔑 demo123</p>
+              <p className="text-xs text-gray-600">🔑 democlient</p>
             </div>
           </div>
         </Card>

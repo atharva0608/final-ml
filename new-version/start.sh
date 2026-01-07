@@ -223,7 +223,7 @@ case "$MODE" in
         echo ""
         echo -e "  ${YELLOW}Demo Client:${NC}"
         echo -e "    Email:    ${GREEN}demo@client.com${NC}"
-        echo -e "    Password: ${GREEN}demo123${NC}"
+        echo -e "    Password: ${GREEN}democlient${NC}"
         echo ""
         echo -e "${YELLOW}⚠️  Change default passwords immediately!${NC}"
         echo ""

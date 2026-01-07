@@ -56,7 +56,7 @@ def seed_demo_data():
         if not demo_user:
             demo_user = User(
                 email="demo@client.com",
-                password_hash=hash_password("demo123"),
+                password_hash=hash_password("democlient"),  # 10 characters
                 role=UserRole.CLIENT,
                 created_at=datetime.utcnow(),
                 updated_at=datetime.utcnow()
@@ -156,7 +156,7 @@ def seed_demo_data():
         print()
         print("  Demo Client:")
         print("    Email:    demo@client.com")
-        print("    Password: demo123")
+        print("    Password: democlient")
         print("    Role:     CLIENT")
         print("    Templates: 3 node templates created")
         print()
