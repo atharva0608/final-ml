@@ -2,18 +2,22 @@
 """
 Seed Demo Data Script
 
-Creates demo users, accounts, and templates for testing and demonstration
+Creates demo users and templates for testing and demonstration
+AWS accounts should be connected via the UI using CloudFormation
 """
 import sys
 import os
 from datetime import datetime
+import warnings
+
+# Suppress bcrypt version warning (harmless compatibility warning)
+warnings.filterwarnings('ignore', message='.*bcrypt.*')
 
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from backend.models.base import SessionLocal, create_tables
 from backend.models.user import User, UserRole
-from backend.models.account import Account, AccountStatus
 from backend.models.node_template import NodeTemplate
 from backend.core.crypto import hash_password
 
@@ -65,32 +69,19 @@ def seed_demo_data():
             print(f"  ℹ️  Demo client already exists")
 
         # ==================== AWS ACCOUNTS ====================
-        print("\n☁️  Creating demo AWS accounts...")
-
-        # Demo AWS Account for client
-        demo_account = db.query(Account).filter(
-            Account.user_id == demo_user.id,
-            Account.aws_account_id == "123456789012"
-        ).first()
-
-        if not demo_account:
-            demo_account = Account(
-                user_id=demo_user.id,
-                aws_account_id="123456789012",
-                account_name="Demo AWS Account",
-                access_key_id="AKIAIOSFODNN7EXAMPLE",  # Demo credentials (not real)
-                secret_access_key_encrypted="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
-                default_region="us-east-1",
-                status=AccountStatus.ACTIVE,
-                created_at=datetime.utcnow(),
-                updated_at=datetime.utcnow()
-            )
-            db.add(demo_account)
-            db.commit()
-            db.refresh(demo_account)
-            print(f"  ✅ Created demo AWS account for demo@client.com")
-        else:
-            print(f"  ℹ️  Demo AWS account already exists")
+        # Note: AWS accounts should be connected via the UI using CloudFormation
+        # The user will:
+        # 1. Click "Connect AWS Account" in the UI
+        # 2. Deploy the CloudFormation stack
+        # 3. System validates the IAM role connection
+        print("\n☁️  AWS Account Setup:")
+        print("  ℹ️  AWS accounts should be connected via the UI")
+        print("  📋 Steps:")
+        print("     1. Login to the application")
+        print("     2. Click 'Settings' → 'Cloud Integrations'")
+        print("     3. Click 'Connect AWS Account'")
+        print("     4. Deploy the provided CloudFormation stack")
+        print("     5. Click 'Verify Connection'")
 
         # ==================== NODE TEMPLATES ====================
         print("\n📋 Creating demo node templates...")
@@ -174,9 +165,16 @@ def seed_demo_data():
         print("    Email:    demo@client.com")
         print("    Password: demo123")
         print("    Role:     CLIENT")
-        print("    Account:  Demo AWS Account (123456789012)")
+        print("    Templates: 3 node templates created")
         print()
         print("=" * 60)
+        print("⚠️  Important Next Steps:")
+        print("=" * 60)
+        print("1. Login as demo@client.com")
+        print("2. Navigate to Settings → Cloud Integrations")
+        print("3. Connect your AWS account via CloudFormation")
+        print("4. Discover and manage your Kubernetes clusters")
+        print()
         print("⚠️  Change passwords immediately in production!")
         print("=" * 60)
 

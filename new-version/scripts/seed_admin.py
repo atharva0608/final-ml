@@ -6,6 +6,10 @@ Manually creates the default admin user if it doesn't exist
 """
 import sys
 import os
+import warnings
+
+# Suppress bcrypt version warning (harmless compatibility warning)
+warnings.filterwarnings('ignore', message='.*bcrypt.*')
 
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
