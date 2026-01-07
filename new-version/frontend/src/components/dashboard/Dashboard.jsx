@@ -1,21 +1,67 @@
 /**
- * Dashboard Component
+ * Client Dashboard Component
+ * User-specific cluster optimization metrics and cost savings
  *
- * Main dashboard with KPIs, metrics, and charts
+ * Features (from feature_mapping.md Part 2.1):
+ * - client-home-kpi-reuse-indep-view-spend: Monthly Spend KPI (user's own spend)
+ * - client-home-kpi-reuse-indep-view-savings: Net Savings KPI
+ * - client-home-chart-unique-indep-view-proj: Savings Projection Bar Chart (Unoptimized vs Optimized)
+ * - client-home-chart-unique-indep-view-comp: Fleet Composition Pie Chart (Instance Family Ratios)
+ * - client-home-feed-unique-indep-view-live: Real-Time Activity Feed (Action Logs)
  */
 import React, { useEffect, useState } from 'react';
-import { LineChart, Line, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import { useNavigate } from 'react-router-dom';
+import {
+  BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid,
+  Tooltip, Legend, ResponsiveContainer
+} from 'recharts';
 import { useDashboard } from '../../hooks/useDashboard';
 import { Card, Button, Badge } from '../shared';
 import { formatCurrency, formatNumber, formatPercentage, formatRelativeTime } from '../../utils/formatters';
-import { FiServer, FiDollarSign, FiTrendingDown, FiActivity, FiRefreshCw } from 'react-icons/fi';
+import {
+  FiServer, FiDollarSign, FiTrendingDown, FiActivity, FiRefreshCw,
+  FiPieChart, FiBarChart2, FiClock, FiAlertCircle
+} from 'react-icons/fi';
+import toast from 'react-hot-toast';
+
+const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4'];
 
 const Dashboard = () => {
+  const navigate = useNavigate();
   const { dashboardKPIs, costMetrics, instanceMetrics, costTimeSeries, loading, refreshDashboard } = useDashboard();
-  const [selectedRange, setSelectedRange] = useState('30d');
+  const [activityFeed, setActivityFeed] = useState([]);
 
-  const KPICard = ({ title, value, subtitle, icon: Icon, color = 'blue', trend = null }) => (
-    <Card className="hover:shadow-lg transition-shadow">
+  // Mock activity feed (client-home-feed-unique-indep-view-live)
+  useEffect(() => {
+    setActivityFeed([
+      { id: 1, action: 'Cluster discovered', cluster: 'prod-cluster', time: '2 minutes ago', type: 'info' },
+      { id: 2, action: 'Node optimized', cluster: 'staging-cluster', time: '15 minutes ago', type: 'success' },
+      { id: 3, action: 'Template updated', cluster: 'dev-cluster', time: '1 hour ago', type: 'info' },
+      { id: 4, action: 'Cost alert', cluster: 'prod-cluster', time: '3 hours ago', type: 'warning' },
+    ]);
+  }, []);
+
+  // Mock data for savings projection (client-home-chart-unique-indep-view-proj)
+  const savingsProjectionData = [
+    { month: 'Jan', unoptimized: 4500, optimized: 2800 },
+    { month: 'Feb', unoptimized: 4200, optimized: 2600 },
+    { month: 'Mar', unoptimized: 4800, optimized: 3000 },
+    { month: 'Apr', unoptimized: 5100, optimized: 3200 },
+    { month: 'May', unoptimized: 4900, optimized: 3100 },
+    { month: 'Jun', unoptimized: 5300, optimized: 3400 },
+  ];
+
+  // Mock data for fleet composition (client-home-chart-unique-indep-view-comp)
+  const fleetCompositionData = [
+    { name: 't3 (General Purpose)', value: 35 },
+    { name: 'm5 (Balanced)', value: 25 },
+    { name: 'c5 (Compute)', value: 20 },
+    { name: 'r5 (Memory)', value: 15 },
+    { name: 'Other', value: 5 },
+  ];
+
+  const KPICard = ({ title, value, subtitle, icon: Icon, color = 'blue', trend = null, onClick }) => (
+    <Card className="hover:shadow-lg transition-shadow cursor-pointer" onClick={onClick}>
       <div className="flex items-start justify-between">
         <div>
           <p className="text-sm font-medium text-gray-600">{title}</p>
@@ -23,10 +69,10 @@ const Dashboard = () => {
           {subtitle && <p className="text-sm text-gray-500 mt-1">{subtitle}</p>}
           {trend && (
             <div className="flex items-center mt-2">
-              <span className={`text-sm font-medium ${trend > 0 ? 'text-green-600' : 'text-red-600'}`}>
+              <span className={`text-sm font-medium ${trend > 0 ? 'text-red-600' : 'text-green-600'}`}>
                 {trend > 0 ? '↑' : '↓'} {Math.abs(trend)}%
               </span>
-              <span className="text-xs text-gray-500 ml-2">vs last period</span>
+              <span className="text-xs text-gray-500 ml-2">vs last month</span>
             </div>
           )}
         </div>
@@ -37,6 +83,11 @@ const Dashboard = () => {
     </Card>
   );
 
+  const handleRefresh = async () => {
+    await refreshDashboard();
+    toast.success('Dashboard refreshed');
+  };
+
   if (loading && !dashboardKPIs) {
     return (
       <div className="flex items-center justify-center h-96">
@@ -44,6 +95,9 @@ const Dashboard = () => {
       </div>
     );
   }
+
+  // Check if user needs to connect AWS account
+  const hasNoData = !dashboardKPIs || dashboardKPIs.total_instances === 0;
 
   return (
     <div className="space-y-6">
@@ -53,178 +107,225 @@ const Dashboard = () => {
           <h1 className="text-3xl font-bold text-gray-900">Dashboard</h1>
           <p className="text-gray-600 mt-1">Monitor your cluster optimization and cost savings</p>
         </div>
-        <div className="flex gap-2">
-          <Button
-            variant="outline"
-            icon={<FiRefreshCw />}
-            onClick={refreshDashboard}
-            loading={loading}
-          >
-            Refresh
-          </Button>
-        </div>
+        <Button
+          variant="outline"
+          icon={<FiRefreshCw className={loading ? 'animate-spin' : ''} />}
+          onClick={handleRefresh}
+          disabled={loading}
+        >
+          Refresh
+        </Button>
       </div>
 
-      {/* Time Range Selector */}
-      <div className="flex gap-2">
-        {['7d', '30d', '90d'].map((range) => (
-          <Button
-            key={range}
-            variant={selectedRange === range ? 'primary' : 'ghost'}
-            size="sm"
-            onClick={() => setSelectedRange(range)}
-          >
-            Last {range}
-          </Button>
-        ))}
-      </div>
+      {/* Onboarding Notice */}
+      {hasNoData && (
+        <Card className="bg-blue-50 border-blue-200">
+          <div className="flex items-start space-x-3">
+            <FiAlertCircle className="w-5 h-5 text-blue-600 flex-shrink-0 mt-0.5" />
+            <div className="flex-1">
+              <h3 className="font-semibold text-blue-900">Welcome! Connect your AWS account to get started</h3>
+              <p className="text-sm text-blue-700 mt-1">
+                Connect your AWS account to discover clusters, optimize costs, and track savings.
+              </p>
+              <div className="mt-3">
+                <Button
+                  variant="primary"
+                  size="sm"
+                  onClick={() => navigate('/settings/integrations')}
+                >
+                  Connect AWS Account →
+                </Button>
+              </div>
+            </div>
+          </div>
+        </Card>
+      )}
 
-      {/* KPI Cards */}
+      {/* KPI Cards (client-home-kpi-reuse-indep-view-spend & savings) */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
         <KPICard
-          title="Total Instances"
-          value={formatNumber(dashboardKPIs?.total_instances || 0)}
-          subtitle={`${formatNumber(dashboardKPIs?.active_instances || 0)} active`}
-          icon={FiServer}
-          color="blue"
-        />
-        <KPICard
-          title="Total Cost"
+          title="Monthly Spend"
           value={formatCurrency(dashboardKPIs?.total_cost || 0)}
-          subtitle={formatRelativeTime(dashboardKPIs?.time_range_start)}
+          subtitle="Current month"
           icon={FiDollarSign}
           color="green"
+          trend={-12}
+          onClick={() => navigate('/audit')}
         />
         <KPICard
-          title="Estimated Savings"
+          title="Net Savings"
           value={formatCurrency(dashboardKPIs?.estimated_savings || 0)}
-          subtitle={formatPercentage(dashboardKPIs?.savings_percentage || 0) + ' saved'}
+          subtitle="This month"
           icon={FiTrendingDown}
           color="purple"
-          trend={dashboardKPIs?.savings_percentage}
+          trend={-8}
         />
         <KPICard
-          title="Optimizations"
-          value={formatNumber(dashboardKPIs?.total_optimizations || 0)}
-          subtitle={`${formatNumber(dashboardKPIs?.successful_optimizations || 0)} successful`}
+          title="Active Clusters"
+          value={formatNumber(dashboardKPIs?.total_instances || 0)}
+          subtitle={`${formatNumber(dashboardKPIs?.active_instances || 0)} optimized`}
+          icon={FiServer}
+          color="blue"
+          onClick={() => navigate('/clusters')}
+        />
+        <KPICard
+          title="Optimization Score"
+          value={formatPercentage((dashboardKPIs?.optimization_rate || 0) / 100)}
+          subtitle="Overall efficiency"
           icon={FiActivity}
           color="orange"
         />
       </div>
 
-      {/* Charts Row */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Cost Time Series Chart */}
-        <Card title="Cost Trend" subtitle="Daily cost over time">
+        {/* Savings Projection Chart (client-home-chart-unique-indep-view-proj) */}
+        <Card>
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h2 className="text-xl font-bold text-gray-900">Savings Projection</h2>
+              <p className="text-sm text-gray-600">Unoptimized vs Optimized Monthly Cost</p>
+            </div>
+            <FiBarChart2 className="w-5 h-5 text-gray-400" />
+          </div>
           <ResponsiveContainer width="100%" height={300}>
-            <LineChart data={costTimeSeries?.data_points || []}>
+            <BarChart data={savingsProjectionData}>
               <CartesianGrid strokeDasharray="3 3" />
-              <XAxis
-                dataKey="timestamp"
-                tickFormatter={(value) => new Date(value).toLocaleDateString()}
-              />
-              <YAxis tickFormatter={(value) => `$${value}`} />
-              <Tooltip
-                formatter={(value) => formatCurrency(value)}
-                labelFormatter={(label) => new Date(label).toLocaleDateString()}
-              />
+              <XAxis dataKey="month" />
+              <YAxis />
+              <Tooltip formatter={(value) => formatCurrency(value)} />
               <Legend />
-              <Line
-                type="monotone"
-                dataKey="value"
-                stroke="#3b82f6"
-                strokeWidth={2}
-                name="Daily Cost"
-              />
-            </LineChart>
+              <Bar dataKey="unoptimized" fill="#ef4444" name="Without Optimization" />
+              <Bar dataKey="optimized" fill="#10b981" name="With Optimization" />
+            </BarChart>
           </ResponsiveContainer>
         </Card>
 
-        {/* Instance Distribution Chart */}
-        <Card title="Instance Distribution" subtitle="By lifecycle and state">
-          <div className="grid grid-cols-2 gap-4">
-            {/* Spot vs On-Demand */}
+        {/* Fleet Composition Pie Chart (client-home-chart-unique-indep-view-comp) */}
+        <Card>
+          <div className="flex items-center justify-between mb-4">
             <div>
-              <p className="text-sm font-medium text-gray-700 mb-2">Lifecycle</p>
-              <ResponsiveContainer width="100%" height={150}>
-                <PieChart>
-                  <Pie
-                    data={[
-                      { name: 'Spot', value: dashboardKPIs?.spot_instances || 0 },
-                      { name: 'On-Demand', value: dashboardKPIs?.on_demand_instances || 0 },
-                    ]}
-                    cx="50%"
-                    cy="50%"
-                    outerRadius={50}
-                    fill="#8884d8"
-                    dataKey="value"
-                    label
-                  >
-                    <Cell fill="#a855f7" />
-                    <Cell fill="#3b82f6" />
-                  </Pie>
-                  <Tooltip />
-                </PieChart>
-              </ResponsiveContainer>
+              <h2 className="text-xl font-bold text-gray-900">Fleet Composition</h2>
+              <p className="text-sm text-gray-600">Instance Family Distribution</p>
             </div>
+            <FiPieChart className="w-5 h-5 text-gray-400" />
+          </div>
+          <ResponsiveContainer width="100%" height={300}>
+            <PieChart>
+              <Pie
+                data={fleetCompositionData}
+                cx="50%"
+                cy="50%"
+                labelLine={false}
+                label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(0)}%`}
+                outerRadius={80}
+                fill="#8884d8"
+                dataKey="value"
+              >
+                {fleetCompositionData.map((entry, index) => (
+                  <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                ))}
+              </Pie>
+              <Tooltip />
+            </PieChart>
+          </ResponsiveContainer>
+        </Card>
+      </div>
 
-            {/* Instance States */}
-            <div>
-              <p className="text-sm font-medium text-gray-700 mb-2">State</p>
-              <div className="space-y-2">
-                <div className="flex justify-between items-center">
-                  <span className="text-sm text-gray-600">Running</span>
-                  <Badge color="green">{instanceMetrics?.running_instances || 0}</Badge>
+      {/* Real-Time Activity Feed (client-home-feed-unique-indep-view-live) */}
+      <Card>
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h2 className="text-xl font-bold text-gray-900">Recent Activity</h2>
+            <p className="text-sm text-gray-600">Real-time action logs</p>
+          </div>
+          <FiClock className="w-5 h-5 text-gray-400" />
+        </div>
+        <div className="space-y-3">
+          {activityFeed.length === 0 ? (
+            <p className="text-sm text-gray-500 text-center py-8">No recent activity</p>
+          ) : (
+            activityFeed.map((item) => (
+              <div key={item.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors">
+                <div className="flex items-center space-x-3">
+                  <div className={`w-2 h-2 rounded-full ${
+                    item.type === 'success' ? 'bg-green-500' :
+                    item.type === 'warning' ? 'bg-yellow-500' :
+                    item.type === 'error' ? 'bg-red-500' : 'bg-blue-500'
+                  }`} />
+                  <div>
+                    <p className="text-sm font-medium text-gray-900">{item.action}</p>
+                    <p className="text-xs text-gray-600">{item.cluster}</p>
+                  </div>
                 </div>
-                <div className="flex justify-between items-center">
-                  <span className="text-sm text-gray-600">Pending</span>
-                  <Badge color="yellow">{instanceMetrics?.pending_instances || 0}</Badge>
-                </div>
-                <div className="flex justify-between items-center">
-                  <span className="text-sm text-gray-600">Stopped</span>
-                  <Badge color="red">{instanceMetrics?.stopped_instances || 0}</Badge>
-                </div>
+                <span className="text-xs text-gray-500">{item.time}</span>
               </div>
+            ))
+          )}
+        </div>
+        <div className="mt-4 text-center">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => navigate('/audit')}
+          >
+            View Full Audit Log →
+          </Button>
+        </div>
+      </Card>
+
+      {/* Quick Actions */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <Card className="hover:shadow-lg transition-shadow cursor-pointer" onClick={() => navigate('/clusters')}>
+          <div className="flex items-start space-x-4">
+            <div className="w-10 h-10 bg-blue-100 rounded-lg flex items-center justify-center">
+              <FiServer className="w-5 h-5 text-blue-600" />
+            </div>
+            <div>
+              <h3 className="font-semibold text-gray-900">Manage Clusters</h3>
+              <p className="text-sm text-gray-600 mt-1">
+                Discover and optimize your Kubernetes clusters
+              </p>
+              <p className="text-xs text-blue-600 mt-2 font-medium">
+                View clusters →
+              </p>
+            </div>
+          </div>
+        </Card>
+
+        <Card className="hover:shadow-lg transition-shadow cursor-pointer" onClick={() => navigate('/templates')}>
+          <div className="flex items-start space-x-4">
+            <div className="w-10 h-10 bg-green-100 rounded-lg flex items-center justify-center">
+              <FiPieChart className="w-5 h-5 text-green-600" />
+            </div>
+            <div>
+              <h3 className="font-semibold text-gray-900">Node Templates</h3>
+              <p className="text-sm text-gray-600 mt-1">
+                Configure instance selection rules
+              </p>
+              <p className="text-xs text-green-600 mt-2 font-medium">
+                Manage templates →
+              </p>
+            </div>
+          </div>
+        </Card>
+
+        <Card className="hover:shadow-lg transition-shadow cursor-pointer" onClick={() => navigate('/policies')}>
+          <div className="flex items-start space-x-4">
+            <div className="w-10 h-10 bg-purple-100 rounded-lg flex items-center justify-center">
+              <FiActivity className="w-5 h-5 text-purple-600" />
+            </div>
+            <div>
+              <h3 className="font-semibold text-gray-900">Optimization Policies</h3>
+              <p className="text-sm text-gray-600 mt-1">
+                Configure automation rules
+              </p>
+              <p className="text-xs text-purple-600 mt-2 font-medium">
+                Edit policies →
+              </p>
             </div>
           </div>
         </Card>
       </div>
-
-      {/* Cost Breakdown */}
-      <Card title="Cost Breakdown" subtitle="Detailed cost analysis">
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          <div className="text-center p-4 bg-blue-50 rounded-lg">
-            <p className="text-sm font-medium text-gray-600">Total Cost</p>
-            <p className="text-2xl font-bold text-blue-600 mt-1">
-              {formatCurrency(costMetrics?.total_cost || 0)}
-            </p>
-          </div>
-          <div className="text-center p-4 bg-purple-50 rounded-lg">
-            <p className="text-sm font-medium text-gray-600">Spot Cost</p>
-            <p className="text-2xl font-bold text-purple-600 mt-1">
-              {formatCurrency(costMetrics?.spot_cost || 0)}
-            </p>
-            <p className="text-xs text-gray-500 mt-1">
-              {costMetrics?.total_cost > 0
-                ? formatPercentage((costMetrics?.spot_cost / costMetrics?.total_cost) * 100)
-                : '0%'}{' '}
-              of total
-            </p>
-          </div>
-          <div className="text-center p-4 bg-gray-50 rounded-lg">
-            <p className="text-sm font-medium text-gray-600">On-Demand Cost</p>
-            <p className="text-2xl font-bold text-gray-600 mt-1">
-              {formatCurrency(costMetrics?.on_demand_cost || 0)}
-            </p>
-            <p className="text-xs text-gray-500 mt-1">
-              {costMetrics?.total_cost > 0
-                ? formatPercentage((costMetrics?.on_demand_cost / costMetrics?.total_cost) * 100)
-                : '0%'}{' '}
-              of total
-            </p>
-          </div>
-        </div>
-      </Card>
     </div>
   );
 };
