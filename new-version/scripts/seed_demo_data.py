@@ -92,19 +92,18 @@ def seed_demo_data():
         ).count()
 
         if existing_templates == 0:
+            from backend.models.node_template import TemplateStrategy, DiskType
+
             # Default balanced template
             balanced_template = NodeTemplate(
                 user_id=demo_user.id,
                 name="Balanced - General Purpose",
-                description="Balanced configuration with t3, t3a, and m5 families for general workloads",
-                instance_families=["t3", "t3a", "m5", "m5a", "m6i"],
-                max_interruption_frequency="moderate",
-                min_vcpu=2,
-                max_vcpu=8,
-                min_memory_gib=4,
-                max_memory_gib=32,
-                architectures=["x86_64"],
-                is_default=True,
+                families=["t3", "t3a", "m5", "m5a", "m6i"],
+                architecture="x86_64",
+                strategy=TemplateStrategy.BALANCED,
+                disk_type=DiskType.GP3,
+                disk_size=100,
+                is_default="Y",
                 created_at=datetime.utcnow(),
                 updated_at=datetime.utcnow()
             )
@@ -114,15 +113,12 @@ def seed_demo_data():
             compute_template = NodeTemplate(
                 user_id=demo_user.id,
                 name="Compute Optimized",
-                description="High CPU performance with c5, c5a, c6i families",
-                instance_families=["c5", "c5a", "c5n", "c6i", "c6a"],
-                max_interruption_frequency="low",
-                min_vcpu=4,
-                max_vcpu=16,
-                min_memory_gib=8,
-                max_memory_gib=64,
-                architectures=["x86_64"],
-                is_default=False,
+                families=["c5", "c5a", "c5n", "c6i", "c6a"],
+                architecture="x86_64",
+                strategy=TemplateStrategy.PERFORMANCE,
+                disk_type=DiskType.GP3,
+                disk_size=100,
+                is_default="N",
                 created_at=datetime.utcnow(),
                 updated_at=datetime.utcnow()
             )
@@ -132,15 +128,12 @@ def seed_demo_data():
             memory_template = NodeTemplate(
                 user_id=demo_user.id,
                 name="Memory Optimized",
-                description="High memory capacity with r5, r5a, r6i families",
-                instance_families=["r5", "r5a", "r5n", "r6i", "r6a"],
-                max_interruption_frequency="moderate",
-                min_vcpu=2,
-                max_vcpu=16,
-                min_memory_gib=16,
-                max_memory_gib=128,
-                architectures=["x86_64"],
-                is_default=False,
+                families=["r5", "r5a", "r5n", "r6i", "r6a"],
+                architecture="x86_64",
+                strategy=TemplateStrategy.BALANCED,
+                disk_type=DiskType.GP3,
+                disk_size=150,
+                is_default="N",
                 created_at=datetime.utcnow(),
                 updated_at=datetime.utcnow()
             )
