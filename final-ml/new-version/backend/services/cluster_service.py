@@ -15,7 +15,10 @@ from backend.schemas.cluster_schemas import (
     ClusterResponse,
     ClusterList,
     ClusterFilter,
+    ClusterList,
+    ClusterFilter,
     AgentInstallCommand,
+    AWSConnectRequest,
 )
 from backend.core.exceptions import (
     ResourceNotFoundError,
@@ -163,6 +166,90 @@ class ClusterService:
             cluster_name=new_cluster.name,
             region=new_cluster.region,
             user_id=user_id
+        )
+
+        return self._to_response(new_cluster)
+
+    def connect_aws_cluster(
+        self,
+        user_id: str,
+        connect_data: AWSConnectRequest
+    ) -> ClusterResponse:
+        """
+        Connect cluster via AWS STS (Agentless)
+
+        Args:
+            user_id: User UUID
+            connect_data: Connection details
+
+        Returns:
+            ClusterResponse
+
+        Raises:
+            ResourceAlreadyExistsError: If cluster name already exists
+            ValidationError: If validation fails
+        """
+        # Validate inputs
+        if not validate_aws_region(connect_data.region):
+            raise ValidationError(f"Invalid AWS region: {connect_data.region}")
+
+        # Check for existing cluster with same name
+        existing = self.db.query(Cluster).join(Account).filter(
+            and_(
+                Account.user_id == user_id,
+                Cluster.name == connect_data.name
+            )
+        ).first()
+
+        if existing:
+            raise ResourceAlreadyExistsError("Cluster", connect_data.name)
+
+        # Get or create placeholder account for this user
+        # In a real scenario, we might want to link this to a specific AWS account
+        # For now, we'll find the first active account or create one if needed
+        account = self.db.query(Account).filter(Account.user_id == user_id).first()
+        
+        if not account:
+            # Create a default account if none exists
+            # This is a simplification; ideally user selects an account
+            account = Account(
+                id=str(uuid.uuid4()),
+                user_id=user_id,
+                aws_account_id=connect_data.role_arn.split(':')[4], # Extract from ARN
+                role_arn="", # Placeholder
+                status=AccountStatus.ACTIVE,
+                created_at=datetime.utcnow(),
+                updated_at=datetime.utcnow()
+            )
+            self.db.add(account)
+            self.db.flush() # Get ID without committing
+
+        # Create cluster record
+        new_cluster = Cluster(
+            id=str(uuid.uuid4()),
+            account_id=account.id,
+            name=connect_data.name,
+            arn=f"arn:aws:eks:{connect_data.region}:{account.aws_account_id}:cluster/{connect_data.name}", # Constructed ARN
+            region=connect_data.region,
+            cluster_type="EKS", # Default to EKS for AWS connections
+            status=ClusterStatus.ACTIVE, # Assume active if we have role
+            agent_installed="N",
+            is_agentless="Y",
+            aws_role_arn=connect_data.role_arn,
+            aws_external_id=connect_data.external_id,
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow()
+        )
+
+        self.db.add(new_cluster)
+        self.db.commit()
+        self.db.refresh(new_cluster)
+
+        logger.info(
+            "Cluster connected via AWS STS",
+            cluster_id=new_cluster.id,
+            name=new_cluster.name,
+            role_arn=new_cluster.aws_role_arn
         )
 
         return self._to_response(new_cluster)

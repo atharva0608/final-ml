@@ -42,6 +42,9 @@ class Cluster(Base):
 
     # Agent connection
     agent_installed = Column(String(1), nullable=False, default="N")  # Y/N
+    is_agentless = Column(String(1), nullable=False, default="N")  # Y/N
+    aws_role_arn = Column(String(255), nullable=True)
+    aws_external_id = Column(String(64), nullable=True)
     last_heartbeat = Column(DateTime, nullable=True)
 
     # Timestamps

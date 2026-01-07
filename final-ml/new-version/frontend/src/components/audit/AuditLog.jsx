@@ -158,6 +158,7 @@ const AuditLog = () => {
     if (eventType.includes('updated')) return 'blue';
     if (eventType.includes('deleted')) return 'red';
     if (eventType.includes('login') || eventType.includes('signup')) return 'purple';
+    if (eventType.includes('karpenter') || eventType.includes('autoscaling')) return 'indigo';
     return 'gray';
   };
 

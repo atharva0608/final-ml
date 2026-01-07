@@ -24,7 +24,14 @@ export const useAuth = () => {
       setAuth(userData, access_token, refresh_token);
 
       toast.success('Login successful!');
-      navigate('/dashboard');
+
+      // Navigate based on user role
+      if (userData.role === 'super_admin' || userData.role === 'SUPER_ADMIN') {
+        navigate('/admin');
+      } else {
+        navigate('/dashboard');
+      }
+
       return { success: true };
     } catch (error) {
       const message = error.response?.data?.message || 'Login failed';
@@ -47,7 +54,14 @@ export const useAuth = () => {
       setAuth(userData, access_token, refresh_token);
 
       toast.success('Account created successfully!');
-      navigate('/dashboard');
+
+      // Navigate based on user role
+      if (userData.role === 'super_admin' || userData.role === 'SUPER_ADMIN') {
+        navigate('/admin');
+      } else {
+        navigate('/dashboard');
+      }
+
       return { success: true };
     } catch (error) {
       const message = error.response?.data?.message || 'Signup failed';

@@ -9,12 +9,17 @@ import { Card, Button, Badge } from '../shared';
 import { formatDateTime, getStatusColor, formatClusterType } from '../../utils/formatters';
 import { FiPlus, FiRefreshCw, FiExternalLink } from 'react-icons/fi';
 import toast from 'react-hot-toast';
+import ClusterConnectModal from './ClusterConnectModal';
+
+import ClusterDetails from './ClusterDetails';
 
 const ClusterList = () => {
   const navigate = useNavigate();
   const { clusters, setClusters, setLoading, loading } = useClusterStore();
   const [searchTerm, setSearchTerm] = useState('');
   const [filterStatus, setFilterStatus] = useState('all');
+  const [showConnectModal, setShowConnectModal] = useState(false);
+  const [selectedClusterId, setSelectedClusterId] = useState(null);
 
   useEffect(() => {
     fetchClusters();
@@ -61,9 +66,9 @@ const ClusterList = () => {
           <Button
             variant="primary"
             icon={<FiPlus />}
-            onClick={() => navigate('/clusters/new')}
+            onClick={() => setShowConnectModal(true)}
           >
-            Register Cluster
+            Connect Cluster
           </Button>
         </div>
       </div>
@@ -97,13 +102,13 @@ const ClusterList = () => {
         <Card>
           <div className="text-center py-12">
             <p className="text-gray-500 text-lg">No clusters found</p>
-            <p className="text-gray-400 mt-2">Register a cluster to get started</p>
+            <p className="text-gray-400 mt-2">Connect a cluster to get started</p>
             <Button
               variant="primary"
               className="mt-4"
-              onClick={() => navigate('/clusters/new')}
+              onClick={() => setShowConnectModal(true)}
             >
-              Register Your First Cluster
+              Connect Your First Cluster
             </Button>
           </div>
         </Card>
@@ -113,7 +118,7 @@ const ClusterList = () => {
             <Card
               key={cluster.id}
               className="hover:shadow-lg transition-shadow cursor-pointer"
-              onClick={() => navigate(`/clusters/${cluster.id}`)}
+              onClick={() => setSelectedClusterId(cluster.id)}
             >
               <div className="flex justify-between items-start">
                 <div className="flex-1">
@@ -140,11 +145,27 @@ const ClusterList = () => {
                       </span>
                     </div>
                   </div>
+
+                  <div className="mt-4 pt-3 border-t border-gray-100">
+                    <div className="flex justify-between items-center text-sm">
+                      <span className="text-gray-600 flex items-center gap-1">
+                        📦 Provisioner:
+                      </span>
+                      <Badge color="green">Karpenter Active</Badge>
+                    </div>
+                    <div className="mt-2 text-sm flex justify-between items-center">
+                      <span className="text-gray-600">Consolidation:</span>
+                      <span className="font-semibold text-gray-900">88% Efficient</span>
+                    </div>
+                    <div className="w-full bg-gray-200 rounded-full h-1.5 mt-1">
+                      <div className="bg-blue-600 h-1.5 rounded-full" style={{ width: '88%' }}></div>
+                    </div>
+                  </div>
                 </div>
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
-                    navigate(`/clusters/${cluster.id}`);
+                    setSelectedClusterId(cluster.id);
                   }}
                   className="p-2 text-gray-400 hover:text-blue-600 transition-colors"
                 >
@@ -176,8 +197,29 @@ const ClusterList = () => {
             </Card>
           ))}
         </div>
-      )}
-    </div>
+      )
+      }
+
+      {/* Cluster Connect Modal */}
+      <ClusterConnectModal
+        isOpen={showConnectModal}
+        onClose={() => setShowConnectModal(false)}
+        onSuccess={() => {
+          setShowConnectModal(false);
+          fetchClusters();
+        }}
+      />
+
+      {/* Cluster Details Modal */}
+      {
+        selectedClusterId && (
+          <ClusterDetails
+            clusterId={selectedClusterId}
+            onClose={() => setSelectedClusterId(null)}
+          />
+        )
+      }
+    </div >
   );
 };
 

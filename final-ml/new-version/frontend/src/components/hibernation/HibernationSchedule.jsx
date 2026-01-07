@@ -5,25 +5,18 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { hibernationAPI } from '../../services/api';
 import { useClusterStore } from '../../store/useStore';
-import { Card, Button, Input } from '../shared';
-import { FiSave, FiRotateCcw, FiClock, FiSun, FiMoon } from 'react-icons/fi';
+import { Card, Button, Input, Badge } from '../shared';
+import { FiSave, FiRotateCcw, FiClock, FiSun, FiMoon, FiDollarSign, FiPlay, FiPower } from 'react-icons/fi';
 import toast from 'react-hot-toast';
 
 const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 const HOURS = Array.from({ length: 24 }, (_, i) => i);
+const HOURLY_COST_AVG = 2.45; // Mock cost per hour for estimation
 
 // Common timezones
 const TIMEZONES = [
-  'UTC',
-  'America/New_York',
-  'America/Chicago',
-  'America/Denver',
-  'America/Los_Angeles',
-  'Europe/London',
-  'Europe/Paris',
-  'Asia/Tokyo',
-  'Asia/Shanghai',
-  'Australia/Sydney',
+  'UTC', 'America/New_York', 'America/Chicago', 'America/Denver', 'America/Los_Angeles',
+  'Europe/London', 'Europe/Paris', 'Asia/Tokyo', 'Asia/Shanghai', 'Australia/Sydney',
 ];
 
 const HibernationSchedule = ({ clusterId }) => {
@@ -41,6 +34,7 @@ const HibernationSchedule = ({ clusterId }) => {
   });
 
   const [existingSchedule, setExistingSchedule] = useState(null);
+  const [savings, setSavings] = useState(0);
   const gridRef = useRef(null);
 
   useEffect(() => {
@@ -48,6 +42,10 @@ const HibernationSchedule = ({ clusterId }) => {
       fetchScheduleForCluster(clusterId);
     }
   }, [clusterId]);
+
+  useEffect(() => {
+    calculateSavings();
+  }, [formData.schedule_matrix]);
 
   const fetchScheduleForCluster = async (clusterIdParam) => {
     setLoading(true);
@@ -72,27 +70,23 @@ const HibernationSchedule = ({ clusterId }) => {
     }
   };
 
+  const calculateSavings = () => {
+    const sleepHours = formData.schedule_matrix.filter(h => h === 0).length;
+    const monthlySavings = (sleepHours / 168) * (HOURLY_COST_AVG * 24 * 30);
+    setSavings(monthlySavings);
+  };
+
   const handleSave = async (e) => {
     e.preventDefault();
 
-    // Validation
     if (formData.schedule_matrix.length !== 168) {
       toast.error('Schedule matrix must have exactly 168 elements');
       return;
     }
 
-    if (formData.pre_warm_minutes < 0 || formData.pre_warm_minutes > 60) {
-      toast.error('Pre-warm minutes must be between 0 and 60');
-      return;
-    }
-
     try {
       const schedulePayload = {
-        cluster_id: formData.cluster_id,
-        schedule_matrix: formData.schedule_matrix,
-        timezone: formData.timezone,
-        pre_warm_minutes: formData.pre_warm_minutes,
-        is_active: formData.is_active,
+        ...formData,
       };
 
       if (existingSchedule) {
@@ -124,6 +118,16 @@ const HibernationSchedule = ({ clusterId }) => {
     }
   };
 
+  const handleWakeUpNow = async () => {
+    if (!clusterId) return;
+    try {
+      await hibernationAPI.override(clusterId, { duration_minutes: 120 });
+      toast.success('Cluster woken up for 2 hours');
+    } catch (error) {
+      toast.error('Failed to wake cluster');
+    }
+  };
+
   // Grid cell interaction handlers
   const handleCellMouseDown = (dayIndex, hourIndex) => {
     const index = dayIndex * 24 + hourIndex;
@@ -152,7 +156,6 @@ const HibernationSchedule = ({ clusterId }) => {
     setFormData({ ...formData, schedule_matrix: newMatrix });
   };
 
-  // Preset functions
   const setAllAwake = () => {
     setFormData({ ...formData, schedule_matrix: Array(168).fill(1) });
     toast.success('All hours set to awake');
@@ -181,7 +184,6 @@ const HibernationSchedule = ({ clusterId }) => {
   };
 
   useEffect(() => {
-    // Add global mouse up listener for drag painting
     document.addEventListener('mouseup', handleMouseUp);
     return () => {
       document.removeEventListener('mouseup', handleMouseUp);
@@ -204,96 +206,99 @@ const HibernationSchedule = ({ clusterId }) => {
           <h1 className="text-3xl font-bold text-gray-900">Hibernation Schedule</h1>
           <p className="text-gray-600 mt-1">Configure when clusters should sleep to save costs</p>
         </div>
-        {existingSchedule && (
-          <Button
-            variant={existingSchedule.is_active ? 'primary' : 'secondary'}
-            icon={<FiClock />}
-            onClick={handleToggleActive}
-          >
-            {existingSchedule.is_active ? 'Active' : 'Inactive'}
-          </Button>
-        )}
+        <div className="flex gap-2">
+          {existingSchedule && (
+            <>
+              <Button
+                variant="outline"
+                icon={<FiPlay />}
+                onClick={handleWakeUpNow}
+                title="Wake up cluster for 2 hours immediately"
+              >
+                Wake Up Now
+              </Button>
+              <Button
+                variant={existingSchedule.is_active ? 'primary' : 'secondary'}
+                icon={<FiPower />}
+                onClick={handleToggleActive}
+              >
+                {existingSchedule.is_active ? 'Active' : 'Inactive'}
+              </Button>
+            </>
+          )}
+        </div>
       </div>
 
       <form onSubmit={handleSave}>
         {/* Configuration Section */}
-        <Card className="mb-6">
-          <div className="space-y-4">
-            {/* Cluster Selection */}
-            {!clusterId && (
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Cluster</label>
-                <select
-                  value={formData.cluster_id}
-                  onChange={(e) => {
-                    setFormData({ ...formData, cluster_id: e.target.value });
-                    if (e.target.value) {
-                      fetchScheduleForCluster(e.target.value);
-                    }
-                  }}
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  required
-                >
-                  <option value="">Select a cluster</option>
-                  {clusters.map((cluster) => (
-                    <option key={cluster.id} value={cluster.id}>
-                      {cluster.name} - {cluster.region}
-                    </option>
-                  ))}
-                </select>
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
+          <Card className="lg:col-span-2">
+            <div className="space-y-4">
+              {!clusterId && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Cluster</label>
+                  <select
+                    value={formData.cluster_id}
+                    onChange={(e) => {
+                      setFormData({ ...formData, cluster_id: e.target.value });
+                      if (e.target.value) fetchScheduleForCluster(e.target.value);
+                    }}
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    required
+                  >
+                    <option value="">Select a cluster</option>
+                    {clusters.map((cluster) => (
+                      <option key={cluster.id} value={cluster.id}>{cluster.name} - {cluster.region}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Timezone</label>
+                  <select
+                    value={formData.timezone}
+                    onChange={(e) => setFormData({ ...formData, timezone: e.target.value })}
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    {TIMEZONES.map((tz) => <option key={tz} value={tz}>{tz}</option>)}
+                  </select>
+                </div>
+                <Input
+                  label="Pre-warm Minutes"
+                  type="number"
+                  value={formData.pre_warm_minutes}
+                  onChange={(e) => setFormData({ ...formData, pre_warm_minutes: parseInt(e.target.value) })}
+                  min="0" max="60" required
+                />
               </div>
-            )}
 
-            <div className="grid grid-cols-2 gap-4">
-              {/* Timezone */}
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Timezone</label>
-                <select
-                  value={formData.timezone}
-                  onChange={(e) => setFormData({ ...formData, timezone: e.target.value })}
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                >
-                  {TIMEZONES.map((tz) => (
-                    <option key={tz} value={tz}>
-                      {tz}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              {/* Pre-warm Minutes */}
-              <Input
-                label="Pre-warm Minutes"
-                type="number"
-                value={formData.pre_warm_minutes}
-                onChange={(e) => setFormData({ ...formData, pre_warm_minutes: parseInt(e.target.value) })}
-                min="0"
-                max="60"
-                required
-                help="Minutes before scheduled wake to start instances"
-              />
-            </div>
-
-            {/* Preset Buttons */}
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">Quick Presets</label>
-              <div className="flex gap-2 flex-wrap">
-                <Button type="button" variant="outline" size="sm" onClick={set24x7}>
-                  24/7 Uptime
-                </Button>
-                <Button type="button" variant="outline" size="sm" onClick={setBusinessHours}>
-                  Business Hours (M-F 9-5)
-                </Button>
-                <Button type="button" variant="outline" size="sm" onClick={setAllAwake}>
-                  All Awake
-                </Button>
-                <Button type="button" variant="outline" size="sm" onClick={setAllSleep}>
-                  All Sleep
-                </Button>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Presets</label>
+                <div className="flex gap-2 flex-wrap">
+                  <Button type="button" variant="outline" size="sm" onClick={set24x7}>24/7 Uptime</Button>
+                  <Button type="button" variant="outline" size="sm" onClick={setBusinessHours}>Business Hours</Button>
+                  <Button type="button" variant="outline" size="sm" onClick={setAllAwake}>All Awake</Button>
+                  <Button type="button" variant="outline" size="sm" onClick={setAllSleep}>All Sleep</Button>
+                </div>
               </div>
             </div>
-          </div>
-        </Card>
+          </Card>
+
+          <Card className="bg-gradient-to-br from-green-50 to-white flex flex-col justify-center">
+            <div className="text-center">
+              <div className="p-3 bg-green-100 rounded-full w-12 h-12 flex items-center justify-center mx-auto mb-3 text-green-600">
+                <FiDollarSign className="w-6 h-6" />
+              </div>
+              <h3 className="text-lg font-medium text-gray-900">Estimated Monthly Savings</h3>
+              <p className="text-3xl font-bold text-green-600 mt-2">
+                ${savings.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              </p>
+              <p className="text-sm text-gray-500 mt-1">Based on current schedule</p>
+            </div>
+          </Card>
+        </div>
 
         {/* Schedule Grid */}
         <Card>
@@ -305,46 +310,38 @@ const HibernationSchedule = ({ clusterId }) => {
                 <FiMoon className="inline w-4 h-4 text-gray-400" /> Sleep
               </p>
             </div>
+            <div className="flex gap-4 text-sm">
+              <div className="flex items-center gap-1"><div className="w-3 h-3 bg-green-500 rounded"></div> Awake</div>
+              <div className="flex items-center gap-1"><div className="w-3 h-3 bg-gray-200 rounded"></div> Sleep</div>
+            </div>
           </div>
 
-          <div className="overflow-x-auto" ref={gridRef}>
+          <div className="overflow-x-auto select-none" ref={gridRef}>
             <div className="inline-block min-w-full">
-              {/* Hour Headers */}
               <div className="flex">
                 <div className="w-24 flex-shrink-0"></div>
-                {HOURS.map((hour) => (
-                  <div
-                    key={hour}
-                    className="w-8 h-8 flex items-center justify-center text-xs font-medium text-gray-600 border-b"
-                  >
+                {HOURS.map(hour => (
+                  <div key={hour} className="w-8 h-8 flex items-center justify-center text-xs font-medium text-gray-500 border-b">
                     {hour}
                   </div>
                 ))}
               </div>
 
-              {/* Day Rows */}
               {DAYS.map((day, dayIndex) => (
                 <div key={day} className="flex">
-                  {/* Day Label */}
                   <div className="w-24 h-8 flex items-center justify-start pr-2 text-sm font-medium text-gray-700 flex-shrink-0">
                     {day}
                   </div>
-
-                  {/* Hour Cells */}
-                  {HOURS.map((hour) => {
+                  {HOURS.map(hour => {
                     const index = dayIndex * 24 + hour;
                     const isAwake = formData.schedule_matrix[index] === 1;
-
                     return (
                       <div
                         key={hour}
                         onMouseDown={() => handleCellMouseDown(dayIndex, hour)}
                         onMouseEnter={() => handleCellMouseEnter(dayIndex, hour)}
-                        className={`w-8 h-8 border border-gray-200 cursor-pointer transition-colors select-none ${
-                          isAwake
-                            ? 'bg-green-500 hover:bg-green-600'
-                            : 'bg-gray-200 hover:bg-gray-300'
-                        }`}
+                        className={`w-8 h-8 border border-white cursor-pointer transition-colors ${isAwake ? 'bg-green-500 hover:bg-green-600' : 'bg-gray-200 hover:bg-gray-300'
+                          }`}
                         title={`${day} ${hour}:00 - ${isAwake ? 'Awake' : 'Sleep'}`}
                       />
                     );
@@ -354,19 +351,7 @@ const HibernationSchedule = ({ clusterId }) => {
             </div>
           </div>
 
-          {/* Legend */}
-          <div className="mt-4 flex items-center gap-6 text-sm">
-            <div className="flex items-center gap-2">
-              <div className="w-4 h-4 bg-green-500 border border-gray-300 rounded"></div>
-              <span className="text-gray-700">Awake (instances running)</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <div className="w-4 h-4 bg-gray-200 border border-gray-300 rounded"></div>
-              <span className="text-gray-700">Sleep (instances hibernated)</span>
-            </div>
-          </div>
-
-          {/* Save Button */}
+          {/* Simple Legend/Help */}
           <div className="flex justify-end pt-4 border-t mt-6">
             <Button type="submit" variant="primary" icon={<FiSave />}>
               {existingSchedule ? 'Update Schedule' : 'Create Schedule'}
@@ -374,21 +359,6 @@ const HibernationSchedule = ({ clusterId }) => {
           </div>
         </Card>
       </form>
-
-      {/* Info Card */}
-      <Card>
-        <div className="text-sm text-gray-600">
-          <h4 className="font-medium text-gray-900 mb-2">How Hibernation Works</h4>
-          <ul className="list-disc list-inside space-y-1">
-            <li>Green cells = cluster stays awake, gray cells = cluster hibernates</li>
-            <li>Pre-warm starts instances before the scheduled wake time</li>
-            <li>Schedule is evaluated every hour based on the selected timezone</li>
-            <li>Hibernation terminates spot instances and stops on-demand instances</li>
-            <li>Workloads are automatically rescheduled when cluster wakes up</li>
-            <li>Typical savings: 60-70% for dev/test environments</li>
-          </ul>
-        </div>
-      </Card>
     </div>
   );
 };

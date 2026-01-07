@@ -7,7 +7,7 @@ import React from 'react';
 import { Outlet, Link, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../../hooks/useAuth';
 import { Button } from '../shared';
-import { FiHome, FiServer, FiFileText, FiSettings, FiTarget, FiClock, FiBarChart2, FiUsers, FiActivity, FiLogOut } from 'react-icons/fi';
+import { FiHome, FiServer, FiFileText, FiSettings, FiTarget, FiClock, FiBarChart2, FiUsers, FiActivity, FiLogOut, FiClipboard } from 'react-icons/fi';
 
 const MainLayout = () => {
   const { user, logout } = useAuth();
@@ -17,18 +17,28 @@ const MainLayout = () => {
   const navigation = [
     { name: 'Dashboard', path: '/dashboard', icon: FiHome },
     { name: 'Clusters', path: '/clusters', icon: FiServer },
-    { name: 'Templates', path: '/templates', icon: FiFileText },
     { name: 'Policies', path: '/policies', icon: FiTarget },
+    { name: 'Templates', path: '/templates', icon: FiFileText },
+    { name: 'Right-Sizing', path: '/right-sizing', icon: FiBarChart2 },
     { name: 'Hibernation', path: '/hibernation', icon: FiClock },
-    { name: 'Metrics', path: '/metrics', icon: FiBarChart2 },
-    { name: 'Experiments', path: '/lab', icon: FiActivity },
+    { name: 'Audit Logs', path: '/audit', icon: FiClipboard },
+    { name: 'Settings', path: '/settings', icon: FiSettings },
   ];
 
   const adminNavigation = [
-    { name: 'Admin Portal', path: '/admin', icon: FiUsers },
+    { name: 'Command Center', path: '/admin', icon: FiActivity },
+    { name: 'Clients', path: '/admin/clients', icon: FiUsers },
+    { name: 'System Health', path: '/admin/health', icon: FiServer },
+    { name: 'The Lab', path: '/admin/lab', icon: FiTarget }, // Using Target icon for Lab/Models
+    { name: 'Configuration', path: '/admin/config', icon: FiSettings },
+    { name: 'Billing', path: '/admin/billing', icon: FiBarChart2 }, // Using BarChart for Billing
   ];
 
   const isActive = (path) => location.pathname === path;
+
+  // Determine which navigation to show
+  const isSuperAdmin = user?.role === 'SUPER_ADMIN' || user?.role === 'super_admin';
+  const navItems = isSuperAdmin ? adminNavigation : navigation;
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -36,22 +46,23 @@ const MainLayout = () => {
       <div className="fixed inset-y-0 left-0 w-64 bg-white border-r border-gray-200">
         {/* Logo */}
         <div className="h-16 flex items-center px-6 border-b border-gray-200">
-          <h1 className="text-xl font-bold text-gray-900">Spot Optimizer</h1>
+          <h1 className="text-xl font-bold text-gray-900">
+            {isSuperAdmin ? 'Admin Console' : 'Spot Optimizer'}
+          </h1>
         </div>
 
         {/* Navigation */}
         <nav className="flex-1 px-4 py-4 space-y-1">
-          {navigation.map((item) => {
+          {navItems.map((item) => {
             const Icon = item.icon;
             return (
               <Link
                 key={item.path}
                 to={item.path}
-                className={`flex items-center px-4 py-3 text-sm font-medium rounded-lg transition-colors ${
-                  isActive(item.path)
-                    ? 'bg-blue-50 text-blue-700'
-                    : 'text-gray-700 hover:bg-gray-50'
-                }`}
+                className={`flex items-center px-4 py-3 text-sm font-medium rounded-lg transition-colors ${isActive(item.path)
+                  ? 'bg-blue-50 text-blue-700'
+                  : 'text-gray-700 hover:bg-gray-50'
+                  }`}
               >
                 <Icon className="w-5 h-5 mr-3" />
                 {item.name}
@@ -59,27 +70,14 @@ const MainLayout = () => {
             );
           })}
 
-          {user?.role === 'SUPER_ADMIN' && (
-            <>
-              <div className="my-4 border-t border-gray-200"></div>
-              {adminNavigation.map((item) => {
-                const Icon = item.icon;
-                return (
-                  <Link
-                    key={item.path}
-                    to={item.path}
-                    className={`flex items-center px-4 py-3 text-sm font-medium rounded-lg transition-colors ${
-                      isActive(item.path)
-                        ? 'bg-blue-50 text-blue-700'
-                        : 'text-gray-700 hover:bg-gray-50'
-                    }`}
-                  >
-                    <Icon className="w-5 h-5 mr-3" />
-                    {item.name}
-                  </Link>
-                );
-              })}
-            </>
+          {/* Admin Impersonation Notice (Optional Placeholder) */}
+          {isSuperAdmin && (
+            <div className="mt-8 px-4">
+              <div className="p-3 bg-yellow-50 rounded-lg border border-yellow-200">
+                <p className="text-xs text-yellow-800 font-medium">Client View Hidden</p>
+                <p className="text-xs text-yellow-700 mt-1">Use "Clients" page to impersonate users.</p>
+              </div>
+            </div>
           )}
         </nav>
 
@@ -117,9 +115,7 @@ const MainLayout = () => {
             </h2>
           </div>
           <div className="flex items-center gap-4">
-            <Button variant="ghost" size="sm" onClick={() => navigate('/settings')}>
-              <FiSettings className="w-4 h-4" />
-            </Button>
+            {/* Settings is now in the sidebar */}
           </div>
         </header>
 

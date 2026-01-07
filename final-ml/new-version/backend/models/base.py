@@ -75,7 +75,7 @@ def seed_default_admin():
     """
     Create default admin user if no users exist
     """
-    from backend.models.user import User
+    from backend.models.user import User, UserRole
     from backend.core.crypto import hash_password
 
     db = SessionLocal()
@@ -87,7 +87,7 @@ def seed_default_admin():
             admin_user = User(
                 email="admin@spotoptimizer.com",
                 password_hash=hash_password("admin123"),
-                role="SUPER_ADMIN"
+                role=UserRole.SUPER_ADMIN
             )
             db.add(admin_user)
             db.commit()

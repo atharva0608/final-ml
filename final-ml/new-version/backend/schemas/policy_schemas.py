@@ -40,6 +40,26 @@ class ExclusionRules(BaseModel):
     }
 
 
+
+class KarpenterSettings(BaseModel):
+    """Karpenter specific configuration"""
+    consolidation_enabled: bool = Field(default=True, description="Enable aggressive pod consolidation")
+    ttl_seconds_after_empty: int = Field(default=30, ge=0, description="Seconds to wait before deleting empty nodes")
+    drift_enabled: bool = Field(default=True, description="Enable drift detection")
+    max_node_age_minutes: Optional[int] = Field(None, ge=0, description="Maximum node age in minutes before rotation")
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "consolidation_enabled": True,
+                "ttl_seconds_after_empty": 30,
+                "drift_enabled": True,
+                "max_node_age_minutes": 10080
+            }
+        }
+    }
+
+
 class PolicyConfig(BaseModel):
     """Complete policy configuration"""
     karpenter_enabled: bool = Field(default=True, description="Enable Karpenter integration")
@@ -49,6 +69,7 @@ class PolicyConfig(BaseModel):
     binpack_settings: Optional[BinpackSettings] = Field(None, description="Bin packing algorithm settings")
     fallback_on_demand: bool = Field(default=True, description="Fallback to on-demand if spot unavailable")
     exclusions: Optional[ExclusionRules] = Field(None, description="Node exclusion rules")
+    karpenter_settings: Optional[KarpenterSettings] = Field(None, description="Karpenter specific settings")
 
     @field_validator('strategy')
     @classmethod

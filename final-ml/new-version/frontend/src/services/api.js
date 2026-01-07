@@ -39,6 +39,7 @@ export const clusterAPI = {
     updateCluster: (id, data) => api.patch(`/api/v1/clusters/${id}`, data),
     deleteCluster: (id) => api.delete(`/api/v1/clusters/${id}`),
     getAgentInstall: (id) => api.get(`/api/v1/clusters/${id}/agent-install`),
+    connectAWS: (data) => api.post('/api/v1/clusters/connect-aws', data),
 };
 export const clustersAPI = clusterAPI;
 

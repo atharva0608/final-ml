@@ -10,6 +10,7 @@ from backend.schemas.auth_schemas import (
     SignupRequest,
     LoginRequest,
     TokenResponse,
+    LoginResponse,
     UserProfile,
     PasswordChangeRequest,
 )
@@ -27,7 +28,7 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 @router.post(
     "/signup",
-    response_model=TokenResponse,
+    response_model=LoginResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Register new user",
     description="Create a new user account and return authentication tokens"
@@ -35,7 +36,7 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 def signup(
     signup_data: SignupRequest,
     db: Session = Depends(get_db)
-) -> TokenResponse:
+) -> LoginResponse:
     """
     Register a new user
 
@@ -59,19 +60,35 @@ def signup(
         email=user.email
     )
 
-    return tokens
+    # Create UserContext
+    user_context = UserContext(
+        user_id=user.id,
+        email=user.email,
+        role=user.role.value
+    )
+
+    # Combine tokens and user data
+    response = LoginResponse(
+        access_token=tokens.access_token,
+        token_type=tokens.token_type,
+        expires_in=tokens.expires_in,
+        refresh_token=tokens.refresh_token,
+        user=user_context
+    )
+
+    return response
 
 
 @router.post(
     "/login",
-    response_model=TokenResponse,
+    response_model=LoginResponse,
     summary="User login",
     description="Authenticate user with email and password"
 )
 def login(
     login_data: LoginRequest,
     db: Session = Depends(get_db)
-) -> TokenResponse:
+) -> LoginResponse:
     """
     Authenticate user and return tokens
 
@@ -94,7 +111,23 @@ def login(
         email=user.email
     )
 
-    return tokens
+    # Create UserContext
+    user_context = UserContext(
+        user_id=user.id,
+        email=user.email,
+        role=user.role.value
+    )
+
+    # Combine tokens and user data
+    response = LoginResponse(
+        access_token=tokens.access_token,
+        token_type=tokens.token_type,
+        expires_in=tokens.expires_in,
+        refresh_token=tokens.refresh_token,
+        user=user_context
+    )
+
+    return response
 
 
 @router.post(

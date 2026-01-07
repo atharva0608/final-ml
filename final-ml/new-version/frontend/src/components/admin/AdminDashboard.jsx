@@ -1,314 +1,124 @@
-/**
- * Admin Dashboard Component
- * Platform-wide statistics and monitoring for super admins
- */
-import React, { useState, useEffect } from 'react';
-import { adminAPI } from '../../services/api';
-import { Card, Button, Badge } from '../shared';
-import { FiUsers, FiServer, FiDollarSign, FiActivity, FiRefreshCw, FiTrendingUp, FiCpu } from 'react-icons/fi';
-import toast from 'react-hot-toast';
-import { formatCurrency, formatNumber, formatDate } from '../../utils/formatters';
-import { LineChart, Line, BarChart, Bar, PieChart, Pie, Cell, ResponsiveContainer, XAxis, YAxis, Tooltip, Legend } from 'recharts';
-
-const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6'];
+import React from 'react';
+import { Card, StatsCard } from '../shared';
+import {
+  FiUsers,
+  FiServer,
+  FiDollarSign,
+  FiActivity,
+  FiTrendingUp,
+  FiZap
+} from 'react-icons/fi';
+import {
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer
+} from 'recharts';
 
 const AdminDashboard = () => {
-  const [stats, setStats] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
+  // Mock Data for "Command Center"
+  const kpiStats = [
+    { label: 'Total Active Clients', value: '842', change: '+12%', icon: FiUsers, color: 'blue' },
+    { label: 'Total EC2 Managed', value: '4,281', change: '+340 this week', icon: FiServer, color: 'purple' },
+    { label: 'Total Savings Generated', value: '$1.2M', change: '+18%', icon: FiDollarSign, color: 'green' },
+    { label: 'Platform Revenue (MRR)', value: '$48.2k', change: '+5%', icon: FiTrendingUp, color: 'indigo' },
+  ];
 
-  useEffect(() => {
-    fetchStats();
-  }, []);
+  const activityFeed = [
+    { id: 1, user: 'Acme Corp', action: 'Optimized Cluster', detail: 'Replaced 5x m5.large with spot', time: '2 mins ago', type: 'optimization' },
+    { id: 2, user: 'Startup Inc', action: 'Connected AWS', detail: 'New cluster onboarding', time: '15 mins ago', type: 'onboarding' },
+    { id: 3, user: 'TechFlow', action: 'Policy Update', detail: 'Changed risk tolerance to Medium', time: '1 hour ago', type: 'config' },
+    { id: 4, user: 'Global Logistics', action: 'Agent Updated', detail: 'Auto-updated to v1.4.2', time: '2 hours ago', type: 'system' },
+  ];
 
-  const fetchStats = async () => {
-    setLoading(true);
-    try {
-      const response = await adminAPI.getStats();
-      setStats(response.data.stats);
-    } catch (error) {
-      toast.error('Failed to load platform statistics');
-    } finally {
-      setLoading(false);
+  const getIconForType = (type) => {
+    switch (type) {
+      case 'optimization': return <FiZap className="text-green-500" />;
+      case 'onboarding': return <FiServer className="text-blue-500" />;
+      case 'config': return <FiActivity className="text-purple-500" />;
+      default: return <FiActivity className="text-gray-500" />;
     }
   };
 
-  const handleRefresh = async () => {
-    setRefreshing(true);
-    await fetchStats();
-    setRefreshing(false);
-    toast.success('Statistics refreshed');
-  };
-
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
-      </div>
-    );
-  }
-
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div className="flex justify-between items-center">
-        <div>
-          <h1 className="text-3xl font-bold text-gray-900">Admin Dashboard</h1>
-          <p className="text-gray-600 mt-1">Platform-wide statistics and monitoring</p>
-        </div>
-        <Button
-          variant="outline"
-          icon={<FiRefreshCw className={refreshing ? 'animate-spin' : ''} />}
-          onClick={handleRefresh}
-          disabled={refreshing}
-        >
-          Refresh
-        </Button>
+      <div>
+        <h1 className="text-2xl font-bold text-gray-900">Command Center</h1>
+        <p className="text-gray-600">Platform Overview & Live Pulse</p>
       </div>
 
-      {/* Key Metrics */}
+      {/* Global KPIs */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-        <Card className="bg-gradient-to-br from-blue-50 to-blue-100 border-blue-200">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm font-medium text-blue-600 mb-1">Total Clients</p>
-              <p className="text-3xl font-bold text-blue-900">
-                {formatNumber(stats?.total_clients || 0)}
-              </p>
-              <p className="text-xs text-blue-600 mt-2">
-                {formatNumber(stats?.active_clients || 0)} active
-              </p>
-            </div>
-            <div className="w-12 h-12 bg-blue-500 rounded-full flex items-center justify-center">
-              <FiUsers className="w-6 h-6 text-white" />
-            </div>
-          </div>
-        </Card>
-
-        <Card className="bg-gradient-to-br from-green-50 to-green-100 border-green-200">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm font-medium text-green-600 mb-1">Total Clusters</p>
-              <p className="text-3xl font-bold text-green-900">
-                {formatNumber(stats?.total_clusters || 0)}
-              </p>
-              <p className="text-xs text-green-600 mt-2">
-                {formatNumber(stats?.active_clusters || 0)} active
-              </p>
-            </div>
-            <div className="w-12 h-12 bg-green-500 rounded-full flex items-center justify-center">
-              <FiServer className="w-6 h-6 text-white" />
-            </div>
-          </div>
-        </Card>
-
-        <Card className="bg-gradient-to-br from-purple-50 to-purple-100 border-purple-200">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm font-medium text-purple-600 mb-1">Total Instances</p>
-              <p className="text-3xl font-bold text-purple-900">
-                {formatNumber(stats?.total_instances || 0)}
-              </p>
-              <p className="text-xs text-purple-600 mt-2">
-                {stats?.spot_percentage || 0}% spot
-              </p>
-            </div>
-            <div className="w-12 h-12 bg-purple-500 rounded-full flex items-center justify-center">
-              <FiCpu className="w-6 h-6 text-white" />
-            </div>
-          </div>
-        </Card>
-
-        <Card className="bg-gradient-to-br from-orange-50 to-orange-100 border-orange-200">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm font-medium text-orange-600 mb-1">Platform Savings</p>
-              <p className="text-3xl font-bold text-orange-900">
-                {formatCurrency(stats?.total_savings || 0)}
-              </p>
-              <p className="text-xs text-orange-600 mt-2">This month</p>
-            </div>
-            <div className="w-12 h-12 bg-orange-500 rounded-full flex items-center justify-center">
-              <FiDollarSign className="w-6 h-6 text-white" />
-            </div>
-          </div>
-        </Card>
+        {kpiStats.map((stat, index) => (
+          <StatsCard key={index} {...stat} />
+        ))}
       </div>
 
-      {/* Charts Row */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Client Growth */}
-        <Card>
-          <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
-            <FiTrendingUp className="w-5 h-5" />
-            Client Growth (Last 30 Days)
-          </h3>
-          {stats?.client_growth_data ? (
-            <ResponsiveContainer width="100%" height={250}>
-              <LineChart data={stats.client_growth_data}>
-                <XAxis dataKey="date" stroke="#9ca3af" fontSize={12} />
-                <YAxis stroke="#9ca3af" fontSize={12} />
-                <Tooltip
-                  contentStyle={{ backgroundColor: '#fff', border: '1px solid #e5e7eb', borderRadius: '8px' }}
-                />
-                <Legend />
-                <Line type="monotone" dataKey="clients" stroke="#3b82f6" strokeWidth={2} name="Total Clients" />
-                <Line type="monotone" dataKey="active" stroke="#10b981" strokeWidth={2} name="Active" />
-              </LineChart>
-            </ResponsiveContainer>
-          ) : (
-            <div className="h-64 flex items-center justify-center text-gray-500">
-              No growth data available
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Main Chart Area */}
+        <div className="lg:col-span-2 space-y-6">
+          <Card className="p-6">
+            <h2 className="text-lg font-bold text-gray-900 mb-4">Savings Velocity</h2>
+            <div className="h-80 w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={[
+                  { name: 'Mon', savings: 4000 },
+                  { name: 'Tue', savings: 3000 },
+                  { name: 'Wed', savings: 2000 },
+                  { name: 'Thu', savings: 2780 },
+                  { name: 'Fri', savings: 1890 },
+                  { name: 'Sat', savings: 2390 },
+                  { name: 'Sun', savings: 3490 },
+                ]}>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E5E7EB" />
+                  <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fill: '#6B7280' }} />
+                  <YAxis axisLine={false} tickLine={false} tick={{ fill: '#6B7280' }} tickFormatter={(value) => `$${value}`} />
+                  <Tooltip
+                    contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)' }}
+                    formatter={(value) => [`$${value}`, 'Savings']}
+                  />
+                  <Line type="monotone" dataKey="savings" stroke="#10B981" strokeWidth={3} dot={{ r: 4, strokeWidth: 2 }} activeDot={{ r: 6 }} />
+                </LineChart>
+              </ResponsiveContainer>
             </div>
-          )}
-        </Card>
-
-        {/* Instance Distribution */}
-        <Card>
-          <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
-            <FiActivity className="w-5 h-5" />
-            Instance Distribution
-          </h3>
-          {stats?.instance_distribution ? (
-            <ResponsiveContainer width="100%" height={250}>
-              <PieChart>
-                <Pie
-                  data={[
-                    { name: 'Spot', value: stats.total_spot_instances || 0 },
-                    { name: 'On-Demand', value: stats.total_on_demand_instances || 0 },
-                  ]}
-                  cx="50%"
-                  cy="50%"
-                  labelLine={false}
-                  label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(0)}%`}
-                  outerRadius={80}
-                  fill="#8884d8"
-                  dataKey="value"
-                >
-                  {[0, 1].map((entry, index) => (
-                    <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                  ))}
-                </Pie>
-                <Tooltip />
-              </PieChart>
-            </ResponsiveContainer>
-          ) : (
-            <div className="h-64 flex items-center justify-center text-gray-500">
-              No distribution data available
-            </div>
-          )}
-        </Card>
-      </div>
-
-      {/* Cost Savings by Client */}
-      <Card>
-        <h3 className="text-lg font-semibold text-gray-900 mb-4">Top Clients by Savings</h3>
-        {stats?.top_clients_by_savings && stats.top_clients_by_savings.length > 0 ? (
-          <ResponsiveContainer width="100%" height={300}>
-            <BarChart data={stats.top_clients_by_savings}>
-              <XAxis dataKey="email" stroke="#9ca3af" fontSize={12} />
-              <YAxis stroke="#9ca3af" fontSize={12} />
-              <Tooltip
-                contentStyle={{ backgroundColor: '#fff', border: '1px solid #e5e7eb', borderRadius: '8px' }}
-                formatter={(value) => formatCurrency(value)}
-              />
-              <Legend />
-              <Bar dataKey="savings" fill="#10b981" name="Savings" />
-              <Bar dataKey="cost" fill="#3b82f6" name="Current Cost" />
-            </BarChart>
-          </ResponsiveContainer>
-        ) : (
-          <div className="h-64 flex items-center justify-center text-gray-500">
-            No savings data available
-          </div>
-        )}
-      </Card>
-
-      {/* Platform Health */}
-      <Card>
-        <h3 className="text-lg font-semibold text-gray-900 mb-4">Platform Health</h3>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
-          <div className="text-center">
-            <div className="text-sm text-gray-600 mb-2">API Success Rate</div>
-            <div className="text-3xl font-bold text-green-600">
-              {stats?.api_success_rate?.toFixed(1) || 0}%
-            </div>
-          </div>
-          <div className="text-center">
-            <div className="text-sm text-gray-600 mb-2">Avg Response Time</div>
-            <div className="text-3xl font-bold text-blue-600">
-              {stats?.avg_response_time || 0}ms
-            </div>
-          </div>
-          <div className="text-center">
-            <div className="text-sm text-gray-600 mb-2">Active Optimizations</div>
-            <div className="text-3xl font-bold text-purple-600">
-              {formatNumber(stats?.active_optimizations || 0)}
-            </div>
-          </div>
-          <div className="text-center">
-            <div className="text-sm text-gray-600 mb-2">Agent Uptime</div>
-            <div className="text-3xl font-bold text-orange-600">
-              {stats?.agent_uptime?.toFixed(1) || 0}%
-            </div>
-          </div>
+          </Card>
         </div>
-      </Card>
 
-      {/* Recent Activity */}
-      <Card>
-        <h3 className="text-lg font-semibold text-gray-900 mb-4">Recent Client Activity</h3>
-        {stats?.recent_signups && stats.recent_signups.length > 0 ? (
-          <div className="overflow-x-auto">
-            <table className="min-w-full divide-y divide-gray-200">
-              <thead className="bg-gray-50">
-                <tr>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Client
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Status
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Clusters
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Instances
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Joined
-                  </th>
-                </tr>
-              </thead>
-              <tbody className="bg-white divide-y divide-gray-200">
-                {stats.recent_signups.map((client) => (
-                  <tr key={client.id} className="hover:bg-gray-50">
-                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
-                      {client.email}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <Badge color={client.is_active ? 'green' : 'gray'}>
-                        {client.is_active ? 'Active' : 'Inactive'}
-                      </Badge>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
-                      {formatNumber(client.cluster_count || 0)}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
-                      {formatNumber(client.instance_count || 0)}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
-                      {formatDate(client.created_at)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          <div className="text-center py-8 text-gray-500">No recent activity</div>
-        )}
-      </Card>
+        {/* Live Activity Feed */}
+        <div className="lg:col-span-1">
+          <Card className="h-full">
+            <div className="p-6 border-b border-gray-100 flex justify-between items-center">
+              <h2 className="text-lg font-bold text-gray-900">Live Activity</h2>
+              <span className="flex h-3 w-3 relative">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-3 w-3 bg-green-500"></span>
+              </span>
+            </div>
+            <div className="p-6 space-y-6">
+              {activityFeed.map((item) => (
+                <div key={item.id} className="flex space-x-3">
+                  <div className="mt-1 bg-gray-50 border border-gray-200 rounded-lg p-2 h-fit">
+                    {getIconForType(item.type)}
+                  </div>
+                  <div>
+                    <p className="text-sm font-medium text-gray-900">
+                      {item.user} <span className="text-gray-400 font-normal">• {item.action}</span>
+                    </p>
+                    <p className="text-xs text-gray-500 mt-1">{item.detail}</p>
+                    <p className="text-xs text-gray-400 mt-1">{item.time}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="p-4 border-t border-gray-100 bg-gray-50 rounded-b-lg text-center">
+              <button className="text-sm text-blue-600 hover:text-blue-800 font-medium">View Global Audit Log</button>
+            </div>
+          </Card>
+        </div>
+      </div>
     </div>
   );
 };

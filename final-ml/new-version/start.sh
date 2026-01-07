@@ -189,6 +189,11 @@ case "$MODE" in
         }
         echo ""
 
+        # Seed demo data (users, accounts, templates)
+        echo -e "${BLUE}🌱 Seeding demo data...${NC}"
+        $COMPOSE_CMD -f docker/docker-compose.yml exec -T backend python scripts/seed_demo_data.py
+        echo ""
+
         # Show service status
         echo -e "${GREEN}✅ All services started successfully!${NC}"
         echo ""
@@ -210,11 +215,17 @@ case "$MODE" in
         echo -e "  Backend API: ${GREEN}http://localhost:8000${NC}"
         echo -e "  API Docs:    ${GREEN}http://localhost:8000/docs${NC}"
         echo ""
-        echo -e "${BLUE}🔑 Default Login Credentials:${NC}"
-        echo -e "  Email:    ${GREEN}admin@spotoptimizer.com${NC}"
-        echo -e "  Password: ${GREEN}admin123${NC}"
+        echo -e "${BLUE}🔑 Login Credentials:${NC}"
         echo ""
-        echo -e "${YELLOW}⚠️  Change default password immediately!${NC}"
+        echo -e "  ${YELLOW}Super Admin:${NC}"
+        echo -e "    Email:    ${GREEN}admin@spotoptimizer.com${NC}"
+        echo -e "    Password: ${GREEN}admin123${NC}"
+        echo ""
+        echo -e "  ${YELLOW}Demo Client:${NC}"
+        echo -e "    Email:    ${GREEN}demo@client.com${NC}"
+        echo -e "    Password: ${GREEN}democlient${NC}"
+        echo ""
+        echo -e "${YELLOW}⚠️  Change default passwords immediately!${NC}"
         echo ""
         echo -e "${BLUE}🔧 Useful Commands:${NC}"
         echo -e "  View logs:    ./start.sh logs [service]"

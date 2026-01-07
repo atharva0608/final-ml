@@ -16,7 +16,9 @@ from backend.schemas.cluster_schemas import (
     ClusterResponse,
     ClusterList,
     ClusterFilter,
+    ClusterFilter,
     AgentInstallCommand,
+    AWSConnectRequest,
 )
 
 router = APIRouter(prefix="/clusters", tags=["Clusters"])
@@ -81,6 +83,33 @@ def register_cluster(
     """
     service = get_cluster_service(db)
     return service.register_cluster(current_user.id, cluster_data)
+
+
+@router.post(
+    "/connect-aws",
+    response_model=ClusterResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Connect AWS cluster",
+    description="Connect an AWS EKS cluster using IAM Role (Agentless)"
+)
+def connect_aws_cluster(
+    connect_data: AWSConnectRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+) -> ClusterResponse:
+    """
+    Connect AWS EKS cluster using STS Assume Role
+
+    Args:
+        connect_data: Connection details (ARN, External ID)
+        current_user: Authenticated user
+        db: Database session
+
+    Returns:
+        Connected cluster details
+    """
+    service = get_cluster_service(db)
+    return service.connect_aws_cluster(current_user.id, connect_data)
 
 
 @router.get(

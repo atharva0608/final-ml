@@ -49,22 +49,6 @@ class LoginRequest(BaseModel):
     }
 
 
-class TokenResponse(BaseModel):
-    """JWT token response"""
-    access_token: str = Field(..., description="JWT access token")
-    token_type: str = Field(default="bearer", description="Token type")
-    expires_in: int = Field(..., description="Token expiration time in seconds")
-
-    model_config = {
-        "json_schema_extra": {
-            "example": {
-                "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-                "token_type": "bearer",
-                "expires_in": 3600
-            }
-        }
-    }
-
 
 class UserContext(BaseModel):
     """User context extracted from JWT token"""
@@ -81,6 +65,49 @@ class UserContext(BaseModel):
             }
         }
     }
+
+
+class TokenResponse(BaseModel):
+    """JWT token response"""
+    access_token: str = Field(..., description="JWT access token")
+    token_type: str = Field(default="bearer", description="Token type")
+    expires_in: int = Field(..., description="Token expiration time in seconds")
+    refresh_token: Optional[str] = Field(None, description="Refresh token")
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+                "token_type": "bearer",
+                "expires_in": 3600,
+                "refresh_token": "d74..."
+            }
+        }
+    }
+
+
+class LoginResponse(TokenResponse):
+    """Login response with user details"""
+    user: UserContext = Field(..., description="User details")
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+                "token_type": "bearer",
+                "expires_in": 3600,
+                "refresh_token": "d74...",
+                "user": {
+                    "user_id": "550e8400-e29b-41d4-a716-446655440000",
+                    "email": "user@example.com",
+                    "role": "CLIENT"
+                }
+            }
+        }
+    }
+
+
+
 
 
 class UserProfile(BaseModel):

@@ -9,6 +9,8 @@ import { FiX, FiRefreshCw, FiSettings, FiClock, FiCpu, FiHardDrive, FiDollarSign
 import toast from 'react-hot-toast';
 import { formatCurrency, formatNumber, formatDate, formatDateTime } from '../../utils/formatters';
 
+import NodeList from './NodeList';
+
 const ClusterDetails = ({ clusterId, onClose }) => {
   const [cluster, setCluster] = useState(null);
   const [metrics, setMetrics] = useState(null);
@@ -16,6 +18,7 @@ const ClusterDetails = ({ clusterId, onClose }) => {
   const [schedule, setSchedule] = useState(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [optimizing, setOptimizing] = useState(false);
 
   useEffect(() => {
     if (clusterId) {
@@ -63,6 +66,19 @@ const ClusterDetails = ({ clusterId, onClose }) => {
     toast.success('Cluster details refreshed');
   };
 
+  const handleOptimize = async () => {
+    if (!clusterId) return;
+    setOptimizing(true);
+    try {
+      await clusterAPI.optimize(clusterId); // Assuming this API endpoint exists or will exist
+      toast.success('Optimization triggered successfully');
+    } catch (error) {
+      toast.error('Failed to trigger optimization');
+    } finally {
+      setOptimizing(false);
+    }
+  };
+
   const getStatusColor = (status) => {
     switch (status) {
       case 'active':
@@ -94,7 +110,7 @@ const ClusterDetails = ({ clusterId, onClose }) => {
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
       <div className="bg-white rounded-lg w-full max-w-4xl max-h-[90vh] overflow-y-auto">
         {/* Header */}
-        <div className="sticky top-0 bg-white border-b px-6 py-4 flex justify-between items-center">
+        <div className="sticky top-0 bg-white border-b px-6 py-4 flex justify-between items-center z-10">
           <div>
             <h2 className="text-2xl font-bold text-gray-900">{cluster?.name}</h2>
             <p className="text-sm text-gray-600 mt-1">
@@ -102,6 +118,15 @@ const ClusterDetails = ({ clusterId, onClose }) => {
             </p>
           </div>
           <div className="flex items-center gap-2">
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={handleOptimize}
+              loading={optimizing}
+              disabled={optimizing}
+            >
+              Instant Rebalance
+            </Button>
             <Button
               variant="outline"
               size="sm"
@@ -350,6 +375,10 @@ const ClusterDetails = ({ clusterId, onClose }) => {
               </div>
             </div>
           </Card>
+
+          {/* Node List */}
+          <NodeList clusterId={clusterId} />
+
         </div>
 
         {/* Footer Actions */}

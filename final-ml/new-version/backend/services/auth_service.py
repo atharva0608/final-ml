@@ -301,7 +301,8 @@ class AuthService:
         return TokenResponse(
             access_token=access_token,
             token_type="bearer",
-            expires_in=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES * 60
+            expires_in=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+            refresh_token=refresh_token
         )
 
 

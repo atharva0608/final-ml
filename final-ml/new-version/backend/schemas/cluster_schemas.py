@@ -40,26 +40,25 @@ class ClusterList(BaseModel):
     clusters: List[ClusterListItem] = Field(..., description="Array of clusters")
     total: int = Field(..., ge=0, description="Total number of clusters")
 
+
+class AWSConnectRequest(BaseModel):
+    """Request to connect cluster via AWS STS"""
+    name: str = Field(..., description="Cluster name")
+    region: str = Field(..., description="AWS region")
+    role_arn: str = Field(..., description="AWS IAM Role ARN to assume")
+    external_id: str = Field(..., description="External ID for security")
+
     model_config = {
         "json_schema_extra": {
             "example": {
-                "clusters": [
-                    {
-                        "id": "550e8400-e29b-41d4-a716-446655440000",
-                        "name": "production-eks",
-                        "region": "us-east-1",
-                        "status": "ACTIVE",
-                        "node_count": 15,
-                        "spot_count": 10,
-                        "monthly_cost": 1250.50,
-                        "agent_installed": True,
-                        "last_heartbeat": "2025-12-31T12:00:00Z"
-                    }
-                ],
-                "total": 1
+                "name": "production-eks",
+                "region": "us-east-1",
+                "role_arn": "arn:aws:iam::123456789012:role/SpotOptimizerMonitoring",
+                "external_id": "spot-optimizer-123"
             }
         }
     }
+
 
 
 class InstanceInfo(BaseModel):
