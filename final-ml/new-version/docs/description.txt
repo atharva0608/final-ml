@@ -1,0 +1,615 @@
+This feature manages the secure entry of new clients into the platform, handling identity verification, organization creation, and the critical initial connection to AWS infrastructure.
+1. Authentication & Account Provisioning
+The entry point is a unified Login/Sign-Up Portal (LoginPage.jsx) that serves both Administrators and Clients.
+Sign Up Flow (New Clients):
+Input: The user provides an Organization Name, Email, and Password.
+Backend Logic: Upon submission to /api/auth/signup, the system performs an atomic transaction:
+User Creation: A new record is created in the users table with a hashed password (bcrypt).
+Placeholder Account: Crucially, the system immediately generates a "Placeholder" row in the accounts table with status='pending' and a temporary account_id.
+Purpose: This prevents the "Orphan User" state, ensuring that when a new user logs in, the dashboard query never returns null.
+Sign In Flow:
+Authentication: The user authenticates via /api/auth/token. The server returns a JWT (JSON Web Token) containing the user's ID and Role.
+Routing (The Gateway): The frontend AuthGateway component intercepts the navigation. It queries /api/client/accounts.
+If accounts.length == 0 or status is pending: Redirects to Onboarding.
+If accounts.length > 0 and status is active: Redirects to Dashboard.
+2. The Cloud Connect Interface
+Once authenticated, new users are presented with the Cloud Connect interface (ClientSetup.jsx). This UI offers two distinct methods for linking an AWS environment, designed to balance security constraints with ease of use.
+Option A: CloudFormation (Role-Based Access) 🛡️
+Best For: Production environments and Enterprise clients requiring strict security governance.
+Mechanism:
+The user enters their AWS Account ID and Target Region.
+The system generates a unique External ID (UUID) to prevent "Confused Deputy" attacks.
+The user is provided with a pre-generated CloudFormation Template URL.
+Backend Verification: When the user clicks "Verify", the backend assumes the created IAM Role using boto3.sts and validates access permissions without ever storing permanent credentials.
+Option B: Direct Credentials (Access Keys) 🔑
+Best For: Lab environments, testing, or rapid prototyping.
+Mechanism:
+The user inputs an AWS Access Key ID and Secret Access Key.
+Encryption: Before saving to the database, the Secret Key is encrypted using AES-256 (via fernet in utils/crypto.py). The raw key is never stored in plain text.
+Validation: The backend immediately attempts a sts.get_caller_identity() call to verify the keys are active and valid.
+3. Connection Persistence & State Management
+To ensure a stable "Connected" experience, the system implements robust state handling:
+Global Uniqueness Check: Before linking, the API checks if the AWS Account ID is already claimed by another user in the system to prevent data collisions.
+The "Upsert" Strategy: If the user creates a connection, the system finds the pending placeholder account created during signup and updates it with the new AWS details, rather than creating a duplicate row.
+Live Status Feedback:
+Once connected, the Account status transitions from 'pending' → 'scanning'.
+The DiscoveryWorker is triggered immediately to fetch EC2 instances.
+The frontend polls the status endpoint and displays a "Connection Established" success message before transitioning to the full dashboard.
+4. Security Architecture
+Data in Transit: All inputs (keys, passwords) are transmitted over HTTPS.
+Data at Rest: AWS Secret Keys are encrypted at the application layer before database insertion.
+Scope Isolation: Each Client sees only the AWS accounts linked to their User ID, enforced by filter(Account.user_id == current_user.id) on every API read operation.
+ 
+
+ Now client dashboard will have  side menu the first feature will be dashboard 
+
+Here is the feature description for the Unified Cluster Observability & Savings Dashboard.
+This design focuses strictly on Monitoring & Assessment (Phase 1), allowing users to visualize inefficiency, potential savings, and health risks without triggering active changes to the infrastructure.
+
+📊 Feature: Unified Cluster Observability Dashboard
+This feature serves as the "Single Pane of Glass" for all connected Kubernetes clusters (EKS) and AWS fleets. It aggregates real-time telemetry to calculate financial waste and stability risks.
+1. Multi-Cluster List & Metadata
+The View: A high-level inventory table.
+Columns: Cluster Name, Region, Kubernetes Version, Total Nodes, Monthly Run Rate ($), and Efficiency Score (A-F grade).
+Logic:
+Aggregates data from Account and Instance tables.
+Monthly Run Rate = SUM(current_instance_price * 730 hours) for all nodes in the cluster.
+Efficiency Score is a weighted average of CPU Allocation vs. Usage.
+2. Bin Packing & Waste Analysis
+The View: A "Resource Gap" Area Chart.
+What it shows: Two lines plotted over time:
+Red Line: Actual Capacity (Total CPU/RAM available on nodes).
+Green Line: Requested Capacity (Total CPU/RAM needed by pods).
+The Insight (Bin Packing Opportunity): The gap between the Red and Green lines represents "Waste"—empty space on servers that you are paying for.
+Calculation:
+Potential_Bin_Packing_Savings = Current_Cost - (Cost_of_Perfectly_Packed_Nodes).
+It simulates rescheduling pods onto fewer, larger nodes to eliminate fragmentation.
+3. Karpenter & Spot Optimization Monitor
+The View: A "Fleet Composition" Sunburst Chart.
+What it shows: Breakdown of the fleet by Instance Lifecycle (Spot vs. On-Demand) and Instance Family (m5, c6, etc.).
+Karpenter Insight:
+Identifies workloads running on expensive "General Purpose" On-Demand nodes that could run on cheaper "Spot" nodes managed by Karpenter.
+Metric: "Spot Readiness Score" – percentage of pods that are stateless and interruption-tolerant.
+Calculation:
+Karpenter_Savings = (OnDemand_Price - Spot_Price) for all "Spot Ready" workloads.
+4. Hibernation Schedule Opportunities
+The View: An "Activity Heatmap" (24x7 Grid).
+What it shows: A grid representing every hour of the week.
+Red Blocks: High Cluster Activity (User logins, CI/CD jobs).
+Blue Blocks: Idle Time (No API calls, low CPU).
+The Insight: Automatically highlights "Blue Zones" (e.g., Sat/Sun, Nights) where the cluster effectively does nothing but costs money.
+Calculation:
+Hibernation_Savings = Hourly_Cluster_Cost * Count_of_Blue_Blocks_per_Month.
+5. Cluster Health & Stability Index
+The View: A "Stability Gauge" (0 - 100%).
+What it shows: A real-time score indicating if the cluster is under stress.
+Components:
+Pressure Events: Frequency of DiskPressure or MemoryPressure events on nodes.
+Spot Stability: Probability of interruption for the current instance types (derived from the ML model).
+Control Plane Latency: Response time of the AWS EKS API.
+Goal: To reassure the user that "Saving Money" is not degrading "Performance". If the score drops below 80%, the gauge turns Orange/Red.
+
+📝 Summary of "Read-Only" Logic
+No Actions: There are NO buttons for "Rebalance Now", "Apply Schedule", or "Enable Karpenter".
+Forecasts Only: All dollar values are labeled as "Potential Savings" or "Projected Waste".
+Data Source: All data is derived from read-only AWS APIs (DescribeInstances, GetMetricStatistics) and Kubernetes Metrics Server.
+
+
+Here is the detailed functional description for the Node Templates Frontend UI. This describes exactly how the feature will look, behave, and interact with the user within the Dashboard.
+
+🎨 Feature Description: Node Templates UI
+Location: Sidebar Menu → Node Templates
+This interface serves as the "Blueprint Manager" for your infrastructure. It allows users to define reusable configurations (Constraints) that the AI Optimizer and Karpenter autoscaler must follow when launching new nodes.
+1. The Main List View (Landing Page)
+When the user clicks "Node Templates", they see a clean, data-rich table listing all defined blueprints.
+Header Section:
+Title: "Node Provisioning Templates".
+Search Bar: A real-time filter to find templates by name (e.g., "GPU Workloads").
+Primary Action Button: A prominent blue "+ Create New Template" button on the top right.
+The Template Grid (Table):
+Column 1: Template Name & Status:
+Displays the name (e.g., Production-General).
+⭐ Default Badge: If a template is the global default, a gold star or "DEFAULT" badge appears next to the name.
+Column 2: Compute Constraints:
+A summarized pill view, e.g., [ m5, c5, r5 ] • x86_64.
+Column 3: Purchasing Strategy:
+Color-coded badges: SPOT (Orange), ON-DEMAND (Blue), or HYBRID (Purple).
+Column 4: Storage:
+Summary of disk config, e.g., gp3 (100GB).
+Column 5: Actions:
+A "Three-Dot" menu for every row containing: Edit, Clone, Set as Default, and Delete.
+Real-Time Interaction:
+"Set as Default" Toggle: Users can click the star icon directly on the table. The UI updates instantly (Optimistic UI), moving the star to the new row before the backend confirms, making the app feel incredibly fast.
+
+2. The "Create Template" Wizard
+Clicking "+ Create New Template" opens a Slide-Over Panel or a Modal with a Multi-Step Wizard to guide the user through complex configurations without overwhelming them.
+Step 1: General Information
+Input: "Template Name" (with live validation to prevent duplicates).
+Input: "Description" (for team documentation).
+Toggle: "Make this the default template for my organization".
+Step 2: Compute & Architecture (The Brains)
+Family Selector: A visual multi-select grid.
+Users see icons for General Purpose, Compute Optimized, Memory Optimized, GPU.
+Action: Selecting "Compute Optimized" auto-checks c5, c6i, c7i.
+Architecture Toggle: A simple switch between x86 (Intel/AMD) and ARM64 (Graviton).
+Size Exclusions: A dropdown to "Blacklist" specific sizes.
+Example: User selects nano, micro, small to ensure production pods never land on tiny nodes.
+Step 3: Spot & Purchasing Strategy (The Savings)
+Capacity Type: Three large cards to choose from:
+Spot Only: Maximum savings, higher risk.
+On-Demand: Zero interruption risk, full price.
+Hybrid: Uses Spot for stateless pods, On-Demand for persistent DBs.
+Spot Allocation Strategy (If Spot is selected):
+Lowest Price: The AI picks the absolute cheapest node.
+Capacity Optimized: The AI picks the node least likely to be interrupted by AWS.
+Step 4: Storage & Networking
+Disk Type: Dropdown (gp2, gp3, io1, ephemeral).
+Disk Size: Slider or Input (e.g., 50 GB).
+Security Groups: A searchable dropdown fetching real Security Group IDs from the connected AWS account.
+
+3. Visual Feedback & Validation
+Live Cost Estimator: As the user selects instance families (e.g., adding m5.large), a small widget in the corner updates to show: "Avg. Spot Price: $0.04/hr".
+Conflict Detection: If a user selects ARM64 architecture but adds a g4dn (Intel-only GPU) instance family, the UI immediately shows a warning: "Instance type g4dn is incompatible with ARM64."
+4. Summary & Save
+The final step shows a JSON-like summary of the policy.
+"Create" Action: Saves the template to the backend and immediately adds it to the List View without a page reload.
+
+Here is the detailed feature description for the Multi-Account Cloud Connect & Onboarding Wizard.
+This design splits the functionality into two parts:
+Persistent Management: A dedicated section to manage multiple accounts anytime.
+First-Run Wizard: A friendly, skippable pop-up guide for new users.
+
+☁️ Feature: Connected Cloud Accounts Manager
+Location: Sidebar Menu → Settings → Cloud Integrations
+This is the central hub where clients can view, manage, and add multiple AWS accounts (e.g., "Production", "Staging", "Dev-Lab").
+1. The Accounts List View
+A clean, card-based or tabular layout listing all linked accounts.
+Visual Layout:
+Header: "Connected Accounts" with a large "+ Connect New Account" button.
+Account Cards: Each connected account appears as a summary card containing:
+Account Name: (e.g., "Acme Corp Production")
+AWS Account ID: Masked for security (e.g., 1234-****-****).
+Region: The primary region (e.g., us-east-1).
+Connection Method: Badge showing "Role-Based" (Secure) or "Access Key" (Lab).
+Live Status:
+🟢 Active: Data syncing perfectly.
+🟡 Scanning: Discovery in progress.
+🔴 Error: Credentials invalid or permission denied.
+Action Menu (Three Dots):
+"Re-Sync": Force a fresh scan of the account.
+"Edit Name": Rename the account alias.
+"Disconnect": Remove the account (requires confirmation modal).
+2. Multi-Account Support
+Organization View: Users can add as many accounts as they want. The backend automatically tags instances with their source account_id, allowing the Dashboard to show a "Global View" (All Accounts) or filter by a specific one.
+
+🪄 Feature: First-Run Onboarding Wizard
+Trigger: Pops up automatically only when a user logs in for the very first time.
+This is a "Hand-Holding" experience designed to get the user to value quickly without forcing them.
+1. The Wizard UI Structure
+A centered, modal-like experience that dims the background.
+Step 1: Welcome & Value Prop
+Image: Friendly illustration of a cloud cluster.
+Text: "Welcome to Spot Optimizer! Let's connect your AWS infrastructure to start saving costs immediately."
+Action: "Start Setup" button.
+Skip: A subtle "Skip for now" button at the top right.
+Step 2: Connection Method (The "Fork")
+User Choice: Two large clickable cards.
+** Production (Recommended):** Uses CloudFormation (Secure, Read-only access).
+** Lab / Dev (Fast):** Uses Access Keys (Immediate connection).
+Selection moves to Step 3.
+Step 3: Credentials Input
+If "Lab" was chosen: Shows the Access Key/Secret Key form.
+If "Production" was chosen: Shows the CloudFormation Template URL and a "Verify" button.
+Validation: Clicking "Connect" triggers a live backend check. If successful, it auto-advances.
+Step 4: Success & Sync
+Visual: A green checkmark animation.
+Text: "Account Connected! We are now scanning your fleet. This typically takes 2-3 minutes."
+Action: "Go to Dashboard" button.
+2. The "Skippable" Logic
+Behavior: If the user clicks "Skip for now":
+The wizard closes immediately.
+The user lands on the Dashboard.
+Empty State: Since no account is connected, the Dashboard shows a placeholder illustration (e.g., "No Data Yet") with a prominent "Connect AWS Account" button in the center.
+Persistence: The wizard will NOT pop up again on the next login (to avoid annoyance), but the "Empty State" remains until they manually connect via the Settings page.
+
+🎨 Frontend UI Component Breakdown
+To implement this, you need these specific components:
+AccountList.jsx: The management page.
+Logic: Fetches GET /api/client/accounts. Renders a grid of cards. Handles the DELETE action.
+OnboardingWizard.jsx: The pop-up modal.
+Logic: Uses internal state (step 1 to 4). Handles the API call to POST /connect.
+Prop: onClose() (called when skipped or finished).
+EmptyDashboard.jsx: The fallback view.
+Logic: Displayed inside DashboardLayout when total_instances === 0. Contains a button that redirects to /settings/cloud-integrations.
+📝 Summary of Flow
+User Logs In.
+Check: Does user have any accounts?
+No: Show OnboardingWizard overlay.
+Yes: Show Dashboard directly.
+User Actions in Wizard:
+Connects: Success -> Wizard closes -> Dashboard loads real data.
+Skips: Wizard closes -> Dashboard loads "Empty State" with manual connect button.
+User goes to Settings: Can add Account B, Account C, etc., via AccountList.
+Here is the detailed feature description for the Optimization Policies section.
+This design consolidates all automation rules into a single, clean interface using a Tabbed Layout. It separates "Infrastructure Operations" (managing EC2 nodes) from "Application Tuning" (managing Kubernetes Pods).
+
+⚙️ Feature: Optimization Policies & Automation
+Location: Sidebar Menu → Optimization Policies
+This is the "Control Room" for the autoscaler. Instead of manually deleting nodes, the user sets high-level rules here, and the AI (Backend) enforces them continuously.
+1. The Layout Strategy
+To prevent information overload, the page is divided into two distinct tabs:
+🏗️ Infrastructure Layer: Controls Physical Nodes (EC2), Karpenter settings, and Cluster-wide schedules.
+📦 Workload Layer: Controls Pod sizing, Request/Limit recommendations, and Scheduling affinity.
+
+Here is the updated, detailed, and feature-rich description for Tab 1: Infrastructure Layer. I have expanded the explanations to clarify exactly how the backend behaves when these configurations are changed.
+
+🟢 Tab 1: Infrastructure Layer (Node Scaling)
+This tab serves as the Command Center for the Autoscaler. It manages the lifecycle of physical EC2 instances, determining when to add capacity (Provisioning) and when to remove it (Deprovisioning/Bin-Packing).
+Card 1: Intelligent Autoscaling (Karpenter Integration)
+Purpose: Replaces the standard AWS Autoscaler with an AI-driven engine that selects the "Perfect Instance" for pending pods in real-time.
+How it works: When a pod cannot fit on existing nodes, this engine queries AWS pricing and capacity APIs to launch a new node specifically tailored to that pod's requirements.
+Controls & Configuration:
+Master Toggle: [ ON / OFF ]
+Action: Controls the active provisioner loop.
+Impact: When OFF, the cluster will never add new nodes, even if pods are pending (stuck in Pending state). When ON, it reacts to pending pods within roughly 1-2 seconds.
+Provisioning Strategy:
+🔘 Lowest Cost Strategy:
+Logic: The AI scans the Spot market and strictly selects the instance type with the lowest price per vCPU that fits the workload.
+Use Case: Best for fault-tolerant batch processing, CI/CD runners, or non-critical dev environments.
+🔘 Capacity Optimized (Recommended):
+Logic: The AI analyzes the Spot Placement Score (SPS) and selects instances with the deepest capacity pools, even if they are slightly more expensive (e.g., +5%).
+Use Case: Essential for Production. It dramatically reduces the chance of a "Spot Interruption" (node termination).
+Constraint Boundary (Node Template):
+UI: A dropdown linked to the "Node Templates" feature.
+Configuration: Selects a specific template (e.g., Production-General containing only m5, c5, r5).
+Impact: The Autoscaler is strictly forbidden from launching any instance type not listed in the selected template. This prevents "weird" hardware (like unintended GPUs or tiny nano instances) from entering the cluster.
+Spot Fallback Protection: [ Checkbox ]
+Configuration: "Auto-fallback to On-Demand if Spot is unavailable."
+How it works: If the Autoscaler tries to launch a Spot node and gets an InsufficientInstanceCapacity error from AWS, it immediately retries with an On-Demand instance.
+Impact: Ensures 100% application uptime during Black Friday or AWS outages, at the cost of higher temporary billing.
+
+Card 2: Bin Packing & Consolidation (Waste Removal)
+Purpose: Actively fights "Cluster Fragmentation." It identifies nodes that are underutilized (e.g., running at 10%) and moves their pods to other nodes so the empty server can be terminated.
+How it works: The system continuously simulates "Tetris" with your pods. If it finds a way to fit the workloads of 3 nodes onto 2 nodes, it triggers the migration.
+Controls & Configuration:
+Aggressiveness Slider: [ Conservative ---|--- Balanced ---|--- Aggressive ]
+Conservative:
+Threshold: Only considers a node for deletion if it is < 20% utilized.
+Behavior: Very stable. Rarely moves pods. Savings are moderate.
+Balanced (Default):
+Threshold: Considers deletion if < 50% utilized AND moving pods costs less than the node.
+Behavior: Good mix of cost savings and stability.
+Aggressive:
+Threshold: Considers deletion if < 80% utilized. It will actively replace expensive nodes (e.g., c5.2xlarge) with cheaper, smaller nodes (e.g., c5.xlarge) continuously.
+Behavior: Maximum savings (up to 70%), but causes frequent pod restarts/rescheduling.
+Consolidation Method:
+🔘 Delete Empty: Only deletes nodes that have become completely empty naturally. Zero risk.
+🔘 Replace & Move: Actively evicts pods to force a node to become empty.
+Stabilization Window (Grace Period):
+Input: Number (Minutes) (e.g., 10).
+Impact: A node must remain "eligible for deletion" for this many minutes before the action is taken.
+Why use it? Prevents "Flapping"—where a node is deleted, and 1 minute later a new pod requests it back. Increasing this value increases stability but decreases savings speed.
+
+Card 3: Smart Hibernation Schedule
+Purpose: To reduce costs by 90%+ on non-production clusters by shutting them down completely when no engineers are working.
+How it works: It scales the Auto Scaling Group (ASG) minimum and maximum counts to 0 during "Sleep" hours and restores them to original values during "Wake" hours.
+Controls & Configuration:
+Timezone Selector:
+UI: Dropdown (e.g., (UTC-05:00) America/New_York).
+Impact: Aligns the scheduler with the team's working hours.
+Visual Weekly Planner:
+UI: A grid representing 24 hours x 7 days.
+Action: Click-and-drag to paint blocks.
+🟩 Green (Active): Cluster runs normally. Node count is determined by Autoscaler.
+⬜ Grey (Hibernating): Cluster forces 0 nodes. All pods are effectively paused (stateful data persists on EBS volumes, but compute stops).
+Excluded Resources:
+UI: Multi-select box for Tags or Namespaces.
+Configuration: "Keep running if tag env=critical exists."
+Impact: Allows specific maintenance pods (like backup jobs or security agents) to keep a single node running even during hibernation.
+Manual Override:
+UI: Button [ Wake Up for 2 Hours ].
+Use Case: If a developer needs to deploy a hotfix on a Saturday night (during hibernation), this button temporarily overrides the schedule without needing to edit the complex calendar.
+
+
+
+🔵 Tab 2: Workload Layer (Pod Tuning)
+This tab focuses on the Application Layer. While Tab 1 ensures you have the right servers, this tab ensures the applications running on them are efficient, correctly sized, and placed in the safest zones.
+Card 1: Smart Pod Rightsizing (Vertical Pod Autoscaling)
+Purpose: Automatically detects and fixes "Over-Provisioning"—where developers request 4 vCPUs for a container that actually uses only 0.2 vCPU.
+How it works: The AI analyzes historical Prometheus metrics (CPU/RAM usage over the last 14 days). It calculates the "Real Usage" (usually p95 or p99 percentile) and recommends new resources.requests and resources.limits values.
+Controls & Configuration:
+Operating Mode:
+🔘 Off: The Rightsizer is completely disabled.
+🔘 Recommendations Only (Read-Only):
+Behavior: The dashboard will show a "Gold Bar" indicating potential savings (e.g., "You can save $500/mo by resizing").
+Action: It generates a diff report but never touches the Kubernetes API.
+Use Case: Best for day-1 onboarding or strict change-control environments.
+🔘 Automatic Apply (Active):
+Behavior: The system proactively patches the Kubernetes Deployment or StatefulSet manifests with the new, lower values.
+Action: This triggers a "Rolling Update" of the pods to apply the new sizing.
+Use Case: Best for Development, Staging, or stateless Production microservices.
+Safety Buffer (Headroom):
+Input: Slider [ 10% -----|----- 50% ] (Default: 20%).
+Configuration: "Add this much buffer on top of actual p95 usage."
+How it works: If a pod uses 100MB RAM peak, and buffer is 20%, the system sets the limit to 120MB.
+Impact: Higher buffer = Lower risk of "OOM Kill" (Out of Memory crashes) but Lower financial savings.
+Severity Threshold:
+Input: Dropdown (e.g., "Only apply if savings > $10/month").
+Impact: Prevents the system from restarting pods just to save 2 cents.
+
+Card 2: Spot Affinity & Deployment Rules
+Purpose: Defines the rules for where specific workloads are allowed to physically land in the cluster. It acts as a policy engine for Kubernetes Scheduling.
+How it works: It applies nodeAffinity, nodeSelector, and tolerations to pods automatically via a Mutating Webhook or by patching deployments.
+Controls & Configuration:
+Spot Preference Strategy:
+🔘 Force Spot (Hard Constraint):
+Technical: Adds nodeSelector: lifecycle=spot.
+Behavior: Pods will ONLY run on Spot instances. If no Spot is available, the pod remains in Pending state.
+Use Case: CI/CD runners, Batch jobs, Development environments.
+🔘 Prefer Spot (Soft Constraint):
+Technical: Adds preferredDuringSchedulingIgnoredDuringExecution affinity.
+Behavior: Kubernetes tries to find a Spot node first. If none exist (or Spot is sold out), it silently falls back to an On-Demand node.
+Use Case: Production microservices, Web servers.
+Burstable Instance Handling:
+Control: [ Checkbox ] "Block Burstable Instances (t3/t4g/t3a)".
+Configuration: Adds a constraint to strictly avoid the t instance family.
+Why use it? Burstable instances use "CPU Credits". If a production app exhausts credits, performance degrades significantly. Checking this ensures consistent performance by forcing use of m (General) or c (Compute) families.
+Availability Zone (AZ) Spread:
+Control: [ Checkbox ] "Enforce Multi-AZ High Availability".
+Behavior: Adds topologySpreadConstraints to ensure that if you run 3 replicas of an app, they never land in the same Availability Zone.
+Impact: Increases resilience against AWS Zone failures.
+
+Card 3: Governance & Exemptions
+Purpose: A "Safety Net" to prevent the Optimizer from touching critical system components or stateful databases that are sensitive to restarts.
+How it works: Any resource matching these rules is completely ignored by the DiscoveryWorker and OptimizerTask.
+Controls & Configuration:
+Namespace Exclusion List:
+UI: Multi-select Search Box (e.g., kube-system, monitoring, payment-gateway).
+Configuration: "Never evict, resize, or move pods in these namespaces."
+Impact: Essential for system stability. For example, moving coredns or aws-node (CNI) can cause network outages. These should always be excluded.
+Label Selectors:
+UI: Key-Value Input pairs (e.g., karpenter.sh/do-not-evict = true).
+Configuration: Allows granular exclusion of specific deployments within a non-excluded namespace.
+Use Case: You want to optimize the default namespace, but skip the single legacy database pod running there.
+Behavior on Exemption:
+The dashboard will mark these resources as "Unmanaged".
+Their costs are still tracked in "Total Spend", but they show 0 "Potential Savings" because the system is forbidden from acting on them.
+
+
+3. Visual Feedback & UX
+To make this feel like a modern SaaS:
++"Estimated Impact" Badge:
+On the top right of every card, a small calculator icon appears.
+Example: If the user turns Bin Packing to "Aggressive", the badge updates: "Potential Savings: +$150/mo".
+Unsaved Changes Bar:
+If the user toggles a setting, a sticky bar appears at the bottom: "You have unsaved changes. [Reset] [Save Policy]".
+Audit Trail:
+A small text link at the bottom: "Last updated by Admin 2 hours ago".
+4. Database Integration
+These settings are stored in a cluster_policies table (JSONB column), linked to the specific AWS Account/Cluster ID. The backend OptimizerTask reads this configuration before running any logic.
+
+Here is the comprehensive feature description for the dedicated Cluster Hibernation module.
+This design elevates Hibernation from a simple setting to a full-featured "Cost Control Center," giving users granular control over when their infrastructure runs and how much they save.
+
+💤 Feature: Smart Cluster Hibernation Manager
+Location: Sidebar Menu → Cluster Hibernation
+This dedicated module automates the startup and shutdown of cluster resources. By treating non-production environments like office lights (turning them off when no one is home), this feature delivers the highest ROI of any tool in the platform, capable of reducing monthly bills by ~65%.
+1. The "Command Center" Header
+The top section provides instant visibility and emergency control.
+Live Status Indicator:
+Visual: A large pulsing badge.
+🟢 ACTIVE: "Cluster is Running. Next sleep scheduled for Friday 8:00 PM."
+💤 HIBERNATING: "Cluster is Sleeping. Estimated savings rate: $12.50/hour."
+Countdown: "Time until wake up: 08h 12m."
+Manual Override (The "Panic Button"):
+Button: [ ⚡ Wake Up Now ] or [ 🛌 Hibernate Now ].
+Smart Duration: Clicking "Wake Up" opens a quick modal: "Keep awake for: [ 1 Hour | 4 Hours | Until Monday ]".
+Use Case: A developer needs to deploy a hotfix at 2:00 AM on a Saturday. They don't need to edit the schedule; they just hit this button.
+Savings Ticker:
+Metric: "This Month's Savings: $4,250.00" (Calculated by comparing actual uptime vs. 24/7 baseline).
+
+2. The Interactive Weekly Scheduler (Recurring Routine)
+This serves as the "Base Schedule" that repeats every week.
+UI Component: A highly responsive 24-Hour x 7-Day Grid.
+Interaction: Users click and drag efficiently to "paint" time blocks.
+Color Coding:
+🟩 Green (Active): Cluster runs at normal capacity.
+⬜ Grey (Sleep): Auto Scaling Groups (ASGs) are set to 0.
+🟨 Yellow (Ramp Up): The "Warm-up" period (see below).
+Smart Feature: "Soft Start" (Pre-Warming):
+Control: [ Checkbox ] "Enable 30-minute Pre-warm".
+Logic: If work starts at 9:00 AM, the system actually starts booting nodes at 8:30 AM.
+Benefit: Prevents the "Monday Morning Lag" where developers wait 15 minutes for pods to schedule. The cluster is ready before they login.
+Global Timezone Sync:
+Dropdown: Selects the cluster's operating region (e.g., America/New_York).
+Visual Aid: Shows "Your Local Time" vs "Cluster Time" to prevent scheduling errors.
+
+3. The Annual Calendar (Holidays & Exceptions)
+A standard calendar view to handle irregularities without breaking the weekly routine.
+UI Component: A scrolling Monthly Calendar (Jan, Feb, Mar...).
+One-Click Holidays:
+Feature: [ Import National Holidays ] button.
+Action: Automatically marks days like "Christmas" or "Thanksgiving" as Force Sleep (Grey).
+Custom Overrides:
+Interaction: Click any specific date (e.g., Nov 15th).
+Context Menu:
+Set as Holiday (Sleep 24h)
+Set as Sprint Day (Active 24h) – Useful for "Hackathons" or "Black Friday" where dev clusters must stay up.
+Persistence: These overrides apply only to the specific date and do not alter the recurring weekly grid.
+
+4. Advanced Configuration & Rules
+Fine-tune exactly what happens when the cluster sleeps.
+Targeting Scope (The "Blast Radius"):
+Options:
+🔘 Full Hibernation: Scales ALL worker node groups to 0. (Cheapest).
+🔘 Selective Hibernation: Keep specific Node Groups running.
+List: [x] worker-spot, [ ] worker-databases, [x] worker-gpu.
+Critical Namespace Protection (Allow-List):
+UI: Multi-select search box.
+Logic: "If a node is running pods from monitoring or vault, DO NOT terminate it."
+Benefit: Ensures your logging pipelines and security tools remain online 24/7 while the expensive application nodes sleep.
+Notification Integration:
+Trigger: "Send alert 30 minutes before hibernation."
+Channel: Slack Webhook / Email.
+Message: "⚠️ Dev-Cluster-01 is going to sleep in 30 mins. Save your work! [Click here to Snooze]".
+
+5. Technical Implementation Notes (Backend)
+State Management: The backend uses a cron job (via APScheduler) running every minute to check the hibernation_schedules table.
+Execution: It uses the AWS autoscaling:UpdateAutoScalingGroup API to change MinSize and DesiredCapacity.
+Data Preservation: It does NOT delete EBS volumes (unless configured). Stateful data persists; only the compute billing stops.
+
+
+📜 Feature: Audit Logs & Compliance Center
+Location: Sidebar Menu → Audit Logs
+This section acts as the "Black Box Recorder" for your entire infrastructure. Every single action taken by a user (e.g., "Manual Scale Up") or by the AI System (e.g., "Spot Instance Replacement") is immutably recorded here.
+1. The Audit Trail (The "Single Source of Truth")
+The main view is a dense, information-rich table designed for security officers and DevOps leads.
+The Data Grid:
+Timestamp: Precision to the millisecond (e.g., Oct 24, 14:32:01.455 UTC).
+Actor (Who): Displays the profile picture and name of the user (e.g., "Alice Admin") OR the system component (e.g., "🤖 Autoscaler Bot").
+Event (What): A clear, human-readable summary (e.g., "Modified Hibernation Schedule").
+Target (Where): The specific resource affected (e.g., Cluster prod-us-east-1 / Node i-0123456789abcdef).
+Outcome: Status badge: 🟢 Success, 🔴 Failed, or 🟡 Denied (Permission Error).
+Deep Dive Drawer:
+Interaction: Clicking any row slides out a "Details Panel."
+"Before & After" Diff: Visualizes exactly what changed.
+Example: "Changed Max Nodes from 10 → 15."
+Metadata: Shows the Source IP Address, User Agent (Browser), and Request ID for forensic analysis.
+
+2. Export & Reporting (The "Auditor's Friend")
+This section allows users to extract data for external compliance audits (SOC2, ISO 27001, HIPAA).
+Export Controls:
+Format Selection: Dropdown for CSV (Excel analysis) or JSON (SIEM ingestion).
+Time Range: "Last 30 Days", "Last Quarter", or "Custom Range".
+Action: A prominent [ ⬇️ Download Audit Report ] button.
+Immutable Checksums (Security Feature):
+When a log file is downloaded, the system generates a SHA-256 Checksum.
+Purpose: Prove to auditors that the logs have not been tampered with since they were generated.
+
+3. Compliance Settings & Retention
+A "Settings" tab within this page allows admins to configure governance rules.
+Data Retention Policy:
+Slider: [ 30 Days ----|---- 1 Year ----|---- Indefinite ].
+Cost Warning: "Retaining logs for > 1 year may incur additional storage fees."
+SIEM Integration (Enterprise):
+Feature: "Stream logs to external destination."
+Configuration: Input fields for Datadog API Key, Splunk HEC URL, or AWS S3 Bucket.
+Benefit: Allows the client to view these logs in their own centralized security tools.
+
+🛠️ Technical Implementation Requirements
+To make this work, you need to add these backend components:
+New Database Model (AuditLog): You need a new table in backend/database/models.py:
+Python
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+    id = Column(UUID, primary_key=True, default=uuid.uuid4)
+    account_id = Column(UUID, ForeignKey("accounts.id"))
+    actor_id = Column(UUID, ForeignKey("users.id")) # Nullable (if system action)
+    actor_type = Column(String) # "user" or "system"
+    action = Column(String)     # "create", "update", "delete"
+    resource_type = Column(String) # "node_template", "schedule", "instance"
+    details = Column(JSONB)     # Stores the diff { "old": 10, "new": 15 }
+    ip_address = Column(String)
+    status = Column(String)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+Middleware Hook: Instead of writing db.add(log) in every single function, create a FastAPI Middleware or a Python Decorator (@log_activity) that automatically captures requests to sensitive endpoints (like POST /templates) and saves the log in the background.
+
+Feature: Multi-Cluster Command Center
+Location: Sidebar Menu → Clusters
+This module acts as the central inventory and control plane for all Kubernetes infrastructure. It is designed to move beyond simple listing, providing a "Single Pane of Glass" for health, cost, and configuration management across hundreds of clusters, regions, and accounts.
+
+1. The Cluster Registry (Main Landing View)
+The primary interface is a high-density, interactive data grid designed for clarity and quick decision-making.
+A. Global Status Bar (The "Heads Up" Display)
+Located at the very top, offering an aggregate view of the entire organization.
+Total Managed Clusters: (e.g., 45)
+Total vCPU / Memory: (e.g., 12,400 vCPU / 48 TB RAM)
+Global Efficiency Score: An aggregated grade (A-F) across all infrastructure.
+Monthly Run Rate: Total projected spend for all clusters combined.
+Critical Alerts: A ticker showing urgent issues (e.g., "3 Clusters have API High Latency").
+B. Smart Filter & Search
+Unified Search: Instantly filters by Cluster Name, ID, Tags, or Region.
+Quick Filters (Pills): One-click filtering for:
+Prod vs Dev environments.
+Healthy vs Degraded status.
+EKS (AWS) vs GKE (Google) vs AKS (Azure) (Future-proofing).
+High Cost (Top 10% spenders).
+C. The Cluster Data Grid
+The core table allows sorting by any column.
+Column
+Visual Element
+Interaction & Detail
+Cluster Identity
+Name, Provider Icon (AWS/GCP), and Environment Tag (Prod/Staging).
+Clicking the name opens the Cluster Detail Dashboard.
+Region
+Flag icon + Region Code (e.g., 🇺🇸 us-east-1).
+Hovering displays the specific Availability Zones used.
+K8s Version
+Version Number (e.g., 1.29).
+Smart Badge: Visual warning if the version is End-of-Life (EOL) or if an upgrade is available.
+Fleet Size
+Node Count / Pod Count.
+Sparkline Graph: A mini line chart showing scaling trends (up/down) over the last 24h.
+Financials
+Monthly Cost + "% Savings" achieved.
+Trend Arrow: ⬆️ or ⬇️ indicating if costs are rising or falling compared to last week.
+Health Score
+Circular Gauge (0-100%).
+Factors in Control Plane latency, Error rates, and Agent heartbeat.
+Compliance
+Shield Icon.
+🟢 = CIS Compliant, 🔴 = Policy Violations Detected.
+Actions
+"Manage" Button + Context Menu.
+Quick access to Settings, Logs, or Remote Console.
+
+D. Bulk Actions Toolbar
+Appears when one or more rows are selected:
+Compare Clusters: Opens a side-by-side view to analyze config differences between selected clusters.
+Apply Policy: Pushes a "Node Template" or "Hibernation Schedule" to multiple clusters simultaneously.
+Upgrade Agent: Batch updates the optimization agent on all selected clusters.
+
+2. The "Add Cluster" Wizard (Onboarding Experience)
+Trigger: [ + Connect Cluster ] Button.
+Design: A guided, step-by-step modal flow with validation at every stage.
+Step 1: Connection Method
+Option A: Auto-Discovery (Recommended): Connects via Cloud Provider API to list all existing clusters.
+Option B: Manual Kubeconfig: Upload a kubeconfig file for restricted environments.
+Option C: Terraform/IaC: Generates a code snippet to add the agent via Infrastructure-as-Code.
+Step 2: Discovery & Selection
+Region Scanner: Users select target regions. The system scans and presents a list of "Unmanaged Clusters".
+Metadata Import: The system automatically fetches tags (e.g., Team, Owner) from the cloud provider to pre-fill cluster details.
+Step 3: Agent Installation Strategy
+Helm Chart: Generates a pre-signed, copy-pasteable Helm command.
+Direct Manifest: Generates a kubectl apply -f ... URL.
+Pre-Flight Check: A proactive feature that runs a script to verify the user has sufficient IAM permissions before attempting installation.
+Step 4: Connection Verification
+Real-Time Ping: A visual "Sonar" animation waiting for the first heartbeat from the agent.
+Success Celebration: Once connected, the modal displays "Success! 14 Nodes Discovered" and offers to "Configure Optimization Now" or "Go to Dashboard".
+
+3. Cluster Detail View (The Deep Dive)
+Trigger: Clicking a specific cluster name.
+Design: A dedicated dashboard page for that specific cluster.
+Header Area
+Breadcrumbs: Clusters > production-us-east-1.
+Sync Status: "Last synced: 12s ago" with a [Sync Now] button.
+Maintenance Mode Toggle: A master switch to pause all automated actions (useful during upgrades).
+Tab 1: Overview & Health
+Topology Map: A visual graph showing Node Groups and the nodes inside them, color-coded by Spot/On-Demand.
+Cost Burndown: A graph showing actual spend vs. budget.
+Alert Feed: List of active warnings (e.g., "Spot Instance Reclaim Risk High in zone 1a").
+Tab 2: Node Groups & Capacity
+Inventory Table: Lists every Auto Scaling Group (ASG) or Karpenter Provisioner.
+Features:
+Toggle "Spot Mode" per group.
+Set Min/Max node limits directly from the UI.
+View "Spot Readiness" score for the workloads running on these nodes.
+Tab 3: Workloads & Namespaces
+Efficiency Report: Lists namespaces by cost.
+Insight: "Namespace analytics is requesting 100 CPUs but using 12. Recommendation: Right-size."
+Top Spenders: A breakdown of the most expensive Deployments or StatefulSets.
+Tab 4: Compliance & Drift
+Drift Detection: Compares current cluster state against the defined "Node Templates". Alerts if someone manually launched a prohibited instance type.
+Security Scan: Results of automated CIS Benchmark checks (e.g., "Root access enabled on 3 pods").

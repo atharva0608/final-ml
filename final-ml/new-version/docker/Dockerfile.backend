@@ -1,0 +1,68 @@
+# Multi-stage build for Spot Optimizer Backend
+# Stage 1: Builder - Install dependencies
+FROM python:3.11-slim AS builder
+
+# Set working directory
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    libpq-dev \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements file
+COPY requirements.txt .
+
+# Install Python dependencies
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
+
+# Stage 2: Runtime - Create minimal runtime image
+FROM python:3.11-slim
+
+# Set working directory
+WORKDIR /app
+
+# Install runtime dependencies only
+RUN apt-get update && apt-get install -y \
+    libpq5 \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy installed packages from builder
+COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
+COPY --from=builder /usr/local/bin /usr/local/bin
+
+# Create non-root user
+RUN groupadd -r spotoptimizer && \
+    useradd -r -g spotoptimizer -u 1000 spotoptimizer && \
+    chown -R spotoptimizer:spotoptimizer /app
+
+# Copy backend source code
+COPY --chown=spotoptimizer:spotoptimizer backend/ /app/backend/
+COPY --chown=spotoptimizer:spotoptimizer scripts/ /app/scripts/
+COPY --chown=spotoptimizer:spotoptimizer config/ /app/config/
+
+# Copy alembic configuration and migrations
+COPY --chown=spotoptimizer:spotoptimizer alembic.ini /app/alembic.ini
+COPY --chown=spotoptimizer:spotoptimizer migrations/ /app/migrations/
+
+# Switch to non-root user
+USER spotoptimizer
+
+# Expose port
+EXPOSE 8000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+# Environment variables (can be overridden)
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+
+# Entrypoint
+CMD ["uvicorn", "backend.core.api_gateway:app", "--host", "0.0.0.0", "--port", "8000"]
