@@ -54,3 +54,5 @@
 | **2026-01-09** | **Frontend / RightSizing** | `Critical Fix` | Updated `RightSizing.jsx` to fetch real recommendations from `/optimization/rightsizing/ALL`. Fixed syntax errors. |
 | **2026-01-09** | **Frontend / Build** | `Critical Fix` | Fixed `Attempted import error: 'api' is not exported` by adding named export in `services/api.js`. |
 | **2026-01-09** | **Backend / Workers** | `Critical Fix` | Fixed Worker Crash: Renamed `celery_app` to `app` in `workers/app.py` to match `__init__.py` export. Added `include` for task modules. |
+| **2026-01-09** | **Backend / API** | `Critical Fix` | Fixed `ImportError` in `health_routes.py` by replacing missing `get_current_active_superuser` with `require_super_admin`. |
+| **2026-01-09** | **Backend / Health** | `Critical Fix` | Fixed `ModuleNotFoundError` in `health_service.py` by correcting Celery app import to `from backend.workers import app`. |
