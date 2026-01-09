@@ -12,4 +12,8 @@ celery_app.conf.beat_schedule = {
         'task': 'backend.workers.tasks.discovery.run_discovery',
         'schedule': 300.0,
     },
+    'pricing-every-hour': {
+        'task': 'backend.workers.tasks.pricing.fetch_aws_pricing',
+        'schedule': 3600.0,
+    },
 }

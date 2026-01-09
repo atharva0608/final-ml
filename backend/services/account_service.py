@@ -24,9 +24,14 @@ class AccountService:
     def link_account(self, user_id: int, data: AccountCreate) -> Account:
         self.verify_connection(data.role_arn, data.external_id)
         
+        # Check if account already exists
+        existing = self.db.query(Account).filter(Account.aws_account_id == data.account_id).first()
+        if existing:
+            raise HTTPException(400, "Account already linked")
+
         account = Account(
             name=data.name,
-            account_id=data.account_id,
+            aws_account_id=data.account_id,
             role_arn=data.role_arn,
             external_id=data.external_id,
             status="active"
