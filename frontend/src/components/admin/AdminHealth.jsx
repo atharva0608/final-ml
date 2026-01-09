@@ -15,6 +15,7 @@ import toast from 'react-hot-toast';
 import { formatNumber } from '../../utils/formatters';
 import { api } from '../../services/api';
 
+
 const AdminHealth = () => {
   // ... state
 

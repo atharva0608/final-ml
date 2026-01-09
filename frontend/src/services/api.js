@@ -9,6 +9,8 @@ const api = axios.create({
     },
 });
 
+export { api };
+
 // Add a request interceptor
 api.interceptors.request.use(
     (config) => {
