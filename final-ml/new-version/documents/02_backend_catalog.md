@@ -137,6 +137,40 @@ These components run on the Kubernetes nodes, separate from the main backend con
 | **BE-INF::Docker::Compose** | `docker/docker-compose.yml` | Infra | Local orchestration for Backend, DB, Redis, and Worker. | `Docker` |
 | **BE-INF::Docker::Nginx** | `docker/nginx.conf` | Infra | Nginx reverse proxy configuration. | `Nginx` |
 
+### 6. Documentation Components
+These are tracking codes for the documentation suite.
+
+| Component ID | File Path | Category | Description |
+| :--- | :--- | :--- | :--- |
+| **DOC-EXT::Arch::Backend** | `docs/backend_architecture.md` | Arch | Backend architecture diagram/docs. |
+| **DOC-EXT::Arch::Frontend** | `docs/frontend.md` | Arch | Frontend structure docs. |
+| **DOC-EXT::Spec::API** | `docs/api.md` | Spec | API Endpoint definitions. |
+| **DOC-EXT::Spec::Schema** | `docs/schema.md` | Spec | Database schema definitions. |
+| **DOC-EXT::Spec::Client** | `docs/CLIENT_DASHBOARD_SPEC.md` | Spec | Requirements for Dashboard. |
+| **DOC-EXT::Plan::Impl** | `docs/IMPLEMENTATION_PLAN.md` | Planning | Implementation roadmap. |
+| **DOC-EXT::Plan::Status** | `IMPLEMENTATION_STATUS.md` | Planning | Status tracker (Root dir). |
+| **DOC-EXT::Context::Prob** | `docs/problemsolved.md` | Context | Problem statement. |
+| **DOC-EXT::Context::Scen** | `docs/scenario.md` | Context | Usage scenario. |
+| **DOC-INT::BE::Root** | `backend/INFO.md` | Internal | Backend overview. |
+| **DOC-INT::BE::API** | `backend/api/INFO.md` | Internal | API conventions. |
+| **DOC-INT::BE::Core** | `backend/core/INFO.md` | Internal | Core utilities docs. |
+| **DOC-INT::BE::Models** | `backend/models/INFO.md` | Internal | DB Models docs. |
+| **DOC-INT::BE::Services** | `backend/services/INFO.md` | Internal | Service layer docs. |
+| **DOC-INT::BE::Workers** | `backend/workers/INFO.md` | Internal | Celery worker docs. |
+| **DOC-INT::AGT::Root** | `agent/INFO.md` | Internal | Agent overview. |
+| **DOC-INT::FE::Root** | `frontend/INFO.md` | Internal | Frontend overview. |
+
+### 7. Miscellaneous System Components
+
+| Component ID | File Path | Type | Description |
+| :--- | :--- | :--- | :--- |
+| **BE-PKG::Services::Init** | `backend/services/__init__.py` | Package | Python package init. |
+| **BE-PKG::Core::Init** | `backend/core/__init__.py` | Package | Python package init. |
+| **BE-PKG::Workers::Init** | `backend/workers/__init__.py` | Package | Python package init. |
+| **AGT-CFG::System::Reqs** | `agent/requirements.txt` | Config | Agent-specific python requirements. |
+| **BE-INF::Docker::Front** | `docker/Dockerfile.frontend` | Infra | Dockerfile for React Frontend. |
+| **BE-AST::Data::LoginFix** | `login_response.json` | Asset | JSON fixture for login testing. |
+
 ## Orphaned / Zombie Components
 These components exist in the codebase but appear to be unused or unreferenced by the main application logic.
 

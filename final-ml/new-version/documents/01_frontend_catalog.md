@@ -2,31 +2,44 @@
 
 | ID (Unique Tracking Code) | File Path | Type | Function / Feature Description | State / Props Used | Dependencies (Imports) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **FE-CMP::AdminDashboard::Main** | `src/components/admin/AdminDashboard.jsx` | Page | Main "Command Center" view. Shows global KPIs, Savings Chart, and Live Activity Feed. | `kpiStats`, `activityFeed` | `StatsCard`, `Card`, `recharts` |
-| **FE-CMP::AdminClients::Main** | `src/components/admin/AdminClients.jsx` | Page | Client Management Interface. Lists clients with search, filter, and actions. | `clients`, `loading`, `searchQuery`, `statusFilter` | `adminAPI`, `Card`, `Button`, `Table`, `Badge` |
-| **FE-CMP::AdminClients::DetailModal** | `src/components/admin/AdminClients.jsx` | Sub-CMP | Modal showing deep profile stats for a client (Resource Usage, Cost). | `selectedClient`, `showDetailModal` | `Card`, `Badge` |
-| **FE-CMP::AdminClients::PasswordReset** | `src/components/admin/AdminClients.jsx` | Sub-CMP | Modal to force reset a client's password. | `showResetPasswordModal`, `newPassword` | `adminAPI.resetPassword` |
-| **FE-CMP::AdminBilling::Main** | `src/components/admin/AdminBilling.jsx` | Page | Billing overview and Plan configuration. Currently uses mock data. | None (Static) | `Card`, `Button`, `Icons` |
-| **FE-CMP::AdminConfig::Main** | `src/components/admin/AdminConfig.jsx` | Page | System Configuration. Controls "Safe Mode" and Global Risk Parameters. | `safeMode`, `agentVersion` | `Card`, `Button`, `ToggleSwitch` |
-| **FE-CMP::AdminHealth::Main** | `src/components/admin/AdminHealth.jsx` | Page | Real-time system health monitoring (API, DB, Redis, Queue). Auto-refreshes. | `health`, `autoRefresh`, `loading` | `Card`, `Badge`, `Charts` |
-| **FE-CMP::AdminLab::Main** | `src/components/admin/AdminLab.jsx` | Page | AI Model Registry and Risk Map visualization. | None (Static List) | `Card`, `Button` |
-| **FE-CMP::AdminOrganizations::Main** | `src/components/admin/AdminOrganizations.jsx` | Page | Organization Management. List, Search, and Filter Organizations. | `organizations`, `loading`, `searchQuery` | `adminAPI`, `FiBriefcase` |
-| **FE-CMP::AdminOrganizations::DetailModal** | `src/components/admin/AdminOrganizations.jsx` | Sub-CMP | Modal showing organization statistics, owner info, and clusters. | `selectedOrg` | `Modal Structure` |
-| **FE-CMP::Login::Main** | `src/components/auth/Login.jsx` | Page | User Login Form. Handles authentication and error display. | `email`, `password`, `loading`, `errors` | `useAuth`, `Input`, `Button` |
-| **FE-CMP::Signup::Main** | `src/components/auth/Signup.jsx` | Page | User Registration Form. Includes Organization Name and password validation. | `email`, `pkgName`, `password` | `useAuth`, `Input`, `Button` |
-| **FE-CMP::Onboarding::Welcome** | `src/components/onboarding/WelcomeStep.jsx` | Sub-CMP | Step 0 of Onboarding. Marketing/Intro screen. | None (Stateless) | `Button`, `FramerMotion` |
-| **FE-CMP::Onboarding::Connect** | `src/components/onboarding/ConnectStep.jsx` | Sub-CMP | Step 1 of Onboarding. AWS CloudFormation Launch & Verification. | `awsLink`, `roleArn`, `verifying` | `onboardingAPI`, `Button` |
-| **FE-CMP::Onboarding::Verify** | `src/components/onboarding/VerifyStep.jsx` | Sub-CMP | Intermediate loading state for verification. Auto-advances. | None | `useEffect`, `setTimeout` |
-| **FE-CMP::Onboarding::Success** | `src/components/onboarding/SuccessStep.jsx` | Sub-CMP | Step 2 (Final). Success message and redirect to dashboard. | None | `Confetti`, `Button` |
-| **FE-CMP::ClusterList::Main** | `src/components/clusters/ClusterList.jsx` | Page | Displays all K8s clusters. KPI cards for cost/nodes. Connect button. | `clusters`, `kpiData`, `loading` | `useClusterStore`, `Recharts` |
-| **FE-CMP::ClusterDetails::Main** | `src/components/clusters/ClusterDetails.jsx` | Sub-CMP | Detailed view of a single cluster. Metrics, Policy, Schedule. | `cluster`, `metrics`, `policy` | `clusterAPI`, `metricsAPI` |
-| **FE-CMP::ClusterConnect::Modal** | `src/components/clusters/ClusterConnectModal.jsx` | Sub-CMP | Wizard to connect a new cluster (Agent script or AWS IAM). | `step`, `provider`, `roleArn` | `clusterAPI`, `Toast` |
-| **FE-CMP::Settings::Main** | `src/components/settings/Settings.jsx` | Page | Settings Hub. Tab navigation for Account, Team, Cloud, Billing. | `activeTab`, `canManageTeam` | `AccountSettings`, `CloudIntegrations`, `TeamManagement` |
-| **FE-CMP::Settings::Account** | `src/components/settings/AccountSettings.jsx` | Sub-CMP | Profile management, Password change, Preferences (Timezone, Alerts). | `passwordData`, `preferences` | `useAuthStore`, `authAPI` |
-| **FE-CMP::Settings::Cloud** | `src/components/settings/CloudIntegrations.jsx` | Sub-CMP | AWS Account Linkage. List, Add, Validate, Delete AWS Accounts. | `accounts`, `formData` | `accountAPI` |
-| **FE-CMP::Settings::Team** | `src/components/settings/TeamManagement.jsx` | Sub-CMP | User Management. List members, Invite users, Manage roles. | `members`, `inviteEmail` | `organizationAPI` |
-| **FE-CMP::TemplateList::Main** | `src/components/templates/TemplateList.jsx` | Page | Node Template Management. List, Create, Set Default, Delete. | `templates`, `showCreateModal` | `useTemplateStore`, `templateAPI` |
-| **FE-CMP::TemplateBuilder::Main** | `src/components/templates/TemplateBuilder.jsx` | Sub-CMP | Complex form builder for Node Templates (Compute, Storage, Network, K8s). | `formData`, `activeTab` | `Input`, `Select` |
-| **FE-LOGIC::Store::Main** | `src/store/useStore.js` | Store | Global State (Zustand). Auth, Clusters, Templates, Policies, Metrics, UI. | `useAuthStore`, `useClusterStore`, etc. | `zustand`, `persist` |
-| **FE-LOGIC::Hooks::useAuth** | `src/hooks/useAuth.js` | Hook | Auth Wrapper. Login, Signup, Logout, Token Management. | `user`, `isAuthenticated` | `useAuthStore`, `authAPI` |
-| **FE-LOGIC::Services::API** | `src/services/api.js`| Service | Central Axios instance and API method definitions. | `authAPI`, `clusterAPI`, etc. | `axios` |
+| **FE-APP::Main::Entry** | `frontend/src/index.js` | App | React application entry point. | `ReactDOM`, `App` | `react-dom` |
+| **FE-APP::Main::Root** | `frontend/src/App.js` | App | Main Router and Layout configuration. | `RouterProvider` | `react-router-dom` |
+| **FE-CFG::System::Pkg** | `frontend/package.json` | Config | NPM dependencies and scripts. | `N/A` | `N/A` |
+| **FE-CFG::System::Tailwind** | `frontend/tailwind.config.js` | Config | Tailwind CSS configuration. | `N/A` | `tailwindcss` |
+| **FE-CFG::System::PostCSS** | `frontend/postcss.config.js` | Config | PostCSS configuration. | `N/A` | `postcss` |
+| **FE-CFG::System::Env** | `frontend/.env.example` | Config | Frontend environment template. | `N/A` | `N/A` |
+| **FE-CMP::Auth::Login** | `frontend/src/components/auth/Login.jsx` | Page | User Login form. | `email`, `password` | `useAuth`, `Input`, `Button` |
+| **FE-CMP::Auth::Signup** | `frontend/src/components/auth/Signup.jsx` | Page | User Signup form. | `email`, `password` | `useAuth`, `Input`, `Button` |
+| **FE-CMP::Dash::Main** | `frontend/src/components/dashboard/Dashboard.jsx` | Page | Main KPI Dashboard. | `kpiStats` | `StatsCard`, `recharts` |
+| **FE-CMP::Layout::Main** | `frontend/src/components/layout/MainLayout.jsx` | Layout | Sidebar, Header, and Wrapper. | `children` | `Sidebar`, `Header` |
+| **FE-CMP::Cluster::List** | `frontend/src/components/clusters/ClusterList.jsx` | Page | List of K8s clusters. | `clusters` | `useClusterStore` |
+| **FE-CMP::Cluster::Detail** | `frontend/src/components/clusters/ClusterDetails.jsx` | Page | Cluster details view. | `cluster` | `clusterAPI` |
+| **FE-CMP::Cluster::Nodes** | `frontend/src/components/clusters/NodeList.jsx` | Component | Node list within a cluster. | `nodes` | `Table` |
+| **FE-CMP::Cluster::Connect** | `frontend/src/components/clusters/ClusterConnectModal.jsx` | Component | Modal to register new clusters. | `step` | `clusterAPI` |
+| **FE-CMP::Tpl::List** | `frontend/src/components/templates/TemplateList.jsx` | Page | Node Template management list. | `templates` | `templateAPI` |
+| **FE-CMP::Tpl::Builder** | `frontend/src/components/templates/TemplateBuilder.jsx` | Component | Form to create/edit templates. | `formData` | `Input`, `Select` |
+| **FE-CMP::Pol::Config** | `frontend/src/components/policies/PolicyConfig.jsx` | Page | Optimization policy settings. | `policy` | `policyAPI` |
+| **FE-CMP::Hiber::Sched** | `frontend/src/components/hibernation/HibernationSchedule.jsx` | Page | Hibernation scheduler UI. | `schedule` | `hibernationAPI` |
+| **FE-CMP::Lab::Main** | `frontend/src/components/lab/ExperimentLab.jsx` | Page | ML Experimentation dashboard. | `experiments` | `labAPI` |
+| **FE-CMP::Right::Main** | `frontend/src/components/right-sizing/RightSizing.jsx` | Page | Rightsizing recommendations. | `recommendations` | `Card` |
+| **FE-CMP::Audit::Log** | `frontend/src/components/audit/AuditLog.jsx` | Page | System Audit Log viewer. | `logs` | `auditAPI` |
+| **FE-CMP::Admin::Dash** | `frontend/src/components/admin/AdminDashboard.jsx` | Admin | Super Admin Overview. | `stats` | `adminAPI` |
+| **FE-CMP::Admin::Orgs** | `frontend/src/components/admin/AdminOrganizations.jsx` | Admin | Organization management table. | `orgs` | `adminAPI` |
+| **FE-CMP::Admin::Clients** | `frontend/src/components/admin/AdminClients.jsx` | Admin | Client management table. | `clients` | `adminAPI` |
+| **FE-CMP::Admin::Billing** | `frontend/src/components/admin/AdminBilling.jsx` | Admin | Billing and Cost view. | `billing` | `Card` |
+| **FE-CMP::Admin::Health** | `frontend/src/components/admin/AdminHealth.jsx` | Admin | System health status. | `health` | `useDashboard` |
+| **FE-CMP::Admin::Config** | `frontend/src/components/admin/AdminConfig.jsx` | Admin | Platform configuration. | `config` | `adminAPI` |
+| **FE-CMP::Set::Main** | `frontend/src/components/settings/Settings.jsx` | Page | User Settings wrapper. | `tab` | `AccountSettings`, `TeamManagement` |
+| **FE-CMP::Set::Account** | `frontend/src/components/settings/AccountSettings.jsx` | Component | User profile settings. | `userData` | `authAPI` |
+| **FE-CMP::Set::Teams** | `frontend/src/components/settings/TeamManagement.jsx` | Component | Team member management. | `members` | `organizationAPI` |
+| **FE-CMP::Set::Cloud** | `frontend/src/components/settings/CloudIntegrations.jsx` | Component | Cloud credentials management. | `accounts` | `accountAPI` |
+| **FE-LIB::UI::Button** | `frontend/src/components/shared/Button.jsx` | UI | Reusable Button. | `onClick` | `N/A` |
+| **FE-LIB::UI::Card** | `frontend/src/components/shared/Card.jsx` | UI | Reusable Card. | `children` | `N/A` |
+| **FE-LIB::UI::Input** | `frontend/src/components/shared/Input.jsx` | UI | Reusable Input. | `onChange` | `N/A` |
+| **FE-LIB::UI::Badge** | `frontend/src/components/shared/Badge.jsx` | UI | Status Badge. | `status` | `N/A` |
+| **FE-LIB::UI::StatsCard** | `frontend/src/components/shared/StatsCard.jsx` | UI | Dashboard Metric Card. | `title`, `value` | `N/A` |
+| **FE-HK::Auth::UseAuth** | `frontend/src/hooks/useAuth.js` | Hook | Authentication logic hook. | `user` | `authAPI` |
+| **FE-HK::Dash::UseDash** | `frontend/src/hooks/useDashboard.js` | Hook | Dashboard data fetching hook. | `data` | `metricsAPI` |
+| **FE-SVC::API::Client** | `frontend/src/services/api.js`| Service | Central Axios instance and API method definitions. | `axios` | `axios` |
+| **FE-STR::Store::Global** | `frontend/src/store/useStore.js` | Store | Global State (Zustand). | `state` | `zustand` |
+| **FE-UTL::Fmt::Format** | `frontend/src/utils/formatters.js` | Utility | Currency/Date formatters. | `value` | `Intl` |
