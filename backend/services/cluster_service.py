@@ -6,7 +6,24 @@ Business logic for cluster discovery, registration, and management
 import boto3
 from typing import List, Optional, Dict, Any
 
-# ... imports ...
+import uuid
+import logging
+from datetime import datetime, timedelta
+from sqlalchemy.orm import Session
+from sqlalchemy import and_, or_, desc
+from backend.models.account import Account, AccountStatus
+from backend.models.cluster import Cluster, ClusterStatus
+from backend.models.user import User
+from backend.models.instance import Instance
+from backend.schemas.cluster_schemas import (
+    ClusterCreate, ClusterUpdate, ClusterResponse, ClusterList, 
+    AWSConnectRequest, AgentInstallCommand, ClusterFilter
+)
+from backend.core.exceptions import (
+    ResourceNotFoundError, ResourceAlreadyExistsError, ValidationError
+)
+
+logger = logging.getLogger(__name__)
 
 
 class ClusterService:
