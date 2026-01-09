@@ -32,8 +32,12 @@ class ExperimentList(BaseModel):
     total: int
 
 class ExperimentFilter(BaseModel):
+    cluster_id: Optional[str] = None
     status: Optional[str] = None
     target_metric: Optional[str] = None
+    search: Optional[str] = None
+    page: int = 1
+    page_size: int = 50
 
 class VariantPerformance(BaseModel):
     model_id: str
