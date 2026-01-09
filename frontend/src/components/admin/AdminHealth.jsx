@@ -20,6 +20,7 @@ const AdminHealth = () => {
   const [health, setHealth] = useState(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [autoRefresh, setAutoRefresh] = useState(false);
 
   useEffect(() => {
     fetchHealth();
@@ -29,7 +30,7 @@ const AdminHealth = () => {
     if (!loading) setRefreshing(true);
 
     try {
-      const response = await api.get('/health/system');
+      const response = await api.get('/api/v1/health/system');
       setHealth(response.data);
     } catch (error) {
       console.error('Health check failed:', error);
