@@ -7,7 +7,7 @@ import toast from 'react-hot-toast';
 import EmptyState from '../shared/EmptyState';
 
 const RightSizing = () => {
-    const { clusters } = useClusterStore();
+    const { clusters, selectedCluster } = useClusterStore();
     const [loading, setLoading] = useState(true);
     const [data, setData] = useState(null);
     const [recommendations, setRecommendations] = useState([]);
