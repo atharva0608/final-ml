@@ -41,29 +41,22 @@ const AdminDashboard = () => {
 
   if (loading) return <div className="p-6 text-center">Loading dashboard...</div>;
 
-  if (!dashboardData) {
-    return (
-      <div className="space-y-6">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">Command Center</h1>
-          <p className="text-gray-600">Platform Overview & Live Pulse</p>
-        </div>
-        <Card className="p-8 text-center">
-          <FiActivity className="w-12 h-12 text-gray-400 mx-auto mb-4" />
-          <h3 className="text-lg font-semibold text-gray-700">Unable to Load Dashboard</h3>
-          <p className="text-gray-500 mt-2">Please check your connection or try again later.</p>
-        </Card>
-      </div>
-    );
-  }
-
-  const { stats, savings_chart, activity_feed } = dashboardData;
+  // Use real data if available, or show placeholder values
+  const stats = dashboardData?.stats || {
+    active_users: 0,
+    recent_signups: 0,
+    total_instances: 0,
+    active_clusters: 0,
+    total_savings: 0
+  };
+  const savings_chart = dashboardData?.savings_chart || [];
+  const activity_feed = dashboardData?.activity_feed || [];
 
   // Transform backend stats to UI format
   const kpiStats = [
-    { label: 'Total Active Clients', value: stats.active_users, change: `+${stats.recent_signups} this month`, icon: FiUsers, color: 'blue' },
-    { label: 'Total EC2 Managed', value: stats.total_instances, change: `${stats.active_clusters} clusters`, icon: FiServer, color: 'purple' },
-    { label: 'Total Savings Generated', value: `$${stats.total_savings.toLocaleString()}`, change: '+18%', icon: FiDollarSign, color: 'green' },
+    { label: 'Total Active Clients', value: stats.active_users || 0, change: `+${stats.recent_signups || 0} this month`, icon: FiUsers, color: 'blue' },
+    { label: 'Total EC2 Managed', value: stats.total_instances || 0, change: `${stats.active_clusters || 0} clusters`, icon: FiServer, color: 'purple' },
+    { label: 'Total Savings Generated', value: `$${(stats.total_savings || 0).toLocaleString()}`, change: '+18%', icon: FiDollarSign, color: 'green' },
     { label: 'Platform Revenue (MRR)', value: '$48.2k', change: '+5%', icon: FiTrendingUp, color: 'indigo' },
   ];
 

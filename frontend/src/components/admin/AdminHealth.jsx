@@ -38,20 +38,10 @@ const AdminHealth = () => {
     if (!loading) setRefreshing(true);
 
     try {
-      // REAL API CALL - no more mock data
-      const response = await fetch('/api/v1/health/system', {
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('access_token')}`,
-          'Content-Type': 'application/json'
-        }
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to fetch health data');
-      }
-
-      const data = await response.json();
-      setHealth(data);
+      // REAL API CALL - using healthAPI from api.js
+      const { healthAPI } = await import('../../services/api');
+      const response = await healthAPI.getSystemHealth();
+      setHealth(response.data);
     } catch (error) {
       console.error('Health check failed:', error);
       toast.error('Failed to fetch system health');

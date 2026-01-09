@@ -11,6 +11,7 @@ from backend.models.base import Base, generate_uuid
 class ClusterStatus(enum.Enum):
     """Cluster status enumeration"""
     PENDING = "pending"
+    DISCOVERED = "discovered"
     ACTIVE = "active"
     INACTIVE = "inactive"
     ERROR = "error"

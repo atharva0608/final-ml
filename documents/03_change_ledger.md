@@ -31,3 +31,6 @@
 | **2026-01-09** | **Backend / Workers** | `Feature` | Added Celery Beat schedule to `app.py`: discovery scan (5 min), pricing collector (10 min), optimization analysis (15 min). |
 | **2026-01-09** | **Backend / Services** | `Fix` | Updated `ClusterService.discover_clusters()` to trigger discovery worker task asynchronously and return existing clusters from DB instead of empty list. |
 | **2026-01-09** | **Backend / Core** | `Fix` | Fixed `action_executor.py`: Replaced wrong `app.` imports with `backend.`, implemented dynamic AMI lookup from existing instance instead of hardcoded `ami-12345678`. |
+| **2026-01-09** | **Backend / Models** | `Fix` | Added `DISCOVERED` value to `ClusterStatus` enum in `cluster.py` and migrated DB to include new enum value. |
+| **2026-01-09** | **Frontend / Admin** | `Fix` | Fixed `AdminHealth.jsx` to use `healthAPI` from `api.js` with correct base URL instead of relative fetch. |
+| **2026-01-09** | **Frontend / Admin** | `Improve` | Modified `AdminDashboard.jsx` and `AdminBilling.jsx` to show full layout with KPI cards even when API fails - data sections use graceful fallback values. |
