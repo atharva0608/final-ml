@@ -8,6 +8,8 @@
 | **FE-CFG::System::Tailwind** | `frontend/tailwind.config.js` | Config | Tailwind CSS configuration. | `N/A` | `tailwindcss` |
 | **FE-CFG::System::PostCSS** | `frontend/postcss.config.js` | Config | PostCSS configuration. | `N/A` | `postcss` |
 | **FE-CFG::System::Env** | `frontend/.env.example` | Config | Frontend environment template. | `N/A` | `N/A` |
+| **FE-ASST::Public::HTML** | `frontend/public/index.html` | Asset | Main HTML entry point. | `N/A` | `N/A` |
+| **FE-ASST::Public::Manifest** | `frontend/public/manifest.json` | Asset | PWA Manifest file. | `N/A` | `N/A` |
 | **FE-CMP::Auth::Login** | `frontend/src/components/auth/Login.jsx` | Page | User Login form. | `email`, `password` | `useAuth`, `Input`, `Button` |
 | **FE-CMP::Auth::Signup** | `frontend/src/components/auth/Signup.jsx` | Page | User Signup form. | `email`, `password` | `useAuth`, `Input`, `Button` |
 | **FE-CMP::Dash::Main** | `frontend/src/components/dashboard/Dashboard.jsx` | Page | Main KPI Dashboard (Backend Simplified: 70% savings assumption). | `kpiStats` | `StatsCard`, `recharts` |
@@ -26,7 +28,7 @@
 | **FE-CMP::Admin::Dash** | `frontend/src/components/admin/AdminDashboard.jsx` | Admin | Super Admin Overview. Fetches real stats/charts from adminAPI. | `stats`, `activityFeed` | `StatsCard`, `recharts` |
 | **FE-CMP::Admin::Orgs** | `frontend/src/components/admin/AdminOrganizations.jsx` | Admin | Organization management table. | `orgs` | `adminAPI` |
 | **FE-CMP::Admin::Clients** | `frontend/src/components/admin/AdminClients.jsx` | Admin | Client management table. | `clients` | `adminAPI` |
-| **FE-CMP::Admin::Billing** | `src/components/admin/AdminBilling.jsx` | Page | Billing overview and Plans (Backend Mocked Data). | `stats`, `plans` | `Card`, `Button`, `Icons` |
+| **FE-CMP::Admin::Billing** | `frontend/src/components/admin/AdminBilling.jsx` | Page | Billing overview and Plans (Backend Mocked Data). | `stats`, `plans` | `Card`, `Button`, `Icons` |
 | **FE-CMP::Admin::Health** | `frontend/src/components/admin/AdminHealth.jsx` | Admin | System health status. | `health` | `useDashboard` |
 | **FE-CMP::Admin::Config** | `frontend/src/components/admin/AdminConfig.jsx` | Admin | Platform configuration. | `config` | `adminAPI` |
 | **FE-CMP::Admin::Lab** | `frontend/src/components/admin/AdminLab.jsx` | Admin | Admin view for Lab experiments. | `experiments` | `labAPI` |
