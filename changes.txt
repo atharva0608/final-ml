@@ -1,0 +1,291 @@
+Here is the breakdown of the demo data found and the instructions/code to implement real data fetching with graceful "No Data" handling.
+
+### 1. Analysis of Hardcoded Data
+
+| Component | File | Hardcoded Data / Mock Logic | Real Source Required |
+| --- | --- | --- | --- |
+| **RightSizing** | `RightSizing.jsx` | `recommendations` array, `chartData` array, `summaryStats` | `RightSizingModule` (Backend) |
+| **Health** | `AdminHealth.jsx` | `mockHealth` object inside `fetchHealth` | `HealthService` (Backend) |
+| **Dashboard** | `Dashboard.jsx` | `activityFeed` (useEffect), `savingsProjectionData`, Cluster Map list | `AuditService`, `MetricsService`, `ClusterService` |
+| **Hibernation** | `HibernationSchedule.jsx` | `HOURLY_COST_AVG = 2.45` | Real cluster average hourly cost calculation |
+
+---
+
+### 2. Backend Implementation (New & Updated)
+
+We need to expose the logic that already exists in `modules` and `services` via API routes.
+
+#### A. Create `backend/api/health_routes.py`
+
+Exposes the `HealthService` logic.
+
+```python
+from fastapi import APIRouter, Depends
+from sqlalchemy.orm import Session
+from backend.models.base import get_db
+from backend.core.health_service import get_health_service
+from backend.models.user import User
+from backend.core.dependencies import get_current_user, get_current_active_superuser
+
+router = APIRouter(prefix="/health", tags=["System"])
+
+@router.get("/system", summary="Get detailed system health")
+def get_system_health(
+    current_user: User = Depends(get_current_active_superuser), # Admin only
+    db: Session = Depends(get_db)
+):
+    service = get_health_service(db)
+    return service.check_overall_health()
+
+```
+
+#### B. Create `backend/api/optimization_routes.py`
+
+Exposes the `RightSizingModule` logic.
+
+```python
+from fastapi import APIRouter, Depends, Query
+from sqlalchemy.orm import Session
+from backend.models.base import get_db
+from backend.models.user import User
+from backend.core.dependencies import get_current_user
+from backend.modules.rightsizer import get_rightsizer
+
+router = APIRouter(prefix="/optimization", tags=["Optimization"])
+
+@router.get("/rightsizing/{cluster_id}", summary="Get resize recommendations")
+def get_rightsizing_recommendations(
+    cluster_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    rightsizer = get_rightsizer(db)
+    analysis = rightsizer.analyze_resource_usage(cluster_id)
+    return analysis
+
+```
+
+#### C. Register Routes in `backend/api/__init__.py`
+
+Ensure these new routers are included in the main app.
+
+```python
+# Add these imports
+from .health_routes import router as health_router
+from .optimization_routes import router as optimization_router
+
+# Add to include_router calls
+api_router.include_router(health_router)
+api_router.include_router(optimization_router)
+
+```
+
+---
+
+### 3. Frontend Implementation & Logic
+
+#### A. Shared "Empty State" Component
+
+Create `frontend/src/components/shared/EmptyState.jsx` to handle no data gracefully.
+
+```jsx
+import React from 'react';
+import { FiInbox } from 'react-icons/fi';
+
+const EmptyState = ({ title, message, action }) => (
+    <div className="flex flex-col items-center justify-center py-12 px-4 bg-gray-50 rounded-lg border-2 border-dashed border-gray-300">
+        <div className="p-4 bg-white rounded-full shadow-sm mb-4">
+            <FiInbox className="w-8 h-8 text-gray-400" />
+        </div>
+        <h3 className="text-lg font-medium text-gray-900">{title}</h3>
+        <p className="text-gray-500 text-center max-w-sm mt-1 mb-6">{message}</p>
+        {action}
+    </div>
+);
+
+export default EmptyState;
+
+```
+
+#### B. Fix `RightSizing.jsx`
+
+Replace the mock array with API calls and handle the empty state.
+
+```jsx
+// ... imports
+import { api } from '../../services/api'; // Ensure this exists
+import EmptyState from '../shared/EmptyState';
+
+const RightSizing = () => {
+    const [loading, setLoading] = useState(true);
+    const [data, setData] = useState(null);
+    const [selectedCluster, setSelectedCluster] = useState(null); // Needs cluster context
+
+    useEffect(() => {
+        // In a real app, get this from a global store or selector
+        const clusterId = "current-cluster-id"; 
+        fetchRecommendations(clusterId);
+    }, []);
+
+    const fetchRecommendations = async (clusterId) => {
+        try {
+            setLoading(true);
+            const res = await api.get(`/optimization/rightsizing/${clusterId}`);
+            setData(res.data);
+        } catch (err) {
+            console.error(err);
+            // toast.error("Could not load recommendations");
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    if (loading) return <div>Loading analysis...</div>;
+
+    const hasRecommendations = data?.overprovisioned_instances?.length > 0;
+
+    return (
+        <div className="space-y-6">
+            {/* Headers & Toggles */}
+            
+            {/* Summary Cards with Real Data */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                <Card>
+                    <p>Monthly Savings</p>
+                    <p className="text-2xl font-bold">${data?.total_potential_savings || 0}</p>
+                </Card>
+                {/* ... other cards */}
+            </div>
+
+            {!hasRecommendations ? (
+                <EmptyState 
+                    title="Everything looks optimized!" 
+                    message="We couldn't find any over-provisioned workloads in this cluster based on the last 14 days of data."
+                />
+            ) : (
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                    {/* Render Real Table */}
+                    <div className="lg:col-span-2">
+                        <Card title="Resize Recommendations">
+                            {/* Map through data.overprovisioned_instances */}
+                        </Card>
+                    </div>
+                    {/* Render Charts */}
+                </div>
+            )}
+        </div>
+    );
+};
+
+```
+
+#### C. Fix `AdminHealth.jsx`
+
+Connect to the new health endpoint.
+
+```jsx
+// Inside AdminHealth component
+const fetchHealth = async () => {
+    if (!loading) setRefreshing(true);
+    try {
+        const response = await api.get('/health/system'); // Call real API
+        setHealth(response.data);
+    } catch (error) {
+        toast.error('Failed to fetch system health');
+        // Handle error state specifically if needed
+    } finally {
+        setLoading(false);
+        setRefreshing(false);
+    }
+};
+
+```
+
+#### D. Fix `Dashboard.jsx`
+
+The dashboard needs data from multiple sources.
+
+```jsx
+// Inside Dashboard component
+const [clusterMap, setClusterMap] = useState([]);
+
+useEffect(() => {
+    const fetchDashboardData = async () => {
+        try {
+            // Parallel data fetching
+            const [logsRes, clustersRes] = await Promise.all([
+                api.get('/audit/logs?limit=5'),
+                api.get('/clusters')
+            ]);
+
+            // Transform Audit Logs for Feed
+            const feed = logsRes.data.logs.map(log => ({
+                id: log.id,
+                action: log.event_name,
+                cluster: log.resource_id, // or lookup name
+                time: formatRelativeTime(log.created_at),
+                type: log.status === 'success' ? 'success' : 'error'
+            }));
+            setActivityFeed(feed);
+
+            // Set Cluster Map
+            setClusterMap(clustersRes.data.items);
+
+        } catch (error) {
+            console.error("Dashboard partial load failure", error);
+        }
+    };
+    fetchDashboardData();
+}, []);
+
+// ... Render logic
+// Replace savingsProjectionData with data from useDashboard() -> costTimeSeries
+// You might need to process costTimeSeries to group by month for the chart
+
+```
+
+#### E. Fix `HibernationSchedule.jsx`
+
+Remove the hardcoded cost constant.
+
+```jsx
+// Add this state
+const [hourlyCost, setHourlyCost] = useState(0);
+
+// Fetch real cost when cluster is selected
+useEffect(() => {
+    if (formData.cluster_id) {
+        fetchClusterMetrics(formData.cluster_id);
+    }
+}, [formData.cluster_id]);
+
+const fetchClusterMetrics = async (id) => {
+    try {
+        // Use existing metrics endpoint
+        const res = await api.get(`/metrics/cluster/${id}`);
+        // Calculate approx hourly cost based on active instances * avg price (or 0.10 default)
+        // Ideally backend sends this, but for now we estimate:
+        const estimatedHourly = res.data.total_instances * 0.12; 
+        setHourlyCost(estimatedHourly);
+    } catch (e) { console.error(e); }
+};
+
+// Update calculation
+const calculateSavings = () => {
+    const sleepHours = formData.schedule_matrix.filter(h => h === 0).length;
+    // Use the dynamic hourlyCost instead of HOURLY_COST_AVG
+    const monthlySavings = (sleepHours / 168) * (hourlyCost * 24 * 30);
+    setSavings(monthlySavings);
+};
+
+```
+
+### 4. Implementation Checklist
+
+1. **Backend**: Add `backend/api/health_routes.py` and `backend/api/optimization_routes.py`.
+2. **Backend**: Register new routes in `main.py` or `api/__init__.py`.
+3. **Frontend**: Create `EmptyState.jsx`.
+4. **Frontend**: Modify `RightSizing.jsx` to fetch from `/optimization/rightsizing/{id}`.
+5. **Frontend**: Modify `AdminHealth.jsx` to fetch from `/health/system`.
+6. **Frontend**: Modify `Dashboard.jsx` to fetch `/audit/logs` and `/clusters`.
+7. **Frontend**: Modify `HibernationSchedule.jsx` to fetch cluster metrics for dynamic cost estimation.

@@ -39,6 +39,7 @@
 | **FE-LIB::UI::Input** | `frontend/src/components/shared/Input.jsx` | UI | Reusable Input. | `onChange` | `N/A` |
 | **FE-LIB::UI::Badge** | `frontend/src/components/shared/Badge.jsx` | UI | Status Badge. | `status` | `N/A` |
 | **FE-LIB::UI::StatsCard** | `frontend/src/components/shared/StatsCard.jsx` | UI | Dashboard Metric Card. | `title`, `value` | `N/A` |
+| **FE-LIB::UI::EmptyState** | `frontend/src/components/shared/EmptyState.jsx` | UI | Empty state placeholder for no-data scenarios. | `title`, `message`, `action` | `FiInbox` |
 | **FE-HK::Auth::UseAuth** | `frontend/src/hooks/useAuth.js` | Hook | Authentication logic hook. | `user` | `authAPI` |
 | **FE-HK::Dash::UseDash** | `frontend/src/hooks/useDashboard.js` | Hook | Dashboard data fetching hook. | `data` | `metricsAPI` |
 | **FE-SVC::API::Client** | `frontend/src/services/api.js`| Service | Central Axios instance and API method definitions. | `axios` | `axios` |
