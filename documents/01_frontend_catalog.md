@@ -29,6 +29,7 @@
 | **FE-CMP::Admin::Billing** | `src/components/admin/AdminBilling.jsx` | Page | Billing overview and Plans. Fetches real data from `adminAPI.getBilling`. | `stats`, `plans` | `Card`, `Button`, `Icons` |
 | **FE-CMP::Admin::Health** | `frontend/src/components/admin/AdminHealth.jsx` | Admin | System health status. | `health` | `useDashboard` |
 | **FE-CMP::Admin::Config** | `frontend/src/components/admin/AdminConfig.jsx` | Admin | Platform configuration. | `config` | `adminAPI` |
+| **FE-CMP::Admin::Lab** | `frontend/src/components/admin/AdminLab.jsx` | Admin | Admin view for Lab experiments. | `experiments` | `labAPI` |
 | **FE-CMP::Set::Main** | `frontend/src/components/settings/Settings.jsx` | Page | User Settings wrapper. | `tab` | `AccountSettings`, `TeamManagement` |
 | **FE-CMP::Set::Account** | `frontend/src/components/settings/AccountSettings.jsx` | Component | User profile settings. | `userData` | `authAPI` |
 | **FE-CMP::Set::Teams** | `frontend/src/components/settings/TeamManagement.jsx` | Component | Team member management. | `members` | `organizationAPI` |
@@ -43,3 +44,10 @@
 | **FE-SVC::API::Client** | `frontend/src/services/api.js`| Service | Central Axios instance and API method definitions. | `axios` | `axios` |
 | **FE-STR::Store::Global** | `frontend/src/store/useStore.js` | Store | Global State (Zustand). | `state` | `zustand` |
 | **FE-UTL::Fmt::Format** | `frontend/src/utils/formatters.js` | Utility | Currency/Date formatters. | `value` | `Intl` |
+| **FE-APP::Style::Global** | `frontend/src/index.css` | Style | Global CSS styles. | `N/A` | `N/A` |
+| **FE-LIB::UI::Index** | `frontend/src/components/shared/index.js` | UI | Export barrel for shared components. | `N/A` | `N/A` |
+| **FE-CMP::Onboard::Page** | `frontend/src/pages/Onboarding.jsx` | Page | Wrapper page for the onboarding flow. | `step` | `WelcomeStep`, `ConnectStep` |
+| **FE-CMP::Onboard::Welcome** | `frontend/src/components/onboarding/WelcomeStep.jsx` | Component | Onboarding Step 1: Welcome. | `onNext` | `Button` |
+| **FE-CMP::Onboard::Connect** | `frontend/src/components/onboarding/ConnectStep.jsx` | Component | Onboarding Step 2: AWS Connect. | `onNext`, `onBack` | `Input`, `Button` |
+| **FE-CMP::Onboard::Verify** | `frontend/src/components/onboarding/VerifyStep.jsx` | Component | Onboarding Step 3: Verify Role. | `roleArn` | `onboardingAPI` |
+| **FE-CMP::Onboard::Success** | `frontend/src/components/onboarding/SuccessStep.jsx` | Component | Onboarding Step 4: Success. | `onComplete` | `Button` |

@@ -13,3 +13,4 @@
 | **2026-01-09** | **Infrastructure / Git** | `Fix` | **CRITICAL**: Reverted changes on `ecc-Tech-Dev-ML-OPs/ml-AURA`. Moved all new work to `atharva0608/final-ml` (Commit `b20bce1`). |
 | **2026-01-09** | **Infrastructure / File Sys** | `Refactor` | Flattened repository structure. Removed `final-ml/new-version` nesting. All project files now in root. |
 | **2026-01-09** | **Docs / Catalog** | `Update` | Added 17 missing components to `02_backend_catalog.md` (Package markers, Context Docs, Internal INFOs, Root Assets) per user audit. |
+| **2026-01-09** | **Docs / Catalog** | `Comprehensive` | Added 8 FE components (Onboarding, Admin Lab) to `01_frontend_catalog.md` and 23 INFO.md/Project docs to `02_backend_catalog.md` per user's detailed audit. Total files now cataloged: ~240. |

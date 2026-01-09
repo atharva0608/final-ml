@@ -175,6 +175,28 @@ These are tracking codes for the documentation suite.
 | **SYS-DOC::Root::Readme** | `README.md` | Doc | The main repository README entry point. |
 | **SYS-DOC::Agent::Readme** | `agent/README.md` | Doc | Specific README for the Agent subsystem. |
 | **SYS-CFG::Root::Pkg** | `package.json` | Config | Root-level Node package configuration. |
+| **DOC-INT::BE::Scrapers** | `backend/scrapers/INFO.md` | Internal | Documentation for scrapers. |
+| **DOC-INT::BE::Modules** | `backend/modules/INFO.md` | Internal | Documentation for optimization modules. |
+| **DOC-INT::BE::Schemas** | `backend/schemas/INFO.md` | Internal | Documentation for Pydantic schemas. |
+| **DOC-INT::FE::Src** | `frontend/src/INFO.md` | Internal | Frontend source overview. |
+| **DOC-INT::FE::Comps** | `frontend/src/components/INFO.md` | Internal | Frontend components overview. |
+| **DOC-INT::FE::Admin** | `frontend/src/components/admin/INFO.md` | Internal | Admin UI components docs. |
+| **DOC-INT::FE::Audit** | `frontend/src/components/audit/INFO.md` | Internal | Audit UI components docs. |
+| **DOC-INT::FE::Auth** | `frontend/src/components/auth/INFO.md` | Internal | Auth UI components docs. |
+| **DOC-INT::FE::Clusters** | `frontend/src/components/clusters/INFO.md` | Internal | Cluster UI components docs. |
+| **DOC-INT::FE::Dash** | `frontend/src/components/dashboard/INFO.md` | Internal | Dashboard UI components docs. |
+| **DOC-INT::FE::Hiber** | `frontend/src/components/hibernation/INFO.md` | Internal | Hibernation UI components docs. |
+| **DOC-INT::FE::Policies** | `frontend/src/components/policies/INFO.md` | Internal | Policy UI components docs. |
+| **DOC-INT::FE::Settings** | `frontend/src/components/settings/INFO.md` | Internal | Settings UI components docs. |
+| **DOC-INT::FE::Tpl** | `frontend/src/components/templates/INFO.md` | Internal | Template UI components docs. |
+| **DOC-INT::FE::Hooks** | `frontend/src/hooks/INFO.md` | Internal | React hooks docs. |
+| **DOC-INT::FE::Services** | `frontend/src/services/INFO.md` | Internal | Frontend API services docs. |
+| **DOC-INT::FE::Utils** | `frontend/src/utils/INFO.md` | Internal | Frontend utility functions docs. |
+| **DOC-PROJ::Index::Master** | `documents/00_master_index.md` | Management | Master index of project documents. |
+| **DOC-PROJ::Catalog::FE** | `documents/01_frontend_catalog.md` | Management | Frontend Catalog. |
+| **DOC-PROJ::Catalog::BE** | `documents/02_backend_catalog.md` | Management | Backend Catalog. |
+| **DOC-PROJ::Ledger::Change** | `documents/03_change_ledger.md` | Management | Change log/ledger. |
+| **DOC-PROJ::Gap::Analysis** | `documents/03_frontend_backend_gap_analysis.md` | Management | Gap analysis document. |
 
 ### 7. Miscellaneous System Components
 
