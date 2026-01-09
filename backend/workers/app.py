@@ -9,12 +9,14 @@ app = Celery(
 )
 
 app.conf.beat_schedule = {
-    'discovery-task': {
+    # Existing discovery task
+    'discovery-every-5-mins': {
         'task': 'workers.discovery.scan_all_accounts', # Matches discovery.py name
-        'schedule': 300.0,
+        'schedule': 300.0, # 5 minutes
     },
+    # NEW: Pricing task
     'pricing-every-hour': {
         'task': 'backend.workers.tasks.pricing.fetch_aws_pricing', # Matches pricing_task.py name
-        'schedule': 3600.0,
+        'schedule': 3600.0, # 1 hour
     },
 }

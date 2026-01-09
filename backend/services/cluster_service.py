@@ -34,6 +34,7 @@ class ClusterService:
         account = self.db.query(Account).filter(Account.id == account_id).first()
         if not account: return []
 
+        discovered = []
         try:
             # Assume Role
             sts = boto3.client('sts')
@@ -50,18 +51,52 @@ class ClusterService:
                 aws_access_key_id=creds['AccessKeyId'],
                 aws_secret_access_key=creds['SecretAccessKey'],
                 aws_session_token=creds['SessionToken'],
-                region_name='us-east-1' # Make dynamic in future
+                region_name=account.region or 'us-east-1'
             )
             
-            clusters = eks.list_clusters()['clusters']
-            results = []
-            for name in clusters:
-                # Save to DB logic here (simplified)
-                results.append({"name": name, "status": "discovered"})
+            cluster_names = eks.list_clusters()['clusters']
+
+            for cluster_name in cluster_names:
+                # 3. Get Details for each cluster
+                details = eks.describe_cluster(name=cluster_name)['cluster']
+                
+                # 4. Save or Update in DB
+                cluster = self.db.query(Cluster).filter(
+                    Cluster.name == cluster_name, 
+                    Cluster.account_id == account.id
+                ).first()
+
+                if not cluster:
+                    cluster = Cluster(
+                        id=str(uuid.uuid4()),
+                        name=cluster_name,
+                        account_id=account.id,
+                        region=account.region or "us-east-1",
+                        status=ClusterStatus.DISCOVERED,
+                        version=details.get('version'),
+                        endpoint=details.get('endpoint'),
+                        created_at=datetime.utcnow(),
+                        updated_at=datetime.utcnow()
+                    )
+                    self.db.add(cluster)
+                else:
+                    # Update existing cluster details
+                    cluster.status = ClusterStatus.DISCOVERED
+                    cluster.version = details.get('version')
+                    cluster.endpoint = details.get('endpoint')
+                    cluster.updated_at = datetime.utcnow()
+                
+                discovered.append({
+                    "name": cluster.name, 
+                    "status": "active", 
+                    "version": cluster.version
+                })
             
-            return results
+            self.db.commit()
+            return discovered
+
         except Exception as e:
-            print(f"Error: {e}")
+            logger.error(f"Discovery failed for account {account.id}: {e}")
             return []
 
     def register_cluster(
