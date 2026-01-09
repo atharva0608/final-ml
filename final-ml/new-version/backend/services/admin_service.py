@@ -491,7 +491,61 @@ class AdminService:
 
         return total_cost
 
+        return total_cost
 
+    def get_billing_info(self, requesting_user: User) -> 'BillingResponse':
+        """
+        Get billing information (Mock implementation for now)
+        """
+        self.verify_super_admin(requesting_user)
+        # Mock data matching frontend hardcoded values
+        return {
+            "stats": {
+                "mrr": "$48,250",
+                "mrr_growth": "+12%",
+                "active_subs": 842,
+                "subs_growth": "+5%",
+                "failed_charges": 3
+            },
+            "plans": [
+                {"name": 'Free Tier', "price": '$0', "nodes": '5', "clients": 124, "status": 'Active'},
+                {"name": 'Pro Plan', "price": '$299', "nodes": '50', "clients": 650, "status": 'Active'},
+                {"name": 'Enterprise', "price": 'Custom', "nodes": 'Unlimited', "clients": 68, "status": 'Active'},
+            ],
+            "upsell_opportunities": [
+                {"client": 'Acme Corp', "plan": 'Free Tier', "usage": '95%', "nodes": '4/5', "client_initial": "A"},
+                {"client": 'Startup Inc', "plan": 'Pro Plan', "usage": '92%', "nodes": '46/50', "client_initial": "S"},
+            ]
+        }
+
+    def get_dashboard_stats(self, requesting_user: User) -> 'DashboardResponse':
+        """
+        Get admin dashboard statistics (Merging real stats with mock chart/feed)
+        """
+        self.verify_super_admin(requesting_user)
+        
+        # Get real stats
+        platform_stats = self.get_platform_stats(requesting_user)
+        
+        # Mock chart and feed (until we have real historical data logic)
+        return {
+            "stats": platform_stats,
+            "savings_chart": [
+                {"name": 'Mon', "savings": 4000},
+                {"name": 'Tue', "savings": 3000},
+                {"name": 'Wed', "savings": 2000},
+                {"name": 'Thu', "savings": 2780},
+                {"name": 'Fri', "savings": 1890},
+                {"name": 'Sat', "savings": 2390},
+                {"name": 'Sun', "savings": 3490},
+            ],
+            "activity_feed": [
+                {"id": 1, "user": 'Acme Corp', "action": 'Optimized Cluster', "detail": 'Replaced 5x m5.large with spot', "time": '2 mins ago', "type": 'optimization'},
+                {"id": 2, "user": 'Startup Inc', "action": 'Connected AWS', "detail": 'New cluster onboarding', "time": '15 mins ago', "type": 'onboarding'},
+                {"id": 3, "user": 'TechFlow', "action": 'Policy Update', "detail": 'Changed risk tolerance to Medium', "time": '1 hour ago', "type": 'config'},
+                {"id": 4, "user": 'Global Logistics', "action": 'Agent Updated', "detail": 'Auto-updated to v1.4.2', "time": '2 hours ago', "type": 'system'},
+            ]
+        }
 def get_admin_service(db: Session) -> AdminService:
     """Get admin service instance"""
     return AdminService(db)

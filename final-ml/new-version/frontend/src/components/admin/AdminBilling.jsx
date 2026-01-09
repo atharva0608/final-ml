@@ -2,7 +2,33 @@ import React, { useState } from 'react';
 import { Card, Button } from '../shared';
 import { FiDollarSign, FiCreditCard, FiUsers, FiTrendingUp, FiExternalLink } from 'react-icons/fi';
 
+import { adminAPI } from '../../services/api'; // Import adminAPI
+import toast from 'react-hot-toast';
+
 const AdminBilling = () => {
+    const [billingData, setBillingData] = useState(null);
+    const [loading, setLoading] = useState(true);
+
+    useEffect(() => {
+        fetchBillingData();
+    }, []);
+
+    const fetchBillingData = async () => {
+        try {
+            const response = await adminAPI.getBilling();
+            setBillingData(response.data);
+        } catch (error) {
+            toast.error('Failed to load billing info');
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    if (loading) return <div className="p-6">Loading billing data...</div>;
+    if (!billingData) return <div className="p-6">No data available</div>;
+
+    const { stats, plans, upsell_opportunities } = billingData;
+
     return (
         <div className="space-y-6">
             <div className="flex justify-between items-center">
@@ -23,9 +49,9 @@ const AdminBilling = () => {
                         <span className="text-sm font-medium">Monthly Recurring Revenue</span>
                     </div>
                     <div className="flex items-baseline space-x-2">
-                        <h2 className="text-3xl font-bold text-gray-900">$48,250</h2>
+                        <h2 className="text-3xl font-bold text-gray-900">{stats.mrr}</h2>
                         <span className="text-sm text-green-600 flex items-center">
-                            <FiTrendingUp className="mr-1" /> +12%
+                            <FiTrendingUp className="mr-1" /> {stats.mrr_growth}
                         </span>
                     </div>
                 </Card>
@@ -35,9 +61,9 @@ const AdminBilling = () => {
                         <span className="text-sm font-medium">Active Subscriptions</span>
                     </div>
                     <div className="flex items-baseline space-x-2">
-                        <h2 className="text-3xl font-bold text-gray-900">842</h2>
+                        <h2 className="text-3xl font-bold text-gray-900">{stats.active_subs}</h2>
                         <span className="text-sm text-green-600 flex items-center">
-                            <FiTrendingUp className="mr-1" /> +5%
+                            <FiTrendingUp className="mr-1" /> {stats.subs_growth}
                         </span>
                     </div>
                 </Card>
@@ -47,7 +73,7 @@ const AdminBilling = () => {
                         <span className="text-sm font-medium">Failed Charges (Last 24h)</span>
                     </div>
                     <div className="flex items-baseline space-x-2">
-                        <h2 className="text-3xl font-bold text-red-600">3</h2>
+                        <h2 className="text-3xl font-bold text-red-600">{stats.failed_charges}</h2>
                         <span className="text-sm text-gray-500">Requires attention</span>
                     </div>
                 </Card>
@@ -72,11 +98,7 @@ const AdminBilling = () => {
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-gray-100">
-                            {[
-                                { name: 'Free Tier', price: '$0', nodes: '5', clients: 124, status: 'Active' },
-                                { name: 'Pro Plan', price: '$299', nodes: '50', clients: 650, status: 'Active' },
-                                { name: 'Enterprise', price: 'Custom', nodes: 'Unlimited', clients: 68, status: 'Active' },
-                            ].map((plan, i) => (
+                            {plans.map((plan, i) => (
                                 <tr key={i} className="hover:bg-gray-50 transition-colors">
                                     <td className="py-4 text-sm font-medium text-gray-900">{plan.name}</td>
                                     <td className="py-4 text-sm text-gray-600">{plan.price}</td>
@@ -99,13 +121,10 @@ const AdminBilling = () => {
                     <p className="text-sm text-gray-500">Clients approaching plan limits</p>
                 </div>
                 <div className="space-y-4">
-                    {[
-                        { client: 'Acme Corp', plan: 'Free Tier', usage: '95%', nodes: '4/5' },
-                        { client: 'Startup Inc', plan: 'Pro Plan', usage: '92%', nodes: '46/50' },
-                    ].map((opp, i) => (
+                    {upsell_opportunities.map((opp, i) => (
                         <div key={i} className="flex items-center justify-between p-3 bg-yellow-50 border border-yellow-100 rounded-lg">
                             <div className="flex items-center space-x-3">
-                                <div className="w-8 h-8 rounded-full bg-yellow-200 text-yellow-800 flex items-center justify-center font-bold text-xs">{opp.client[0]}</div>
+                                <div className="w-8 h-8 rounded-full bg-yellow-200 text-yellow-800 flex items-center justify-center font-bold text-xs">{opp.client_initial}</div>
                                 <div>
                                     <h4 className="font-semibold text-gray-900 text-sm">{opp.client}</h4>
                                     <p className="text-xs text-gray-500">{opp.plan} • {opp.usage} usage</p>

@@ -22,7 +22,7 @@
 | **BE-SVC::Metrics::Main** | `backend/services/metrics_service.py` | Service | Metrics aggregation (Cost, Savings, Usage). Generates Dashboard KPIs and Time Series data. | `Instance`, `OptimizationJob` |
 | **BE-SVC::Audit::Main** | `backend/services/audit_service.py` | Service | Audit logging and querying. tracks actor, event, resource, outcome, and diffs. | `AuditLog` |
 | **BE-SVC::Lab::Main** | `backend/services/lab_service.py` | Service | ML Experimentation (A/B Testing). Manage experiments, variants, and calculate results/winners. | `LabExperiment`, `MLModel` |
-| **BE-API::Admin::Main** | `backend/api/admin_routes.py` | API | Super Admin Endpoints. List Orgs/Clients, Client Details, Toggle Status, Platform Stats. | `AdminService` |
+| **BE-API::Admin::Main** | `backend/api/admin_routes.py` | API | Super Admin Endpoints. List Orgs/Clients, Billing, Dashboard Stats, Platform Stats. | `AdminService` |
 | **BE-API::Account::Main** | `backend/api/account_routes.py` | API | AWS Account Management. Link, List, Delete accounts. | `AccountService` |
 | **BE-API::Cluster::Main** | `backend/api/cluster_routes.py` | API | Cluster Operations. Discover, Register, Connect (AWS), Agent Install, Heartbeat. | `ClusterService` |
 | **BE-API::Organization::Main** | `backend/api/organization_routes.py` | API | Organization Management. List Members, Invite (ORG_ADMIN), Update Role, Remove Member. | `OrganizationService` |
@@ -108,9 +108,9 @@
 | **BE-WRK::Core::App** | `backend/workers/app.py` | Worker | Celery Application instance and configuration. | `Celery` |
 | **BE-OPS::Deploy::Main** | `scripts/deployment/deploy.sh` | Script | Main deployment shell script. | `Bash` |
 | **BE-OPS::Deploy::Setup** | `scripts/deployment/setup.sh` | Script | Environment setup shell script. | `Bash` |
-| **BE-CFG::System::Reqs** | `requirements.txt` | Config | Python dependency requirements list. | `Pip` |
+| **BE-CFG::Deps::Main** | `requirements.txt` | Config | Python dependency manifest for the backend. | `Pip` |
 | **BE-CFG::System::EnvExample** | `.env.example` | Config | Template for environment variables. | `Env` |
-| **BE-AST::DB::MigTemplate** | `migrations/script.py.mako` | Asset | Mako template used by Alembic. | `Mako` |
+| **BE-MIG::TPL::Script** | `migrations/script.py.mako` | Config | Mako template used by Alembic. | `Mako` |
 | **BE-SCH::System::Registry** | `backend/schemas/__init__.py` | Schema | Exports all schemas. | `Python` |
 | **BE-MODL::System::Registry** | `backend/modules/__init__.py` | Module | Exports all optimization modules. | `Python` |
 

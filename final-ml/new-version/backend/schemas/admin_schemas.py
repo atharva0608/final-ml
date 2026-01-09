@@ -110,3 +110,46 @@ class OrganizationList(BaseModel):
     page: int
     page_size: int
 
+class BillingPlan(BaseModel):
+    name: str
+    price: str
+    nodes: str
+    clients: int
+    status: str
+
+class UpsellOpportunity(BaseModel):
+    client: str
+    plan: str
+    usage: str
+    nodes: str
+    client_initial: str
+
+class BillingStats(BaseModel):
+    mrr: str
+    mrr_growth: str
+    active_subs: int
+    subs_growth: str
+    failed_charges: int
+
+class BillingResponse(BaseModel):
+    stats: BillingStats
+    plans: List[BillingPlan]
+    upsell_opportunities: List[UpsellOpportunity]
+
+class SavingsPoint(BaseModel):
+    name: str
+    savings: float
+
+class ActivityItem(BaseModel):
+    id: int
+    user: str
+    action: str
+    detail: str
+    time: str
+    type: str
+
+class DashboardResponse(BaseModel):
+    stats: PlatformStats
+    savings_chart: List[SavingsPoint]
+    activity_feed: List[ActivityItem]
+

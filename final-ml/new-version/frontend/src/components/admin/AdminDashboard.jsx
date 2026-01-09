@@ -1,38 +1,38 @@
-import React from 'react';
-import { Card, StatsCard } from '../shared';
-import {
-  FiUsers,
-  FiServer,
-  FiDollarSign,
-  FiActivity,
-  FiTrendingUp,
-  FiZap
-} from 'react-icons/fi';
-import {
-  LineChart,
-  Line,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  ResponsiveContainer
-} from 'recharts';
+import { adminAPI } from '../../services/api'; import { useState, useEffect } from 'react';
 
 const AdminDashboard = () => {
-  // Mock Data for "Command Center"
+  const [dashboardData, setDashboardData] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetchDashboardData();
+  }, []);
+
+  const fetchDashboardData = async () => {
+    try {
+      const response = await adminAPI.getDashboardStats();
+      setDashboardData(response.data);
+    } catch (error) {
+      console.error('Failed to load dashboard stats');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (loading) return <div className="p-6">Loading dashboard...</div>;
+  if (!dashboardData) return null;
+
+  const { stats, savings_chart, activity_feed } = dashboardData;
+
+  // Transform backend stats to UI format
   const kpiStats = [
-    { label: 'Total Active Clients', value: '842', change: '+12%', icon: FiUsers, color: 'blue' },
-    { label: 'Total EC2 Managed', value: '4,281', change: '+340 this week', icon: FiServer, color: 'purple' },
-    { label: 'Total Savings Generated', value: '$1.2M', change: '+18%', icon: FiDollarSign, color: 'green' },
+    { label: 'Total Active Clients', value: stats.active_users, change: `+${stats.recent_signups} this month`, icon: FiUsers, color: 'blue' },
+    { label: 'Total EC2 Managed', value: stats.total_instances, change: `${stats.active_clusters} clusters`, icon: FiServer, color: 'purple' },
+    { label: 'Total Savings Generated', value: `$${stats.total_savings.toLocaleString()}`, change: '+18%', icon: FiDollarSign, color: 'green' },
     { label: 'Platform Revenue (MRR)', value: '$48.2k', change: '+5%', icon: FiTrendingUp, color: 'indigo' },
   ];
 
-  const activityFeed = [
-    { id: 1, user: 'Acme Corp', action: 'Optimized Cluster', detail: 'Replaced 5x m5.large with spot', time: '2 mins ago', type: 'optimization' },
-    { id: 2, user: 'Startup Inc', action: 'Connected AWS', detail: 'New cluster onboarding', time: '15 mins ago', type: 'onboarding' },
-    { id: 3, user: 'TechFlow', action: 'Policy Update', detail: 'Changed risk tolerance to Medium', time: '1 hour ago', type: 'config' },
-    { id: 4, user: 'Global Logistics', action: 'Agent Updated', detail: 'Auto-updated to v1.4.2', time: '2 hours ago', type: 'system' },
-  ];
+
 
   const getIconForType = (type) => {
     switch (type) {
@@ -64,15 +64,7 @@ const AdminDashboard = () => {
             <h2 className="text-lg font-bold text-gray-900 mb-4">Savings Velocity</h2>
             <div className="h-80 w-full">
               <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={[
-                  { name: 'Mon', savings: 4000 },
-                  { name: 'Tue', savings: 3000 },
-                  { name: 'Wed', savings: 2000 },
-                  { name: 'Thu', savings: 2780 },
-                  { name: 'Fri', savings: 1890 },
-                  { name: 'Sat', savings: 2390 },
-                  { name: 'Sun', savings: 3490 },
-                ]}>
+                <LineChart data={savings_chart}>
                   <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E5E7EB" />
                   <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fill: '#6B7280' }} />
                   <YAxis axisLine={false} tickLine={false} tick={{ fill: '#6B7280' }} tickFormatter={(value) => `$${value}`} />
@@ -98,7 +90,7 @@ const AdminDashboard = () => {
               </span>
             </div>
             <div className="p-6 space-y-6">
-              {activityFeed.map((item) => (
+              {activity_feed.map((item) => (
                 <div key={item.id} className="flex space-x-3">
                   <div className="mt-1 bg-gray-50 border border-gray-200 rounded-lg p-2 h-fit">
                     {getIconForType(item.type)}

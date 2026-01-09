@@ -23,10 +23,10 @@
 | **FE-CMP::Lab::Main** | `frontend/src/components/lab/ExperimentLab.jsx` | Page | ML Experimentation dashboard. | `experiments` | `labAPI` |
 | **FE-CMP::Right::Main** | `frontend/src/components/right-sizing/RightSizing.jsx` | Page | Rightsizing recommendations. | `recommendations` | `Card` |
 | **FE-CMP::Audit::Log** | `frontend/src/components/audit/AuditLog.jsx` | Page | System Audit Log viewer. | `logs` | `auditAPI` |
-| **FE-CMP::Admin::Dash** | `frontend/src/components/admin/AdminDashboard.jsx` | Admin | Super Admin Overview. | `stats` | `adminAPI` |
+| **FE-CMP::Admin::Dash** | `frontend/src/components/admin/AdminDashboard.jsx` | Admin | Super Admin Overview. Fetches real stats/charts from adminAPI. | `stats`, `activityFeed` | `StatsCard`, `recharts` |
 | **FE-CMP::Admin::Orgs** | `frontend/src/components/admin/AdminOrganizations.jsx` | Admin | Organization management table. | `orgs` | `adminAPI` |
 | **FE-CMP::Admin::Clients** | `frontend/src/components/admin/AdminClients.jsx` | Admin | Client management table. | `clients` | `adminAPI` |
-| **FE-CMP::Admin::Billing** | `frontend/src/components/admin/AdminBilling.jsx` | Admin | Billing and Cost view. | `billing` | `Card` |
+| **FE-CMP::Admin::Billing** | `src/components/admin/AdminBilling.jsx` | Page | Billing overview and Plans. Fetches real data from `adminAPI.getBilling`. | `stats`, `plans` | `Card`, `Button`, `Icons` |
 | **FE-CMP::Admin::Health** | `frontend/src/components/admin/AdminHealth.jsx` | Admin | System health status. | `health` | `useDashboard` |
 | **FE-CMP::Admin::Config** | `frontend/src/components/admin/AdminConfig.jsx` | Admin | Platform configuration. | `config` | `adminAPI` |
 | **FE-CMP::Set::Main** | `frontend/src/components/settings/Settings.jsx` | Page | User Settings wrapper. | `tab` | `AccountSettings`, `TeamManagement` |

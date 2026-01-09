@@ -18,6 +18,8 @@ from backend.schemas.admin_schemas import (
     PasswordReset,
     OrganizationList,
     OrganizationFilter,
+    BillingResponse,
+    DashboardResponse,
 )
 from datetime import datetime
 
@@ -231,3 +233,37 @@ def get_platform_stats(
     """
     service = get_admin_service(db)
     return service.get_platform_stats(current_user)
+
+
+@router.get(
+    "/billing",
+    response_model=BillingResponse,
+    summary="Get billing information",
+    description="Get billing stats, plans, and upsell opportunities (Super admin only)"
+)
+def get_billing_info(
+    current_user: User = Depends(require_super_admin),
+    db: Session = Depends(get_db)
+) -> BillingResponse:
+    """
+    Get billing information
+    """
+    service = get_admin_service(db)
+    return service.get_billing_info(current_user)
+
+
+@router.get(
+    "/dashboard",
+    response_model=DashboardResponse,
+    summary="Get dashboard statistics",
+    description="Get aggregated dashboard stats, charts, and activity feed (Super admin only)"
+)
+def get_dashboard_stats(
+    current_user: User = Depends(require_super_admin),
+    db: Session = Depends(get_db)
+) -> DashboardResponse:
+    """
+    Get dashboard statistics
+    """
+    service = get_admin_service(db)
+    return service.get_dashboard_stats(current_user)
