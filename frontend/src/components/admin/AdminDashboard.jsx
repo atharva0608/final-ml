@@ -56,8 +56,8 @@ const AdminDashboard = () => {
   const kpiStats = [
     { label: 'Total Active Clients', value: stats.active_users || 0, change: `+${stats.recent_signups || 0} this month`, icon: FiUsers, color: 'blue' },
     { label: 'Total EC2 Managed', value: stats.total_instances || 0, change: `${stats.active_clusters || 0} clusters`, icon: FiServer, color: 'purple' },
-    { label: 'Total Savings Generated', value: `$${(stats.total_savings || 0).toLocaleString()}`, change: '+18%', icon: FiDollarSign, color: 'green' },
-    { label: 'Platform Revenue (MRR)', value: '$48.2k', change: '+5%', icon: FiTrendingUp, color: 'indigo' },
+    { label: 'Total Savings Generated', value: `$${(stats.total_savings || 0).toLocaleString()}`, change: '+0%', icon: FiDollarSign, color: 'green' },
+    { label: 'Platform Revenue (MRR)', value: stats.mrr || '$0.00', change: '+5%', icon: FiTrendingUp, color: 'indigo' },
   ];
 
 

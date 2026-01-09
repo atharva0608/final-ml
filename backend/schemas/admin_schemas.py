@@ -46,10 +46,18 @@ class PasswordReset(BaseModel):
     new_password: str
 
 class PlatformStats(BaseModel):
-    total_users: int
-    total_clusters: int
-    total_savings: float
-    active_experiments: int
+    total_users: int = 0
+    active_users: int = 0
+    recent_signups: int = 0
+    total_clusters: int = 0
+    active_clusters: int = 0
+    total_instances: int = 0
+    running_instances: int = 0
+    spot_instances: int = 0
+    total_cost: float = 0.0
+    total_savings: float = 0.0
+    active_experiments: int = 0
+    mrr: Optional[str] = None
 
 class ClientListItem(ClientSummary): pass
 

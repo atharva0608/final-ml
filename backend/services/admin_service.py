@@ -520,28 +520,19 @@ class AdminService:
 
     def get_dashboard_stats(self, requesting_user: User) -> 'DashboardResponse':
         """
-        Get admin dashboard statistics (Merging real stats with mock chart/feed)
+        Get admin dashboard statistics (Real data)
         """
         self.verify_super_admin(requesting_user)
         
         # Get real stats
         platform_stats = self.get_platform_stats(requesting_user)
         
-        # Calculate real MRR
-        mrr_value = f"${platform_stats.total_cost:,.2f}"
+        # Calculate real MRR and assign to stats object
+        # Using Total Platform Cost as proxy for "Managed Spend"
+        platform_stats.mrr = f"${platform_stats.total_cost:,.2f}"
         
-        stats = {
-            "active_users": platform_stats.active_users,
-            "recent_signups": platform_stats.recent_signups,
-            "total_instances": platform_stats.total_instances,
-            "active_clusters": platform_stats.active_clusters,
-            "total_savings": 0.0,
-            "total_savings_value": 0.0,
-            "mrr": mrr_value
-        }
-
         return {
-            "stats": stats,
+            "stats": platform_stats,
             "savings_chart": [], 
             "activity_feed": []
         }

@@ -37,3 +37,4 @@
 | **2026-01-09** | **Backend / Admin** | `Fix` | Replaced hardcoded mocked data in `admin_service.get_dashboard_stats` (MRR, charts, feed) with real calculations (MRR derived from platform cost) and empty list fallbacks. |
 | **2026-01-09** | **Frontend / Admin** | `Feature` | Updated `AdminLab.jsx` to fetch real experiments from `labAPI` instead of hardcoded data. |
 | **2026-01-09** | **Frontend / Client** | `Fix` | Updated `Dashboard.jsx` to use real `clusterAPI.listClusters` for Cluster Map and real `costTimeSeries` for Savings Projection (removing fake fallbacks). |
+| **2026-01-09** | **Backend / Admin** | `Fix` | Resolved 500 Error in Admin Dashboard by syncing `PlatformStats` schema with `admin_service` implementation and adding missing fields. |
