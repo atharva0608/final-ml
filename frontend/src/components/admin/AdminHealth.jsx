@@ -17,7 +17,13 @@ import { api } from '../../services/api';
 
 
 const AdminHealth = () => {
-  // ... state
+  const [health, setHealth] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+
+  useEffect(() => {
+    fetchHealth();
+  }, []);
 
   const fetchHealth = async () => {
     if (!loading) setRefreshing(true);
