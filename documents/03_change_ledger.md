@@ -56,3 +56,5 @@
 | **2026-01-09** | **Backend / Workers** | `Critical Fix` | Fixed Worker Crash: Renamed `celery_app` to `app` in `workers/app.py` to match `__init__.py` export. Added `include` for task modules. |
 | **2026-01-09** | **Backend / API** | `Critical Fix` | Fixed `ImportError` in `health_routes.py` by replacing missing `get_current_active_superuser` with `require_super_admin`. |
 | **2026-01-09** | **Backend / Health** | `Critical Fix` | Fixed `ModuleNotFoundError` in `health_service.py` by correcting Celery app import to `from backend.workers import app`. |
+| **2026-01-09** | **Backend / Services** | `Critical Fix` | Fixed `ImportError` in `account_service.py` by restoring missing `get_account_service` factory function. |
+| **2026-01-09** | **Backend / Schemas** | `Fix` | Resolved Pydantic warning `Field "model_id" has conflict` in `lab_schemas.py` by adding `protected_namespaces` config. |
