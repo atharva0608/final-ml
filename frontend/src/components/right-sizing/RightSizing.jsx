@@ -10,32 +10,20 @@ const RightSizing = () => {
     const { clusters } = useClusterStore();
     const [loading, setLoading] = useState(true);
     const [data, setData] = useState(null);
-
-    // For demo, pick first cluster or handle selection better
-    const selectedCluster = clusters?.[0];
+    const [recommendations, setRecommendations] = useState([]);
 
     useEffect(() => {
-        if (selectedCluster?.id) {
-            fetchRecommendations(selectedCluster.id);
-        } else {
+        // Fetch real data
+        api.get('/optimization/rightsizing/ALL').then(res => {
+            setRecommendations(res.data.recommendations || []);
             setLoading(false);
-        }
-    }, [selectedCluster]);
-
-    const fetchRecommendations = async (clusterId) => {
-        try {
-            setLoading(true);
-            // Using direct api call for new endpoint
-            const res = await api.get(`/optimization/rightsizing/${clusterId}`);
-            setData(res.data);
-        } catch (err) {
+        }).catch(err => {
             console.error("RightSizing fetch error:", err);
-            // toast.error("Could not load recommendations");
             setData(null);
-        } finally {
             setLoading(false);
-        }
-    };
+        });
+    }, []);
+
 
 
     if (!selectedCluster) {

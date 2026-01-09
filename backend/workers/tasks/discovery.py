@@ -20,6 +20,7 @@ from backend.core.redis_client import get_redis_client
 logger = logging.getLogger(__name__)
 
 
+
 @app.task(bind=True, name="workers.discovery.scan_all_accounts")
 def discovery_worker_loop(self: Task) -> Dict[str, Any]:
     """
@@ -81,6 +82,9 @@ def discovery_worker_loop(self: Task) -> Dict[str, Any]:
 
     finally:
         db.close()
+
+# Alias for app.py compatibility
+run_discovery = discovery_worker_loop
 
 
 def scan_account(account: Account, db: Session, redis_client) -> Dict[str, int]:

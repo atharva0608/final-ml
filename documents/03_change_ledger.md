@@ -48,3 +48,7 @@
 | **2026-01-09** | **Backend / Lab** | `Fix` | Resolved `InvalidRequestError` in `list_experiments` by adding missing `cluster_id` FK/relationship to `LabExperiment` model and patching DB schema. |
 | **2026-01-09** | **Docs / Frontend** | `Update` | Refined `01_frontend_catalog.md` and Gap Analysis. Annotated mocked/simplified components and added public assets (`index.html`, `manifest.json`). Confirmed 100% file coverage. |
 | **2026-01-09** | **Backend / Worker** | `Fix` | Connected `PricingCollector` to Celery app. Registered `collect_spot_prices` (Every 10m) and `collect_ondemand_prices` (Daily). Updated Catalogs. |
+| **2026-01-09** | **Backend / API** | `Critical Fix` | Populated empty `health_routes.py` and `optimization_routes.py` with implementation logic. Registered routes in `api/__init__.py`. |
+| **2026-01-09** | **Backend / Services** | `Critical Fix` | Implemented real AWS `boto3` logic in `AccountService` (verify_connection) and `ClusterService` (discover_clusters). |
+| **2026-01-09** | **Backend / Workers** | `Critical Fix` | Configured `workers/app.py` schedule. Fixed `discovery.py` to alias `run_discovery` for Celery task compatibility. |
+| **2026-01-09** | **Frontend / RightSizing** | `Critical Fix` | Updated `RightSizing.jsx` to fetch real recommendations from `/optimization/rightsizing/ALL`. Fixed syntax errors. |

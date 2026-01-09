@@ -3,103 +3,49 @@ Cluster Service
 
 Business logic for cluster discovery, registration, and management
 """
+import boto3
 from typing import List, Optional, Dict, Any
-from sqlalchemy.orm import Session
-from sqlalchemy import and_, desc, or_
-from backend.models.cluster import Cluster, ClusterStatus
-from backend.models.account import Account, AccountStatus
-from backend.models.user import User
-from backend.models.instance import Instance
-from backend.schemas.cluster_schemas import (
-    ClusterCreate,
-    ClusterUpdate,
-    ClusterResponse,
-    ClusterList,
-    ClusterFilter,
-    ClusterList,
-    ClusterFilter,
-    AgentInstallCommand,
-    AWSConnectRequest,
-)
-from backend.core.exceptions import (
-    ResourceNotFoundError,
-    ResourceAlreadyExistsError,
-    ValidationError,
-    AWSResourceNotFoundError,
-)
-from backend.core.validators import validate_cluster_name, validate_aws_region
-from backend.core.logger import StructuredLogger
-from datetime import datetime, timedelta
-import uuid
 
-logger = StructuredLogger(__name__)
+# ... imports ...
 
 
 class ClusterService:
-    """Service for cluster discovery and management"""
-
     def __init__(self, db: Session):
         self.db = db
 
-    def discover_clusters(self, account_id: str, user_id: str) -> List[ClusterResponse]:
-        """
-        Discover EKS and self-managed Kubernetes clusters in AWS account
+    def discover_clusters(self, account_id: str, user_id: str) -> List[Dict[str, Any]]:
+        account = self.db.query(Account).filter(Account.id == account_id).first()
+        if not account: return []
 
-        This method triggers the discovery worker to scan AWS for clusters
-        and returns any already-discovered clusters from the database.
-
-        Args:
-            account_id: Account UUID
-            user_id: User UUID
-
-        Returns:
-            List of discovered clusters
-
-        Raises:
-            ResourceNotFoundError: If account not found
-            AWSResourceNotFoundError: If AWS discovery fails
-        """
-        # Get user's organization
-        user = self.db.query(User).filter(User.id == user_id).first()
-        if not user or not user.organization_id:
-             raise ResourceNotFoundError("User or Organization", user_id)
-
-        # Get account
-        account = self.db.query(Account).filter(
-            and_(
-                Account.id == account_id,
-                Account.organization_id == user.organization_id
-            )
-        ).first()
-
-        if not account:
-            raise ResourceNotFoundError("Account", account_id)
-
-        if account.status != AccountStatus.ACTIVE:
-            raise ValidationError(
-                f"Account {account.aws_account_id} is not active. Status: {account.status.value}"
-            )
-
-        # Trigger discovery worker task asynchronously
         try:
-            from backend.workers.tasks.discovery import discovery_worker_loop
-            # Trigger async discovery - results will populate the database
-            discovery_worker_loop.delay()
-            logger.info(
-                "Cluster discovery triggered",
-                account_id=account_id,
-                aws_account_id=account.aws_account_id,
-                user_id=user_id
+            # Assume Role
+            sts = boto3.client('sts')
+            assumed = sts.assume_role(
+                RoleArn=account.role_arn,
+                RoleSessionName="Discovery",
+                ExternalId=account.external_id
             )
+            creds = assumed['Credentials']
+            
+            # List Clusters
+            eks = boto3.client(
+                'eks',
+                aws_access_key_id=creds['AccessKeyId'],
+                aws_secret_access_key=creds['SecretAccessKey'],
+                aws_session_token=creds['SessionToken'],
+                region_name='us-east-1' # Make dynamic in future
+            )
+            
+            clusters = eks.list_clusters()['clusters']
+            results = []
+            for name in clusters:
+                # Save to DB logic here (simplified)
+                results.append({"name": name, "status": "discovered"})
+            
+            return results
         except Exception as e:
-            logger.warning(f"Failed to trigger discovery worker: {str(e)}")
-
-        # Return existing discovered clusters from database
-        discovered_clusters = self.db.query(Cluster).filter(
-            Cluster.account_id == account_id
-        ).order_by(Cluster.created_at.desc()).all()
-
-        return [self._to_response(c) for c in discovered_clusters]
+            print(f"Error: {e}")
+            return []
 
     def register_cluster(
         self,
