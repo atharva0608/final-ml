@@ -205,9 +205,8 @@ class HealthService:
         Returns:
             Dict with Celery health status
         """
-        try:
             # Import Celery app
-            from backend.workers.celery_app import celery_app
+            from backend.workers import app as celery_app
 
             # Get active workers
             inspect = celery_app.control.inspect()
