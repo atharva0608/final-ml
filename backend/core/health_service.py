@@ -30,6 +30,7 @@ from sqlalchemy import text
 
 from backend.models.base import get_db
 from backend.core.redis_client import get_redis_client
+from backend.core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -306,6 +307,15 @@ class HealthService:
             Dict with AWS connectivity status
         """
         try:
+            # Skip check if credentials are not configured (e.g. local dev)
+            if not settings.AWS_ACCESS_KEY_ID or not settings.AWS_SECRET_ACCESS_KEY:
+                return {
+                    "status": HealthStatus.HEALTHY,
+                    "message": "AWS credentials not configured (Local Mode)",
+                    "response_time_ms": 0,
+                    "account_id": "local-dev"
+                }
+
             # Try to get caller identity (doesn't require specific permissions)
             sts_client = boto3.client('sts')
 
