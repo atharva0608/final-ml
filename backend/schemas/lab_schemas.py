@@ -43,6 +43,7 @@ class VariantPerformance(BaseModel):
     model_id: str
     metric_score: float
     instance_count: int
+    model_config = {'protected_namespaces': ()}
 
 class ExperimentResults(BaseModel):
     experiment_id: str
@@ -82,6 +83,7 @@ class ABTestVariant(BaseModel):
     variant_id: str
     model_id: str
     weight: float
+    model_config = {'protected_namespaces': ()}
 
 class ABTestResults(BaseModel):
     experiment_id: str
@@ -93,3 +95,4 @@ class ABTestResults(BaseModel):
 class ModelPromoteRequest(BaseModel):
     model_id: str
     environment: str
+    model_config = {'protected_namespaces': ()}

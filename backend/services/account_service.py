@@ -40,3 +40,6 @@ class AccountService:
         self.db.commit()
         self.db.refresh(account)
         return account
+
+def get_account_service(db: Session) -> AccountService:
+    return AccountService(db)
