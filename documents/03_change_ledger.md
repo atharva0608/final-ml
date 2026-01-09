@@ -58,3 +58,4 @@
 | **2026-01-09** | **Backend / Health** | `Critical Fix` | Fixed `ModuleNotFoundError` in `health_service.py` by correcting Celery app import to `from backend.workers import app`. |
 | **2026-01-09** | **Backend / Services** | `Critical Fix` | Fixed `ImportError` in `account_service.py` by restoring missing `get_account_service` factory function. |
 | **2026-01-09** | **Backend / Schemas** | `Fix` | Resolved Pydantic warning `Field "model_id" has conflict` in `lab_schemas.py` by adding `protected_namespaces` config. |
+| **2026-01-09** | **Frontend / Admin** | `Fix` | Fixed `ReferenceError: loading is not defined` in `AdminHealth.jsx` by adding missing state variables. Rebuilt frontend container. |
