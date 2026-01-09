@@ -97,7 +97,7 @@
 | **BE-API::Auth::Main** | `backend/api/auth_routes.py` | API | Authentication Endpoints (Login, Signup, Refresh Token). | `AuthService` |
 | **BE-API::Template::Main** | `backend/api/template_routes.py` | API | Node Template Endpoints (Create, List, Delete templates). | `TemplateService` |
 | **BE-SVC::Onboarding::Main** | `backend/services/onboarding_service.py` | Service | Business logic for tracking user onboarding steps. | `OnboardingState` |
-| **BE-SVC::Data::Pricing** | `backend/scrapers/pricing_collector.py` | Service | **Disconnected**: Implemented with Celery tasks, but NOT registered in `workers/app.py`. | `boto3` |
+| **BE-SVC::Data::Pricing** | `backend/scrapers/pricing_collector.py` | Service | **Real**: Connected via Celery. Collects Spot (every 10m) and On-Demand (daily) prices from AWS. | `boto3` |
 | **BE-SVC::Data::SpotRisk** | `backend/scrapers/spot_advisor_scraper.py` | Service | Fetches AWS Spot Advisor data for interruption risks. | `requests` |
 | **BE-SCH::Account::Main** | `backend/schemas/account_schemas.py` | Schema | Pydantic models for AWS Account validation. | `Pydantic` |
 | **BE-SCH::Audit::Main** | `backend/schemas/audit_schemas.py` | Schema | Pydantic models for Audit Log responses. | `Pydantic` |

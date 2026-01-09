@@ -47,3 +47,4 @@
 | **2026-01-09** | **Docs / Audit** | `Update` | Deep audit of `backend/`: Identified `PricingCollector` worker disconnection, `MLModelServer`/`BinPacker` as standalone modules, and `SettingsService` as in-memory mock. Updated catalog statuses. |
 | **2026-01-09** | **Backend / Lab** | `Fix` | Resolved `InvalidRequestError` in `list_experiments` by adding missing `cluster_id` FK/relationship to `LabExperiment` model and patching DB schema. |
 | **2026-01-09** | **Docs / Frontend** | `Update` | Refined `01_frontend_catalog.md` and Gap Analysis. Annotated mocked/simplified components and added public assets (`index.html`, `manifest.json`). Confirmed 100% file coverage. |
+| **2026-01-09** | **Backend / Worker** | `Fix` | Connected `PricingCollector` to Celery app. Registered `collect_spot_prices` (Every 10m) and `collect_ondemand_prices` (Daily). Updated Catalogs. |

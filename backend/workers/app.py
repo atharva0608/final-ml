@@ -13,6 +13,7 @@ app = Celery(
         "backend.workers.tasks.hibernation_worker",
         "backend.workers.tasks.report_worker",
         "backend.workers.tasks.event_processor",
+        "backend.scrapers.pricing_collector",
     ],
 )
 
@@ -33,13 +34,18 @@ app.conf.update(
         },
         # Pricing collector - update spot prices every 10 minutes
         "pricing-collect-spot-prices": {
-            "task": "workers.pricing.collect_spot_prices",
+            "task": "scrapers.pricing.collect_spot_prices",
             "schedule": 600.0,  # 10 minutes
         },
         # Optimization worker - analyze clusters every 15 minutes
         "optimization-analyze-clusters": {
             "task": "workers.optimization.analyze_all_clusters",
             "schedule": 900.0,  # 15 minutes
+        },
+        # On-Demand pricing - daily at 1:00 AM UTC
+        "pricing-collect-ondemand-prices": {
+            "task": "scrapers.pricing.collect_ondemand_prices",
+            "schedule": crontab(hour=1, minute=0),
         },
     },
 )

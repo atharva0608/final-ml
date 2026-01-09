@@ -34,7 +34,7 @@ These are backend components that exist but are disconnected or simplified, affe
 
 | Component | Status | Impact on Frontend |
 | :--- | :--- | :--- |
-| **Pricing Collector** | **Disconnected** | Pricing data in dashboards may be stale or empty (Worker task not registered). |
+
 | **ML Model Server** | **Standalone** | Lab experiments use mocked prediction logic, not real-time inference. |
 | **Metrics Service** | **Simplified** | Savings charts use hardcoded assumptions (70% spot discount), not real billing data. |
 | **Admin Service (Billing)** | **Mocked Data** | Billing page displays static/mocked invoice data, not connected to Stripe/AWS Cost Explorer. |
