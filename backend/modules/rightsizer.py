@@ -55,8 +55,7 @@ class RightSizingModule:
         logger.info(f"[MOD-SIZE-01] Analyzing resource usage for cluster {cluster_id}")
 
         instances = self.db.query(Instance).filter(
-            Instance.cluster_id == cluster_id,
-            Instance.deleted_at.is_(None)
+            Instance.cluster_id == cluster_id
         ).all()
 
         overprovisioned = []
