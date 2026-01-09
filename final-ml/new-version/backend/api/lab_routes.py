@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from typing import Optional
 from backend.models.base import get_db
 from backend.models.user import User
-from backend.core.dependencies import get_current_user
+from backend.core.dependencies import get_current_user, RequireAccess
 from backend.services.lab_service import get_lab_service
 from backend.schemas.lab_schemas import (
     ExperimentCreate,
@@ -31,7 +31,7 @@ router = APIRouter(prefix="/lab", tags=["Lab"])
 )
 def create_experiment(
     experiment_data: ExperimentCreate,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(RequireAccess("EXECUTION")),
     db: Session = Depends(get_db)
 ) -> ExperimentResponse:
     """
@@ -139,7 +139,7 @@ def get_experiment(
 def update_experiment(
     experiment_id: str,
     update_data: ExperimentUpdate,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(RequireAccess("EXECUTION")),
     db: Session = Depends(get_db)
 ) -> ExperimentResponse:
     """
@@ -175,7 +175,7 @@ def update_experiment(
 )
 def delete_experiment(
     experiment_id: str,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(RequireAccess("FULL")),
     db: Session = Depends(get_db)
 ) -> None:
     """
@@ -204,7 +204,7 @@ def delete_experiment(
 )
 def start_experiment(
     experiment_id: str,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(RequireAccess("EXECUTION")),
     db: Session = Depends(get_db)
 ) -> ExperimentResponse:
     """
@@ -235,7 +235,7 @@ def start_experiment(
 )
 def stop_experiment(
     experiment_id: str,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(RequireAccess("EXECUTION")),
     db: Session = Depends(get_db)
 ) -> ExperimentResponse:
     """

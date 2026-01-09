@@ -190,9 +190,10 @@ case "$MODE" in
         echo ""
 
         # Seed demo data (users, accounts, templates)
-        echo -e "${BLUE}🌱 Seeding demo data...${NC}"
-        $COMPOSE_CMD -f docker/docker-compose.yml exec -T backend python scripts/seed_demo_data.py
-        echo ""
+        # Seeding is now handled by the backend startup event (backend/core/api_gateway.py)
+        # echo -e "${BLUE}🌱 Seeding demo data...${NC}"
+        # $COMPOSE_CMD -f docker/docker-compose.yml exec -T backend python scripts/seed_demo_data.py
+        # echo ""
 
         # Show service status
         echo -e "${GREEN}✅ All services started successfully!${NC}"
@@ -222,8 +223,8 @@ case "$MODE" in
         echo -e "    Password: ${GREEN}admin123${NC}"
         echo ""
         echo -e "  ${YELLOW}Demo Client:${NC}"
-        echo -e "    Email:    ${GREEN}demo@client.com${NC}"
-        echo -e "    Password: ${GREEN}democlient${NC}"
+        echo -e "    Email:    ${GREEN}demo@spotoptimizer.com${NC}"
+        echo -e "    Password: ${GREEN}demo1234${NC}"
         echo ""
         echo -e "${YELLOW}⚠️  Change default passwords immediately!${NC}"
         echo ""

@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from typing import Optional
 from backend.models.base import get_db
 from backend.models.user import User
-from backend.core.dependencies import get_current_user
+from backend.core.dependencies import get_current_user, RequireAccess
 from backend.services.policy_service import get_policy_service
 from backend.schemas.policy_schemas import (
     PolicyCreate,
@@ -30,7 +30,7 @@ router = APIRouter(prefix="/policies", tags=["Policies"])
 )
 def create_policy(
     policy_data: PolicyCreate,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(RequireAccess("EXECUTION")),
     db: Session = Depends(get_db)
 ) -> PolicyResponse:
     """
@@ -169,7 +169,7 @@ def get_policy_by_cluster(
 def update_policy(
     policy_id: str,
     update_data: PolicyUpdate,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(RequireAccess("EXECUTION")),
     db: Session = Depends(get_db)
 ) -> PolicyResponse:
     """
@@ -203,7 +203,7 @@ def update_policy(
 )
 def delete_policy(
     policy_id: str,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(RequireAccess("FULL")),
     db: Session = Depends(get_db)
 ) -> None:
     """
@@ -232,7 +232,7 @@ def delete_policy(
 )
 def toggle_policy(
     policy_id: str,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(RequireAccess("EXECUTION")),
     db: Session = Depends(get_db)
 ) -> PolicyResponse:
     """

@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from typing import Optional
 from backend.models.base import get_db
 from backend.models.user import User
-from backend.core.dependencies import get_current_user
+from backend.core.dependencies import get_current_user, RequireAccess
 from backend.services.hibernation_service import get_hibernation_service
 from backend.schemas.hibernation_schemas import (
     HibernationScheduleCreate,
@@ -30,7 +30,7 @@ router = APIRouter(prefix="/hibernation", tags=["Hibernation"])
 )
 def create_schedule(
     schedule_data: HibernationScheduleCreate,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(RequireAccess("EXECUTION")),
     db: Session = Depends(get_db)
 ) -> HibernationScheduleResponse:
     """
@@ -168,7 +168,7 @@ def get_schedule_by_cluster(
 def update_schedule(
     schedule_id: str,
     update_data: HibernationScheduleUpdate,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(RequireAccess("EXECUTION")),
     db: Session = Depends(get_db)
 ) -> HibernationScheduleResponse:
     """
@@ -201,7 +201,7 @@ def update_schedule(
 )
 def delete_schedule(
     schedule_id: str,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(RequireAccess("FULL")),
     db: Session = Depends(get_db)
 ) -> None:
     """
@@ -230,7 +230,7 @@ def delete_schedule(
 )
 def toggle_schedule(
     schedule_id: str,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(RequireAccess("EXECUTION")),
     db: Session = Depends(get_db)
 ) -> HibernationScheduleResponse:
     """

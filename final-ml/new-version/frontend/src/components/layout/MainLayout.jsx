@@ -7,7 +7,7 @@ import React from 'react';
 import { Outlet, Link, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../../hooks/useAuth';
 import { Button } from '../shared';
-import { FiHome, FiServer, FiFileText, FiSettings, FiTarget, FiClock, FiBarChart2, FiUsers, FiActivity, FiLogOut, FiClipboard } from 'react-icons/fi';
+import { FiHome, FiServer, FiFileText, FiSettings, FiTarget, FiClock, FiBarChart2, FiUsers, FiActivity, FiLogOut, FiClipboard, FiBriefcase } from 'react-icons/fi';
 
 const MainLayout = () => {
   const { user, logout } = useAuth();
@@ -27,6 +27,7 @@ const MainLayout = () => {
 
   const adminNavigation = [
     { name: 'Command Center', path: '/admin', icon: FiActivity },
+    { name: 'Organizations', path: '/admin/organizations', icon: FiBriefcase },
     { name: 'Clients', path: '/admin/clients', icon: FiUsers },
     { name: 'System Health', path: '/admin/health', icon: FiServer },
     { name: 'The Lab', path: '/admin/lab', icon: FiTarget }, // Using Target icon for Lab/Models

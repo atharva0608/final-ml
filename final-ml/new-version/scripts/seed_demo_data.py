@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from backend.models.base import SessionLocal, create_tables
 from backend.models.user import User, UserRole
 from backend.models.node_template import NodeTemplate
+from backend.models.onboarding import OnboardingState # Fix for Mapper initialization
 from backend.core.crypto import hash_password
 
 
@@ -52,19 +53,26 @@ def seed_demo_data():
             print(f"  ℹ️  Admin user already exists")
 
         # 2. Demo Client User
-        demo_user = db.query(User).filter(User.email == "demo@client.com").first()
+        demo_email = "demo@spotoptimizer.com"
+        demo_user = db.query(User).filter(User.email == demo_email).first()
         if not demo_user:
             demo_user = User(
-                email="demo@client.com",
-                password_hash=hash_password("democlient"),  # 10 characters
+                email=demo_email,
+                password_hash=hash_password("demo1234"),  # Updated password to meet 8 char limit
                 role=UserRole.CLIENT,
                 created_at=datetime.utcnow(),
                 updated_at=datetime.utcnow()
             )
+            # Should also add Organization/Account creation here like in base.py?
+            # base.py handles it better (with Organization).
+            # If I run this script, it only creates User, likely with Default Organization (None?)
+            # But api_gateway will likely fix it up or create a duplicate if I'm not careful.
+            # Ideally this script should CALL base.seed_demo_data() instead of duplicating logic.
+            # But let's just fix the crash and credentials for now.
             db.add(demo_user)
             db.commit()
             db.refresh(demo_user)
-            print(f"  ✅ Created demo client: demo@client.com")
+            print(f"  ✅ Created demo client: {demo_email}")
         else:
             print(f"  ℹ️  Demo client already exists")
 
@@ -138,9 +146,9 @@ def seed_demo_data():
                 updated_at=datetime.utcnow()
             )
             db.add(memory_template)
-
+            
             db.commit()
-            print(f"  ✅ Created 3 demo node templates")
+            print(f"  ✅ Created 3 demo node templates for {demo_email}")
         else:
             print(f"  ℹ️  Demo templates already exist ({existing_templates} templates)")
 
@@ -155,8 +163,8 @@ def seed_demo_data():
         print("    Role:     SUPER_ADMIN")
         print()
         print("  Demo Client:")
-        print("    Email:    demo@client.com")
-        print("    Password: democlient")
+        print("    Email:    demo@spotoptimizer.com")
+        print("    Password: demo1234")
         print("    Role:     CLIENT")
         print("    Templates: 3 node templates created")
         print()

@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from typing import Optional
 from backend.models.base import get_db
 from backend.models.user import User
-from backend.core.dependencies import get_current_user
+from backend.core.dependencies import get_current_user, RequireAccess
 from backend.services.cluster_service import get_cluster_service
 from backend.schemas.cluster_schemas import (
     ClusterCreate,
@@ -64,7 +64,7 @@ def discover_clusters(
 )
 def register_cluster(
     cluster_data: ClusterCreate,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(RequireAccess("EXECUTION")),
     db: Session = Depends(get_db)
 ) -> ClusterResponse:
     """
@@ -94,7 +94,7 @@ def register_cluster(
 )
 def connect_aws_cluster(
     connect_data: AWSConnectRequest,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(RequireAccess("EXECUTION")),
     db: Session = Depends(get_db)
 ) -> ClusterResponse:
     """
@@ -201,7 +201,7 @@ def get_cluster(
 def update_cluster(
     cluster_id: str,
     update_data: ClusterUpdate,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(RequireAccess("EXECUTION")),
     db: Session = Depends(get_db)
 ) -> ClusterResponse:
     """
@@ -234,7 +234,7 @@ def update_cluster(
 )
 def delete_cluster(
     cluster_id: str,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(RequireAccess("FULL")),
     db: Session = Depends(get_db)
 ) -> None:
     """

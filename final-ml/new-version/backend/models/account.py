@@ -27,8 +27,8 @@ class Account(Base):
     # Primary key
     id = Column(String(36), primary_key=True, default=generate_uuid, index=True)
 
-    # Foreign key to users
-    user_id = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    # Foreign key to Organization
+    organization_id = Column(String(36), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
 
     # AWS account details
     aws_account_id = Column(String(12), nullable=False)
@@ -43,7 +43,7 @@ class Account(Base):
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     # Relationships
-    user = relationship("User", back_populates="accounts")
+    organization = relationship("Organization", back_populates="accounts")
     clusters = relationship("Cluster", back_populates="account", cascade="all, delete-orphan")
 
     def __repr__(self):

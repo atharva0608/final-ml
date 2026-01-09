@@ -8,6 +8,7 @@ import { Button, Input, Card } from '../shared';
 
 const Signup = () => {
   const [email, setEmail] = useState('');
+  const [organizationName, setOrganizationName] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [loading, setLoading] = useState(false);
@@ -21,6 +22,12 @@ const Signup = () => {
       newErrors.email = 'Email is required';
     } else if (!/\S+@\S+\.\S+/.test(email)) {
       newErrors.email = 'Email is invalid';
+    }
+
+    if (!organizationName) {
+      newErrors.organizationName = 'Company name is required';
+    } else if (organizationName.length < 2) {
+      newErrors.organizationName = 'Company name must be at least 2 characters';
     }
 
     if (!password) {
@@ -53,7 +60,11 @@ const Signup = () => {
     }
 
     setLoading(true);
-    await signup(email, password);
+    setLoading(true);
+    // Passing object to match new API or update useAuth hook to handle parameters
+    // Assuming useAuth.signup signature needs update or accepts object
+    // Checking previous useAuth usage, it takes arguments. updating call.
+    await signup(email, password, organizationName);
     setLoading(false);
   };
 
@@ -84,6 +95,16 @@ const Signup = () => {
               error={errors.email}
               required
               autoComplete="email"
+            />
+
+            <Input
+              label="Company / Organization Name"
+              type="text"
+              value={organizationName}
+              onChange={(e) => setOrganizationName(e.target.value)}
+              placeholder="Acme Corp"
+              error={errors.organizationName}
+              required
             />
 
             <Input

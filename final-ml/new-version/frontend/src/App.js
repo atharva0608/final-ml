@@ -17,6 +17,7 @@ import Signup from './components/auth/Signup';
 
 // Main Pages
 import Dashboard from './components/dashboard/Dashboard';
+import Onboarding from './pages/Onboarding';
 import ClusterList from './components/clusters/ClusterList';
 import TemplateList from './components/templates/TemplateList';
 import PolicyConfig from './components/policies/PolicyConfig';
@@ -30,6 +31,7 @@ import AdminHealth from './components/admin/AdminHealth';
 import AdminLab from './components/admin/AdminLab';
 import AdminConfig from './components/admin/AdminConfig';
 import AdminBilling from './components/admin/AdminBilling';
+import AdminOrganizations from './components/admin/AdminOrganizations';
 import RightSizing from './components/right-sizing/RightSizing';
 
 // Protected Route Component
@@ -150,6 +152,15 @@ function App() {
 
           {/* Protected Routes */}
           <Route
+            path="/onboarding"
+            element={
+              <ProtectedRoute>
+                <Onboarding />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
             path="/"
             element={
               <ProtectedRoute>
@@ -173,6 +184,7 @@ function App() {
             <Route path="admin/health" element={<AdminRoute><AdminHealth /></AdminRoute>} />
             <Route path="admin/lab" element={<AdminRoute><AdminLab /></AdminRoute>} />
             <Route path="admin/config" element={<AdminRoute><AdminConfig /></AdminRoute>} />
+            <Route path="admin/organizations" element={<AdminRoute><AdminOrganizations /></AdminRoute>} />
             <Route path="admin/billing" element={<AdminRoute><AdminBilling /></AdminRoute>} />
           </Route>
 

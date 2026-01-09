@@ -13,6 +13,9 @@ from backend.api.hibernation_routes import router as hibernation_router
 from backend.api.metrics_routes import router as metrics_router
 from backend.api.admin_routes import router as admin_router
 from backend.api.lab_routes import router as lab_router
+from backend.api.onboarding_routes import router as onboarding_router
+from backend.api.organization_routes import router as organization_router
+from backend.api.settings_routes import router as settings_router
 
 __all__ = [
     "auth_router",
@@ -24,4 +27,7 @@ __all__ = [
     "metrics_router",
     "admin_router",
     "lab_router",
+    "onboarding_router",
+    "organization_router",
+    "settings_router",
 ]

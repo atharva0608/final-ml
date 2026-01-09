@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from typing import Optional
 from backend.models.base import get_db
 from backend.models.user import User
-from backend.core.dependencies import get_current_user
+from backend.core.dependencies import get_current_user, require_super_admin
 from backend.services.admin_service import get_admin_service
 from backend.schemas.admin_schemas import (
     ClientList,
@@ -16,10 +16,37 @@ from backend.schemas.admin_schemas import (
     UserManagement,
     PlatformStats,
     PasswordReset,
+    OrganizationList,
+    OrganizationFilter,
 )
 from datetime import datetime
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
+
+
+@router.get(
+    "/organizations",
+    response_model=OrganizationList,
+    summary="List all organizations",
+    description="Get paginated list of organizations (Super admin only)"
+)
+def list_organizations(
+    search: Optional[str] = Query(None, description="Search by name or slug"),
+    page: int = Query(1, ge=1, description="Page number"),
+    page_size: int = Query(50, ge=1, le=100, description="Items per page"),
+    current_user: User = Depends(require_super_admin),
+    db: Session = Depends(get_db)
+) -> OrganizationList:
+    """
+    List all organizations
+    """
+    filters = OrganizationFilter(
+        search=search,
+        page=page,
+        page_size=page_size
+    )
+    service = get_admin_service(db)
+    return service.list_organizations(current_user, filters)
 
 
 @router.get(
@@ -35,7 +62,7 @@ def list_clients(
     created_before: Optional[datetime] = Query(None, description="Filter by creation date (before)"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(50, ge=1, le=100, description="Items per page"),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_super_admin),
     db: Session = Depends(get_db)
 ) -> ClientList:
     """
@@ -82,7 +109,7 @@ def list_clients(
 )
 def get_client_details(
     client_id: str,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_super_admin),
     db: Session = Depends(get_db)
 ) -> UserManagement:
     """
@@ -114,7 +141,7 @@ def get_client_details(
 )
 def toggle_client_status(
     client_id: str,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_super_admin),
     db: Session = Depends(get_db)
 ) -> UserManagement:
     """
@@ -144,7 +171,7 @@ def toggle_client_status(
 def reset_client_password(
     client_id: str,
     password_data: PasswordReset,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_super_admin),
     db: Session = Depends(get_db)
 ) -> None:
     """
@@ -182,7 +209,7 @@ def reset_client_password(
     description="Get aggregated platform-wide statistics (Super admin only)"
 )
 def get_platform_stats(
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_super_admin),
     db: Session = Depends(get_db)
 ) -> PlatformStats:
     """

@@ -21,7 +21,10 @@ from backend.api import (
     metrics_router,
     admin_router,
     lab_router,
+    onboarding_router,
+    organization_router,
 )
+from backend.api import account_routes
 
 logger = StructuredLogger(__name__)
 
@@ -325,6 +328,16 @@ app.include_router(admin_router, prefix="/api/v1")
 # Lab routes
 app.include_router(lab_router, prefix="/api/v1")
 
+# Onboarding routes
+# Onboarding routes
+app.include_router(onboarding_router, prefix="/api/v1")
+
+# Organization routes
+app.include_router(organization_router, prefix="/api/v1")
+
+# Account routes
+app.include_router(account_routes.router, prefix="/api/v1")
+
 
 # Startup and shutdown events
 
@@ -333,7 +346,7 @@ async def startup_event():
     """
     Application startup tasks
     """
-    from backend.models.base import create_tables, seed_default_admin
+    from backend.models.base import create_tables, seed_demo_data
 
     logger.info(
         "Application starting",
@@ -350,8 +363,8 @@ async def startup_event():
         create_tables()
         logger.info("✅ Database tables created/verified")
 
-        # Seed default admin user
-        seed_default_admin()
+        # Seed demo data
+        seed_demo_data()
     except Exception as e:
         logger.error(f"❌ Failed to initialize database: {e}")
 

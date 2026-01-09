@@ -6,7 +6,8 @@ Business logic for user authentication, signup, login, and token management
 from typing import Optional, Tuple
 from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
-from backend.models.user import User, UserRole
+from backend.models.user import User, UserRole, OrgRole, AccessLevel
+from backend.models.organization import Organization
 from backend.schemas.auth_schemas import (
     SignupRequest,
     LoginRequest,
@@ -76,23 +77,44 @@ class AuthService:
         # Hash password
         password_hash = hash_password(signup_data.password)
 
-        # Create new user
+        # Create Organization
+        base_slug = signup_data.organization_name.lower().replace(" ", "-")
+        # specific logic for uniqueness could be added here
+        
+        new_org = Organization(
+            name=signup_data.organization_name,
+            slug=base_slug + "-" + datetime.utcnow().strftime("%H%M%S") # simple uniqueness
+        )
+        self.db.add(new_org)
+        self.db.flush() # Get ID
+
+        # Create new user (organization owner)
         new_user = User(
             email=signup_data.email.lower(),
             password_hash=password_hash,
             role=UserRole.CLIENT,  # Default role
+            organization_id=new_org.id,
+            org_role=OrgRole.ORG_ADMIN,  # Organization creator becomes ORG_ADMIN
+            access_level=AccessLevel.FULL,  # Full access for org creator
+            must_reset_password=False,  # Owner chose their own password
             created_at=datetime.utcnow(),
             updated_at=datetime.utcnow()
         )
 
         self.db.add(new_user)
+        self.db.flush()  # Get user ID
+        
+        # Set organization owner
+        new_org.owner_user_id = new_user.id
+        
         self.db.commit()
         self.db.refresh(new_user)
 
         logger.info(
-            "New user registered",
+            "New user registered as organization owner",
             user_id=new_user.id,
-            email=new_user.email
+            email=new_user.email,
+            organization_id=new_org.id
         )
 
         # Generate tokens
@@ -189,7 +211,12 @@ class AuthService:
 
         # Generate new access token only
         access_token = create_access_token(
-            data={"sub": user.id, "email": user.email, "role": user.role.value}
+            data={
+                "sub": user.id, 
+                "email": user.email, 
+                "role": user.role.value,
+                "organization_id": user.organization_id
+            }
         )
 
         return TokenResponse(
@@ -220,6 +247,8 @@ class AuthService:
             id=user.id,
             email=user.email,
             role=user.role.value,
+            organization_id=user.organization_id,
+            organization_name=user.organization.name if user.organization else None,
             created_at=user.created_at
         )
 
@@ -286,7 +315,9 @@ class AuthService:
             data={
                 "sub": user.id,
                 "email": user.email,
-                "role": user.role.value
+                "role": user.role.value,
+                "organization_id": user.organization_id,
+                "organization_name": user.organization.name if user.organization else None
             }
         )
 

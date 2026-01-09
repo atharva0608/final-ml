@@ -68,6 +68,7 @@ class InsufficientPermissionsError(AuthorizationError):
 
 # Alias for backward compatibility
 UnauthorizedError = AuthorizationError
+ForbiddenError = AuthorizationError
 
 
 # Resource Exceptions

@@ -3,17 +3,25 @@
  * Tabbed interface for Account, Integrations, and Billing
  */
 import React, { useState } from 'react';
-import { FiUser, FiCloud, FiCreditCard, FiShield } from 'react-icons/fi';
+import { FiUser, FiCloud, FiCreditCard, FiShield, FiUsers } from 'react-icons/fi';
 import AccountSettings from './AccountSettings';
 import CloudIntegrations from './CloudIntegrations';
+import TeamManagement from './TeamManagement';
 import { Card, Button, Input } from '../shared';
 import toast from 'react-hot-toast';
+import { useAuth } from '../../hooks/useAuth';
 
 const Settings = () => {
     const [activeTab, setActiveTab] = useState('account');
+    const { user } = useAuth();
+
+    // Only ORG_ADMIN can access Team Management (invite/remove/update members)
+    const canManageTeam = user?.org_role === 'ORG_ADMIN';
 
     const tabs = [
         { id: 'account', label: 'Account', icon: FiUser },
+        // Only show team tab for authorized roles
+        ...(canManageTeam ? [{ id: 'team', label: 'Team', icon: FiUsers }] : []),
         { id: 'integrations', label: 'Cloud Integrations', icon: FiCloud },
         { id: 'billing', label: 'Billing', icon: FiCreditCard },
         { id: 'security', label: 'Security', icon: FiShield },
@@ -23,6 +31,8 @@ const Settings = () => {
         switch (activeTab) {
             case 'account':
                 return <AccountSettings />;
+            case 'team':
+                return <TeamManagement />;
             case 'integrations':
                 return <CloudIntegrations />;
             case 'billing':
@@ -50,8 +60,8 @@ const Settings = () => {
                             key={tab.id}
                             onClick={() => setActiveTab(tab.id)}
                             className={`flex items-center gap-2 py-4 px-1 border-b-2 font-medium text-sm transition-colors ${activeTab === tab.id
-                                    ? 'border-blue-500 text-blue-600'
-                                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                                ? 'border-blue-500 text-blue-600'
+                                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
                                 }`}
                         >
                             <tab.icon className="w-5 h-5" />

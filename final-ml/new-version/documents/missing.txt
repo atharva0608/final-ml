@@ -1,0 +1,39 @@
+# Missing Components & Gaps
+Date: 2026-01-09
+
+# Missing Components & Gaps
+Date: 2026-01-09
+
+## Resolved Items
+- [x] `backend/api/settings_routes.py`: Created.
+- [x] `backend/services/settings_service.py`: Created.
+- [x] `backend/models/integrations.py`: Handled via in-memory mock in service.
+- [x] `POST /api/v1/accounts/{id}/validate`: Added to `account_routes.py`.
+- [x] `POST /api/v1/accounts/{id}/set-default`: Added to `account_routes.py`.
+
+## Remaining Logic / Stubs
+- [ ] `backend/core/action_executor.py`: Missing implementation for `RightSize`, `Consolidate`, `ScaleUp`, `ScaleDown` (marked as TODO).
+- [ ] `backend/services/cluster_service.py`: `discover_clusters` returns hardcoded empty list.
+- [ ] `backend/services/metrics_service.py`: `_calculate_savings` uses hardcoded 70% spot discount.
+
+
+## Missing Logic / Stubs (Code exists but is incomplete)
+- [ ] `backend/core/action_executor.py`: Missing implementation for `RightSize`, `Consolidate`, `ScaleUp`, `ScaleDown` (marked as TODO).
+- [ ] `backend/services/cluster_service.py`: `discover_clusters` returns hardcoded empty list.
+- [ ] `backend/services/metrics_service.py`: `_calculate_savings` uses hardcoded 70% spot discount.
+
+However, there is one major component group that is part of your server-side ecosystem but sits just outside the backend/ folder in your file structure: the Kubernetes Agent.
+
+Since you included docker/Dockerfile.backend (which is outside backend/), you should likely include the Agent as well, as it is the "hands" of your backend running on the clusters.
+
+Here are the missing items:Suggested ID,File Path,Type,Function / Feature Description
+AGT-SVC::Core::Main,agent/main.py,Service,Agent entrypoint. Manages WebSocket connection to backend.
+AGT-SVC::Core::Collector,agent/collector.py,Service,Collects cluster metrics (CPU/Mem) and pushes to backend.
+AGT-SVC::Core::Actuator,agent/actuator.py,Service,"Executes actions received from backend (Cordon, Drain)."
+AGT-SVC::Core::Heartbeat,agent/heartbeat.py,Service,Sends periodic heartbeats to maintain cluster status.
+AGT-UTL::Net::WebSocket,agent/websocket_client.py,Utility,Wrapper for WebSocket communication logic.
+AGT-CFG::System::Config,agent/config.py,Config,"Agent configuration (API Key, Backend URL)."
+AGT-INF::Docker::Image,agent/Dockerfile,Infra,Docker container definition for the Agent.
+Suggested ID,File Path,Type,Function / Feature Description
+BE-CFG::Deps::Main,requirements.txt,Config,Python dependency manifest for the backend.
+BE-MIG::TPL::Script,migrations/script.py.mako,Config,Mako template used by Alembic to generate new migration files.

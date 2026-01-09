@@ -14,7 +14,7 @@ from backend.schemas.template_schemas import (
     NodeTemplateList,
 )
 from backend.services.template_service import get_template_service, TemplateService
-from backend.core.dependencies import get_current_user
+from backend.core.dependencies import get_current_user, RequireAccess
 from backend.core.logger import StructuredLogger
 
 logger = StructuredLogger(__name__)
@@ -66,7 +66,7 @@ def get_template(
 )
 def create_template(
     template_data: NodeTemplateCreate,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(RequireAccess("EXECUTION")),
     db: Session = Depends(get_db)
 ) -> NodeTemplateResponse:
     """
@@ -96,7 +96,7 @@ def create_template(
 def update_template(
     template_id: str,
     template_data: NodeTemplateUpdate,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(RequireAccess("EXECUTION")),
     db: Session = Depends(get_db)
 ) -> NodeTemplateResponse:
     """Update template configuration"""
@@ -112,7 +112,7 @@ def update_template(
 )
 def delete_template(
     template_id: str,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(RequireAccess("FULL")),
     db: Session = Depends(get_db)
 ):
     """
@@ -138,7 +138,7 @@ def delete_template(
 )
 def set_default_template(
     template_id: str,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(RequireAccess("EXECUTION")),
     db: Session = Depends(get_db)
 ) -> NodeTemplateResponse:
     """

@@ -60,11 +60,16 @@ def signup(
         email=user.email
     )
 
-    # Create UserContext
+    # Create UserContext (organization owner, must_reset_password=False)
     user_context = UserContext(
         user_id=user.id,
         email=user.email,
-        role=user.role.value
+        role=user.role.value,
+        organization_id=user.organization_id,
+        org_role=user.org_role.value if user.org_role else None,
+        organization_name=user.organization.name if user.organization else None,
+        access_level=user.access_level.value if user.access_level else None,
+        must_reset_password=user.must_reset_password
     )
 
     # Combine tokens and user data
@@ -111,11 +116,16 @@ def login(
         email=user.email
     )
 
-    # Create UserContext
+    # Create UserContext with must_reset_password flag
     user_context = UserContext(
         user_id=user.id,
         email=user.email,
-        role=user.role.value
+        role=user.role.value,
+        organization_id=user.organization_id,
+        org_role=user.org_role.value if user.org_role else None,
+        organization_name=user.organization.name if user.organization else None,
+        access_level=user.access_level.value if user.access_level else None,
+        must_reset_password=user.must_reset_password
     )
 
     # Combine tokens and user data

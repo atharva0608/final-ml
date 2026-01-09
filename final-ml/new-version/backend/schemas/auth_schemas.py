@@ -11,6 +11,7 @@ class SignupRequest(BaseModel):
     """User signup request"""
     email: EmailStr = Field(..., description="User email address")
     password: str = Field(..., min_length=8, max_length=128, description="User password (min 8 characters)")
+    organization_name: str = Field(..., description="Organization or Company Name", min_length=2)
 
     @field_validator('password')
     @classmethod
@@ -55,13 +56,19 @@ class UserContext(BaseModel):
     user_id: str = Field(..., description="User UUID")
     email: str = Field(..., description="User email")
     role: str = Field(..., description="User role (CLIENT or SUPER_ADMIN)")
+    organization_id: Optional[str] = Field(None, description="Organization UUID")
+    org_role: Optional[str] = Field(None, description="Role within the Organization (ORG_ADMIN/TEAM_LEAD/MEMBER)")
+    organization_name: Optional[str] = Field(None, description="Organization Name")
+    access_level: Optional[str] = Field(None, description="Access Level (READ_ONLY/EXECUTION/FULL)")
+    must_reset_password: bool = Field(False, description="Whether user must reset password on next login")
 
     model_config = {
         "json_schema_extra": {
             "example": {
                 "user_id": "550e8400-e29b-41d4-a716-446655440000",
                 "email": "user@example.com",
-                "role": "CLIENT"
+                "role": "CLIENT",
+                "must_reset_password": False
             }
         }
     }
@@ -115,6 +122,8 @@ class UserProfile(BaseModel):
     id: str = Field(..., description="User UUID")
     email: str = Field(..., description="User email")
     role: str = Field(..., description="User role")
+    organization_id: Optional[str] = Field(None, description="Organization UUID")
+    organization_name: Optional[str] = Field(None, description="Organization Name")
     created_at: datetime = Field(..., description="Account creation timestamp")
 
     model_config = {

@@ -40,9 +40,13 @@ export const useAuth = () => {
     }
   };
 
-  const signup = async (email, password) => {
+  const signup = async (email, password, organizationName) => {
     try {
-      const response = await authAPI.signup({ email, password });
+      const response = await authAPI.signup({
+        email,
+        password,
+        organization_name: organizationName
+      });
       const { user: userData, access_token, refresh_token } = response.data;
 
       // Store tokens

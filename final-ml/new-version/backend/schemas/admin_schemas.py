@@ -5,12 +5,13 @@ from datetime import datetime
 class ClientSummary(BaseModel):
     id: str
     email: str
-    organization_name: str
-    status: str
+    organization_name: Optional[str] = None
     total_clusters: int = 0
-    total_savings: float = 0.0
+    total_instances: int = 0
+    total_cost: float = 0.0
     is_active: bool = True
     created_at: datetime
+    last_login: Optional[datetime] = None
 
 class ClientFilter(BaseModel):
     search: Optional[str] = None
@@ -22,18 +23,24 @@ class ClientFilter(BaseModel):
 
 class ClientStats(BaseModel):
     client_id: str
-    savings_trend: List[Dict[str, Any]]
-    active_policies: int
+    savings_trend: List[Dict[str, Any]] = []
+    active_policies: int = 0
+    total_accounts: int = 0
+    total_clusters: int = 0
+    total_instances: int = 0
+    running_instances: int = 0
+    total_cost: float = 0.0
 
 class UserManagement(BaseModel):
-    user_id: str
+    id: str
     email: str
-    full_name: str
-    status: str
+    full_name: Optional[str] = None
+    is_active: bool
     role: str
     created_at: datetime
+    updated_at: Optional[datetime] = None
     last_login: Optional[datetime] = None
-    stats: Optional[Dict[str, Any]] = None
+    stats: Optional[ClientStats] = None
 
 class PasswordReset(BaseModel):
     new_password: str
@@ -80,3 +87,26 @@ class ImpersonateRequest(BaseModel):
 class ImpersonateResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
+
+class OrganizationSummary(BaseModel):
+    id: str
+    name: str
+    slug: str
+    owner_email: Optional[str] = None
+    total_users: int = 0
+    total_clusters: int = 0
+    total_instances: int = 0
+    created_at: datetime
+    is_active: bool = True
+
+class OrganizationFilter(BaseModel):
+    search: Optional[str] = None
+    page: int = 1
+    page_size: int = 50
+
+class OrganizationList(BaseModel):
+    organizations: List[OrganizationSummary]
+    total: int
+    page: int
+    page_size: int
+

@@ -237,6 +237,10 @@ After running migrations, a default super admin account is created:
 
 **⚠️ IMPORTANT**: Change this password immediately in production!
 
+A demo client account is also created:
+- **Email**: demo@spotoptimizer.com
+- **Password**: demo1234
+
 ## Database Schema
 
 The platform uses 13 database models:

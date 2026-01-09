@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import and_, desc, or_
 from backend.models.cluster import Cluster, ClusterStatus
 from backend.models.account import Account, AccountStatus
+from backend.models.user import User
 from backend.models.instance import Instance
 from backend.schemas.cluster_schemas import (
     ClusterCreate,
@@ -55,11 +56,16 @@ class ClusterService:
             ResourceNotFoundError: If account not found
             AWSResourceNotFoundError: If AWS discovery fails
         """
+        # Get user's organization
+        user = self.db.query(User).filter(User.id == user_id).first()
+        if not user or not user.organization_id:
+             raise ResourceNotFoundError("User or Organization", user_id)
+
         # Get account
         account = self.db.query(Account).filter(
             and_(
                 Account.id == account_id,
-                Account.user_id == user_id
+                Account.organization_id == user.organization_id
             )
         ).first()
 
@@ -118,11 +124,16 @@ class ClusterService:
         if not validate_aws_region(cluster_data.region):
             raise ValidationError(f"Invalid AWS region: {cluster_data.region}")
 
-        # Check if account exists and belongs to user
+        # Get user
+        user = self.db.query(User).filter(User.id == user_id).first()
+        if not user or not user.organization_id:
+             raise ResourceNotFoundError("User or Organization", user_id)
+
+        # Check if account exists and belongs to user's org
         account = self.db.query(Account).filter(
             and_(
                 Account.id == cluster_data.account_id,
-                Account.user_id == user_id
+                Account.organization_id == user.organization_id
             )
         ).first()
 
@@ -193,10 +204,15 @@ class ClusterService:
         if not validate_aws_region(connect_data.region):
             raise ValidationError(f"Invalid AWS region: {connect_data.region}")
 
-        # Check for existing cluster with same name
+        # Get user
+        user = self.db.query(User).filter(User.id == user_id).first()
+        if not user or not user.organization_id:
+             raise ResourceNotFoundError("User or Organization", user_id)
+
+        # Check for existing cluster with same name within org
         existing = self.db.query(Cluster).join(Account).filter(
             and_(
-                Account.user_id == user_id,
+                Account.organization_id == user.organization_id,
                 Cluster.name == connect_data.name
             )
         ).first()
@@ -204,25 +220,22 @@ class ClusterService:
         if existing:
             raise ResourceAlreadyExistsError("Cluster", connect_data.name)
 
-        # Get or create placeholder account for this user
-        # In a real scenario, we might want to link this to a specific AWS account
-        # For now, we'll find the first active account or create one if needed
-        account = self.db.query(Account).filter(Account.user_id == user_id).first()
+        # Get or create placeholder account for this org
+        account = self.db.query(Account).filter(Account.organization_id == user.organization_id).first()
         
         if not account:
             # Create a default account if none exists
-            # This is a simplification; ideally user selects an account
             account = Account(
                 id=str(uuid.uuid4()),
-                user_id=user_id,
-                aws_account_id=connect_data.role_arn.split(':')[4], # Extract from ARN
-                role_arn="", # Placeholder
+                organization_id=user.organization_id,
+                aws_account_id=connect_data.role_arn.split(':')[4],
+                role_arn="", 
                 status=AccountStatus.ACTIVE,
                 created_at=datetime.utcnow(),
                 updated_at=datetime.utcnow()
             )
             self.db.add(account)
-            self.db.flush() # Get ID without committing
+            self.db.flush()
 
         # Create cluster record
         new_cluster = Cluster(
@@ -268,10 +281,14 @@ class ClusterService:
         Raises:
             ResourceNotFoundError: If cluster not found
         """
+        user = self.db.query(User).filter(User.id == user_id).first()
+        if not user or not user.organization_id:
+             raise ResourceNotFoundError("User or Organization", user_id)
+
         cluster = self.db.query(Cluster).join(Account).filter(
             and_(
                 Cluster.id == cluster_id,
-                Account.user_id == user_id
+                Account.organization_id == user.organization_id
             )
         ).first()
 
@@ -295,8 +312,13 @@ class ClusterService:
         Returns:
             ClusterList with paginated results
         """
+        user = self.db.query(User).filter(User.id == user_id).first()
+        if not user or not user.organization_id:
+             # Return empty if no org
+             return ClusterList(clusters=[], total=0, page=filters.page, page_size=filters.page_size)
+
         query = self.db.query(Cluster).join(Account).filter(
-            Account.user_id == user_id
+            Account.organization_id == user.organization_id
         )
 
         # Apply filters
@@ -355,10 +377,14 @@ class ClusterService:
         Raises:
             ResourceNotFoundError: If cluster not found
         """
+        user = self.db.query(User).filter(User.id == user_id).first()
+        if not user or not user.organization_id:
+             raise ResourceNotFoundError("User or Organization", user_id)
+
         cluster = self.db.query(Cluster).join(Account).filter(
             and_(
                 Cluster.id == cluster_id,
-                Account.user_id == user_id
+                Account.organization_id == user.organization_id
             )
         ).first()
 
@@ -399,10 +425,14 @@ class ClusterService:
             ResourceNotFoundError: If cluster not found
             ValidationError: If cluster has active instances
         """
+        user = self.db.query(User).filter(User.id == user_id).first()
+        if not user or not user.organization_id:
+             raise ResourceNotFoundError("User or Organization", user_id)
+
         cluster = self.db.query(Cluster).join(Account).filter(
             and_(
                 Cluster.id == cluster_id,
-                Account.user_id == user_id
+                Account.organization_id == user.organization_id
             )
         ).first()
 
@@ -452,10 +482,14 @@ class ClusterService:
         Raises:
             ResourceNotFoundError: If cluster not found
         """
+        user = self.db.query(User).filter(User.id == user_id).first()
+        if not user or not user.organization_id:
+             raise ResourceNotFoundError("User or Organization", user_id)
+
         cluster = self.db.query(Cluster).join(Account).filter(
             and_(
                 Cluster.id == cluster_id,
-                Account.user_id == user_id
+                Account.organization_id == user.organization_id
             )
         ).first()
 

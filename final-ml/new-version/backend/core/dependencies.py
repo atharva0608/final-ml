@@ -4,7 +4,7 @@ FastAPI Dependencies
 Dependency injection functions for authentication, authorization, and database access
 """
 from typing import Optional
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from backend.models.base import get_db
@@ -25,6 +25,7 @@ security = HTTPBearer()
 
 
 def get_current_user_context(
+    request: Request,
     credentials: HTTPAuthorizationCredentials = Depends(security),
     db: Session = Depends(get_db)
 ) -> UserContext:
@@ -32,6 +33,7 @@ def get_current_user_context(
     Extract and validate user context from JWT token
 
     Args:
+        request: FastAPI request
         credentials: HTTP Bearer credentials
         db: Database session
 
@@ -59,11 +61,19 @@ def get_current_user_context(
         raise AuthenticationError("User not found")
 
     # Return user context
-    return UserContext(
+    ctx = UserContext(
         user_id=user.id,
         email=user.email,
-        role=user.role.value
+        role=user.role.value,
+        organization_id=user.organization_id,
+        org_role=user.org_role.value if user.org_role else None,
+        access_level=user.access_level.value if user.access_level else None
     )
+    
+    # Store in request state for logging
+    request.state.user_context = ctx
+    
+    return ctx
 
 
 def get_current_user(
@@ -72,16 +82,6 @@ def get_current_user(
 ) -> User:
     """
     Get current authenticated user from database
-
-    Args:
-        user_context: User context from token
-        db: Database session
-
-    Returns:
-        User model instance
-
-    Raises:
-        AuthenticationError: If user not found
     """
     user = db.query(User).filter(User.id == user_context.user_id).first()
     if not user:
@@ -95,20 +95,82 @@ def require_super_admin(
 ) -> User:
     """
     Require super admin role
-
-    Args:
-        current_user: Current authenticated user
-
-    Returns:
-        User if super admin
-
-    Raises:
-        AuthorizationError: If user is not super admin
     """
     if current_user.role.value != "SUPER_ADMIN":
         raise InsufficientPermissionsError("This operation requires super admin privileges")
 
     return current_user
+
+
+class RequireRole:
+    """
+    Dependency to require a minimum Organization Role
+    Hierarchy: ORG_ADMIN > TEAM_LEAD > MEMBER
+    """
+    def __init__(self, min_role: str):
+        self.min_role = min_role
+        # Define hierarchy
+        self.hierarchy = {
+            "MEMBER": 0,
+            "TEAM_LEAD": 1,
+            "ORG_ADMIN": 2
+        }
+
+    def __call__(self, current_user: User = Depends(get_current_user)) -> User:
+        # Super admins always have access
+        if current_user.role.value == "SUPER_ADMIN":
+            return current_user
+
+        if not current_user.organization_id:
+            raise AuthorizationError("User does not belong to an organization")
+
+        # Get values
+        user_role_str = current_user.org_role.value if current_user.org_role else "MEMBER"
+        
+        user_level = self.hierarchy.get(user_role_str, 0)
+        required_level = self.hierarchy.get(self.min_role, 0)
+
+        if user_level < required_level:
+            raise InsufficientPermissionsError(f"Role {self.min_role} or higher required")
+            
+        return current_user
+
+
+class RequireAccess:
+    """
+    Dependency to require a minimum Access Level
+    Hierarchy: READ_ONLY < EXECUTION < FULL
+    """
+    def __init__(self, min_level: str):
+        self.min_level = min_level
+        self.hierarchy = {
+            "READ_ONLY": 0,
+            "EXECUTION": 1,
+            "FULL": 2
+        }
+
+    def __call__(self, current_user: User = Depends(get_current_user)) -> User:
+        # Super admins always have access
+        if current_user.role.value == "SUPER_ADMIN":
+            return current_user
+
+        if not current_user.organization_id:
+            raise AuthorizationError("User does not belong to an organization")
+
+        # Get values
+        user_access_str = current_user.access_level.value if current_user.access_level else "READ_ONLY"
+        
+        user_level = self.hierarchy.get(user_access_str, 0)
+        required_level = self.hierarchy.get(self.min_level, 0)
+
+        if user_level < required_level:
+            raise InsufficientPermissionsError(f"Access Level {self.min_level} or higher required")
+            
+        return current_user
+
+
+# Backward compatibility alias - requires ORG_ADMIN role
+require_org_admin = RequireRole("ORG_ADMIN")
 
 
 def verify_cluster_ownership(
@@ -145,7 +207,7 @@ def verify_cluster_ownership(
     # Check if cluster belongs to user's account
     account = db.query(Account).filter(
         Account.id == cluster.account_id,
-        Account.user_id == current_user.id
+        Account.organization_id == current_user.organization_id
     ).first()
 
     if not account:
@@ -182,6 +244,8 @@ def verify_template_ownership(
     # Check if user owns the template
     template = db.query(NodeTemplate).filter(
         NodeTemplate.id == template_id,
+        # Templates likely owned by Org too? Or User? For now keeping User but ideally Org
+        # Assuming NodeTemplate will be migrated to Org later, leaving as is for now or updating if I updated model
         NodeTemplate.user_id == current_user.id
     ).first()
 
@@ -315,7 +379,7 @@ def verify_account_ownership(
     # Check if user owns the account
     account = db.query(Account).filter(
         Account.id == account_id,
-        Account.user_id == current_user.id
+        Account.organization_id == current_user.organization_id
     ).first()
 
     if not account:

@@ -12,7 +12,7 @@ const api = axios.create({
 // Add a request interceptor
 api.interceptors.request.use(
     (config) => {
-        const token = localStorage.getItem('token');
+        const token = localStorage.getItem('access_token');
         if (token) {
             config.headers.Authorization = `Bearer ${token}`;
         }
@@ -54,6 +54,7 @@ export const accountsAPI = accountAPI;
 
 export const adminAPI = {
     listClients: (params) => api.get('/api/v1/admin/clients', { params }),
+    listOrganizations: (params) => api.get('/api/v1/admin/organizations', { params }), // New Endpoint
     getClient: (id) => api.get(`/api/v1/admin/clients/${id}`),
     toggleClient: (id) => api.post(`/api/v1/admin/clients/${id}/toggle`),
     resetPassword: (id, data) => api.post(`/api/v1/admin/clients/${id}/reset-password`, data),
@@ -117,6 +118,20 @@ export const settingsAPI = {
     getIntegrations: () => api.get('/api/v1/settings/integrations'),
     addIntegration: (data) => api.post('/api/v1/settings/integrations', data),
     deleteIntegration: (id) => api.delete(`/api/v1/settings/integrations/${id}`),
+};
+
+export const onboardingAPI = {
+    getState: () => api.get('/api/v1/onboarding/state'),
+    getAwsLink: (mode) => api.get(`/api/v1/onboarding/aws-link?mode=${mode || 'READ_ONLY'}`),
+    verify: (roleArn) => api.post('/api/v1/onboarding/verify', { role_arn: roleArn }),
+    skip: () => api.post('/api/v1/onboarding/skip'),
+};
+
+export const organizationAPI = {
+    getMembers: () => api.get('/api/v1/organization/members'),
+    inviteMember: (email, role, access_level) => api.post('/api/v1/organization/members', { email, role, access_level }),
+    removeMember: (userId) => api.delete(`/api/v1/organization/members/${userId}`),
+    updateMemberRole: (userId, role, access_level) => api.patch(`/api/v1/organization/members/${userId}`, { role, access_level }),
 };
 
 export default api;

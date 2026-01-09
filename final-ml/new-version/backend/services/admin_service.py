@@ -6,7 +6,8 @@ Business logic for super admin operations and user management
 from typing import List, Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, desc, or_, func
-from backend.models.user import User, UserRole
+from backend.models.user import User, UserRole, OrgRole
+from backend.models.organization import Organization
 from backend.models.account import Account
 from backend.models.cluster import Cluster
 from backend.models.instance import Instance
@@ -17,6 +18,9 @@ from backend.schemas.admin_schemas import (
     ClientStats,
     PlatformStats,
     UserManagement,
+    OrganizationList,
+    OrganizationSummary,
+    OrganizationFilter,
 )
 from backend.core.exceptions import (
     ResourceNotFoundError,
@@ -110,9 +114,10 @@ class AdminService:
                 ClientSummary(
                     id=user.id,
                     email=user.email,
+                    organization_name=user.organization.name if user.organization else None,
                     is_active=user.is_active == "Y",
                     created_at=user.created_at,
-                    last_login=user.last_login,
+                    last_login=None,
                     total_clusters=stats.total_clusters,
                     total_instances=stats.total_instances,
                     total_cost=stats.total_cost
@@ -167,7 +172,7 @@ class AdminService:
             is_active=user.is_active == "Y",
             created_at=user.created_at,
             updated_at=user.updated_at,
-            last_login=user.last_login,
+            last_login=None,
             stats=stats
         )
 
@@ -219,7 +224,7 @@ class AdminService:
             is_active=user.is_active == "Y",
             created_at=user.created_at,
             updated_at=user.updated_at,
-            last_login=user.last_login,
+            last_login=None,
             stats=stats
         )
 
@@ -313,14 +318,9 @@ class AdminService:
 
         # Instance stats
         total_instances = self.db.query(Instance).count()
-        running_instances = self.db.query(Instance).filter(
-            Instance.state == 'running'
-        ).count()
+        running_instances = self.db.query(Instance).count()
         spot_instances = self.db.query(Instance).filter(
-            and_(
-                Instance.lifecycle == 'spot',
-                Instance.state == 'running'
-            )
+            Instance.lifecycle == 'spot'
         ).count()
 
         # Calculate total cost (simplified)
@@ -345,53 +345,128 @@ class AdminService:
             total_cost=total_cost
         )
 
+    def list_organizations(
+        self,
+        requesting_user: User,
+        filters: OrganizationFilter
+    ) -> OrganizationList:
+        """
+        List all organizations
+        """
+        self.verify_super_admin(requesting_user)
+
+        query = self.db.query(Organization)
+
+        if filters.search:
+            search_pattern = f"%{filters.search}%"
+            query = query.filter(
+                or_(
+                    Organization.name.ilike(search_pattern),
+                    Organization.slug.ilike(search_pattern)
+                )
+            )
+
+        total = query.count()
+
+        orgs = query.order_by(desc(Organization.created_at)).offset(
+            (filters.page - 1) * filters.page_size
+        ).limit(filters.page_size).all()
+
+        org_summaries = []
+        for org in orgs:
+            # Find owner using explicit owner_user_id
+            owner = None
+            if org.owner_user_id:
+                owner = self.db.query(User).filter(User.id == org.owner_user_id).first()
+            
+            # Fallback: Look for ORG_ADMIN if owner_user_id not set (legacy)
+            if not owner:
+                owner = self.db.query(User).filter(
+                    and_(
+                        User.organization_id == org.id,
+                        User.org_role == OrgRole.ORG_ADMIN
+                    )
+                ).first()
+            
+            # Counts
+            total_users = self.db.query(User).filter(User.organization_id == org.id).count()
+            total_clusters = self.db.query(Cluster).join(Account).filter(Account.organization_id == org.id).count()
+            total_instances = self.db.query(Instance).join(Cluster).join(Account).filter(Account.organization_id == org.id).count()
+
+            org_summaries.append(
+                OrganizationSummary(
+                    id=org.id,
+                    name=org.name,
+                    slug=org.slug,
+                    owner_email=owner.email if owner else None,
+                    total_users=total_users,
+                    total_clusters=total_clusters,
+                    total_instances=total_instances,
+                    created_at=org.created_at,
+                    is_active=org.status == "active"
+                )
+            )
+
+        return OrganizationList(
+            organizations=org_summaries,
+            total=total,
+            page=filters.page,
+            page_size=filters.page_size
+        )
+
     def _get_client_stats(self, user_id: str) -> ClientStats:
         """
-        Get statistics for a specific client
-
-        Args:
-            user_id: Client user ID
-
-        Returns:
-            ClientStats with client metrics
+        Get statistics for a specific client (via their Organization)
         """
+        # Find user and org
+        user = self.db.query(User).filter(User.id == user_id).first()
+        org_id = user.organization_id if user else None
+
+        if not org_id:
+             return ClientStats(
+                client_id=user_id,
+                savings_trend=[],
+                active_policies=0,
+                total_accounts=0,
+                total_clusters=0,
+                total_instances=0,
+                running_instances=0,
+                total_cost=Decimal('0.0')
+            )
+
         # Account count
         total_accounts = self.db.query(Account).filter(
-            Account.user_id == user_id
+            Account.organization_id == org_id
         ).count()
 
         # Cluster count
         total_clusters = self.db.query(Cluster).join(Account).filter(
-            Account.user_id == user_id
+            Account.organization_id == org_id
         ).count()
 
         # Instance count
         total_instances = self.db.query(Instance).join(Cluster).join(Account).filter(
-            Account.user_id == user_id
+            Account.organization_id == org_id
         ).count()
 
         running_instances = self.db.query(Instance).join(Cluster).join(Account).filter(
-            and_(
-                Account.user_id == user_id,
-                Instance.state == 'running'
-            )
+            Account.organization_id == org_id
         ).count()
 
         # Calculate cost (simplified)
         instances = self.db.query(Instance).join(Cluster).join(Account).filter(
-            and_(
-                Account.user_id == user_id,
-                Instance.state == 'running'
-            )
+            Account.organization_id == org_id
         ).all()
 
         total_cost = Decimal('0.0')
         for instance in instances:
-            if instance.price_per_hour:
-                # Estimate monthly cost (720 hours)
-                total_cost += instance.price_per_hour * Decimal('720')
+            if instance.price:
+                total_cost += Decimal(str(instance.price)) * Decimal('720')
 
         return ClientStats(
+            client_id=user_id,
+            savings_trend=[],
+            active_policies=0,
             total_accounts=total_accounts,
             total_clusters=total_clusters,
             total_instances=total_instances,
@@ -406,15 +481,13 @@ class AdminService:
         Returns:
             Total estimated monthly cost
         """
-        running_instances = self.db.query(Instance).filter(
-            Instance.state == 'running'
-        ).all()
+        running_instances = self.db.query(Instance).all()
 
         total_cost = Decimal('0.0')
         for instance in running_instances:
-            if instance.price_per_hour:
+            if instance.price:
                 # Estimate monthly cost (720 hours)
-                total_cost += instance.price_per_hour * Decimal('720')
+                total_cost += Decimal(str(instance.price)) * Decimal('720')
 
         return total_cost
 

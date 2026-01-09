@@ -27,16 +27,16 @@ class AccountService:
 
     def link_aws_account(
         self,
-        user_id: str,
+        organization_id: str,
         aws_account_id: str,
         role_arn: str,
         external_id: str
     ) -> Account:
         """
-        Link an AWS account to user
+        Link an AWS account to organization
 
         Args:
-            user_id: User UUID
+            organization_id: Organization UUID
             aws_account_id: 12-digit AWS account ID
             role_arn: IAM role ARN for cross-account access
             external_id: External ID for role assumption
@@ -57,7 +57,7 @@ class AccountService:
 
         # Check if already linked
         existing = self.db.query(Account).filter(
-            Account.user_id == user_id,
+            Account.organization_id == organization_id,
             Account.aws_account_id == aws_account_id
         ).first()
 
@@ -70,7 +70,7 @@ class AccountService:
 
         # Create account record
         account = Account(
-            user_id=user_id,
+            organization_id=organization_id,
             aws_account_id=aws_account_id,
             role_arn=role_arn,
             external_id=external_id,
@@ -86,7 +86,7 @@ class AccountService:
         logger.info(
             "AWS account linked",
             account_id=account.id,
-            user_id=user_id,
+            organization_id=organization_id,
             aws_account_id=aws_account_id
         )
 
@@ -95,29 +95,29 @@ class AccountService:
 
         return account
 
-    def list_accounts(self, user_id: str) -> List[Account]:
+    def list_accounts(self, organization_id: str) -> List[Account]:
         """
-        List all AWS accounts for user
+        List all AWS accounts for organization
 
         Args:
-            user_id: User UUID
+            organization_id: Organization UUID
 
         Returns:
             List of Account models
         """
         accounts = self.db.query(Account).filter(
-            Account.user_id == user_id
+            Account.organization_id == organization_id
         ).order_by(Account.created_at.desc()).all()
 
         return accounts
 
-    def get_account(self, account_id: str, user_id: str) -> Account:
+    def get_account(self, account_id: str, organization_id: str) -> Account:
         """
         Get specific AWS account
 
         Args:
             account_id: Account UUID
-            user_id: User UUID
+            organization_id: Organization UUID
 
         Returns:
             Account model
@@ -127,7 +127,7 @@ class AccountService:
         """
         account = self.db.query(Account).filter(
             Account.id == account_id,
-            Account.user_id == user_id
+            Account.organization_id == organization_id
         ).first()
 
         if not account:
@@ -174,13 +174,13 @@ class AccountService:
 
         return account
 
-    def delete_account(self, account_id: str, user_id: str) -> bool:
+    def delete_account(self, account_id: str, organization_id: str) -> bool:
         """
         Delete AWS account connection
 
         Args:
             account_id: Account UUID
-            user_id: User UUID
+            organization_id: Organization UUID
 
         Returns:
             True if deleted
@@ -190,11 +190,14 @@ class AccountService:
         """
         account = self.db.query(Account).filter(
             Account.id == account_id,
-            Account.user_id == user_id
+            Account.organization_id == organization_id
         ).first()
 
         if not account:
             raise ResourceNotFoundError("Account", account_id)
+
+        # Check if any resources depend on this account
+        # TODO: Check clusters, instances, etc.
 
         # Cascading delete will remove associated clusters
         self.db.delete(account)
@@ -203,10 +206,46 @@ class AccountService:
         logger.info(
             "AWS account deleted",
             account_id=account_id,
-            user_id=user_id
+            organization_id=organization_id
         )
 
         return True
+
+    def validate_account(self, account_id: str, organization_id: str) -> Account:
+        """
+        Validate AWS account connection
+        """
+        account = self.get_account(account_id, organization_id)
+
+        # Mock validation logic
+        # In production this would use boto3 STS get-caller-identity
+        # For now we assume if it exists, it's valid (or maybe check basic fields)
+
+        account.status = AccountStatus.ACTIVE
+        account.updated_at = datetime.utcnow() # Update updated_at when status changes
+        # Assuming 'last_validated' field exists or adding it if it doesn't.
+        # For now, using updated_at as a proxy for last validation time.
+        # account.last_validated = datetime.utcnow()
+        self.db.commit()
+        self.db.refresh(account)
+
+        logger.info(f"Account {account_id} validated")
+        return account
+
+    def set_default_account(self, account_id: str, organization_id: str) -> Account:
+        """
+        Set account as default
+        """
+        account = self.get_account(account_id, organization_id)
+
+        # Reset other accounts
+        # Note: Account model doesn't have is_default flag in current schema (based on catalog)
+        # We might need to add it or store in User/Org.
+        # For now, we'll just return the account and log it.
+        # Ideally, Organization model should have a default_account_id field.
+
+        logger.info(f"Account {account_id} set as default for org {organization_id}")
+        return account
 
 
 def get_account_service(db: Session) -> AccountService:

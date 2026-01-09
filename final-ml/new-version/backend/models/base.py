@@ -53,11 +53,13 @@ def create_tables():
     This is called on application startup
     """
     # Import all models to ensure they're registered with Base
+    from backend.models.organization import Organization
     from backend.models.user import User
     from backend.models.account import Account
     from backend.models.cluster import Cluster
     from backend.models.instance import Instance
     from backend.models.node_template import NodeTemplate
+    from backend.models.onboarding import OnboardingState
     from backend.models.cluster_policy import ClusterPolicy
     from backend.models.hibernation_schedule import HibernationSchedule
     from backend.models.audit_log import AuditLog
@@ -65,35 +67,96 @@ def create_tables():
     from backend.models.optimization_job import OptimizationJob
     from backend.models.lab_experiment import LabExperiment
     from backend.models.agent_action import AgentAction
+    from backend.models.agent_action import AgentAction
     from backend.models.api_key import APIKey
+    from backend.models.invitation import OrganizationInvitation
 
     # Create all tables
     Base.metadata.create_all(bind=engine)
 
 
-def seed_default_admin():
+def seed_demo_data():
     """
-    Create default admin user if no users exist
+    Create default admin and demo client users if they don't exist
     """
-    from backend.models.user import User, UserRole
+    from backend.models.user import User, UserRole, OrgRole, AccessLevel
+    from backend.models.organization import Organization
+    from backend.models.account import Account, AccountStatus
     from backend.core.crypto import hash_password
 
     db = SessionLocal()
     try:
-        # Check if any users exist
-        user_count = db.query(User).count()
-        if user_count == 0:
-            # Create default admin user
+        # 1. Seed Admin
+        admin_email = "admin@spotoptimizer.com"
+        admin_user = db.query(User).filter(User.email == admin_email).first()
+        
+        if not admin_user:
+            # Check/Create Admin Org
+            admin_org = db.query(Organization).filter(Organization.slug == "admin-org").first()
+            if not admin_org:
+                admin_org = Organization(
+                    name="Admin Organization",
+                    slug="admin-org",
+                    status="active"
+                )
+                db.add(admin_org)
+                db.flush()
+            
+            # Create Admin User
             admin_user = User(
-                email="admin@spotoptimizer.com",
+                email=admin_email,
                 password_hash=hash_password("admin123"),
-                role=UserRole.SUPER_ADMIN
+                role=UserRole.SUPER_ADMIN,
+                organization_id=admin_org.id,
+                org_role=OrgRole.ORG_ADMIN,
+                access_level=AccessLevel.FULL
             )
             db.add(admin_user)
             db.commit()
-            print("✅ Created default admin user: admin@spotoptimizer.com / admin123")
+            print(f"✅ Created default admin user: {admin_email} / admin123")
+        
+        # 2. Seed Demo Client
+        demo_email = "demo@spotoptimizer.com"
+        demo_user = db.query(User).filter(User.email == demo_email).first()
+        
+        if not demo_user:
+            # Check/Create Demo Org
+            demo_org = db.query(Organization).filter(Organization.slug == "demo-org").first()
+            if not demo_org:
+                demo_org = Organization(
+                    name="Demo Corp",
+                    slug="demo-org",
+                    status="active"
+                )
+                db.add(demo_org)
+                db.flush()
+            
+            # Create Demo User
+            demo_user = User(
+                email=demo_email,
+                password_hash=hash_password("demo1234"),
+                role=UserRole.CLIENT,
+                organization_id=demo_org.id,
+                org_role=OrgRole.ORG_ADMIN,
+                access_level=AccessLevel.FULL
+            )
+            db.add(demo_user)
+            db.flush()
+            
+            # Create Default Account for Demo User
+            demo_account = Account(
+                aws_account_id="123456789012",
+                organization_id=demo_org.id,
+                role_arn="arn:aws:iam::123456789012:role/SpotOptimizerRole",
+                status=AccountStatus.ACTIVE
+            )
+            db.add(demo_account)
+            
+            db.commit()
+            print(f"✅ Created demo client user: {demo_email} / demo1234")
+
     except Exception as e:
-        print(f"⚠️  Failed to create default admin user: {e}")
+        print(f"⚠️  Failed to seed demo data: {e}")
         db.rollback()
     finally:
         db.close()
