@@ -34,6 +34,7 @@ class LabExperiment(Base):
 
     # Foreign key to ml_models
     model_id = Column(String(36), ForeignKey("ml_models.id", ondelete="CASCADE"), nullable=False, index=True)
+    cluster_id = Column(String(36), ForeignKey("clusters.id", ondelete="CASCADE"), nullable=False, index=True)
 
     # Test configuration
     instance_id = Column(String(20), nullable=False)  # EC2 instance used for test
@@ -55,6 +56,7 @@ class LabExperiment(Base):
 
     # Relationships
     ml_model = relationship("MLModel", back_populates="lab_experiments")
+    cluster = relationship("Cluster", backref="lab_experiments")
 
     def __repr__(self):
         return f"<LabExperiment(id={self.id}, model_id={self.model_id}, test_type={self.test_type})>"
