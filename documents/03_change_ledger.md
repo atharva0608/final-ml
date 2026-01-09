@@ -60,3 +60,4 @@
 | **2026-01-09** | **Backend / Schemas** | `Fix` | Resolved Pydantic warning `Field "model_id" has conflict` in `lab_schemas.py` by adding `protected_namespaces` config. |
 | **2026-01-09** | **Frontend / Admin** | `Fix` | Fixed `ReferenceError: loading is not defined` in `AdminHealth.jsx` by adding missing state variables. Rebuilt frontend container. |
 | **2026-01-09** | **Backend / Health** | `Perf` | Optimized `/health/system` by skipping AWS connectivity check when credentials are missing, reducing latency for local dev. |
+| **2026-01-09** | **Frontend / RightSizing** | `Fix` | Fixed 404 on `/optimization/rightsizing/ALL` by updating `RightSizing.jsx` to use `optimizationAPI` with correct `/api/v1` prefix. |
