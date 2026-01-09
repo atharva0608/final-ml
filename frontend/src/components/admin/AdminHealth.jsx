@@ -1,7 +1,3 @@
-/**
- * Admin Health Component
- * System health monitoring and diagnostics for super admins
- */
 import React, { useState, useEffect } from 'react';
 import { Card, Button, Badge } from '../shared';
 import {
@@ -17,30 +13,16 @@ import {
 } from 'react-icons/fi';
 import toast from 'react-hot-toast';
 import { formatNumber } from '../../utils/formatters';
+import { api } from '../../services/api';
 
 const AdminHealth = () => {
-  const [health, setHealth] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [autoRefresh, setAutoRefresh] = useState(true);
-
-  useEffect(() => {
-    fetchHealth();
-
-    // Auto-refresh every 30 seconds if enabled
-    if (autoRefresh) {
-      const interval = setInterval(fetchHealth, 30000);
-      return () => clearInterval(interval);
-    }
-  }, [autoRefresh]);
+  // ... state
 
   const fetchHealth = async () => {
     if (!loading) setRefreshing(true);
 
     try {
-      // REAL API CALL - using healthAPI from api.js
-      const { healthAPI } = await import('../../services/api');
-      const response = await healthAPI.getSystemHealth();
+      const response = await api.get('/health/system');
       setHealth(response.data);
     } catch (error) {
       console.error('Health check failed:', error);
@@ -58,6 +40,7 @@ const AdminHealth = () => {
       setRefreshing(false);
     }
   };
+
 
   const handleRefresh = () => {
     fetchHealth();

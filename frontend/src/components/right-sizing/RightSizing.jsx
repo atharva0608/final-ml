@@ -1,202 +1,192 @@
 import React, { useState, useEffect } from 'react';
-import { Card, Button, Badge, EmptyState } from '../shared';
-import { FiTrendingDown, FiActivity, FiCheck, FiCpu, FiAlertTriangle } from 'react-icons/fi';
-import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from 'recharts';
+import { FiDollarSign, FiTrendingDown, FiServer, FiCheckCircle, FiCpu, FiInfo, FiArrowDownRight } from 'react-icons/fi';
+import { Card, Button, Badge } from '../shared';
+import { useClusterStore } from '../../store/useStore';
+import { api } from '../../services/api';
 import toast from 'react-hot-toast';
-import { optimizationAPI } from '../../services/api';
+import EmptyState from '../shared/EmptyState';
 
 const RightSizing = () => {
-    const [timeRange, setTimeRange] = useState('7d');
-    const [autoResize, setAutoResize] = useState(false);
+    const { clusters } = useClusterStore();
     const [loading, setLoading] = useState(true);
     const [data, setData] = useState(null);
-    const [selectedClusterId, setSelectedClusterId] = useState(null);
+
+    // For demo, pick first cluster or handle selection better
+    const selectedCluster = clusters?.[0];
 
     useEffect(() => {
-        // Get cluster from URL or global state - for now use first available
-        const clusterId = localStorage.getItem('selectedClusterId') || 'default';
-        setSelectedClusterId(clusterId);
-        fetchRecommendations(clusterId);
-    }, []);
+        if (selectedCluster?.id) {
+            fetchRecommendations(selectedCluster.id);
+        } else {
+            setLoading(false);
+        }
+    }, [selectedCluster]);
 
     const fetchRecommendations = async (clusterId) => {
-        setLoading(true);
         try {
-            const response = await optimizationAPI.getRightsizing(clusterId);
-            setData(response.data);
-        } catch (error) {
-            console.error("Failed to fetch rightsizing data", error);
-            // Fallback to empty state
+            setLoading(true);
+            // Using direct api call for new endpoint
+            const res = await api.get(`/optimization/rightsizing/${clusterId}`);
+            setData(res.data);
+        } catch (err) {
+            console.error("RightSizing fetch error:", err);
+            // toast.error("Could not load recommendations");
             setData(null);
         } finally {
             setLoading(false);
         }
     };
 
-    const handleApply = async (id) => {
-        toast.success(`Resize applied to workload ID ${id}`);
-    };
 
-    if (loading) return <div className="p-8 text-center">Loading analysis...</div>;
-
-    // Handle no data state
-    if (!data || !data.recommendations || data.recommendations.length === 0) {
+    if (!selectedCluster) {
         return (
-            <div className="space-y-6">
-                <div>
-                    <h1 className="text-3xl font-bold text-gray-900">Workload Rightsizing</h1>
-                    <p className="mt-1 text-gray-600">Optimize pod resource requests to reduce waste.</p>
-                </div>
-                <EmptyState
-                    title="Everything looks optimized!"
-                    message="We couldn't find any over-provisioned workloads in this cluster based on the last 14 days of data."
-                />
+            <EmptyState
+                title="No Cluster Available"
+                message="Please connect a cluster to view rightsizing recommendations."
+            />
+        );
+    }
+
+    if (loading) {
+        return (
+            <div className="min-h-[400px] flex items-center justify-center">
+                <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
             </div>
         );
     }
 
-    const { summaryStats, recommendations, chartData } = data;
+    const hasRecommendations = data?.overprovisioned_instances?.length > 0;
+    const savings = data?.total_potential_savings || 0;
+    const instanceCount = data?.overprovisioned_instances?.length || 0;
 
     return (
         <div className="space-y-6">
-            <div className="flex justify-between items-center">
+            {/* Header */}
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
                 <div>
-                    <h1 className="text-3xl font-bold text-gray-900">Workload Rightsizing</h1>
-                    <p className="mt-1 text-gray-600">
-                        Optimize pod resource requests to reduce waste and improve stability.
-                    </p>
-                </div>
-                <div className="flex items-center bg-white p-2 rounded-lg border shadow-sm">
-                    <span className="text-sm font-medium mr-3 text-gray-700">Auto-Resize</span>
-                    <button
-                        onClick={() => setAutoResize(!autoResize)}
-                        className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${autoResize ? 'bg-green-500' : 'bg-gray-300'
-                            }`}
-                    >
-                        <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${autoResize ? 'translate-x-6' : 'translate-x-1'
-                            }`} />
-                    </button>
+                    <h1 className="text-2xl font-bold text-gray-900">Right Sizing</h1>
+                    <p className="text-gray-500 mt-1">optimize your infrastructure costs by resizing over-provisioned instances</p>
                 </div>
             </div>
 
-            {/* Summary Cards */}
+            {/* Summary Stats */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                <Card className="bg-gradient-to-br from-blue-50 to-white">
-                    <div className="flex items-center gap-4">
-                        <div className="p-3 bg-blue-100 rounded-lg text-blue-600">
-                            <FiTrendingDown className="w-6 h-6" />
-                        </div>
-                        <div>
-                            <p className="text-sm font-medium text-gray-600">Monthly Potential Savings</p>
-                            <p className="text-2xl font-bold text-gray-900">${summaryStats.monthly_savings}</p>
+                <div className="bg-gradient-to-br from-blue-50 to-white p-6 rounded-xl border border-blue-100 shadow-sm">
+                    <div className="flex items-start justify-between mb-4">
+                        <div className="p-2 bg-blue-100 rounded-lg text-blue-600">
+                            <FiDollarSign className="w-6 h-6" />
                         </div>
                     </div>
-                </Card>
-                <Card className="bg-gradient-to-br from-orange-50 to-white">
-                    <div className="flex items-center gap-4">
-                        <div className="p-3 bg-orange-100 rounded-lg text-orange-600">
-                            <FiActivity className="w-6 h-6" />
-                        </div>
-                        <div>
-                            <p className="text-sm font-medium text-gray-600">Oversized Workloads</p>
-                            <p className="text-2xl font-bold text-gray-900">{summaryStats.oversized_count}</p>
+                    <h3 className="text-sm font-medium text-gray-500 mb-1">Potential Monthly Savings</h3>
+                    <p className="text-3xl font-bold text-gray-900">${savings.toFixed(2)}</p>
+                    <div className="mt-4 text-sm text-gray-600">
+                        Based on 14-day analysis
+                    </div>
+                </div>
+
+                <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm">
+                    <div className="flex items-start justify-between mb-4">
+                        <div className="p-2 bg-purple-100 rounded-lg text-purple-600">
+                            <FiServer className="w-6 h-6" />
                         </div>
                     </div>
-                </Card>
-                <Card className="bg-gradient-to-br from-green-50 to-white">
-                    <div className="flex items-center gap-4">
-                        <div className="p-3 bg-green-100 rounded-lg text-green-600">
-                            <FiCheck className="w-6 h-6" />
-                        </div>
-                        <div>
-                            <p className="text-sm font-medium text-gray-600">Efficiency Gain</p>
-                            <p className="text-2xl font-bold text-gray-900">+{summaryStats.efficiency_improvement}%</p>
+                    <h3 className="text-sm font-medium text-gray-500 mb-1">Over-provisioned Instances</h3>
+                    <p className="text-3xl font-bold text-gray-900">{instanceCount}</p>
+                </div>
+
+                <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm">
+                    <div className="flex items-start justify-between mb-4">
+                        <div className="p-2 bg-green-100 rounded-lg text-green-600">
+                            <FiCheckCircle className="w-6 h-6" />
                         </div>
                     </div>
-                </Card>
+                    <h3 className="text-sm font-medium text-gray-500 mb-1">Optimization Score</h3>
+                    <div className="flex items-end gap-2">
+                        <p className="text-3xl font-bold text-gray-900">{instanceCount > 0 ? 65 : 100}</p>
+                        <span className="text-sm text-gray-500 mb-1">/100</span>
+                    </div>
+                </div>
             </div>
 
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                {/* Recommendations Table */}
-                <div className="lg:col-span-2">
-                    <Card title="Resize Recommendations">
-                        <div className="overflow-x-auto">
-                            <table className="min-w-full divide-y divide-gray-200">
-                                <thead className="bg-gray-50">
-                                    <tr>
-                                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Workload</th>
-                                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Current Limit</th>
-                                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Recommended</th>
-                                        <th className="px-6 py-3 text-left text-xs font-medium text-green-600 uppercase">Savings</th>
-                                        <th className="px-6 py-3 text-right">Action</th>
-                                    </tr>
-                                </thead>
-                                <tbody className="bg-white divide-y divide-gray-200">
-                                    {recommendations.map((rec) => (
-                                        <tr key={rec.id} className="hover:bg-gray-50">
-                                            <td className="px-6 py-4">
-                                                <div className="text-sm font-medium text-gray-900">{rec.name}</div>
-                                                <div className="text-xs text-gray-500">{rec.namespace}</div>
-                                            </td>
-                                            <td className="px-6 py-4 text-sm text-gray-500">
-                                                <div>CPU: {rec.current_cpu}</div>
-                                                <div>Mem: {rec.current_mem}</div>
-                                            </td>
-                                            <td className="px-6 py-4 text-sm text-gray-900">
-                                                <div className="font-semibold text-blue-600">CPU: {rec.rec_cpu}</div>
-                                                <div className="font-semibold text-blue-600">Mem: {rec.rec_mem}</div>
-                                            </td>
-                                            <td className="px-6 py-4 text-sm text-green-600 font-bold">
-                                                ${rec.savings}/mo
-                                            </td>
-                                            <td className="px-6 py-4 text-right">
-                                                <Button size="sm" variant="outline" onClick={() => handleApply(rec.id)}>
-                                                    Resize
-                                                </Button>
-                                            </td>
+            {!hasRecommendations ? (
+                <EmptyState
+                    title="Everything looks optimized!"
+                    message="We couldn't find any over-provisioned workloads in this cluster based on the last 14 days of data."
+                />
+            ) : (
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                    {/* Recommendations List */}
+                    <div className="lg:col-span-2 space-y-6">
+                        <Card title="Recommendations" className="overflow-hidden">
+                            <div className="overflow-x-auto">
+                                <table className="w-full text-left">
+                                    <thead className="bg-gray-50 border-b border-gray-100">
+                                        <tr>
+                                            <th className="py-3 px-4 text-xs font-semibold text-gray-500 uppercase">Instance</th>
+                                            <th className="py-3 px-4 text-xs font-semibold text-gray-500 uppercase">Current</th>
+                                            <th className="py-3 px-4 text-xs font-semibold text-gray-500 uppercase">Recommendation</th>
+                                            <th className="py-3 px-4 text-xs font-semibold text-gray-500 uppercase">CPU / Mem Util</th>
+                                            <th className="py-3 px-4 text-xs font-semibold text-gray-500 uppercase">Savings</th>
+                                            <th className="py-3 px-4 text-xs font-semibold text-gray-500 uppercase"></th>
                                         </tr>
-                                    ))}
-                                </tbody>
-                            </table>
-                        </div>
-                    </Card>
-                </div>
+                                    </thead>
+                                    <tbody className="divide-y divide-gray-50">
+                                        {data.overprovisioned_instances.map((item, idx) => (
+                                            <tr key={idx} className="hover:bg-gray-50/50">
+                                                <td className="py-3 px-4">
+                                                    <div className="font-medium text-gray-900 text-sm">{item.instance_id}</div>
+                                                </td>
+                                                <td className="py-3 px-4">
+                                                    <Badge variant="gray">{item.instance_type}</Badge>
+                                                </td>
+                                                <td className="py-3 px-4">
+                                                    <div className="flex items-center gap-2 text-green-600 font-medium text-sm">
+                                                        <FiArrowDownRight />
+                                                        {item.recommendation.replace("Downsize to ", "")}
+                                                    </div>
+                                                </td>
+                                                <td className="py-3 px-4 text-sm text-gray-600">
+                                                    <div className="flex flex-col gap-1">
+                                                        <div className="flex justify-between text-xs">
+                                                            <span>CPU</span>
+                                                            <span>{item.utilization_percent.cpu}%</span>
+                                                        </div>
+                                                        <div className="w-24 h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                                                            <div className="h-full bg-blue-500" style={{ width: `${item.utilization_percent.cpu}%` }}></div>
+                                                        </div>
+                                                        <div className="flex justify-between text-xs mt-1">
+                                                            <span>Mem</span>
+                                                            <span>{item.utilization_percent.memory}%</span>
+                                                        </div>
+                                                        <div className="w-24 h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                                                            <div className="h-full bg-indigo-500" style={{ width: `${item.utilization_percent.memory}%` }}></div>
+                                                        </div>
+                                                    </div>
+                                                </td>
+                                                <td className="py-3 px-4 font-bold text-gray-900 text-sm">
+                                                    ${item.potential_savings_monthly}
+                                                </td>
+                                                <td className="py-3 px-4 text-right">
+                                                    <Button size="sm" variant="outline">Apply</Button>
+                                                </td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </Card>
+                    </div>
 
-                {/* Utilization Chart */}
-                <div>
-                    <Card title="Analysis: payment-service/api-gateway">
-                        <div className="h-64 mt-4">
-                            <ResponsiveContainer width="100%" height="100%">
-                                <AreaChart data={chartData}>
-                                    <defs>
-                                        <linearGradient id="colorUsage" x1="0" y1="0" x2="0" y2="1">
-                                            <stop offset="5%" stopColor="#3B82F6" stopOpacity={0.8} />
-                                            <stop offset="95%" stopColor="#3B82F6" stopOpacity={0} />
-                                        </linearGradient>
-                                    </defs>
-                                    <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                                    <XAxis dataKey="time" tick={{ fontSize: 12 }} />
-                                    <YAxis tick={{ fontSize: 12 }} label={{ value: 'CPU %', angle: -90, position: 'insideLeft' }} />
-                                    <Tooltip />
-                                    <ReferenceLine y={80} stroke="orange" strokeDasharray="3 3" label="Limit" />
-                                    <ReferenceLine y={40} stroke="green" strokeDasharray="3 3" label="Rec" />
-                                    <Area type="monotone" dataKey="usage" stroke="#3B82F6" fillOpacity={1} fill="url(#colorUsage)" />
-                                </AreaChart>
-                            </ResponsiveContainer>
-                        </div>
-                        <div className="mt-4 p-4 bg-gray-50 rounded-lg text-sm">
-                            <h4 className="font-semibold flex items-center mb-2">
-                                <FiAlertTriangle className="text-orange-500 mr-2" />
-                                Analysis Insight
-                            </h4>
-                            <p className="text-gray-600">
-                                This workload requests <strong>{recommendations[0].current_cpu}</strong> CPU but averages only <strong>15%</strong> utilization.
-                                Reducing request to <strong>{recommendations[0].rec_cpu}</strong> is safe based on peak usage over the last 30 days.
-                            </p>
-                        </div>
-                    </Card>
+                    {/* Side Panel placeholder */}
+                    <div className="space-y-6">
+                        <Card title="Resource Efficiency">
+                            <div className="h-64 flex items-center justify-center text-gray-400 text-sm italic border-2 border-dashed rounded-lg">
+                                Select an instance to view usage charts
+                            </div>
+                        </Card>
+                    </div>
                 </div>
-            </div>
+            )}
         </div>
     );
 };

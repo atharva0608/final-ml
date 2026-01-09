@@ -6,6 +6,7 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { clusterAPI } from '../../services/api';
 import { useClusterStore } from '../../store/useStore';
+import { useAuth } from '../../hooks/useAuth';
 import { Button, Badge, Card } from '../shared'; // Assuming Card is a simple white container
 import { formatCurrency, formatClusterType } from '../../utils/formatters';
 import { FiRefreshCw, FiPlus, FiMoreHorizontal, FiHardDrive, FiCpu, FiActivity, FiServer } from 'react-icons/fi'; // Icons
@@ -17,6 +18,7 @@ import { FaAws, FaGoogle, FaMicrosoft, FaLinux } from 'react-icons/fa'; // Provi
 
 const ClusterList = () => {
   const navigate = useNavigate();
+  const { user } = useAuth(); // Get authenticated user
   const { clusters, setClusters, setLoading, loading } = useClusterStore();
   const [searchTerm, setSearchTerm] = useState('');
   const [showConnectModal, setShowConnectModal] = useState(false);
@@ -194,6 +196,13 @@ const ClusterList = () => {
     cluster.name.toLowerCase().includes(searchTerm.toLowerCase())
   );
 
+  const handleConnectClick = () => {
+    if (user?.access_level === 'READ_ONLY') {
+      toast.error("Restricted: You don't have access to connect clusters. Please contact your Team Lead.");
+      return;
+    }
+    setShowConnectModal(true);
+  };
 
   if (loading && clusters.length === 0) {
     return (
@@ -210,8 +219,9 @@ const ClusterList = () => {
         <h1 className="text-2xl font-bold text-gray-900">Clusters</h1>
         <Button
           variant="primary"
-          className="bg-blue-600 hover:bg-blue-700 text-white shadow-none font-semibold px-6"
-          onClick={() => setShowConnectModal(true)}
+          className={`bg-blue-600 hover:bg-blue-700 text-white shadow-none font-semibold px-6 ${user?.access_level === 'READ_ONLY' ? 'opacity-50 cursor-not-allowed' : ''
+            }`}
+          onClick={handleConnectClick}
         >
           Connect cluster
         </Button>
@@ -331,8 +341,8 @@ const ClusterList = () => {
                   </td>
                   <td className="py-4 px-6">
                     <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium ${cluster.status === 'ACTIVE'
-                        ? 'bg-green-50 text-green-700'
-                        : 'bg-gray-100 text-gray-700'
+                      ? 'bg-green-50 text-green-700'
+                      : 'bg-gray-100 text-gray-700'
                       }`}>
                       <span className={`w-1.5 h-1.5 rounded-full ${cluster.status === 'ACTIVE' ? 'bg-green-500' : 'bg-gray-400'
                         }`} />

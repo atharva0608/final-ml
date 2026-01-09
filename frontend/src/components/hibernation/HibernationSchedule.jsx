@@ -3,7 +3,7 @@
  * 168-hour schedule matrix (7 days × 24 hours)
  */
 import React, { useState, useEffect, useRef } from 'react';
-import { hibernationAPI } from '../../services/api';
+import { hibernationAPI, metricAPI } from '../../services/api';
 import { useClusterStore } from '../../store/useStore';
 import { Card, Button, Input, Badge } from '../shared';
 import { FiSave, FiRotateCcw, FiClock, FiSun, FiMoon, FiDollarSign, FiPlay, FiPower } from 'react-icons/fi';
@@ -51,20 +51,14 @@ const HibernationSchedule = ({ clusterId }) => {
   // NEW: Fetch dynamic hourly cost from metrics API
   const fetchClusterCost = async (clusterIdParam) => {
     try {
-      const response = await fetch(`/api/v1/metrics/cluster/${clusterIdParam}`, {
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('access_token')}`,
-          'Content-Type': 'application/json'
-        }
-      });
-      if (response.ok) {
-        const data = await response.json();
+      const response = await metricAPI.getClusterMetrics(clusterIdParam);
+      if (response.data) {
         // Calculate estimated hourly cost (instances * avg price)
-        const estimatedHourly = (data.total_instances || 0) * 0.12;
+        const estimatedHourly = (response.data.total_instances || 0) * 0.12;
         setHourlyCost(estimatedHourly);
       }
     } catch (error) {
-      console.warn('Failed to fetch hourly cost, using default');
+      console.warn('Failed to fetch hourly cost, using default', error);
       setHourlyCost(2.45); // Fallback default
     }
   };

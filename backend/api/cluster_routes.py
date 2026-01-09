@@ -33,7 +33,7 @@ router = APIRouter(prefix="/clusters", tags=["Clusters"])
 )
 def discover_clusters(
     account_id: str = Query(..., description="AWS Account ID to discover clusters in"),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(RequireAccess("EXECUTION")),
     db: Session = Depends(get_db)
 ) -> list[ClusterResponse]:
     """

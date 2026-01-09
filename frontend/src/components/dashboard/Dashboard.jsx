@@ -23,6 +23,7 @@ import {
   FiPieChart, FiBarChart2, FiClock, FiAlertCircle
 } from 'react-icons/fi';
 import toast from 'react-hot-toast';
+import { auditAPI, clusterAPI } from '../../services/api';
 
 const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4'];
 
@@ -31,58 +32,34 @@ const Dashboard = () => {
   const { dashboardKPIs, costMetrics, instanceMetrics, costTimeSeries, loading, refreshDashboard } = useDashboard();
   const [activityFeed, setActivityFeed] = useState([]);
   const [savingsProjectionData, setSavingsProjectionData] = useState([]);
-
-  // REAL API CALL: Fetch activity feed from audit logs
-  useEffect(() => {
-    const fetchActivityFeed = async () => {
-      try {
-        const response = await fetch('/api/v1/audit/logs?limit=5', {
-          headers: {
-            'Authorization': `Bearer ${localStorage.getItem('access_token')}`,
-            'Content-Type': 'application/json'
-          }
-        });
-        if (response.ok) {
-          const data = await response.json();
-          const logs = data.logs || [];
-
-          if (logs.length > 0) {
-            const realFeed = logs.map(log => ({
-              id: log.id,
-              action: log.event_name || log.event || log.action,
-              cluster: log.resource_id || log.resource_type || 'System',
-              time: formatRelativeTime(log.created_at || log.timestamp),
-              type: (log.status || log.outcome) === 'success' ? 'success' : (log.status || log.outcome) === 'error' ? 'error' : 'info'
-            }));
-            setActivityFeed(realFeed);
-          } else {
-            // Fallback if no logs found to show something (so it doesn't look broken)
-            // or keep empty state. Let's keep empty state but handle it in UI
-            setActivityFeed([]);
-          }
-        }
-      } catch (error) {
-        console.error('Failed to fetch activity feed:', error);
-        setActivityFeed([]);
-      }
-    };
-    fetchActivityFeed();
-  }, []);
-
   const [clusters, setClusters] = useState([]);
 
-  // REAL API CALL: Fetch clusters for map
   useEffect(() => {
-    const fetchClusters = async () => {
+    const fetchData = async () => {
       try {
-        const { clusterAPI } = await import('../../services/api');
-        const response = await clusterAPI.listClusters();
-        setClusters(response.data.clusters || []);
+        // Fetch Activity Feed
+        const logsRes = await auditAPI.list({ limit: 5 });
+        const logs = logsRes.data.logs || [];
+        if (logs.length > 0) {
+          const realFeed = logs.map(log => ({
+            id: log.id,
+            action: log.event_name || log.event || log.action,
+            cluster: log.resource_id || log.resource_type || 'System',
+            time: formatRelativeTime(log.created_at || log.timestamp),
+            type: (log.status || log.outcome) === 'success' ? 'success' : (log.status || log.outcome) === 'error' ? 'error' : 'info'
+          }));
+          setActivityFeed(realFeed);
+        }
+
+        // Fetch Clusters
+        const clustersRes = await clusterAPI.listClusters();
+        setClusters(clustersRes.data.clusters || []);
+
       } catch (error) {
-        console.error('Failed to load clusters:', error);
+        console.error('Failed to fetch dashboard data:', error);
       }
     };
-    fetchClusters();
+    fetchData();
   }, []);
 
   // Use costTimeSeries from useDashboard hook if available
