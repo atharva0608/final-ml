@@ -159,6 +159,22 @@ These are tracking codes for the documentation suite.
 | **DOC-INT::BE::Workers** | `backend/workers/INFO.md` | Internal | Celery worker docs. |
 | **DOC-INT::AGT::Root** | `agent/INFO.md` | Internal | Agent overview. |
 | **DOC-INT::FE::Root** | `frontend/INFO.md` | Internal | Frontend overview. |
+| **DOC-EXT::Context::Backend** | `docs/backend.md` | Context | General backend context (distinct from `backend_architecture.md`). |
+| **DOC-EXT::Context::FeatureMap** | `docs/featuremapping.md` | Context | Mapping of features to requirements. |
+| **DOC-EXT::Context::Task** | `docs/task.md` | Context | Task breakdown or requirements list. |
+| **DOC-EXT::Context::ScenarioApp** | `docs/application_scenario.md` | Context | Detailed application scenario. |
+| **DOC-EXT::Meta::LLM** | `docs/LLM_INSTRUCTIONS.md` | Meta | Instructions for LLM interaction with codebase. |
+| **DOC-EXT::Meta::Desc** | `docs/description.md` | Meta | High-level project description. |
+| **DOC-INT::Utils::Info** | `backend/utils/INFO.md` | Internal | Documentation for backend utilities. |
+| **DOC-INT::Scripts::Info** | `scripts/INFO.md` | Internal | Overview of the scripts directory. |
+| **DOC-INT::Scripts::AWS** | `scripts/aws/INFO.md` | Internal | Documentation for AWS specific scripts. |
+| **DOC-INT::Scripts::Deploy** | `scripts/deployment/INFO.md` | Internal | Documentation for deployment scripts. |
+| **DOC-INT::Docker::Info** | `docker/INFO.md` | Internal | Documentation for Docker configuration. |
+| **DOC-INT::Config::Info** | `config/INFO.md` | Internal | Documentation for general config. |
+| **DOC-INT::Mig::Info** | `migrations/INFO.md` | Internal | Documentation for DB migrations. |
+| **SYS-DOC::Root::Readme** | `README.md` | Doc | The main repository README entry point. |
+| **SYS-DOC::Agent::Readme** | `agent/README.md` | Doc | Specific README for the Agent subsystem. |
+| **SYS-CFG::Root::Pkg** | `package.json` | Config | Root-level Node package configuration. |
 
 ### 7. Miscellaneous System Components
 
@@ -167,6 +183,7 @@ These are tracking codes for the documentation suite.
 | **BE-PKG::Services::Init** | `backend/services/__init__.py` | Package | Python package init. |
 | **BE-PKG::Core::Init** | `backend/core/__init__.py` | Package | Python package init. |
 | **BE-PKG::Workers::Init** | `backend/workers/__init__.py` | Package | Python package init. |
+| **BE-PKG::Scrapers::Init** | `backend/scrapers/__init__.py` | Package | Python package marker for scrapers. |
 | **AGT-CFG::System::Reqs** | `agent/requirements.txt` | Config | Agent-specific python requirements. |
 | **BE-INF::Docker::Front** | `docker/Dockerfile.frontend` | Infra | Dockerfile for React Frontend. |
 | **BE-AST::Data::LoginFix** | `login_response.json` | Asset | JSON fixture for login testing. |
