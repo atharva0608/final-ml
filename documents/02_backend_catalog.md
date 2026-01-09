@@ -12,7 +12,7 @@
 | ID (Unique Tracking Code) | File Path | Type | Function / Feature Description | Main Dependencies |
 | :--- | :--- | :--- | :--- | :--- |
 | **BE-SVC::Auth::Main** | `backend/services/auth_service.py` | Service | User authentication, signup, login, token management (JWT). | `User`, `Organization`, `crypto` |
-| **BE-SVC::Admin::Main** | `backend/services/admin_service.py` | Service | Super Admin operations: Client management, Platform stats, Logic to "verify_super_admin". | `User`, `Cluster`, `Instance` |
+| **BE-SVC::Admin::Main** | `backend/services/admin_service.py` | Service | Super Admin operations: Client management, Platform stats (Real MRR/Costs), Logic to "verify_super_admin". | `User`, `Cluster`, `Instance` |
 | **BE-SVC::Organization::Main** | `backend/services/organization_service.py` | Service | Member management (Invite, Remove, Update Role). RBAC enforcement (Org Admin vs Team Lead). | `User`, `OrganizationInvitation` |
 | **BE-SVC::Account::Main** | `backend/services/account_service.py` | Service | AWS Account linkage. Validates Role ARN, External ID. Manages Account status. | `Account`, `boto3` (implied) |
 | **BE-SVC::Cluster::Main** | `backend/services/cluster_service.py` | Service | Cluster discovery (AWS EKS), registration, heartbeat tracking, and agent install script generation. | `Cluster`, `Account`, `boto3` |
@@ -217,9 +217,7 @@ These components exist in the codebase but appear to be unused or unreferenced b
 
 | ID | File Path | Status | Reason |
 | :--- | :--- | :--- | :--- |
-| **BE-SVC::Data::Pricing** | `backend/scrapers/pricing_collector.py` | **Zombie** | Not imported by any service, worker, or API. Pricing data is likely mocked or static. |
 | **BE-SVC::Data::SpotRisk** | `backend/scrapers/spot_advisor_scraper.py` | **Zombie** | Not imported by Risk Tracker or Decision Engine. Real-time interruption data is missing. |
-| **BE-MODL::Optimizer::Rightsize** | `backend/modules/rightsizer.py` | **Zombie** | Only imported in `__init__.py` but never used in `decision_engine` or `optimization` worker. |
 
 
 ## Components with Uncertain / Pending Status
@@ -228,9 +226,8 @@ These components are present but their implementation status is questionable (po
 | ID | File Path | Status | Finding |
 | :--- | :--- | :--- | :--- |
 | **BE-SVC::Account::Main** | `backend/services/account_service.py` | **Mock Logic** | "Link Account" stores credentials without verifying AWS connection via STS. |
-| **BE-SVC::Cluster::Main** | `backend/services/cluster_service.py` | **Stubbed** | `discover_clusters` method returns empty list `[]` with TODO comment. |
-| **BE-SVC::Metrics::Main** | `backend/services/metrics_service.py` | **Simplified** | Uses hardcoded 70% spot discount assumption in `_calculate_savings`. |
+| **BE-SVC::Metrics::Main** | `backend/services/metrics_service.py` | **Simplified** | Uses `costTimeSeries` hook logic (Frontend) and assumes 70% spot discount in `_calculate_savings`. |
 | **BE-WRK::Task::Events** | `backend/workers/tasks/event_processor.py` | **Partial** | Logic exists but primary triggers (webhooks) seem missing from API routes. |
-| **BE-CORE::Logic::Executor** | `backend/core/action_executor.py` | **Partial / Stubbed** | Core flow exists, but specific actions (RightSize, Consolidate) are TODOs. |
+| **BE-CORE::Logic::Executor** | `backend/core/action_executor.py` | **Partial** | Spot Replacement implemented (AWS). Rightsizing/Consolidation pending. |
 
 > **Note**: `HealthService` and `DecisionEngine` were audited and found to contain **Real** implementation logic, contrary to initial assumptions.
