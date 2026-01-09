@@ -1,19 +1,20 @@
 from celery import Celery
 import os
 
-celery_app = Celery(
+app = Celery(
     "worker",
     broker=os.environ.get("REDIS_URL", "redis://localhost:6379/0"),
-    backend=os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+    backend=os.environ.get("REDIS_URL", "redis://localhost:6379/0"),
+    include=['backend.workers.tasks.discovery', 'backend.workers.tasks.pricing_task']
 )
 
-celery_app.conf.beat_schedule = {
+app.conf.beat_schedule = {
     'discovery-task': {
-        'task': 'backend.workers.tasks.discovery.run_discovery',
+        'task': 'workers.discovery.scan_all_accounts', # Matches discovery.py name
         'schedule': 300.0,
     },
     'pricing-every-hour': {
-        'task': 'backend.workers.tasks.pricing.fetch_aws_pricing',
+        'task': 'backend.workers.tasks.pricing.fetch_aws_pricing', # Matches pricing_task.py name
         'schedule': 3600.0,
     },
 }

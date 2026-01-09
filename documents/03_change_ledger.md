@@ -52,3 +52,5 @@
 | **2026-01-09** | **Backend / Services** | `Critical Fix` | Implemented real AWS `boto3` logic in `AccountService` (verify_connection) and `ClusterService` (discover_clusters). |
 | **2026-01-09** | **Backend / Workers** | `Critical Fix` | Configured `workers/app.py` schedule. Fixed `discovery.py` to alias `run_discovery` for Celery task compatibility. |
 | **2026-01-09** | **Frontend / RightSizing** | `Critical Fix` | Updated `RightSizing.jsx` to fetch real recommendations from `/optimization/rightsizing/ALL`. Fixed syntax errors. |
+| **2026-01-09** | **Frontend / Build** | `Critical Fix` | Fixed `Attempted import error: 'api' is not exported` by adding named export in `services/api.js`. |
+| **2026-01-09** | **Backend / Workers** | `Critical Fix` | Fixed Worker Crash: Renamed `celery_app` to `app` in `workers/app.py` to match `__init__.py` export. Added `include` for task modules. |
