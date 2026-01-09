@@ -77,7 +77,7 @@ const Dashboard = () => {
       try {
         const { clusterAPI } = await import('../../services/api');
         const response = await clusterAPI.listClusters();
-        setClusters(response.data || []);
+        setClusters(response.data.clusters || []);
       } catch (error) {
         console.error('Failed to load clusters:', error);
       }
