@@ -71,6 +71,7 @@ def delete_account(
     current_user: User = Depends(RequireAccess("FULL")),
     db: Session = Depends(get_db)
 ):
+    service = get_account_service(db)
     service.delete_account(account_id, current_user.organization_id)
 
 @router.post(

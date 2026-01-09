@@ -63,3 +63,4 @@
 | **2026-01-09** | **Frontend / RightSizing** | `Fix` | Fixed 404 on `/optimization/rightsizing/ALL` by updating `RightSizing.jsx` to use `optimizationAPI` with correct `/api/v1` prefix. |
 | **2026-01-09** | **Backend / Services** | `Feat` | Implemented real `discover_clusters` logic in `ClusterService` (EKS list/describe + DB upsert). |
 | **2026-01-09** | **Backend / Workers** | `Feat` | Implemented `fetch_aws_pricing` task with `PricingCollector` and `SpotAdvisorScraper`. Updated Celery schedule. |
+| **2026-01-09** | **Backend / Services** | `Critical Fix` | Implemented complete `AccountService` with `list_accounts`, `get_account`, `link_aws_account`, `delete_account`, `validate_account`, `set_default_account`. Fixed 500 error on `/accounts` API. |
