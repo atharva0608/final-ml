@@ -35,11 +35,12 @@ class AccountUpdate(BaseModel):
 class AccountResponse(BaseModel):
     """Account response model"""
     id: str
-    user_id: str
+    organization_id: Optional[str] = None  # Account belongs to organization, not user
     aws_account_id: str
-    role_arn: str
-    external_id: str
+    role_arn: Optional[str] = None
+    external_id: Optional[str] = None  # Can be null
     status: str
+    region: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 

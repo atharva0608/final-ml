@@ -44,18 +44,25 @@ const Dashboard = () => {
         });
         if (response.ok) {
           const data = await response.json();
-          const realFeed = (data.logs || []).map(log => ({
-            id: log.id,
-            action: log.event_name || log.action,
-            cluster: log.resource_id || 'System',
-            time: formatRelativeTime(log.created_at),
-            type: log.status === 'success' ? 'success' : log.status === 'error' ? 'error' : 'info'
-          }));
-          setActivityFeed(realFeed);
+          const logs = data.logs || [];
+
+          if (logs.length > 0) {
+            const realFeed = logs.map(log => ({
+              id: log.id,
+              action: log.event_name || log.event || log.action,
+              cluster: log.resource_id || log.resource_type || 'System',
+              time: formatRelativeTime(log.created_at || log.timestamp),
+              type: (log.status || log.outcome) === 'success' ? 'success' : (log.status || log.outcome) === 'error' ? 'error' : 'info'
+            }));
+            setActivityFeed(realFeed);
+          } else {
+            // Fallback if no logs found to show something (so it doesn't look broken)
+            // or keep empty state. Let's keep empty state but handle it in UI
+            setActivityFeed([]);
+          }
         }
       } catch (error) {
         console.error('Failed to fetch activity feed:', error);
-        // Fallback to empty
         setActivityFeed([]);
       }
     };

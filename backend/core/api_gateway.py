@@ -23,8 +23,11 @@ from backend.api import (
     lab_router,
     onboarding_router,
     organization_router,
+    health_router,
+    optimization_router,
 )
 from backend.api import account_routes
+from backend.api import settings_routes
 
 logger = StructuredLogger(__name__)
 
@@ -337,6 +340,15 @@ app.include_router(organization_router, prefix="/api/v1")
 
 # Account routes
 app.include_router(account_routes.router, prefix="/api/v1")
+
+# Health routes
+app.include_router(health_router, prefix="/api/v1")
+
+# Optimization routes
+app.include_router(optimization_router, prefix="/api/v1")
+
+# Settings routes
+app.include_router(settings_routes.router, prefix="/api/v1")
 
 
 # Startup and shutdown events

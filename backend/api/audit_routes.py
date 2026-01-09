@@ -60,6 +60,29 @@ def get_audit_logs(
     return service.get_audit_logs(filters)
 
 
+# Alias endpoint for frontend compatibility
+@router.get(
+    "/logs",
+    response_model=AuditLogList,
+    summary="Get audit logs (alias)",
+    description="Alias for /audit endpoint - Query audit logs with filters and pagination"
+)
+def get_audit_logs_alias(
+    limit: Optional[int] = Query(None, description="Limit number of results"),
+    page: int = Query(1, ge=1, description="Page number"),
+    page_size: int = Query(20, ge=1, le=100, description="Items per page"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+) -> AuditLogList:
+    """Alias endpoint for /audit - frontend compatibility"""
+    filters = AuditLogFilter(
+        page=page,
+        page_size=limit or page_size
+    )
+    service = get_audit_service(db)
+    return service.get_audit_logs(filters)
+
+
 @router.get(
     "/{audit_id}",
     response_model=AuditLogSchema,
