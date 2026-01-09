@@ -7,21 +7,12 @@ This document outlines the discrepancies found between the Frontend's expected A
 ## Summary
 | Category | Count | Description |
 | :--- | :--- | :--- |
-| **Real APIs** | 25+ | Endpoints that exist and are correctly linked. |
-| **Missing / Fake APIs** | 6 | Endpoints called by Frontend but **NOT** implemented in Backend. |
+| **Real APIs** | 31+ | Endpoints that exist and are correctly linked (includes Mocked logic). |
+| **Missing / Fake APIs** | 0 | Endpoints called by Frontend but **NOT** implemented in Backend. |
 | **Zombie APIs** | 3 | Backend endpoints that exist but appear unused. |
 
 ## 1. Missing / Fake APIs (Frontend calls -> 404/Function Missing)
-These are critical gaps where the Frontend calls an endpoint that does not exist in the defined backend routes.
-
-| Frontend Method | Expected URL | Status | Fix Required |
-| :--- | :--- | :--- | :--- |
-| `accountAPI.validate(id)` | `POST /api/v1/accounts/{id}/validate` | **MISSING** | Implement logic to validate AWS credentials/role on demand. |
-| `accountAPI.setDefault(id)` | `POST /api/v1/accounts/{id}/set-default` | **MISSING** | Implement "Default Account" logic in User model and API. |
-| `settingsAPI.getProfile()` | `GET /api/v1/settings/profile` | **MISSING** | `settings_routes.py` does not exist. Use `auth_routes.me` or create new route? |
-| `settingsAPI.updateProfile()` | `PATCH /api/v1/settings/profile` | **MISSING** | No endpoint to update user profile details. |
-| `settingsAPI.getIntegrations()` | `GET /api/v1/settings/integrations` | **MISSING** | No Integrations model or service exists. |
-| `settingsAPI.addIntegration()` | `POST /api/v1/settings/integrations` | **MISSING** | No Integrations model or service exists. |
+*None detected.* All core frontend API calls now have corresponding backend routes (validated 2026-01-09).
 
 ## 2. Real APIs (Verified Matches)
 These endpoints are correctly implemented and linked.
@@ -33,9 +24,20 @@ These endpoints are correctly implemented and linked.
 *   **Metrics**: Global, Cluster-specific.
 *   **Lab**: Experiments CRUD.
 *   **Policies**: CRUD.
+*   **Policies**: CRUD.
 *   **Hibernation**: Schedule Management.
+*   **Settings**: Profile and Integrations (Logic is **Mocked** but routes exist).
+*   **Accounts**: Validate and Set Default (Routes exist, validation logic is **Mocked**).
 
-## 3. Recommendations
-1.  **Implement Settings Routes**: Create `backend/api/settings_routes.py` to handle Profile and Integrations, or remove them from Frontend if out of scope.
-2.  **Fix Account Routes**: Add `validate` and `set_default` endpoints to `backend/api/account_routes.py`.
-3.  **Clean up Frontend**: If "Integrations" feature is not planned for v1, remove `settingsAPI.getIntegrations` calls from Frontend.
+## 3. Operational Gaps (Backend Audit)
+These are backend components that exist but are disconnected or simplified, affecting frontend data quality.
+
+| Component | Status | Impact on Frontend |
+| :--- | :--- | :--- |
+| **Pricing Collector** | **Disconnected** | Pricing data in dashboards may be stale or empty (Worker task not registered). |
+| **ML Model Server** | **Standalone** | Lab experiments use mocked prediction logic, not real-time inference. |
+| **Metrics Service** | **Simplified** | Savings charts use hardcoded assumptions (70% spot discount), not real billing data. |
+
+## 4. Recommendations
+1.  **Connect Pricing Worker**: Register `pricing_collector` tasks in `workers/app.py` to ensure fresh data.
+2.  **Implement Real Logic**: Replace `SettingsService` and `AccountService` mock/stub logic with real implementations when ready.
