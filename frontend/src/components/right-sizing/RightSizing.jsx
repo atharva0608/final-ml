@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { FiDollarSign, FiTrendingDown, FiServer, FiCheckCircle, FiCpu, FiInfo, FiArrowDownRight } from 'react-icons/fi';
 import { Card, Button, Badge } from '../shared';
 import { useClusterStore } from '../../store/useStore';
-import { api } from '../../services/api';
+import { api, optimizationAPI } from '../../services/api';
 import toast from 'react-hot-toast';
 import EmptyState from '../shared/EmptyState';
 
@@ -14,14 +14,23 @@ const RightSizing = () => {
 
     useEffect(() => {
         // Fetch real data
-        api.get('/optimization/rightsizing/ALL').then(res => {
-            setRecommendations(res.data.recommendations || []);
-            setLoading(false);
-        }).catch(err => {
-            console.error("RightSizing fetch error:", err);
-            setData(null);
-            setLoading(false);
-        });
+        const fetchRecommendations = async () => {
+            try {
+                // Use 'ALL' or specific cluster ID if desired. 
+                // Using 'ALL' implies the backend handles it or we iterate.
+                // For now matching the original intent.
+                const res = await optimizationAPI.getRightsizing('ALL');
+                setRecommendations(res.data.recommendations || []);
+                setData(res.data); // Also set data if structure matches
+            } catch (err) {
+                console.error("RightSizing fetch error:", err);
+                setData(null);
+            } finally {
+                setLoading(false);
+            }
+        };
+
+        fetchRecommendations();
     }, []);
 
 
