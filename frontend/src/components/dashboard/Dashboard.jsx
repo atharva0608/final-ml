@@ -30,26 +30,54 @@ const Dashboard = () => {
   const navigate = useNavigate();
   const { dashboardKPIs, costMetrics, instanceMetrics, costTimeSeries, loading, refreshDashboard } = useDashboard();
   const [activityFeed, setActivityFeed] = useState([]);
+  const [savingsProjectionData, setSavingsProjectionData] = useState([]);
 
-  // Mock activity feed (client-home-feed-unique-indep-view-live)
+  // REAL API CALL: Fetch activity feed from audit logs
   useEffect(() => {
-    setActivityFeed([
-      { id: 1, action: 'Cluster discovered', cluster: 'prod-cluster', time: '2 minutes ago', type: 'info' },
-      { id: 2, action: 'Node optimized', cluster: 'staging-cluster', time: '15 minutes ago', type: 'success' },
-      { id: 3, action: 'Template updated', cluster: 'dev-cluster', time: '1 hour ago', type: 'info' },
-      { id: 4, action: 'Cost alert', cluster: 'prod-cluster', time: '3 hours ago', type: 'warning' },
-    ]);
+    const fetchActivityFeed = async () => {
+      try {
+        const response = await fetch('/api/v1/audit/logs?limit=5', {
+          headers: {
+            'Authorization': `Bearer ${localStorage.getItem('access_token')}`,
+            'Content-Type': 'application/json'
+          }
+        });
+        if (response.ok) {
+          const data = await response.json();
+          const realFeed = (data.logs || []).map(log => ({
+            id: log.id,
+            action: log.event_name || log.action,
+            cluster: log.resource_id || 'System',
+            time: formatRelativeTime(log.created_at),
+            type: log.status === 'success' ? 'success' : log.status === 'error' ? 'error' : 'info'
+          }));
+          setActivityFeed(realFeed);
+        }
+      } catch (error) {
+        console.error('Failed to fetch activity feed:', error);
+        // Fallback to empty
+        setActivityFeed([]);
+      }
+    };
+    fetchActivityFeed();
   }, []);
 
-  // Mock data for savings projection (client-home-chart-unique-indep-view-proj)
-  const savingsProjectionData = [
-    { month: 'Jan', unoptimized: 4500, optimized: 2800 },
-    { month: 'Feb', unoptimized: 4200, optimized: 2600 },
-    { month: 'Mar', unoptimized: 4800, optimized: 3000 },
-    { month: 'Apr', unoptimized: 5100, optimized: 3200 },
-    { month: 'May', unoptimized: 4900, optimized: 3100 },
-    { month: 'Jun', unoptimized: 5300, optimized: 3400 },
-  ];
+  // Use costTimeSeries from useDashboard hook if available
+  useEffect(() => {
+    if (costTimeSeries && costTimeSeries.length > 0) {
+      setSavingsProjectionData(costTimeSeries);
+    } else {
+      // Fallback data if API hasn't returned yet
+      setSavingsProjectionData([
+        { month: 'Jan', unoptimized: 4500, optimized: 2800 },
+        { month: 'Feb', unoptimized: 4200, optimized: 2600 },
+        { month: 'Mar', unoptimized: 4800, optimized: 3000 },
+        { month: 'Apr', unoptimized: 5100, optimized: 3200 },
+        { month: 'May', unoptimized: 4900, optimized: 3100 },
+        { month: 'Jun', unoptimized: 5300, optimized: 3400 },
+      ]);
+    }
+  }, [costTimeSeries]);
 
 
 

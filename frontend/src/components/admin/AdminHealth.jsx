@@ -38,63 +38,31 @@ const AdminHealth = () => {
     if (!loading) setRefreshing(true);
 
     try {
-      // Simulated health data - in production, this would call an API
-      const mockHealth = {
-        status: 'healthy',
-        timestamp: new Date().toISOString(),
-        services: {
-          api: {
-            status: 'healthy',
-            response_time: Math.floor(Math.random() * 50) + 20,
-            uptime: 99.98,
-          },
-          database: {
-            status: 'healthy',
-            connections: Math.floor(Math.random() * 50) + 10,
-            max_connections: 100,
-            query_time_avg: Math.floor(Math.random() * 20) + 5,
-          },
-          redis: {
-            status: 'healthy',
-            memory_usage: Math.floor(Math.random() * 30) + 40,
-            max_memory: 100,
-            hit_rate: 94.5,
-          },
-          queue: {
-            status: 'healthy',
-            pending_jobs: Math.floor(Math.random() * 100),
-            failed_jobs: Math.floor(Math.random() * 5),
-            processed_per_minute: Math.floor(Math.random() * 200) + 100,
-          },
-        },
-        metrics: {
-          cpu_usage: Math.floor(Math.random() * 30) + 20,
-          memory_usage: Math.floor(Math.random() * 20) + 50,
-          disk_usage: Math.floor(Math.random() * 15) + 35,
-          network_in: (Math.random() * 50 + 10).toFixed(2),
-          network_out: (Math.random() * 30 + 5).toFixed(2),
-        },
-        incidents: [
-          {
-            id: 1,
-            severity: 'warning',
-            message: 'Database query latency slightly elevated',
-            timestamp: new Date(Date.now() - 3600000).toISOString(),
-            resolved: true,
-          },
-          {
-            id: 2,
-            severity: 'info',
-            message: 'Scheduled maintenance completed successfully',
-            timestamp: new Date(Date.now() - 7200000).toISOString(),
-            resolved: true,
-          },
-        ],
-      };
+      // REAL API CALL - no more mock data
+      const response = await fetch('/api/v1/health/system', {
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('access_token')}`,
+          'Content-Type': 'application/json'
+        }
+      });
 
-      setHealth(mockHealth);
+      if (!response.ok) {
+        throw new Error('Failed to fetch health data');
+      }
+
+      const data = await response.json();
+      setHealth(data);
     } catch (error) {
+      console.error('Health check failed:', error);
       toast.error('Failed to fetch system health');
+      // Set degraded status on error
+      setHealth({
+        status: 'degraded',
+        timestamp: new Date().toISOString(),
+        services: {},
+        metrics: {},
+        incidents: []
+      });
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -374,9 +342,8 @@ const AdminHealth = () => {
             {health.incidents.map((incident) => (
               <div
                 key={incident.id}
-                className={`p-4 rounded-lg border ${
-                  incident.resolved ? 'bg-gray-50 border-gray-200' : 'bg-yellow-50 border-yellow-200'
-                }`}
+                className={`p-4 rounded-lg border ${incident.resolved ? 'bg-gray-50 border-gray-200' : 'bg-yellow-50 border-yellow-200'
+                  }`}
               >
                 <div className="flex items-start justify-between">
                   <div className="flex items-start gap-3 flex-1">

@@ -11,7 +11,6 @@ import toast from 'react-hot-toast';
 
 const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 const HOURS = Array.from({ length: 24 }, (_, i) => i);
-const HOURLY_COST_AVG = 2.45; // Mock cost per hour for estimation
 
 // Common timezones
 const TIMEZONES = [
@@ -24,6 +23,7 @@ const HibernationSchedule = ({ clusterId }) => {
   const [loading, setLoading] = useState(false);
   const [isPainting, setIsPainting] = useState(false);
   const [paintMode, setPaintMode] = useState(null); // 'awake' or 'sleep'
+  const [hourlyCost, setHourlyCost] = useState(0); // Dynamic cost per hour
 
   const [formData, setFormData] = useState({
     cluster_id: clusterId || '',
@@ -40,12 +40,34 @@ const HibernationSchedule = ({ clusterId }) => {
   useEffect(() => {
     if (clusterId) {
       fetchScheduleForCluster(clusterId);
+      fetchClusterCost(clusterId); // Fetch dynamic cost
     }
   }, [clusterId]);
 
   useEffect(() => {
     calculateSavings();
-  }, [formData.schedule_matrix]);
+  }, [formData.schedule_matrix, hourlyCost]);
+
+  // NEW: Fetch dynamic hourly cost from metrics API
+  const fetchClusterCost = async (clusterIdParam) => {
+    try {
+      const response = await fetch(`/api/v1/metrics/cluster/${clusterIdParam}`, {
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('access_token')}`,
+          'Content-Type': 'application/json'
+        }
+      });
+      if (response.ok) {
+        const data = await response.json();
+        // Calculate estimated hourly cost (instances * avg price)
+        const estimatedHourly = (data.total_instances || 0) * 0.12;
+        setHourlyCost(estimatedHourly);
+      }
+    } catch (error) {
+      console.warn('Failed to fetch hourly cost, using default');
+      setHourlyCost(2.45); // Fallback default
+    }
+  };
 
   const fetchScheduleForCluster = async (clusterIdParam) => {
     setLoading(true);
@@ -72,7 +94,8 @@ const HibernationSchedule = ({ clusterId }) => {
 
   const calculateSavings = () => {
     const sleepHours = formData.schedule_matrix.filter(h => h === 0).length;
-    const monthlySavings = (sleepHours / 168) * (HOURLY_COST_AVG * 24 * 30);
+    // Use dynamic hourlyCost instead of hardcoded constant
+    const monthlySavings = (sleepHours / 168) * (hourlyCost * 24 * 30);
     setSavings(monthlySavings);
   };
 

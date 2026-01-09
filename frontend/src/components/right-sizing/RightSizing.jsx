@@ -1,40 +1,61 @@
-import React, { useState } from 'react';
-import { Card, Button, Badge } from '../shared';
+import React, { useState, useEffect } from 'react';
+import { Card, Button, Badge, EmptyState } from '../shared';
 import { FiTrendingDown, FiActivity, FiCheck, FiCpu, FiAlertTriangle } from 'react-icons/fi';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from 'recharts';
 import toast from 'react-hot-toast';
+import { optimizationAPI } from '../../services/api';
 
 const RightSizing = () => {
     const [timeRange, setTimeRange] = useState('7d');
     const [autoResize, setAutoResize] = useState(false);
+    const [loading, setLoading] = useState(true);
+    const [data, setData] = useState(null);
+    const [selectedClusterId, setSelectedClusterId] = useState(null);
 
-    // Mock Data
-    const summaryStats = {
-        monthly_savings: 450.25,
-        oversized_count: 12,
-        efficiency_improvement: 24, // percent
+    useEffect(() => {
+        // Get cluster from URL or global state - for now use first available
+        const clusterId = localStorage.getItem('selectedClusterId') || 'default';
+        setSelectedClusterId(clusterId);
+        fetchRecommendations(clusterId);
+    }, []);
+
+    const fetchRecommendations = async (clusterId) => {
+        setLoading(true);
+        try {
+            const response = await optimizationAPI.getRightsizing(clusterId);
+            setData(response.data);
+        } catch (error) {
+            console.error("Failed to fetch rightsizing data", error);
+            // Fallback to empty state
+            setData(null);
+        } finally {
+            setLoading(false);
+        }
     };
 
-    const recommendations = [
-        { id: 1, namespace: 'payment-service', name: 'api-gateway', current_cpu: '2000m', rec_cpu: '500m', current_mem: '4Gi', rec_mem: '2Gi', savings: 125.00, confidence: 'High' },
-        { id: 2, namespace: 'data-pipeline', name: 'processor-worker', current_cpu: '4000m', rec_cpu: '2500m', current_mem: '8Gi', rec_mem: '6Gi', savings: 85.50, confidence: 'Medium' },
-        { id: 3, namespace: 'frontend', name: 'web-server', current_cpu: '1000m', rec_cpu: '200m', current_mem: '2Gi', rec_mem: '512Mi', savings: 45.20, confidence: 'High' },
-        { id: 4, namespace: 'monitoring', name: 'log-collector', current_cpu: '500m', rec_cpu: '100m', current_mem: '1Gi', rec_mem: '256Mi', savings: 15.00, confidence: 'Low' },
-    ];
-
-    const chartData = [
-        { time: '00:00', usage: 15, request: 80 },
-        { time: '04:00', usage: 12, request: 80 },
-        { time: '08:00', usage: 45, request: 80 },
-        { time: '12:00', usage: 60, request: 80 },
-        { time: '16:00', usage: 55, request: 80 },
-        { time: '20:00', usage: 30, request: 80 },
-        { time: '23:59', usage: 20, request: 80 },
-    ];
-
-    const handleApply = (id) => {
+    const handleApply = async (id) => {
         toast.success(`Resize applied to workload ID ${id}`);
     };
+
+    if (loading) return <div className="p-8 text-center">Loading analysis...</div>;
+
+    // Handle no data state
+    if (!data || !data.recommendations || data.recommendations.length === 0) {
+        return (
+            <div className="space-y-6">
+                <div>
+                    <h1 className="text-3xl font-bold text-gray-900">Workload Rightsizing</h1>
+                    <p className="mt-1 text-gray-600">Optimize pod resource requests to reduce waste.</p>
+                </div>
+                <EmptyState
+                    title="Everything looks optimized!"
+                    message="We couldn't find any over-provisioned workloads in this cluster based on the last 14 days of data."
+                />
+            </div>
+        );
+    }
+
+    const { summaryStats, recommendations, chartData } = data;
 
     return (
         <div className="space-y-6">

@@ -70,6 +70,15 @@ export const metricAPI = {
 };
 export const metricsAPI = metricAPI;
 
+export const optimizationAPI = {
+    getRightsizing: (clusterId) => api.get(`/api/v1/optimization/rightsizing/${clusterId}`),
+    applyRecommendation: (id) => api.post(`/api/v1/optimization/apply/${id}`),
+};
+
+export const healthAPI = {
+    getSystemHealth: () => api.get('/api/v1/health/system'),
+};
+
 export const policyAPI = {
     listPolicies: (params) => api.get('/api/v1/policies', { params }),
     getPolicy: (id) => api.get(`/api/v1/policies/${id}`),

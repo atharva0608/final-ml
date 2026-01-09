@@ -20,3 +20,8 @@
 | **2026-01-09** | **Frontend / Shared** | `Feature` | Created `EmptyState.jsx` component for graceful no-data handling. |
 | **2026-01-09** | **Backend / API** | `Update` | Registered `health_router` and `optimization_router` in `backend/api/__init__.py`. |
 | **2026-01-09** | **Docs / Catalog** | `Verify` | Confirmed all items from `missing.txt` are present in catalogs: Agent components, config files, stub status tracked. |
+| **2026-01-09** | **Frontend / RightSizing** | `Refactor` | Removed mock data arrays. Now fetches from `/optimization/rightsizing/{id}`. Added empty state handling with `EmptyState` component. |
+| **2026-01-09** | **Frontend / AdminHealth** | `Refactor` | Replaced 60-line `mockHealth` object with real API call to `/health/system`. |
+| **2026-01-09** | **Frontend / Dashboard** | `Refactor` | Replaced mock activity feed with real `/audit/logs` API call. Uses `costTimeSeries` from `useDashboard` hook. |
+| **2026-01-09** | **Frontend / Hibernation** | `Refactor` | Removed hardcoded `HOURLY_COST_AVG`. Fetches dynamic cost from `/metrics/cluster/{id}`. |
+| **2026-01-09** | **Frontend / API** | `Feature` | Added `optimizationAPI` and `healthAPI` definitions to `api.js`. |
