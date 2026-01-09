@@ -45,6 +45,9 @@ class ClusterService:
         """
         Discover EKS and self-managed Kubernetes clusters in AWS account
 
+        This method triggers the discovery worker to scan AWS for clusters
+        and returns any already-discovered clusters from the database.
+
         Args:
             account_id: Account UUID
             user_id: User UUID
@@ -77,23 +80,26 @@ class ClusterService:
                 f"Account {account.aws_account_id} is not active. Status: {account.status.value}"
             )
 
-        discovered_clusters = []
+        # Trigger discovery worker task asynchronously
+        try:
+            from backend.workers.tasks.discovery import discovery_worker_loop
+            # Trigger async discovery - results will populate the database
+            discovery_worker_loop.delay()
+            logger.info(
+                "Cluster discovery triggered",
+                account_id=account_id,
+                aws_account_id=account.aws_account_id,
+                user_id=user_id
+            )
+        except Exception as e:
+            logger.warning(f"Failed to trigger discovery worker: {str(e)}")
 
-        # TODO: Implement actual AWS EKS discovery using boto3
-        # For now, this is a placeholder that would call:
-        # eks_client = boto3.client('eks', region_name=region)
-        # clusters = eks_client.list_clusters()
-        # For each cluster, get cluster details and create/update in database
+        # Return existing discovered clusters from database
+        discovered_clusters = self.db.query(Cluster).filter(
+            Cluster.account_id == account_id
+        ).order_by(Cluster.created_at.desc()).all()
 
-        logger.info(
-            "Cluster discovery initiated",
-            account_id=account_id,
-            aws_account_id=account.aws_account_id,
-            user_id=user_id
-        )
-
-        # Return discovered clusters (placeholder for now)
-        return discovered_clusters
+        return [self._to_response(c) for c in discovered_clusters]
 
     def register_cluster(
         self,

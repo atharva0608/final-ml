@@ -29,13 +29,13 @@ import boto3
 from botocore.exceptions import ClientError
 from sqlalchemy.orm import Session
 
-from app.database.models import (
+from backend.models import (
     Cluster,
     Account,
-    ActionLog,
     Instance
 )
-from app.core.redis_client import get_redis_client
+from backend.models.audit_log import AuditLog as ActionLog
+from backend.core.redis_client import get_redis_client
 
 logger = logging.getLogger(__name__)
 
@@ -297,18 +297,32 @@ class ActionExecutor:
             # Step 1: Launch new Spot instance
             logger.info(f"[CORE-EXEC] Launching Spot instance {new_instance_type}")
 
-            # TODO: In production, get launch template from old instance
+            # Get AMI from existing instance (NOT hardcoded)
+            old_instance_info = ec2_client.describe_instances(
+                InstanceIds=[old_instance_id]
+            )
+            ami_id = "ami-0123456789abcdef0"  # Fallback
+            if old_instance_info.get('Reservations'):
+                old_instance = old_instance_info['Reservations'][0]['Instances'][0]
+                ami_id = old_instance.get('ImageId', ami_id)
+                # Also get security groups and subnet from old instance
+                security_groups = [sg['GroupId'] for sg in old_instance.get('SecurityGroups', [])]
+                subnet_id = old_instance.get('SubnetId')
+            else:
+                security_groups = action.get("security_groups", [])
+                subnet_id = action.get("subnet_id")
+
             launch_response = ec2_client.request_spot_instances(
                 InstanceCount=1,
                 Type='one-time',
                 LaunchSpecification={
-                    'ImageId': action.get("ami_id", "ami-12345678"),  # TODO: Get from old instance
+                    'ImageId': ami_id,
                     'InstanceType': new_instance_type,
                     'Placement': {
                         'AvailabilityZone': availability_zone
                     },
-                    'SecurityGroupIds': action.get("security_groups", []),
-                    'SubnetId': action.get("subnet_id"),
+                    'SecurityGroupIds': security_groups,
+                    'SubnetId': subnet_id,
                     'IamInstanceProfile': action.get("iam_instance_profile", {}),
                     'UserData': action.get("user_data", "")
                 }

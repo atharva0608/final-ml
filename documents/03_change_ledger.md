@@ -28,3 +28,6 @@
 | **2026-01-09** | **Backend / Core** | `Fix` | Fixed `health_service.py`: Replaced wrong `app.` imports with `backend.` (4 occurrences). Removed orphaned `OptimizationJob` references. Backend now starts successfully. |
 | **2026-01-09** | **Frontend / API** | `Fix` | Added missing `getDashboardStats` and `getBilling` methods to `adminAPI` in `api.js`. |
 | **2026-01-09** | **Frontend / Admin** | `Fix` | Added styled error state UI to `AdminDashboard.jsx` and `AdminBilling.jsx` instead of blank page on API failure. |
+| **2026-01-09** | **Backend / Workers** | `Feature` | Added Celery Beat schedule to `app.py`: discovery scan (5 min), pricing collector (10 min), optimization analysis (15 min). |
+| **2026-01-09** | **Backend / Services** | `Fix` | Updated `ClusterService.discover_clusters()` to trigger discovery worker task asynchronously and return existing clusters from DB instead of empty list. |
+| **2026-01-09** | **Backend / Core** | `Fix` | Fixed `action_executor.py`: Replaced wrong `app.` imports with `backend.`, implemented dynamic AMI lookup from existing instance instead of hardcoded `ami-12345678`. |

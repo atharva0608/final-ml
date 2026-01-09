@@ -1,4 +1,5 @@
 from celery import Celery
+from celery.schedules import crontab
 import os
 from backend.core.config import settings
 
@@ -23,7 +24,26 @@ app.conf.update(
     enable_utc=True,
     task_track_started=True,
     worker_prefetch_multiplier=1,
+    # Celery Beat Schedule for periodic tasks
+    beat_schedule={
+        # Discovery worker - scan AWS accounts every 5 minutes
+        "discovery-scan-all-accounts": {
+            "task": "workers.discovery.scan_all_accounts",
+            "schedule": 300.0,  # 5 minutes
+        },
+        # Pricing collector - update spot prices every 10 minutes
+        "pricing-collect-spot-prices": {
+            "task": "workers.pricing.collect_spot_prices",
+            "schedule": 600.0,  # 10 minutes
+        },
+        # Optimization worker - analyze clusters every 15 minutes
+        "optimization-analyze-clusters": {
+            "task": "workers.optimization.analyze_all_clusters",
+            "schedule": 900.0,  # 15 minutes
+        },
+    },
 )
 
 if __name__ == "__main__":
     app.start()
+
