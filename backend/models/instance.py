@@ -10,8 +10,8 @@ from backend.models.base import Base, generate_uuid
 
 class InstanceLifecycle(enum.Enum):
     """Instance lifecycle enumeration"""
-    SPOT = "spot"
-    ON_DEMAND = "on_demand"
+    SPOT = "SPOT"
+    ON_DEMAND = "ON_DEMAND"
 
 
 class Instance(Base):

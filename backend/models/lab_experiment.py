@@ -11,10 +11,11 @@ from backend.models.base import Base, generate_uuid
 
 class ExperimentStatus(enum.Enum):
     """Lab experiment status enumeration"""
-    PENDING = "pending"
-    RUNNING = "running"
-    COMPLETED = "completed"
-    FAILED = "failed"
+    DRAFT = "DRAFT"
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
 
 
 class LabExperiment(Base):

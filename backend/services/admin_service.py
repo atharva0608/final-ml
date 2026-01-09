@@ -10,7 +10,7 @@ from backend.models.user import User, UserRole, OrgRole
 from backend.models.organization import Organization
 from backend.models.account import Account
 from backend.models.cluster import Cluster
-from backend.models.instance import Instance
+from backend.models.instance import Instance, InstanceLifecycle
 from backend.schemas.admin_schemas import (
     ClientList,
     ClientSummary,
@@ -320,7 +320,7 @@ class AdminService:
         total_instances = self.db.query(Instance).count()
         running_instances = self.db.query(Instance).count()
         spot_instances = self.db.query(Instance).filter(
-            Instance.lifecycle == 'spot'
+            Instance.lifecycle == InstanceLifecycle.SPOT
         ).count()
 
         # Calculate total cost (simplified)
