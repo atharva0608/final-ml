@@ -54,12 +54,14 @@ export const accountsAPI = accountAPI;
 
 export const adminAPI = {
     listClients: (params) => api.get('/api/v1/admin/clients', { params }),
-    listOrganizations: (params) => api.get('/api/v1/admin/organizations', { params }), // New Endpoint
+    listOrganizations: (params) => api.get('/api/v1/admin/organizations', { params }),
     getClient: (id) => api.get(`/api/v1/admin/clients/${id}`),
     toggleClient: (id) => api.post(`/api/v1/admin/clients/${id}/toggle`),
     resetPassword: (id, data) => api.post(`/api/v1/admin/clients/${id}/reset-password`, data),
     getHealth: () => api.get('/api/v1/admin/health'),
     getStats: () => api.get('/api/v1/admin/stats'),
+    getDashboardStats: () => api.get('/api/v1/admin/dashboard'),
+    getBilling: () => api.get('/api/v1/admin/billing'),
 };
 
 export const metricAPI = {

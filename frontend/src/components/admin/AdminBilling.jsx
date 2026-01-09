@@ -24,8 +24,23 @@ const AdminBilling = () => {
         }
     };
 
-    if (loading) return <div className="p-6">Loading billing data...</div>;
-    if (!billingData) return <div className="p-6">No data available</div>;
+    if (loading) return <div className="p-6 text-center">Loading billing data...</div>;
+
+    if (!billingData) {
+        return (
+            <div className="space-y-6">
+                <div>
+                    <h1 className="text-2xl font-bold text-gray-900">Billing & Plans</h1>
+                    <p className="text-gray-600">Monetization management and Revenue Ops</p>
+                </div>
+                <Card className="p-8 text-center">
+                    <FiCreditCard className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+                    <h3 className="text-lg font-semibold text-gray-700">Billing Data Unavailable</h3>
+                    <p className="text-gray-500 mt-2">Unable to load billing information. Please try again later.</p>
+                </Card>
+            </div>
+        );
+    }
 
     const { stats, plans, upsell_opportunities } = billingData;
 

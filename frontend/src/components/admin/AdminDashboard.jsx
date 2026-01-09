@@ -32,14 +32,30 @@ const AdminDashboard = () => {
       const response = await adminAPI.getDashboardStats();
       setDashboardData(response.data);
     } catch (error) {
-      console.error('Failed to load dashboard stats');
+      console.error('Failed to load dashboard stats:', error);
+      setDashboardData(null);
     } finally {
       setLoading(false);
     }
   };
 
-  if (loading) return <div className="p-6">Loading dashboard...</div>;
-  if (!dashboardData) return null;
+  if (loading) return <div className="p-6 text-center">Loading dashboard...</div>;
+
+  if (!dashboardData) {
+    return (
+      <div className="space-y-6">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Command Center</h1>
+          <p className="text-gray-600">Platform Overview & Live Pulse</p>
+        </div>
+        <Card className="p-8 text-center">
+          <FiActivity className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+          <h3 className="text-lg font-semibold text-gray-700">Unable to Load Dashboard</h3>
+          <p className="text-gray-500 mt-2">Please check your connection or try again later.</p>
+        </Card>
+      </div>
+    );
+  }
 
   const { stats, savings_chart, activity_feed } = dashboardData;
 

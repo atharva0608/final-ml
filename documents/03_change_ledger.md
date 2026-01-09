@@ -26,3 +26,5 @@
 | **2026-01-09** | **Frontend / Hibernation** | `Refactor` | Removed hardcoded `HOURLY_COST_AVG`. Fetches dynamic cost from `/metrics/cluster/{id}`. |
 | **2026-01-09** | **Frontend / API** | `Feature` | Added `optimizationAPI` and `healthAPI` definitions to `api.js`. |
 | **2026-01-09** | **Backend / Core** | `Fix` | Fixed `health_service.py`: Replaced wrong `app.` imports with `backend.` (4 occurrences). Removed orphaned `OptimizationJob` references. Backend now starts successfully. |
+| **2026-01-09** | **Frontend / API** | `Fix` | Added missing `getDashboardStats` and `getBilling` methods to `adminAPI` in `api.js`. |
+| **2026-01-09** | **Frontend / Admin** | `Fix` | Added styled error state UI to `AdminDashboard.jsx` and `AdminBilling.jsx` instead of blank page on API failure. |
