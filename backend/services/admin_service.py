@@ -527,24 +527,23 @@ class AdminService:
         # Get real stats
         platform_stats = self.get_platform_stats(requesting_user)
         
-        # Mock chart and feed (until we have real historical data logic)
+        # Calculate real MRR
+        mrr_value = f"${platform_stats.total_cost:,.2f}"
+        
+        stats = {
+            "active_users": platform_stats.active_users,
+            "recent_signups": platform_stats.recent_signups,
+            "total_instances": platform_stats.total_instances,
+            "active_clusters": platform_stats.active_clusters,
+            "total_savings": 0.0,
+            "total_savings_value": 0.0,
+            "mrr": mrr_value
+        }
+
         return {
-            "stats": platform_stats,
-            "savings_chart": [
-                {"name": 'Mon', "savings": 4000},
-                {"name": 'Tue', "savings": 3000},
-                {"name": 'Wed', "savings": 2000},
-                {"name": 'Thu', "savings": 2780},
-                {"name": 'Fri', "savings": 1890},
-                {"name": 'Sat', "savings": 2390},
-                {"name": 'Sun', "savings": 3490},
-            ],
-            "activity_feed": [
-                {"id": 1, "user": 'Acme Corp', "action": 'Optimized Cluster', "detail": 'Replaced 5x m5.large with spot', "time": '2 mins ago', "type": 'optimization'},
-                {"id": 2, "user": 'Startup Inc', "action": 'Connected AWS', "detail": 'New cluster onboarding', "time": '15 mins ago', "type": 'onboarding'},
-                {"id": 3, "user": 'TechFlow', "action": 'Policy Update', "detail": 'Changed risk tolerance to Medium', "time": '1 hour ago', "type": 'config'},
-                {"id": 4, "user": 'Global Logistics', "action": 'Agent Updated', "detail": 'Auto-updated to v1.4.2', "time": '2 hours ago', "type": 'system'},
-            ]
+            "stats": stats,
+            "savings_chart": [], 
+            "activity_feed": []
         }
 def get_admin_service(db: Session) -> AdminService:
     """Get admin service instance"""

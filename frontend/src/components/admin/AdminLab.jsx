@@ -1,8 +1,31 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { Card, Button } from '../shared';
-import { FiCpu, FiAlertTriangle, FiUpload, FiMap, FiActivity } from 'react-icons/fi';
+import { FiCpu, FiAlertTriangle, FiUpload, FiMap, FiActivity, FiRefreshCw } from 'react-icons/fi';
+import { labAPI } from '../../services/api';
+import toast from 'react-hot-toast';
+import { formatRelativeTime } from '../../utils/formatters';
 
 const AdminLab = () => {
+    const [experiments, setExperiments] = useState([]);
+    const [loading, setLoading] = useState(true);
+
+    useEffect(() => {
+        fetchExperiments();
+    }, []);
+
+    const fetchExperiments = async () => {
+        try {
+            setLoading(true);
+            const response = await labAPI.listExperiments();
+            setExperiments(response.data.items || []);
+        } catch (error) {
+            console.error('Failed to load experiments:', error);
+            // toast.error('Failed to load lab data'); // Optional: don't spam errors
+        } finally {
+            setLoading(false);
+        }
+    };
+
     return (
         <div className="space-y-6">
             <div className="flex justify-between items-center">
@@ -13,7 +36,7 @@ const AdminLab = () => {
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                {/* Model Registry */}
+                {/* Model Registry (Real Data) */}
                 <Card className="p-6">
                     <div className="flex justify-between items-center mb-6">
                         <div className="flex items-center space-x-3">
@@ -25,35 +48,34 @@ const AdminLab = () => {
                                 <p className="text-sm text-gray-500">Manage Spot Stability Models</p>
                             </div>
                         </div>
-                        <Button variant="outline" icon={<FiUpload />}>Upload Model</Button>
+                        <Button variant="outline" size="sm" onClick={fetchExperiments} icon={<FiRefreshCw className={loading ? "animate-spin" : ""} />}>Refresh</Button>
                     </div>
 
                     <div className="space-y-4">
-                        {[
-                            { version: 'v1.2-beta', status: 'Shadow Mode', accuracy: '94%', last_trained: '2h ago' },
-                            { version: 'v1.0 (Prod)', status: 'Active', accuracy: '91%', last_trained: '2d ago' },
-                        ].map((model, i) => (
-                            <div key={i} className="flex items-center justify-between p-4 border rounded-lg hover:border-purple-200 transition-colors">
-                                <div className="flex items-center space-x-4">
-                                    <div className={`w-2 h-2 rounded-full ${model.status === 'Active' ? 'bg-green-500' : 'bg-yellow-500'}`} />
-                                    <div>
-                                        <h3 className="font-semibold text-gray-900">{model.version}</h3>
-                                        <p className="text-xs text-gray-500">Last trained: {model.last_trained}</p>
+                        {loading ? (
+                            <p className="text-center text-gray-500 py-4">Loading models...</p>
+                        ) : experiments.length === 0 ? (
+                            <p className="text-center text-gray-500 py-4">No active experiments found.</p>
+                        ) : (
+                            experiments.map((exp, i) => (
+                                <div key={exp.id} className="flex items-center justify-between p-4 border rounded-lg hover:border-purple-200 transition-colors">
+                                    <div className="flex items-center space-x-4">
+                                        <div className={`w-2 h-2 rounded-full ${exp.status === 'RUNNING' ? 'bg-green-500' : 'bg-yellow-500'}`} />
+                                        <div>
+                                            <h3 className="font-semibold text-gray-900">{exp.name}</h3>
+                                            <p className="text-xs text-gray-500">Created: {formatRelativeTime(exp.created_at)}</p>
+                                        </div>
+                                    </div>
+                                    <div className="flex items-center space-x-6">
+                                        <span className={`px-2 py-1 text-xs font-medium rounded-full ${exp.status === 'RUNNING' ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'
+                                            }`}>
+                                            {exp.status}
+                                        </span>
+                                        <Button size="sm" variant="ghost">Details</Button>
                                     </div>
                                 </div>
-                                <div className="flex items-center space-x-6">
-                                    <div className="text-right">
-                                        <p className="text-xs text-gray-500">Accuracy</p>
-                                        <p className="font-medium text-gray-900">{model.accuracy}</p>
-                                    </div>
-                                    <span className={`px-2 py-1 text-xs font-medium rounded-full ${model.status === 'Active' ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'
-                                        }`}>
-                                        {model.status}
-                                    </span>
-                                    <Button size="sm" variant="ghost">Promote</Button>
-                                </div>
-                            </div>
-                        ))}
+                            ))
+                        )}
                     </div>
                 </Card>
 

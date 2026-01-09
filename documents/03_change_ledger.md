@@ -34,3 +34,6 @@
 | **2026-01-09** | **Backend / Models** | `Fix` | Added `DISCOVERED` value to `ClusterStatus` enum in `cluster.py` and migrated DB to include new enum value. |
 | **2026-01-09** | **Frontend / Admin** | `Fix` | Fixed `AdminHealth.jsx` to use `healthAPI` from `api.js` with correct base URL instead of relative fetch. |
 | **2026-01-09** | **Frontend / Admin** | `Improve` | Modified `AdminDashboard.jsx` and `AdminBilling.jsx` to show full layout with KPI cards even when API fails - data sections use graceful fallback values. |
+| **2026-01-09** | **Backend / Admin** | `Fix` | Replaced hardcoded mocked data in `admin_service.get_dashboard_stats` (MRR, charts, feed) with real calculations (MRR derived from platform cost) and empty list fallbacks. |
+| **2026-01-09** | **Frontend / Admin** | `Feature` | Updated `AdminLab.jsx` to fetch real experiments from `labAPI` instead of hardcoded data. |
+| **2026-01-09** | **Frontend / Client** | `Fix` | Updated `Dashboard.jsx` to use real `clusterAPI.listClusters` for Cluster Map and real `costTimeSeries` for Savings Projection (removing fake fallbacks). |

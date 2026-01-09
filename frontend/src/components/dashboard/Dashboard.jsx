@@ -69,20 +69,29 @@ const Dashboard = () => {
     fetchActivityFeed();
   }, []);
 
+  const [clusters, setClusters] = useState([]);
+
+  // REAL API CALL: Fetch clusters for map
+  useEffect(() => {
+    const fetchClusters = async () => {
+      try {
+        const { clusterAPI } = await import('../../services/api');
+        const response = await clusterAPI.listClusters();
+        setClusters(response.data || []);
+      } catch (error) {
+        console.error('Failed to load clusters:', error);
+      }
+    };
+    fetchClusters();
+  }, []);
+
   // Use costTimeSeries from useDashboard hook if available
   useEffect(() => {
     if (costTimeSeries && costTimeSeries.length > 0) {
       setSavingsProjectionData(costTimeSeries);
     } else {
-      // Fallback data if API hasn't returned yet
-      setSavingsProjectionData([
-        { month: 'Jan', unoptimized: 4500, optimized: 2800 },
-        { month: 'Feb', unoptimized: 4200, optimized: 2600 },
-        { month: 'Mar', unoptimized: 4800, optimized: 3000 },
-        { month: 'Apr', unoptimized: 5100, optimized: 3200 },
-        { month: 'May', unoptimized: 4900, optimized: 3100 },
-        { month: 'Jun', unoptimized: 5300, optimized: 3400 },
-      ]);
+      // Clear data if no real data available (don't show fake graph)
+      setSavingsProjectionData([]);
     }
   }, [costTimeSeries]);
 
@@ -125,15 +134,17 @@ const Dashboard = () => {
   }
 
   // Check if user needs to connect AWS account
-  const hasNoData = !dashboardKPIs || dashboardKPIs.total_instances === 0;
+  const hasNoData = !loading &&
+    (!dashboardKPIs || dashboardKPIs.total_instances === 0) &&
+    (!costMetrics || costMetrics.total_cost === 0);
 
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex justify-between items-center">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
-          <h1 className="text-3xl font-bold text-gray-900">Dashboard</h1>
-          <p className="text-gray-600 mt-1">Monitor your cluster optimization and cost savings</p>
+          <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
+          <p className="text-gray-600">Overview of your infrastructure and savings</p>
         </div>
         <Button
           variant="outline"
@@ -216,15 +227,22 @@ const Dashboard = () => {
             <FiBarChart2 className="w-5 h-5 text-gray-400" />
           </div>
           <ResponsiveContainer width="100%" height={300}>
-            <BarChart data={savingsProjectionData}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="month" />
-              <YAxis />
-              <Tooltip formatter={(value) => formatCurrency(value)} />
-              <Legend />
-              <Bar dataKey="unoptimized" fill="#ef4444" name="On-Demand Cost" />
-              <Bar dataKey="optimized" fill="#10b981" name="Actual Spend" />
-            </BarChart>
+            {savingsProjectionData.length > 0 ? (
+              <BarChart data={savingsProjectionData}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey="month" />
+                <YAxis />
+                <Tooltip formatter={(value) => formatCurrency(value)} />
+                <Legend />
+                <Bar dataKey="unoptimized" fill="#ef4444" name="On-Demand Cost" />
+                <Bar dataKey="optimized" fill="#10b981" name="Actual Spend" />
+              </BarChart>
+            ) : (
+              <div className="flex flex-col items-center justify-center h-full text-gray-400">
+                <FiBarChart2 className="w-12 h-12 mb-2 opacity-20" />
+                <p>No historical data available yet</p>
+              </div>
+            )}
           </ResponsiveContainer>
         </Card>
 
@@ -238,22 +256,28 @@ const Dashboard = () => {
             <FiServer className="w-5 h-5 text-gray-400" />
           </div>
           <div className="grid grid-cols-2 gap-4 h-[300px] overflow-y-auto">
-            {/* Mock Cluster Status Cards */}
-            {['prod-cluster-us-east-1', 'staging-cluster-eu-central-1', 'dev-cluster-us-west-2'].map((cluster, i) => (
-              <div key={cluster} className="p-4 border border-gray-200 rounded-lg flex flex-col justify-between hover:bg-gray-50 transition-colors">
-                <div className="flex items-start justify-between">
-                  <div>
-                    <h3 className="font-medium text-gray-900 truncate" title={cluster}>{cluster}</h3>
-                    <p className="text-xs text-gray-500 mt-1">v1.27.3 • 12 nodes</p>
-                  </div>
-                  <span className={`flex h-3 w-3 rounded-full ${i === 0 ? 'bg-green-500' : i === 1 ? 'bg-green-500' : 'bg-red-500'}`} title={i === 2 ? 'Disconnected' : 'Connected'} />
-                </div>
-                <div className="mt-4 flex items-center justify-between text-xs">
-                  <span className="text-gray-500">Heartbeat: {i === 2 ? '5m ago' : 'Live'}</span>
-                  <Button size="xs" variant="ghost" onClick={() => navigate('/clusters')}>View</Button>
-                </div>
+            {clusters.length === 0 ? (
+              <div className="col-span-2 flex flex-col items-center justify-center text-gray-400 h-full">
+                <FiServer className="w-12 h-12 mb-2 opacity-20" />
+                <p>No clusters connected</p>
               </div>
-            ))}
+            ) : (
+              clusters.map((cluster, i) => (
+                <div key={cluster.id} className="p-4 border border-gray-200 rounded-lg flex flex-col justify-between hover:bg-gray-50 transition-colors">
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <h3 className="font-medium text-gray-900 truncate" title={cluster.name}>{cluster.name}</h3>
+                      <p className="text-xs text-gray-500 mt-1">{cluster.provider || 'AWS'} • {cluster.region}</p>
+                    </div>
+                    <span className={`flex h-3 w-3 rounded-full ${cluster.status === 'ACTIVE' ? 'bg-green-500' : 'bg-red-500'}`} title={cluster.status} />
+                  </div>
+                  <div className="mt-4 flex items-center justify-between text-xs">
+                    <span className="text-gray-500">Status: {cluster.status}</span>
+                    <Button size="xs" variant="ghost" onClick={() => navigate(`/clusters/${cluster.id}`)}>View</Button>
+                  </div>
+                </div>
+              ))
+            )}
           </div>
         </Card>
       </div>
