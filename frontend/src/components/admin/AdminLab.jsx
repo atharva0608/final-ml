@@ -17,7 +17,7 @@ const AdminLab = () => {
         try {
             setLoading(true);
             const response = await labAPI.listExperiments();
-            setExperiments(response.data.items || []);
+            setExperiments(response.data.experiments || []);
         } catch (error) {
             console.error('Failed to load experiments:', error);
             // toast.error('Failed to load lab data'); // Optional: don't spam errors
