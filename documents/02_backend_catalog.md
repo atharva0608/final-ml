@@ -43,7 +43,7 @@
 | **BE-MOD::Infra::Template** | `backend/models/node_template.py` | Model | Node Template Table. | `Base` |
 | **BE-MOD::Policy::Main** | `backend/models/cluster_policy.py` | Model | Cluster Policy Table. | `Base` |
 | **BE-MOD::Policy::Hibernation** | `backend/models/hibernation_schedule.py` | Model | Hibernation Schedule Table. | `Base` |
-| **BE-MOD::Lab::Experiment** | `backend/models/lab_experiment.py` | Model | Lab Experiment Table. | `Base` |
+| **BE-MOD::Lab::Experiment** | `backend/models/lab_experiment.py` | Model | Lab Experiment Table (Linked to `Cluster`). | `Base` |
 | **BE-MOD::Lab::MLModel** | `backend/models/ml_model.py` | Model | Machine Learning Model Table. | `Base` |
 | **BE-MOD::Ops::AuditLog** | `backend/models/audit_log.py` | Model | Audit Log Table. | `Base` |
 | **BE-MOD::Ops::OptJob** | `backend/models/optimization_job.py` | Model | Optimization Job Table. | `Base` |
@@ -73,14 +73,14 @@
 | **BE-MODL::Optimizer::BinPack** | `backend/modules/bin_packer.py` | Module | **Standalone**: Implemented logic for node consolidation, awaiting worker integration. | `Kubernetes` |
 | **BE-MODL::ML::Server** | `backend/modules/ml_model_server.py` | Module | **Standalone**: Implemented (Mocked) ML prediction server. Not used by API/Workers yet. | `Tensorflow/PyTorch` |
 | **BE-MODL::ML::Validator** | `backend/modules/model_validator.py` | Module | **Standalone**: Implemented validation logic. | `Pandas` |
-| **BE-MODL::Risk::Tracker** | `backend/modules/risk_tracker.py` | Module | Tracking spot instance interruption risk. | `History Data` |
+| **BE-MODL::Risk::Tracker** | `backend/modules/risk_tracker.py` | Module | **Real**: "Hive Mind" Global Risk Intelligence using Redis to flag/check instance pools. | `Redis`, `PubSub` |
 | **BE-WRK::Task::Discovery** | `backend/workers/tasks/discovery.py` | Worker | Periodic cluster/resource discovery task. | `boto3` |
 | **BE-WRK::Task::EventProc** | `backend/workers/tasks/event_processor.py` | Worker | Processing K8s events (pod pending, etc). | `Redis` |
 | **BE-WRK::Task::Hibernate** | `backend/workers/tasks/hibernation_worker.py` | Worker | Executing hibernation schedules (Stop/Start nodes). | `HibernationService` |
 | **BE-WRK::Task::Optimize** | `backend/workers/tasks/optimization.py` | Worker | Triggering optimization runs. | `SpotOptimizer` |
 | **BE-WRK::Task::Report** | `backend/workers/tasks/report_worker.py` | Worker | Generating periodic usage/savings reports. | `MetricsService` |
 | **BE-APP::Main::Entrypoint** | `main.py` | App | **Critical**: Main ASGI application entrypoint (FastAPI app). | `Backend` |
-| **BE-API::Router::Root** | `backend/api/__init__.py` | API | Central API Router aggregating all feature routes. | `FastAPI` |
+| **BE-API::Router::Root** | `backend/api/__init__.py` | API | Central API Router. **Note**: `account_routes` is NOT exported here (imported directly by Gateway). | `FastAPI` |
 | **BE-MOD::System::Registry** | `backend/models/__init__.py` | Model | Model Registry exporting models for Alembic. | `SQLAlchemy` |
 | **BE-WRK::Task::Registry** | `backend/workers/tasks/__init__.py` | Worker | Task Registry exporting Celery tasks. | `Celery` |
 | **BE-CFG::DB::Alembic** | `alembic.ini` | Config | Configuration for Alembic DB migrations. | `Alembic` |
