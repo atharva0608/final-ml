@@ -44,3 +44,4 @@
 | **2026-01-09** | **Backend / Lab** | `Fix` | Fixed `AttributeError: Account.user_id` in `lab_service.py` by implementing correct `_get_user_org` helper and filtering by `Account.organization_id`. |
 | **2026-01-09** | **Backend / Lab** | `Fix` | Resolved `AttributeError: 'ExperimentFilter' object has no attribute 'cluster_id'` by adding missing fields to Pydantic model. |
 | **2026-01-09** | **Docs / Catalog** | `Update` | Updated `02_backend_catalog.md` to reflect "Real" implementation status of `ClusterService` (Discovery), `ActionExecutor` (Spot Rep), and removal of zombies (`Pricing`, `Rightsizer`). |
+| **2026-01-09** | **Docs / Audit** | `Update` | Deep audit of `backend/`: Identified `PricingCollector` worker disconnection, `MLModelServer`/`BinPacker` as standalone modules, and `SettingsService` as in-memory mock. Updated catalog statuses. |

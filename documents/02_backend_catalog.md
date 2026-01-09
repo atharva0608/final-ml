@@ -70,9 +70,9 @@
 | **BE-CORE::Logic::Validators** | `backend/core/validators.py` | Core | Common input validators. | `Regex` |
 | **BE-MODL::Optimizer::Spot** | `backend/modules/spot_optimizer.py` | Module | Core Logic for Spot Instance optimization/replacement. | `AWS Pricing` |
 | **BE-MODL::Optimizer::Rightsize** | `backend/modules/rightsizer.py` | Module | Logic for rightsizing instances based on usage. | `Metrics` |
-| **BE-MODL::Optimizer::BinPack** | `backend/modules/bin_packer.py` | Module | Pod Bin-packing logic for node reduction. | `Kubernetes` |
-| **BE-MODL::ML::Server** | `backend/modules/ml_model_server.py` | Module | Serving logic for ML models. | `Tensorflow/PyTorch` |
-| **BE-MODL::ML::Validator** | `backend/modules/model_validator.py` | Module | Validation logic for ML model inputs/outputs. | `Pandas` |
+| **BE-MODL::Optimizer::BinPack** | `backend/modules/bin_packer.py` | Module | **Standalone**: Implemented logic for node consolidation, awaiting worker integration. | `Kubernetes` |
+| **BE-MODL::ML::Server** | `backend/modules/ml_model_server.py` | Module | **Standalone**: Implemented (Mocked) ML prediction server. Not used by API/Workers yet. | `Tensorflow/PyTorch` |
+| **BE-MODL::ML::Validator** | `backend/modules/model_validator.py` | Module | **Standalone**: Implemented validation logic. | `Pandas` |
 | **BE-MODL::Risk::Tracker** | `backend/modules/risk_tracker.py` | Module | Tracking spot instance interruption risk. | `History Data` |
 | **BE-WRK::Task::Discovery** | `backend/workers/tasks/discovery.py` | Worker | Periodic cluster/resource discovery task. | `boto3` |
 | **BE-WRK::Task::EventProc** | `backend/workers/tasks/event_processor.py` | Worker | Processing K8s events (pod pending, etc). | `Redis` |
@@ -97,7 +97,7 @@
 | **BE-API::Auth::Main** | `backend/api/auth_routes.py` | API | Authentication Endpoints (Login, Signup, Refresh Token). | `AuthService` |
 | **BE-API::Template::Main** | `backend/api/template_routes.py` | API | Node Template Endpoints (Create, List, Delete templates). | `TemplateService` |
 | **BE-SVC::Onboarding::Main** | `backend/services/onboarding_service.py` | Service | Business logic for tracking user onboarding steps. | `OnboardingState` |
-| **BE-SVC::Data::Pricing** | `backend/scrapers/pricing_collector.py` | Service | Scrapes and normalizes AWS EC2 pricing data. | `boto3` |
+| **BE-SVC::Data::Pricing** | `backend/scrapers/pricing_collector.py` | Service | **Disconnected**: Implemented with Celery tasks, but NOT registered in `workers/app.py`. | `boto3` |
 | **BE-SVC::Data::SpotRisk** | `backend/scrapers/spot_advisor_scraper.py` | Service | Fetches AWS Spot Advisor data for interruption risks. | `requests` |
 | **BE-SCH::Account::Main** | `backend/schemas/account_schemas.py` | Schema | Pydantic models for AWS Account validation. | `Pydantic` |
 | **BE-SCH::Audit::Main** | `backend/schemas/audit_schemas.py` | Schema | Pydantic models for Audit Log responses. | `Pydantic` |
@@ -226,6 +226,7 @@ These components are present but their implementation status is questionable (po
 | ID | File Path | Status | Finding |
 | :--- | :--- | :--- | :--- |
 | **BE-SVC::Account::Main** | `backend/services/account_service.py` | **Mock Logic** | "Link Account" stores credentials without verifying AWS connection via STS. |
+| **BE-SVC::Settings::Main** | `backend/services/settings_service.py` | **Mocked** | Uses in-memory dict `_MOCK_INTEGRATIONS_DB` for storage. |
 | **BE-SVC::Metrics::Main** | `backend/services/metrics_service.py` | **Simplified** | Uses `costTimeSeries` hook logic (Frontend) and assumes 70% spot discount in `_calculate_savings`. |
 | **BE-WRK::Task::Events** | `backend/workers/tasks/event_processor.py` | **Partial** | Logic exists but primary triggers (webhooks) seem missing from API routes. |
 | **BE-CORE::Logic::Executor** | `backend/core/action_executor.py` | **Partial** | Spot Replacement implemented (AWS). Rightsizing/Consolidation pending. |
