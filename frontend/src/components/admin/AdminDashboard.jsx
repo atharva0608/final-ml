@@ -1,4 +1,23 @@
-import { adminAPI } from '../../services/api'; import { useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
+import { adminAPI } from '../../services/api';
+import { Card, StatsCard } from '../shared';
+import {
+  FiUsers,
+  FiServer,
+  FiDollarSign,
+  FiActivity,
+  FiTrendingUp,
+  FiZap
+} from 'react-icons/fi';
+import {
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer
+} from 'recharts';
 
 const AdminDashboard = () => {
   const [dashboardData, setDashboardData] = useState(null);

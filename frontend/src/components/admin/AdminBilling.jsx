@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Card, Button } from '../shared';
 import { FiDollarSign, FiCreditCard, FiUsers, FiTrendingUp, FiExternalLink } from 'react-icons/fi';
 
