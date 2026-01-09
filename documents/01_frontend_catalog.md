@@ -54,3 +54,51 @@
 | **FE-CMP::Onboard::Connect** | `frontend/src/components/onboarding/ConnectStep.jsx` | Component | Onboarding Step 2: AWS Connect. | `onNext`, `onBack` | `Input`, `Button` |
 | **FE-CMP::Onboard::Verify** | `frontend/src/components/onboarding/VerifyStep.jsx` | Component | Onboarding Step 3: Verify Role. | `roleArn` | `onboardingAPI` |
 | **FE-CMP::Onboard::Success** | `frontend/src/components/onboarding/SuccessStep.jsx` | Component | Onboarding Step 4: Success. | `onComplete` | `Button` |
+
+### 6. Documentation Components
+
+| Component ID | File Path | Category | Description |
+| :--- | :--- | :--- | :--- |
+| **DOC-INT::FE::Root** | `frontend/INFO.md` | Internal | Frontend architecture overview. |
+| **DOC-INT::FE::Src** | `frontend/src/INFO.md` | Internal | Source directory overview. |
+| **DOC-INT::FE::Auth** | `frontend/src/components/auth/INFO.md` | Internal | Auth components docs. |
+| **DOC-INT::FE::Cluster** | `frontend/src/components/clusters/INFO.md` | Internal | Cluster management docs. |
+| **DOC-INT::FE::Dash** | `frontend/src/components/dashboard/INFO.md` | Internal | Dashboard components docs. |
+| **DOC-INT::FE::Admin** | `frontend/src/components/admin/INFO.md` | Internal | Admin portal docs. |
+| **DOC-INT::FE::Hibernation** | `frontend/src/components/hibernation/INFO.md` | Internal | Hibernation scheduler docs. |
+| **DOC-INT::FE::Lab** | `frontend/src/components/lab/INFO.md` | Internal | Lab/Experiment docs. |
+| **DOC-INT::FE::Policies** | `frontend/src/components/policies/INFO.md` | Internal | Policy engine docs. |
+| **DOC-INT::FE::Settings** | `frontend/src/components/settings/INFO.md` | Internal | Settings components docs. |
+| **DOC-INT::FE::Shared** | `frontend/src/components/shared/INFO.md` | Internal | Shared UI library docs. |
+| **DOC-INT::FE::Templates** | `frontend/src/components/templates/INFO.md` | Internal | Template builder docs. |
+| **DOC-INT::FE::Hooks** | `frontend/src/hooks/INFO.md` | Internal | Custom React hooks docs. |
+| **DOC-INT::FE::Services** | `frontend/src/services/INFO.md` | Internal | API service layer docs. |
+| **DOC-INT::FE::Audit** | `frontend/src/components/audit/INFO.md` | Internal | Audit log docs. |
+
+
+### 7. Miscellaneous System Components
+
+| Component ID | File Path | Type | Description |
+| :--- | :--- | :--- | :--- |
+| **FE-CFG::System::Lock** | `frontend/package-lock.json` | Config | NPM dependency lock file. |
+| **FE-CFG::System::GitIgnore** | `frontend/.gitignore` | Config | Git ignore rules for frontend. |
+| **FE-ASST::Public::Favicon** | `frontend/public/favicon.ico` | Asset | Browser tab icon. |
+| **FE-ASST::Public::Logo** | `frontend/public/logo192.png` | Asset | App logo asset. |
+
+## Orphaned / Zombie Components
+These components exist in the codebase but appear to be unused or unreferenced by the main application logic.
+
+| ID | File Path | Status | Reason |
+| :--- | :--- | :--- | :--- |
+| *None Detected* | - | **Clean** | All source files appear to be in use. |
+
+
+## Components with Uncertain / Pending Status
+These components are fully implemented in Frontend but rely on Backend services that are Mocked, Simplified, or Disconnected.
+
+| ID | File Path | Status | Finding |
+| :--- | :--- | :--- | :--- |
+| **FE-CMP::Dash::Main** | `frontend/src/components/dashboard/Dashboard.jsx` | **Simplified** | Displays "Savings" based on hardcoded 70% discount assumption (Backend: `MetricsService`). |
+| **FE-CMP::Admin::Billing** | `frontend/src/components/admin/AdminBilling.jsx` | **Mocked Data** | Billing plans and history are mocked responses, not real Stripe/AWS data. |
+| **FE-CMP::Set::Cloud** | `frontend/src/components/settings/CloudIntegrations.jsx` | **Mocked Logic** | "Link Account" UI works, but Backend does not validate AWS STS credentials yet. |
+| **FE-CMP::Set::Account** | `frontend/src/components/settings/AccountSettings.jsx` | **Mocked** | Profile updates (Name, Email) are not permanently persisted to DB (Backend: `SettingsService`). |
