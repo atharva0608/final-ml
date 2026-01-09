@@ -41,3 +41,4 @@
 | **2026-01-09** | **Frontend / Client** | `Fix` | Fixed `TypeError: h.map is not a function` in `Dashboard.jsx` by correctly accessing `response.data.clusters` from the `ClusterList` API response. |
 | **2026-01-09** | **Frontend / Admin** | `Fix` | Fixed potential empty data issue in `AdminLab.jsx` by correcting `response.data.items` to `response.data.experiments` matching `ExperimentList` schema. |
 | **2026-01-09** | **Backend / Core** | `Fix` | Resolved recursing 500 Errors by standardizing Enums (`InstanceLifecycle`, `ExperimentStatus`) to uppercase and adding missing `DRAFT` status in Lab Service. |
+| **2026-01-09** | **Backend / Lab** | `Fix` | Fixed `AttributeError: Account.user_id` in `lab_service.py` by implementing correct `_get_user_org` helper and filtering by `Account.organization_id`. |

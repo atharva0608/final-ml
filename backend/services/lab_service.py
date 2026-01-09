@@ -10,6 +10,7 @@ from backend.models.lab_experiment import LabExperiment, ExperimentStatus
 from backend.models.ml_model import MLModel
 from backend.models.cluster import Cluster
 from backend.models.account import Account
+from backend.models.user import User
 from backend.schemas.lab_schemas import (
     ExperimentCreate,
     ExperimentUpdate,
@@ -38,6 +39,13 @@ class LabService:
     def __init__(self, db: Session):
         self.db = db
 
+    def _get_user_org(self, user_id: str) -> str:
+        """Helper to get user's organization ID"""
+        user = self.db.query(User).filter(User.id == user_id).first()
+        if not user or not user.organization_id:
+            raise ResourceNotFoundError("User Organization", user_id)
+        return user.organization_id
+
     def create_experiment(
         self,
         user_id: str,
@@ -58,11 +66,13 @@ class LabService:
             ResourceAlreadyExistsError: If experiment name already exists
             ValidationError: If validation fails
         """
-        # Verify cluster belongs to user
+        # Verify cluster belongs to user's organization
+        org_id = self._get_user_org(user_id)
+
         cluster = self.db.query(Cluster).join(Account).filter(
             and_(
                 Cluster.id == experiment_data.cluster_id,
-                Account.user_id == user_id
+                Account.organization_id == org_id
             )
         ).first()
 
@@ -72,7 +82,7 @@ class LabService:
         # Check for duplicate experiment name
         existing = self.db.query(LabExperiment).join(Cluster).join(Account).filter(
             and_(
-                Account.user_id == user_id,
+                Account.organization_id == org_id,
                 LabExperiment.name == experiment_data.name
             )
         ).first()
@@ -146,10 +156,12 @@ class LabService:
         Raises:
             ResourceNotFoundError: If experiment not found
         """
+        org_id = self._get_user_org(user_id)
+
         experiment = self.db.query(LabExperiment).join(Cluster).join(Account).filter(
             and_(
                 LabExperiment.id == experiment_id,
-                Account.user_id == user_id
+                Account.organization_id == org_id
             )
         ).first()
 
@@ -173,8 +185,14 @@ class LabService:
         Returns:
             ExperimentList with paginated results
         """
+        # Get user's organization
+        try:
+            org_id = self._get_user_org(user_id)
+        except ResourceNotFoundError:
+            return ExperimentList(experiments=[], total=0, page=filters.page, page_size=filters.page_size)
+
         query = self.db.query(LabExperiment).join(Cluster).join(Account).filter(
-            Account.user_id == user_id
+            Account.organization_id == org_id
         )
 
         # Apply filters
@@ -225,10 +243,12 @@ class LabService:
             ResourceNotFoundError: If experiment not found
             ValidationError: If validation fails
         """
+        org_id = self._get_user_org(user_id)
+
         experiment = self.db.query(LabExperiment).join(Cluster).join(Account).filter(
             and_(
                 LabExperiment.id == experiment_id,
-                Account.user_id == user_id
+                Account.organization_id == org_id
             )
         ).first()
 
@@ -286,10 +306,12 @@ class LabService:
             ResourceNotFoundError: If experiment not found
             ValidationError: If experiment is running
         """
+        org_id = self._get_user_org(user_id)
+
         experiment = self.db.query(LabExperiment).join(Cluster).join(Account).filter(
             and_(
                 LabExperiment.id == experiment_id,
-                Account.user_id == user_id
+                Account.organization_id == org_id
             )
         ).first()
 
@@ -329,10 +351,12 @@ class LabService:
             ResourceNotFoundError: If experiment not found
             ValidationError: If experiment cannot be started
         """
+        org_id = self._get_user_org(user_id)
+
         experiment = self.db.query(LabExperiment).join(Cluster).join(Account).filter(
             and_(
                 LabExperiment.id == experiment_id,
-                Account.user_id == user_id
+                Account.organization_id == org_id
             )
         ).first()
 
@@ -376,10 +400,12 @@ class LabService:
             ResourceNotFoundError: If experiment not found
             ValidationError: If experiment is not running
         """
+        org_id = self._get_user_org(user_id)
+
         experiment = self.db.query(LabExperiment).join(Cluster).join(Account).filter(
             and_(
                 LabExperiment.id == experiment_id,
-                Account.user_id == user_id
+                Account.organization_id == org_id
             )
         ).first()
 
@@ -426,10 +452,12 @@ class LabService:
         Raises:
             ResourceNotFoundError: If experiment not found
         """
+        org_id = self._get_user_org(user_id)
+
         experiment = self.db.query(LabExperiment).join(Cluster).join(Account).filter(
             and_(
                 LabExperiment.id == experiment_id,
-                Account.user_id == user_id
+                Account.organization_id == org_id
             )
         ).first()
 
