@@ -25,3 +25,4 @@
 | **2026-01-09** | **Frontend / Dashboard** | `Refactor` | Replaced mock activity feed with real `/audit/logs` API call. Uses `costTimeSeries` from `useDashboard` hook. |
 | **2026-01-09** | **Frontend / Hibernation** | `Refactor` | Removed hardcoded `HOURLY_COST_AVG`. Fetches dynamic cost from `/metrics/cluster/{id}`. |
 | **2026-01-09** | **Frontend / API** | `Feature` | Added `optimizationAPI` and `healthAPI` definitions to `api.js`. |
+| **2026-01-09** | **Backend / Core** | `Fix` | Fixed `health_service.py`: Replaced wrong `app.` imports with `backend.` (4 occurrences). Removed orphaned `OptimizationJob` references. Backend now starts successfully. |

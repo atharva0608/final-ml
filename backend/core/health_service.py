@@ -28,8 +28,8 @@ from botocore.exceptions import ClientError
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 
-from app.database.session import get_db
-from app.core.redis_client import get_redis_client
+from backend.models.base import get_db
+from backend.core.redis_client import get_redis_client
 
 logger = logging.getLogger(__name__)
 
@@ -207,7 +207,7 @@ class HealthService:
         """
         try:
             # Import Celery app
-            from app.core.celery_app import app as celery_app
+            from backend.workers.celery_app import celery_app
 
             # Get active workers
             inspect = celery_app.control.inspect()
@@ -398,16 +398,10 @@ class HealthService:
             redis_client = self.redis_client or get_redis_client()
 
             # Get database stats
-            from app.database.models import Cluster, Account, OptimizationJob
+            from backend.models import Cluster, Account
 
             cluster_count = db.query(Cluster).count()
             account_count = db.query(Account).count()
-            job_count = db.query(OptimizationJob).count()
-
-            # Get recent job stats
-            recent_jobs = db.query(OptimizationJob).filter(
-                OptimizationJob.created_at >= datetime.utcnow() - timedelta(hours=24)
-            ).count()
 
             # Get Redis stats
             redis_info = redis_client.info()
@@ -416,9 +410,7 @@ class HealthService:
                 "timestamp": datetime.utcnow().isoformat(),
                 "database": {
                     "clusters": cluster_count,
-                    "accounts": account_count,
-                    "total_jobs": job_count,
-                    "jobs_last_24h": recent_jobs
+                    "accounts": account_count
                 },
                 "redis": {
                     "used_memory_mb": int(redis_info.get('used_memory', 0) / (1024 * 1024)),
