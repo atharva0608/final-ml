@@ -54,7 +54,7 @@
 | **BE-SCH::Template::Main** | `backend/schemas/template_schemas.py` | Schema | Pydantic Schemas for Template (Create, Update, Response). | `Pydantic` |
 | **BE-SCH::Policy::Main** | `backend/schemas/policy_schemas.py` | Schema | Pydantic Schemas for Policy (Create, Update, Response). | `Pydantic` |
 | **BE-SCH::Metrics::Main** | `backend/schemas/metric_schemas.py` | Schema | Pydantic Schemas for Metrics (DashboardKPIs, TimeSeries). | `Pydantic` |
-| **BE-API::Onboarding::Main** | `backend/api/onboarding_routes.py` | API | Onboarding Endpoints. Get State, AWS Deep Link, Verify Role, Skip. | `OnboardingService` |
+| **BE-API::Onboarding::Main** | `backend/api/onboarding_routes.py` | API | **Real**: Onboarding Endpoints. Get State, AWS Deep Link, Verify Role (creates Account + triggers `discovery_worker_loop`), Skip. | `OnboardingService`, `discovery` |
 | **BE-MOD::System::AgentAction** | `backend/models/agent_action.py` | Model | Pending actions for K8s Agent (e.g. cordon, drain). | `Base` |
 | **BE-MOD::Auth::APIKey** | `backend/models/api_key.py` | Model | API Keys for programmatic access. | `Base` |
 | **BE-CORE::Config::Main** | `backend/core/config.py` | Core | Global application configuration (Env vars). | `pydantic_settings` |

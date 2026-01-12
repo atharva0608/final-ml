@@ -51,8 +51,8 @@
 | **FE-LIB::UI::Index** | `frontend/src/components/shared/index.js` | UI | Export barrel for shared components. | `N/A` | `N/A` |
 | **FE-CMP::Onboard::Page** | `frontend/src/pages/Onboarding.jsx` | Page | Wrapper page for the onboarding flow. | `step` | `WelcomeStep`, `ConnectStep` |
 | **FE-CMP::Onboard::Welcome** | `frontend/src/components/onboarding/WelcomeStep.jsx` | Component | Onboarding Step 1: Welcome. | `onNext` | `Button` |
-| **FE-CMP::Onboard::Connect** | `frontend/src/components/onboarding/ConnectStep.jsx` | Component | Onboarding Step 2: AWS Connect. | `onNext`, `onBack` | `Input`, `Button` |
-| **FE-CMP::Onboard::Verify** | `frontend/src/components/onboarding/VerifyStep.jsx` | Component | Onboarding Step 3: Verify Role. | `roleArn` | `onboardingAPI` |
+| **FE-CMP::Onboard::Connect** | `frontend/src/components/onboarding/ConnectStep.jsx` | Component | **Real**: Onboarding Step 2: AWS Connect. Has loading state (`isLoading`), ARN validation, disabled button handling. | `onNext`, `roleArn`, `verifying` | `Input`, `Button`, `onboardingAPI` |
+| **FE-CMP::Onboard::Verify** | `frontend/src/components/onboarding/VerifyStep.jsx` | Component | Onboarding Step 3: Visual loading spinner during verification. | `onNext` | `motion` |
 | **FE-CMP::Onboard::Success** | `frontend/src/components/onboarding/SuccessStep.jsx` | Component | Onboarding Step 4: Success. | `onComplete` | `Button` |
 
 ### 6. Documentation Components
@@ -100,5 +100,5 @@ These components are fully implemented in Frontend but rely on Backend services 
 | :--- | :--- | :--- | :--- |
 | **FE-CMP::Dash::Main** | `frontend/src/components/dashboard/Dashboard.jsx` | **Simplified** | Displays "Savings" based on hardcoded 70% discount assumption (Backend: `MetricsService`). |
 | **FE-CMP::Admin::Billing** | `frontend/src/components/admin/AdminBilling.jsx` | **Mocked Data** | Billing plans and history are mocked responses, not real Stripe/AWS data. |
-| **FE-CMP::Set::Cloud** | `frontend/src/components/settings/CloudIntegrations.jsx` | **Mocked Logic** | "Link Account" UI works, but Backend does not validate AWS STS credentials yet. |
+| ~~**FE-CMP::Set::Cloud**~~ | ~~`frontend/src/components/settings/CloudIntegrations.jsx`~~ | ~~**Mocked Logic**~~ | **RESOLVED (2026-01-12)**: Backend `AccountService` now validates AWS STS credentials. Onboarding triggers discovery. |
 | **FE-CMP::Set::Account** | `frontend/src/components/settings/AccountSettings.jsx` | **Mocked** | Profile updates (Name, Email) are not permanently persisted to DB (Backend: `SettingsService`). |
