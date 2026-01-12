@@ -58,9 +58,43 @@ def verify_connection(
             detail="Failed to verify Role. Check permissions and ExternalId."
         )
     
+    # Get the onboarding state to access external_id and account_id
+    state = service.get_or_create_state(current_user.id)
+    
+    # Create an Account record in the database
+    from backend.models.account import Account, AccountStatus
+    import uuid
+    
+    # Check if account already exists
+    existing_account = db.query(Account).filter(
+        Account.aws_account_id == state.aws_account_id,
+        Account.organization_id == current_user.organization_id
+    ).first()
+    
+    if not existing_account:
+        new_account = Account(
+            id=str(uuid.uuid4()),
+            organization_id=current_user.organization_id,
+            aws_account_id=state.aws_account_id,
+            role_arn=request.role_arn,
+            external_id=state.external_id,
+            status=AccountStatus.ACTIVE
+        )
+        db.add(new_account)
+        db.commit()
+        db.refresh(new_account)
+        account_id = new_account.id
+    else:
+        account_id = existing_account.id
+    
+    # TRIGGER DATA FETCHING - The critical step from changes.txt
+    from backend.workers.tasks.discovery import discovery_worker_loop
+    discovery_worker_loop.delay()  # Trigger background scan of all accounts
+    
     # Auto-complete onboarding after verification for this flow
     service.complete_onboarding(current_user.id)
-    return {"status": "verified", "message": "Connection successful"}
+    return {"status": "verified", "message": "Connection successful. Discovering clusters..."}
+
 
 @router.post("/skip")
 def skip_onboarding(
