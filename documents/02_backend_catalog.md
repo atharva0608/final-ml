@@ -1,6 +1,6 @@
 # Backend Component Catalog
 
-**Date:** 2024-05-23
+**Date:** 2026-01-12 (Last Updated)
 **Scope:** `backend/` Directory
 
 ## ID Naming Convention
@@ -14,8 +14,8 @@
 | **BE-SVC::Auth::Main** | `backend/services/auth_service.py` | Service | User authentication, signup, login, token management (JWT). | `User`, `Organization`, `crypto` |
 | **BE-SVC::Admin::Main** | `backend/services/admin_service.py` | Service | Super Admin operations: Client management, Platform stats (Real MRR/Costs), Logic to "verify_super_admin". | `User`, `Cluster`, `Instance` |
 | **BE-SVC::Organization::Main** | `backend/services/organization_service.py` | Service | Member management (Invite, Remove, Update Role). RBAC enforcement (Org Admin vs Team Lead). | `User`, `OrganizationInvitation` |
-| **BE-SVC::Account::Main** | `backend/services/account_service.py` | Service | AWS Account linkage. Validates Role ARN, External ID. Manages Account status. | `Account`, `boto3` (implied) |
-| **BE-SVC::Cluster::Main** | `backend/services/cluster_service.py` | Service | Cluster discovery (AWS EKS), registration, heartbeat tracking, and agent install script generation. | `Cluster`, `Account`, `boto3` |
+| **BE-SVC::Account::Main** | `backend/services/account_service.py` | Service | **Real**: AWS Account linkage with `verify_connection` using `boto3.sts.assume_role`. Full CRUD: list, get, link, delete, validate, set_default. | `Account`, `boto3` |
+| **BE-SVC::Cluster::Main** | `backend/services/cluster_service.py` | Service | **Real**: Cluster discovery via `boto3.eks.list_clusters/describe_cluster` with STS assume_role. DB upsert for discovered clusters. | `Cluster`, `Account`, `boto3` |
 | **BE-SVC::Template::Main** | `backend/services/template_service.py` | Service | Node Template CRUD. Logic for setting default templates. | `NodeTemplate`, `User` |
 | **BE-SVC::Policy::Main** | `backend/services/policy_service.py` | Service | Policy management. Validates spot percentages, min/max nodes, and resource limits. | `ClusterPolicy`, `Cluster`, `NodeTemplate` |
 | **BE-SVC::Hibernation::Main** | `backend/services/hibernation_service.py` | Service | Hibernation schedule logic. Validates cron-like schedule matrix and timezone. | `HibernationSchedule` |
@@ -107,7 +107,8 @@
 | **BE-API::Settings::Main** | `backend/api/settings_routes.py` | API | Settings Endpoints. Profile management and Integrations. | `SettingsService` |
 | **BE-SVC::Settings::Main** | `backend/services/settings_service.py` | Service | Logic for user profile updates and integrations (Mocked). | `User`, `Mocks` |
 | **BE-SCH::Settings::Main** | `backend/schemas/settings_schemas.py` | Schema | Pydantic models for Settings and Integrations. | `Pydantic` |
-| **BE-WRK::Core::App** | `backend/workers/app.py` | Worker | Celery Application instance and configuration. | `Celery` |
+| **BE-WRK::Core::App** | `backend/workers/app.py` | Worker | **Real**: Celery app with `beat_schedule`: `discovery-every-5-mins` (300s), `pricing-every-hour` (3600s). | `Celery`, `Redis` |
+| **BE-WRK::Task::Pricing** | `backend/workers/tasks/pricing_task.py` | Worker | **Real**: Fetches AWS pricing via `PricingCollector` and spot risks via `SpotAdvisorScraper`. Scheduled hourly. | `boto3`, `Scrapers` |
 | **BE-OPS::Deploy::Main** | `scripts/deployment/deploy.sh` | Script | Main deployment shell script. | `Bash` |
 | **BE-OPS::Deploy::Setup** | `scripts/deployment/setup.sh` | Script | Environment setup shell script. | `Bash` |
 | **BE-CFG::Deps::Main** | `requirements.txt` | Config | Python dependency manifest for the backend. | `Pip` |
@@ -217,7 +218,7 @@ These components exist in the codebase but appear to be unused or unreferenced b
 
 | ID | File Path | Status | Reason |
 | :--- | :--- | :--- | :--- |
-| **BE-SVC::Data::SpotRisk** | `backend/scrapers/spot_advisor_scraper.py` | **Zombie** | Not imported by Risk Tracker or Decision Engine. Real-time interruption data is missing. |
+| **BE-SVC::Data::SpotRisk** | `backend/scrapers/spot_advisor_scraper.py` | **Real** | Connected via `pricing_task.py`. Called by `fetch_aws_pricing` Celery task (hourly). |
 
 
 ## Components with Uncertain / Pending Status
@@ -225,7 +226,7 @@ These components are present but their implementation status is questionable (po
 
 | ID | File Path | Status | Finding |
 | :--- | :--- | :--- | :--- |
-| **BE-SVC::Account::Main** | `backend/services/account_service.py` | **Mock Logic** | "Link Account" stores credentials without verifying AWS connection via STS. |
+| ~~**BE-SVC::Account::Main**~~ | ~~`backend/services/account_service.py`~~ | ~~**Mock Logic**~~ | **RESOLVED (2026-01-12)**: Now uses `boto3.client('sts').assume_role()` to verify before saving. |
 | **BE-SVC::Settings::Main** | `backend/services/settings_service.py` | **Mocked** | Uses in-memory dict `_MOCK_INTEGRATIONS_DB` for storage. |
 | **BE-SVC::Metrics::Main** | `backend/services/metrics_service.py` | **Simplified** | Uses `costTimeSeries` hook logic (Frontend) and assumes 70% spot discount in `_calculate_savings`. |
 | **BE-WRK::Task::Events** | `backend/workers/tasks/event_processor.py` | **Partial** | Logic exists but primary triggers (webhooks) seem missing from API routes. |
