@@ -59,10 +59,23 @@ def discovery_worker_loop(self: Task) -> Dict[str, Any]:
                 result = scan_account(account, db, redis_client)
                 total_clusters += result['clusters_found']
                 total_instances += result['instances_found']
+                
+                # Update sync status on SUCCESS (Heartbeat feature)
+                from backend.models.account import SyncStatus
+                account.last_sync_at = datetime.utcnow()
+                account.sync_status = SyncStatus.HEALTHY
+                account.sync_error = None
+                db.commit()
 
             except Exception as e:
                 logger.error(f"[WORK-DISC-01] Failed to scan account {account.id}: {str(e)}")
+                # Update sync status on FAILURE (Heartbeat feature)
+                from backend.models.account import SyncStatus
+                account.sync_status = SyncStatus.FAILED
+                account.sync_error = str(e)[:500]  # Limit error message length
+                db.commit()
                 continue
+
 
         duration = (datetime.utcnow() - start_time).total_seconds()
 

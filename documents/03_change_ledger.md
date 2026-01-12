@@ -67,3 +67,11 @@
 | **2026-01-09** | **Backend / Modules** | `Critical Fix` | Fixed `AttributeError: Instance has no attribute 'deleted_at'` in `rightsizer.py` by removing non-existent field filter. |
 | **2026-01-12** | **Docs / Verification** | `Audit` | **FULL VERIFICATION COMPLETE**: All 4 phases from `changes.txt` checklist confirmed implemented. Phase 1: Dependencies (boto3, celery, redis, requests in requirements.txt). Phase 2: Backend API routing, AccountService with verify_connection + boto3 STS, ClusterService with real EKS discovery. Phase 3: pricing_task.py with PricingCollector/SpotAdvisorScraper, app.py with beat_schedule. Phase 4: Frontend using real APIs (no mock data). |
 | **2026-01-12** | **Backend / Onboarding** | `Critical Fix` | Fixed onboarding→discovery handshake: `/verify` endpoint now creates `Account` record in DB and triggers `discovery_worker_loop.delay()` to immediately start fetching clusters. This was the critical Step 3 gap identified in the onboarding audit. |
+| **2026-01-12** | **Backend / Account Model** | `Feature` | Added `DISCONNECTED` status to `AccountStatus` enum. Added `SyncStatus` enum (`healthy`/`warning`/`failed`). Added columns: `last_sync_at`, `sync_status`, `sync_error`, `region`, `is_default`. |
+| **2026-01-12** | **Backend / Account Service** | `Feature` | Added `disconnect_account` method that strips `role_arn`/`external_id` and sets status to `DISCONNECTED` while preserving historical data. |
+| **2026-01-12** | **Backend / API** | `Feature` | Added `POST /accounts/{id}/disconnect` endpoint for secure credential removal without data loss. |
+| **2026-01-12** | **Backend / Workers** | `Feature` | Discovery worker now updates `last_sync_at`, `sync_status`, `sync_error` on each account scan (Heartbeat feature). |
+| **2026-01-12** | **Backend / Billing** | `Feature` | Created `billing_routes.py` with `/billing/create-portal-session`, `/billing/webhook/stripe`, `/billing/status` endpoints for Stripe integration. |
+| **2026-01-12** | **Backend / API** | `Update` | Registered `billing_router` in `api/__init__.py`. |
+| **2026-01-12** | **Docs / Gap Analysis** | `Update` | Comprehensively updated `03_frontend_backend_gap_analysis.md` with resolved gaps and new APIs. |
+

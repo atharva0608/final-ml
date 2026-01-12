@@ -106,3 +106,19 @@ def set_default_account(
     """
     service = get_account_service(db)
     return service.set_default_account(account_id, current_user.organization_id)
+
+
+@router.post("/{account_id}/disconnect")
+def disconnect_account(
+    account_id: str,
+    current_user: User = Depends(RequireAccess("FULL")),
+    db: Session = Depends(get_db)
+):
+    """
+    Disconnect AWS account - strips credentials but preserves history.
+    This is safer than delete for keeping cost/usage data.
+    """
+    service = get_account_service(db)
+    service.disconnect_account(account_id, current_user.organization_id)
+    return {"status": "success", "message": "Credentials removed. Account disconnected."}
+

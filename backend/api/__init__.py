@@ -13,6 +13,7 @@ from backend.api.metrics_routes import router as metrics_router
 from backend.api.admin_routes import router as admin_router
 from backend.api.lab_routes import router as lab_router
 from backend.api.organization_routes import router as organization_router
+from backend.api.billing_routes import router as billing_router
 
 api_router = APIRouter()
 
@@ -30,3 +31,5 @@ api_router.include_router(metrics_router)
 api_router.include_router(admin_router)
 api_router.include_router(lab_router)
 api_router.include_router(organization_router)
+api_router.include_router(billing_router)
+

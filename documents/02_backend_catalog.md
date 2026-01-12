@@ -33,7 +33,9 @@
 | **BE-API::Lab::Main** | `backend/api/lab_routes.py` | API | Lab Experiments. Create, List, Start, Stop, Get Results for A/B testing. | `LabService` |
 | **BE-API::Health::System** | `backend/api/health_routes.py` | API | System Health Monitoring. Get detailed health status (DB, Redis, Workers). | `HealthService` |
 | **BE-API::Optimization::Main** | `backend/api/optimization_routes.py` | API | Rightsizing Recommendations. Analyze cluster workloads and return resize advice. | `RightSizer` |
+| **BE-API::Billing::Main** | `backend/api/billing_routes.py` | API | **Real**: Stripe Billing. Create portal session, webhook handler, subscription status. | `stripe` |
 | **BE-MOD::System::Base** | `backend/models/base.py` | Model | Base Audit Mixin and DB connection setup. | `SQLAlchemy` |
+
 | **BE-MOD::Auth::User** | `backend/models/user.py` | Model | User Table. | `Base` |
 | **BE-MOD::Auth::Org** | `backend/models/organization.py` | Model | Organization Table. | `Base` |
 | **BE-MOD::Auth::Invite** | `backend/models/invitation.py` | Model | Organization Invitation Table. | `Base` |

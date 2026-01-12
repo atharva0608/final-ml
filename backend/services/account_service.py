@@ -115,6 +115,23 @@ class AccountService:
         self.db.refresh(account)
         return account
 
+    def disconnect_account(self, account_id: str, organization_id: str) -> Account:
+        """
+        Disconnect AWS account - strips credentials but keeps historical data.
+        This is safer than delete as it preserves cost/usage history.
+        """
+        account = self.get_account(account_id, organization_id)
+        
+        # Strip credentials (don't delete the record)
+        account.role_arn = None
+        account.external_id = None
+        account.status = AccountStatus.DISCONNECTED
+        account.updated_at = datetime.utcnow()
+        
+        self.db.commit()
+        self.db.refresh(account)
+        return account
+
     # Legacy method for backwards compatibility
     def link_account(self, user_id: int, data: AccountCreate) -> Account:
         """Legacy link account method"""
@@ -127,3 +144,4 @@ class AccountService:
 
 def get_account_service(db: Session) -> AccountService:
     return AccountService(db)
+

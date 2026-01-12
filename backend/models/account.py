@@ -1,7 +1,7 @@
 """
 Account model - AWS Account connections
 """
-from sqlalchemy import Column, String, DateTime, ForeignKey, Enum as SQLEnum
+from sqlalchemy import Column, String, DateTime, ForeignKey, Enum as SQLEnum, Boolean, Text
 from sqlalchemy.orm import relationship
 from datetime import datetime
 import enum
@@ -14,6 +14,14 @@ class AccountStatus(enum.Enum):
     SCANNING = "scanning"
     ACTIVE = "active"
     ERROR = "error"
+    DISCONNECTED = "disconnected"  # NEW: For disconnect feature
+
+
+class SyncStatus(enum.Enum):
+    """Sync health status for heartbeat"""
+    HEALTHY = "healthy"
+    WARNING = "warning"
+    FAILED = "failed"
 
 
 class Account(Base):
@@ -32,11 +40,20 @@ class Account(Base):
 
     # AWS account details
     aws_account_id = Column(String(12), nullable=False)
-    role_arn = Column(String(255), nullable=False)
+    role_arn = Column(String(255), nullable=True)  # Nullable for disconnected accounts
     external_id = Column(String(64), nullable=True)
+    region = Column(String(20), nullable=True, default="us-east-1")
 
     # Status
     status = Column(SQLEnum(AccountStatus), nullable=False, default=AccountStatus.PENDING, index=True)
+    
+    # NEW: Sync/Heartbeat tracking
+    last_sync_at = Column(DateTime, nullable=True)
+    sync_status = Column(SQLEnum(SyncStatus), nullable=True, default=SyncStatus.HEALTHY)
+    sync_error = Column(Text, nullable=True)
+    
+    # Default account flag
+    is_default = Column(Boolean, default=False)
 
     # Timestamps
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
@@ -48,3 +65,4 @@ class Account(Base):
 
     def __repr__(self):
         return f"<Account(id={self.id}, aws_account_id={self.aws_account_id}, status={self.status.value})>"
+
