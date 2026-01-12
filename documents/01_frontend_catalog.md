@@ -1,0 +1,106 @@
+# 🎨 Frontend Component Catalog
+
+| ID (Unique Tracking Code) | File Path | Type | Function / Feature Description | State / Props Used | Dependencies (Imports) |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **FE-APP::Main::Entry** | `frontend/src/index.js` | App | React application entry point. | `ReactDOM`, `App` | `react-dom` |
+| **FE-APP::Main::Root** | `frontend/src/App.js` | App | Main Router and Layout configuration. | `RouterProvider` | `react-router-dom` |
+| **FE-CFG::System::Pkg** | `frontend/package.json` | Config | NPM dependencies and scripts. | `N/A` | `N/A` |
+| **FE-CFG::System::Tailwind** | `frontend/tailwind.config.js` | Config | Tailwind CSS configuration. | `N/A` | `tailwindcss` |
+| **FE-CFG::System::PostCSS** | `frontend/postcss.config.js` | Config | PostCSS configuration. | `N/A` | `postcss` |
+| **FE-CFG::System::Env** | `frontend/.env.example` | Config | Frontend environment template. | `N/A` | `N/A` |
+| **FE-ASST::Public::HTML** | `frontend/public/index.html` | Asset | Main HTML entry point. | `N/A` | `N/A` |
+| **FE-ASST::Public::Manifest** | `frontend/public/manifest.json` | Asset | PWA Manifest file. | `N/A` | `N/A` |
+| **FE-CMP::Auth::Login** | `frontend/src/components/auth/Login.jsx` | Page | User Login form. | `email`, `password` | `useAuth`, `Input`, `Button` |
+| **FE-CMP::Auth::Signup** | `frontend/src/components/auth/Signup.jsx` | Page | User Signup form. | `email`, `password` | `useAuth`, `Input`, `Button` |
+| **FE-CMP::Dash::Main** | `frontend/src/components/dashboard/Dashboard.jsx` | Page | Main KPI Dashboard (Backend Simplified: 70% savings assumption). | `kpiStats` | `StatsCard`, `recharts` |
+| **FE-CMP::Layout::Main** | `frontend/src/components/layout/MainLayout.jsx` | Layout | Sidebar, Header, and Wrapper. | `children` | `Sidebar`, `Header` |
+| **FE-CMP::Cluster::List** | `frontend/src/components/clusters/ClusterList.jsx` | Page | List of K8s clusters. | `clusters` | `useClusterStore` |
+| **FE-CMP::Cluster::Detail** | `frontend/src/components/clusters/ClusterDetails.jsx` | Page | Cluster details view. | `cluster` | `clusterAPI` |
+| **FE-CMP::Cluster::Nodes** | `frontend/src/components/clusters/NodeList.jsx` | Component | Node list within a cluster. | `nodes` | `Table` |
+| **FE-CMP::Cluster::Connect** | `frontend/src/components/clusters/ClusterConnectModal.jsx` | Component | Modal to register new clusters. | `step` | `clusterAPI` |
+| **FE-CMP::Tpl::List** | `frontend/src/components/templates/TemplateList.jsx` | Page | Node Template management list. | `templates` | `templateAPI` |
+| **FE-CMP::Tpl::Builder** | `frontend/src/components/templates/TemplateBuilder.jsx` | Component | Form to create/edit templates. | `formData` | `Input`, `Select` |
+| **FE-CMP::Pol::Config** | `frontend/src/components/policies/PolicyConfig.jsx` | Page | Optimization policy settings. | `policy` | `policyAPI` |
+| **FE-CMP::Hiber::Sched** | `frontend/src/components/hibernation/HibernationSchedule.jsx` | Page | Hibernation scheduler UI. | `schedule` | `hibernationAPI` |
+| **FE-CMP::Lab::Main** | `frontend/src/components/lab/ExperimentLab.jsx` | Page | ML Experimentation dashboard. | `experiments` | `labAPI` |
+| **FE-CMP::Right::Main** | `frontend/src/components/right-sizing/RightSizing.jsx` | Page | Rightsizing recommendations. | `recommendations` | `Card` |
+| **FE-CMP::Audit::Log** | `frontend/src/components/audit/AuditLog.jsx` | Page | System Audit Log viewer. | `logs` | `auditAPI` |
+| **FE-CMP::Admin::Dash** | `frontend/src/components/admin/AdminDashboard.jsx` | Admin | Super Admin Overview. Fetches real stats/charts from adminAPI. | `stats`, `activityFeed` | `StatsCard`, `recharts` |
+| **FE-CMP::Admin::Orgs** | `frontend/src/components/admin/AdminOrganizations.jsx` | Admin | Organization management table. | `orgs` | `adminAPI` |
+| **FE-CMP::Admin::Clients** | `frontend/src/components/admin/AdminClients.jsx` | Admin | Client management table. | `clients` | `adminAPI` |
+| **FE-CMP::Admin::Billing** | `frontend/src/components/admin/AdminBilling.jsx` | Page | Billing overview and Plans (Backend Mocked Data). | `stats`, `plans` | `Card`, `Button`, `Icons` |
+| **FE-CMP::Admin::Health** | `frontend/src/components/admin/AdminHealth.jsx` | Admin | System health status. | `health` | `useDashboard` |
+| **FE-CMP::Admin::Config** | `frontend/src/components/admin/AdminConfig.jsx` | Admin | **Real**: Platform configuration with Safe Mode toggle (API connected). | `safeMode`, `config` | `adminAPI`, `PlatformSettings` |
+| **FE-CMP::Admin::Platform** | `frontend/src/components/admin/PlatformSettings.jsx` | Admin | **Real**: Platform AWS Identity management with STS verification. | `connected`, `formData` | `adminAPI`, `toast` |
+| **FE-CMP::Admin::Lab** | `frontend/src/components/admin/AdminLab.jsx` | Admin | Admin view for Lab experiments. | `experiments` | `labAPI` |
+| **FE-CMP::Set::Main** | `frontend/src/components/settings/Settings.jsx` | Page | User Settings wrapper. | `tab` | `AccountSettings`, `TeamManagement` |
+| **FE-CMP::Set::Account** | `frontend/src/components/settings/AccountSettings.jsx` | Component | User profile settings (Backend Mocked). | `userData` | `authAPI` |
+| **FE-CMP::Set::Teams** | `frontend/src/components/settings/TeamManagement.jsx` | Component | Team member management. | `members` | `organizationAPI` |
+| **FE-CMP::Set::Cloud** | `frontend/src/components/settings/CloudIntegrations.jsx` | Component | Managing AWS account links, CloudFormation template download, and status validation. | `accounts` | `accountAPI` |
+| **FE-CMP::Cleanup::Main** | `frontend/src/components/cleanup/CleanupDashboard.jsx` | Page | **Real**: Resource Hygiene Dashboard with multi-region AWS scanning. Identifies orphaned instances, volumes, snapshots, and unused Elastic IPs across all enabled AWS regions. Displays potential monthly savings and allows authorization/termination/deletion actions. | `cleanupData`, `selectedItems`, `activeTab`, `selectedAccount` | `cleanupAPI`, `accountAPI`, `StatsCard`, `Badge` |
+| **FE-LIB::UI::Button** | `frontend/src/components/shared/Button.jsx` | UI | Reusable Button. | `onClick` | `N/A` |
+| **FE-LIB::UI::Card** | `frontend/src/components/shared/Card.jsx` | UI | Reusable Card. | `children` | `N/A` |
+| **FE-LIB::UI::Input** | `frontend/src/components/shared/Input.jsx` | UI | Reusable Input. | `onChange` | `N/A` |
+| **FE-LIB::UI::Badge** | `frontend/src/components/shared/Badge.jsx` | UI | Status Badge. | `status` | `N/A` |
+| **FE-LIB::UI::StatsCard** | `frontend/src/components/shared/StatsCard.jsx` | UI | Dashboard Metric Card. | `title`, `value` | `N/A` |
+| **FE-LIB::UI::EmptyState** | `frontend/src/components/shared/EmptyState.jsx` | UI | Empty state placeholder for no-data scenarios. | `title`, `message`, `action` | `FiInbox` |
+| **FE-HK::Auth::UseAuth** | `frontend/src/hooks/useAuth.js` | Hook | Authentication logic hook. | `user` | `authAPI` |
+| **FE-HK::Dash::UseDash** | `frontend/src/hooks/useDashboard.js` | Hook | Dashboard data fetching hook. | `data` | `metricsAPI` |
+| **FE-SVC::API::Client** | `frontend/src/services/api.js`| Service | Central Axios instance and API method definitions. | `axios` | `axios` |
+| **FE-STR::Store::Global** | `frontend/src/store/useStore.js` | Store | Global State (Zustand). | `state` | `zustand` |
+| **FE-UTL::Fmt::Format** | `frontend/src/utils/formatters.js` | Utility | Currency/Date formatters. | `value` | `Intl` |
+| **FE-APP::Style::Global** | `frontend/src/index.css` | Style | Global CSS styles. | `N/A` | `N/A` |
+| **FE-LIB::UI::Index** | `frontend/src/components/shared/index.js` | UI | Export barrel for shared components. | `N/A` | `N/A` |
+| **FE-CMP::Onboard::Page** | `frontend/src/pages/Onboarding.jsx` | Page | Wrapper page for the onboarding flow. | `step` | `WelcomeStep`, `ConnectStep` |
+| **FE-CMP::Onboard::Welcome** | `frontend/src/components/onboarding/WelcomeStep.jsx` | Component | Onboarding Step 1: Welcome. | `onNext` | `Button` |
+| **FE-CMP::Onboard::Connect** | `frontend/src/components/onboarding/ConnectStep.jsx` | Component | **Real**: Onboarding Step 2: AWS Connect. Has loading state (`isLoading`), ARN validation, disabled button handling. | `onNext`, `roleArn`, `verifying` | `Input`, `Button`, `onboardingAPI` |
+| **FE-CMP::Onboard::Verify** | `frontend/src/components/onboarding/VerifyStep.jsx` | Component | Onboarding Step 3: Visual loading spinner during verification. | `onNext` | `motion` |
+| **FE-CMP::Onboard::Success** | `frontend/src/components/onboarding/SuccessStep.jsx` | Component | Onboarding Step 4: Success. | `onComplete` | `Button` |
+
+### 6. Documentation Components
+
+| Component ID | File Path | Category | Description |
+| :--- | :--- | :--- | :--- |
+| **DOC-INT::FE::Root** | `frontend/INFO.md` | Internal | Frontend architecture overview. |
+| **DOC-INT::FE::Src** | `frontend/src/INFO.md` | Internal | Source directory overview. |
+| **DOC-INT::FE::Auth** | `frontend/src/components/auth/INFO.md` | Internal | Auth components docs. |
+| **DOC-INT::FE::Cluster** | `frontend/src/components/clusters/INFO.md` | Internal | Cluster management docs. |
+| **DOC-INT::FE::Dash** | `frontend/src/components/dashboard/INFO.md` | Internal | Dashboard components docs. |
+| **DOC-INT::FE::Admin** | `frontend/src/components/admin/INFO.md` | Internal | Admin portal docs. |
+| **DOC-INT::FE::Hibernation** | `frontend/src/components/hibernation/INFO.md` | Internal | Hibernation scheduler docs. |
+| **DOC-INT::FE::Lab** | `frontend/src/components/lab/INFO.md` | Internal | Lab/Experiment docs. |
+| **DOC-INT::FE::Policies** | `frontend/src/components/policies/INFO.md` | Internal | Policy engine docs. |
+| **DOC-INT::FE::Settings** | `frontend/src/components/settings/INFO.md` | Internal | Settings components docs. |
+| **DOC-INT::FE::Shared** | `frontend/src/components/shared/INFO.md` | Internal | Shared UI library docs. |
+| **DOC-INT::FE::Templates** | `frontend/src/components/templates/INFO.md` | Internal | Template builder docs. |
+| **DOC-INT::FE::Hooks** | `frontend/src/hooks/INFO.md` | Internal | Custom React hooks docs. |
+| **DOC-INT::FE::Services** | `frontend/src/services/INFO.md` | Internal | API service layer docs. |
+| **DOC-INT::FE::Audit** | `frontend/src/components/audit/INFO.md` | Internal | Audit log docs. |
+
+
+### 7. Miscellaneous System Components
+
+| Component ID | File Path | Type | Description |
+| :--- | :--- | :--- | :--- |
+| **FE-CFG::System::Lock** | `frontend/package-lock.json` | Config | NPM dependency lock file. |
+| **FE-CFG::System::GitIgnore** | `frontend/.gitignore` | Config | Git ignore rules for frontend. |
+| **FE-ASST::Public::Favicon** | `frontend/public/favicon.ico` | Asset | Browser tab icon. |
+| **FE-ASST::Public::Logo** | `frontend/public/logo192.png` | Asset | App logo asset. |
+
+## Orphaned / Zombie Components
+These components exist in the codebase but appear to be unused or unreferenced by the main application logic.
+
+| ID | File Path | Status | Reason |
+| :--- | :--- | :--- | :--- |
+| *None Detected* | - | **Clean** | All source files appear to be in use. |
+
+
+## Components with Uncertain / Pending Status
+These components are fully implemented in Frontend but rely on Backend services that are Mocked, Simplified, or Disconnected.
+
+| ID | File Path | Status | Finding |
+| :--- | :--- | :--- | :--- |
+| **FE-CMP::Dash::Main** | `frontend/src/components/dashboard/Dashboard.jsx` | **Simplified** | Displays "Savings" based on hardcoded 70% discount assumption (Backend: `MetricsService`). |
+| **FE-CMP::Admin::Billing** | `frontend/src/components/admin/AdminBilling.jsx` | **Mocked Data** | Billing plans and history are mocked responses, not real Stripe/AWS data. |
+| ~~**FE-CMP::Set::Cloud**~~ | ~~`frontend/src/components/settings/CloudIntegrations.jsx`~~ | ~~**Mocked Logic**~~ | **RESOLVED (2026-01-12)**: Backend `AccountService` now validates AWS STS credentials. Onboarding triggers discovery. |
+| **FE-CMP::Set::Account** | `frontend/src/components/settings/AccountSettings.jsx` | **Mocked** | Profile updates (Name, Email) are not permanently persisted to DB (Backend: `SettingsService`). |
