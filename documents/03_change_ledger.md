@@ -74,4 +74,16 @@
 | **2026-01-12** | **Backend / Billing** | `Feature` | Created `billing_routes.py` with `/billing/create-portal-session`, `/billing/webhook/stripe`, `/billing/status` endpoints for Stripe integration. |
 | **2026-01-12** | **Backend / API** | `Update` | Registered `billing_router` in `api/__init__.py`. |
 | **2026-01-12** | **Docs / Gap Analysis** | `Update` | Comprehensively updated `03_frontend_backend_gap_analysis.md` with resolved gaps and new APIs. |
-
+| **2026-01-12** | **Backend / Admin** | `Feature` | Added Platform Identity Management: `get_platform_connection`, `update_platform_credentials`, `disconnect_platform` methods in AdminService with STS verification. |
+| **2026-01-12** | **Backend / API** | `Feature` | Added Platform Identity endpoints: `GET /admin/platform/connection`, `POST /admin/platform/connect`, `DELETE /admin/platform/disconnect`. |
+| **2026-01-12** | **Frontend / Admin** | `Feature` | Created `PlatformSettings.jsx` component with AWS credential form, live status indicator, connect/disconnect flows. |
+| **2026-01-12** | **Frontend / AdminConfig** | `Update` | Integrated `PlatformSettings` component and connected Safe Mode toggle to backend API. |
+| **2026-01-12** | **Backend / Models** | `Feature` | Created `system_config.py` model for key-value system settings storage. |
+| **2026-01-12** | **Backend / Templates** | `Feature` | Created `backend/templates/aws/read-only-role.yaml` CloudFormation template for client AWS onboarding with cross-account IAM role. |
+| **2026-01-12** | **Backend / API** | `Feature` | Created `template_routes.py` with `GET /templates/aws-onboarding` endpoint to serve CloudFormation template as downloadable file. |
+| **2026-01-12** | **Backend / Services / Frontend / CloudIntegrations** | `Bugfix` | **[Backend]** `AccountService`: Added Platform Identity verification using `SystemConfig` credentials (fixes `NoCredentialsError`). **[Frontend]** `CloudIntegrations.jsx`: Fixed account list parsing logic to handle- **[BUGFIX]** [Frontend] `CloudIntegrations.jsx`: Fixed validation logic to check `status` field instead of `is_valid` and fix case sensitivity.
+- **[FEATURE]** [Backend] `AccountService`: Trigger `ClusterService.discover_clusters` automatically upon successful account validation to fetch monitoring data immediately.
+- **[BUGFIX]** [Frontend] `api.js`: Updated `metricAPI` to match backend routes (`/dashboard`, `/cost`, etc.), fixing "Failed to load dashboard data" error.
+ |
+| **2026-01-12** | **Backend / Models** | `Bugfix` | Added `SystemConfig` import to `create_tables()` in `base.py` to ensure `system_configs` table is created at startup. |
+| **2026-01-12** | **Backend / Admin** | `Bugfix` | Changed `update_platform_credentials()` to use `HTTPException` for proper error responses. Added `NoCredentialsError` handling and improved AWS error logging. |

@@ -14,7 +14,7 @@
 | **BE-SVC::Auth::Main** | `backend/services/auth_service.py` | Service | User authentication, signup, login, token management (JWT). | `User`, `Organization`, `crypto` |
 | **BE-SVC::Admin::Main** | `backend/services/admin_service.py` | Service | Super Admin operations: Client management, Platform stats (Real MRR/Costs), Logic to "verify_super_admin". | `User`, `Cluster`, `Instance` |
 | **BE-SVC::Organization::Main** | `backend/services/organization_service.py` | Service | Member management (Invite, Remove, Update Role). RBAC enforcement (Org Admin vs Team Lead). | `User`, `OrganizationInvitation` |
-| **BE-SVC::Account::Main** | `backend/services/account_service.py` | Service | **Real**: AWS Account linkage with `verify_connection` using `boto3.sts.assume_role`. Full CRUD: list, get, link, delete, validate, set_default. | `Account`, `boto3` |
+| **BE-SVC::Account::Main** | `backend/services/account_service.py` | Service | Managing AWS accounts, Platform Identity integration, and STS assume_role validation. | `Account`, `boto3` |
 | **BE-SVC::Cluster::Main** | `backend/services/cluster_service.py` | Service | **Real**: Cluster discovery via `boto3.eks.list_clusters/describe_cluster` with STS assume_role. DB upsert for discovered clusters. | `Cluster`, `Account`, `boto3` |
 | **BE-SVC::Template::Main** | `backend/services/template_service.py` | Service | Node Template CRUD. Logic for setting default templates. | `NodeTemplate`, `User` |
 | **BE-SVC::Policy::Main** | `backend/services/policy_service.py` | Service | Policy management. Validates spot percentages, min/max nodes, and resource limits. | `ClusterPolicy`, `Cluster`, `NodeTemplate` |
@@ -34,6 +34,11 @@
 | **BE-API::Health::System** | `backend/api/health_routes.py` | API | System Health Monitoring. Get detailed health status (DB, Redis, Workers). | `HealthService` |
 | **BE-API::Optimization::Main** | `backend/api/optimization_routes.py` | API | Rightsizing Recommendations. Analyze cluster workloads and return resize advice. | `RightSizer` |
 | **BE-API::Billing::Main** | `backend/api/billing_routes.py` | API | **Real**: Stripe Billing. Create portal session, webhook handler, subscription status. | `stripe` |
+| **BE-API::Admin::Platform** | `backend/api/admin_routes.py` | API | **Real**: Platform Identity Management. Get connection status, connect (STS verify), disconnect. | `AdminService`, `boto3` |
+| **BE-API::Templates::Main** | `backend/api/template_routes.py` | API | **Real**: Serves CloudFormation templates for client AWS onboarding. | `FileResponse` |
+| **BE-SVC::Admin::Platform** | `backend/services/admin_service.py` | Service | **Real**: Platform credential management with STS verification. | `boto3`, `SystemConfig` |
+| **BE-MOD::System::Config** | `backend/models/system_config.py` | Model | Key-value store for system settings (Safe Mode, Platform Keys). | `Base` |
+| **BE-TPL::AWS::RoleYAML** | `backend/templates/aws/read-only-role.yaml` | Template | CloudFormation YAML for cross-account IAM role creation. | N/A |
 | **BE-MOD::System::Base** | `backend/models/base.py` | Model | Base Audit Mixin and DB connection setup. | `SQLAlchemy` |
 
 | **BE-MOD::Auth::User** | `backend/models/user.py` | Model | User Table. | `Base` |

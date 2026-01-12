@@ -39,14 +39,7 @@ def list_organizations(
     current_user: User = Depends(require_super_admin),
     db: Session = Depends(get_db)
 ) -> OrganizationList:
-    """
-    List all organizations
-    """
-    filters = OrganizationFilter(
-        search=search,
-        page=page,
-        page_size=page_size
-    )
+    filters = OrganizationFilter(search=search, page=page, page_size=page_size)
     service = get_admin_service(db)
     return service.list_organizations(current_user, filters)
 
@@ -58,212 +51,159 @@ def list_organizations(
     description="Get paginated list of client users (Super admin only)"
 )
 def list_clients(
-    search: Optional[str] = Query(None, description="Search by email or ID"),
-    is_active: Optional[bool] = Query(None, description="Filter by active status"),
-    created_after: Optional[datetime] = Query(None, description="Filter by creation date (after)"),
-    created_before: Optional[datetime] = Query(None, description="Filter by creation date (before)"),
-    page: int = Query(1, ge=1, description="Page number"),
-    page_size: int = Query(50, ge=1, le=100, description="Items per page"),
+    search: Optional[str] = Query(None),
+    is_active: Optional[bool] = Query(None),
+    created_after: Optional[datetime] = Query(None),
+    created_before: Optional[datetime] = Query(None),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=100),
     current_user: User = Depends(require_super_admin),
     db: Session = Depends(get_db)
 ) -> ClientList:
-    """
-    List all client users
-
-    Super admin only endpoint to view all registered clients
-    with filtering and pagination.
-
-    Supports filtering by:
-    - Search text (email or ID)
-    - Active status
-    - Creation date range
-
-    Args:
-        search: Optional search query
-        is_active: Optional active status filter
-        created_after: Optional creation date filter (after)
-        created_before: Optional creation date filter (before)
-        page: Page number (default: 1)
-        page_size: Items per page (default: 50, max: 100)
-        current_user: Authenticated user (must be super admin)
-        db: Database session
-
-    Returns:
-        Paginated list of clients with summary stats
-    """
     filters = ClientFilter(
-        search=search,
-        is_active=is_active,
-        created_after=created_after,
-        created_before=created_before,
-        page=page,
-        page_size=page_size
+        search=search, is_active=is_active,
+        created_after=created_after, created_before=created_before,
+        page=page, page_size=page_size
     )
     service = get_admin_service(db)
     return service.list_clients(current_user, filters)
 
 
-@router.get(
-    "/clients/{client_id}",
-    response_model=UserManagement,
-    summary="Get client details",
-    description="Get detailed information about a specific client (Super admin only)"
-)
+@router.get("/clients/{client_id}", response_model=UserManagement)
 def get_client_details(
     client_id: str,
     current_user: User = Depends(require_super_admin),
     db: Session = Depends(get_db)
 ) -> UserManagement:
-    """
-    Get client details
-
-    Retrieves detailed information about a specific client including:
-    - User profile
-    - Account statistics
-    - Cluster and instance counts
-    - Cost metrics
-
-    Args:
-        client_id: Client user ID
-        current_user: Authenticated user (must be super admin)
-        db: Database session
-
-    Returns:
-        Full client details with statistics
-    """
     service = get_admin_service(db)
     return service.get_client_details(current_user, client_id)
 
 
-@router.post(
-    "/clients/{client_id}/toggle",
-    response_model=UserManagement,
-    summary="Toggle client active status",
-    description="Activate or deactivate a client user (Super admin only)"
-)
+@router.post("/clients/{client_id}/toggle", response_model=UserManagement)
 def toggle_client_status(
     client_id: str,
     current_user: User = Depends(require_super_admin),
     db: Session = Depends(get_db)
 ) -> UserManagement:
-    """
-    Toggle client active status
-
-    Enable or disable a client account. Disabled accounts
-    cannot log in or access the platform.
-
-    Args:
-        client_id: Client user ID
-        current_user: Authenticated user (must be super admin)
-        db: Database session
-
-    Returns:
-        Updated client details
-    """
     service = get_admin_service(db)
     return service.toggle_client_status(current_user, client_id)
 
 
-@router.post(
-    "/clients/{client_id}/reset-password",
-    status_code=status.HTTP_204_NO_CONTENT,
-    summary="Reset client password",
-    description="Reset a client's password (Super admin only)"
-)
+@router.post("/clients/{client_id}/reset-password", status_code=status.HTTP_204_NO_CONTENT)
 def reset_client_password(
     client_id: str,
     password_data: PasswordReset,
     current_user: User = Depends(require_super_admin),
     db: Session = Depends(get_db)
 ) -> None:
-    """
-    Reset client password
-
-    Allows super admin to reset a client's password.
-    Useful for account recovery or security purposes.
-
-    The new password must meet strength requirements:
-    - At least 8 characters
-    - Contains uppercase and lowercase letters
-    - Contains at least one digit
-
-    Args:
-        client_id: Client user ID
-        password_data: New password
-        current_user: Authenticated user (must be super admin)
-        db: Database session
-
-    Returns:
-        None (204 No Content)
-    """
     service = get_admin_service(db)
-    service.reset_client_password(
-        current_user,
-        client_id,
-        password_data.new_password
-    )
+    service.reset_client_password(current_user, client_id, password_data.new_password)
 
 
-@router.get(
-    "/stats",
-    response_model=PlatformStats,
-    summary="Get platform statistics",
-    description="Get aggregated platform-wide statistics (Super admin only)"
-)
+@router.get("/stats", response_model=PlatformStats)
 def get_platform_stats(
     current_user: User = Depends(require_super_admin),
     db: Session = Depends(get_db)
 ) -> PlatformStats:
-    """
-    Get platform statistics
-
-    Returns aggregated metrics across the entire platform:
-    - Total and active users
-    - Recent signups (last 30 days)
-    - Total clusters and instances
-    - Spot vs on-demand split
-    - Total platform cost
-
-    Args:
-        current_user: Authenticated user (must be super admin)
-        db: Database session
-
-    Returns:
-        Platform-wide statistics
-    """
     service = get_admin_service(db)
     return service.get_platform_stats(current_user)
 
 
-@router.get(
-    "/billing",
-    response_model=BillingResponse,
-    summary="Get billing information",
-    description="Get billing stats, plans, and upsell opportunities (Super admin only)"
-)
+@router.get("/billing", response_model=BillingResponse)
 def get_billing_info(
     current_user: User = Depends(require_super_admin),
     db: Session = Depends(get_db)
 ) -> BillingResponse:
-    """
-    Get billing information
-    """
     service = get_admin_service(db)
     return service.get_billing_info(current_user)
 
 
-@router.get(
-    "/dashboard",
-    response_model=DashboardResponse,
-    summary="Get dashboard statistics",
-    description="Get aggregated dashboard stats, charts, and activity feed (Super admin only)"
-)
+@router.get("/dashboard", response_model=DashboardResponse)
 def get_dashboard_stats(
     current_user: User = Depends(require_super_admin),
     db: Session = Depends(get_db)
 ) -> DashboardResponse:
-    """
-    Get dashboard statistics
-    """
     service = get_admin_service(db)
     return service.get_dashboard_stats(current_user)
+
+
+# ============================================
+# System Config Endpoints (Safe Mode, etc.)
+# ============================================
+
+@router.get("/config/{key}", summary="Get system config value")
+def get_config_value(
+    key: str,
+    current_user: User = Depends(require_super_admin),
+    db: Session = Depends(get_db)
+):
+    from backend.models.system_config import SystemConfig
+    config = db.query(SystemConfig).filter(SystemConfig.key == key).first()
+    if config:
+        return {"key": config.key, "value": config.value}
+    defaults = {
+        "SAFE_MODE": True,
+        "RISK_TTL_MINUTES": 30,
+        "OPTIMIZATION_COOLDOWN_MINUTES": 60,
+        "AGENT_VERSION": "v1.4.2"
+    }
+    return {"key": key, "value": defaults.get(key, None)}
+
+
+@router.patch("/config", summary="Update system config")
+def update_config_value(
+    key: str = Body(...),
+    value = Body(...),
+    current_user: User = Depends(require_super_admin),
+    db: Session = Depends(get_db)
+):
+    from backend.models.system_config import SystemConfig
+    config = db.query(SystemConfig).filter(SystemConfig.key == key).first()
+    if config:
+        config.value = str(value)
+    else:
+        config = SystemConfig(key=key, value=str(value))
+        db.add(config)
+    db.commit()
+    return {"key": key, "value": value, "message": f"Config '{key}' updated successfully"}
+
+
+# ============================================
+# Platform Identity Management Endpoints
+# ============================================
+
+@router.get("/platform/connection", summary="Get platform AWS connection status")
+def get_platform_connection(
+    current_user: User = Depends(require_super_admin),
+    db: Session = Depends(get_db)
+):
+    service = get_admin_service(db)
+    return service.get_platform_connection(current_user)
+
+
+@router.post("/platform/connect", summary="Connect platform AWS identity")
+def connect_platform(
+    access_key_id: str = Body(..., embed=True),
+    secret_access_key: str = Body(..., embed=True),
+    region: str = Body("us-east-1", embed=True),
+    role_arn: str = Body(None, embed=True),
+    current_user: User = Depends(require_super_admin),
+    db: Session = Depends(get_db)
+):
+    service = get_admin_service(db)
+    return service.update_platform_credentials(
+        requesting_user=current_user,
+        access_key_id=access_key_id,
+        secret_access_key=secret_access_key,
+        region=region,
+        role_arn=role_arn
+    )
+
+
+@router.delete("/platform/disconnect", summary="Disconnect platform AWS identity")
+def disconnect_platform(
+    current_user: User = Depends(require_super_admin),
+    db: Session = Depends(get_db)
+):
+    service = get_admin_service(db)
+    return service.disconnect_platform(current_user)

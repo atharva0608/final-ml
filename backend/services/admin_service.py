@@ -12,21 +12,11 @@ from backend.models.account import Account
 from backend.models.cluster import Cluster
 from backend.models.instance import Instance, InstanceLifecycle
 from backend.schemas.admin_schemas import (
-    ClientList,
-    ClientSummary,
-    ClientFilter,
-    ClientStats,
-    PlatformStats,
-    UserManagement,
-    OrganizationList,
-    OrganizationSummary,
-    OrganizationFilter,
+    ClientList, ClientSummary, ClientFilter, ClientStats,
+    PlatformStats, UserManagement, OrganizationList,
+    OrganizationSummary, OrganizationFilter,
 )
-from backend.core.exceptions import (
-    ResourceNotFoundError,
-    ValidationError,
-    UnauthorizedError,
-)
+from backend.core.exceptions import ResourceNotFoundError, ValidationError, UnauthorizedError
 from backend.core.crypto import hash_password
 from backend.core.logger import StructuredLogger
 from datetime import datetime, timedelta
@@ -42,471 +32,159 @@ class AdminService:
         self.db = db
 
     def verify_super_admin(self, user: User) -> None:
-        """
-        Verify user has super admin role
-
-        Args:
-            user: User to verify
-
-        Raises:
-            UnauthorizedError: If user is not super admin
-        """
         if user.role != UserRole.SUPER_ADMIN:
             raise UnauthorizedError("Super admin access required")
 
-    def list_clients(
-        self,
-        requesting_user: User,
-        filters: ClientFilter
-    ) -> ClientList:
-        """
-        List all client users with filters
-
-        Args:
-            requesting_user: User making the request (must be super admin)
-            filters: Filter criteria
-
-        Returns:
-            ClientList with paginated results
-
-        Raises:
-            UnauthorizedError: If not super admin
-        """
+    def list_clients(self, requesting_user: User, filters: ClientFilter) -> ClientList:
         self.verify_super_admin(requesting_user)
-
-        # Base query for client users
         query = self.db.query(User).filter(User.role == UserRole.CLIENT)
-
-        # Apply filters
+        
         if filters.search:
             search_pattern = f"%{filters.search}%"
-            query = query.filter(
-                or_(
-                    User.email.ilike(search_pattern),
-                    User.id.ilike(search_pattern)
-                )
-            )
-
+            query = query.filter(or_(User.email.ilike(search_pattern), User.id.ilike(search_pattern)))
         if filters.is_active is not None:
-            query = query.filter(
-                User.is_active == ("Y" if filters.is_active else "N")
-            )
-
+            query = query.filter(User.is_active == ("Y" if filters.is_active else "N"))
         if filters.created_after:
             query = query.filter(User.created_at >= filters.created_after)
-
         if filters.created_before:
             query = query.filter(User.created_at <= filters.created_before)
-
-        # Get total count
+        
         total = query.count()
-
-        # Apply pagination and ordering
-        users = query.order_by(desc(User.created_at)).offset(
-            (filters.page - 1) * filters.page_size
-        ).limit(filters.page_size).all()
-
-        # Convert to client summaries with stats
+        users = query.order_by(desc(User.created_at)).offset((filters.page - 1) * filters.page_size).limit(filters.page_size).all()
+        
         client_summaries = []
         for user in users:
             stats = self._get_client_stats(user.id)
-            client_summaries.append(
-                ClientSummary(
-                    id=user.id,
-                    email=user.email,
-                    organization_name=user.organization.name if user.organization else None,
-                    is_active=user.is_active == "Y",
-                    created_at=user.created_at,
-                    last_login=None,
-                    total_clusters=stats.total_clusters,
-                    total_instances=stats.total_instances,
-                    total_cost=stats.total_cost
-                )
-            )
+            client_summaries.append(ClientSummary(
+                id=user.id, email=user.email,
+                organization_name=user.organization.name if user.organization else None,
+                is_active=user.is_active == "Y", created_at=user.created_at, last_login=None,
+                total_clusters=stats.total_clusters, total_instances=stats.total_instances, total_cost=stats.total_cost
+            ))
+        
+        return ClientList(clients=client_summaries, total=total, page=filters.page, page_size=filters.page_size)
 
-        logger.info(
-            "Clients listed",
-            admin_id=requesting_user.id,
-            total_clients=total,
-            page=filters.page
-        )
-
-        return ClientList(
-            clients=client_summaries,
-            total=total,
-            page=filters.page,
-            page_size=filters.page_size
-        )
-
-    def get_client_details(
-        self,
-        requesting_user: User,
-        client_id: str
-    ) -> UserManagement:
-        """
-        Get detailed information about a client
-
-        Args:
-            requesting_user: User making the request (must be super admin)
-            client_id: Client user ID
-
-        Returns:
-            UserManagement with full client details
-
-        Raises:
-            UnauthorizedError: If not super admin
-            ResourceNotFoundError: If client not found
-        """
+    def get_client_details(self, requesting_user: User, client_id: str) -> UserManagement:
         self.verify_super_admin(requesting_user)
-
         user = self.db.query(User).filter(User.id == client_id).first()
         if not user:
             raise ResourceNotFoundError("User", client_id)
-
         stats = self._get_client_stats(client_id)
-
         return UserManagement(
-            id=user.id,
-            email=user.email,
-            role=user.role.value,
-            is_active=user.is_active == "Y",
-            created_at=user.created_at,
-            updated_at=user.updated_at,
-            last_login=None,
-            stats=stats
+            id=user.id, email=user.email, role=user.role.value,
+            is_active=user.is_active == "Y", created_at=user.created_at,
+            updated_at=user.updated_at, last_login=None, stats=stats
         )
 
-    def toggle_client_status(
-        self,
-        requesting_user: User,
-        client_id: str
-    ) -> UserManagement:
-        """
-        Activate or deactivate a client user
-
-        Args:
-            requesting_user: User making the request (must be super admin)
-            client_id: Client user ID
-
-        Returns:
-            Updated UserManagement
-
-        Raises:
-            UnauthorizedError: If not super admin
-            ResourceNotFoundError: If client not found
-        """
+    def toggle_client_status(self, requesting_user: User, client_id: str) -> UserManagement:
         self.verify_super_admin(requesting_user)
-
         user = self.db.query(User).filter(User.id == client_id).first()
         if not user:
             raise ResourceNotFoundError("User", client_id)
-
-        # Toggle active status
         user.is_active = "N" if user.is_active == "Y" else "Y"
         user.updated_at = datetime.utcnow()
-
         self.db.commit()
         self.db.refresh(user)
-
-        logger.info(
-            "Client status toggled",
-            admin_id=requesting_user.id,
-            client_id=client_id,
-            is_active=user.is_active == "Y"
-        )
-
         stats = self._get_client_stats(client_id)
-
         return UserManagement(
-            id=user.id,
-            email=user.email,
-            role=user.role.value,
-            is_active=user.is_active == "Y",
-            created_at=user.created_at,
-            updated_at=user.updated_at,
-            last_login=None,
-            stats=stats
+            id=user.id, email=user.email, role=user.role.value,
+            is_active=user.is_active == "Y", created_at=user.created_at,
+            updated_at=user.updated_at, last_login=None, stats=stats
         )
 
-    def reset_client_password(
-        self,
-        requesting_user: User,
-        client_id: str,
-        new_password: str
-    ) -> bool:
-        """
-        Reset a client's password
-
-        Args:
-            requesting_user: User making the request (must be super admin)
-            client_id: Client user ID
-            new_password: New password
-
-        Returns:
-            True if successful
-
-        Raises:
-            UnauthorizedError: If not super admin
-            ResourceNotFoundError: If client not found
-            ValidationError: If password invalid
-        """
+    def reset_client_password(self, requesting_user: User, client_id: str, new_password: str) -> bool:
         self.verify_super_admin(requesting_user)
-
         user = self.db.query(User).filter(User.id == client_id).first()
         if not user:
             raise ResourceNotFoundError("User", client_id)
-
-        # Validate password strength
         if len(new_password) < 8:
             raise ValidationError("Password must be at least 8 characters")
-
-        # Hash and update password
         user.password_hash = hash_password(new_password)
         user.updated_at = datetime.utcnow()
-
         self.db.commit()
-
-        logger.info(
-            "Client password reset",
-            admin_id=requesting_user.id,
-            client_id=client_id
-        )
-
         return True
 
-    def get_platform_stats(
-        self,
-        requesting_user: User
-    ) -> PlatformStats:
-        """
-        Get platform-wide statistics
-
-        Args:
-            requesting_user: User making the request (must be super admin)
-
-        Returns:
-            PlatformStats with aggregated metrics
-
-        Raises:
-            UnauthorizedError: If not super admin
-        """
+    def get_platform_stats(self, requesting_user: User) -> PlatformStats:
         self.verify_super_admin(requesting_user)
-
-        # User stats
         total_users = self.db.query(User).filter(User.role == UserRole.CLIENT).count()
-        active_users = self.db.query(User).filter(
-            and_(
-                User.role == UserRole.CLIENT,
-                User.is_active == "Y"
-            )
-        ).count()
-
-        # Recent signups (last 30 days)
+        active_users = self.db.query(User).filter(and_(User.role == UserRole.CLIENT, User.is_active == "Y")).count()
         thirty_days_ago = datetime.utcnow() - timedelta(days=30)
-        recent_signups = self.db.query(User).filter(
-            and_(
-                User.role == UserRole.CLIENT,
-                User.created_at >= thirty_days_ago
-            )
-        ).count()
-
-        # Cluster stats
+        recent_signups = self.db.query(User).filter(and_(User.role == UserRole.CLIENT, User.created_at >= thirty_days_ago)).count()
         total_clusters = self.db.query(Cluster).count()
-        active_clusters = self.db.query(Cluster).filter(
-            Cluster.status.in_(['ACTIVE', 'DISCOVERED'])
-        ).count()
-
-        # Instance stats
+        active_clusters = self.db.query(Cluster).filter(Cluster.status.in_(['ACTIVE', 'DISCOVERED'])).count()
         total_instances = self.db.query(Instance).count()
         running_instances = self.db.query(Instance).count()
-        spot_instances = self.db.query(Instance).filter(
-            Instance.lifecycle == InstanceLifecycle.SPOT
-        ).count()
-
-        # Calculate total cost (simplified)
+        spot_instances = self.db.query(Instance).filter(Instance.lifecycle == InstanceLifecycle.SPOT).count()
         total_cost = self._calculate_platform_cost()
-
-        logger.info(
-            "Platform stats retrieved",
-            admin_id=requesting_user.id,
-            total_users=total_users,
-            total_clusters=total_clusters
-        )
-
         return PlatformStats(
-            total_users=total_users,
-            active_users=active_users,
-            recent_signups=recent_signups,
-            total_clusters=total_clusters,
-            active_clusters=active_clusters,
-            total_instances=total_instances,
-            running_instances=running_instances,
-            spot_instances=spot_instances,
-            total_cost=total_cost
+            total_users=total_users, active_users=active_users, recent_signups=recent_signups,
+            total_clusters=total_clusters, active_clusters=active_clusters,
+            total_instances=total_instances, running_instances=running_instances,
+            spot_instances=spot_instances, total_cost=total_cost
         )
 
-    def list_organizations(
-        self,
-        requesting_user: User,
-        filters: OrganizationFilter
-    ) -> OrganizationList:
-        """
-        List all organizations
-        """
+    def list_organizations(self, requesting_user: User, filters: OrganizationFilter) -> OrganizationList:
         self.verify_super_admin(requesting_user)
-
         query = self.db.query(Organization)
-
         if filters.search:
             search_pattern = f"%{filters.search}%"
-            query = query.filter(
-                or_(
-                    Organization.name.ilike(search_pattern),
-                    Organization.slug.ilike(search_pattern)
-                )
-            )
-
+            query = query.filter(or_(Organization.name.ilike(search_pattern), Organization.slug.ilike(search_pattern)))
         total = query.count()
-
-        orgs = query.order_by(desc(Organization.created_at)).offset(
-            (filters.page - 1) * filters.page_size
-        ).limit(filters.page_size).all()
-
+        orgs = query.order_by(desc(Organization.created_at)).offset((filters.page - 1) * filters.page_size).limit(filters.page_size).all()
+        
         org_summaries = []
         for org in orgs:
-            # Find owner using explicit owner_user_id
             owner = None
             if org.owner_user_id:
                 owner = self.db.query(User).filter(User.id == org.owner_user_id).first()
-            
-            # Fallback: Look for ORG_ADMIN if owner_user_id not set (legacy)
             if not owner:
-                owner = self.db.query(User).filter(
-                    and_(
-                        User.organization_id == org.id,
-                        User.org_role == OrgRole.ORG_ADMIN
-                    )
-                ).first()
-            
-            # Counts
+                owner = self.db.query(User).filter(and_(User.organization_id == org.id, User.org_role == OrgRole.ORG_ADMIN)).first()
             total_users = self.db.query(User).filter(User.organization_id == org.id).count()
             total_clusters = self.db.query(Cluster).join(Account).filter(Account.organization_id == org.id).count()
             total_instances = self.db.query(Instance).join(Cluster).join(Account).filter(Account.organization_id == org.id).count()
-
-            org_summaries.append(
-                OrganizationSummary(
-                    id=org.id,
-                    name=org.name,
-                    slug=org.slug,
-                    owner_email=owner.email if owner else None,
-                    total_users=total_users,
-                    total_clusters=total_clusters,
-                    total_instances=total_instances,
-                    created_at=org.created_at,
-                    is_active=org.status == "active"
-                )
-            )
-
-        return OrganizationList(
-            organizations=org_summaries,
-            total=total,
-            page=filters.page,
-            page_size=filters.page_size
-        )
+            org_summaries.append(OrganizationSummary(
+                id=org.id, name=org.name, slug=org.slug,
+                owner_email=owner.email if owner else None,
+                total_users=total_users, total_clusters=total_clusters,
+                total_instances=total_instances, created_at=org.created_at,
+                is_active=org.status == "active"
+            ))
+        return OrganizationList(organizations=org_summaries, total=total, page=filters.page, page_size=filters.page_size)
 
     def _get_client_stats(self, user_id: str) -> ClientStats:
-        """
-        Get statistics for a specific client (via their Organization)
-        """
-        # Find user and org
         user = self.db.query(User).filter(User.id == user_id).first()
         org_id = user.organization_id if user else None
-
         if not org_id:
-             return ClientStats(
-                client_id=user_id,
-                savings_trend=[],
-                active_policies=0,
-                total_accounts=0,
-                total_clusters=0,
-                total_instances=0,
-                running_instances=0,
-                total_cost=Decimal('0.0')
-            )
-
-        # Account count
-        total_accounts = self.db.query(Account).filter(
-            Account.organization_id == org_id
-        ).count()
-
-        # Cluster count
-        total_clusters = self.db.query(Cluster).join(Account).filter(
-            Account.organization_id == org_id
-        ).count()
-
-        # Instance count
-        total_instances = self.db.query(Instance).join(Cluster).join(Account).filter(
-            Account.organization_id == org_id
-        ).count()
-
-        running_instances = self.db.query(Instance).join(Cluster).join(Account).filter(
-            Account.organization_id == org_id
-        ).count()
-
-        # Calculate cost (simplified)
-        instances = self.db.query(Instance).join(Cluster).join(Account).filter(
-            Account.organization_id == org_id
-        ).all()
-
+            return ClientStats(client_id=user_id, savings_trend=[], active_policies=0,
+                             total_accounts=0, total_clusters=0, total_instances=0,
+                             running_instances=0, total_cost=Decimal('0.0'))
+        total_accounts = self.db.query(Account).filter(Account.organization_id == org_id).count()
+        total_clusters = self.db.query(Cluster).join(Account).filter(Account.organization_id == org_id).count()
+        total_instances = self.db.query(Instance).join(Cluster).join(Account).filter(Account.organization_id == org_id).count()
+        running_instances = total_instances
+        instances = self.db.query(Instance).join(Cluster).join(Account).filter(Account.organization_id == org_id).all()
         total_cost = Decimal('0.0')
         for instance in instances:
             if instance.price:
                 total_cost += Decimal(str(instance.price)) * Decimal('720')
-
         return ClientStats(
-            client_id=user_id,
-            savings_trend=[],
-            active_policies=0,
-            total_accounts=total_accounts,
-            total_clusters=total_clusters,
-            total_instances=total_instances,
-            running_instances=running_instances,
-            total_cost=total_cost
+            client_id=user_id, savings_trend=[], active_policies=0,
+            total_accounts=total_accounts, total_clusters=total_clusters,
+            total_instances=total_instances, running_instances=running_instances, total_cost=total_cost
         )
 
     def _calculate_platform_cost(self) -> Decimal:
-        """
-        Calculate total platform cost
-
-        Returns:
-            Total estimated monthly cost
-        """
         running_instances = self.db.query(Instance).all()
-
         total_cost = Decimal('0.0')
         for instance in running_instances:
             if instance.price:
-                # Estimate monthly cost (720 hours)
                 total_cost += Decimal(str(instance.price)) * Decimal('720')
-
         return total_cost
 
-        return total_cost
-
-    def get_billing_info(self, requesting_user: User) -> 'BillingResponse':
-        """
-        Get billing information (Mock implementation for now)
-        """
+    def get_billing_info(self, requesting_user: User):
         self.verify_super_admin(requesting_user)
-        # Mock data matching frontend hardcoded values
         return {
-            "stats": {
-                "mrr": "$48,250",
-                "mrr_growth": "+12%",
-                "active_subs": 842,
-                "subs_growth": "+5%",
-                "failed_charges": 3
-            },
+            "stats": {"mrr": "$48,250", "mrr_growth": "+12%", "active_subs": 842, "subs_growth": "+5%", "failed_charges": 3},
             "plans": [
                 {"name": 'Free Tier', "price": '$0', "nodes": '5', "clients": 124, "status": 'Active'},
                 {"name": 'Pro Plan', "price": '$299', "nodes": '50', "clients": 650, "status": 'Active'},
@@ -518,24 +196,94 @@ class AdminService:
             ]
         }
 
-    def get_dashboard_stats(self, requesting_user: User) -> 'DashboardResponse':
-        """
-        Get admin dashboard statistics (Real data)
-        """
+    def get_dashboard_stats(self, requesting_user: User):
+        self.verify_super_admin(requesting_user)
+        platform_stats = self.get_platform_stats(requesting_user)
+        platform_stats.mrr = f"${platform_stats.total_cost:,.2f}"
+        return {"stats": platform_stats, "savings_chart": [], "activity_feed": []}
+
+    # ==============================================
+    # Platform Identity Management
+    # ==============================================
+
+    def get_platform_connection(self, requesting_user: User) -> dict:
+        self.verify_super_admin(requesting_user)
+        from backend.models.system_config import SystemConfig
+        access_key = self.db.query(SystemConfig).filter(SystemConfig.key == "PLATFORM_AWS_ACCESS_KEY").first()
+        region = self.db.query(SystemConfig).filter(SystemConfig.key == "PLATFORM_AWS_REGION").first()
+        role_arn = self.db.query(SystemConfig).filter(SystemConfig.key == "PLATFORM_ROLE_ARN").first()
+        
+        if access_key and access_key.value:
+            key_value = access_key.value
+            masked_key = f"{key_value[:4]}...{key_value[-4:]}" if len(key_value) > 8 else "****"
+            return {"connected": True, "access_key_id": masked_key,
+                    "region": region.value if region else "us-east-1",
+                    "role_arn": role_arn.value if role_arn else None,
+                    "message": "Platform AWS Identity is configured"}
+        return {"connected": False, "access_key_id": None, "region": None, "role_arn": None,
+                "message": "No platform credentials configured"}
+
+    def update_platform_credentials(self, requesting_user: User, access_key_id: str,
+                                   secret_access_key: str, region: str = "us-east-1",
+                                   role_arn: str = None) -> dict:
+        import boto3
+        from botocore.exceptions import ClientError, NoCredentialsError
+        from fastapi import HTTPException
         self.verify_super_admin(requesting_user)
         
-        # Get real stats
-        platform_stats = self.get_platform_stats(requesting_user)
+        try:
+            # STS is a global service, region is optional but we can use it for default
+            sts = boto3.client('sts', aws_access_key_id=access_key_id,
+                              aws_secret_access_key=secret_access_key,
+                              region_name=region if region else 'us-east-1')
+            identity = sts.get_caller_identity()
+            verified_arn = identity.get('Arn', 'Unknown')
+            account_id = identity.get('Account', 'Unknown')
+            logger.info(f"Platform credentials verified: {verified_arn}")
+        except ClientError as e:
+            error_code = e.response.get('Error', {}).get('Code', 'Unknown')
+            error_msg = e.response.get('Error', {}).get('Message', 'Invalid credentials')
+            logger.error(f"AWS ClientError: {error_code} - {error_msg}")
+            raise HTTPException(status_code=400, detail=f"AWS rejected credentials: {error_code} - {error_msg}")
+        except NoCredentialsError:
+            logger.error("No credentials provided")
+            raise HTTPException(status_code=400, detail="AWS credentials are missing or invalid")
+        except Exception as e:
+            logger.error(f"Unexpected error verifying credentials: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Failed to verify credentials: {str(e)}")
         
-        # Calculate real MRR and assign to stats object
-        # Using Total Platform Cost as proxy for "Managed Spend"
-        platform_stats.mrr = f"${platform_stats.total_cost:,.2f}"
-        
-        return {
-            "stats": platform_stats,
-            "savings_chart": [], 
-            "activity_feed": []
+        from backend.models.system_config import SystemConfig
+        config_items = {
+            "PLATFORM_AWS_ACCESS_KEY": access_key_id,
+            "PLATFORM_AWS_SECRET": secret_access_key,
+            "PLATFORM_AWS_REGION": region,
+            "PLATFORM_ROLE_ARN": role_arn or "",
+            "PLATFORM_AWS_ACCOUNT_ID": account_id
         }
+        for key, value in config_items.items():
+            config = self.db.query(SystemConfig).filter(SystemConfig.key == key).first()
+            if config:
+                config.value = value
+            else:
+                config = SystemConfig(key=key, value=value)
+                self.db.add(config)
+        self.db.commit()
+        return {"connected": True, "account_id": account_id, "verified_arn": verified_arn,
+                "region": region, "message": "Platform Identity verified and saved"}
+
+    def disconnect_platform(self, requesting_user: User) -> dict:
+        self.verify_super_admin(requesting_user)
+        from backend.models.system_config import SystemConfig
+        keys_to_remove = ["PLATFORM_AWS_ACCESS_KEY", "PLATFORM_AWS_SECRET", "PLATFORM_AWS_REGION",
+                         "PLATFORM_ROLE_ARN", "PLATFORM_AWS_ACCOUNT_ID"]
+        for key in keys_to_remove:
+            config = self.db.query(SystemConfig).filter(SystemConfig.key == key).first()
+            if config:
+                self.db.delete(config)
+        self.db.commit()
+        logger.info(f"Platform credentials removed by user {requesting_user.id}")
+        return {"connected": False, "message": "Platform credentials removed successfully"}
+
+
 def get_admin_service(db: Session) -> AdminService:
-    """Get admin service instance"""
     return AdminService(db)

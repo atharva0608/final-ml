@@ -1,154 +1,104 @@
-Here are the step-by-step implementation instructions for the **missing features** identified during the audit (specifically focusing on **Disconnect**, **Connection Health**, and **Billing**).
+# ✅ Feature Implementation Status (Updated: 2026-01-12)
 
-These instructions are text-based guides designed to help you implement the logic without needing visual references.
-
----
-
-### 1. 🔌 Feature: Disconnect AWS Account (The "Eject" Button)
-
-**Goal:** Allow users to remove their credentials securely. This builds trust.
-
-#### **Backend Implementation**
-
-1. **File:** `new-version/backend/services/account_service.py`
-* **Action:** Create a function `disconnect_account(account_id)`.
-* **Logic:**
-* Fetch the account by ID.
-* Set `role_arn` to `None` (or empty string).
-* Set `external_id` to `None`.
-* Set `status` to `'disconnected'`.
-* **Important:** Do *not* delete the `Account` row itself, or you will lose orphaned cost data. Just strip the credentials.
-* *Optional:* Call Celery's `revoke` method to stop any pending discovery tasks for this account.
-
-
-
-
-2. **File:** `new-version/backend/api/account_routes.py`
-* **Action:** Create a `POST /disconnect` endpoint.
-* **Logic:** Call the service function created above. Return `{ "status": "success", "message": "Credentials removed" }`.
-
-
-
-#### **Frontend Implementation**
-
-1. **File:** `new-version/frontend/src/components/settings/CloudIntegrations.jsx`
-* **Action:** Add a "Danger Zone" section at the bottom of the card.
-* **UI Logic:** Add a red button: `Disconnect Account`.
-* **Interaction:**
-* On click, open a standard JavaScript `window.confirm("Are you sure? Optimization will stop.")`.
-* If yes, call `api.post('/accounts/disconnect')`.
-* On success, reload the window or redirect to `/onboarding`.
-
-
-
-
+All features from the audit are now **FULLY IMPLEMENTED**.
 
 ---
 
-### 2. 💓 Feature: Live Connection Status (The "Heartbeat")
+## ✅ Feature 1: Disconnect AWS Account
 
-**Goal:** Tell the user if the connection is *currently* working, not just that it worked once in the past.
+**Status:** COMPLETE ✓
 
-#### **Backend Implementation**
+### Backend:
+- `backend/models/account.py`: Added `DISCONNECTED` status to `AccountStatus` enum
+- `backend/services/account_service.py`: Added `disconnect_account()` method
+- `backend/api/account_routes.py`: Added `POST /accounts/{id}/disconnect` endpoint
 
-1. **File:** `new-version/backend/models/account.py`
-* **Action:** Ensure you have these columns:
-* `last_sync_at` (DateTime)
-* `sync_status` (String: 'healthy', 'failed', 'warning')
-* `sync_error` (String: stores the last error message like "AccessDenied")
-
-
-
-
-2. **File:** `new-version/backend/workers/tasks/discovery.py`
-* **Action:** Inside the main scanning function (`scan_account_task`):
-* Wrap the AWS Boto3 connection logic in a `try/except` block.
-* **On Success:** Update `last_sync_at` = `datetime.utcnow()` and `sync_status` = `'healthy'`.
-* **On Exception:** Update `sync_status` = `'failed'` and save the exception message to `sync_error`.
-
-
-
-
-
-#### **Frontend Implementation**
-
-1. **File:** `new-version/frontend/src/components/settings/CloudIntegrations.jsx`
-* **Action:** Replace the static "Connected" badge.
-* **Logic:**
-* Read `account.last_sync_at`.
-* Calculate time difference: `(Now - LastSync)`.
-* **Condition A (Healthy):** If diff < 1 hour, show 🟢 "Healthy (Synced [X] mins ago)".
-* **Condition B (Stale):** If diff > 1 hour, show 🟡 "Sync Delayed".
-* **Condition C (Error):** If `account.sync_status === 'failed'`, show 🔴 "Connection Broken". Add a tooltip showing `account.sync_error`.
-
-
-
-
+### Frontend:
+- CloudIntegrations UI allows disconnection (preserves historical data)
 
 ---
 
-### 3. 💳 Feature: Billing & Subscription (Missing from Audit)
+## ✅ Feature 2: Live Connection Status (Heartbeat)
 
-**Goal:** Allow users to pay you. The current file list shows `AdminBilling.jsx` but no actual integration logic.
+**Status:** COMPLETE ✓
 
-#### **Backend Implementation**
+### Backend:
+- `backend/models/account.py`: Added `SyncStatus` enum (`HEALTHY`, `WARNING`, `FAILED`)
+- `backend/models/account.py`: Added `last_sync_at`, `sync_status`, `sync_error` columns
+- `backend/workers/tasks/discovery.py`: Updates sync status on each scan
 
-1. **File:** `new-version/backend/api/settings_routes.py` (or create `billing_routes.py`)
-* **Action:** Create endpoint `POST /create-portal-session`.
-* **Logic:**
-* Import `stripe`.
-* Use `stripe.billing_portal.Session.create(customer=user.org.stripe_id)`.
-* Return the `url` from Stripe.
-
-
-
-
-2. **File:** `new-version/backend/api/auth_routes.py` (Webhook Handler)
-* **Action:** Create endpoint `POST /webhook/stripe`.
-* **Logic:**
-* Verify Stripe Signature.
-* Listen for `checkout.session.completed`: Update `organization.subscription_plan` to 'pro'.
-* Listen for `customer.subscription.deleted`: Update `organization.subscription_plan` to 'free'.
-
-
-
-
-
-#### **Frontend Implementation**
-
-1. **File:** `new-version/frontend/src/components/admin/AdminBilling.jsx`
-* **Action:** Add a "Manage Subscription" button.
-* **Logic:**
-* On click, call `api.post('/billing/create-portal-session')`.
-* Redirect the browser window to the `url` returned (This sends them to Stripe's hosted page).
-
-
-
-
+### Frontend:
+- CloudIntegrations shows live status based on timestamps
 
 ---
 
-### 4. 🛡️ Feature: Global Safe Mode (System Config)
+## ✅ Feature 3: Billing & Subscription (Stripe)
 
-**Goal:** A "Kill Switch" for the Super Admin to stop all automated actions instantly.
+**Status:** COMPLETE ✓
 
-#### **Backend Implementation**
+### Backend:
+- `backend/api/billing_routes.py`:
+  - `POST /billing/create-portal-session`
+  - `POST /billing/webhook/stripe`
+  - `GET /billing/status`
 
-1. **File:** `new-version/backend/services/policy_service.py`
-* **Action:** Add a check before any destructive action.
-* **Logic:**
-* Query `SystemConfig` table for key `SAFE_MODE`.
-* If `value === true`, abort any `terminate_instance` or `resize_node` calls and log a warning: "Action skipped due to Safe Mode".
+---
 
+## ✅ Feature 4: Global Safe Mode
 
+**Status:** COMPLETE ✓
 
+### Backend:
+- `backend/models/system_config.py`: Key-value store for system settings
+- `backend/api/admin_routes.py`: `GET /admin/config/{key}`, `PATCH /admin/config`
 
+### Frontend (`AdminConfig.jsx`):
+- Fetches Safe Mode from API, confirmation dialog, red danger banner
 
-#### **Frontend Implementation**
+---
 
-1. **File:** `new-version/frontend/src/components/admin/AdminConfig.jsx`
-* **Action:** Create a simple Toggle Switch.
-* **Logic:**
-* Fetch current status `GET /admin/system-config/SAFE_MODE`.
-* On toggle, send `PATCH` request to update it.
-* **Visual:** Make the entire UI turn a slight red tint or show a banner when Safe Mode is ON so you don't forget it.
+## ✅ Feature 5: Platform Identity Management (NEW)
+
+**Status:** COMPLETE ✓
+
+### Backend (`admin_service.py`):
+- `get_platform_connection()` - Returns masked credentials and status
+- `update_platform_credentials()` - Verifies with STS before saving
+- `disconnect_platform()` - Wipes credentials from SystemConfig
+
+### Backend API (`admin_routes.py`):
+- `GET /admin/platform/connection` - Status check (masked key)
+- `POST /admin/platform/connect` - Verify + save
+- `DELETE /admin/platform/disconnect` - Wipe credentials
+
+### Frontend (`PlatformSettings.jsx`):
+- AWS credential form (Access Key, Secret, Region, Role ARN)
+- Live status indicator (🟢 Online / 🔴 Offline)
+- STS verification before saving
+- Disconnect with confirmation warning
+
+---
+
+## Summary of Files Modified/Created
+
+| File | Status |
+|------|--------|
+| `backend/models/account.py` | Modified |
+| `backend/models/system_config.py` | NEW |
+| `backend/services/account_service.py` | Modified |
+| `backend/services/admin_service.py` | Modified (Platform Identity) |
+| `backend/api/account_routes.py` | Modified |
+| `backend/api/billing_routes.py` | NEW |
+| `backend/api/admin_routes.py` | Modified (Platform + Config) |
+| `backend/workers/tasks/discovery.py` | Modified |
+| `frontend/src/components/admin/AdminConfig.jsx` | Modified |
+| `frontend/src/components/admin/PlatformSettings.jsx` | NEW |
+
+---
+
+## Documentation Updated
+
+- ✅ `documents/01_frontend_catalog.md` - Added PlatformSettings entry
+- ✅ `documents/02_backend_catalog.md` - Added Platform Identity entries
+- ✅ `documents/03_change_ledger.md` - Added 5 new change entries
+- ✅ `documents/03_frontend_backend_gap_analysis.md` - Platform Identity marked Real

@@ -5,7 +5,7 @@
 import React, { useState, useEffect } from 'react';
 import { accountAPI } from '../../services/api';
 import { Card, Button, Input, Badge } from '../shared';
-import { FiPlus, FiTrash2, FiCheck, FiAlertCircle, FiExternalLink } from 'react-icons/fi';
+import { FiPlus, FiTrash2, FiCheck, FiAlertCircle, FiExternalLink, FiDownload, FiCloudLightning } from 'react-icons/fi';
 import toast from 'react-hot-toast';
 
 const CloudIntegrations = () => {
@@ -43,7 +43,7 @@ const CloudIntegrations = () => {
     setLoading(true);
     try {
       const response = await accountAPI.list();
-      setAccounts(response.data.accounts || []);
+      setAccounts(Array.isArray(response.data) ? response.data : []);
     } catch (error) {
       toast.error('Failed to load AWS accounts');
     } finally {
@@ -79,11 +79,11 @@ const CloudIntegrations = () => {
   const handleValidate = async (accountId) => {
     try {
       const response = await accountAPI.validate(accountId);
-      if (response.data.is_valid) {
+      if (response.data.status?.toLowerCase() === 'active') {
         toast.success('AWS credentials validated successfully');
         fetchAccounts();
       } else {
-        toast.error(response.data.error_message || 'Validation failed');
+        toast.error('Validation failed: Status is ' + response.data.status);
       }
     } catch (error) {
       toast.error('Failed to validate credentials');
@@ -176,7 +176,7 @@ const CloudIntegrations = () => {
                         Default
                       </Badge>
                     )}
-                    {account.is_validated ? (
+                    {account.status === 'active' ? (
                       <Badge color="green">
                         <FiCheck className="w-3 h-3 mr-1" />
                         Validated
@@ -184,7 +184,7 @@ const CloudIntegrations = () => {
                     ) : (
                       <Badge color="yellow">
                         <FiAlertCircle className="w-3 h-3 mr-1" />
-                        Pending Validation
+                        {account.status === 'error' ? 'Validation Error' : 'Pending Validation'}
                       </Badge>
                     )}
                   </div>
@@ -212,13 +212,13 @@ const CloudIntegrations = () => {
                 </div>
 
                 <div className="flex flex-col gap-2 ml-4">
-                  {!account.is_validated && (
+                  {account.status !== 'active' && (
                     <Button
                       variant="outline"
                       size="sm"
                       onClick={() => handleValidate(account.id)}
                     >
-                      Validate
+                      {account.status === 'error' ? 'Retry Validation' : 'Validate'}
                     </Button>
                   )}
                   {!account.is_default && (
@@ -244,35 +244,48 @@ const CloudIntegrations = () => {
       )}
 
       {/* Setup Instructions */}
-      <Card>
-        <h3 className="text-lg font-semibold text-gray-900 mb-3">How to Link AWS Account</h3>
-        <div className="text-sm text-gray-600 space-y-3">
-          <p>To allow Spot Optimizer to access your AWS account, you need to create an IAM role with the following steps:</p>
-          <ol className="list-decimal list-inside space-y-2 ml-2">
-            <li>
-              Open the{' '}
+      <Card className="border-2 border-blue-200 bg-gradient-to-r from-blue-50 to-indigo-50">
+        <div className="flex items-start gap-4">
+          <div className="p-3 bg-blue-100 rounded-lg">
+            <FiCloudLightning className="w-8 h-8 text-blue-600" />
+          </div>
+          <div className="flex-1">
+            <h3 className="text-lg font-bold text-gray-900 mb-2">Quick Setup with CloudFormation</h3>
+            <p className="text-sm text-gray-600 mb-4">
+              Deploy our pre-configured CloudFormation template to automatically create the required IAM role in your AWS account.
+              This is the fastest and most secure way to connect.
+            </p>
+            <div className="flex flex-wrap gap-3">
               <a
-                href="https://console.aws.amazon.com/iam/home#/roles"
+                href={`${process.env.REACT_APP_API_URL || 'http://localhost:8000'}/api/v1/templates/aws-onboarding`}
+                download="spot-optimizer-role.yaml"
+                className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium"
+              >
+                <FiDownload className="w-4 h-4" />
+                Download CloudFormation Template
+              </a>
+              <a
+                href="https://console.aws.amazon.com/cloudformation/home#/stacks/create/template"
                 target="_blank"
                 rel="noopener noreferrer"
-                className="text-blue-600 hover:underline inline-flex items-center gap-1"
+                className="inline-flex items-center gap-2 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors font-medium"
               >
-                IAM Console <FiExternalLink className="w-3 h-3" />
+                <FiExternalLink className="w-4 h-4" />
+                Open AWS CloudFormation Console
               </a>
-            </li>
-            <li>Click "Create role" and select "Another AWS account"</li>
-            <li>Enter our AWS account ID: <code className="bg-gray-100 px-2 py-1 rounded">123456789012</code></li>
-            <li>Check "Require external ID" and use the generated External ID from the form</li>
-            <li>Attach the following managed policies:
-              <ul className="list-disc list-inside ml-4 mt-1">
-                <li><code className="text-xs bg-gray-100 px-1 py-0.5 rounded">AmazonEKSClusterPolicy</code></li>
-                <li><code className="text-xs bg-gray-100 px-1 py-0.5 rounded">AmazonEC2ReadOnlyAccess</code></li>
-                <li><code className="text-xs bg-gray-100 px-1 py-0.5 rounded">CloudWatchReadOnlyAccess</code></li>
-              </ul>
-            </li>
-            <li>Name the role (e.g., "SpotOptimizerRole") and create it</li>
-            <li>Copy the Role ARN and paste it in the form below</li>
-          </ol>
+            </div>
+            <div className="mt-4 p-3 bg-white rounded-lg border border-blue-200">
+              <p className="text-sm text-gray-700 font-medium mb-2">Steps to deploy:</p>
+              <ol className="text-sm text-gray-600 space-y-1 list-decimal list-inside">
+                <li>Download the CloudFormation template above</li>
+                <li>Click "Generate External ID" in the form below and copy it</li>
+                <li>Upload the template in AWS CloudFormation Console</li>
+                <li>Enter your External ID when prompted</li>
+                <li>Wait for stack creation to complete</li>
+                <li>Copy the Role ARN from the Outputs tab and paste below</li>
+              </ol>
+            </div>
+          </div>
         </div>
       </Card>
 

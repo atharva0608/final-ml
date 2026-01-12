@@ -67,10 +67,11 @@ export const adminAPI = {
 };
 
 export const metricAPI = {
+    getDashboard: (params) => api.get('/api/v1/metrics/dashboard', { params }),
+    getCost: (params) => api.get('/api/v1/metrics/cost', { params }),
+    getInstances: (params) => api.get('/api/v1/metrics/instances', { params }),
+    getCostTimeSeries: (params) => api.get('/api/v1/metrics/cost/timeseries', { params }),
     getClusterMetrics: (id, params) => api.get(`/api/v1/metrics/cluster/${id}`, { params }),
-    getGlobalMetrics: (params) => api.get('/api/v1/metrics/global', { params }),
-    getSavingsData: (params) => api.get('/api/v1/metrics/savings', { params }),
-    getActivityFeed: (params) => api.get('/api/v1/metrics/activity', { params }),
 };
 export const metricsAPI = metricAPI;
 

@@ -70,6 +70,7 @@ def create_tables():
     from backend.models.agent_action import AgentAction
     from backend.models.api_key import APIKey
     from backend.models.invitation import OrganizationInvitation
+    from backend.models.system_config import SystemConfig  # For Safe Mode & Platform Identity
 
     # Create all tables
     Base.metadata.create_all(bind=engine)

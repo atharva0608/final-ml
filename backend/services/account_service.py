@@ -12,10 +12,40 @@ class AccountService:
     def __init__(self, db: Session):
         self.db = db
 
+    def _get_platform_client(self, service_name: str):
+        """Get an AWS client using platform credentials from SystemConfig"""
+        from backend.models.system_config import SystemConfig
+        
+        access_key = self.db.query(SystemConfig).filter(SystemConfig.key == "PLATFORM_AWS_ACCESS_KEY").first()
+        secret_key = self.db.query(SystemConfig).filter(SystemConfig.key == "PLATFORM_AWS_SECRET").first()
+        region = self.db.query(SystemConfig).filter(SystemConfig.key == "PLATFORM_AWS_REGION").first()
+        
+        region_name = region.value if region and region.value else 'us-east-1'
+        
+        if access_key and secret_key and access_key.value and secret_key.value:
+            return boto3.client(
+                service_name,
+                aws_access_key_id=access_key.value,
+                aws_secret_access_key=secret_key.value,
+                region_name=region_name
+            )
+        else:
+            # Check if we have env vars as fallback, otherwise raise friendly error
+            import os
+            if not os.getenv("AWS_ACCESS_KEY_ID"):
+                from fastapi import HTTPException
+                raise HTTPException(
+                    status_code=400, 
+                    detail="Platform AWS Identity is not configured. Please set up Platform Credentials in Admin Settings first."
+                )
+            
+            # Fallback to environment variables
+            return boto3.client(service_name, region_name=region_name)
+
     def verify_connection(self, role_arn: str, external_id: str) -> bool:
         """Verify AWS connection by attempting to assume role"""
         try:
-            sts = boto3.client('sts')
+            sts = self._get_platform_client('sts')
             sts.assume_role(
                 RoleArn=role_arn,
                 RoleSessionName="SpotOptimizerVerify",
@@ -91,6 +121,17 @@ class AccountService:
             account.status = AccountStatus.ACTIVE
             account.last_validated = datetime.utcnow()
             account.updated_at = datetime.utcnow()
+            
+            # Trigger discovery
+            try:
+                from backend.services.cluster_service import ClusterService
+                cluster_service = ClusterService(self.db)
+                # Pass organization_id as user_id for context, though currently unused
+                cluster_service.discover_clusters(account.id, organization_id)
+            except Exception as e:
+                # Log but don't fail validation
+                print(f"Discovery trigger failed: {e}")
+                
         except HTTPException:
             account.status = AccountStatus.ERROR
             account.updated_at = datetime.utcnow()

@@ -39,6 +39,7 @@ This document outlines the discrepancies found between the Frontend's expected A
 | Account Disconnect | **Real** | Strips credentials, sets status to DISCONNECTED, preserves history. |
 | Connection Health | **Real** | `last_sync_at`, `sync_status`, `sync_error` tracked by discovery worker. |
 | Billing Portal | **Partial** | Stripe integration scaffolded, requires API key config. |
+| Platform Identity | **Real** | NEW: Admin AWS credential management with STS verification. |
 | Settings | **Mocked** | Profile/Integrations use in-memory mock. |
 
 ## 3. Resolved Gaps (2026-01-12)
