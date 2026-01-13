@@ -31,6 +31,7 @@ This document outlines the discrepancies found between the Frontend's expected A
 *   **Cleanup / Dependencies**: `check-dependencies` pre-flight verification (NEW - Feature 1).
 *   **Cleanup / Tag Compliance**: `is_compliant`, `missing_tags`, `untagged_waste_cost` in scan results (NEW - Feature 2).
 *   **Approvals**: Pending request management (List, Approve, Reject) - Feature 3.
+*   **Team-Specific Governance**: `GET/PUT /teams/{id}/governance` for Team Lead approval policy configuration (NEW).
 
 ### Previously Implemented APIs (2026-01-12)
 *   **Accounts**: Link, Validate, Set Default, Disconnect, List.
@@ -42,11 +43,13 @@ This document outlines the discrepancies found between the Frontend's expected A
 ### Status Notes
 | Feature | Backend Status | Notes |
 | :--- | :--- | :--- |
-| **Governance (Autopilot)** | **Real** | NEW: Policy-as-Code auto-cleanup with "System Autopilot" actor. |
-| **Dependency Check** | **Real** | NEW: Pre-flight verification for Snapshots (AMI refs), SGs (ENI refs), Volumes (attachments). |
-| **Tag Compliance** | **Real** | NEW: `Organization.required_tags` checked during scan, `is_compliant` + `missing_tags` returned. |
+| **Governance (Autopilot)** | **Real** | Policy-as-Code auto-cleanup with "System Autopilot" actor. |
+| **Dependency Check (Feature 1)** | **Real + UI** | Pre-flight verification with Warning Modal in CleanupDashboard. |
+| **Tag Compliance (Feature 2)** | **Real + UI** | Shameback card + Compliance column with missing tags tooltip. |
 | **Cleanup** | **Real** | Full implementation with parallel scanning, caching, tag compliance, dependency checks. |
-| **Approvals** | **Real** | Four-Eyes approval workflow for Members and Strict Mode. |
+| **Hierarchical Governance (Feature 6)** | **Real** | 4-Tier RBAC (Super Admin, Org Admin, Team Lead, Member), Governance toggles, Four-Eyes approval workflow. |
+| **Team-Specific Governance** | **Real + UI** | Team.governance_config JSON, GET/PUT /teams/{id}/governance API, TeamGovernance.jsx with 5 action toggles. |
+| **Approvals (Feature 3)** | **Real** | Four-Eyes approval workflow for Members and Strict Mode. |
 
 ## 3. Resolved Gaps (2026-01-13)
 
@@ -55,6 +58,7 @@ This document outlines the discrepancies found between the Frontend's expected A
 | **Governance** | Not Implemented | **Real**: GovernanceService + API routes for policy management |
 | **Dependency Check** | Not Implemented | **Real**: CleanupService.check_dependencies() + API endpoint |
 | **Tag Compliance** | Not Implemented | **Real**: is_compliant, missing_tags enrichment during scan |
+| **Team-Specific Governance** | Not Implemented | **Real**: Team.governance_config + TeamGovernance.jsx UI |
 | **Approval Workflow** | Already Implemented | ✅ Verified working |
 
 ## 4. Remaining Zombie APIs

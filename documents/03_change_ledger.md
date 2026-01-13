@@ -3,6 +3,9 @@
 
 | Date | Component | Change Type | Description |
 | :--- | :--- | :--- | :--- |
+| **2026-01-13** | **Full Stack / Team Governance** | `Feature` | **Team-Specific Governance**: Added `governance_config` JSON column to Team model. Created `GET/PUT /teams/{id}/governance` API endpoints. Updated `AccountService` and `CleanupService` to check team-specific approval rules. Created `TeamGovernance.jsx` component with toggle switches for 5 action types. Integrated into `TeamManagement.jsx`. |
+| **2026-01-13** | **Frontend / Cleanup** | `Feature` | **Feature 1 & 2 Complete**: Added pre-flight dependency check (`handleCleanupClick`) with Warning Modal showing blocking resources. Added "Untagged Waste" Shameback stats card. Added Compliance column with green/red badges and tooltip for missing tags. |
+| **2026-01-13** | **Full Stack / Feature 6** | `Complete` | **Hierarchical Governance & Approval System**: Backend: Updated `UserRole` enum (4-tier), added `is_governance_enabled`/`is_strict_approval_mode` to Organization, created `ApprovalRequest` model and `ApprovalService`. Frontend: Updated `TeamManagement.jsx` for 4-Tier Roles & Governance Toggles, created `ApprovalCenter.jsx` for Team Leads, added `approvalsAPI` to api.js, updated `CleanupDashboard.jsx` for Pending Approval (202 Accepted) states. |
 | **2026-01-13** | **Backend / Metrics** | `Fix` | Updated `MetricsService` to use `InstanceLifecycle` enum values instead of string comparisons for lifecycle filtering. |
 | **2026-01-13** | **Frontend / Dashboard** | `Feature` | Converted invitation acceptance from separate page to modal overlay on Dashboard with light theme and blur backdrop. |
 | **2026-01-13** | **Frontend / Settings** | `Fix` | Added `TEAM_LEAD` to visible roles for Team tab in Settings page. |

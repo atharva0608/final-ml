@@ -35,9 +35,10 @@
 | **FE-CMP::Admin::Lab** | `frontend/src/components/admin/AdminLab.jsx` | Admin | Admin view for Lab experiments. | `experiments` | `labAPI` |
 | **FE-CMP::Set::Main** | `frontend/src/components/settings/Settings.jsx` | Page | User Settings wrapper. | `tab` | `AccountSettings`, `TeamManagement` |
 | **FE-CMP::Set::Account** | `frontend/src/components/settings/AccountSettings.jsx` | Component | User profile settings (Backend Mocked). | `userData` | `authAPI` |
-| **FE-CMP::Set::Teams** | `frontend/src/components/settings/TeamManagement.jsx` | Component | **New**: Team-Centric Management. Accordion view for hierarchical team/member management. | `teams`, `members` | `teamAPI` |
+| **FE-CMP::Set::Teams** | `frontend/src/components/settings/TeamManagement.jsx` | Component | **Real**: 4-Tier Role Management (Super Admin, Org Admin, Team Lead, Member). Accordion view for hierarchical team/member management. **Team-Specific Governance** integration via collapsible "Configure Approval Policies" section. | `teams`, `members`, `showGovernanceForTeam` | `teamAPI`, `TeamGovernance` |
 | **FE-CMP::Set::Profile** | `frontend/src/components/settings/UserProfile.jsx` | Component | **New**: User Profile settings (Full Name update). | `user` | `userAPI` |
-| **FE-CMP::Approv::Main** | `frontend/src/components/approvals/ApprovalCenter.jsx` | Page | **Real**: Approval Center for Maker-Checker workflows. Lists pending requests and allows Team Leads to Approve/Reject. | `requests` | `approvalsAPI`, `Badge` |
+| **FE-CMP::Set::TeamGov** | `frontend/src/components/settings/TeamGovernance.jsx` | Component | **Real**: Team-Specific Approval Policies UI. Toggle switches for 5 actions (CONNECT_ACCOUNT, TERMINATE_INSTANCE, DELETE_VOLUME, DELETE_SNAPSHOT, RELEASE_IP). Fetches/saves to `PUT /teams/{id}/governance`. | `config`, `teamId` | `api`, `toast` |
+| **FE-CMP::Approv::Main** | `frontend/src/components/approvals/ApprovalCenter.jsx` | Page | **Real**: Approval Center for Maker-Checker (Four-Eyes) workflows. Lists pending requests and allows Team Leads to Approve/Reject destructive actions. | `requests` | `approvalsAPI`, `Badge` |
 | **FE-CMP::Gov::Settings** | `frontend/src/components/settings/GovernanceSettings.jsx` | Page | **Real**: Automated Governance / Policy-as-Code settings. Master toggle, policy cards, required tags configuration. | `config`, `policies` | `governanceAPI`, `toast` |
 
 ### 6. Documentation Components
@@ -58,7 +59,7 @@
 | **FE-CMP::Onboard::Connect** | `frontend/src/components/onboarding/ConnectStep.jsx` | Component | **Real**: Onboarding Step 2: AWS Connect. Has loading state (`isLoading`), ARN validation, disabled button handling. | `onNext`, `roleArn`, `verifying` | `Input`, `Button`, `onboardingAPI` |
 | **FE-CMP::Onboard::Verify** | `frontend/src/components/onboarding/VerifyStep.jsx` | Component | Onboarding Step 3: Visual loading spinner during verification. | `onNext` | `motion` |
 | **FE-CMP::Onboard::Success** | `frontend/src/components/onboarding/SuccessStep.jsx` | Component | Onboarding Step 4: Success. | `onComplete` | `Button` |
-| **FE-CMP::Cleanup::Main** | `frontend/src/components/cleanup/CleanupDashboard.jsx` | Page | **Real**: Resource Hygiene Dashboard. Multi-Region Scanning, **Tag Compliance** (is_compliant, missing_tags), **Pending Approval** (202 handling), **Dependency Check** (pre-flight verification). | `scanResult`, `selectedAccount` | `cleanupAPI`, `StatsCard`, `react-icons` |
+| **FE-CMP::Cleanup::Main** | `frontend/src/components/cleanup/CleanupDashboard.jsx` | Page | **Real (Complete)**: Resource Hygiene Dashboard. Multi-Region Scanning, **Tag Compliance** (Shameback card, Compliance column with missing tags tooltip), **Dependency Check** (pre-flight verification with Warning Modal), **Pending Approval** (202 handling with locked checkboxes). | `scanResult`, `selectedAccount` | `cleanupAPI`, `StatsCard`, `react-icons` |
 
 ### 6. Documentation Components
 

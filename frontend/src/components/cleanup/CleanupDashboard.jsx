@@ -3,7 +3,7 @@ import { cleanupAPI, accountsAPI } from '../../services/api';
 import StatsCard from '../shared/StatsCard';
 import Badge from '../shared/Badge';
 import Button from '../shared/Button';
-import { FiDollarSign, FiAlertOctagon, FiHardDrive, FiGlobe, FiCheckCircle, FiAlertTriangle } from 'react-icons/fi';
+import { FiDollarSign, FiAlertOctagon, FiHardDrive, FiGlobe, FiCheckCircle, FiAlertTriangle, FiTag, FiX, FiAlertCircle } from 'react-icons/fi';
 import toast from 'react-hot-toast';
 
 const CleanupDashboard = () => {
@@ -15,6 +15,12 @@ const CleanupDashboard = () => {
     const [selectedItems, setSelectedItems] = useState([]);
     const [actionLoading, setActionLoading] = useState(false);
     const [selectedRegion, setSelectedRegion] = useState('ALL');
+
+    // Feature 1: Dependency Check Modal State
+    const [showDependencyModal, setShowDependencyModal] = useState(false);
+    const [blockingResources, setBlockingResources] = useState([]);
+    const [pendingAction, setPendingAction] = useState(null);
+    const [checkingDependencies, setCheckingDependencies] = useState(false);
 
     // Hardcoded regions list for now (or fetch from backend if available)
     const regionsList = [
@@ -71,8 +77,65 @@ const CleanupDashboard = () => {
         }
     };
 
-    const handleExecuteAction = async (actionType) => {
+    // Feature 1: Pre-flight Dependency Check before deletion
+    const handleCleanupClick = async (actionType) => {
         if (!selectedAccount || selectedItems.length === 0) return;
+
+        // Only check dependencies for destructive actions on snapshots, volumes, security groups
+        const needsCheck = ['DELETE', 'TERMINATE'].includes(actionType) &&
+            ['SNAPSHOT', 'VOLUME'].includes(activeTab);
+
+        if (!needsCheck) {
+            // Safe action, execute directly
+            executeCleanupAction(actionType);
+            return;
+        }
+
+        setCheckingDependencies(true);
+        const allBlockers = [];
+
+        try {
+            // Check each selected item for dependencies
+            for (const resourceId of selectedItems) {
+                const resource = scanResult.resources.find(r => r.id === resourceId);
+                if (!resource) continue;
+
+                const res = await cleanupAPI.checkDependencies(
+                    selectedAccount,
+                    resource.type,
+                    resourceId,
+                    resource.region
+                );
+
+                if (!res.data.can_delete && res.data.blocking_resources?.length > 0) {
+                    allBlockers.push({
+                        resource_id: resourceId,
+                        blockers: res.data.blocking_resources
+                    });
+                }
+            }
+
+            if (allBlockers.length > 0) {
+                // Show warning modal with blocking resources
+                setBlockingResources(allBlockers);
+                setPendingAction(actionType);
+                setShowDependencyModal(true);
+            } else {
+                // All clear, execute
+                executeCleanupAction(actionType);
+            }
+        } catch (err) {
+            console.error("Dependency check failed", err);
+            toast.error("Failed to check dependencies. Proceeding with caution...");
+            // Fallback: proceed anyway (user can cancel)
+            executeCleanupAction(actionType);
+        } finally {
+            setCheckingDependencies(false);
+        }
+    };
+
+    // Actual execution logic (called after dependency check passes or is bypassed)
+    const executeCleanupAction = async (actionType) => {
         setActionLoading(true);
         try {
             const itemsByRegion = {};
@@ -110,6 +173,8 @@ const CleanupDashboard = () => {
         } finally {
             setActionLoading(false);
             setSelectedItems([]);
+            setShowDependencyModal(false);
+            setPendingAction(null);
         }
     };
 
@@ -192,7 +257,7 @@ const CleanupDashboard = () => {
             </div>
 
             {/* Persistent Stats Cards */}
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4">
                 <StatsCard
                     title="Potential Monthly Savings"
                     value={`$${stats.total_potential_savings.toFixed(2)}`}
@@ -204,6 +269,13 @@ const CleanupDashboard = () => {
                     value={`$${selectedSavings.toFixed(2)}`}
                     color="indigo"
                     icon={FiCheckCircle}
+                />
+                {/* Feature 2: Untagged Waste "Shameback" Card */}
+                <StatsCard
+                    title="Untagged Waste"
+                    value={`$${(stats.untagged_waste_cost || 0).toFixed(2)}`}
+                    color="red"
+                    icon={FiTag}
                 />
                 <StatsCard
                     title="Unauthorized Instances"
@@ -256,10 +328,10 @@ const CleanupDashboard = () => {
                         <Button
                             variant="danger"
                             size="sm"
-                            disabled={selectedItems.length === 0 || actionLoading}
-                            onClick={() => handleExecuteAction(activeTab === 'INSTANCE' ? 'TERMINATE' : activeTab === 'ELASTIC_IP' ? 'RELEASE' : 'DELETE')}
+                            disabled={selectedItems.length === 0 || actionLoading || checkingDependencies}
+                            onClick={() => handleCleanupClick(activeTab === 'INSTANCE' ? 'TERMINATE' : activeTab === 'ELASTIC_IP' ? 'RELEASE' : 'DELETE')}
                         >
-                            {actionLoading ? 'Cleanup...' : 'Cleanup Selected'}
+                            {checkingDependencies ? 'Checking...' : actionLoading ? 'Cleanup...' : 'Cleanup Selected'}
                         </Button>
                     </div>
                 </div>
@@ -313,9 +385,9 @@ const CleanupDashboard = () => {
                                     <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Name</th>
                                     <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Region</th>
                                     <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Status</th>
+                                    <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Compliance</th>
                                     <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Safety</th>
                                     <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Cost/Mo</th>
-                                    <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Details</th>
                                 </tr>
                             </thead>
                             <tbody className="bg-white divide-y divide-gray-200">
@@ -349,6 +421,28 @@ const CleanupDashboard = () => {
                                                 {resource.status.replace(/_/g, ' ')}
                                             </Badge>
                                         </td>
+                                        {/* Feature 2: Compliance Column with Tooltip */}
+                                        <td className="px-6 py-4 whitespace-nowrap">
+                                            {resource.is_compliant !== false ? (
+                                                <span className="bg-green-100 text-green-800 text-xs font-bold px-2 py-1 rounded-full flex items-center w-fit">
+                                                    <FiCheckCircle className="mr-1" /> Compliant
+                                                </span>
+                                            ) : (
+                                                <div className="relative group">
+                                                    <span className="bg-red-100 text-red-800 text-xs font-bold px-2 py-1 rounded-full flex items-center w-fit cursor-help">
+                                                        <FiTag className="mr-1" /> Untagged
+                                                    </span>
+                                                    {resource.missing_tags?.length > 0 && (
+                                                        <div className="absolute left-0 top-full mt-1 w-48 bg-gray-900 text-white text-xs rounded py-2 px-3 opacity-0 group-hover:opacity-100 transition-opacity z-20 pointer-events-none shadow-lg">
+                                                            <div className="font-bold mb-1">Missing Tags:</div>
+                                                            {resource.missing_tags.map((tag, i) => (
+                                                                <div key={i} className="text-gray-300">• {tag}</div>
+                                                            ))}
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            )}
+                                        </td>
                                         <td className="px-6 py-4 whitespace-nowrap">
                                             {getSafetyLevel(resource) === 'HIGH' && (
                                                 <span className="bg-green-100 text-green-800 text-xs font-bold px-2 py-1 rounded-full flex items-center w-fit">
@@ -367,9 +461,6 @@ const CleanupDashboard = () => {
                                             )}
                                         </td>
                                         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 font-medium">${resource.cost_per_month.toFixed(2)}</td>
-                                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 max-w-xs truncate">
-                                            {JSON.stringify(resource.metadata)}
-                                        </td>
                                     </tr>
                                 ))}
                             </tbody>
@@ -377,6 +468,67 @@ const CleanupDashboard = () => {
                     </div>
                 )}
             </div>
+
+            {/* Feature 1: Dependency Warning Modal */}
+            {showDependencyModal && (
+                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+                    <div className="bg-white rounded-lg shadow-xl max-w-lg w-full mx-4 overflow-hidden">
+                        <div className="bg-red-50 p-4 border-b border-red-100 flex items-center gap-3">
+                            <div className="bg-red-100 p-2 rounded-full">
+                                <FiAlertCircle className="text-red-600 w-6 h-6" />
+                            </div>
+                            <div>
+                                <h3 className="text-lg font-bold text-red-900">Cannot Delete Resources</h3>
+                                <p className="text-sm text-red-700">Some resources have blocking dependencies</p>
+                            </div>
+                        </div>
+                        <div className="p-4 max-h-64 overflow-y-auto">
+                            {blockingResources.map((item, idx) => (
+                                <div key={idx} className="mb-4 last:mb-0">
+                                    <div className="font-mono text-sm text-gray-900 mb-1">{item.resource_id}</div>
+                                    <div className="pl-4 space-y-1">
+                                        {item.blockers.map((blocker, i) => (
+                                            <div key={i} className="text-sm text-red-600 flex items-center gap-2">
+                                                <FiX className="flex-shrink-0" />
+                                                <span>Used by {blocker.type}: <span className="font-mono">{blocker.id}</span></span>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                        <div className="p-4 bg-gray-50 border-t flex justify-end gap-3">
+                            <Button
+                                variant="secondary"
+                                onClick={() => {
+                                    setShowDependencyModal(false);
+                                    setBlockingResources([]);
+                                    setPendingAction(null);
+                                }}
+                            >
+                                Cancel
+                            </Button>
+                            <Button
+                                variant="danger"
+                                onClick={() => {
+                                    // Remove blocked items from selection and proceed
+                                    const blockedIds = blockingResources.map(b => b.resource_id);
+                                    const safeItems = selectedItems.filter(id => !blockedIds.includes(id));
+                                    if (safeItems.length > 0) {
+                                        setSelectedItems(safeItems);
+                                        executeCleanupAction(pendingAction);
+                                    } else {
+                                        toast.error('All selected items have blocking dependencies');
+                                        setShowDependencyModal(false);
+                                    }
+                                }}
+                            >
+                                Skip Blocked & Continue
+                            </Button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 };

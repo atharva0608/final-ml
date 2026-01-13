@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { teamAPI, organizationAPI } from '../../services/api';
-import { FiChevronDown, FiChevronRight, FiEdit2, FiPlus, FiUser, FiUserPlus, FiShield, FiDatabase, FiMail, FiMoreVertical, FiArrowRight } from 'react-icons/fi';
+import { FiChevronDown, FiChevronRight, FiEdit2, FiPlus, FiUser, FiUserPlus, FiShield, FiDatabase, FiMail, FiMoreVertical, FiArrowRight, FiSettings } from 'react-icons/fi';
 import { Card, Button, Input, Badge } from '../shared';
 import toast from 'react-hot-toast';
 import { useAuthStore } from '../../store/useStore';
+import TeamGovernance from './TeamGovernance';
 
 const TeamManagement = () => {
     const { user: currentUser } = useAuthStore();
@@ -30,6 +31,9 @@ const TeamManagement = () => {
     const [editingMember, setEditingMember] = useState(null);
     const [editMemberRole, setEditMemberRole] = useState("");
     const [moveToTeamId, setMoveToTeamId] = useState("");
+
+    // Team Governance
+    const [showGovernanceForTeam, setShowGovernanceForTeam] = useState(null);
 
     useEffect(() => {
         fetchTeams();
@@ -318,6 +322,24 @@ const TeamManagement = () => {
                                         )}
                                     </tbody>
                                 </table>
+
+                                {/* Team Governance Section - For Team Leads and Org Admins */}
+                                {(isOrgAdmin || (isTeamLead && currentUser?.team_id === team.id)) && (
+                                    <div className="mt-6 pt-4 border-t">
+                                        <button
+                                            onClick={() => setShowGovernanceForTeam(showGovernanceForTeam === team.id ? null : team.id)}
+                                            className="flex items-center gap-2 text-purple-600 hover:text-purple-800 font-medium text-sm mb-4"
+                                        >
+                                            <FiSettings className="w-4 h-4" />
+                                            {showGovernanceForTeam === team.id ? 'Hide Approval Policies' : 'Configure Approval Policies'}
+                                            {showGovernanceForTeam === team.id ? <FiChevronDown className="w-4 h-4" /> : <FiChevronRight className="w-4 h-4" />}
+                                        </button>
+
+                                        {showGovernanceForTeam === team.id && (
+                                            <TeamGovernance teamId={team.id} teamName={team.name} />
+                                        )}
+                                    </div>
+                                )}
                             </div>
                         )}
                     </Card>

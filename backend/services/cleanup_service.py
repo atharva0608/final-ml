@@ -379,7 +379,7 @@ class CleanupService:
     def execute_action(self, account_id: str, action_data: CleanupAction, user: User = None, bypass_approval: bool = False):
         """
         Execute a cleanup action on a specific resource.
-        Supports RBAC & Approval Workflow.
+        Supports RBAC & Team-Specific Approval Workflow.
         """
         # 0. RBAC / Approval Check
         if user and not bypass_approval:
@@ -387,27 +387,41 @@ class CleanupService:
             from backend.services.approval_service import ApprovalService
             
             needs_approval = False
-            # Rule 1: Members ALWAYS need approval
+            action_key = str(action_data.action_type).replace("CleanupActionType.", "")  # e.g., "TERMINATE" -> map to config key
+            
+            # Map action types to governance config keys
+            action_config_map = {
+                "TERMINATE": "TERMINATE_INSTANCE",
+                "DELETE": "DELETE_VOLUME" if "VOLUME" in str(action_data.action_type) else "DELETE_SNAPSHOT",
+                "RELEASE": "RELEASE_IP"
+            }
+            config_key = action_config_map.get(action_key, action_key)
+            
+            # Rule 1: Members - Check team-specific governance first
             if user.role == UserRole.MEMBER:
-                needs_approval = True
+                if user.team and user.team.governance_config:
+                    # Check if Team Lead has enabled approval for this specific action
+                    needs_approval = user.team.governance_config.get(config_key, False)
+                else:
+                    # Fallback: If no team config exists, use system default (require approval)
+                    needs_approval = True
             
             # Rule 2: Team Leads need approval if Org is in Strict Mode
             elif user.role == UserRole.TEAM_LEAD and user.organization and user.organization.is_strict_approval_mode:
                 needs_approval = True
 
-            # Rule 3: Critical Actions configured in Governance Settings always require approval
+            # Rule 3: Critical Actions configured in Org Governance Settings always require approval (except Org Admin)
             if not needs_approval and user.organization and user.organization.governance_config:
                 critical_actions = user.organization.governance_config.get('critical_actions', [])
-                # action_data.action_type is an Enum, we rely on string comparison
-                if str(action_data.action_type) in critical_actions and user.role != UserRole.ORG_ADMIN:
+                if config_key in critical_actions and user.role != UserRole.ORG_ADMIN:
                     needs_approval = True
                 
             if needs_approval:
-                logger.info(f"Action requires approval for user {user.id} (Role: {user.role})")
+                logger.info(f"Action requires approval for user {user.id} (Role: {user.role}, Team: {user.team_id})")
                 approval_svc = ApprovalService(self.db)
                 req = approval_svc.create_request(
                     user=user,
-                    resource_type="AWS_RESOURCE", # Could be more specific like "EBS_VOLUME"
+                    resource_type="AWS_RESOURCE",
                     action="CLEANUP_EXECUTE",
                     payload={
                         "account_id": account_id,

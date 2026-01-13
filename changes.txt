@@ -1,72 +1,245 @@
-# ✅ Feature Implementation Status (Updated: 2026-01-13)
+Based on your requirements, we need to move the approval rules from being "Global" or "Hardcoded" to being **Dynamic and Team-Specific**.
 
-All features from the audit are now **FULLY IMPLEMENTED**.
+Here is the implementation plan to allow Team Leads to configure approval rules for their own teams.
 
----
+### 1. 🏗️ Database & Model Changes
 
-## ✅ Feature 1: Disconnect AWS Account
-**Status:** COMPLETE ✓
+We need to store these rules on the `Team` object.
 
----
+**File:** `backend/models/team.py`
 
-## ✅ Feature 2: Live Connection Status (Heartbeat)
-**Status:** COMPLETE ✓
+* **Action:** Add a `governance_config` column. This JSON field will store which actions require approval (e.g., `{"account_connect": true, "instance_delete": false}`).
 
----
+```python
+from sqlalchemy import Column, String, ForeignKey, DateTime, JSON # <--- Import JSON
+from sqlalchemy.orm import relationship
+from datetime import datetime
+import uuid
+from backend.models.base import Base
 
-## ✅ Feature 3: Billing & Subscription (Stripe)
-**Status:** COMPLETE ✓
+class Team(Base):
+    __tablename__ = "teams"
 
----
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    name = Column(String(100), nullable=False)
+    organization_id = Column(String(36), ForeignKey("organizations.id"), nullable=False)
+    
+    # New Column: Stores specific rules for this team
+    # Example: { "CONNECT_ACCOUNT": true, "TERMINATE_INSTANCE": true }
+    governance_config = Column(JSON, default={}) 
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
 
-## ✅ Feature 4: Global Safe Mode
-**Status:** COMPLETE ✓
+    members = relationship("User", back_populates="team")
+    organization = relationship("Organization", back_populates="teams")
 
----
-
-## ✅ Feature 5: Platform Identity Management
-**Status:** COMPLETE ✓
-
----
-
-## ✅ Feature 6: Hierarchical Governance & Approval System
-**Status:** COMPLETE ✓
-
-### Backend:
-- `backend/models/user.py`: Updated `UserRole` enum (SUPER_ADMIN, ORG_ADMIN, TEAM_LEAD, MEMBER).
-- `backend/models/organization.py`: Added `is_governance_enabled`, `is_strict_approval_mode`.
-- `backend/models/approval.py`: Created `ApprovalRequest` model.
-- `backend/services/approval_service.py`: Implemented request logic (Approve/Reject).
-- `backend/services/cleanup_service.py`: Integrated "Four-Eyes" check (intercepts destructive actions).
-- `backend/api/approval_routes.py`: Added endpoints for pending requests and decisions.
-- `backend/services/auth_service.py`, `admin_service.py`: Refactored to remove deprecated `OrgRole`.
-
-### Frontend:
-- `frontend/src/components/settings/TeamManagement.jsx`: Updated for 4-Tier Roles & Governance Toggles.
-- `frontend/src/components/approvals/ApprovalCenter.jsx`: New Dashboard for Team Leads.
-- `frontend/src/components/cleanup/CleanupDashboard.jsx`: Handling "Pending Approval" (202 Accepted) states.
-- `frontend/src/services/api.js`: Added `approvalsAPI` service.
+```
 
 ---
 
-## Summary of Files Modified/Created
+### 2. 🔌 Backend API & Service Logic
 
-| File | Status |
-|------|--------|
-| `backend/models/user.py` | Modified |
-| `backend/models/approval.py` | NEW |
-| `backend/services/approval_service.py` | NEW |
-| `backend/services/cleanup_service.py` | Modified |
-| `backend/api/approval_routes.py` | NEW |
-| `frontend/src/components/approvals/ApprovalCenter.jsx` | NEW |
-| `frontend/src/components/settings/TeamManagement.jsx` | Modified |
-| `frontend/src/services/api.js` | Modified |
+We need a way to **Update** these rules and a way to **Check** them.
+
+#### **A. Update Team Governance (API)**
+
+**File:** `backend/api/team_routes.py`
+Add an endpoint for the Team Lead to save these settings.
+
+```python
+from backend.schemas.team_schemas import TeamGovernanceUpdate # You'll need to define this Pydantic model
+
+@router.put("/{team_id}/governance")
+def update_team_governance(
+    team_id: str, 
+    config: dict = Body(..., embed=True), # Accepts arbitrary JSON or specific schema
+    db: Session = Depends(get_db), 
+    user: User = Depends(get_current_user)
+):
+    # 1. Validation: Only Team Lead of THIS team (or Org Admin) can update
+    team = db.query(Team).filter(Team.id == team_id).first()
+    if not team:
+        raise HTTPException(404, "Team not found")
+        
+    is_authorized = (user.role == UserRole.ORG_ADMIN) or \
+                    (user.role == UserRole.TEAM_LEAD and user.team_id == team_id)
+    
+    if not is_authorized:
+        raise HTTPException(403, "Not authorized to change team rules")
+
+    # 2. Update Config
+    # Merge or Replace logic depending on preference. Here we replace.
+    team.governance_config = config
+    db.commit()
+    
+    return {"status": "success", "config": team.governance_config}
+
+```
+
+#### **B. Enforce Rules: Account Connection**
+
+**File:** `backend/services/account_service.py`
+Modify `connect_account` to check the team's config.
+
+```python
+    def connect_account(self, user: User, data: dict):
+        # ... (Existing AWS validation logic) ...
+
+        # CHECK TEAM GOVERNANCE
+        needs_approval = False
+        
+        # Default policy: Members need approval if not specified otherwise
+        if user.role == UserRole.MEMBER:
+            if user.team and user.team.governance_config:
+                # Check specific flag. If key is missing, default to True (Safe) or False (Open)
+                # Here defaulting to False (Open) unless explicitly checked
+                needs_approval = user.team.governance_config.get("CONNECT_ACCOUNT", False)
+            else:
+                # Fallback if no team config exists (System Default)
+                needs_approval = True 
+
+        status = "PENDING_APPROVAL" if needs_approval else "ACTIVE"
+        
+        new_account = Account(..., status=status)
+        self.db.add(new_account)
+        self.db.commit()
+
+        if needs_approval:
+            # Create Approval Request
+            self.approval_service.create_request(
+                user=user,
+                action="CONNECT_ACCOUNT",
+                resource_type="AWS_ACCOUNT",
+                payload={"account_id": new_account.id}
+            )
+            return {"status": "pending_approval", "message": "Connection queued for approval"}
+            
+        return {"status": "success", "account": new_account}
+
+```
+
+#### **C. Enforce Rules: Deletion/Cleanup**
+
+**File:** `backend/services/cleanup_service.py`
+Update `execute_action` to look at the team config instead of hardcoded roles.
+
+```python
+    def execute_action(self, ..., user: User, ...):
+        # ...
+        
+        needs_approval = False
+        action_key = action_data.action_type # e.g. "TERMINATE_INSTANCE"
+
+        if user.role == UserRole.MEMBER and user.team:
+            # Check if Team Lead has enabled approval for this SPECIFIC action
+            needs_approval = user.team.governance_config.get(str(action_key), False)
+        
+        if needs_approval:
+             # Create Approval Request
+             # ...
+             return {"status": "pending_approval"}
+
+```
 
 ---
 
-## Documentation Updated
+### 3. 🎨 Frontend Implementation
 
-- ✅ `documents/01_frontend_catalog.md` - Added ApprovalCenter & TeamManagement updates
-- ✅ `documents/02_backend_catalog.md` - Added ApprovalService & Models
-- ✅ `documents/03_change_ledger.md` - Logged RBAC & Approval features
-- ✅ `documents/03_frontend_backend_gap_analysis.md` - Approvals API marked Real
+We need a UI for the Team Lead to toggle these switches.
+
+**File:** `frontend/src/components/settings/TeamGovernance.jsx` (New Component)
+
+```jsx
+import React, { useState, useEffect } from 'react';
+import { api } from '../../services/api';
+import { Card, Switch, Button } from '../shared';
+import toast from 'react-hot-toast';
+
+const ACTION_TYPES = [
+  { key: 'CONNECT_ACCOUNT', label: 'Connect AWS Account', desc: 'Require approval when a member adds a new cloud account.' },
+  { key: 'TERMINATE_INSTANCE', label: 'Terminate Instance', desc: 'Require approval to delete EC2 instances.' },
+  { key: 'DELETE_VOLUME', label: 'Delete Volume', desc: 'Require approval to delete EBS volumes.' },
+  { key: 'DELETE_SNAPSHOT', label: 'Delete Snapshot', desc: 'Require approval to delete snapshots.' },
+  { key: 'RELEASE_IP', label: 'Release Elastic IP', desc: 'Require approval to release static IPs.' },
+];
+
+const TeamGovernance = ({ teamId }) => {
+  const [config, setConfig] = useState({});
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    fetchConfig();
+  }, [teamId]);
+
+  const fetchConfig = async () => {
+    // Assuming GET /teams/{id} returns the governance_config field
+    const res = await api.get(`/teams/${teamId}`);
+    setConfig(res.data.governance_config || {});
+  };
+
+  const handleToggle = (key) => {
+    setConfig(prev => ({
+      ...prev,
+      [key]: !prev[key]
+    }));
+  };
+
+  const saveChanges = async () => {
+    setLoading(true);
+    try {
+      await api.put(`/teams/${teamId}/governance`, config);
+      toast.success("Team policies updated");
+    } catch (err) {
+      toast.error("Failed to update policies");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <Card className="p-6">
+      <div className="flex justify-between items-center mb-6">
+        <div>
+          <h2 className="text-xl font-bold">Team Approval Policies</h2>
+          <p className="text-gray-500 text-sm">Select which actions require your approval.</p>
+        </div>
+        <Button onClick={saveChanges} loading={loading}>Save Policies</Button>
+      </div>
+
+      <div className="space-y-6">
+        {ACTION_TYPES.map(action => (
+          <div key={action.key} className="flex justify-between items-center pb-4 border-b last:border-0">
+            <div>
+              <h3 className="font-medium text-gray-900">{action.label}</h3>
+              <p className="text-sm text-gray-500">{action.desc}</p>
+            </div>
+            <Switch 
+              checked={!!config[action.key]} 
+              onChange={() => handleToggle(action.key)} 
+            />
+          </div>
+        ))}
+      </div>
+    </Card>
+  );
+};
+
+export default TeamGovernance;
+
+```
+
+**Integration:**
+Add this component inside your `TeamManagement.jsx` accordion. When a Team Lead expands their team card, show a "Policies" tab or button that renders this `TeamGovernance` component.
+
+### 4. Detailed Instructions Summary
+
+1. **DB Migration:** Run a migration to add `governance_config` (JSON) to the `teams` table.
+2. **API Update:** Implement `PUT /teams/{id}/governance` in `team_routes.py`.
+3. **Service Logic:**
+* In `AccountService`, wrap the `ACTIVE` status assignment in a check against `user.team.governance_config['CONNECT_ACCOUNT']`.
+* In `CleanupService`, wrap the execution logic in a check against `user.team.governance_config[action_type]`.
+
+
+4. **UI Update:** Create the `TeamGovernance` component shown above and embed it into the Team Lead's dashboard view.
+
+This gives the Team Lead full control. They can say: *"My team is experienced, so they can delete volumes without asking, but adding a new AWS account (which costs money) definitely needs my approval."*

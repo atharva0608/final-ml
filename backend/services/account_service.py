@@ -115,13 +115,21 @@ class AccountService:
         if existing:
             raise HTTPException(400, "Account already linked")
 
-        # Determine Status
+        # Determine Status - Check Team-Specific Governance
         status = AccountStatus.ACTIVE
         needs_approval = False
         
         if requester.role == UserRole.MEMBER:
-            status = AccountStatus.PENDING_APPROVAL
-            needs_approval = True
+            # Check team-specific governance config first
+            if requester.team and requester.team.governance_config:
+                # If team has CONNECT_ACCOUNT rule enabled, require approval
+                needs_approval = requester.team.governance_config.get("CONNECT_ACCOUNT", False)
+            else:
+                # Fallback to system default: Members always need approval
+                needs_approval = True
+                
+            if needs_approval:
+                status = AccountStatus.PENDING_APPROVAL
 
         account = Account(
             id=str(uuid.uuid4()),

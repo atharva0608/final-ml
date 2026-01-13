@@ -43,14 +43,14 @@
 | **BE-TPL::AWS::RoleYAML** | `backend/templates/aws/read-only-role.yaml` | Template | CloudFormation YAML for cross-account IAM role creation. | N/A |
 | **BE-MOD::System::Base** | `backend/models/base.py` | Model | Base Audit Mixin and DB connection setup. | `SQLAlchemy` |
 
-| **BE-SVC::Approval::Main** | `backend/services/approval_service.py` | Service | **Real**: Approval Engine. Creates requests, enforces Maker-Checker rules, executes approved payloads dynamically. | `ApprovalRequest`, `User` |    
-| **BE-API::Approval::Main** | `backend/api/approval_routes.py` | API | **Real**: Approval Endpoints. List Pending, Approve, Reject. | `ApprovalService` |
-| **BE-MOD::Auth::Approval** | `backend/models/approval.py` | Model | Approval Request Table. Stores payload and status. | `Base` |
-| **BE-MOD::Auth::User** | `backend/models/user.py` | Model | User Table. Updated with `UserRole` (Super/Org/Team/Member) and `team_id`. | `Base` |
-| **BE-MOD::Auth::Org** | `backend/models/organization.py` | Model | Organization Table. Updated with Governance Flags (`is_strict_approval_mode`). | `Base` |
-| **BE-MOD::Auth::Team** | `backend/models/team.py` | Model | **New**: Team Model. Groups users within an org. | `Base` |
+| **BE-SVC::Approval::Main** | `backend/services/approval_service.py` | Service | **Real (Feature 6)**: Approval Engine for Four-Eyes Principle. Creates requests, enforces Maker-Checker rules, executes approved payloads dynamically. | `ApprovalRequest`, `User` |    
+| **BE-API::Approval::Main** | `backend/api/approval_routes.py` | API | **Real (Feature 6)**: Approval Endpoints. List Pending, Approve, Reject for Team Leads. | `ApprovalService` |
+| **BE-MOD::Auth::Approval** | `backend/models/approval.py` | Model | **NEW (Feature 6)**: Approval Request Table. Stores payload and status for Maker-Checker workflow. | `Base` |
+| **BE-MOD::Auth::User** | `backend/models/user.py` | Model | **Updated (Feature 6)**: 4-Tier `UserRole` enum (SUPER_ADMIN, ORG_ADMIN, TEAM_LEAD, MEMBER) and `team_id`. | `Base` |
+| **BE-MOD::Auth::Org** | `backend/models/organization.py` | Model | **Updated (Feature 6)**: Governance Flags (`is_governance_enabled`, `is_strict_approval_mode`). | `Base` |
+| **BE-MOD::Auth::Team** | `backend/models/team.py` | Model | **Real**: Team Model. Groups users within an org. **governance_config** (JSON) stores team-specific approval rules. | `Base` |
 | **BE-SVC::Team::Main** | `backend/services/team_service.py` | Service | **New**: Team Management. Create, Rename, Assign members. | `Team`, `User` |
-| **BE-API::Team::Main** | `backend/api/team_routes.py` | API | **New**: Team Endpoints (CRUD). | `TeamService` |
+| **BE-API::Team::Main** | `backend/api/team_routes.py` | API | **Real**: Team Endpoints (CRUD). **Team-Specific Governance**: `GET/PUT /teams/{id}/governance` for approval policy configuration. | `TeamService`, `Team` |
 | **BE-MOD::Auth::Invite** | `backend/models/invitation.py` | Model | Organization Invitation Table. | `Base` |
 | **BE-SVC::Governance::Main** | `backend/services/governance_service.py` | Service | **Real**: Automated Governance / Policy-as-Code. Executes cleanup based on org policies with "System Autopilot" actor. | `CleanupService`, `AuditLog` |
 | **BE-API::Governance::Main** | `backend/api/governance_routes.py` | API | **Real**: Governance Endpoints. Get/Update policies, trigger autopilot. | `GovernanceService` |
