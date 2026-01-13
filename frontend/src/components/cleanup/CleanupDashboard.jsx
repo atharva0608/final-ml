@@ -3,7 +3,7 @@ import { cleanupAPI, accountsAPI } from '../../services/api';
 import Badge from '../shared/Badge';
 import Button from '../shared/Button';
 import GaugeChart from '../shared/GaugeChart';
-import { FiDollarSign, FiAlertOctagon, FiHardDrive, FiGlobe, FiCheckCircle, FiAlertTriangle, FiTag, FiX, FiAlertCircle, FiServer, FiCamera, FiRefreshCw, FiShield } from 'react-icons/fi';
+import { FiDollarSign, FiAlertOctagon, FiHardDrive, FiGlobe, FiCheckCircle, FiAlertTriangle, FiTag, FiX, FiAlertCircle, FiServer, FiCamera, FiRefreshCw, FiShield, FiShare2, FiDatabase, FiUsers, FiFolder, FiLink } from 'react-icons/fi';
 import toast from 'react-hot-toast';
 
 const CleanupDashboard = () => {
@@ -205,6 +205,9 @@ const CleanupDashboard = () => {
         if (resource.type === 'VOLUME' && resource.status === 'ORPHANED') return 'HIGH';
         if (resource.type === 'SNAPSHOT' && resource.status === 'ORPHANED') return 'HIGH';
         if (resource.type === 'ELASTIC_IP' && resource.status === 'ORPHANED') return 'HIGH';
+        if (resource.type === 'LOAD_BALANCER' && resource.status === 'ORPHANED') return 'HIGH';
+        if (resource.type === 'IAM_USER' && resource.status === 'SAFE_TO_DELETE') return 'HIGH';
+        if (resource.type === 'RDS_DB' && resource.status === 'LEGACY_UPGRADE') return 'MEDIUM';
         if (resource.type === 'INSTANCE' && resource.status === 'UNAUTHORIZED') return 'MEDIUM';
         return 'LOW';
     };
@@ -215,6 +218,9 @@ const CleanupDashboard = () => {
         orphaned_volume_count: 0,
         orphaned_snapshot_count: 0,
         unused_ip_count: 0,
+        idle_lb_count: 0,
+        idle_rds_count: 0,
+        dormant_user_count: 0,
         untagged_waste_cost: 0
     };
 
@@ -229,6 +235,11 @@ const CleanupDashboard = () => {
         { type: 'VOLUME', label: 'Volumes', icon: FiHardDrive, action: 'DELETE' },
         { type: 'SNAPSHOT', label: 'Snapshots', icon: FiCamera, action: 'DELETE' },
         { type: 'ELASTIC_IP', label: 'Elastic IPs', icon: FiGlobe, action: 'RELEASE' },
+        { type: 'LOAD_BALANCER', label: 'Load Balancers', icon: FiShare2, action: 'DELETE' },
+        { type: 'NETWORK_INTERFACE', label: 'Network Interfaces', icon: FiLink, action: 'DELETE' },
+        { type: 'RDS_DB', label: 'Databases', icon: FiDatabase, action: 'SNAPSHOT_STOP' },
+        { type: 'IAM_USER', label: 'Identity', icon: FiUsers, action: 'DISABLE' },
+        { type: 'S3_BUCKET', label: 'Storage', icon: FiFolder, action: 'DELETE' },
     ];
 
     return (
@@ -338,8 +349,8 @@ const CleanupDashboard = () => {
                                         key={tab.type}
                                         onClick={() => setActiveTab(tab.type)}
                                         className={`p-4 rounded-xl border-2 transition-all ${isActive
-                                                ? 'border-blue-500 bg-blue-50'
-                                                : 'border-gray-200 bg-white hover:border-gray-300'
+                                            ? 'border-blue-500 bg-blue-50'
+                                            : 'border-gray-200 bg-white hover:border-gray-300'
                                             }`}
                                     >
                                         <div className="flex items-center justify-between mb-3">
@@ -390,6 +401,27 @@ const CleanupDashboard = () => {
                                 label="Elastic IPs"
                                 unit="Unused"
                                 color="indigo"
+                            />
+                            <GaugeChart
+                                value={stats.idle_lb_count || 0}
+                                maxValue={Math.max(stats.idle_lb_count || 0, 10)}
+                                label="Load Balancers"
+                                unit="Idle"
+                                color="purple"
+                            />
+                            <GaugeChart
+                                value={stats.idle_rds_count || 0}
+                                maxValue={Math.max(stats.idle_rds_count || 0, 10)}
+                                label="Databases"
+                                unit="Idle/Legacy"
+                                color="orange"
+                            />
+                            <GaugeChart
+                                value={stats.dormant_user_count || 0}
+                                maxValue={Math.max(stats.dormant_user_count || 0, 10)}
+                                label="IAM Users"
+                                unit="Dormant"
+                                color="pink"
                             />
                         </div>
                     </div>
@@ -452,8 +484,8 @@ const CleanupDashboard = () => {
                         <button
                             onClick={() => { setShowAuthorized(false); setSelectedItems([]); }}
                             className={`px-3 py-1.5 text-xs font-medium rounded-md transition-all ${!showAuthorized
-                                    ? 'bg-white text-gray-900 shadow-sm'
-                                    : 'text-gray-500 hover:text-gray-700'
+                                ? 'bg-white text-gray-900 shadow-sm'
+                                : 'text-gray-500 hover:text-gray-700'
                                 }`}
                         >
                             To Review
@@ -461,8 +493,8 @@ const CleanupDashboard = () => {
                         <button
                             onClick={() => { setShowAuthorized(true); setSelectedItems([]); }}
                             className={`px-3 py-1.5 text-xs font-medium rounded-md transition-all ${showAuthorized
-                                    ? 'bg-white text-indigo-600 shadow-sm'
-                                    : 'text-gray-500 hover:text-gray-700'
+                                ? 'bg-white text-indigo-600 shadow-sm'
+                                : 'text-gray-500 hover:text-gray-700'
                                 }`}
                         >
                             Authorized
@@ -510,6 +542,7 @@ const CleanupDashboard = () => {
                                     </th>
                                     <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Resource ID</th>
                                     <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Name</th>
+                                    <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Reason</th>
                                     <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Region</th>
                                     <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Status</th>
                                     <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Compliance</th>
@@ -531,6 +564,9 @@ const CleanupDashboard = () => {
                                         </td>
                                         <td className="px-6 py-4 whitespace-nowrap text-sm font-mono text-gray-900">{resource.id}</td>
                                         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">{resource.name || '-'}</td>
+                                        <td className="px-6 py-4 text-sm text-gray-500 max-w-xs truncate" title={resource.reason}>
+                                            {resource.reason || '-'}
+                                        </td>
                                         <td className="px-6 py-4 whitespace-nowrap">
                                             <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-700">
                                                 {resource.region}
@@ -547,11 +583,31 @@ const CleanupDashboard = () => {
 
                                             {resource.type === 'INSTANCE' && resource.metadata?.State && (
                                                 <span className={`ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${resource.metadata.State === 'running' ? 'bg-green-100 text-green-800' :
-                                                        resource.metadata.State === 'stopped' ? 'bg-gray-100 text-gray-800' :
-                                                            'bg-yellow-100 text-yellow-800'
+                                                    resource.metadata.State === 'stopped' ? 'bg-gray-100 text-gray-800' :
+                                                        'bg-yellow-100 text-yellow-800'
                                                     }`}>
                                                     {resource.metadata.State.toUpperCase()}
                                                 </span>
+                                            )}
+                                            {resource.type === 'LOAD_BALANCER' && (
+                                                <div className="text-xs text-gray-500 mt-1">
+                                                    {resource.metadata?.DNS} (Type: {resource.metadata?.Type})
+                                                </div>
+                                            )}
+                                            {resource.type === 'RDS_DB' && (
+                                                <div className="text-xs text-gray-500 mt-1">
+                                                    {resource.metadata?.Engine} ({resource.metadata?.Class})
+                                                </div>
+                                            )}
+                                            {resource.type === 'S3_BUCKET' && resource.metadata?.IncompleteUploads > 0 && (
+                                                <div className="text-xs text-red-500 mt-1">
+                                                    {resource.metadata?.IncompleteUploads} Incomplete Uploads
+                                                </div>
+                                            )}
+                                            {resource.type === 'IAM_USER' && (
+                                                <div className="text-xs text-gray-500 mt-1">
+                                                    Last Used: {resource.metadata?.LastUsed}
+                                                </div>
                                             )}
                                         </td>
                                         <td className="px-6 py-4 whitespace-nowrap">

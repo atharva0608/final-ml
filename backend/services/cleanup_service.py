@@ -169,6 +169,9 @@ class CleanupService:
             orphaned_volume_count=len([r for r in resources if r.type == ResourceType.VOLUME and not r.is_authorized]),
             orphaned_snapshot_count=len([r for r in resources if r.type == ResourceType.SNAPSHOT and not r.is_authorized]),
             unused_ip_count=len([r for r in resources if r.type == ResourceType.ELASTIC_IP and not r.is_authorized]),
+            idle_lb_count=len([r for r in resources if r.type == ResourceType.LOAD_BALANCER and not r.is_authorized]),
+            idle_rds_count=len([r for r in resources if r.type == ResourceType.RDS_DB and not r.is_authorized]),
+            dormant_user_count=len([r for r in resources if r.type == ResourceType.IAM_USER and not r.is_authorized]),
             untagged_waste_cost=untagged_waste,
             resources=resources
         )
@@ -337,6 +340,29 @@ class CleanupService:
 
             except Exception as e:
                 logger.error(f"Error scanning instances in {region}: {e}")
+
+            # 5. NETWORK HYGIENE (ELB/ENI)
+            net_res, net_sav = self._scan_network(session, region, required_tags)
+            resources.extend(net_res)
+            savings += net_sav
+
+            # 6. DATABASE HYGIENE (RDS)
+            db_res, db_sav = self._scan_databases(session, region, required_tags)
+            resources.extend(db_res)
+            savings += db_sav
+
+            # 7. GLOBAL CHECKS (IAM / S3) - Run only in Primary Region (us-east-1)
+            if region == 'us-east-1':
+                # Identity
+                iam_res, iam_sav = self._scan_identity(session)
+                resources.extend(iam_res)
+                savings += iam_sav
+                
+                # Storage (S3)
+                s3_res, s3_sav = self._scan_storage(session, required_tags)
+                resources.extend(s3_res)
+                savings += s3_sav
+
         except Exception as e:
             logger.error(f"Failed to scan region {region}: {e}")
             return [], 0.0
@@ -408,6 +434,260 @@ class CleanupService:
             "can_delete": len(blocking) == 0,
             "blocking_resources": blocking
         }
+
+    def _scan_network(self, session, region, required_tags):
+        resources = []
+        savings = 0.0
+        try:
+            # 1. Load Balancers
+            elbv2 = session.client('elbv2')
+            try:
+                lbs = elbv2.describe_load_balancers()['LoadBalancers']
+                for lb in lbs:
+                    lb_arn = lb['LoadBalancerArn']
+                    lb_name = lb['LoadBalancerName']
+                    
+                    # Check Target Groups
+                    tgs = elbv2.describe_target_groups(LoadBalancerArn=lb_arn)['TargetGroups']
+                    is_idle = False
+                    
+                    if not tgs:
+                        is_idle = True
+                    else:
+                        all_unused = True
+                        for tg in tgs:
+                            try:
+                                health = elbv2.describe_target_health(TargetGroupArn=tg['TargetGroupArn'])['TargetHealthDescriptions']
+                                # If any target is 'healthy' or 'initial', it's active
+                                active_states = ['healthy', 'initial']
+                                if any(h['TargetHealth']['State'] in active_states for h in health):
+                                    all_unused = False
+                                    break
+                            except Exception:
+                                continue # TG might be empty
+                        if not all_unused:
+                            is_idle = False
+                        else:
+                            # Verify if TGs themselves are empty (target_health returns empty list)
+                            # Logic: If all TGs have NO healthy targets equivalent to 'unused'
+                            is_idle = True
+                    
+                    if is_idle:
+                        cost = 16.0 # Approx
+                        status = CleanupStatus.ORPHANED
+                        
+                        # Tags
+                        tags = []
+                        try:
+                            tag_desc = elbv2.describe_tags(ResourceArns=[lb_arn])
+                            tags = tag_desc['TagDescriptions'][0]['Tags']
+                        except: pass
+                        tag_keys = {t['Key'] for t in tags}
+                        missing = [rt for rt in required_tags if rt not in tag_keys]
+                        
+                        item = ResourceItem(
+                            id=lb_arn,
+                            name=lb_name,
+                            type=ResourceType.LOAD_BALANCER,
+                            status=status,
+                            region=region,
+                            cost_per_month=cost,
+                            reason="No active targets attached",
+                            metadata={'DNS': lb['DNSName'], 'Type': lb['Type']},
+                            is_compliant=len(missing) == 0,
+                            missing_tags=missing
+                        )
+                        resources.append(item)
+                        savings += cost
+            except Exception as e:
+                logger.error(f"ELB Scan Error: {e}")
+
+            # 2. Unattached ENIs
+            ec2 = session.client('ec2')
+            try:
+                enis = ec2.describe_network_interfaces(Filters=[{'Name': 'status', 'Values': ['available']}])['NetworkInterfaces']
+                for eni in enis:
+                    cost = 0.1 # Minimal cost but clutters VPC
+                    status = CleanupStatus.ORPHANED
+                    item = ResourceItem(
+                        id=eni['NetworkInterfaceId'],
+                        name=eni.get('Description', 'Unattached ENI'),
+                        type=ResourceType.NETWORK_INTERFACE,
+                        status=status,
+                        region=region,
+                        cost_per_month=cost,
+                        reason="Unattached network interface",
+                        metadata={'PrivateIp': eni.get('PrivateIpAddress'), 'VpcId': eni.get('VpcId')},
+                        is_compliant=True
+                    )
+                    resources.append(item)
+                    savings += cost
+            except Exception: pass
+            
+        except Exception as e:
+            logger.error(f"Network Scan Error: {e}")
+        return resources, savings
+
+    def _scan_databases(self, session, region, required_tags):
+        resources = []
+        savings = 0.0
+        try:
+            rds = session.client('rds')
+            cloudwatch = session.client('cloudwatch')
+            dbs = rds.describe_db_instances()['DBInstances']
+            
+            from datetime import datetime, timezone, timedelta
+            end_time = datetime.now(timezone.utc)
+            start_time = end_time - timedelta(days=14)
+            
+            for db in dbs:
+                db_id = db['DBInstanceIdentifier']
+                status = db['DBInstanceStatus']
+                db_class = db['DBInstanceClass']
+                
+                if status != 'available':
+                    continue
+                
+                # Check Legacy Generation
+                is_legacy = db_class.startswith('db.t2') or db_class.startswith('db.m4') or db_class.startswith('db.m3')
+                
+                # Check Idle via CloudWatch (DatabaseConnections)
+                is_idle = False
+                max_connections = -1
+                try:
+                    metrics = cloudwatch.get_metric_statistics(
+                        Namespace='AWS/RDS',
+                        MetricName='DatabaseConnections',
+                        Dimensions=[{'Name': 'DBInstanceIdentifier', 'Value': db_id}],
+                        StartTime=start_time,
+                        EndTime=end_time,
+                        Period=86400,  # 1 day
+                        Statistics=['Maximum']
+                    )
+                    datapoints = metrics.get('Datapoints', [])
+                    if datapoints:
+                        max_connections = max(dp.get('Maximum', 0) for dp in datapoints)
+                        if max_connections == 0:
+                            is_idle = True
+                except Exception as cw_err:
+                    logger.warning(f"CloudWatch check failed for {db_id}: {cw_err}")
+                
+                # Determine status and reason
+                cleanup_status = CleanupStatus.ACTIVE
+                reason = None
+                cost_estimate = 0.0
+                
+                if is_idle:
+                    cleanup_status = CleanupStatus.ORPHANED
+                    reason = f"Zero connections for 14 days"
+                    cost_estimate = 50.0  # Rough estimate
+                elif is_legacy:
+                    cleanup_status = CleanupStatus.LEGACY_UPGRADE
+                    reason = f"Legacy instance class ({db_class}). Upgrade to T3/M5 for savings."
+                    cost_estimate = 20.0
+                
+                # Tag compliance
+                tags = db.get('TagList', [])
+                tag_keys = {t['Key'] for t in tags}
+                missing = [rt for rt in required_tags if rt not in tag_keys]
+                
+                # Only add if there's an issue
+                if cleanup_status != CleanupStatus.ACTIVE or len(missing) > 0:
+                    item = ResourceItem(
+                        id=db_id,
+                        name=db_id,
+                        type=ResourceType.RDS_DB,
+                        status=cleanup_status,
+                        region=region,
+                        cost_per_month=cost_estimate,
+                        reason=reason,
+                        metadata={'Engine': db['Engine'], 'Class': db_class, 'MaxConnections14d': max_connections},
+                        is_compliant=len(missing) == 0,
+                        missing_tags=missing
+                    )
+                    resources.append(item)
+                    savings += cost_estimate
+        except Exception as e:
+            logger.error(f"RDS Scan Error: {e}")
+        return resources, savings
+
+    def _scan_identity(self, session):
+        resources = []
+        savings = 0.0
+        try:
+            iam = session.client('iam')
+            from datetime import datetime, timezone, timedelta
+            threshold = datetime.now(timezone.utc) - timedelta(days=90)
+            
+            users = iam.list_users()['Users']
+            for u in users:
+                last_used = u.get('PasswordLastUsed')
+                days_inactive = None
+                
+                # Calculate inactivity
+                is_dormant = False
+                if last_used:
+                    days_inactive = (datetime.now(timezone.utc) - last_used).days
+                    if days_inactive > 90:
+                        is_dormant = True
+                elif u['CreateDate'] < threshold:
+                    days_inactive = (datetime.now(timezone.utc) - u['CreateDate']).days
+                    is_dormant = True
+                    
+                if is_dormant:
+                    item = ResourceItem(
+                        id=u['UserName'],
+                        name=u['UserName'],
+                        type=ResourceType.IAM_USER,
+                        status=CleanupStatus.SAFE_TO_DELETE,
+                        region='global',
+                        cost_per_month=0.0,
+                        reason=f"Inactive for {days_inactive} days",
+                        metadata={'LastUsed': str(last_used) if last_used else 'Never', 'DaysInactive': days_inactive},
+                        is_compliant=False
+                    )
+                    resources.append(item)
+        except Exception as e:
+            logger.error(f"IAM Scan Error: {e}")
+        return resources, savings
+
+    def _scan_storage(self, session, required_tags):
+        resources = []
+        savings = 0.0
+        try:
+            s3 = session.client('s3')
+            buckets = s3.list_buckets()['Buckets']
+            from datetime import datetime, timezone, timedelta
+            threshold = datetime.now(timezone.utc) - timedelta(days=7)
+
+            for b in buckets:
+                b_name = b['Name']
+                # Check Incomplete Multipart Uploads
+                try:
+                    uploads = s3.list_multipart_uploads(Bucket=b_name).get('Uploads', [])
+                    old_uploads = [u for u in uploads if u['Initiated'] < threshold]
+                    
+                    if old_uploads:
+                        oldest = min(u['Initiated'] for u in old_uploads)
+                        age_days = (datetime.now(timezone.utc) - oldest).days
+                        cost = len(old_uploads) * 0.5  # Rough estimate per incomplete upload
+                        item = ResourceItem(
+                            id=b_name,
+                            name=b_name,
+                            type=ResourceType.S3_BUCKET,
+                            status=CleanupStatus.ORPHANED,
+                            region='global',
+                            cost_per_month=cost,
+                            reason=f"{len(old_uploads)} incomplete uploads (oldest: {age_days} days)",
+                            metadata={'IncompleteUploads': len(old_uploads), 'OldestUploadDays': age_days},
+                            is_compliant=True
+                        )
+                        resources.append(item)
+                        savings += cost
+                except Exception: pass
+        except Exception as e:
+            logger.error(f"S3 Scan Error: {e}")
+        return resources, savings
 
     def execute_action(self, account_id: str, action_data: CleanupAction, user: User = None, bypass_approval: bool = False):
         """
@@ -488,6 +768,14 @@ class CleanupService:
                     if vol_id.startswith('vol-'):
                         ec2.delete_volume(VolumeId=vol_id)
                         logger.info(f"Deleted volume {vol_id}")
+                    elif vol_id.startswith('arn:aws:elasticloadbalancing'):
+                         # ELB Deletion
+                         try:
+                             elbv2 = session.client('elbv2')
+                             elbv2.delete_load_balancer(LoadBalancerArn=vol_id)
+                             logger.info(f"Deleted ELB {vol_id}")
+                         except Exception as elb_err:
+                             logger.error(f"Failed to delete ELB {vol_id}: {elb_err}")
                     elif vol_id.startswith('snap-'):
                         ec2.delete_snapshot(SnapshotId=vol_id)
                         logger.info(f"Deleted snapshot {vol_id}")
@@ -504,6 +792,40 @@ class CleanupService:
             elif action_type == CleanupActionType.TERMINATE:
                 ec2.terminate_instances(InstanceIds=resource_ids)
                 logger.info(f"Terminated instances {resource_ids}")
+
+            elif action_type == CleanupActionType.SNAPSHOT_STOP:
+                rds = session.client('rds')
+                for rid in resource_ids:
+                    try:
+                         # Create snapshot first
+                         import uuid
+                         snap_id = f"{rid}-manual-snap-{uuid.uuid4().hex[:6]}"
+                         rds.create_db_snapshot(DBSnapshotIdentifier=snap_id, DBInstanceIdentifier=rid)
+                         logger.info(f"Created snapshot {snap_id} for {rid}")
+                         # Then stop (might fail if snap in progress, but we try)
+                         # Actually stop isn't immediate.
+                         rds.stop_db_instance(DBInstanceIdentifier=rid)
+                         logger.info(f"Stopped RDS {rid}")
+                    except Exception as rds_err:
+                        logger.error(f"RDS Action failed: {rds_err}")
+
+            elif action_type == CleanupActionType.DISABLE:
+                iam = session.client('iam')
+                for rid in resource_ids:
+                    # Assuming rid is UserName
+                    try:
+                        # Disable Login Profile (Console Access)
+                        try:
+                            iam.delete_login_profile(UserName=rid)
+                            logger.info(f"Deleted login profile for {rid}")
+                        except: pass
+                        # Inactivate Keys?
+                        keys = iam.list_access_keys(UserName=rid)['AccessKeyMetadata']
+                        for k in keys:
+                            iam.update_access_key(UserName=rid, AccessKeyId=k['AccessKeyId'], Status='Inactive')
+                        logger.info(f"Disabled keys for {rid}")
+                    except Exception as iam_err:
+                         logger.error(f"IAM Action failed: {iam_err}")
                 
             elif action_type == CleanupActionType.AUTHORIZE:
                 from backend.models.authorized_resource import AuthorizedResource

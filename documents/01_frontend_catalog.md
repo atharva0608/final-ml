@@ -60,7 +60,7 @@
 | **FE-CMP::Onboard::Connect** | `frontend/src/components/onboarding/ConnectStep.jsx` | Component | **Real**: Onboarding Step 2: AWS Connect. Has loading state (`isLoading`), ARN validation, disabled button handling. | `onNext`, `roleArn`, `verifying` | `Input`, `Button`, `onboardingAPI` |
 | **FE-CMP::Onboard::Verify** | `frontend/src/components/onboarding/VerifyStep.jsx` | Component | Onboarding Step 3: Visual loading spinner during verification. | `onNext` | `motion` |
 | **FE-CMP::Onboard::Success** | `frontend/src/components/onboarding/SuccessStep.jsx` | Component | Onboarding Step 4: Success. | `onComplete` | `Button` |
-| **FE-CMP::Cleanup::Main** | `frontend/src/components/cleanup/CleanupDashboard.jsx` | Page | **Real (Complete)**: Resource Hygiene Dashboard. Multi-Region Scanning, **Authorization** (Authorize/Unauthorize resources, filter views), **Persistence** (1-hour cache), **Tag Compliance** (Shameback card), **Dependency Check** (Warning Modal). | `scanResult`, `selectedAccount` | `cleanupAPI`, `GaugeChart` |
+| **FE-CMP::Cleanup::Main** | `frontend/src/components/cleanup/CleanupDashboard.jsx` | Page | **Real (Complete)**: Resource Hygiene Dashboard. Multi-Region Scanning, **Authorization** (Authorize/Unauthorize resources, filter views), **Persistence** (1-hour cache), **Tag Compliance** (Shameback card), **Dependency Check** (Warning Modal), **Advanced Hygiene**: 9 resource tabs (Instances, Volumes, Snapshots, IPs, Load Balancers, Network Interfaces, Databases, Identity, Storage), **Reason column** for explaining why resources flagged. | `scanResult`, `selectedAccount` | `cleanupAPI`, `GaugeChart` |
 
 ### 6. Documentation Components
 

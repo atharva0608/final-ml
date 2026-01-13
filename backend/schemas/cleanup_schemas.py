@@ -7,6 +7,13 @@ class ResourceType(str, Enum):
     VOLUME = "VOLUME"
     SNAPSHOT = "SNAPSHOT"
     ELASTIC_IP = "ELASTIC_IP"
+    LOAD_BALANCER = "LOAD_BALANCER"
+    NAT_GATEWAY = "NAT_GATEWAY"
+    NETWORK_INTERFACE = "NETWORK_INTERFACE"  # ENI
+    RDS_DB = "RDS_DB"
+    S3_BUCKET = "S3_BUCKET"
+    IAM_USER = "IAM_USER"
+    IAM_KEY = "IAM_KEY"
 
 class CleanupStatus(str, Enum):
     ACTIVE = "ACTIVE"
@@ -16,6 +23,8 @@ class CleanupStatus(str, Enum):
     STOPPED = "STOPPED"
     UNAUTHORIZED = "UNAUTHORIZED"
     SAFE_TO_DELETE = "SAFE_TO_DELETE"
+    RISK = "RISK" # For IAM Keys
+    LEGACY_UPGRADE = "LEGACY_UPGRADE" # For Feature 5
 
 class ResourceItem(BaseModel):
     id: str
@@ -25,6 +34,7 @@ class ResourceItem(BaseModel):
     region: str
     cost_per_month: float = 0.0
     is_authorized: bool = False
+    reason: Optional[str] = None  # Why this resource is flagged (e.g., "No healthy targets")
     metadata: Dict[str, Any] = Field(default_factory=dict)
     # Tag Compliance (Feature 2)
     is_compliant: bool = True
@@ -40,6 +50,9 @@ class CleanupSummary(BaseModel):
     orphaned_volume_count: int = 0
     orphaned_snapshot_count: int = 0
     unused_ip_count: int = 0
+    idle_lb_count: int = 0
+    idle_rds_count: int = 0
+    dormant_user_count: int = 0
     untagged_waste_cost: float = 0.0  # Feature 2: Total cost of non-compliant resources
     resources: List[ResourceItem]
 
@@ -49,6 +62,8 @@ class CleanupActionType(str, Enum):
     TERMINATE = "TERMINATE"
     DELETE = "DELETE"
     RELEASE = "RELEASE"
+    SNAPSHOT_STOP = "SNAPSHOT_STOP"
+    DISABLE = "DISABLE"
 
 class CleanupAction(BaseModel):
     resource_ids: List[str]
