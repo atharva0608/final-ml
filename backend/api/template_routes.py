@@ -80,3 +80,21 @@ Outputs:
                 "Content-Disposition": "attachment; filename=spot-optimizer-role.yaml"
             }
         )
+
+@router.get(
+    "/",
+    summary="List available templates",
+    description="Get a list of all available CloudFormation templates"
+)
+def list_templates():
+    return {
+        "items": [
+            {
+                "id": "aws-onboarding",
+                "name": "AWS Cross-Account Role",
+                "description": "CloudFormation template to create the necessary IAM role for Spot Optimizer.",
+                "url": "/api/v1/templates/aws-onboarding",
+                "type": "cloudformation"
+            }
+        ]
+    }

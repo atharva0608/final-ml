@@ -32,6 +32,9 @@ This document outlines the discrepancies found between the Frontend's expected A
 *   **Onboarding**: Get State, AWS Link, Verify (+ triggers discovery), Skip.
 *   **Optimization**: Rightsizing recommendations.
 *   **Health**: System health status.
+*   **Health**: System health status.
+*   **Cleanup**: Resource Hygiene scanning and action execution (Multi-Region).
+*   **Templates**: CloudFormation template listing and download.
 
 ### Status Notes
 | Feature | Backend Status | Notes |
@@ -40,7 +43,10 @@ This document outlines the discrepancies found between the Frontend's expected A
 | Connection Health | **Real** | `last_sync_at`, `sync_status`, `sync_error` tracked by discovery worker. |
 | Billing Portal | **Partial** | Stripe integration scaffolded, requires API key config. |
 | Platform Identity | **Real** | NEW: Admin AWS credential management with STS verification. |
+| Platform Identity | **Real** | NEW: Admin AWS credential management with STS verification. |
 | Settings | **Mocked** | Profile/Integrations use in-memory mock. |
+| **Cleanup** | **Real** | Full implementation of multi-region scanning and action execution (boto3). |
+| **Templates** | **Real** | List (`/`) and Download (`/aws-onboarding`) endpoints serving YAML files. |
 
 ## 3. Resolved Gaps (2026-01-12)
 
@@ -50,7 +56,9 @@ This document outlines the discrepancies found between the Frontend's expected A
 | **ClusterService** | Fake Discovery | **Real**: EKS list_clusters + describe_cluster |
 | **Onboarding→Discovery** | Disconnected | **Real**: /verify creates Account + triggers discovery |
 | **PricingCollector** | Zombie | **Connected**: via pricing_task Celery worker |
+| **PricingCollector** | Zombie | **Connected**: via pricing_task Celery worker |
 | **SpotAdvisorScraper** | Zombie | **Connected**: via pricing_task Celery worker |
+| **TemplateRoutes** | 404 Error | **Fixed**: Added `list_templates` endpoint to `template_routes.py` |
 
 ## 4. Remaining Zombie APIs
 | Component | Status | Reason |

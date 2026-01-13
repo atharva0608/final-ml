@@ -1,0 +1,330 @@
+import React, { useState, useEffect } from 'react';
+import { cleanupAPI, accountsAPI } from '../../services/api';
+import StatsCard from '../shared/StatsCard';
+import Badge from '../shared/Badge';
+import Button from '../shared/Button';
+import { FiDollarSign, FiAlertOctagon, FiHardDrive, FiGlobe, FiCheckCircle } from 'react-icons/fi';
+
+const CleanupDashboard = () => {
+    const [loading, setLoading] = useState(false);
+    const [accounts, setAccounts] = useState([]);
+    const [selectedAccount, setSelectedAccount] = useState('');
+    const [scanResult, setScanResult] = useState(null);
+    const [activeTab, setActiveTab] = useState('INSTANCE');
+    const [selectedItems, setSelectedItems] = useState([]);
+    const [actionLoading, setActionLoading] = useState(false);
+    const [selectedRegion, setSelectedRegion] = useState('ALL');
+
+    // Hardcoded regions list for now (or fetch from backend if available)
+    const regionsList = [
+        { id: 'ALL', name: 'Global Scan (All Regions)' },
+        { id: 'us-east-1', name: 'US East (N. Virginia)' },
+        { id: 'us-east-2', name: 'US East (Ohio)' },
+        { id: 'us-west-1', name: 'US West (N. California)' },
+        { id: 'us-west-2', name: 'US West (Oregon)' },
+        { id: 'eu-west-1', name: 'Europe (Ireland)' },
+        { id: 'eu-central-1', name: 'Europe (Frankfurt)' },
+        { id: 'ap-south-1', name: 'Asia Pacific (Mumbai)' },
+        { id: 'ap-northeast-1', name: 'Asia Pacific (Tokyo)' },
+        { id: 'ap-southeast-1', name: 'Asia Pacific (Singapore)' },
+        { id: 'ap-southeast-2', name: 'Asia Pacific (Sydney)' },
+        { id: 'sa-east-1', name: 'South America (São Paulo)' },
+    ];
+
+    useEffect(() => {
+        fetchAccounts();
+    }, []);
+
+    const fetchAccounts = async () => {
+        try {
+            const res = await accountsAPI.list();
+            setAccounts(res.data);
+            if (res.data.length > 0) {
+                setSelectedAccount(res.data[0].id);
+            }
+        } catch (err) {
+            console.error("Failed to load accounts", err);
+        }
+    };
+
+    const handleScan = async () => {
+        if (!selectedAccount) return;
+        setLoading(true);
+        try {
+            const regionsToScan = selectedRegion === 'ALL' ? ['ALL'] : [selectedRegion];
+            const res = await cleanupAPI.scan(selectedAccount, { regions: regionsToScan });
+            setScanResult(res.data);
+            setSelectedItems([]);
+        } catch (err) {
+            console.error("Scan failed", err);
+            setScanResult({
+                total_potential_savings: 0,
+                unauthorized_instance_count: 0,
+                orphaned_volume_count: 0,
+                orphaned_snapshot_count: 0,
+                unused_ip_count: 0,
+                resources: []
+            });
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const handleExecuteAction = async (actionType) => {
+        if (!selectedAccount || selectedItems.length === 0) return;
+        setActionLoading(true);
+        try {
+            const itemsByRegion = {};
+            selectedItems.forEach(id => {
+                const item = scanResult.resources.find(r => r.id === id);
+                if (item) {
+                    if (!itemsByRegion[item.region]) itemsByRegion[item.region] = [];
+                    itemsByRegion[item.region].push(id);
+                }
+            });
+
+            for (const region of Object.keys(itemsByRegion)) {
+                await cleanupAPI.execute({
+                    resource_ids: itemsByRegion[region],
+                    action_type: actionType,
+                    region: region
+                }, selectedAccount);
+            }
+
+            handleScan();
+        } catch (err) {
+            console.error("Action failed", err);
+            alert("Failed to execute cleanup action: " + err.message);
+        } finally {
+            setActionLoading(false);
+            setSelectedItems([]);
+        }
+    };
+
+    const toggleSelection = (id) => {
+        setSelectedItems(prev =>
+            prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]
+        );
+    };
+
+    const filteredResources = scanResult?.resources.filter(r => r.type === activeTab) || [];
+
+    // Calculate defaults if no scan result
+    const stats = scanResult || {
+        total_potential_savings: 0,
+        unauthorized_instance_count: 0,
+        orphaned_volume_count: 0,
+        unused_ip_count: 0
+    };
+
+    // Calculate savings for selected items
+    const selectedSavings = scanResult?.resources
+        .filter(r => selectedItems.includes(r.id))
+        .reduce((sum, r) => sum + r.cost_per_month, 0) || 0;
+
+    return (
+        <div className="p-6 space-y-6 bg-gray-50 min-h-screen">
+            {/* Header */}
+            <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200 flex flex-col md:flex-row justify-between items-center gap-4">
+                <div>
+                    <h1 className="text-2xl font-bold text-gray-900">Resource Hygiene</h1>
+                    <p className="text-sm text-gray-500">Scan and eliminate waste across your AWS infrastructure</p>
+                </div>
+                <div className="flex flex-wrap gap-3 items-center">
+                    <select
+                        className="border border-gray-300 rounded-md px-3 py-2 text-sm focus:ring-indigo-500 focus:border-indigo-500 bg-white"
+                        value={selectedAccount}
+                        onChange={(e) => setSelectedAccount(e.target.value)}
+                    >
+                        {accounts.map(acc => (
+                            <option key={acc.id} value={acc.id}>{acc.name || acc.aws_account_id}</option>
+                        ))}
+                    </select>
+                    <select
+                        className="border border-gray-300 rounded-md px-3 py-2 text-sm focus:ring-indigo-500 focus:border-indigo-500 bg-white"
+                        value={selectedRegion}
+                        onChange={(e) => setSelectedRegion(e.target.value)}
+                    >
+                        {regionsList.map(r => (
+                            <option key={r.id} value={r.id}>{r.name}</option>
+                        ))}
+                    </select>
+                    <Button onClick={handleScan} disabled={loading || !selectedAccount} className="w-full md:w-auto">
+                        {loading ? (
+                            <span className="flex items-center gap-2">
+                                <svg className="animate-spin h-4 w-4 text-white" fill="none" viewBox="0 0 24 24">
+                                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                </svg>
+                                Scanning...
+                            </span>
+                        ) : 'Start Scan'}
+                    </Button>
+                </div>
+            </div>
+
+            {/* Persistent Stats Cards */}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+                <StatsCard
+                    title="Potential Monthly Savings"
+                    value={`$${stats.total_potential_savings.toFixed(2)}`}
+                    color="green"
+                    icon={FiDollarSign}
+                />
+                <StatsCard
+                    title="Selected Savings"
+                    value={`$${selectedSavings.toFixed(2)}`}
+                    color="indigo"
+                    icon={FiCheckCircle}
+                />
+                <StatsCard
+                    title="Unauthorized Instances"
+                    value={stats.unauthorized_instance_count}
+                    color="red"
+                    icon={FiAlertOctagon}
+                />
+                <StatsCard
+                    title="Orphaned Volumes"
+                    value={stats.orphaned_volume_count}
+                    color="yellow"
+                    icon={FiHardDrive}
+                />
+                <StatsCard
+                    title="Unused IPs"
+                    value={stats.unused_ip_count}
+                    color="blue"
+                    icon={FiGlobe}
+                />
+            </div>
+
+            {/* Main Content Area */}
+            <div className="bg-white shadow-sm rounded-lg border border-gray-200 overflow-hidden min-h-[400px]">
+                {/* Tabs */}
+                <div className="border-b border-gray-200 bg-gray-50 flex px-4">
+                    {['INSTANCE', 'VOLUME', 'SNAPSHOT', 'ELASTIC_IP'].map(type => (
+                        <button
+                            key={type}
+                            className={`px-6 py-4 text-sm font-medium transition-colors border-b-2 ${activeTab === type
+                                    ? 'border-indigo-600 text-indigo-600 bg-white'
+                                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                                }`}
+                            onClick={() => setActiveTab(type)}
+                        >
+                            {type.replace('_', ' ')}s
+                            {scanResult && <span className="ml-2 bg-gray-100 text-gray-600 py-0.5 px-2 rounded-full text-xs">
+                                {scanResult.resources.filter(r => r.type === type).length}
+                            </span>}
+                        </button>
+                    ))}
+                </div>
+
+                {/* Toolbar */}
+                <div className="p-4 border-b border-gray-200 flex justify-between items-center bg-white">
+                    <div className="text-sm text-gray-600 font-medium">
+                        {loading ? 'Scanning resources...' : `${filteredResources.length} resources found`}
+                        {selectedItems.length > 0 && <span className="ml-2 text-indigo-600">({selectedItems.length} selected)</span>}
+                    </div>
+                    <div className="space-x-2">
+                        <Button
+                            variant="danger"
+                            size="sm"
+                            disabled={selectedItems.length === 0 || actionLoading}
+                            onClick={() => handleExecuteAction(activeTab === 'INSTANCE' ? 'TERMINATE' : activeTab === 'ELASTIC_IP' ? 'RELEASE' : 'DELETE')}
+                        >
+                            {actionLoading ? 'Cleanup...' : 'Cleanup Selected'}
+                        </Button>
+                    </div>
+                </div>
+
+                {/* Content */}
+                {loading ? (
+                    <div className="flex flex-col items-center justify-center h-64">
+                        <svg className="animate-spin h-8 w-8 text-indigo-600 mb-4" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                        <p className="text-gray-500">Scanning {selectedRegion}...</p>
+                    </div>
+                ) : !scanResult ? (
+                    <div className="flex flex-col items-center justify-center h-64 text-center">
+                        <div className="bg-gray-100 p-4 rounded-full mb-4">
+                            <svg className="h-8 w-8 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                            </svg>
+                        </div>
+                        <h3 className="text-lg font-medium text-gray-900">Ready to Scan</h3>
+                        <p className="text-gray-500 max-w-sm mt-1">Select an account and region above, then click "Start Scan" to identify cleanup opportunities.</p>
+                    </div>
+                ) : filteredResources.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center h-64 text-center">
+                        <div className="bg-green-50 p-4 rounded-full mb-4">
+                            <svg className="h-8 w-8 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                            </svg>
+                        </div>
+                        <h3 className="text-lg font-medium text-gray-900">All Clean!</h3>
+                        <p className="text-gray-500">No orphaned {activeTab.toLowerCase().replace('_', ' ')}s found in this region.</p>
+                    </div>
+                ) : (
+                    <div className="overflow-x-auto">
+                        <table className="min-w-full divide-y divide-gray-200">
+                            <thead className="bg-gray-50">
+                                <tr>
+                                    <th className="px-6 py-3 text-left w-12">
+                                        <input
+                                            type="checkbox"
+                                            className="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+                                            onChange={(e) => {
+                                                if (e.target.checked) setSelectedItems(filteredResources.map(r => r.id));
+                                                else setSelectedItems([]);
+                                            }}
+                                            checked={filteredResources.length > 0 && selectedItems.length === filteredResources.length}
+                                        />
+                                    </th>
+                                    <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Resource ID</th>
+                                    <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Name</th>
+                                    <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Region</th>
+                                    <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Status</th>
+                                    <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Cost/Mo</th>
+                                    <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Details</th>
+                                </tr>
+                            </thead>
+                            <tbody className="bg-white divide-y divide-gray-200">
+                                {filteredResources.map(resource => (
+                                    <tr key={resource.id} className={`hover:bg-gray-50 transition-colors ${selectedItems.includes(resource.id) ? 'bg-blue-50' : ''}`}>
+                                        <td className="px-6 py-4 whitespace-nowrap">
+                                            <input
+                                                type="checkbox"
+                                                className="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+                                                checked={selectedItems.includes(resource.id)}
+                                                onChange={() => toggleSelection(resource.id)}
+                                            />
+                                        </td>
+                                        <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900 font-mono">{resource.id}</td>
+                                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{resource.name}</td>
+                                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                                            <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-800">
+                                                {resource.region}
+                                            </span>
+                                        </td>
+                                        <td className="px-6 py-4 whitespace-nowrap">
+                                            <Badge type={resource.status === 'ORPHANED' || resource.status === 'UNAUTHORIZED' ? 'warning' : 'success'}>
+                                                {resource.status}
+                                            </Badge>
+                                        </td>
+                                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 font-medium">${resource.cost_per_month.toFixed(2)}</td>
+                                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 max-w-xs truncate">
+                                            {JSON.stringify(resource.metadata)}
+                                        </td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+                )}
+            </div>
+        </div>
+    );
+};
+
+export default CleanupDashboard;

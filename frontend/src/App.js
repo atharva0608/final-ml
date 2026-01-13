@@ -33,6 +33,7 @@ import AdminConfig from './components/admin/AdminConfig';
 import AdminBilling from './components/admin/AdminBilling';
 import AdminOrganizations from './components/admin/AdminOrganizations';
 import RightSizing from './components/right-sizing/RightSizing';
+import CleanupDashboard from './components/cleanup/CleanupDashboard';
 
 // Protected Route Component
 const ProtectedRoute = ({ children }) => {
@@ -176,6 +177,7 @@ function App() {
             <Route path="right-sizing" element={<RightSizing />} />
             <Route path="hibernation" element={<HibernationSchedule />} />
             <Route path="audit" element={<AuditLog />} />
+            <Route path="cleanup" element={<CleanupDashboard />} />
             <Route path="settings" element={<Settings />} />
 
             {/* Admin Routes (SUPER_ADMIN only) */}

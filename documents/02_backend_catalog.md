@@ -22,6 +22,7 @@
 | **BE-SVC::Metrics::Main** | `backend/services/metrics_service.py` | Service | Metrics aggregation (Cost, Savings, Usage). Generates Dashboard KPIs and Time Series data. | `Instance`, `OptimizationJob` |
 | **BE-SVC::Audit::Main** | `backend/services/audit_service.py` | Service | Audit logging and querying. tracks actor, event, resource, outcome, and diffs. | `AuditLog` |
 | **BE-SVC::Lab::Main** | `backend/services/lab_service.py` | Service | ML Experimentation (A/B Testing). Manage experiments, variants, and calculate results/winners. | `LabExperiment`, `MLModel` |
+| **BE-SVC::Cleanup::Main** | `backend/services/cleanup_service.py` | Service | **Real**: Logic for scanning and purging AWS resources. Supports Multi-Region scanning, Orphan detection, and Auto-Cleanup actions. | `boto3`, `ResourceItem` |
 | **BE-API::Admin::Main** | `backend/api/admin_routes.py` | API | Super Admin Endpoints. List Orgs/Clients, Billing, Dashboard Stats, Platform Stats. | `AdminService` |
 | **BE-API::Account::Main** | `backend/api/account_routes.py` | API | AWS Account Management. Link, List, Delete accounts. | `AccountService` |
 | **BE-API::Cluster::Main** | `backend/api/cluster_routes.py` | API | Cluster Operations. Discover, Register, Connect (AWS), Agent Install, Heartbeat. | `ClusterService` |
@@ -31,11 +32,12 @@
 | **BE-API::Metrics::Main** | `backend/api/metrics_routes.py` | API | Dashboard Metrics. Savings, Costs, Instance Stats, Time Series. | `MetricsService` |
 | **BE-API::Audit::Main** | `backend/api/audit_routes.py` | API | Audit Log Querying. Filter logs by actor, event, resource type. | `AuditService` |
 | **BE-API::Lab::Main** | `backend/api/lab_routes.py` | API | Lab Experiments. Create, List, Start, Stop, Get Results for A/B testing. | `LabService` |
+| **BE-API::Cleanup::Main** | `backend/api/cleanup_routes.py` | API | Endpoints for resource hygiene scanning and action execution. | `CleanupService` |
 | **BE-API::Health::System** | `backend/api/health_routes.py` | API | System Health Monitoring. Get detailed health status (DB, Redis, Workers). | `HealthService` |
 | **BE-API::Optimization::Main** | `backend/api/optimization_routes.py` | API | Rightsizing Recommendations. Analyze cluster workloads and return resize advice. | `RightSizer` |
 | **BE-API::Billing::Main** | `backend/api/billing_routes.py` | API | **Real**: Stripe Billing. Create portal session, webhook handler, subscription status. | `stripe` |
 | **BE-API::Admin::Platform** | `backend/api/admin_routes.py` | API | **Real**: Platform Identity Management. Get connection status, connect (STS verify), disconnect. | `AdminService`, `boto3` |
-| **BE-API::Templates::Main** | `backend/api/template_routes.py` | API | **Real**: Serves CloudFormation templates for client AWS onboarding. | `FileResponse` |
+| **BE-API::Templates::Main** | `backend/api/template_routes.py` | API | **Real**: Serves CloudFormation templates. Includes `GET /` (List) and `GET /aws-onboarding` (Download). | `FileResponse` |
 | **BE-SVC::Admin::Platform** | `backend/services/admin_service.py` | Service | **Real**: Platform credential management with STS verification. | `boto3`, `SystemConfig` |
 | **BE-MOD::System::Config** | `backend/models/system_config.py` | Model | Key-value store for system settings (Safe Mode, Platform Keys). | `Base` |
 | **BE-TPL::AWS::RoleYAML** | `backend/templates/aws/read-only-role.yaml` | Template | CloudFormation YAML for cross-account IAM role creation. | N/A |
@@ -95,7 +97,8 @@
 | **BE-MIG::Ver::001_Initial** | `migrations/versions/001_initial_schema.py` | Migration | Initial database schema creation script. | `Alembic` |
 | **BE-MIG::Ver::002_Seed** | `migrations/versions/002_seed_data.py` | Migration | Script to seed database with default data. | `Alembic` |
 | **BE-AST::AWS::IAM_Full** | `backend/templates/aws/full-access-role.yaml` | Asset | CloudFormation template for Full Access IAM Role. | `AWS` |
-| **BE-AST::AWS::IAM_ReadOnly** | `backend/templates/aws/read-only-role.yaml` | Asset | CloudFormation template for Read-Only IAM Role. | `AWS` |
+| **BE-AST::AWS::IAM_Full** | `backend/templates/aws/full-access-role.yaml` | Asset | CloudFormation template for Full Access IAM Role. | `AWS` |
+| **BE-AST::AWS::IAM_ReadOnly** | `backend/templates/aws/read-only-role.yaml` | Asset | CloudFormation template for Read-Only IAM Role. Updated with `SpotOptimizerCleanupPolicy`. | `AWS` |
 | **BE-SCR::Admin::Seed** | `scripts/seed_admin.py` | Script | Utility to programmatically create an admin user. | `Python` |
 | **BE-SCR::Data::SeedDemo** | `scripts/seed_demo_data.py` | Script | Utility to populate system with demo data. | `Python` |
 | **BE-SCR::AWS::LaunchSpot** | `scripts/aws/launch_spot.py` | Script | Standalone script to test Spot Instance launching. | `boto3` |
@@ -110,6 +113,7 @@
 | **BE-SCH::Audit::Main** | `backend/schemas/audit_schemas.py` | Schema | Pydantic models for Audit Log responses. | `Pydantic` |
 | **BE-SCH::Hibernation::Main** | `backend/schemas/hibernation_schemas.py` | Schema | Pydantic models for Hibernation Schedules. | `Pydantic` |
 | **BE-SCH::Lab::Main** | `backend/schemas/lab_schemas.py` | Schema | Pydantic models for ML Experiments. | `Pydantic` |
+| **BE-SCH::Cleanup::Main** | `backend/schemas/cleanup_schemas.py` | Schema | Pydantic models for resource costing and cleanup status. | `Pydantic` |
 | **BE-SCH::Organization::Main** | `backend/schemas/organization_schemas.py` | Schema | Pydantic models for Org members and invites. | `Pydantic` |
 | **BE-API::Settings::Main** | `backend/api/settings_routes.py` | API | Settings Endpoints. Profile management and Integrations. | `SettingsService` |
 | **BE-SVC::Settings::Main** | `backend/services/settings_service.py` | Service | Logic for user profile updates and integrations (Mocked). | `User`, `Mocks` |

@@ -20,6 +20,7 @@ const MainLayout = () => {
     { name: 'Policies', path: '/policies', icon: FiTarget },
     { name: 'Templates', path: '/templates', icon: FiFileText },
     { name: 'Right-Sizing', path: '/right-sizing', icon: FiBarChart2 },
+    { name: 'Resource Hygiene', path: '/cleanup', icon: FiActivity },
     { name: 'Hibernation', path: '/hibernation', icon: FiClock },
     { name: 'Audit Logs', path: '/audit', icon: FiClipboard },
     { name: 'Settings', path: '/settings', icon: FiSettings },

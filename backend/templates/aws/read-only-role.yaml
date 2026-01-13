@@ -28,6 +28,18 @@ Resources:
         - 'arn:aws:iam::aws:policy/SecurityAudit'
         - 'arn:aws:iam::aws:policy/AmazonEC2ReadOnlyAccess'
         - 'arn:aws:iam::aws:policy/CloudWatchReadOnlyAccess'
+      Policies:
+        - PolicyName: 'SpotOptimizerCleanupPolicy'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'ec2:TerminateInstances'
+                  - 'ec2:DeleteVolume'
+                  - 'ec2:DeleteSnapshot'
+                  - 'ec2:ReleaseAddress'
+                Resource: '*'
 
 Outputs:
   RoleArn:

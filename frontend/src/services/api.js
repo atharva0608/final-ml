@@ -148,4 +148,14 @@ export const organizationAPI = {
     updateMemberRole: (userId, role, access_level) => api.patch(`/api/v1/organization/members/${userId}`, { role, access_level }),
 };
 
+export const cleanupAPI = {
+    scan: (accountId, params) => api.get(`/api/v1/cleanup/scan/${accountId}`, {
+        params,
+        paramsSerializer: {
+            indexes: null // Serializes arrays as 'regions=value' instead of 'regions[]=value'
+        }
+    }),
+    execute: (payload, accountId) => api.post(`/api/v1/cleanup/action?account_id=${accountId}`, payload),
+};
+
 export default api;

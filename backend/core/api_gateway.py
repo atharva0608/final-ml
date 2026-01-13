@@ -25,6 +25,7 @@ from backend.api import (
     organization_router,
     health_router,
     optimization_router,
+    cleanup_router,
 )
 from backend.api import account_routes
 from backend.api import settings_routes
@@ -346,6 +347,9 @@ app.include_router(health_router, prefix="/api/v1")
 
 # Optimization routes
 app.include_router(optimization_router, prefix="/api/v1")
+
+# Cleanup routes
+app.include_router(cleanup_router, prefix="/api/v1")
 
 # Settings routes
 app.include_router(settings_routes.router, prefix="/api/v1")
