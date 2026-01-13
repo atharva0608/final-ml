@@ -22,7 +22,7 @@
 | **BE-SVC::Metrics::Main** | `backend/services/metrics_service.py` | Service | Metrics aggregation (Cost, Savings, Usage). Generates Dashboard KPIs and Time Series data. | `Instance`, `OptimizationJob` |
 | **BE-SVC::Audit::Main** | `backend/services/audit_service.py` | Service | Audit logging and querying. tracks actor, event, resource, outcome, and diffs. | `AuditLog` |
 | **BE-SVC::Lab::Main** | `backend/services/lab_service.py` | Service | ML Experimentation (A/B Testing). Manage experiments, variants, and calculate results/winners. | `LabExperiment`, `MLModel` |
-| **BE-SVC::Cleanup::Main** | `backend/services/cleanup_service.py` | Service | **Real (Optimized)**: Parallel multi-region scanning, Redis Caching (5 min TTL), **Dependency Check** (pre-flight for SG/Snapshot/Volume), **Tag Compliance** (is_compliant, missing_tags), **RBAC Approval** integration. | `boto3`, `concurrent.futures`, `redis`, `ResourceItem` |
+| **BE-SVC::Cleanup::Main** | `backend/services/cleanup_service.py` | Service | **Real (Optimized)**: Parallel multi-region scanning, **1-Hour Cache Persistence**, **Authorization** filtering (excludes authorized resources from savings), **Dependency Check**, **Tag Compliance**. | `boto3`, `redis`, `AuthorizedResource` |
 | **BE-API::Admin::Main** | `backend/api/admin_routes.py` | API | Super Admin Endpoints. List Orgs/Clients, Billing, Dashboard Stats, Platform Stats. | `AdminService` |
 | **BE-API::Account::Main** | `backend/api/account_routes.py` | API | AWS Account Management. Link, List, Delete accounts. | `AccountService` |
 | **BE-API::Cluster::Main** | `backend/api/cluster_routes.py` | API | Cluster Operations. Discover, Register, Connect (AWS), Agent Install, Heartbeat. | `ClusterService` |
@@ -57,6 +57,7 @@
 | **BE-MOD::Infra::Account** | `backend/models/account.py` | Model | AWS Account Table. | `Base` |
 | **BE-MOD::Infra::Cluster** | `backend/models/cluster.py` | Model | Kubernetes Cluster Table. | `Base` |
 | **BE-MOD::Infra::Instance** | `backend/models/instance.py` | Model | Node/Instance Table. | `Base` |
+| **BE-MOD::Clean::AuthRes** | `backend/models/authorized_resource.py` | Model | **Real**: Authorized Resources Table. Stores user-authorized exceptions to cleanup rules. | `Base` |
 | **BE-MOD::Infra::Template** | `backend/models/node_template.py` | Model | Node Template Table. | `Base` |
 | **BE-MOD::Policy::Main** | `backend/models/cluster_policy.py` | Model | Cluster Policy Table. | `Base` |
 | **BE-MOD::Policy::Hibernation** | `backend/models/hibernation_schedule.py` | Model | Hibernation Schedule Table. | `Base` |

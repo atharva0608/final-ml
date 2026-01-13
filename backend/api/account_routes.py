@@ -41,7 +41,8 @@ def link_account(
         organization_id=current_user.organization_id,
         aws_account_id=account_data.aws_account_id,
         role_arn=account_data.role_arn,
-        external_id=account_data.external_id
+        external_id=account_data.external_id,
+        requester=current_user
     )
 
 @router.get(

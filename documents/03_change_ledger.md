@@ -3,6 +3,9 @@
 
 | Date | Component | Change Type | Description |
 | :--- | :--- | :--- | :--- |
+| **2026-01-13** | **Backend / DB** | `Fix` | **Schema Mismatch Fix**: Resolved 500 Error by aligning `AuthorizedResource` FK types (String) with Account/User models. |
+| **2026-01-13** | **Cleanup / UX** | `Feature` | **Persistence & Animation**: Increased scan cache TTL to 1 hour. Implemented auto-load on account selection. Added animated Gauge Charts for metrics. |
+| **2026-01-13** | **Cleanup / Feature** | `Completed` | **Resource Authorization**: Implemented `AuthorizedResource` model and endpoints. Features: Authorize/Unauthorize actions, Filtered views (To Review/Authorized), Exclusion from savings calculations. |
 | **2026-01-13** | **Full Stack / Team Governance** | `Feature` | **Team-Specific Governance**: Added `governance_config` JSON column to Team model. Created `GET/PUT /teams/{id}/governance` API endpoints. Updated `AccountService` and `CleanupService` to check team-specific approval rules. Created `TeamGovernance.jsx` component with toggle switches for 5 action types. Integrated into `TeamManagement.jsx`. |
 | **2026-01-13** | **Frontend / Cleanup** | `Feature` | **Feature 1 & 2 Complete**: Added pre-flight dependency check (`handleCleanupClick`) with Warning Modal showing blocking resources. Added "Untagged Waste" Shameback stats card. Added Compliance column with green/red badges and tooltip for missing tags. |
 | **2026-01-13** | **Full Stack / Feature 6** | `Complete` | **Hierarchical Governance & Approval System**: Backend: Updated `UserRole` enum (4-tier), added `is_governance_enabled`/`is_strict_approval_mode` to Organization, created `ApprovalRequest` model and `ApprovalService`. Frontend: Updated `TeamManagement.jsx` for 4-Tier Roles & Governance Toggles, created `ApprovalCenter.jsx` for Team Leads, added `approvalsAPI` to api.js, updated `CleanupDashboard.jsx` for Pending Approval (202 Accepted) states. |

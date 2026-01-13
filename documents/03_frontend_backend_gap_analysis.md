@@ -32,6 +32,7 @@ This document outlines the discrepancies found between the Frontend's expected A
 *   **Cleanup / Tag Compliance**: `is_compliant`, `missing_tags`, `untagged_waste_cost` in scan results (NEW - Feature 2).
 *   **Approvals**: Pending request management (List, Approve, Reject) - Feature 3.
 *   **Team-Specific Governance**: `GET/PUT /teams/{id}/governance` for Team Lead approval policy configuration (NEW).
+*   **Cleanup / Authorization**: `AUTHORIZE` and `UNAUTHORIZE` actions in `cleanupAPI.execute` (Persistence).
 
 ### Previously Implemented APIs (2026-01-12)
 *   **Accounts**: Link, Validate, Set Default, Disconnect, List.
@@ -50,6 +51,7 @@ This document outlines the discrepancies found between the Frontend's expected A
 | **Hierarchical Governance (Feature 6)** | **Real** | 4-Tier RBAC (Super Admin, Org Admin, Team Lead, Member), Governance toggles, Four-Eyes approval workflow. |
 | **Team-Specific Governance** | **Real + UI** | Team.governance_config JSON, GET/PUT /teams/{id}/governance API, TeamGovernance.jsx with 5 action toggles. |
 | **Approvals (Feature 3)** | **Real** | Four-Eyes approval workflow for Members and Strict Mode. |
+| **Authorization** | **Real + UI** | `AuthorizedResource` model, persistence, and dashboard filtering. |
 
 ## 3. Resolved Gaps (2026-01-13)
 
@@ -60,6 +62,7 @@ This document outlines the discrepancies found between the Frontend's expected A
 | **Tag Compliance** | Not Implemented | **Real**: is_compliant, missing_tags enrichment during scan |
 | **Team-Specific Governance** | Not Implemented | **Real**: Team.governance_config + TeamGovernance.jsx UI |
 | **Approval Workflow** | Already Implemented | ✅ Verified working |
+| **Resource Authorization** | Not Implemented | **Real**: AuthorizedResource model + Actions |
 
 ## 4. Remaining Zombie APIs
 | Component | Status | Reason |

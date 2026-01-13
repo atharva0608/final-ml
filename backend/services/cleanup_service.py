@@ -67,7 +67,7 @@ class CleanupService:
             logger.error(f"Failed to list regions: {e}")
             return ['us-east-1'] # Fallback
 
-    def scan_resources(self, account_id: str, request_regions: List[str] = None, organization = None) -> CleanupSummary:
+    def scan_resources(self, account_id: str, request_regions: List[str] = None, organization = None, force_refresh: bool = False) -> CleanupSummary:
         """Scan for orphaned resources across regions using parallel execution with Caching"""
         from concurrent.futures import ThreadPoolExecutor, as_completed
         from backend.core.redis_client import get_redis_client
@@ -77,20 +77,29 @@ class CleanupService:
         regions_key = "ALL" if not request_regions or "ALL" in request_regions else "-".join(sorted(request_regions))
         cache_key = f"cleanup:scan:{account_id}:{regions_key}"
         
-        # 1. Check Cache
-        try:
-            redis_client = get_redis_client()
-            cached_data = redis_client.get(cache_key)
-            if cached_data:
-                try:
-                    data = json.loads(cached_data)
-                    logger.info(f"Returning cached cleanup scan for {account_id}")
-                    return CleanupSummary(**data)
-                except Exception as e:
-                    logger.error(f"Cache parse error: {e}")
-        except Exception as e:
-            logger.error(f"Redis cache check failed: {e}")
-            redis_client = None # Ensure we don't try to use it later if it failed here
+        redis_client = None
+        # 1. Check Cache (unless force_refresh is True)
+        if not force_refresh:
+            try:
+                redis_client = get_redis_client()
+                cached_data = redis_client.get(cache_key)
+                if cached_data:
+                    try:
+                        data = json.loads(cached_data)
+                        logger.info(f"Returning cached cleanup scan for {account_id}")
+                        return CleanupSummary(**data)
+                    except Exception as e:
+                        logger.error(f"Cache parse error: {e}")
+            except Exception as e:
+                logger.error(f"Redis cache check failed: {e}")
+                redis_client = None
+        else:
+            logger.info(f"Force refresh requested, bypassing cache for {account_id}")
+            try:
+                redis_client = get_redis_client()
+            except Exception as e:
+                logger.error(f"Redis connection failed: {e}")
+                redis_client = None
 
         account = self.db.query(Account).filter(Account.id == account_id).first()
         if not account:
@@ -108,6 +117,14 @@ class CleanupService:
                 target_regions = ['us-east-1', 'us-east-2', 'us-west-1', 'us-west-2', 'eu-central-1', 'eu-west-1']
 
         resources: List[ResourceItem] = []
+        
+        # [NEW] Fetch Authorized Resources
+        from backend.models.authorized_resource import AuthorizedResource
+        authorized_resources = self.db.query(AuthorizedResource).filter(
+            AuthorizedResource.account_id == account.id
+        ).all()
+        # Create lookup map: (id) -> AuthorizedResource
+        authorized_map = {r.resource_id: r for r in authorized_resources}
         total_savings = 0.0
         
         # OPTIMIZATION: Parallel execution across regions
@@ -126,24 +143,40 @@ class CleanupService:
                 except Exception as e:
                     logger.error(f"Region {region} scan failed: {e}")
 
-        # Calculate untagged waste cost (Feature 2)
-        untagged_waste = sum(r.cost_per_month for r in resources if not r.is_compliant)
+        # [NEW] Apply Authorization Logic (Post-Processing)
+        # Fetch Authorized Resources if not already fetched (in case prev step failed partial apply, but likely it succeeded)
+        # Actually, let's just do it here to be safe and clear.
+        from backend.models.authorized_resource import AuthorizedResource
+        authorized_resources = self.db.query(AuthorizedResource).filter(
+            AuthorizedResource.account_id == account.id
+        ).all()
+        authorized_ids = {r.resource_id for r in authorized_resources}
         
-        # Aggregate counts
+        # Deduct authorized resources from savings and mark them
+        for r in resources:
+            if r.id in authorized_ids:
+                r.is_authorized = True
+                # Deduct cost from total savings (since it was added in the worker)
+                total_savings -= r.cost_per_month
+
+        # Calculate untagged waste cost (Feature 2) - Exclude authorized
+        untagged_waste = sum(r.cost_per_month for r in resources if not r.is_compliant and not r.is_authorized)
+        
+        # Aggregate counts - Exclude authorized
         summary = CleanupSummary(
-            total_potential_savings=total_savings,
-            unauthorized_instance_count=len([r for r in resources if r.type == ResourceType.INSTANCE]),
-            orphaned_volume_count=len([r for r in resources if r.type == ResourceType.VOLUME]),
-            orphaned_snapshot_count=len([r for r in resources if r.type == ResourceType.SNAPSHOT]),
-            unused_ip_count=len([r for r in resources if r.type == ResourceType.ELASTIC_IP]),
+            total_potential_savings=max(0.0, total_savings), # Ensure no floating point quirk negative
+            unauthorized_instance_count=len([r for r in resources if r.type == ResourceType.INSTANCE and not r.is_authorized]),
+            orphaned_volume_count=len([r for r in resources if r.type == ResourceType.VOLUME and not r.is_authorized]),
+            orphaned_snapshot_count=len([r for r in resources if r.type == ResourceType.SNAPSHOT and not r.is_authorized]),
+            unused_ip_count=len([r for r in resources if r.type == ResourceType.ELASTIC_IP and not r.is_authorized]),
             untagged_waste_cost=untagged_waste,
             resources=resources
         )
         
-        # 2. Set Cache (TTL 5 minutes)
+        # 2. Set Cache (TTL 1 hour)
         if redis_client:
             try:
-                redis_client.setex(cache_key, 300, summary.json())
+                redis_client.setex(cache_key, 3600, summary.json())
             except Exception as e:
                 logger.error(f"Failed to set cleanup cache: {e}")
             
@@ -392,10 +425,10 @@ class CleanupService:
             # Map action types to governance config keys
             action_config_map = {
                 "TERMINATE": "TERMINATE_INSTANCE",
-                "DELETE": "DELETE_VOLUME" if "VOLUME" in str(action_data.action_type) else "DELETE_SNAPSHOT",
+                "DELETE": "DELETE_VOLUME",  # Uses same rule for volumes and snapshots
                 "RELEASE": "RELEASE_IP"
             }
-            config_key = action_config_map.get(action_key, action_key)
+            config_key = action_config_map.get(str(action_data.action_type.value), str(action_data.action_type.value))
             
             # Rule 1: Members - Check team-specific governance first
             if user.role == UserRole.MEMBER:
@@ -449,31 +482,71 @@ class CleanupService:
             
             logger.info(f"Executing {action_type} on {len(resource_ids)} resources in {action_data.region}")
             
-            if action_type == ActionType.DELETE_VOLUME:
+            if action_type == CleanupActionType.DELETE:
                 for vol_id in resource_ids:
-                    ec2.delete_volume(VolumeId=vol_id)
-                    logger.info(f"Deleted volume {vol_id}")
+                    # Try to delete as volume or snapshot based on resource ID format
+                    if vol_id.startswith('vol-'):
+                        ec2.delete_volume(VolumeId=vol_id)
+                        logger.info(f"Deleted volume {vol_id}")
+                    elif vol_id.startswith('snap-'):
+                        ec2.delete_snapshot(SnapshotId=vol_id)
+                        logger.info(f"Deleted snapshot {vol_id}")
+                    else:
+                        # Assume volume by default
+                        ec2.delete_volume(VolumeId=vol_id)
+                        logger.info(f"Deleted volume {vol_id}")
                     
-            elif action_type == ActionType.DELETE_SNAPSHOT:
-                for snap_id in resource_ids:
-                    ec2.delete_snapshot(SnapshotId=snap_id)
-                    logger.info(f"Deleted snapshot {snap_id}")
-                    
-            elif action_type == ActionType.RELEASE_IP:
-                for alloc_id in resource_ids: # FE sends IDs, for EIP usually AllocationId
-                    # Verify if ID is an IP or AlloctionId. Boto3 needs AllocationId for VPC IPs
-                    # Assuming we store AllocationId as the ID for EIPs
+            elif action_type == CleanupActionType.RELEASE:
+                for alloc_id in resource_ids:
                     ec2.release_address(AllocationId=alloc_id)
                     logger.info(f"Released IP {alloc_id}")
                     
-            elif action_type == ActionType.TERMINATE_INSTANCE:
+            elif action_type == CleanupActionType.TERMINATE:
                 ec2.terminate_instances(InstanceIds=resource_ids)
                 logger.info(f"Terminated instances {resource_ids}")
+                
+            elif action_type == CleanupActionType.AUTHORIZE:
+                from backend.models.authorized_resource import AuthorizedResource
+                for rid in resource_ids:
+                    # Infer type
+                    rtype = "UNKNOWN"
+                    if rid.startswith('i-'): rtype = "INSTANCE"
+                    elif rid.startswith('vol-'): rtype = "VOLUME"
+                    elif rid.startswith('snap-'): rtype = "SNAPSHOT"
+                    elif rid.startswith('eipalloc-') or '.' in rid: rtype = "ELASTIC_IP"
+                    
+                    # Check if exists
+                    exists = self.db.query(AuthorizedResource).filter(
+                        AuthorizedResource.account_id == account_id, 
+                        AuthorizedResource.resource_id == rid
+                    ).first()
+                    
+                    if not exists:
+                        new_auth = AuthorizedResource(
+                            resource_id=rid,
+                            account_id=account_id,
+                            region=action_data.region,
+                            resource_type=rtype,
+                            created_by_id=user.id if user else None,
+                            notes="Authorized via Cleanup Dashboard"
+                        )
+                        self.db.add(new_auth)
+                        logger.info(f"Authorized resource {rid}")
+                self.db.commit()
+
+            elif action_type == CleanupActionType.UNAUTHORIZE:
+                from backend.models.authorized_resource import AuthorizedResource
+                for rid in resource_ids:
+                    self.db.query(AuthorizedResource).filter(
+                        AuthorizedResource.account_id == account_id, 
+                        AuthorizedResource.resource_id == rid
+                    ).delete()
+                    logger.info(f"Unauthorized resource {rid}")
+                self.db.commit()
             
             return {"status": "success", "message": f"Successfully executed {action_type} on {len(resource_ids)} resources"}
 
         except Exception as e:
-            # ... (Exception handling remains same)
             # Re-raise or handle
             import botocore
             if isinstance(e, botocore.exceptions.ClientError):
@@ -481,6 +554,17 @@ class CleanupService:
                 if code == 'UnauthorizedOperation':
                      raise Exception(f"AWS Permission Denied: {e}")
             raise e
+        finally:
+            # Invalidate cache after action execution
+            try:
+                from backend.core.redis_client import get_redis_client
+                redis_client = get_redis_client()
+                # Delete all cache keys for this account
+                for key in redis_client.scan_iter(f"cleanup:scan:{account_id}:*"):
+                    redis_client.delete(key)
+                    logger.info(f"Invalidated cache key: {key}")
+            except Exception as cache_err:
+                logger.error(f"Failed to invalidate cache: {cache_err}")
                  
         # The original code had an `elif action.action_type == CleanupActionType.AUTHORIZE:` here.
         # Given the new structure, this `elif` would be outside the `try` block and not directly

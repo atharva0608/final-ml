@@ -16,16 +16,18 @@ router = APIRouter(
 def scan_resources(
     account_id: str, 
     regions: Optional[List[str]] = Query(None),
+    force_refresh: bool = Query(False, description="Bypass cache and fetch fresh data from AWS"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     """
     Scan for orphaned resources.
     Pass regions=['ALL'] to scan all available regions.
+    Pass force_refresh=true to bypass cache (use after cleanup actions).
     """
     service = CleanupService(db)
     try:
-        return service.scan_resources(account_id, regions, organization=current_user.organization)
+        return service.scan_resources(account_id, regions, organization=current_user.organization, force_refresh=force_refresh)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

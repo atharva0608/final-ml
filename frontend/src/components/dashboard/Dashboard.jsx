@@ -23,7 +23,7 @@ import {
   FiPieChart, FiBarChart2, FiClock, FiAlertCircle, FiCheck, FiX, FiUsers, FiBriefcase
 } from 'react-icons/fi';
 import toast from 'react-hot-toast';
-import { auditAPI, clusterAPI, authAPI } from '../../services/api';
+import { auditAPI, clusterAPI, authAPI, accountsAPI } from '../../services/api';
 import { useAuthStore } from '../../store/useStore';
 
 const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4'];
@@ -112,6 +112,7 @@ const Dashboard = () => {
   const [activityFeed, setActivityFeed] = useState([]);
   const [savingsProjectionData, setSavingsProjectionData] = useState([]);
   const [clusters, setClusters] = useState([]);
+  const [accounts, setAccounts] = useState([]);
   const [inviteLoading, setInviteLoading] = useState(false);
 
   // Check if user has pending invitation
@@ -171,6 +172,11 @@ const Dashboard = () => {
         const clustersRes = await clusterAPI.listClusters();
         setClusters(clustersRes.data.clusters || []);
 
+        // Fetch Accounts (For Welcome Card visibility)
+        const accountsRes = await accountsAPI.list();
+        setAccounts(accountsRes.data || []);
+
+
       } catch (error) {
         console.error('Failed to fetch dashboard data:', error);
       }
@@ -226,10 +232,8 @@ const Dashboard = () => {
     );
   }
 
-  // Check if user needs to connect AWS account
-  const hasNoData = !loading &&
-    (!dashboardKPIs || dashboardKPIs.total_instances === 0) &&
-    (!costMetrics || costMetrics.total_cost === 0);
+  // Check if user needs to connect AWS account (Only show if NO accounts connected)
+  const hasNoData = !loading && accounts.length === 0;
 
   return (
     <>
@@ -274,7 +278,7 @@ const Dashboard = () => {
                   <Button
                     variant="primary"
                     size="sm"
-                    onClick={() => navigate('/settings/integrations')}
+                    onClick={() => navigate('/onboarding')}
                   >
                     Connect AWS Account →
                   </Button>

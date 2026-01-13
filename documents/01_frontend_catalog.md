@@ -46,6 +46,7 @@
 | **FE-LIB::UI::Input** | `frontend/src/components/shared/Input.jsx` | UI | Reusable Input. | `onChange` | `N/A` |
 | **FE-LIB::UI::Badge** | `frontend/src/components/shared/Badge.jsx` | UI | Status Badge. | `status` | `N/A` |
 | **FE-LIB::UI::StatsCard** | `frontend/src/components/shared/StatsCard.jsx` | UI | Dashboard Metric Card. | `title`, `value` | `N/A` |
+| **FE-LIB::UI::GaugeChart** | `frontend/src/components/shared/GaugeChart.jsx` | UI | Animated Semi-Circular Gauge for metrics. | `value`, `maxValue` | `useEffect` |
 | **FE-LIB::UI::EmptyState** | `frontend/src/components/shared/EmptyState.jsx` | UI | Empty state placeholder for no-data scenarios. | `title`, `message`, `action` | `FiInbox` |
 | **FE-HK::Auth::UseAuth** | `frontend/src/hooks/useAuth.js` | Hook | Authentication logic hook. | `user` | `authAPI` |
 | **FE-HK::Dash::UseDash** | `frontend/src/hooks/useDashboard.js` | Hook | Dashboard data fetching hook. | `data` | `metricsAPI` |
@@ -59,7 +60,7 @@
 | **FE-CMP::Onboard::Connect** | `frontend/src/components/onboarding/ConnectStep.jsx` | Component | **Real**: Onboarding Step 2: AWS Connect. Has loading state (`isLoading`), ARN validation, disabled button handling. | `onNext`, `roleArn`, `verifying` | `Input`, `Button`, `onboardingAPI` |
 | **FE-CMP::Onboard::Verify** | `frontend/src/components/onboarding/VerifyStep.jsx` | Component | Onboarding Step 3: Visual loading spinner during verification. | `onNext` | `motion` |
 | **FE-CMP::Onboard::Success** | `frontend/src/components/onboarding/SuccessStep.jsx` | Component | Onboarding Step 4: Success. | `onComplete` | `Button` |
-| **FE-CMP::Cleanup::Main** | `frontend/src/components/cleanup/CleanupDashboard.jsx` | Page | **Real (Complete)**: Resource Hygiene Dashboard. Multi-Region Scanning, **Tag Compliance** (Shameback card, Compliance column with missing tags tooltip), **Dependency Check** (pre-flight verification with Warning Modal), **Pending Approval** (202 handling with locked checkboxes). | `scanResult`, `selectedAccount` | `cleanupAPI`, `StatsCard`, `react-icons` |
+| **FE-CMP::Cleanup::Main** | `frontend/src/components/cleanup/CleanupDashboard.jsx` | Page | **Real (Complete)**: Resource Hygiene Dashboard. Multi-Region Scanning, **Authorization** (Authorize/Unauthorize resources, filter views), **Persistence** (1-hour cache), **Tag Compliance** (Shameback card), **Dependency Check** (Warning Modal). | `scanResult`, `selectedAccount` | `cleanupAPI`, `GaugeChart` |
 
 ### 6. Documentation Components
 
