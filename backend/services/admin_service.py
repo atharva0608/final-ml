@@ -6,7 +6,7 @@ Business logic for super admin operations and user management
 from typing import List, Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, desc, or_, func
-from backend.models.user import User, UserRole, OrgRole
+from backend.models.user import User, UserRole
 from backend.models.organization import Organization
 from backend.models.account import Account
 from backend.models.cluster import Cluster
@@ -138,7 +138,7 @@ class AdminService:
             if org.owner_user_id:
                 owner = self.db.query(User).filter(User.id == org.owner_user_id).first()
             if not owner:
-                owner = self.db.query(User).filter(and_(User.organization_id == org.id, User.org_role == OrgRole.ORG_ADMIN)).first()
+                owner = self.db.query(User).filter(and_(User.organization_id == org.id, User.role == UserRole.ORG_ADMIN)).first()
             total_users = self.db.query(User).filter(User.organization_id == org.id).count()
             total_clusters = self.db.query(Cluster).join(Account).filter(Account.organization_id == org.id).count()
             total_instances = self.db.query(Instance).join(Cluster).join(Account).filter(Account.organization_id == org.id).count()

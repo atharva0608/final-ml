@@ -35,9 +35,12 @@
 | **FE-CMP::Admin::Lab** | `frontend/src/components/admin/AdminLab.jsx` | Admin | Admin view for Lab experiments. | `experiments` | `labAPI` |
 | **FE-CMP::Set::Main** | `frontend/src/components/settings/Settings.jsx` | Page | User Settings wrapper. | `tab` | `AccountSettings`, `TeamManagement` |
 | **FE-CMP::Set::Account** | `frontend/src/components/settings/AccountSettings.jsx` | Component | User profile settings (Backend Mocked). | `userData` | `authAPI` |
-| **FE-CMP::Set::Teams** | `frontend/src/components/settings/TeamManagement.jsx` | Component | Team member management. | `members` | `organizationAPI` |
-| **FE-CMP::Set::Cloud** | `frontend/src/components/settings/CloudIntegrations.jsx` | Component | Managing AWS account links, CloudFormation template download, and status validation. | `accounts` | `accountAPI` |
-| **FE-LIB::UI::Button** | `frontend/src/components/shared/Button.jsx` | UI | Reusable Button. | `onClick` | `N/A` |
+| **FE-CMP::Set::Teams** | `frontend/src/components/settings/TeamManagement.jsx` | Component | **New**: Team-Centric Management. Accordion view for hierarchical team/member management. | `teams`, `members` | `teamAPI` |
+| **FE-CMP::Set::Profile** | `frontend/src/components/settings/UserProfile.jsx` | Component | **New**: User Profile settings (Full Name update). | `user` | `userAPI` |
+| **FE-CMP::Approv::Main** | `frontend/src/components/approvals/ApprovalCenter.jsx` | Page | **Real**: Approval Center for Maker-Checker workflows. Lists pending requests and allows Team Leads to Approve/Reject. | `requests` | `approvalsAPI`, `Badge` |
+| **FE-CMP::Gov::Settings** | `frontend/src/components/settings/GovernanceSettings.jsx` | Page | **Real**: Automated Governance / Policy-as-Code settings. Master toggle, policy cards, required tags configuration. | `config`, `policies` | `governanceAPI`, `toast` |
+
+### 6. Documentation Components
 | **FE-LIB::UI::Card** | `frontend/src/components/shared/Card.jsx` | UI | Reusable Card. | `children` | `N/A` |
 | **FE-LIB::UI::Input** | `frontend/src/components/shared/Input.jsx` | UI | Reusable Input. | `onChange` | `N/A` |
 | **FE-LIB::UI::Badge** | `frontend/src/components/shared/Badge.jsx` | UI | Status Badge. | `status` | `N/A` |
@@ -55,7 +58,7 @@
 | **FE-CMP::Onboard::Connect** | `frontend/src/components/onboarding/ConnectStep.jsx` | Component | **Real**: Onboarding Step 2: AWS Connect. Has loading state (`isLoading`), ARN validation, disabled button handling. | `onNext`, `roleArn`, `verifying` | `Input`, `Button`, `onboardingAPI` |
 | **FE-CMP::Onboard::Verify** | `frontend/src/components/onboarding/VerifyStep.jsx` | Component | Onboarding Step 3: Visual loading spinner during verification. | `onNext` | `motion` |
 | **FE-CMP::Onboard::Success** | `frontend/src/components/onboarding/SuccessStep.jsx` | Component | Onboarding Step 4: Success. | `onComplete` | `Button` |
-| **FE-CMP::Cleanup::Main** | `frontend/src/components/cleanup/CleanupDashboard.jsx` | Page | **Real**: Resource Hygiene Dashboard. Multi-Region Scanning, Live Savings Calculator, "Cast AI" style UI, and Action Execution. | `scanResult`, `selectedAccount` | `cleanupAPI`, `StatsCard`, `react-icons` |
+| **FE-CMP::Cleanup::Main** | `frontend/src/components/cleanup/CleanupDashboard.jsx` | Page | **Real**: Resource Hygiene Dashboard. Multi-Region Scanning, **Tag Compliance** (is_compliant, missing_tags), **Pending Approval** (202 handling), **Dependency Check** (pre-flight verification). | `scanResult`, `selectedAccount` | `cleanupAPI`, `StatsCard`, `react-icons` |
 
 ### 6. Documentation Components
 

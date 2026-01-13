@@ -66,7 +66,7 @@ def get_current_user_context(
         email=user.email,
         role=user.role.value,
         organization_id=user.organization_id,
-        org_role=user.org_role.value if user.org_role else None,
+        org_role=user.role.value,
         access_level=user.access_level.value if user.access_level else None
     )
     
@@ -125,7 +125,12 @@ class RequireRole:
             raise AuthorizationError("User does not belong to an organization")
 
         # Get values
-        user_role_str = current_user.org_role.value if current_user.org_role else "MEMBER"
+        # Legacy support: use role as org_role
+        user_role_str = current_user.role.value
+        
+        # Treat CLIENT role as ORG_ADMIN (Legacy/Demo support)
+        if user_role_str == "CLIENT":
+            user_role_str = "ORG_ADMIN"
         
         user_level = self.hierarchy.get(user_role_str, 0)
         required_level = self.hierarchy.get(self.min_role, 0)

@@ -7,28 +7,55 @@ class TimeSeriesPoint(BaseModel):
     value: float
 
 class TimeSeriesData(BaseModel):
-    points: List[TimeSeriesPoint]
-    label: str
+    """Time series data for charts"""
+    metric_name: str = ""
+    data_points: List[TimeSeriesPoint] = []
+    unit: str = ""
+    # Legacy compatibility
+    points: Optional[List[TimeSeriesPoint]] = None
+    label: Optional[str] = None
 
 class DashboardKPIs(BaseModel):
-    total_savings: float
-    spot_percentage: float
-    cluster_health: float
-    active_clusters: int
+    """Dashboard key performance indicators"""
+    total_instances: int = 0
+    active_instances: int = 0
+    spot_instances: int = 0
+    on_demand_instances: int = 0
+    total_cost: float = 0.0
+    estimated_savings: float = 0.0
+    savings_percentage: float = 0.0
+    total_optimizations: int = 0
+    successful_optimizations: int = 0
+    optimization_rate: Optional[float] = None
+    time_range_start: Optional[datetime] = None
+    time_range_end: Optional[datetime] = None
 
 class CostMetrics(BaseModel):
-    on_demand_cost: float
-    spot_cost: float
-    savings: float
+    """Cost breakdown metrics"""
+    total_cost: float = 0.0
+    spot_cost: float = 0.0
+    on_demand_cost: float = 0.0
+    currency: str = "USD"
 
 class InstanceMetrics(BaseModel):
-    instance_id: str
-    cpu_util: float
-    memory_util: float
+    """Aggregate instance metrics for dashboard"""
+    total_instances: int = 0
+    running_instances: int = 0
+    pending_instances: int = 0
+    stopping_instances: int = 0
+    stopped_instances: int = 0
+    terminated_instances: int = 0
+    spot_instances: int = 0
+    on_demand_instances: int = 0
+    amd64_instances: int = 0
+    arm64_instances: int = 0
 
 class SavingsBreakdown(BaseModel):
-    total: float
-    by_category: Dict[str, float]
+    """Savings breakdown metrics"""
+    total_savings: float = 0.0
+    spot_savings: float = 0.0
+    hibernation_savings: float = 0.0
+    savings_percentage: float = 0.0
 
 class ClusterMetrics(BaseModel):
     cluster_id: str

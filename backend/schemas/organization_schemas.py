@@ -15,10 +15,14 @@ class MemberResponse(BaseModel):
     id: str
     email: str
     org_role: str
-    access_level: Optional[str] = "READ_ONLY"
+    access_level: str
     is_active: bool
+    status: Optional[str] = "ACTIVE"
     created_at: datetime
     last_login: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
 
 class MemberListResponse(BaseModel):
     members: List[MemberResponse]

@@ -6,6 +6,7 @@ from typing import List, Optional
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 from backend.models.account import Account, AccountStatus
+from backend.models.user import User, UserRole
 from backend.schemas.account_schemas import AccountCreate, AccountResponse
 
 class AccountService:
@@ -55,11 +56,31 @@ class AccountService:
         except ClientError as e:
             raise HTTPException(400, f"AWS Connection Failed: {str(e)}")
 
-    def list_accounts(self, organization_id: str) -> List[Account]:
-        """List all accounts for an organization"""
-        return self.db.query(Account).filter(
-            Account.organization_id == organization_id
-        ).all()
+    def list_accounts(self, user: "User") -> List[Account]:
+        """
+        List accounts based on RBAC:
+        - Org Admin: All accounts in organization
+        - Team Lead: All accounts owned by team members
+        - Member: Only their own accounts
+        """
+        query = self.db.query(Account).filter(Account.organization_id == user.organization_id)
+        
+        if user.role == UserRole.ORG_ADMIN or user.role == UserRole.CLIENT:
+            return query.all()
+        
+        elif user.role == UserRole.TEAM_LEAD:
+            if not user.team_id:
+                return query.filter(Account.user_id == user.id).all() # Fallback to own
+            
+            # Get all user IDs in the team
+            team_members = self.db.query(User.id).filter(User.team_id == user.team_id).all()
+            member_ids = [m.id for m in team_members]
+            return query.filter(Account.user_id.in_(member_ids)).all()
+            
+        elif user.role == UserRole.MEMBER:
+            return query.filter(Account.user_id == user.id).all()
+            
+        return []
 
     def get_account(self, account_id: str, organization_id: str) -> Account:
         """Get a specific account by ID"""
@@ -76,9 +97,13 @@ class AccountService:
         organization_id: str,
         aws_account_id: str,
         role_arn: str,
-        external_id: str
-    ) -> Account:
+        external_id: str,
+        requester
+    ) -> dict:
         """Link a new AWS account after verifying credentials"""
+        from backend.models.user import UserRole
+        from backend.models.approval import ApprovalRequest
+        
         # Verify connection first
         self.verify_connection(role_arn, external_id)
         
@@ -90,21 +115,43 @@ class AccountService:
         if existing:
             raise HTTPException(400, "Account already linked")
 
+        # Determine Status
+        status = AccountStatus.ACTIVE
+        needs_approval = False
+        
+        if requester.role == UserRole.MEMBER:
+            status = AccountStatus.PENDING_APPROVAL
+            needs_approval = True
+
         account = Account(
             id=str(uuid.uuid4()),
             organization_id=organization_id,
             aws_account_id=aws_account_id,
             role_arn=role_arn,
             external_id=external_id,
-            status=AccountStatus.ACTIVE,
+            status=status,
             created_at=datetime.utcnow(),
             updated_at=datetime.utcnow()
         )
+        
         self.db.add(account)
         self.db.commit()
-        self.db.refresh(account)
-        return account
+        
+        if needs_approval:
+            approval_req = ApprovalRequest(
+                organization_id=organization_id,
+                requester_id=requester.id,
+                resource_type="AWS_ACCOUNT",
+                resource_id=account.id,
+                action="CONNECT_ACCOUNT",
+                execution_payload={} 
+            )
+            self.db.add(approval_req)
+            self.db.commit()
+            return {"status": "pending", "message": "Connection request sent to Team Lead", "account": account}
 
+        self.db.refresh(account)
+        return {"status": "success", "account": account}
     def delete_account(self, account_id: str, organization_id: str) -> bool:
         """Delete/unlink an AWS account"""
         account = self.get_account(account_id, organization_id)

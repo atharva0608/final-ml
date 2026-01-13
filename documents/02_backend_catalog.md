@@ -22,7 +22,7 @@
 | **BE-SVC::Metrics::Main** | `backend/services/metrics_service.py` | Service | Metrics aggregation (Cost, Savings, Usage). Generates Dashboard KPIs and Time Series data. | `Instance`, `OptimizationJob` |
 | **BE-SVC::Audit::Main** | `backend/services/audit_service.py` | Service | Audit logging and querying. tracks actor, event, resource, outcome, and diffs. | `AuditLog` |
 | **BE-SVC::Lab::Main** | `backend/services/lab_service.py` | Service | ML Experimentation (A/B Testing). Manage experiments, variants, and calculate results/winners. | `LabExperiment`, `MLModel` |
-| **BE-SVC::Cleanup::Main** | `backend/services/cleanup_service.py` | Service | **Real**: Logic for scanning and purging AWS resources. Supports Multi-Region scanning, Orphan detection, and Auto-Cleanup actions. | `boto3`, `ResourceItem` |
+| **BE-SVC::Cleanup::Main** | `backend/services/cleanup_service.py` | Service | **Real (Optimized)**: Parallel multi-region scanning, Redis Caching (5 min TTL), **Dependency Check** (pre-flight for SG/Snapshot/Volume), **Tag Compliance** (is_compliant, missing_tags), **RBAC Approval** integration. | `boto3`, `concurrent.futures`, `redis`, `ResourceItem` |
 | **BE-API::Admin::Main** | `backend/api/admin_routes.py` | API | Super Admin Endpoints. List Orgs/Clients, Billing, Dashboard Stats, Platform Stats. | `AdminService` |
 | **BE-API::Account::Main** | `backend/api/account_routes.py` | API | AWS Account Management. Link, List, Delete accounts. | `AccountService` |
 | **BE-API::Cluster::Main** | `backend/api/cluster_routes.py` | API | Cluster Operations. Discover, Register, Connect (AWS), Agent Install, Heartbeat. | `ClusterService` |
@@ -43,9 +43,17 @@
 | **BE-TPL::AWS::RoleYAML** | `backend/templates/aws/read-only-role.yaml` | Template | CloudFormation YAML for cross-account IAM role creation. | N/A |
 | **BE-MOD::System::Base** | `backend/models/base.py` | Model | Base Audit Mixin and DB connection setup. | `SQLAlchemy` |
 
-| **BE-MOD::Auth::User** | `backend/models/user.py` | Model | User Table. | `Base` |
-| **BE-MOD::Auth::Org** | `backend/models/organization.py` | Model | Organization Table. | `Base` |
+| **BE-SVC::Approval::Main** | `backend/services/approval_service.py` | Service | **Real**: Approval Engine. Creates requests, enforces Maker-Checker rules, executes approved payloads dynamically. | `ApprovalRequest`, `User` |    
+| **BE-API::Approval::Main** | `backend/api/approval_routes.py` | API | **Real**: Approval Endpoints. List Pending, Approve, Reject. | `ApprovalService` |
+| **BE-MOD::Auth::Approval** | `backend/models/approval.py` | Model | Approval Request Table. Stores payload and status. | `Base` |
+| **BE-MOD::Auth::User** | `backend/models/user.py` | Model | User Table. Updated with `UserRole` (Super/Org/Team/Member) and `team_id`. | `Base` |
+| **BE-MOD::Auth::Org** | `backend/models/organization.py` | Model | Organization Table. Updated with Governance Flags (`is_strict_approval_mode`). | `Base` |
+| **BE-MOD::Auth::Team** | `backend/models/team.py` | Model | **New**: Team Model. Groups users within an org. | `Base` |
+| **BE-SVC::Team::Main** | `backend/services/team_service.py` | Service | **New**: Team Management. Create, Rename, Assign members. | `Team`, `User` |
+| **BE-API::Team::Main** | `backend/api/team_routes.py` | API | **New**: Team Endpoints (CRUD). | `TeamService` |
 | **BE-MOD::Auth::Invite** | `backend/models/invitation.py` | Model | Organization Invitation Table. | `Base` |
+| **BE-SVC::Governance::Main** | `backend/services/governance_service.py` | Service | **Real**: Automated Governance / Policy-as-Code. Executes cleanup based on org policies with "System Autopilot" actor. | `CleanupService`, `AuditLog` |
+| **BE-API::Governance::Main** | `backend/api/governance_routes.py` | API | **Real**: Governance Endpoints. Get/Update policies, trigger autopilot. | `GovernanceService` |
 | **BE-MOD::Infra::Account** | `backend/models/account.py` | Model | AWS Account Table. | `Base` |
 | **BE-MOD::Infra::Cluster** | `backend/models/cluster.py` | Model | Kubernetes Cluster Table. | `Base` |
 | **BE-MOD::Infra::Instance** | `backend/models/instance.py` | Model | Node/Instance Table. | `Base` |
@@ -96,6 +104,7 @@
 | **BE-MIG::Env::Main** | `migrations/env.py` | Config | Python environment script for migrations. | `Alembic` |
 | **BE-MIG::Ver::001_Initial** | `migrations/versions/001_initial_schema.py` | Migration | Initial database schema creation script. | `Alembic` |
 | **BE-MIG::Ver::002_Seed** | `migrations/versions/002_seed_data.py` | Migration | Script to seed database with default data. | `Alembic` |
+| **BE-MIG::Ver::003_Governance** | `migrations/versions/003_add_governance_columns.py` | Migration | Adds `team_id` (users), `required_tags` (organizations), `approval_requests` table. | `Alembic` |
 | **BE-AST::AWS::IAM_Full** | `backend/templates/aws/full-access-role.yaml` | Asset | CloudFormation template for Full Access IAM Role. | `AWS` |
 | **BE-AST::AWS::IAM_Full** | `backend/templates/aws/full-access-role.yaml` | Asset | CloudFormation template for Full Access IAM Role. | `AWS` |
 | **BE-AST::AWS::IAM_ReadOnly** | `backend/templates/aws/read-only-role.yaml` | Asset | CloudFormation template for Read-Only IAM Role. Updated with `SpotOptimizerCleanupPolicy`. | `AWS` |

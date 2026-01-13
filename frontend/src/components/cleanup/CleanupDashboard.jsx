@@ -3,7 +3,8 @@ import { cleanupAPI, accountsAPI } from '../../services/api';
 import StatsCard from '../shared/StatsCard';
 import Badge from '../shared/Badge';
 import Button from '../shared/Button';
-import { FiDollarSign, FiAlertOctagon, FiHardDrive, FiGlobe, FiCheckCircle } from 'react-icons/fi';
+import { FiDollarSign, FiAlertOctagon, FiHardDrive, FiGlobe, FiCheckCircle, FiAlertTriangle } from 'react-icons/fi';
+import toast from 'react-hot-toast';
 
 const CleanupDashboard = () => {
     const [loading, setLoading] = useState(false);
@@ -83,18 +84,29 @@ const CleanupDashboard = () => {
                 }
             });
 
+            let pendingRequests = 0;
             for (const region of Object.keys(itemsByRegion)) {
-                await cleanupAPI.execute({
+                const response = await cleanupAPI.execute({
                     resource_ids: itemsByRegion[region],
                     action_type: actionType,
                     region: region
                 }, selectedAccount);
+
+                if (response.status === 202) {
+                    pendingRequests++;
+                }
+            }
+
+            if (pendingRequests > 0) {
+                toast.success(`Request Sent: ${pendingRequests} batch(es) pending approval.`);
+            } else {
+                toast.success('Cleaned up resources successfully');
             }
 
             handleScan();
         } catch (err) {
             console.error("Action failed", err);
-            alert("Failed to execute cleanup action: " + err.message);
+            toast.error("Failed to execute cleanup action: " + err.message);
         } finally {
             setActionLoading(false);
             setSelectedItems([]);
@@ -108,6 +120,22 @@ const CleanupDashboard = () => {
     };
 
     const filteredResources = scanResult?.resources.filter(r => r.type === activeTab) || [];
+
+    // Safety Score helper - determines cleanup confidence level
+    const getSafetyLevel = (resource) => {
+        // HIGH: Explicitly safe items
+        if (resource.status === 'SAFE_TO_DELETE') return 'HIGH';
+
+        // HIGH: Orphaned volumes/snapshots are usually safe to delete (Fallback if status is just ORPHANED)
+        if (resource.type === 'VOLUME' && resource.status === 'ORPHANED') return 'HIGH';
+        if (resource.type === 'SNAPSHOT' && resource.status === 'ORPHANED') return 'HIGH';
+        if (resource.type === 'ELASTIC_IP' && resource.status === 'ORPHANED') return 'HIGH';
+
+        // MEDIUM: Unauthorized instances might be dev boxes or manual deployments
+        if (resource.type === 'INSTANCE' && resource.status === 'UNAUTHORIZED') return 'MEDIUM';
+
+        return 'LOW';
+    };
 
     // Calculate defaults if no scan result
     const stats = scanResult || {
@@ -205,8 +233,8 @@ const CleanupDashboard = () => {
                         <button
                             key={type}
                             className={`px-6 py-4 text-sm font-medium transition-colors border-b-2 ${activeTab === type
-                                    ? 'border-indigo-600 text-indigo-600 bg-white'
-                                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                                ? 'border-indigo-600 text-indigo-600 bg-white'
+                                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
                                 }`}
                             onClick={() => setActiveTab(type)}
                         >
@@ -285,6 +313,7 @@ const CleanupDashboard = () => {
                                     <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Name</th>
                                     <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Region</th>
                                     <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Status</th>
+                                    <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Safety</th>
                                     <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Cost/Mo</th>
                                     <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Details</th>
                                 </tr>
@@ -293,12 +322,20 @@ const CleanupDashboard = () => {
                                 {filteredResources.map(resource => (
                                     <tr key={resource.id} className={`hover:bg-gray-50 transition-colors ${selectedItems.includes(resource.id) ? 'bg-blue-50' : ''}`}>
                                         <td className="px-6 py-4 whitespace-nowrap">
-                                            <input
-                                                type="checkbox"
-                                                className="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
-                                                checked={selectedItems.includes(resource.id)}
-                                                onChange={() => toggleSelection(resource.id)}
-                                            />
+                                            <div className="relative group">
+                                                <input
+                                                    type="checkbox"
+                                                    disabled={resource.status === 'PENDING_APPROVAL'}
+                                                    className="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500 disabled:opacity-50"
+                                                    checked={selectedItems.includes(resource.id)}
+                                                    onChange={() => toggleSelection(resource.id)}
+                                                />
+                                                {resource.status === 'PENDING_APPROVAL' && (
+                                                    <div className="absolute left-6 top-0 w-32 bg-black text-white text-xs rounded py-1 px-2 opacity-0 group-hover:opacity-100 transition-opacity z-10 pointer-events-none">
+                                                        Pending Approval
+                                                    </div>
+                                                )}
+                                            </div>
                                         </td>
                                         <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900 font-mono">{resource.id}</td>
                                         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{resource.name}</td>
@@ -308,9 +345,26 @@ const CleanupDashboard = () => {
                                             </span>
                                         </td>
                                         <td className="px-6 py-4 whitespace-nowrap">
-                                            <Badge type={resource.status === 'ORPHANED' || resource.status === 'UNAUTHORIZED' ? 'warning' : 'success'}>
-                                                {resource.status}
+                                            <Badge type={resource.status === 'SAFE_TO_DELETE' ? 'success' : (resource.status === 'ORPHANED' || resource.status === 'UNAUTHORIZED' ? 'warning' : 'neutral')}>
+                                                {resource.status.replace(/_/g, ' ')}
                                             </Badge>
+                                        </td>
+                                        <td className="px-6 py-4 whitespace-nowrap">
+                                            {getSafetyLevel(resource) === 'HIGH' && (
+                                                <span className="bg-green-100 text-green-800 text-xs font-bold px-2 py-1 rounded-full flex items-center w-fit">
+                                                    <FiCheckCircle className="mr-1" /> Safe to Delete
+                                                </span>
+                                            )}
+                                            {getSafetyLevel(resource) === 'MEDIUM' && (
+                                                <span className="bg-yellow-100 text-yellow-800 text-xs font-bold px-2 py-1 rounded-full flex items-center w-fit">
+                                                    <FiAlertTriangle className="mr-1" /> Review Needed
+                                                </span>
+                                            )}
+                                            {getSafetyLevel(resource) === 'LOW' && (
+                                                <span className="bg-red-100 text-red-800 text-xs font-bold px-2 py-1 rounded-full flex items-center w-fit">
+                                                    <FiAlertOctagon className="mr-1" /> Risky
+                                                </span>
+                                            )}
                                         </td>
                                         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 font-medium">${resource.cost_per_month.toFixed(2)}</td>
                                         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 max-w-xs truncate">

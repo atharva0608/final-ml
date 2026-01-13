@@ -34,14 +34,22 @@ import AdminBilling from './components/admin/AdminBilling';
 import AdminOrganizations from './components/admin/AdminOrganizations';
 import RightSizing from './components/right-sizing/RightSizing';
 import CleanupDashboard from './components/cleanup/CleanupDashboard';
+import ApprovalCenter from './components/approvals/ApprovalCenter';
+import GovernanceSettings from './components/settings/GovernanceSettings';
+
+import InviteAcceptance from './components/auth/InviteAcceptance';
 
 // Protected Route Component
 const ProtectedRoute = ({ children }) => {
-  const { isAuthenticated } = useAuthStore();
+  const { isAuthenticated, user } = useAuthStore();
+
+  console.log("ProtectedRoute Check - User:", user); // DEBUG: Check user status for redirect
 
   if (!isAuthenticated) {
     return <Navigate to="/login" replace />;
   }
+
+  // NOTE: PENDING_INVITE users will see modal on Dashboard instead of redirect
 
   return children;
 };
@@ -151,6 +159,16 @@ function App() {
             }
           />
 
+          {/* Invitation Acceptance Route */}
+          <Route
+            path="/invite-acceptance"
+            element={
+              <ProtectedRoute>
+                <InviteAcceptance />
+              </ProtectedRoute>
+            }
+          />
+
           {/* Protected Routes */}
           <Route
             path="/onboarding"
@@ -178,7 +196,9 @@ function App() {
             <Route path="hibernation" element={<HibernationSchedule />} />
             <Route path="audit" element={<AuditLog />} />
             <Route path="cleanup" element={<CleanupDashboard />} />
+            <Route path="approvals" element={<ApprovalCenter />} />
             <Route path="settings" element={<Settings />} />
+            <Route path="settings/governance" element={<GovernanceSettings />} />
 
             {/* Admin Routes (SUPER_ADMIN only) */}
             <Route path="admin" element={<AdminRoute><AdminDashboard /></AdminRoute>} />

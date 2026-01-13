@@ -6,7 +6,8 @@ from sqlalchemy.orm import relationship
 from datetime import datetime
 import enum
 from backend.models.base import Base, generate_uuid
-from backend.models.user import OrgRole, AccessLevel
+from backend.models.user import UserRole, AccessLevel
+from backend.models.user import UserRole, AccessLevel # Changed OrgRole to UserRole
 
 class InvitationStatus(enum.Enum):
     PENDING = "PENDING"
@@ -29,7 +30,7 @@ class OrganizationInvitation(Base):
     status = Column(SQLEnum(InvitationStatus), default=InvitationStatus.PENDING, nullable=False)
     
     # Permissions to grant
-    role = Column(SQLEnum(OrgRole), nullable=False, default=OrgRole.MEMBER)
+    role = Column(SQLEnum(UserRole), nullable=False, default=UserRole.MEMBER) # Changed OrgRole to UserRole
     access_level = Column(SQLEnum(AccessLevel), nullable=False, default=AccessLevel.READ_ONLY)
     
     # Links

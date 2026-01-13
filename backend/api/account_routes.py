@@ -21,11 +21,8 @@ def list_accounts(
 ):
     """List all AWS accounts linked to the user's organization"""
     service = get_account_service(db)
-    # Service expects user_id, it should probably filter by user's org for better multi-tenancy?
-    # Service implementation currently filters by user_id. 
-    # If users share accounts in an org, the service logic might need update, 
-    # but for now we follow existing pattern.
-    return service.list_accounts(current_user.organization_id)
+    # Service expects user object for RBAC filtering
+    return service.list_accounts(current_user)
 
 @router.post(
     "",

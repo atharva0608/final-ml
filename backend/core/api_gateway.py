@@ -26,7 +26,31 @@ from backend.api import (
     health_router,
     optimization_router,
     cleanup_router,
+    approval_router,
+    team_router,
+    user_router,
 )
+
+__all__ = [
+    "auth_router",
+    "template_router",
+    "audit_router",
+    "cluster_router",
+    "policy_router",
+    "hibernation_router",
+    "metrics_router",
+    "admin_router",
+    "lab_router",
+    "onboarding_router",
+    "organization_router",
+    "health_router",
+    "optimization_router",
+    "cleanup_router",
+    "approval_router",
+    "team_router",
+    "user_router",
+]
+
 from backend.api import account_routes
 from backend.api import settings_routes
 
@@ -350,6 +374,15 @@ app.include_router(optimization_router, prefix="/api/v1")
 
 # Cleanup routes
 app.include_router(cleanup_router, prefix="/api/v1")
+
+# Approval routes
+app.include_router(approval_router, prefix="/api/v1")
+
+# Team routes
+app.include_router(team_router, prefix="/api/v1")
+
+# User routes
+app.include_router(user_router, prefix="/api/v1")
 
 # Settings routes
 app.include_router(settings_routes.router, prefix="/api/v1")

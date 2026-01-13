@@ -13,6 +13,7 @@ from backend.schemas.auth_schemas import (
     LoginResponse,
     UserProfile,
     PasswordChangeRequest,
+    InvitationResponseRequest,
 )
 from backend.services.auth_service import get_auth_service, AuthService
 from backend.core.dependencies import get_current_user, get_current_user_context
@@ -66,10 +67,11 @@ def signup(
         email=user.email,
         role=user.role.value,
         organization_id=user.organization_id,
-        org_role=user.org_role.value if user.org_role else None,
+        org_role=None,  # Deprecated - using unified role instead
         organization_name=user.organization.name if user.organization else None,
         access_level=user.access_level.value if user.access_level else None,
-        must_reset_password=user.must_reset_password
+        must_reset_password=user.must_reset_password,
+        status=user.status if hasattr(user, 'status') else "ACTIVE"
     )
 
     # Combine tokens and user data
@@ -82,6 +84,43 @@ def signup(
     )
 
     return response
+
+@router.post(
+    "/invitation-response",
+    status_code=status.HTTP_200_OK,
+    summary="Accept or Decline Invitation",
+    description="Accepting activates the account. Declining permanently deletes the account."
+)
+def respond_to_invitation(
+    response_data: InvitationResponseRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Handle invitation response for pending users.
+    """
+    from backend.models.user import UserStatus
+    
+    if current_user.status != UserStatus.PENDING_INVITE.value:
+         # Idempotency: If already active, just return success if they accepted
+        if response_data.accept and current_user.status == UserStatus.ACTIVE.value:
+             return {"message": "Account already active"}
+        raise backend.core.exceptions.ValidationError("User is not in a pending invitation state")
+
+    if response_data.accept:
+        # Activate User
+        current_user.status = UserStatus.ACTIVE.value
+        db.commit()
+        logger.info(f"User {current_user.email} accepted invitation. Account activated.")
+        return {"message": "Invitation accepted. Welcome aboard!"}
+    
+    else:
+        # Decline: Hard Delete
+        email = current_user.email
+        db.delete(current_user)
+        db.commit()
+        logger.info(f"User {email} declined invitation. Account deleted.")
+        return {"message": "Invitation declined. Account removed."}
 
 
 @router.post(
@@ -122,10 +161,12 @@ def login(
         email=user.email,
         role=user.role.value,
         organization_id=user.organization_id,
-        org_role=user.org_role.value if user.org_role else None,
+        org_role=None,  # Deprecated - using unified role instead
         organization_name=user.organization.name if user.organization else None,
         access_level=user.access_level.value if user.access_level else None,
-        must_reset_password=user.must_reset_password
+        must_reset_password=user.must_reset_password,
+        status=user.status or "ACTIVE",
+        team_id=user.team_id
     )
 
     # Combine tokens and user data

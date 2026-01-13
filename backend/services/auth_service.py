@@ -6,8 +6,10 @@ Business logic for user authentication, signup, login, and token management
 from typing import Optional, Tuple
 from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
-from backend.models.user import User, UserRole, OrgRole, AccessLevel
+from backend.models.user import User, UserRole, AccessLevel
 from backend.models.organization import Organization
+from backend.models.invitation import OrganizationInvitation, InvitationStatus
+from sqlalchemy import and_
 from backend.schemas.auth_schemas import (
     SignupRequest,
     LoginRequest,
@@ -77,29 +79,62 @@ class AuthService:
         # Hash password
         password_hash = hash_password(signup_data.password)
 
-        # Create Organization
-        base_slug = signup_data.organization_name.lower().replace(" ", "-")
-        # specific logic for uniqueness could be added here
-        
-        new_org = Organization(
-            name=signup_data.organization_name,
-            slug=base_slug + "-" + datetime.utcnow().strftime("%H%M%S") # simple uniqueness
-        )
-        self.db.add(new_org)
-        self.db.flush() # Get ID
+        # Check for pending invitation
+        invitation = self.db.query(OrganizationInvitation).filter(
+            and_(
+                OrganizationInvitation.email == signup_data.email.lower(),
+                OrganizationInvitation.status == InvitationStatus.PENDING
+            )
+        ).first()
 
-        # Create new user (organization owner)
-        new_user = User(
-            email=signup_data.email.lower(),
-            password_hash=password_hash,
-            role=UserRole.CLIENT,  # Default role
-            organization_id=new_org.id,
-            org_role=OrgRole.ORG_ADMIN,  # Organization creator becomes ORG_ADMIN
-            access_level=AccessLevel.FULL,  # Full access for org creator
-            must_reset_password=False,  # Owner chose their own password
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow()
-        )
+        new_user = None
+        new_org = None
+        
+        if invitation:
+            # User joins existing organization via invitation
+            logger.info(
+                "Processing signup with invitation", 
+                email=signup_data.email, 
+                role=invitation.role,
+                organization_id=invitation.organization_id
+            )
+            
+            new_user = User(
+                email=signup_data.email.lower(),
+                password_hash=password_hash,
+                role=invitation.role,
+                organization_id=invitation.organization_id,
+                access_level=invitation.access_level,
+                must_reset_password=False,
+                created_at=datetime.utcnow(),
+                updated_at=datetime.utcnow()
+            )
+            
+            # Mark invitation as accepted
+            invitation.status = InvitationStatus.ACCEPTED
+            
+        else:
+            # Standard Signup: Create new Organization
+            base_slug = signup_data.organization_name.lower().replace(" ", "-")
+            
+            new_org = Organization(
+                name=signup_data.organization_name,
+                slug=base_slug + "-" + datetime.utcnow().strftime("%H%M%S")
+            )
+            self.db.add(new_org)
+            self.db.flush()
+
+            # Create owner user
+            new_user = User(
+                email=signup_data.email.lower(),
+                password_hash=password_hash,
+                role=UserRole.ORG_ADMIN,
+                organization_id=new_org.id,
+                access_level=AccessLevel.FULL,
+                must_reset_password=False,
+                created_at=datetime.utcnow(),
+                updated_at=datetime.utcnow()
+            )
 
         self.db.add(new_user)
         self.db.flush()  # Get user ID
@@ -317,7 +352,10 @@ class AuthService:
                 "email": user.email,
                 "role": user.role.value,
                 "organization_id": user.organization_id,
-                "organization_name": user.organization.name if user.organization else None
+                "organization_name": user.organization.name if user.organization else None,
+                "status": user.status or "ACTIVE",
+                "team_id": user.team_id,
+                "must_reset_password": user.must_reset_password or False
             }
         )
 

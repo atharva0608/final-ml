@@ -50,7 +50,7 @@ class Settings(BaseSettings):
 
     # CORS
     CORS_ORIGINS: Union[str, List[str]] = Field(
-        default="http://localhost:3000,http://localhost:5173",
+        default="http://localhost:3000,http://localhost:5173,http://localhost,http://localhost:80",
         description="CORS allowed origins (comma-separated string or list)"
     )
     CORS_ALLOW_CREDENTIALS: bool = Field(default=True, description="CORS allow credentials")

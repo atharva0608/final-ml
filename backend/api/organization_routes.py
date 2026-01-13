@@ -60,9 +60,21 @@ def invite_member(
     
     return InviteResponse(
         message=result["message"],
-        invitation=None,
+        invitation=result["invitation"],
         temporary_password=result["temporary_password"]
     )
+
+@router.get(
+    "/invitations",
+    summary="List pending invitations",
+    description="Get all pending invitations for the organization"
+)
+def list_invitations(
+    current_user: User = Depends(RequireRole("ORG_ADMIN")),
+    db: Session = Depends(get_db)
+):
+    service = get_organization_service(db)
+    return {"invitations": service.list_invitations(current_user.organization_id)}
 
 @router.delete(
     "/members/{user_id}",

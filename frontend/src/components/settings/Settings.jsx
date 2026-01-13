@@ -15,13 +15,14 @@ const Settings = () => {
     const [activeTab, setActiveTab] = useState('account');
     const { user } = useAuth();
 
-    // Only ORG_ADMIN can access Team Management (invite/remove/update members)
-    const canManageTeam = user?.org_role === 'ORG_ADMIN';
+    // ORG_ADMIN can manage all teams, TEAM_LEAD can see and manage their own team
+    const myRole = user?.role;
+    const canSeeTeamTab = myRole === 'ORG_ADMIN' || myRole === 'SUPER_ADMIN' || myRole === 'CLIENT' || myRole === 'TEAM_LEAD';
 
     const tabs = [
         { id: 'account', label: 'Account', icon: FiUser },
         // Only show team tab for authorized roles
-        ...(canManageTeam ? [{ id: 'team', label: 'Team', icon: FiUsers }] : []),
+        ...(canSeeTeamTab ? [{ id: 'team', label: 'Team', icon: FiUsers }] : []),
         { id: 'integrations', label: 'Cloud Integrations', icon: FiCloud },
         { id: 'billing', label: 'Billing', icon: FiCreditCard },
         { id: 'security', label: 'Security', icon: FiShield },

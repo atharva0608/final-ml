@@ -1,10 +1,11 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 from typing import List, Optional
 
-from backend.core.dependencies import get_db
+from backend.core.dependencies import get_db, get_current_user
 from backend.services.cleanup_service import CleanupService
 from backend.schemas.cleanup_schemas import CleanupSummary, CleanupAction
+from backend.models.user import User
 
 router = APIRouter(
     prefix="/cleanup",
@@ -15,8 +16,8 @@ router = APIRouter(
 def scan_resources(
     account_id: str, 
     regions: Optional[List[str]] = Query(None),
-    db: Session = Depends(get_db)
-    # user = Depends(get_current_user) # Assuming auth is handled globally or middleware
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
     """
     Scan for orphaned resources.
@@ -24,7 +25,27 @@ def scan_resources(
     """
     service = CleanupService(db)
     try:
-        return service.scan_resources(account_id, regions)
+        return service.scan_resources(account_id, regions, organization=current_user.organization)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/check-dependencies")
+def check_dependencies(
+    account_id: str = Query(...),
+    resource_type: str = Query(...),
+    resource_id: str = Query(...),
+    region: str = Query(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Feature 1: Deep Dependency Mapping
+    Pre-flight check before deletion to verify no blocking resources.
+    """
+    service = CleanupService(db)
+    try:
+        result = service.check_dependencies(account_id, resource_type, resource_id, region)
+        return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -32,13 +53,19 @@ def scan_resources(
 def execute_cleanup_action(
     action: CleanupAction,
     account_id: str = Query(..., description="The account ID to execute action on"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
     """
     Execute cleanup actions (Terminate, Delete, Release).
+    Supports RBAC - Members require approval.
     """
     service = CleanupService(db)
     try:
-        return service.execute_action(account_id, action)
+        result = service.execute_action(account_id, action, user=current_user)
+        # Return 202 Accepted if pending approval
+        if result.get("status") == "pending_approval":
+            return Response(status_code=202, content=result, media_type="application/json")
+        return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

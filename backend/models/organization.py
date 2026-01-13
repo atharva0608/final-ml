@@ -1,7 +1,7 @@
 """
 Organization model - Multi-tenancy root
 """
-from sqlalchemy import Column, String, DateTime
+from sqlalchemy import Column, String, DateTime, Boolean, JSON
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from backend.models.base import Base, generate_uuid
@@ -24,7 +24,15 @@ class Organization(Base):
     slug = Column(String(255), unique=True, index=True)
     billing_email = Column(String(255), nullable=True)
     stripe_customer_id = Column(String(255), nullable=True)
+    stripe_customer_id = Column(String(255), nullable=True)
     status = Column(String(50), default="active")
+    
+    # Governance & RBAC Settings
+    is_governance_enabled = Column(Boolean, default=False)      # "Automated Governance" Toggle
+    is_strict_approval_mode = Column(Boolean, default=False)    # If True, even Admins need approval
+    governance_config = Column(JSON, default={})                # JSON config for specific actions
+    required_tags = Column(JSON, default=["Owner", "Environment"])  # Feature 2: Required tag keys for compliance
+
     
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -32,6 +40,7 @@ class Organization(Base):
     # Relationships
     users = relationship("User", back_populates="organization", cascade="all, delete-orphan")
     accounts = relationship("Account", back_populates="organization", cascade="all, delete-orphan")
+    teams = relationship("Team", back_populates="organization", cascade="all, delete-orphan")
 
     def __repr__(self):
         return f"<Organization(id={self.id}, name={self.name})>"

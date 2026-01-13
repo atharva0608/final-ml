@@ -3,6 +3,29 @@
 
 | Date | Component | Change Type | Description |
 | :--- | :--- | :--- | :--- |
+| **2026-01-13** | **Backend / Metrics** | `Fix` | Updated `MetricsService` to use `InstanceLifecycle` enum values instead of string comparisons for lifecycle filtering. |
+| **2026-01-13** | **Frontend / Dashboard** | `Feature` | Converted invitation acceptance from separate page to modal overlay on Dashboard with light theme and blur backdrop. |
+| **2026-01-13** | **Frontend / Settings** | `Fix` | Added `TEAM_LEAD` to visible roles for Team tab in Settings page. |
+| **2026-01-13** | **Backend / Instance** | `Fix` | Fixed `InstanceLifecycle` enum values to lowercase (`spot`, `on-demand`) to match database values. |
+| **2026-01-13** | **Frontend / InviteAcceptance** | `Fix` | Fixed `login is not a function` error by using `updateUser()` instead. |
+| **2026-01-13** | **Backend / Instance** | `Feature` | Added `state` column to `Instance` model to fix `MetricsService` AttributeError. |
+| **2026-01-13** | **Backend / Auth** | `Fix` | Added `status` and `team_id` to login response `UserContext` to enable frontend invitation acceptance flow. |
+| **2026-01-13** | **Backend / Auth** | `Fix` | Updated JWT token generation to include `status`, `team_id`, and `must_reset_password` fields. |
+| **2026-01-13** | **Backend / Team** | `Feature` | Added `POST /teams/{id}/invite` endpoint for inviting new users directly to a team with PENDING_INVITE status. |
+| **2026-01-13** | **Backend / Team** | `Fix` | Updated `assign_member` to allow Team Leads to assign members to their own team. |
+| **2026-01-13** | **Frontend / Team** | `Feature` | Refactored TeamManagement with two buttons: "Assign" (existing members) and "Invite" (new members). |
+| **2026-01-13** | **Backend / Account** | `Fix` | Added `user_id` column to `Account` model and enforced relationship to fix seed data and RBAC logic. |
+| **2026-01-13** | **Backend / Account** | `Fix` | Fixed `NameError` in `AccountService` by using forward reference for `User` type hint and ensuring correct imports. |
+| **2026-01-13** | **Backend / Account** | `Feature` | Added `POST /accounts/{id}/approve` endpoint to bridge Account ID to Approval Request logic for UI simplicity. |
+| **2026-01-13** | **Backend / Account** | `Fix` | Updated `list_accounts` to strictly enforce RBAC filter (Admin=All, Lead=Team, Member=Own) passing `user` object. |
+| **2026-01-13** | **Frontend / Team** | `Fix` | Updated `TeamManagement.jsx` to show "Static Card" for Members and "Assigned Accounts" column as per spec. |
+| **2026-01-13** | **Frontend / Integration** | `Fix` | Added "Approve" button to `CloudIntegrations.jsx` invoking the new backend bridge endpoint. |
+| **2026-01-13** | **Backend / Team** | `Feature` | Implemented `Team` model, Service, and Routes. Added `team_id` to User model and RBAC logic for team isolation. |
+| **2026-01-13** | **Backend / Account** | `Update` | Implemented approval workflow logic in `AccountService`: `MEMBER` triggers `PENDING_APPROVAL` status. |
+| **2026-01-13** | **Frontend / Team** | `Refactor` | Rewrote `TeamManagement.jsx` to use Accordion view for hierarchical team display and member assignment. |
+| **2026-01-13** | **Frontend / Profile** | `Feature` | Created `UserProfile.jsx` component for updating user full name. |
+| **2026-01-13** | **Frontend / Integration** | `Update` | Updated `CloudIntegrations.jsx` to handle Pending Approval status and show badges. |
+| **2026-01-13** | **Migration** | `New` | Created `005_add_team_model.py` migration (robust with separate transactions). |
 | **2026-01-09** | **Backend / Settings** | `Feature` | Implemented `Settings` module (Routes, Service, Schemas, Mocks). Fixed Frontend 404s. |
 | **2026-01-09** | **Backend / Admin** | `Feature` | Implemented `get_billing_info` and `get_dashboard_stats` endpoints. |
 | **2026-01-09** | **Backend / Account** | `Fix` | Added `validate` and `set-default` endpoints to resolve Frontend gaps. |
@@ -101,3 +124,33 @@
 | **2026-01-12** | **Backend / Templates** | `Update` | Updated `aws/read-only-role.yaml` CloudFormation template to include `SpotOptimizerCleanupPolicy`. Added `ec2:TerminateInstances`, `ec2:DeleteVolume`, `ec2:DeleteSnapshot`, and `ec2:ReleaseAddress` to enable cleanup actions on client accounts. |
 | **2026-01-12** | **Backend / Templates** | `Bugfix` | Implemented `GET /api/v1/templates` endpoint in `template_routes.py`. Fixed 404 error where frontend was requesting the list of templates but the route was missing. |
 | **2026-01-12** | **Docs / Catalog** | `Deep Drill` | Comprehensive update of all catalog files (`01_frontend_catalog`, `02_backend_catalog`) and gap analysis (`03_frontend_backend_gap_analysis`). Confirmed "Real" status of Cleanup, Templates, and Platform Identity modules. |
+| **2026-01-13** | **Backend / Cleanup** | `Performance` | **Parallel Scanning**: Refactored `scan_resources` to use `ThreadPoolExecutor` with `max_workers=10`. Regions now scan concurrently (~30s → ~5s). |
+| **2026-01-13** | **Backend / Cleanup** | `Optimization` | **API Call Reduction**: Volumes are now fetched once per region (`describe_volumes`). Orphan volumes are filtered in-memory. Cached `vol_ids` set is reused for snapshot verification, eliminating redundant API calls. |
+| **2026-01-13** | **Frontend / Cleanup** | `Feature` | **Safety Score Badge**: Added `getSafetyLevel()` helper and new table column. Resources are classified as "Safe to Delete" (green), "Review Needed" (yellow), or "Risky" (red) based on type/status. |
+| **2026-01-13** | **Backend / Cleanup** | `Optimization` | **Redis Caching**: Implemented 5-minute cache for cleanup scans to prevent API throttling and reduce costs. |
+| **2026-01-13** | **Backend / Cleanup** | `Logic` | **Safe Deletion Logic**: Implemented `SAFE_TO_DELETE` status for resources meeting high-confidence criteria (e.g., Volumes/Snapshots orphaned > 30 days). |
+| **2026-01-13** | **Backend / RBAC** | `Feature` | **Hierarchical RBAC**: Updated `User` model with 4-tier roles (Super Admin, Org Admin, Team Lead, Member). Updated `Organization` with Governance flags. |
+| **2026-01-13** | **Backend / Approval** | `Feature` | **Approval Engine**: Implemented `ApprovalRequest` model and `ApprovalService`. Enforces "Four-Eyes Principle" where critical actions (Cleanup) by Members are queued for approval. |
+| **2026-01-13** | **Backend / Cleanup** | `Integration` | **Governance Integration**: Updated `CleanupService.execute_action` to intercept actions from restricted users and create approval requests instead of executing immediately. |
+| **2026-01-13** | **Frontend / Teams** | `Feature` | **Governance UI**: Updated `TeamManagement.jsx` to allow Org Admins to toggle "Strict Mode" and assign "Team Lead" roles. |
+| **2026-01-13** | **Frontend / Approvals** | `Feature` | **Approval Center**: Created `ApprovalCenter.jsx` dashboard for Team Leads to view/approve/reject pending actions. Added Sidebar link. |
+| **2026-01-13** | **Frontend / Cleanup** | `UX` | **Pending State**: Updated `CleanupDashboard` to handle `202 Accepted` status, show "Request Sent" toast, and lock checkboxes for pending items. |
+| **2026-01-13** | **Backend / Cleanup** | `Feature` | **Deep Dependency Mapping**: Added `check_dependencies()` method and `/check-dependencies` API for pre-flight verification before deletions (Snapshots → AMIs, SGs → ENIs). |
+| **2026-01-13** | **Backend / Cleanup** | `Feature` | **Tag Compliance**: Added `is_compliant`, `missing_tags`, `untagged_waste_cost` to scan results. Checks against `Organization.required_tags` setting. |
+| **2026-01-13** | **Backend / Governance** | `Feature` | **Automated Governance**: Created `GovernanceService` with rules engine for auto-cleanup (IPs, Volumes, Snapshots). Logs actions as "System Autopilot". |
+| **2026-01-13** | **Backend / API** | `Feature` | **Governance API**: Created `governance_routes.py` with `/policies`, `/policies PATCH`, `/run-autopilot` endpoints. Admin-only access. |
+| **2026-01-13** | **Frontend / Settings** | `Feature` | **Governance Settings**: Created `GovernanceSettings.jsx` page for policy configuration. Master toggle, individual policy cards, required tags input. |
+| **2026-01-13** | **Backend / Models** | `Update` | **Organization**: Added `required_tags` column (JSON list) for tag compliance feature. |
+| **2026-01-13** | **Backend / Schemas** | `Update` | **CleanupSchemas**: Added `is_compliant`, `missing_tags`, `blocking_resources`, `pending_approval` to `ResourceItem` and `untagged_waste_cost` to `CleanupSummary`. |
+| **2026-01-13** | **Backend / Migrations** | `Feature` | **Migration 003**: Created `003_add_governance_columns.py` for `team_id`, `required_tags`, and `approval_requests` table. Ensures fresh installs get full schema. |
+| **2026-01-13** | **Backend / Cleanup** | `Bugfix` | Added missing `User` import to `cleanup_service.py` fixing `NameError` on startup. |
+| **2026-01-13** | **Backend / Invite** | `Fix` | Removed deprecated `User.org_role` usage from `dependencies.py` to fix 500 Error on invite member. |
+| **2026-01-13** | **Backend / Metrics** | `Fix` | **500 Error Fix**: Refactored `MetricsService` to use `organization_id` instead of `Account.user_id` (deprecated). Queries now correctly filter key metrics by Org ID. |
+| **2026-01-13** | **Backend / Organization** | `Fix` | **403 Error Fix**: Updated `create_invitation` logic to allow `UserRole.CLIENT` as a valid administrator role for issuing invites. |
+| **2026-01-13** | **Backend / Organization** | `Refactor` | **Direct User Creation**: Updated `OrganizationService.create_invitation` to bypass token generation and directly create `User` accounts. |
+| **2026-01-13** | **Full Stack / Auth** | `New Feature` | **Invitation Acceptance Flow**: Implemented `UserStatus.PENDING_INVITE` and `InviteAcceptance` screen. Users must explicituly Accept or Decline (delete account) on first login. |
+| **2026-01-13** | **Backend / Models** | `Fix` | **Circular Import Loop**: Resolved `AttributeError: parent` in `User` model caused by incorrect placement of `UserStatus` Enum inside the class definition. Restored correct class structure. |
+| **2026-01-13** | **Backend / API** | `Fix` | **NameError Fix**: Resolved `NameError: name 'backend' is not defined` in `auth_routes.py` by correctly importing `InvitationResponseRequest`. |
+| **2026-01-13** | **Backend / Organization** | `Fix` | **Invite/Delete Fixes**: Resolved 500 Error on Invite (missing `UserStatus` import) and 403 Error on Delete (missing `CLIENT` role permission). |
+| **2026-01-13** | **Backend / Schemas** | `Fix` | **Status Visibility**: Added `status` field to `MemberResponse` schema so the frontend can correctly display "Pending" vs "Active". |
+| **2026-01-13** | **Backend / Organization** | `Fix` | **Update Member Fix**: Resolved 403 Error on Update Role (missing `CLIENT` role permission). |

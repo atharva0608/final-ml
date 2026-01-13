@@ -80,7 +80,7 @@ def seed_demo_data():
     """
     Create default admin and demo client users if they don't exist
     """
-    from backend.models.user import User, UserRole, OrgRole, AccessLevel
+    from backend.models.user import User, UserRole, AccessLevel
     from backend.models.organization import Organization
     from backend.models.account import Account, AccountStatus
     from backend.core.crypto import hash_password
@@ -109,7 +109,7 @@ def seed_demo_data():
                 password_hash=hash_password("admin123"),
                 role=UserRole.SUPER_ADMIN,
                 organization_id=admin_org.id,
-                org_role=OrgRole.ORG_ADMIN,
+                # org_role=OrgRole.ORG_ADMIN,
                 access_level=AccessLevel.FULL
             )
             db.add(admin_user)
@@ -138,7 +138,7 @@ def seed_demo_data():
                 password_hash=hash_password("demo1234"),
                 role=UserRole.CLIENT,
                 organization_id=demo_org.id,
-                org_role=OrgRole.ORG_ADMIN,
+                # org_role=OrgRole.ORG_ADMIN,
                 access_level=AccessLevel.FULL
             )
             db.add(demo_user)

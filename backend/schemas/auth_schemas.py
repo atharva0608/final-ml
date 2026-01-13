@@ -51,6 +51,11 @@ class LoginRequest(BaseModel):
 
 
 
+class InvitationResponseRequest(BaseModel):
+    """Request to accept or decline invitation"""
+    accept: bool = Field(..., description="True to accept and join, False to decline (delete account)")
+
+
 class UserContext(BaseModel):
     """User context extracted from JWT token"""
     user_id: str = Field(..., description="User UUID")
@@ -61,6 +66,8 @@ class UserContext(BaseModel):
     organization_name: Optional[str] = Field(None, description="Organization Name")
     access_level: Optional[str] = Field(None, description="Access Level (READ_ONLY/EXECUTION/FULL)")
     must_reset_password: bool = Field(False, description="Whether user must reset password on next login")
+    status: str = Field("ACTIVE", description="User status (ACTIVE/PENDING_INVITE)")
+    team_id: Optional[str] = Field(None, description="Team UUID")
 
     model_config = {
         "json_schema_extra": {

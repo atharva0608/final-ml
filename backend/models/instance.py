@@ -10,8 +10,8 @@ from backend.models.base import Base, generate_uuid
 
 class InstanceLifecycle(enum.Enum):
     """Instance lifecycle enumeration"""
-    SPOT = "SPOT"
-    ON_DEMAND = "ON_DEMAND"
+    SPOT = "spot"
+    ON_DEMAND = "on-demand"
 
 
 class Instance(Base):
@@ -38,6 +38,12 @@ class Instance(Base):
     price = Column(Float, nullable=True)
     cpu_util = Column(Float, nullable=True)  # Percentage (0-100)
     memory_util = Column(Float, nullable=True)  # Percentage (0-100)
+    
+    # Instance State
+    state = Column(String(20), nullable=False, default="running", index=True)
+    
+    # Architecture (amd64, arm64)
+    architecture = Column(String(20), nullable=True, default="amd64")
 
     # Timestamps
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)

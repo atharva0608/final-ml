@@ -14,6 +14,7 @@ from backend.models.optimization_job import OptimizationJob
 from backend.models.lab_experiment import LabExperiment
 from backend.models.agent_action import AgentAction
 from backend.models.api_key import APIKey
+from backend.models.team import Team
 
 __all__ = [
     "User",
@@ -29,4 +30,5 @@ __all__ = [
     "LabExperiment",
     "AgentAction",
     "APIKey",
+    "Team",
 ]

@@ -15,6 +15,7 @@ class CleanupStatus(str, Enum):
     DELETED = "DELETED"
     STOPPED = "STOPPED"
     UNAUTHORIZED = "UNAUTHORIZED"
+    SAFE_TO_DELETE = "SAFE_TO_DELETE"
 
 class ResourceItem(BaseModel):
     id: str
@@ -25,6 +26,13 @@ class ResourceItem(BaseModel):
     cost_per_month: float = 0.0
     is_authorized: bool = False
     metadata: Dict[str, Any] = Field(default_factory=dict)
+    # Tag Compliance (Feature 2)
+    is_compliant: bool = True
+    missing_tags: List[str] = Field(default_factory=list)
+    # Dependency Mapping (Feature 1)
+    blocking_resources: List[Dict[str, str]] = Field(default_factory=list)  # [{"type": "AMI", "id": "ami-123"}]
+    # Approval Status (Feature 3)
+    pending_approval: bool = False
 
 class CleanupSummary(BaseModel):
     total_potential_savings: float = 0.0
@@ -32,6 +40,7 @@ class CleanupSummary(BaseModel):
     orphaned_volume_count: int = 0
     orphaned_snapshot_count: int = 0
     unused_ip_count: int = 0
+    untagged_waste_cost: float = 0.0  # Feature 2: Total cost of non-compliant resources
     resources: List[ResourceItem]
 
 class CleanupActionType(str, Enum):

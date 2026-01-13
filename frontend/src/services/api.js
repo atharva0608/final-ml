@@ -31,6 +31,7 @@ export const authAPI = {
     me: () => api.get('/api/v1/auth/me'),
     refresh: (token) => api.post('/api/v1/auth/refresh', { refresh_token: token }),
     changePassword: (data) => api.post('/api/v1/auth/change-password', data),
+    respondToInvitation: (data) => api.post('/api/v1/auth/invitation-response', data),
 };
 export const authService = authAPI;
 
@@ -49,8 +50,9 @@ export const accountAPI = {
     list: (params) => api.get('/api/v1/accounts', { params }),
     create: (data) => api.post('/api/v1/accounts', data),
     validate: (id) => api.post(`/api/v1/accounts/${id}/validate`),
-    delete: (id) => api.delete(`/api/v1/accounts/${id}`),
     setDefault: (id) => api.post(`/api/v1/accounts/${id}/set-default`),
+    approve: (id) => api.post(`/api/v1/accounts/${id}/approve`),
+    delete: (id) => api.delete(`/api/v1/accounts/${id}`),
 };
 export const accountsAPI = accountAPI;
 
@@ -143,9 +145,22 @@ export const onboardingAPI = {
 
 export const organizationAPI = {
     getMembers: () => api.get('/api/v1/organization/members'),
+    getInvitations: () => api.get('/api/v1/organization/invitations'),
     inviteMember: (email, role, access_level) => api.post('/api/v1/organization/members', { email, role, access_level }),
     removeMember: (userId) => api.delete(`/api/v1/organization/members/${userId}`),
     updateMemberRole: (userId, role, access_level) => api.patch(`/api/v1/organization/members/${userId}`, { role, access_level }),
+};
+
+export const teamAPI = {
+    list: () => api.get('/api/v1/teams'),
+    create: (name) => api.post('/api/v1/teams', { name }),
+    rename: (id, name) => api.put(`/api/v1/teams/${id}/rename`, { name }),
+    assign: (teamId, memberId) => api.post(`/api/v1/teams/${teamId}/assign`, { member_id: memberId }),
+    invite: (teamId, email, role = "MEMBER") => api.post(`/api/v1/teams/${teamId}/invite`, { email, role }),
+};
+
+export const userAPI = {
+    updateProfile: (data) => api.patch('/api/v1/users/me', data),
 };
 
 export const cleanupAPI = {
@@ -156,6 +171,22 @@ export const cleanupAPI = {
         }
     }),
     execute: (payload, accountId) => api.post(`/api/v1/cleanup/action?account_id=${accountId}`, payload),
+    checkDependencies: (accountId, resourceType, resourceId, region) => api.get('/api/v1/cleanup/check-dependencies', {
+        params: { account_id: accountId, resource_type: resourceType, resource_id: resourceId, region }
+    }),
+};
+
+export const approvalAPI = {
+    listPending: () => api.get('/api/v1/approvals/pending'),
+    approve: (id) => api.post(`/api/v1/approvals/${id}/approve`),
+    reject: (id, reason) => api.post(`/api/v1/approvals/${id}/reject`, { reason }),
+};
+export const approvalsAPI = approvalAPI;
+
+export const governanceAPI = {
+    getPolicies: () => api.get('/api/v1/governance/policies'),
+    updatePolicies: (data) => api.patch('/api/v1/governance/policies', data),
+    runAutopilot: (accountId) => api.post(`/api/v1/governance/run-autopilot?account_id=${accountId}`),
 };
 
 export default api;

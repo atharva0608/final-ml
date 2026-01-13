@@ -37,6 +37,9 @@ class Account(Base):
 
     # Foreign key to Organization
     organization_id = Column(String(36), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
+    
+    # Creator/Owner of the account connection
+    user_id = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
 
     # AWS account details
     aws_account_id = Column(String(12), nullable=False)
@@ -61,6 +64,7 @@ class Account(Base):
 
     # Relationships
     organization = relationship("Organization", back_populates="accounts")
+    user = relationship("User", back_populates="accounts")
     clusters = relationship("Cluster", back_populates="account", cascade="all, delete-orphan")
 
     def __repr__(self):

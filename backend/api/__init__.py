@@ -15,6 +15,10 @@ from backend.api.lab_routes import router as lab_router
 from backend.api.organization_routes import router as organization_router
 from backend.api.billing_routes import router as billing_router
 from backend.api.cleanup_routes import router as cleanup_router
+from backend.api.approval_routes import router as approval_router
+from backend.api.team_routes import router as team_router
+from backend.api.user_routes import router as user_router
+from backend.api.governance_routes import router as governance_router
 
 api_router = APIRouter()
 
@@ -34,4 +38,6 @@ api_router.include_router(lab_router)
 api_router.include_router(organization_router)
 api_router.include_router(billing_router)
 api_router.include_router(cleanup_router)
+api_router.include_router(approval_router)
+api_router.include_router(governance_router)
 

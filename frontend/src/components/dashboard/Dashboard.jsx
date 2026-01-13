@@ -20,19 +20,135 @@ import { Card, Button, Badge } from '../shared';
 import { formatCurrency, formatNumber, formatPercentage, formatRelativeTime } from '../../utils/formatters';
 import {
   FiServer, FiDollarSign, FiTrendingDown, FiActivity, FiRefreshCw,
-  FiPieChart, FiBarChart2, FiClock, FiAlertCircle
+  FiPieChart, FiBarChart2, FiClock, FiAlertCircle, FiCheck, FiX, FiUsers, FiBriefcase
 } from 'react-icons/fi';
 import toast from 'react-hot-toast';
-import { auditAPI, clusterAPI } from '../../services/api';
+import { auditAPI, clusterAPI, authAPI } from '../../services/api';
+import { useAuthStore } from '../../store/useStore';
 
 const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4'];
 
+// Invitation Acceptance Modal Component
+const InvitationModal = ({ user, onAccept, onDecline, loading }) => {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      {/* Backdrop with blur */}
+      <div className="absolute inset-0 bg-gray-900/50 backdrop-blur-sm" />
+
+      {/* Modal */}
+      <div className="relative bg-white rounded-2xl shadow-2xl p-8 max-w-md w-full mx-4 border border-gray-200">
+        {/* Icon */}
+        <div className="flex justify-center mb-6">
+          <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center">
+            <FiUsers className="w-8 h-8 text-blue-600" />
+          </div>
+        </div>
+
+        {/* Title */}
+        <h2 className="text-2xl font-bold text-gray-900 text-center mb-2">
+          You've Been Invited!
+        </h2>
+
+        <p className="text-gray-600 text-center mb-6">
+          Please confirm your membership to continue
+        </p>
+
+        {/* Details Card */}
+        <div className="bg-gray-50 rounded-xl p-4 mb-6 space-y-3">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 bg-blue-100 rounded-lg flex items-center justify-center">
+              <FiBriefcase className="w-5 h-5 text-blue-600" />
+            </div>
+            <div>
+              <p className="text-xs text-gray-500 uppercase tracking-wide">Organization</p>
+              <p className="font-semibold text-gray-900">{user?.organization_name || 'Your Organization'}</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 bg-purple-100 rounded-lg flex items-center justify-center">
+              <FiUsers className="w-5 h-5 text-purple-600" />
+            </div>
+            <div>
+              <p className="text-xs text-gray-500 uppercase tracking-wide">Your Role</p>
+              <p className="font-semibold text-gray-900">{user?.role?.replace('_', ' ') || 'Team Member'}</p>
+            </div>
+          </div>
+        </div>
+
+        {/* Actions */}
+        <div className="flex gap-3">
+          <Button
+            variant="outline"
+            className="flex-1"
+            icon={<FiX className="w-4 h-4" />}
+            onClick={onDecline}
+            disabled={loading}
+          >
+            Decline
+          </Button>
+          <Button
+            variant="primary"
+            className="flex-1"
+            icon={<FiCheck className="w-4 h-4" />}
+            onClick={onAccept}
+            disabled={loading}
+          >
+            {loading ? 'Accepting...' : 'Accept & Join'}
+          </Button>
+        </div>
+
+        <p className="text-xs text-gray-400 text-center mt-4">
+          By accepting, you agree to the organization's terms and policies
+        </p>
+      </div>
+    </div>
+  );
+};
+
 const Dashboard = () => {
   const navigate = useNavigate();
+  const { user, updateUser, logout } = useAuthStore();
   const { dashboardKPIs, costMetrics, instanceMetrics, costTimeSeries, loading, refreshDashboard } = useDashboard();
   const [activityFeed, setActivityFeed] = useState([]);
   const [savingsProjectionData, setSavingsProjectionData] = useState([]);
   const [clusters, setClusters] = useState([]);
+  const [inviteLoading, setInviteLoading] = useState(false);
+
+  // Check if user has pending invitation
+  const showInvitationModal = user?.status === 'PENDING_INVITE';
+
+  const handleAcceptInvitation = async () => {
+    setInviteLoading(true);
+    try {
+      await authAPI.respondToInvitation({ accept: true });
+      toast.success("Welcome to the team!");
+      // Update user status in store
+      updateUser({ ...user, status: 'ACTIVE' });
+      // Update localStorage
+      const storedUser = JSON.parse(localStorage.getItem('user') || '{}');
+      localStorage.setItem('user', JSON.stringify({ ...storedUser, status: 'ACTIVE' }));
+    } catch (error) {
+      console.error("Failed to accept invitation:", error);
+      toast.error(error.response?.data?.detail || "Failed to accept invitation");
+    } finally {
+      setInviteLoading(false);
+    }
+  };
+
+  const handleDeclineInvitation = async () => {
+    setInviteLoading(true);
+    try {
+      await authAPI.respondToInvitation({ accept: false });
+      toast.success("Invitation declined");
+      logout();
+      navigate('/login');
+    } catch (error) {
+      console.error("Failed to decline invitation:", error);
+      toast.error("Failed to decline invitation");
+    } finally {
+      setInviteLoading(false);
+    }
+  };
 
   useEffect(() => {
     const fetchData = async () => {
@@ -116,244 +232,256 @@ const Dashboard = () => {
     (!costMetrics || costMetrics.total_cost === 0);
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
-          <p className="text-gray-600">Overview of your infrastructure and savings</p>
-        </div>
-        <Button
-          variant="outline"
-          icon={<FiRefreshCw className={loading ? 'animate-spin' : ''} />}
-          onClick={handleRefresh}
-          disabled={loading}
-        >
-          Refresh
-        </Button>
-      </div>
-
-      {/* Onboarding Notice */}
-      {hasNoData && (
-        <Card className="bg-blue-50 border-blue-200">
-          <div className="flex items-start space-x-3">
-            <FiAlertCircle className="w-5 h-5 text-blue-600 flex-shrink-0 mt-0.5" />
-            <div className="flex-1">
-              <h3 className="font-semibold text-blue-900">Welcome! Connect your AWS account to get started</h3>
-              <p className="text-sm text-blue-700 mt-1">
-                Connect your AWS account to discover clusters, optimize costs, and track savings.
-              </p>
-              <div className="mt-3">
-                <Button
-                  variant="primary"
-                  size="sm"
-                  onClick={() => navigate('/settings/integrations')}
-                >
-                  Connect AWS Account →
-                </Button>
-              </div>
-            </div>
-          </div>
-        </Card>
+    <>
+      {/* Invitation Acceptance Modal */}
+      {showInvitationModal && (
+        <InvitationModal
+          user={user}
+          onAccept={handleAcceptInvitation}
+          onDecline={handleDeclineInvitation}
+          loading={inviteLoading}
+        />
       )}
 
-      {/* KPI Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-        <KPICard
-          title="Net Savings"
-          value={formatCurrency(dashboardKPIs?.estimated_savings || 0)}
-          subtitle="This month"
-          icon={FiTrendingDown}
-          color="green"
-          trend={-8}
-        />
-        <KPICard
-          title="Current Spend Rate"
-          value={formatCurrency(dashboardKPIs?.total_cost || 0)}
-          subtitle="Projected end-of-month"
-          icon={FiDollarSign}
-          color="blue"
-          trend={-12}
-          onClick={() => navigate('/audit')}
-        />
-        <KPICard
-          title="Efficiency Score"
-          value={formatPercentage((dashboardKPIs?.optimization_rate || 0) / 100)}
-          subtitle="Resource Usage / Requests"
-          icon={FiActivity}
-          color="orange"
-        />
-        <KPICard
-          title="Spot Coverage"
-          value={formatPercentage(0.65)} // Mock value for now
-          subtitle="Workloads on Spot"
-          icon={FiPieChart}
-          color="purple"
-          trend={5}
-        />
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Savings Projection Chart */}
-        <Card>
-          <div className="flex items-center justify-between mb-4">
-            <div>
-              <h2 className="text-xl font-bold text-gray-900">Savings Projection</h2>
-              <p className="text-sm text-gray-600">Daily spend vs On-Demand baseline</p>
-            </div>
-            <FiBarChart2 className="w-5 h-5 text-gray-400" />
+      <div className="space-y-6">
+        {/* Header */}
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div>
+            <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
+            <p className="text-gray-600">Overview of your infrastructure and savings</p>
           </div>
-          <ResponsiveContainer width="100%" height={300}>
-            {savingsProjectionData.length > 0 ? (
-              <BarChart data={savingsProjectionData}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="month" />
-                <YAxis />
-                <Tooltip formatter={(value) => formatCurrency(value)} />
-                <Legend />
-                <Bar dataKey="unoptimized" fill="#ef4444" name="On-Demand Cost" />
-                <Bar dataKey="optimized" fill="#10b981" name="Actual Spend" />
-              </BarChart>
-            ) : (
-              <div className="flex flex-col items-center justify-center h-full text-gray-400">
-                <FiBarChart2 className="w-12 h-12 mb-2 opacity-20" />
-                <p>No historical data available yet</p>
-              </div>
-            )}
-          </ResponsiveContainer>
-        </Card>
+          <Button
+            variant="outline"
+            icon={<FiRefreshCw className={loading ? 'animate-spin' : ''} />}
+            onClick={handleRefresh}
+            disabled={loading}
+          >
+            Refresh
+          </Button>
+        </div>
 
-        {/* Cluster Map */}
-        <Card>
-          <div className="flex items-center justify-between mb-4">
-            <div>
-              <h2 className="text-xl font-bold text-gray-900">Cluster Map</h2>
-              <p className="text-sm text-gray-600">High-level status of connected clusters</p>
-            </div>
-            <FiServer className="w-5 h-5 text-gray-400" />
-          </div>
-          <div className="grid grid-cols-2 gap-4 h-[300px] overflow-y-auto">
-            {clusters.length === 0 ? (
-              <div className="col-span-2 flex flex-col items-center justify-center text-gray-400 h-full">
-                <FiServer className="w-12 h-12 mb-2 opacity-20" />
-                <p>No clusters connected</p>
+        {/* Onboarding Notice */}
+        {hasNoData && (
+          <Card className="bg-blue-50 border-blue-200">
+            <div className="flex items-start space-x-3">
+              <FiAlertCircle className="w-5 h-5 text-blue-600 flex-shrink-0 mt-0.5" />
+              <div className="flex-1">
+                <h3 className="font-semibold text-blue-900">Welcome! Connect your AWS account to get started</h3>
+                <p className="text-sm text-blue-700 mt-1">
+                  Connect your AWS account to discover clusters, optimize costs, and track savings.
+                </p>
+                <div className="mt-3">
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    onClick={() => navigate('/settings/integrations')}
+                  >
+                    Connect AWS Account →
+                  </Button>
+                </div>
               </div>
-            ) : (
-              clusters.map((cluster, i) => (
-                <div key={cluster.id} className="p-4 border border-gray-200 rounded-lg flex flex-col justify-between hover:bg-gray-50 transition-colors">
-                  <div className="flex items-start justify-between">
-                    <div>
-                      <h3 className="font-medium text-gray-900 truncate" title={cluster.name}>{cluster.name}</h3>
-                      <p className="text-xs text-gray-500 mt-1">{cluster.provider || 'AWS'} • {cluster.region}</p>
+            </div>
+          </Card>
+        )}
+
+        {/* KPI Cards */}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+          <KPICard
+            title="Net Savings"
+            value={formatCurrency(dashboardKPIs?.estimated_savings || 0)}
+            subtitle="This month"
+            icon={FiTrendingDown}
+            color="green"
+            trend={-8}
+          />
+          <KPICard
+            title="Current Spend Rate"
+            value={formatCurrency(dashboardKPIs?.total_cost || 0)}
+            subtitle="Projected end-of-month"
+            icon={FiDollarSign}
+            color="blue"
+            trend={-12}
+            onClick={() => navigate('/audit')}
+          />
+          <KPICard
+            title="Efficiency Score"
+            value={formatPercentage((dashboardKPIs?.optimization_rate || 0) / 100)}
+            subtitle="Resource Usage / Requests"
+            icon={FiActivity}
+            color="orange"
+          />
+          <KPICard
+            title="Spot Coverage"
+            value={formatPercentage(0.65)} // Mock value for now
+            subtitle="Workloads on Spot"
+            icon={FiPieChart}
+            color="purple"
+            trend={5}
+          />
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {/* Savings Projection Chart */}
+          <Card>
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h2 className="text-xl font-bold text-gray-900">Savings Projection</h2>
+                <p className="text-sm text-gray-600">Daily spend vs On-Demand baseline</p>
+              </div>
+              <FiBarChart2 className="w-5 h-5 text-gray-400" />
+            </div>
+            <ResponsiveContainer width="100%" height={300}>
+              {savingsProjectionData.length > 0 ? (
+                <BarChart data={savingsProjectionData}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="month" />
+                  <YAxis />
+                  <Tooltip formatter={(value) => formatCurrency(value)} />
+                  <Legend />
+                  <Bar dataKey="unoptimized" fill="#ef4444" name="On-Demand Cost" />
+                  <Bar dataKey="optimized" fill="#10b981" name="Actual Spend" />
+                </BarChart>
+              ) : (
+                <div className="flex flex-col items-center justify-center h-full text-gray-400">
+                  <FiBarChart2 className="w-12 h-12 mb-2 opacity-20" />
+                  <p>No historical data available yet</p>
+                </div>
+              )}
+            </ResponsiveContainer>
+          </Card>
+
+          {/* Cluster Map */}
+          <Card>
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h2 className="text-xl font-bold text-gray-900">Cluster Map</h2>
+                <p className="text-sm text-gray-600">High-level status of connected clusters</p>
+              </div>
+              <FiServer className="w-5 h-5 text-gray-400" />
+            </div>
+            <div className="grid grid-cols-2 gap-4 h-[300px] overflow-y-auto">
+              {clusters.length === 0 ? (
+                <div className="col-span-2 flex flex-col items-center justify-center text-gray-400 h-full">
+                  <FiServer className="w-12 h-12 mb-2 opacity-20" />
+                  <p>No clusters connected</p>
+                </div>
+              ) : (
+                clusters.map((cluster, i) => (
+                  <div key={cluster.id} className="p-4 border border-gray-200 rounded-lg flex flex-col justify-between hover:bg-gray-50 transition-colors">
+                    <div className="flex items-start justify-between">
+                      <div>
+                        <h3 className="font-medium text-gray-900 truncate" title={cluster.name}>{cluster.name}</h3>
+                        <p className="text-xs text-gray-500 mt-1">{cluster.provider || 'AWS'} • {cluster.region}</p>
+                      </div>
+                      <span className={`flex h-3 w-3 rounded-full ${cluster.status === 'ACTIVE' ? 'bg-green-500' : 'bg-red-500'}`} title={cluster.status} />
                     </div>
-                    <span className={`flex h-3 w-3 rounded-full ${cluster.status === 'ACTIVE' ? 'bg-green-500' : 'bg-red-500'}`} title={cluster.status} />
+                    <div className="mt-4 flex items-center justify-between text-xs">
+                      <span className="text-gray-500">Status: {cluster.status}</span>
+                      <Button size="xs" variant="ghost" onClick={() => navigate(`/clusters/${cluster.id}`)}>View</Button>
+                    </div>
                   </div>
-                  <div className="mt-4 flex items-center justify-between text-xs">
-                    <span className="text-gray-500">Status: {cluster.status}</span>
-                    <Button size="xs" variant="ghost" onClick={() => navigate(`/clusters/${cluster.id}`)}>View</Button>
+                ))
+              )}
+            </div>
+          </Card>
+        </div>
+
+        {/* Real-Time Activity Feed (client-home-feed-unique-indep-view-live) */}
+        <Card>
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h2 className="text-xl font-bold text-gray-900">Recent Activity</h2>
+              <p className="text-sm text-gray-600">Real-time action logs</p>
+            </div>
+            <FiClock className="w-5 h-5 text-gray-400" />
+          </div>
+          <div className="space-y-3">
+            {activityFeed.length === 0 ? (
+              <p className="text-sm text-gray-500 text-center py-8">No recent activity</p>
+            ) : (
+              activityFeed.map((item) => (
+                <div key={item.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors">
+                  <div className="flex items-center space-x-3">
+                    <div className={`w-2 h-2 rounded-full ${item.type === 'success' ? 'bg-green-500' :
+                      item.type === 'warning' ? 'bg-yellow-500' :
+                        item.type === 'error' ? 'bg-red-500' : 'bg-blue-500'
+                      }`} />
+                    <div>
+                      <p className="text-sm font-medium text-gray-900">{item.action}</p>
+                      <p className="text-xs text-gray-600">{item.cluster}</p>
+                    </div>
                   </div>
+                  <span className="text-xs text-gray-500">{item.time}</span>
                 </div>
               ))
             )}
           </div>
-        </Card>
-      </div>
-
-      {/* Real-Time Activity Feed (client-home-feed-unique-indep-view-live) */}
-      <Card>
-        <div className="flex items-center justify-between mb-4">
-          <div>
-            <h2 className="text-xl font-bold text-gray-900">Recent Activity</h2>
-            <p className="text-sm text-gray-600">Real-time action logs</p>
+          <div className="mt-4 text-center">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => navigate('/audit')}
+            >
+              View Full Audit Log →
+            </Button>
           </div>
-          <FiClock className="w-5 h-5 text-gray-400" />
-        </div>
-        <div className="space-y-3">
-          {activityFeed.length === 0 ? (
-            <p className="text-sm text-gray-500 text-center py-8">No recent activity</p>
-          ) : (
-            activityFeed.map((item) => (
-              <div key={item.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors">
-                <div className="flex items-center space-x-3">
-                  <div className={`w-2 h-2 rounded-full ${item.type === 'success' ? 'bg-green-500' :
-                    item.type === 'warning' ? 'bg-yellow-500' :
-                      item.type === 'error' ? 'bg-red-500' : 'bg-blue-500'
-                    }`} />
-                  <div>
-                    <p className="text-sm font-medium text-gray-900">{item.action}</p>
-                    <p className="text-xs text-gray-600">{item.cluster}</p>
-                  </div>
-                </div>
-                <span className="text-xs text-gray-500">{item.time}</span>
+        </Card>
+
+        {/* Quick Actions */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          <Card className="hover:shadow-lg transition-shadow cursor-pointer" onClick={() => navigate('/clusters')}>
+            <div className="flex items-start space-x-4">
+              <div className="w-10 h-10 bg-blue-100 rounded-lg flex items-center justify-center">
+                <FiServer className="w-5 h-5 text-blue-600" />
               </div>
-            ))
-          )}
+              <div>
+                <h3 className="font-semibold text-gray-900">Manage Clusters</h3>
+                <p className="text-sm text-gray-600 mt-1">
+                  Discover and optimize your Kubernetes clusters
+                </p>
+                <p className="text-xs text-blue-600 mt-2 font-medium">
+                  View clusters →
+                </p>
+              </div>
+            </div>
+          </Card>
+
+          <Card className="hover:shadow-lg transition-shadow cursor-pointer" onClick={() => navigate('/templates')}>
+            <div className="flex items-start space-x-4">
+              <div className="w-10 h-10 bg-green-100 rounded-lg flex items-center justify-center">
+                <FiPieChart className="w-5 h-5 text-green-600" />
+              </div>
+              <div>
+                <h3 className="font-semibold text-gray-900">Node Templates</h3>
+                <p className="text-sm text-gray-600 mt-1">
+                  Configure instance selection rules
+                </p>
+                <p className="text-xs text-green-600 mt-2 font-medium">
+                  Manage templates →
+                </p>
+              </div>
+            </div>
+          </Card>
+
+          <Card className="hover:shadow-lg transition-shadow cursor-pointer" onClick={() => navigate('/policies')}>
+            <div className="flex items-start space-x-4">
+              <div className="w-10 h-10 bg-purple-100 rounded-lg flex items-center justify-center">
+                <FiActivity className="w-5 h-5 text-purple-600" />
+              </div>
+              <div>
+                <h3 className="font-semibold text-gray-900">Optimization Policies</h3>
+                <p className="text-sm text-gray-600 mt-1">
+                  Configure automation rules
+                </p>
+                <p className="text-xs text-purple-600 mt-2 font-medium">
+                  Edit policies →
+                </p>
+              </div>
+            </div>
+          </Card>
         </div>
-        <div className="mt-4 text-center">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => navigate('/audit')}
-          >
-            View Full Audit Log →
-          </Button>
-        </div>
-      </Card>
-
-      {/* Quick Actions */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <Card className="hover:shadow-lg transition-shadow cursor-pointer" onClick={() => navigate('/clusters')}>
-          <div className="flex items-start space-x-4">
-            <div className="w-10 h-10 bg-blue-100 rounded-lg flex items-center justify-center">
-              <FiServer className="w-5 h-5 text-blue-600" />
-            </div>
-            <div>
-              <h3 className="font-semibold text-gray-900">Manage Clusters</h3>
-              <p className="text-sm text-gray-600 mt-1">
-                Discover and optimize your Kubernetes clusters
-              </p>
-              <p className="text-xs text-blue-600 mt-2 font-medium">
-                View clusters →
-              </p>
-            </div>
-          </div>
-        </Card>
-
-        <Card className="hover:shadow-lg transition-shadow cursor-pointer" onClick={() => navigate('/templates')}>
-          <div className="flex items-start space-x-4">
-            <div className="w-10 h-10 bg-green-100 rounded-lg flex items-center justify-center">
-              <FiPieChart className="w-5 h-5 text-green-600" />
-            </div>
-            <div>
-              <h3 className="font-semibold text-gray-900">Node Templates</h3>
-              <p className="text-sm text-gray-600 mt-1">
-                Configure instance selection rules
-              </p>
-              <p className="text-xs text-green-600 mt-2 font-medium">
-                Manage templates →
-              </p>
-            </div>
-          </div>
-        </Card>
-
-        <Card className="hover:shadow-lg transition-shadow cursor-pointer" onClick={() => navigate('/policies')}>
-          <div className="flex items-start space-x-4">
-            <div className="w-10 h-10 bg-purple-100 rounded-lg flex items-center justify-center">
-              <FiActivity className="w-5 h-5 text-purple-600" />
-            </div>
-            <div>
-              <h3 className="font-semibold text-gray-900">Optimization Policies</h3>
-              <p className="text-sm text-gray-600 mt-1">
-                Configure automation rules
-              </p>
-              <p className="text-xs text-purple-600 mt-2 font-medium">
-                Edit policies →
-              </p>
-            </div>
-          </div>
-        </Card>
       </div>
-    </div>
+    </>
   );
 };
 
