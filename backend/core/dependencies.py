@@ -174,6 +174,29 @@ class RequireAccess:
         return current_user
 
 
+class RequirePermission:
+    """
+    Dependency to require a specific permission slug.
+    Uses the new fine-grained RBAC system.
+    Falls back to legacy role-based checks for backward compatibility.
+    """
+    def __init__(self, permission: str):
+        self.permission = permission
+
+    def __call__(self, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> User:
+        from backend.services.role_service import RoleService
+        
+        # Super admins always have access
+        if current_user.role.value == "SUPER_ADMIN":
+            return current_user
+
+        service = RoleService(db)
+        if not service.user_has_permission(current_user, self.permission):
+            raise InsufficientPermissionsError(f"Permission '{self.permission}' required")
+        
+        return current_user
+
+
 # Backward compatibility alias - requires ORG_ADMIN role
 require_org_admin = RequireRole("ORG_ADMIN")
 

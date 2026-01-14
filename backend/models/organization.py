@@ -41,6 +41,7 @@ class Organization(Base):
     users = relationship("User", back_populates="organization", cascade="all, delete-orphan")
     accounts = relationship("Account", back_populates="organization", cascade="all, delete-orphan")
     teams = relationship("Team", back_populates="organization", cascade="all, delete-orphan")
+    custom_roles = relationship("Role", back_populates="organization", cascade="all, delete-orphan")
 
     def __repr__(self):
         return f"<Organization(id={self.id}, name={self.name})>"

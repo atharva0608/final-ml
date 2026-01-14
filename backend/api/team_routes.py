@@ -86,3 +86,8 @@ def update_team_governance(
     
     return {"status": "success", "governance_config": team.governance_config}
 
+
+@router.get("/{team_id}/stats")
+def get_team_stats(team_id: str, service: TeamService = Depends(get_service), user: User = Depends(get_current_user)):
+    """Get statistics for a specific team (Member count, resources, cost)"""
+    return service.get_team_stats(user, team_id)

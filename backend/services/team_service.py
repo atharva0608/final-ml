@@ -110,5 +110,32 @@ class TeamService:
         self.db.refresh(new_user)
         return new_user
 
+    def get_team_stats(self, user: User, team_id: str):
+        """Get stats for a specific team (Member count, Resources, Cost)"""
+        team = self.db.query(Team).filter(Team.id == team_id).first()
+        if not team:
+            raise ResourceNotFoundError("Team", team_id)
+            
+        # Check permissions
+        if user.role != UserRole.ORG_ADMIN and user.role != UserRole.CLIENT:
+            if user.team_id != team_id:
+                raise ForbiddenError("Not authorized to view stats for this team")
+
+        member_count = self.db.query(User).filter(User.team_id == team_id).count()
+        
+        # Placeholder for Resources/Cost until resource tagging is implemented
+        # In future: Query Instances/Volumes tagged with this team
+        resource_count = 0 
+        total_cost = 0.0
+        
+        return {
+            "id": team.id,
+            "name": team.name,
+            "member_count": member_count,
+            "resource_count": resource_count, # Mocked for now
+            "total_cost": total_cost,         # Mocked for now
+            "currency": "USD"
+        }
+
 def get_team_service(db: Session):
     return TeamService(db)

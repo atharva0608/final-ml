@@ -62,6 +62,9 @@ class User(Base):
     team_id = Column(String(36), ForeignKey("teams.id"), nullable=True)
     full_name = Column(String(100), nullable=True) # For "Enter Name" requirement
     
+    # Fine-Grained RBAC: Link to database-driven Role
+    role_id = Column(String(36), ForeignKey("roles.id"), nullable=True)
+    
     # Password reset enforcement for invited users
     must_reset_password = Column(Boolean, default=False, nullable=False)
 
@@ -75,6 +78,7 @@ class User(Base):
     # Relationships
     team = relationship("Team", back_populates="members")
     organization = relationship("Organization", back_populates="users")
+    assigned_role = relationship("Role", back_populates="users")
     accounts = relationship("Account", back_populates="user", cascade="all, delete-orphan")
     node_templates = relationship("NodeTemplate", back_populates="user", cascade="all, delete-orphan")
     onboarding_state = relationship("OnboardingState", uselist=False, back_populates="user", cascade="all, delete-orphan")

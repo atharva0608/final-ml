@@ -157,6 +157,7 @@ export const teamAPI = {
     rename: (id, name) => api.put(`/api/v1/teams/${id}/rename`, { name }),
     assign: (teamId, memberId) => api.post(`/api/v1/teams/${teamId}/assign`, { member_id: memberId }),
     invite: (teamId, email, role = "MEMBER") => api.post(`/api/v1/teams/${teamId}/invite`, { email, role }),
+    getStats: (teamId) => api.get(`/api/v1/teams/${teamId}/stats`),
 };
 
 export const userAPI = {
@@ -189,4 +190,16 @@ export const governanceAPI = {
     runAutopilot: (accountId) => api.post(`/api/v1/governance/run-autopilot?account_id=${accountId}`),
 };
 
+export const rolesAPI = {
+    listPermissions: () => api.get('/api/v1/roles/permissions'),
+    listRoles: () => api.get('/api/v1/roles'),
+    getRole: (id) => api.get(`/api/v1/roles/${id}`),
+    createRole: (data) => api.post('/api/v1/roles', data),
+    updateRole: (id, data) => api.put(`/api/v1/roles/${id}`, data),
+    deleteRole: (id) => api.delete(`/api/v1/roles/${id}`),
+    assignRole: (userId, roleId) => api.post('/api/v1/roles/assign', { user_id: userId, role_id: roleId }),
+    seed: () => api.post('/api/v1/roles/seed'),
+};
+
 export default api;
+

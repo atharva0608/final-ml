@@ -3,6 +3,8 @@
 
 | Date | Component | Change Type | Description |
 | :--- | :--- | :--- | :--- |
+| **2026-01-14** | **Full Stack / RBAC** | `Feature` | **Fine-Grained RBAC System**: Backend: Created `Permission`, `Role` models with `role_permissions` association table. Added `RequirePermission` dependency for permission-based authorization. CRUD endpoints at `/api/v1/roles`. Frontend: Interactive Role Editor modal with categorized permission checkboxes. System roles locked with icon. 9 default permissions across 5 modules. |
+| **2026-01-14** | **Frontend / Team** | `Redesign` | **Team Management UI Overhaul**: Implemented tabbed interface (Members/Roles) matching design spec. Members tab: ACTIVE/INVITED filters, search bar, clean table with 3-dot action menus. Roles tab: Permission matrix with YES/NO badges for 6 permissions across 3 roles. Emerald color theme. |
 | **2026-01-13** | **Backend / DB** | `Fix` | **Schema Mismatch Fix**: Resolved 500 Error by aligning `AuthorizedResource` FK types (String) with Account/User models. |
 | **2026-01-13** | **Cleanup / UX** | `Feature` | **Persistence & Animation**: Increased scan cache TTL to 1 hour. Implemented auto-load on account selection. Added animated Gauge Charts for metrics. |
 | **2026-01-13** | **Cleanup / Feature** | `Completed` | **Resource Authorization**: Implemented `AuthorizedResource` model and endpoints. Features: Authorize/Unauthorize actions, Filtered views (To Review/Authorized), Exclusion from savings calculations. |

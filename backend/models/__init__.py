@@ -16,6 +16,8 @@ from backend.models.agent_action import AgentAction
 from backend.models.api_key import APIKey
 from backend.models.team import Team
 from backend.models.authorized_resource import AuthorizedResource
+from backend.models.permission import Permission
+from backend.models.role import Role, RoleType, role_permissions
 
 __all__ = [
     "User",
@@ -33,4 +35,9 @@ __all__ = [
     "APIKey",
     "Team",
     "AuthorizedResource",
+    "Permission",
+    "Role",
+    "RoleType",
+    "role_permissions",
 ]
+
