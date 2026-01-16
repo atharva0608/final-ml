@@ -388,8 +388,13 @@ app.include_router(user_router, prefix="/api/v1")
 app.include_router(settings_routes.router, prefix="/api/v1")
 
 # Role routes (RBAC)
+# Role routes (RBAC)
 from backend.api.role_routes import router as role_router
 app.include_router(role_router, prefix="/api/v1")
+
+# Ticket routes (JIT)
+from backend.api.ticket_routes import router as ticket_router
+app.include_router(ticket_router, prefix="/api/v1")
 
 
 # Startup and shutdown events

@@ -102,6 +102,20 @@ def require_super_admin(
     return current_user
 
 
+def verify_tenant_action(
+    current_user: User = Depends(get_current_user)
+) -> User:
+    """
+    Ensure the user is NOT a Platform Admin (Super Admin).
+    Platform Admins are restricted from modifying client resources.
+    This enforces the 'Iron Wall' separation of concerns.
+    """
+    if current_user.role.value == "SUPER_ADMIN":
+        raise InsufficientPermissionsError("Platform Admins cannot modify client resources.")
+    
+    return current_user
+
+
 class RequireRole:
     """
     Dependency to require a minimum Organization Role

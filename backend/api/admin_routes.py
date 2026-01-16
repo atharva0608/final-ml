@@ -44,6 +44,16 @@ def list_organizations(
     return service.list_organizations(current_user, filters)
 
 
+@router.post("/organizations/{org_id}/toggle", response_model=OrganizationSummary)
+def toggle_organization_status(
+    org_id: str,
+    current_user: User = Depends(require_super_admin),
+    db: Session = Depends(get_db)
+) -> OrganizationSummary:
+    service = get_admin_service(db)
+    return service.toggle_organization_status(current_user, org_id)
+
+
 @router.get(
     "/clients",
     response_model=ClientList,

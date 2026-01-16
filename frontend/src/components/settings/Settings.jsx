@@ -6,7 +6,6 @@ import React, { useState } from 'react';
 import { FiUser, FiCloud, FiCreditCard, FiShield, FiUsers } from 'react-icons/fi';
 import AccountSettings from './AccountSettings';
 import CloudIntegrations from './CloudIntegrations';
-import TeamManagement from './TeamManagement';
 import { Card, Button, Input } from '../shared';
 import toast from 'react-hot-toast';
 import { useAuth } from '../../hooks/useAuth';
@@ -21,8 +20,6 @@ const Settings = () => {
 
     const tabs = [
         { id: 'account', label: 'Account', icon: FiUser },
-        // Only show team tab for authorized roles
-        ...(canSeeTeamTab ? [{ id: 'team', label: 'Team', icon: FiUsers }] : []),
         { id: 'integrations', label: 'Cloud Integrations', icon: FiCloud },
         { id: 'billing', label: 'Billing', icon: FiCreditCard },
         { id: 'security', label: 'Security', icon: FiShield },
@@ -32,8 +29,6 @@ const Settings = () => {
         switch (activeTab) {
             case 'account':
                 return <AccountSettings />;
-            case 'team':
-                return <TeamManagement />;
             case 'integrations':
                 return <CloudIntegrations />;
             case 'billing':

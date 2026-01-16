@@ -15,11 +15,14 @@ class MemberResponse(BaseModel):
     id: str
     email: str
     org_role: str
+    role: str  # Alias for org_role for frontend compatibility
     access_level: str
     is_active: bool
     status: Optional[str] = "ACTIVE"
     created_at: datetime
     last_login: Optional[datetime] = None
+    team_id: Optional[str] = None
+    full_name: Optional[str] = None
 
     class Config:
         from_attributes = True

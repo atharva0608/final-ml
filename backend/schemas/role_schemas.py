@@ -7,7 +7,9 @@ from pydantic import BaseModel, Field
 
 class PermissionResponse(BaseModel):
     """Permission response schema"""
+    id: str
     slug: str
+    name: str
     module: str
     description: Optional[str] = None
 

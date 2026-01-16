@@ -41,6 +41,7 @@ const Onboarding = () => {
             navigate('/dashboard');
         } catch (error) {
             console.error("Skip failed", error);
+            // Assuming we have toast imported or using alert for now if not
         }
     };
 

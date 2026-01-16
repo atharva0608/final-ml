@@ -1,65 +1,46 @@
-
-import React, { useState, useEffect } from 'react';
 import {
     FiSearch,
     FiFilter,
     FiBriefcase,
-    FiUsers
+    FiUsers,
+    FiSlash,
+    FiCheckCircle,
+    FiCloud
 } from 'react-icons/fi';
 import { adminAPI } from '../../services/api';
 import { format } from 'date-fns';
+import toast from 'react-hot-toast';
 
 const AdminOrganizations = () => {
-    const [organizations, setOrganizations] = useState([]);
-    const [loading, setLoading] = useState(true);
-    const [error, setError] = useState(null);
-    const [searchQuery, setSearchQuery] = useState('');
-    const [page, setPage] = useState(1);
-    const [totalPages, setTotalPages] = useState(1);
-    const [selectedOrg, setSelectedOrg] = useState(null);
+    // ... (state)
 
-    const fetchOrganizations = async () => {
+    // ... (fetchOrganizations)
+
+    const handleToggleStatus = async (org) => {
+        if (!window.confirm(`Are you sure you want to ${org.is_active ? 'suspend' : 'activate'} ${org.name}?`)) return;
+
         try {
-            setLoading(true);
-            const response = await adminAPI.listOrganizations({
-                page,
-                page_size: 10,
-                search: searchQuery || undefined
-            });
-            setOrganizations(response.data.organizations);
-            setTotalPages(Math.ceil(response.data.total / 10));
-            setError(null);
-        } catch (err) {
-            console.error('Failed to fetch organizations:', err);
-            setError('Failed to load organizations');
-        } finally {
-            setLoading(false);
+            await adminAPI.toggleOrg(org.id);
+            toast.success(`Organization ${org.is_active ? 'suspended' : 'activated'}`);
+            fetchOrganizations();
+        } catch (e) {
+            console.error(e);
+            toast.error("Failed to update status");
         }
     };
 
-    useEffect(() => {
-        fetchOrganizations();
-    }, [page, searchQuery]);
-
-    // Debounce search
-    useEffect(() => {
-        const timer = setTimeout(() => {
-            if (searchQuery) setPage(1);
-            fetchOrganizations();
-        }, 500);
-        return () => clearTimeout(timer);
-    }, [searchQuery]);
+    // ... (useEffect)
 
     return (
         <div className="space-y-6">
             <div className="flex justify-between items-center">
                 <div>
-                    <h1 className="text-2xl font-bold text-gray-900">Organization Management</h1>
-                    <p className="text-gray-600 mt-1">Manage all organizations on the platform</p>
+                    <h1 className="text-2xl font-bold text-gray-900">Tenant Management</h1>
+                    <p className="text-gray-600 mt-1">Manage organizations, plans, and access</p>
                 </div>
             </div>
 
-            {/* Filters */}
+            {/* Filters ... */}
             <div className="bg-white rounded-lg shadow p-4 flex gap-4">
                 <div className="flex-1 relative">
                     <FiSearch className="h-5 w-5 text-gray-400 absolute left-3 top-1/2 transform -translate-y-1/2" />
@@ -129,6 +110,9 @@ const AdminOrganizations = () => {
                                                 <div className="text-xs text-gray-500">
                                                     {org.total_clusters} Clusters • {org.total_instances} Instances
                                                 </div>
+                                                <div className="text-xs text-gray-400 flex items-center gap-1">
+                                                    <FiCloud className="h-3 w-3" /> {org.total_accounts || 0} Accounts
+                                                </div>
                                             </div>
                                         </td>
                                         <td className="px-6 py-4 text-gray-600">
@@ -143,12 +127,20 @@ const AdminOrganizations = () => {
                                             </span>
                                         </td>
                                         <td className="px-6 py-4">
-                                            <button
-                                                onClick={() => setSelectedOrg(org)}
-                                                className="text-blue-600 hover:text-blue-800 text-sm font-medium"
-                                            >
-                                                Details
-                                            </button>
+                                            <div className="flex flex-col gap-2">
+                                                <button
+                                                    onClick={() => setSelectedOrg(org)}
+                                                    className="text-blue-600 hover:text-blue-800 text-sm font-medium text-left"
+                                                >
+                                                    Details
+                                                </button>
+                                                <button
+                                                    onClick={() => handleToggleStatus(org)}
+                                                    className={`text-sm font-medium text-left ${org.is_active ? 'text-red-600 hover:text-red-800' : 'text-green-600 hover:text-green-800'}`}
+                                                >
+                                                    {org.is_active ? 'Suspend Org' : 'Activate Org'}
+                                                </button>
+                                            </div>
                                         </td>
                                     </tr>
                                 ))

@@ -83,6 +83,10 @@ class AuditService:
 
         return audit_entry
 
+from backend.models.user import User
+
+# ... existing code ...
+
     def get_audit_logs(
         self,
         filters: AuditLogFilter
@@ -105,6 +109,8 @@ class AuditService:
             query = query.filter(AuditLog.timestamp <= filters.end_date)
         if filters.actor_id:
             query = query.filter(AuditLog.actor_id == filters.actor_id)
+        if filters.actor_role:
+            query = query.join(User, AuditLog.actor_id == User.id).filter(User.role == filters.actor_role)
         if filters.event:
             query = query.filter(AuditLog.event == filters.event)
         if filters.resource_type:

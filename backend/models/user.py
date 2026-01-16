@@ -1,11 +1,20 @@
 """
 User model - Platform users (clients and admins)
 """
-from sqlalchemy import Column, String, DateTime, Enum as SQLEnum, Boolean, ForeignKey
+from sqlalchemy import Column, String, DateTime, Enum as SQLEnum, Boolean, ForeignKey, Table
 from sqlalchemy.orm import relationship
 from datetime import datetime
 import enum
 from backend.models.base import Base, generate_uuid
+
+
+# Association table for User <-> Permission (Custom/Direct Permissions)
+user_permissions = Table(
+    'user_permissions',
+    Base.metadata,
+    Column('user_id', String(36), ForeignKey('users.id', ondelete='CASCADE'), primary_key=True),
+    Column('permission_id', String(36), ForeignKey('permissions.id', ondelete='CASCADE'), primary_key=True)
+)
 
 
 
@@ -82,6 +91,9 @@ class User(Base):
     accounts = relationship("Account", back_populates="user", cascade="all, delete-orphan")
     node_templates = relationship("NodeTemplate", back_populates="user", cascade="all, delete-orphan")
     onboarding_state = relationship("OnboardingState", uselist=False, back_populates="user", cascade="all, delete-orphan")
+
+    # Direct/Custom Permissions (overrides or adds to Role)
+    custom_permissions = relationship("Permission", secondary=user_permissions, lazy="joined")
 
     @property
     def aws_accounts_count(self) -> int:

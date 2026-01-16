@@ -25,6 +25,26 @@ api.interceptors.request.use(
     }
 );
 
+// Add a response interceptor for Global Error Handling (JIT Governance)
+api.interceptors.response.use(
+    (response) => response,
+    (error) => {
+        // Check for JIT Logic Interception (403 + detail flag)
+        if (error.response && error.response.status === 403) {
+            const data = error.response.data;
+            // The backend sends `details: { required_ticket: true, ... }`
+            if (data.details && data.details.required_ticket) {
+                // Dispatch custom event for UI to catch
+                const event = new CustomEvent('governance:required', {
+                    detail: data.details
+                });
+                window.dispatchEvent(event);
+            }
+        }
+        return Promise.reject(error);
+    }
+);
+
 export const authAPI = {
     login: (data) => api.post('/api/v1/auth/login', data),
     signup: (data) => api.post('/api/v1/auth/signup', data),
@@ -59,6 +79,7 @@ export const accountsAPI = accountAPI;
 export const adminAPI = {
     listClients: (params) => api.get('/api/v1/admin/clients', { params }),
     listOrganizations: (params) => api.get('/api/v1/admin/organizations', { params }),
+    toggleOrg: (id) => api.post(`/api/v1/admin/organizations/${id}/toggle`),
     getClient: (id) => api.get(`/api/v1/admin/clients/${id}`),
     toggleClient: (id) => api.post(`/api/v1/admin/clients/${id}/toggle`),
     resetPassword: (id, data) => api.post(`/api/v1/admin/clients/${id}/reset-password`, data),
@@ -74,6 +95,10 @@ export const metricAPI = {
     getInstances: (params) => api.get('/api/v1/metrics/instances', { params }),
     getCostTimeSeries: (params) => api.get('/api/v1/metrics/cost/timeseries', { params }),
     getClusterMetrics: (id, params) => api.get(`/api/v1/metrics/cluster/${id}`, { params }),
+    getSavings: (params) => api.get('/api/v1/metrics/savings', { params }),
+    getOverview: () => api.get('/api/v1/metrics/overview'),
+    getTeamSummary: (teamId) => api.get(`/api/v1/metrics/teams/${teamId}/summary`),
+    getAccountSummary: (accountId) => api.get(`/api/v1/metrics/accounts/${accountId}/summary`),
 };
 export const metricsAPI = metricAPI;
 
@@ -139,6 +164,7 @@ export const settingsAPI = {
 export const onboardingAPI = {
     getState: () => api.get('/api/v1/onboarding/state'),
     getAwsLink: (mode) => api.get(`/api/v1/onboarding/aws-link?mode=${mode || 'READ_ONLY'}`),
+    getTemplate: (mode) => api.get(`/api/v1/onboarding/template?mode=${mode || 'READ_ONLY'}`, { responseType: 'blob' }),
     verify: (roleArn) => api.post('/api/v1/onboarding/verify', { role_arn: roleArn }),
     skip: () => api.post('/api/v1/onboarding/skip'),
 };
@@ -152,16 +178,20 @@ export const organizationAPI = {
 };
 
 export const teamAPI = {
-    list: () => api.get('/api/v1/teams'),
-    create: (name) => api.post('/api/v1/teams', { name }),
+    list: () => api.get('/api/v1/teams/'),
+    get: (id) => api.get(`/api/v1/teams/${id}`),
+    create: (name) => api.post('/api/v1/teams/', { name }),
     rename: (id, name) => api.put(`/api/v1/teams/${id}/rename`, { name }),
     assign: (teamId, memberId) => api.post(`/api/v1/teams/${teamId}/assign`, { member_id: memberId }),
+    remove: (teamId, memberId) => api.post(`/api/v1/teams/${teamId}/remove`, { member_id: memberId }),
     invite: (teamId, email, role = "MEMBER") => api.post(`/api/v1/teams/${teamId}/invite`, { email, role }),
     getStats: (teamId) => api.get(`/api/v1/teams/${teamId}/stats`),
+    updateGovernance: (teamId, config) => api.put(`/api/v1/teams/${teamId}/governance`, { config: config }),
 };
 
 export const userAPI = {
     updateProfile: (data) => api.patch('/api/v1/users/me', data),
+    updatePermissions: (userId, permissions) => api.post(`/api/v1/users/${userId}/permissions`, { permissions }),
 };
 
 export const cleanupAPI = {
@@ -198,8 +228,21 @@ export const rolesAPI = {
     updateRole: (id, data) => api.put(`/api/v1/roles/${id}`, data),
     deleteRole: (id) => api.delete(`/api/v1/roles/${id}`),
     assignRole: (userId, roleId) => api.post('/api/v1/roles/assign', { user_id: userId, role_id: roleId }),
+    assignRole: (userId, roleId) => api.post('/api/v1/roles/assign', { user_id: userId, role_id: roleId }),
     seed: () => api.post('/api/v1/roles/seed'),
 };
+
+export const ticketAPI = {
+    create: (data) => api.post('/api/v1/tickets/', data),
+    grantAccess: (data) => api.post('/api/v1/tickets/grant', data), // Admin Grant
+    acceptGrant: (id) => api.post(`/api/v1/tickets/${id}/accept`),
+    rejectGrant: (id) => api.post(`/api/v1/tickets/${id}/reject`),
+    list: (status) => api.get('/api/v1/tickets/', { params: { status } }),
+    getActiveWindow: () => api.get('/api/v1/tickets/active-window'),
+    approve: (id) => api.post(`/api/v1/tickets/${id}/approve`),
+    revoke: (id) => api.post(`/api/v1/tickets/${id}/revoke`),
+};
+export const ticketsAPI = ticketAPI;
 
 export default api;
 

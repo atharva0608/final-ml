@@ -20,6 +20,7 @@ from backend.api.team_routes import router as team_router
 from backend.api.user_routes import router as user_router
 from backend.api.governance_routes import router as governance_router
 from backend.api.role_routes import router as role_router
+from backend.api.ticket_routes import router as ticket_router
 
 api_router = APIRouter()
 
@@ -42,3 +43,5 @@ api_router.include_router(cleanup_router)
 api_router.include_router(approval_router)
 api_router.include_router(governance_router)
 api_router.include_router(role_router)
+api_router.include_router(team_router)
+api_router.include_router(ticket_router)

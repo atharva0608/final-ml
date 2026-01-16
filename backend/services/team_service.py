@@ -66,6 +66,35 @@ class TeamService:
         self.db.refresh(member)
         return member
 
+    def remove_member(self, user: User, member_id: str, team_id: str):
+        """
+        Removes a member from a team (sets team_id to None).
+        Allowed by: ORG_ADMIN (any team), TEAM_LEAD (their own team only)
+        """
+        is_org_admin = user.role == UserRole.ORG_ADMIN or user.role == UserRole.CLIENT
+        is_team_lead_of_team = user.role == UserRole.TEAM_LEAD and user.team_id == team_id
+
+        if not (is_org_admin or is_team_lead_of_team):
+            raise ForbiddenError("Not authorized to remove members from this team")
+            
+        member = self.db.query(User).filter(
+            User.id == member_id, 
+            User.organization_id == user.organization_id,
+            User.team_id == team_id
+        ).first()
+
+        if not member:
+            # Check if member exists at all
+            exists = self.db.query(User).filter(User.id == member_id).first()
+            if not exists:
+                raise ResourceNotFoundError("Member", member_id)
+            raise ForbiddenError("Member is not in this team")
+        
+        member.team_id = None
+        self.db.commit()
+        self.db.refresh(member)
+        return member
+
     def invite_member(self, user: User, email: str, team_id: str, role: str = "MEMBER"):
         """
         Invites a NEW user to the platform AND assigns them to a team.

@@ -96,6 +96,7 @@ class AuditLogFilter(BaseModel):
     start_date: Optional[datetime] = Field(None, description="Filter logs after this date")
     end_date: Optional[datetime] = Field(None, description="Filter logs before this date")
     actor_id: Optional[str] = Field(None, description="Filter by actor UUID")
+    actor_role: Optional[str] = Field(None, description="Filter by actor role")
     event: Optional[str] = Field(None, description="Filter by event type")
     resource_type: Optional[str] = Field(None, description="Filter by resource type")
     outcome: Optional[str] = Field(None, description="Filter by outcome (SUCCESS or FAILURE)")

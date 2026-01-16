@@ -6,7 +6,7 @@ from typing import Optional
 from backend.models.base import get_db
 from backend.models.user import User
 from backend.services.onboarding_service import get_onboarding_service, OnboardingService
-from backend.core.dependencies import get_current_user
+from backend.core.dependencies import get_current_user, verify_tenant_action
 from backend.models.onboarding import ConnectionMode
 
 router = APIRouter(prefix="/onboarding", tags=["Onboarding"])
@@ -44,10 +44,24 @@ def get_aws_link(
     url = service.get_cloudformation_deep_link(current_user.id, mode)
     return {"url": url}
 
+from fastapi import Response
+
+@router.get("/template")
+def get_template(
+    mode: ConnectionMode = ConnectionMode.READ_ONLY,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    service = get_onboarding_service(db)
+    yaml_content = service.get_template(current_user.id, mode)
+    return Response(content=yaml_content, media_type="application/x-yaml", headers={
+        "Content-Disposition": "attachment; filename=spot-optimizer-role.yaml"
+    })
+
 @router.post("/verify")
 def verify_connection(
     request: VerifyRequest,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(verify_tenant_action),
     db: Session = Depends(get_db)
 ):
     service = get_onboarding_service(db)

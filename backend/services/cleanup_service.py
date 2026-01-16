@@ -695,58 +695,28 @@ class CleanupService:
         Supports RBAC & Team-Specific Approval Workflow.
         """
         # 0. RBAC / Approval Check
+        # 0. JIT Governance Check
         if user and not bypass_approval:
-            from backend.models.user import UserRole
-            from backend.services.approval_service import ApprovalService
+            from backend.services.permission_service import PermissionService
             
-            needs_approval = False
-            action_key = str(action_data.action_type).replace("CleanupActionType.", "")  # e.g., "TERMINATE" -> map to config key
-            
-            # Map action types to governance config keys
             action_config_map = {
                 "TERMINATE": "TERMINATE_INSTANCE",
-                "DELETE": "DELETE_VOLUME",  # Uses same rule for volumes and snapshots
-                "RELEASE": "RELEASE_IP"
+                "DELETE": "DELETE_VOLUME",
+                "RELEASE": "RELEASE_IP",
+                "SNAPSHOT_STOP": "SNAPSHOT_STOP"
             }
-            config_key = action_config_map.get(str(action_data.action_type.value), str(action_data.action_type.value))
+            # Map Enum to string
+            action_key = str(action_data.action_type).replace("CleanupActionType.", "")
+            mapped_action = action_config_map.get(action_key, action_key)
             
-            # Rule 1: Members - Check team-specific governance first
-            if user.role == UserRole.MEMBER:
-                if user.team and user.team.governance_config:
-                    # Check if Team Lead has enabled approval for this specific action
-                    needs_approval = user.team.governance_config.get(config_key, False)
-                else:
-                    # Fallback: If no team config exists, use system default (require approval)
-                    needs_approval = True
+            perm_service = PermissionService(self.db)
             
-            # Rule 2: Team Leads need approval if Org is in Strict Mode
-            elif user.role == UserRole.TEAM_LEAD and user.organization and user.organization.is_strict_approval_mode:
-                needs_approval = True
-
-            # Rule 3: Critical Actions configured in Org Governance Settings always require approval (except Org Admin)
-            if not needs_approval and user.organization and user.organization.governance_config:
-                critical_actions = user.organization.governance_config.get('critical_actions', [])
-                if config_key in critical_actions and user.role != UserRole.ORG_ADMIN:
-                    needs_approval = True
+            # Check permission for each resource (Active Window covers all, Specific Ticket covers specific)
+            # If any resource is denied, the whole batch fails (atomic safety)
+            for rid in action_data.resource_ids:
+                perm_service.enforce(user, mapped_action, rid)
                 
-            if needs_approval:
-                logger.info(f"Action requires approval for user {user.id} (Role: {user.role}, Team: {user.team_id})")
-                approval_svc = ApprovalService(self.db)
-                req = approval_svc.create_request(
-                    user=user,
-                    resource_type="AWS_RESOURCE",
-                    action="CLEANUP_EXECUTE",
-                    payload={
-                        "account_id": account_id,
-                        "action_data": action_data.dict()
-                    }
-                )
-                return {
-                    "status": "pending_approval", 
-                    "message": "Action queued for Team Lead approval", 
-                    "request_id": req.id,
-                    "approval_status": "PENDING"
-                }
+            logger.info(f"JIT Check passed for {mapped_action} by {user.email}")
 
         account = self.db.query(Account).filter(Account.id == account_id).first()
         if not account:

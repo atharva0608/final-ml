@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 from typing import List, Optional
 
-from backend.core.dependencies import get_db, get_current_user
+from backend.core.dependencies import get_db, get_current_user, verify_tenant_action
 from backend.services.cleanup_service import CleanupService
 from backend.schemas.cleanup_schemas import CleanupSummary, CleanupAction
 from backend.models.user import User
@@ -18,7 +18,7 @@ def scan_resources(
     regions: Optional[List[str]] = Query(None),
     force_refresh: bool = Query(False, description="Bypass cache and fetch fresh data from AWS"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(verify_tenant_action)
 ):
     """
     Scan for orphaned resources.
@@ -38,7 +38,7 @@ def check_dependencies(
     resource_id: str = Query(...),
     region: str = Query(...),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(verify_tenant_action)
 ):
     """
     Feature 1: Deep Dependency Mapping
@@ -56,7 +56,7 @@ def execute_cleanup_action(
     action: CleanupAction,
     account_id: str = Query(..., description="The account ID to execute action on"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(verify_tenant_action)
 ):
     """
     Execute cleanup actions (Terminate, Delete, Release).

@@ -30,6 +30,11 @@ def rename_team(team_id: str, name: str = Body(..., embed=True), service: TeamSe
 def assign_member(team_id: str, member_id: str = Body(..., embed=True), service: TeamService = Depends(get_service), user: User = Depends(get_current_user)):
     return service.assign_member(user, member_id, team_id)
 
+@router.post("/{team_id}/remove")
+def remove_member(team_id: str, member_id: str = Body(..., embed=True), service: TeamService = Depends(get_service), user: User = Depends(get_current_user)):
+    """Remove a member from the team (unassign)"""
+    return service.remove_member(user, member_id, team_id)
+
 @router.post("/{team_id}/invite")
 def invite_member(team_id: str, email: str = Body(...), role: str = Body("MEMBER"), service: TeamService = Depends(get_service), user: User = Depends(get_current_user)):
     """Invite a new user to the platform and assign to this team"""
@@ -37,7 +42,7 @@ def invite_member(team_id: str, email: str = Body(...), role: str = Body("MEMBER
 
 @router.get("/{team_id}")
 def get_team(team_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    """Get a specific team's details including governance config"""
+    """Get a specific team's details including governance config AND members"""
     team = db.query(Team).filter(Team.id == team_id).first()
     if not team:
         raise HTTPException(404, "Team not found")
@@ -46,11 +51,25 @@ def get_team(team_id: str, db: Session = Depends(get_db), user: User = Depends(g
     if team.organization_id != user.organization_id:
         raise HTTPException(403, "Not authorized to view this team")
     
+    # Serialize members manually to ensure accounts are included and Enums handled
+    members_data = []
+    for m in team.members:
+        members_data.append({
+            "id": m.id,
+            "email": m.email,
+            "full_name": m.full_name,
+            "role": m.role.value if hasattr(m.role, "value") else str(m.role),
+            "status": m.status.value if hasattr(m.status, "value") else str(m.status),
+            "aws_accounts_count": len(m.accounts),
+            "accounts": [{"id": str(a.id), "aws_account_id": a.aws_account_id, "status": a.status} for a in m.accounts]
+        })
+
     return {
         "id": team.id,
         "name": team.name,
         "governance_config": team.governance_config or {},
-        "created_at": team.created_at
+        "created_at": team.created_at,
+        "members": members_data
     }
 
 @router.put("/{team_id}/governance")
@@ -82,12 +101,16 @@ def update_team_governance(
     # Update the config
     team.governance_config = config
     db.commit()
-    db.refresh(team)
     
-    return {"status": "success", "governance_config": team.governance_config}
+    return {"status": "success", "config": team.governance_config}
 
 
-@router.get("/{team_id}/stats")
-def get_team_stats(team_id: str, service: TeamService = Depends(get_service), user: User = Depends(get_current_user)):
-    """Get statistics for a specific team (Member count, resources, cost)"""
-    return service.get_team_stats(user, team_id)
+@router.get("/{team_id}/stats", response_model=dict)
+def get_team_stats(
+    team_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Get team statistics (member count, resource count, cost)"""
+    service = TeamService(db)
+    return service.get_team_stats(current_user, team_id)

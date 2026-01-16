@@ -34,10 +34,15 @@ import AdminBilling from './components/admin/AdminBilling';
 import AdminOrganizations from './components/admin/AdminOrganizations';
 import RightSizing from './components/right-sizing/RightSizing';
 import CleanupDashboard from './components/cleanup/CleanupDashboard';
-import ApprovalCenter from './components/approvals/ApprovalCenter';
 import GovernanceSettings from './components/settings/GovernanceSettings';
 
+import Teams from './pages/Teams';
+import TeamDetails from './pages/TeamDetails';
+import Roles from './pages/Roles';
 import InviteAcceptance from './components/auth/InviteAcceptance';
+import AccountAnalytics from './pages/AccountAnalytics';
+import TicketCenter from './pages/TicketCenter';
+import TicketRequestModal from './components/tickets/TicketRequestModal';
 
 // Protected Route Component
 const ProtectedRoute = ({ children }) => {
@@ -112,9 +117,27 @@ function App() {
     }
   }, [accessToken, logout]);
 
+  const [governanceModalOpen, setGovernanceModalOpen] = React.useState(false);
+  const [governanceData, setGovernanceData] = React.useState(null);
+
+  React.useEffect(() => {
+    const handleGovernanceRequired = (event) => {
+      setGovernanceData(event.detail);
+      setGovernanceModalOpen(true);
+    };
+
+    window.addEventListener('governance:required', handleGovernanceRequired);
+    return () => window.removeEventListener('governance:required', handleGovernanceRequired);
+  }, []);
+
   return (
     <BrowserRouter>
       <div className="App">
+        <TicketRequestModal
+          isOpen={governanceModalOpen}
+          onClose={() => setGovernanceModalOpen(false)}
+          initialData={governanceData}
+        />
         <Toaster
           position="top-right"
           toastOptions={{
@@ -196,9 +219,15 @@ function App() {
             <Route path="hibernation" element={<HibernationSchedule />} />
             <Route path="audit" element={<AuditLog />} />
             <Route path="cleanup" element={<CleanupDashboard />} />
-            <Route path="approvals" element={<ApprovalCenter />} />
+            <Route path="approvals" element={<TicketCenter />} />
+            <Route path="settings" element={<Settings />} />
             <Route path="settings" element={<Settings />} />
             <Route path="settings/governance" element={<GovernanceSettings />} />
+
+            <Route path="teams" element={<Teams />} />
+            <Route path="teams/:teamId" element={<TeamDetails />} />
+            <Route path="roles" element={<Roles />} />
+            <Route path="accounts/:accountId/analytics" element={<AccountAnalytics />} />
 
             {/* Admin Routes (SUPER_ADMIN only) */}
             <Route path="admin" element={<AdminRoute><AdminDashboard /></AdminRoute>} />

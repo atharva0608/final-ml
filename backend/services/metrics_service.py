@@ -96,7 +96,8 @@ class MetricsService:
             user_id,
             start_date,
             end_date,
-            filters.cluster_id
+            filters.cluster_id,
+            filters.team_id
         )
 
         # Calculate savings
@@ -104,7 +105,8 @@ class MetricsService:
             user_id,
             start_date,
             end_date,
-            filters.cluster_id
+            filters.cluster_id,
+            filters.team_id
         )
 
         # Optimization jobs
@@ -168,7 +170,8 @@ class MetricsService:
             user_id,
             start_date,
             end_date,
-            filters.cluster_id
+            filters.cluster_id,
+            filters.team_id
         )
 
     def get_instance_metrics(
@@ -255,7 +258,8 @@ class MetricsService:
             day_cost = self._calculate_daily_cost(
                 user_id,
                 current_date,
-                filters.cluster_id
+                filters.cluster_id,
+                filters.team_id
             )
 
             data_points.append(
@@ -348,7 +352,8 @@ class MetricsService:
         user_id: str,
         start_date: datetime,
         end_date: datetime,
-        cluster_id: Optional[str] = None
+        cluster_id: Optional[str] = None,
+        team_id: Optional[str] = None
     ) -> CostMetrics:
         """
         Calculate cost metrics for time range
@@ -375,6 +380,10 @@ class MetricsService:
 
         if cluster_id:
             instance_query = instance_query.filter(Cluster.id == cluster_id)
+
+        if team_id:
+            # Filter by team via Account -> User -> Team
+            instance_query = instance_query.join(User).filter(User.team_id == team_id)
 
         # Get active instances with pricing
         active_instances = instance_query.filter(
@@ -416,7 +425,8 @@ class MetricsService:
         user_id: str,
         start_date: datetime,
         end_date: datetime,
-        cluster_id: Optional[str] = None
+        cluster_id: Optional[str] = None,
+        team_id: Optional[str] = None
     ) -> SavingsBreakdown:
         """
         Calculate savings from spot instance usage
@@ -435,7 +445,8 @@ class MetricsService:
             user_id,
             start_date,
             end_date,
-            cluster_id
+            cluster_id,
+            team_id
         )
 
         # Calculate what it would cost if all were on-demand
@@ -467,7 +478,8 @@ class MetricsService:
         self,
         user_id: str,
         date: datetime,
-        cluster_id: Optional[str] = None
+        cluster_id: Optional[str] = None,
+        team_id: Optional[str] = None
     ) -> Decimal:
         """
         Calculate cost for a specific day
@@ -487,10 +499,173 @@ class MetricsService:
             user_id,
             start_of_day,
             end_of_day,
-            cluster_id
+            cluster_id,
+            team_id
         )
 
         return cost_metrics.total_cost
+
+    def get_team_consolidated_stats(self, team_id: str) -> Dict[str, Any]:
+        """
+        Aggregates data from ALL members in a team for the Admin/Lead view.
+        This provides the detailed "Consolidated View" feature with:
+        - Top Spenders Leaderboard
+        - Waste Distribution (for Pie Chart)
+        - Cost Trends (for Area Chart)
+        
+        Args:
+            team_id: Team UUID
+            
+        Returns:
+            Dictionary with comprehensive consolidated stats
+        """
+        # 1. Identify all users in this team
+        team_members = self.db.query(User).filter(User.team_id == team_id).all()
+        member_ids = [str(u.id) for u in team_members]
+
+        if not member_ids:
+            return {
+                "total_cost": 0.0,
+                "total_waste": 0.0,
+                "instance_count": 0,
+                "cluster_count": 0,
+                "member_count": 0,
+                "account_count": 0,
+                "efficiency_score": 100,
+                "history": [],
+                "top_spenders": [],
+                "waste_distribution": []
+            }
+
+        # 2. Get All Accounts belonging to these members
+        accounts = self.db.query(Account).filter(Account.user_id.in_(member_ids)).all()
+        account_ids = [str(a.id) for a in accounts]
+
+        # 3. Calculate Instance and Cluster counts
+        total_instances = 0
+        total_clusters = 0
+        
+        if account_ids:
+            total_instances = self.db.query(Instance).filter(
+                Instance.account_id.in_(account_ids)
+            ).count()
+            
+            total_clusters = self.db.query(Cluster).filter(
+                Cluster.account_id.in_(account_ids)
+            ).count()
+
+        # 4. Calculate Cost (simulated - in production, sum from CostMetric table)
+        avg_hourly_cost = Decimal('0.05')  # Average hourly cost per instance
+        hours_in_month = 720
+        total_cost = float(total_instances * avg_hourly_cost * hours_in_month)
+        
+        # 5. Calculate Waste Distribution (for Pie Chart)
+        # In production, query ResourceItem grouped by resource_type
+        # For now, generate mock data based on total_cost
+        waste_categories = [
+            {"name": "Idle Volumes", "value": round(total_cost * 0.06, 2)},
+            {"name": "Stopped Instances", "value": round(total_cost * 0.04, 2)},
+            {"name": "Old Snapshots", "value": round(total_cost * 0.03, 2)},
+            {"name": "Unused IPs", "value": round(total_cost * 0.02, 2)},
+        ]
+        # Filter out zero values
+        waste_distribution = [w for w in waste_categories if w["value"] > 0]
+        total_waste = sum(w["value"] for w in waste_distribution)
+
+        # 6. Build Top Spenders Leaderboard
+        # In production, query CostMetric grouped by user
+        top_spenders = []
+        for i, member in enumerate(team_members[:5]):  # Top 5
+            member_accounts = [a for a in accounts if str(a.user_id) == str(member.id)]
+            member_instances = 0
+            for acc in member_accounts:
+                member_instances += self.db.query(Instance).filter(
+                    Instance.account_id == str(acc.id)
+                ).count()
+            
+            member_cost = float(member_instances * avg_hourly_cost * hours_in_month)
+            if member_cost > 0 or len(member_accounts) > 0:
+                top_spenders.append({
+                    "name": member.full_name or member.email.split('@')[0],
+                    "email": member.email,
+                    "cost": round(member_cost, 2),
+                    "account_count": len(member_accounts)
+                })
+        
+        # Sort by cost descending
+        top_spenders.sort(key=lambda x: x["cost"], reverse=True)
+
+        # 7. Calculate Efficiency Score (100 - waste percentage)
+        efficiency_score = 100 if total_cost == 0 else round(100 - (total_waste / total_cost * 100), 1)
+
+        # 8. Build weekly history for graph
+        history = []
+        for week in range(4):
+            week_factor = 0.25 * (week + 1)  # Simulates growing cost over weeks
+            history.append({
+                "name": f"Week {week + 1}",
+                "date": f"Week {week + 1}",
+                "cost": round(total_cost * week_factor, 2)
+            })
+
+        return {
+            "total_cost": round(total_cost, 2),
+            "total_waste": round(total_waste, 2),
+            "instance_count": total_instances,
+            "cluster_count": total_clusters,
+            "member_count": len(member_ids),
+            "account_count": len(accounts),
+            "efficiency_score": efficiency_score,
+            "history": history,
+            "top_spenders": top_spenders,
+            "waste_distribution": waste_distribution
+        }
+
+    def get_account_consolidated_stats(self, account_id: str) -> Dict[str, Any]:
+        """ Stats for a single AWS Account """
+        account = self.db.query(Account).filter(Account.id == account_id).first()
+        if not account:
+            return {"total_cost": 0, "history": []}
+            
+        # Instance Count
+        total_instances = self.db.query(Instance).filter(Instance.account_id == account_id).count()
+        total_clusters = self.db.query(Cluster).filter(Cluster.account_id == account_id).count()
+        
+        # Cost (Mock)
+        avg_hourly_cost = Decimal('0.05')
+        hours_in_month = 720
+        total_cost = float(total_instances * avg_hourly_cost * hours_in_month)
+        
+        # Waste (Mock - same categories)
+        waste_categories = [
+            {"name": "Idle Volumes", "value": round(total_cost * 0.06, 2)},
+            {"name": "Stopped Instances", "value": round(total_cost * 0.04, 2)},
+            {"name": "Old Snapshots", "value": round(total_cost * 0.03, 2)},
+            {"name": "Unused IPs", "value": round(total_cost * 0.02, 2)},
+        ]
+        waste_distribution = [w for w in waste_categories if w["value"] > 0]
+        total_waste = sum(w["value"] for w in waste_distribution)
+        
+        efficiency_score = 100 if total_cost == 0 else round(100 - (total_waste / total_cost * 100), 1)
+        
+        history = []
+        for week in range(4):
+            week_factor = 0.25 * (week + 1)
+            history.append({
+               "name": f"Week {week + 1}",
+               "date": f"Week {week + 1}",
+               "cost": round(total_cost * week_factor, 2)
+            })
+            
+        return {
+            "total_cost": round(total_cost, 2),
+            "total_waste": round(total_waste, 2),
+            "instance_count": total_instances,
+            "cluster_count": total_clusters,
+            "efficiency_score": efficiency_score,
+            "history": history,
+            "waste_distribution": waste_distribution
+        }
 
 
 def get_metrics_service(db: Session) -> MetricsService:

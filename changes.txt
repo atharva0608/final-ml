@@ -1,245 +1,83 @@
-Based on your requirements, we need to move the approval rules from being "Global" or "Hardcoded" to being **Dynamic and Team-Specific**.
+Here are the **Functional Specifications** and **Implementation Guidelines** to introduce the **Super Admin (Platform Admin)** role. This role is strictly separated from Client Data operations.
 
-Here is the implementation plan to allow Team Leads to configure approval rules for their own teams.
+### 1. The Core Principle: "Platform vs. Tenant" Separation
 
-### 1. 🏗️ Database & Model Changes
+You must architecturally enforce that the **Super Admin** manages the *Container*, while the **Organization Admin** manages the *Content*.
 
-We need to store these rules on the `Team` object.
+* **Super Admin Scope:** The Application Infrastructure (Database health, ML Models, Global Pricing Config, Tenant Billing Status).
+* **Organization Admin Scope:** The Client Cloud Resources (AWS Accounts, EC2 Instances, Team Members, Cost Savings).
 
-**File:** `backend/models/team.py`
+### 2. Permission Constraints (The "Iron Wall")
 
-* **Action:** Add a `governance_config` column. This JSON field will store which actions require approval (e.g., `{"account_connect": true, "instance_delete": false}`).
+To ensure the Super Admin cannot touch client accounts, implement these logic rules in your **Authorization Middleware**:
 
-```python
-from sqlalchemy import Column, String, ForeignKey, DateTime, JSON # <--- Import JSON
-from sqlalchemy.orm import relationship
-from datetime import datetime
-import uuid
-from backend.models.base import Base
+#### **A. Explicit Deny on Resource Actions**
 
-class Team(Base):
-    __tablename__ = "teams"
+* **The Rule:** Any API endpoint that interacts with a cloud provider (AWS/GCP/Azure) or modifies specific client resources must **Block** the Super Admin role.
+* **Affected Actions:** `Terminate Instance`, `Delete Volume`, `Connect Cloud Account`, `Scan Infrastructure`, `Execute Cleanup`.
+* **Implementation Note:** In your permission checker, if `user.role == 'SUPER_ADMIN'`, these endpoints should return `403 Forbidden` with a message: *"Platform Admins cannot modify client resources."*
 
-    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    name = Column(String(100), nullable=False)
-    organization_id = Column(String(36), ForeignKey("organizations.id"), nullable=False)
-    
-    # New Column: Stores specific rules for this team
-    # Example: { "CONNECT_ACCOUNT": true, "TERMINATE_INSTANCE": true }
-    governance_config = Column(JSON, default={}) 
-    
-    created_at = Column(DateTime, default=datetime.utcnow)
+#### **B. Read-Only "Shadow" View (Optional but Restricted)**
 
-    members = relationship("User", back_populates="team")
-    organization = relationship("Organization", back_populates="teams")
-
-```
+* If you allow Super Admins to *see* client data for support purposes, it must be strictly **Read-Only**.
+* **Masking:** Sensitive data like AWS Access Keys, Cost details, or PII must be masked even for the Super Admin.
 
 ---
 
-### 2. 🔌 Backend API & Service Logic
+### 3. Super Admin Capabilities (What they CAN do)
 
-We need a way to **Update** these rules and a way to **Check** them.
+The Super Admin dashboard should look completely different from the Client dashboard. It focuses on **System Health** and **Tenant Governance**.
 
-#### **A. Update Team Governance (API)**
+#### **Feature 1: Tenant & License Management**
 
-**File:** `backend/api/team_routes.py`
-Add an endpoint for the Team Lead to save these settings.
+* **Organization Oversight:** A list of all registered clients (Organizations).
+* **Actions:**
+* **Onboard/Offboard:** Create new client environments or suspend non-paying clients.
+* **Feature Toggles:** Enable/Disable specific modules per client (e.g., "Grant Client A access to *Spot Instance Optimization* feature").
+* **Limit Configuration:** Set limits on how many team members or AWS accounts a client can add.
 
-```python
-from backend.schemas.team_schemas import TeamGovernanceUpdate # You'll need to define this Pydantic model
 
-@router.put("/{team_id}/governance")
-def update_team_governance(
-    team_id: str, 
-    config: dict = Body(..., embed=True), # Accepts arbitrary JSON or specific schema
-    db: Session = Depends(get_db), 
-    user: User = Depends(get_current_user)
-):
-    # 1. Validation: Only Team Lead of THIS team (or Org Admin) can update
-    team = db.query(Team).filter(Team.id == team_id).first()
-    if not team:
-        raise HTTPException(404, "Team not found")
-        
-    is_authorized = (user.role == UserRole.ORG_ADMIN) or \
-                    (user.role == UserRole.TEAM_LEAD and user.team_id == team_id)
-    
-    if not is_authorized:
-        raise HTTPException(403, "Not authorized to change team rules")
 
-    # 2. Update Config
-    # Merge or Replace logic depending on preference. Here we replace.
-    team.governance_config = config
-    db.commit()
-    
-    return {"status": "success", "config": team.governance_config}
+#### **Feature 2: ML Model Governance**
 
-```
+* **Centralized Model Registry:** The Super Admin manages the AI/ML models used by the optimization engine.
+* **Actions:**
+* **Push Updates:** Upload a new version of the "Rightsizing Algorithm" that applies to all clients.
+* **Model Config:** Tweak global hyperparameters (e.g., "Aggressiveness of savings recommendations") without touching client data directly.
 
-#### **B. Enforce Rules: Account Connection**
 
-**File:** `backend/services/account_service.py`
-Modify `connect_account` to check the team's config.
 
-```python
-    def connect_account(self, user: User, data: dict):
-        # ... (Existing AWS validation logic) ...
+#### **Feature 3: System Performance & Health**
 
-        # CHECK TEAM GOVERNANCE
-        needs_approval = False
-        
-        # Default policy: Members need approval if not specified otherwise
-        if user.role == UserRole.MEMBER:
-            if user.team and user.team.governance_config:
-                # Check specific flag. If key is missing, default to True (Safe) or False (Open)
-                # Here defaulting to False (Open) unless explicitly checked
-                needs_approval = user.team.governance_config.get("CONNECT_ACCOUNT", False)
-            else:
-                # Fallback if no team config exists (System Default)
-                needs_approval = True 
-
-        status = "PENDING_APPROVAL" if needs_approval else "ACTIVE"
-        
-        new_account = Account(..., status=status)
-        self.db.add(new_account)
-        self.db.commit()
-
-        if needs_approval:
-            # Create Approval Request
-            self.approval_service.create_request(
-                user=user,
-                action="CONNECT_ACCOUNT",
-                resource_type="AWS_ACCOUNT",
-                payload={"account_id": new_account.id}
-            )
-            return {"status": "pending_approval", "message": "Connection queued for approval"}
-            
-        return {"status": "success", "account": new_account}
-
-```
-
-#### **C. Enforce Rules: Deletion/Cleanup**
-
-**File:** `backend/services/cleanup_service.py`
-Update `execute_action` to look at the team config instead of hardcoded roles.
-
-```python
-    def execute_action(self, ..., user: User, ...):
-        # ...
-        
-        needs_approval = False
-        action_key = action_data.action_type # e.g. "TERMINATE_INSTANCE"
-
-        if user.role == UserRole.MEMBER and user.team:
-            # Check if Team Lead has enabled approval for this SPECIFIC action
-            needs_approval = user.team.governance_config.get(str(action_key), False)
-        
-        if needs_approval:
-             # Create Approval Request
-             # ...
-             return {"status": "pending_approval"}
-
-```
+* **Application Metrics:** View the CPU, Memory, and Latency of the *SaaS Platform itself* (not the client's servers).
+* **Job Queues:** Monitor the status of background workers (e.g., "10,000 optimization jobs pending").
+* **Global Audit:** A master log showing *which* Organization Admin did what, for compliance and platform security.
 
 ---
 
-### 3. 🎨 Frontend Implementation
+### 4. Dashboard UX: The "God View"
 
-We need a UI for the Team Lead to toggle these switches.
+#### **Navigation Menu**
 
-**File:** `frontend/src/components/settings/TeamGovernance.jsx` (New Component)
+Remove all "Resource" tabs. Replace them with:
 
-```jsx
-import React, { useState, useEffect } from 'react';
-import { api } from '../../services/api';
-import { Card, Switch, Button } from '../shared';
-import toast from 'react-hot-toast';
+1. **Tenants:** (List of Organizations, Subscription Status, Active Users).
+2. **Platform Health:** (Redis Status, API Latency, Error Rates).
+3. **Model Registry:** (Manage ML versions).
+4. **Global Config:** (Pricing APIs, System Maintenance Mode).
 
-const ACTION_TYPES = [
-  { key: 'CONNECT_ACCOUNT', label: 'Connect AWS Account', desc: 'Require approval when a member adds a new cloud account.' },
-  { key: 'TERMINATE_INSTANCE', label: 'Terminate Instance', desc: 'Require approval to delete EC2 instances.' },
-  { key: 'DELETE_VOLUME', label: 'Delete Volume', desc: 'Require approval to delete EBS volumes.' },
-  { key: 'DELETE_SNAPSHOT', label: 'Delete Snapshot', desc: 'Require approval to delete snapshots.' },
-  { key: 'RELEASE_IP', label: 'Release Elastic IP', desc: 'Require approval to release static IPs.' },
-];
+#### **The "Impersonation" Risk**
 
-const TeamGovernance = ({ teamId }) => {
-  const [config, setConfig] = useState({});
-  const [loading, setLoading] = useState(false);
+* **Decision:** You must decide if a Super Admin can "Log in as Client".
+* **Recommendation:** **Disable this by default.** If implemented for support, it requires a "Break Glass" procedure that logs a critical alert and notifies the Client Org Admin immediately.
 
-  useEffect(() => {
-    fetchConfig();
-  }, [teamId]);
+### Summary of Hierarchical Access
 
-  const fetchConfig = async () => {
-    // Assuming GET /teams/{id} returns the governance_config field
-    const res = await api.get(`/teams/${teamId}`);
-    setConfig(res.data.governance_config || {});
-  };
-
-  const handleToggle = (key) => {
-    setConfig(prev => ({
-      ...prev,
-      [key]: !prev[key]
-    }));
-  };
-
-  const saveChanges = async () => {
-    setLoading(true);
-    try {
-      await api.put(`/teams/${teamId}/governance`, config);
-      toast.success("Team policies updated");
-    } catch (err) {
-      toast.error("Failed to update policies");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return (
-    <Card className="p-6">
-      <div className="flex justify-between items-center mb-6">
-        <div>
-          <h2 className="text-xl font-bold">Team Approval Policies</h2>
-          <p className="text-gray-500 text-sm">Select which actions require your approval.</p>
-        </div>
-        <Button onClick={saveChanges} loading={loading}>Save Policies</Button>
-      </div>
-
-      <div className="space-y-6">
-        {ACTION_TYPES.map(action => (
-          <div key={action.key} className="flex justify-between items-center pb-4 border-b last:border-0">
-            <div>
-              <h3 className="font-medium text-gray-900">{action.label}</h3>
-              <p className="text-sm text-gray-500">{action.desc}</p>
-            </div>
-            <Switch 
-              checked={!!config[action.key]} 
-              onChange={() => handleToggle(action.key)} 
-            />
-          </div>
-        ))}
-      </div>
-    </Card>
-  );
-};
-
-export default TeamGovernance;
-
-```
-
-**Integration:**
-Add this component inside your `TeamManagement.jsx` accordion. When a Team Lead expands their team card, show a "Policies" tab or button that renders this `TeamGovernance` component.
-
-### 4. Detailed Instructions Summary
-
-1. **DB Migration:** Run a migration to add `governance_config` (JSON) to the `teams` table.
-2. **API Update:** Implement `PUT /teams/{id}/governance` in `team_routes.py`.
-3. **Service Logic:**
-* In `AccountService`, wrap the `ACTIVE` status assignment in a check against `user.team.governance_config['CONNECT_ACCOUNT']`.
-* In `CleanupService`, wrap the execution logic in a check against `user.team.governance_config[action_type]`.
-
-
-4. **UI Update:** Create the `TeamGovernance` component shown above and embed it into the Team Lead's dashboard view.
-
-This gives the Team Lead full control. They can say: *"My team is experienced, so they can delete volumes without asking, but adding a new AWS account (which costs money) definitely needs my approval."*
+| Action | Super Admin (Platform) | Org Admin (Client) |
+| --- | --- | --- |
+| **Update App Version** | ✅ **Yes** | ❌ No |
+| **Disable Client Org** | ✅ **Yes** | ❌ No |
+| **Update Billing Plan** | ✅ **Yes** | ❌ No |
+| **Delete Client EC2** | ❌ **BLOCK** | ✅ **Yes** |
+| **Add AWS Account** | ❌ **BLOCK** | ✅ **Yes** |
+| **Invite Team Member** | ❌ **BLOCK** | ✅ **Yes** |

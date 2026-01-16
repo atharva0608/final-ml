@@ -95,5 +95,74 @@ class OnboardingService:
         user.onboarding_completed = True
         self.db.commit()
 
+    def get_template(self, user_id: str, mode: ConnectionMode) -> str:
+        state = self.get_or_create_state(user_id)
+        
+        # Determine policies based on mode
+        # In a real app, these would be loaded from a file or template engine
+        # Here we embed a simple functional CloudFormation template
+        
+        policy_document = ""
+        if mode == ConnectionMode.READ_ONLY:
+            policy_document = """
+                Version: '2012-10-17'
+                Statement:
+                  - Effect: Allow
+                    Action:
+                      - 'ec2:Describe*'
+                      - 'cloudwatch:GetMetricData'
+                      - 'autoscaling:Describe*'
+                      - 'eks:Describe*'
+                      - 'eks:List*'
+                    Resource: '*'
+            """
+        else:
+            policy_document = """
+                Version: '2012-10-17'
+                Statement:
+                  - Effect: Allow
+                    Action: '*'
+                    Resource: '*'
+            """
+
+        yaml_template = f"""
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'SpotOptimizer - Cross Account Access Role'
+Parameters:
+  ExternalId:
+    Type: String
+    Description: 'The Unique External ID provided by SpotOptimizer'
+    Default: '{state.external_id}'
+  TrustedRoleARN:
+    Type: String
+    Description: 'The ARN of the SpotOptimizer Backend Role to trust'
+    Default: '{TRUSTED_ROLE_ARN}'
+
+Resources:
+  SpotOptimizerRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: !Sub 'SpotOptimizer-Access-Role-${{ExternalId}}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Ref TrustedRoleARN
+            Action: 'sts:AssumeRole'
+            Condition:
+              StringEquals:
+                'sts:ExternalId': !Ref ExternalId
+      Policies:
+        - PolicyName: 'SpotOptimizerPermissions'
+          PolicyDocument: {policy_document}
+
+Outputs:
+  RoleArn:
+    Description: 'The ARN of the created Role'
+    Value: !GetAtt SpotOptimizerRole.Arn
+"""
+        return yaml_template.strip()
+
 def get_onboarding_service(db: Session = None):
     return OnboardingService(db)

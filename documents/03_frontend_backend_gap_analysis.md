@@ -1,5 +1,5 @@
 # Frontend-Backend Gap Analysis
-**Date:** 2026-01-13 (Last Updated)
+**Date:** 2026-01-14 (Last Updated)
 **Scope:** `frontend/src/services/api.js` vs `backend/api/*.py`
 
 This document outlines the discrepancies found between the Frontend's expected API calls and the Backend's actual routes.
@@ -7,7 +7,7 @@ This document outlines the discrepancies found between the Frontend's expected A
 ## Summary
 | Category | Count | Description |
 | :--- | :--- | :--- |
-| **Real APIs** | 40+ | Endpoints that exist and are correctly linked (includes Mocked logic). |
+| **Real APIs** | 50+ | Endpoints that exist and are correctly linked (includes JIT Ticket System). |
 | **Missing / Fake APIs** | 0 | Endpoints called by Frontend but **NOT** implemented in Backend. |
 | **Zombie APIs** | 1 | Backend endpoints that exist but appear unused. |
 
@@ -26,12 +26,28 @@ This document outlines the discrepancies found between the Frontend's expected A
 *   **Hibernation**: Schedule Management.
 *   **Audit**: Activity logs.
 
-### Newly Implemented APIs (2026-01-13)
-*   **Governance**: Get Policies, Update Policies, Run Autopilot (NEW - Feature 4).
-*   **Cleanup / Dependencies**: `check-dependencies` pre-flight verification (NEW - Feature 1).
-*   **Cleanup / Tag Compliance**: `is_compliant`, `missing_tags`, `untagged_waste_cost` in scan results (NEW - Feature 2).
+### Newly Implemented APIs (2026-01-14)
+*   **JIT Tickets**: Full CRUD + workflow endpoints at `/api/v1/tickets` (NEW - JIT System).
+    *   `POST /` - Create access request
+    *   `POST /grant` - Admin grants access to recipients
+    *   `GET /` - List tickets (role-filtered)
+    *   `POST /{id}/approve` - Approve pending ticket
+    *   `POST /{id}/revoke` - Revoke active access
+    *   `POST /{id}/accept` - Accept delegated grant (PENDING_CONSENT → APPROVED_ACTIVE)
+    *   `POST /{id}/reject` - Decline delegated grant
+    *   `GET /active-window` - Get user's current active access window
+    
+### Newly Implemented APIs (Admin Dashboard Reset)
+*   **Super Admin Command Center**:
+    *   `GET /admin/dashboard` - Real-time Platform Stats and Live Activity Feed (sourced from Audit Logs).
+    *   `POST /admin/organizations/{id}/toggle` - Suspend/Activate tenants (Kill Switch).
+
+### Previously Implemented APIs (2026-01-13)
+*   **Governance**: Get Policies, Update Policies, Run Autopilot (Feature 4).
+*   **Cleanup / Dependencies**: `check-dependencies` pre-flight verification (Feature 1).
+*   **Cleanup / Tag Compliance**: `is_compliant`, `missing_tags`, `untagged_waste_cost` in scan results (Feature 2).
 *   **Approvals**: Pending request management (List, Approve, Reject) - Feature 3.
-*   **Team-Specific Governance**: `GET/PUT /teams/{id}/governance` for Team Lead approval policy configuration (NEW).
+*   **Team-Specific Governance**: `GET/PUT /teams/{id}/governance` for Team Lead approval policy configuration.
 *   **Cleanup / Authorization**: `AUTHORIZE` and `UNAUTHORIZE` actions in `cleanupAPI.execute` (Persistence).
 
 ### Previously Implemented APIs (2026-01-12)
@@ -52,6 +68,7 @@ This document outlines the discrepancies found between the Frontend's expected A
 | **Team-Specific Governance** | **Real + UI** | Team.governance_config JSON, GET/PUT /teams/{id}/governance API, TeamGovernance.jsx with 5 action toggles. |
 | **Approvals (Feature 3)** | **Real** | Four-Eyes approval workflow for Members and Strict Mode. |
 | **Authorization** | **Real + UI** | `AuthorizedResource` model, persistence, and dashboard filtering. |
+| **JIT Ticket System** | **Real + UI (Audited 2026-01-14)** | Full role-based ticket workflow. Backend: Ticket model, TicketService, PermissionService. Authorization fixed to include `CLIENT` role. Frontend: TicketCenter with stats cards, real timestamps, expiry countdown. No mock data - uses `ticketsAPI` for all operations. |
 
 ## 3. Resolved Gaps (2026-01-13)
 
@@ -63,6 +80,7 @@ This document outlines the discrepancies found between the Frontend's expected A
 | **Team-Specific Governance** | Not Implemented | **Real**: Team.governance_config + TeamGovernance.jsx UI |
 | **Approval Workflow** | Already Implemented | ✅ Verified working |
 | **Resource Authorization** | Not Implemented | **Real**: AuthorizedResource model + Actions |
+| **JIT Ticket System** | Not Implemented | **Real**: Ticket model, TicketService, PermissionService, role-based UI |
 
 ## 4. Remaining Zombie APIs
 | Component | Status | Reason |

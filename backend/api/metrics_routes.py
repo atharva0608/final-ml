@@ -76,6 +76,7 @@ def get_cost_metrics(
     start_date: Optional[datetime] = Query(None, description="Start of time range"),
     end_date: Optional[datetime] = Query(None, description="End of time range"),
     cluster_id: Optional[str] = Query(None, description="Filter by cluster ID"),
+    team_id: Optional[str] = Query(None, description="Filter by team ID"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ) -> CostMetrics:
@@ -93,6 +94,7 @@ def get_cost_metrics(
         start_date: Optional start date (default: 30 days ago)
         end_date: Optional end date (default: now)
         cluster_id: Optional cluster filter
+        team_id: Optional team filter
         current_user: Authenticated user
         db: Database session
 
@@ -102,7 +104,8 @@ def get_cost_metrics(
     filters = MetricFilter(
         start_date=start_date or (datetime.utcnow() - timedelta(days=30)),
         end_date=end_date or datetime.utcnow(),
-        cluster_id=cluster_id
+        cluster_id=cluster_id,
+        team_id=team_id
     )
     service = get_metrics_service(db)
     return service.get_cost_metrics(current_user.id, filters)
@@ -150,6 +153,7 @@ def get_cost_time_series(
     start_date: Optional[datetime] = Query(None, description="Start of time range"),
     end_date: Optional[datetime] = Query(None, description="End of time range"),
     cluster_id: Optional[str] = Query(None, description="Filter by cluster ID"),
+    team_id: Optional[str] = Query(None, description="Filter by team ID"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ) -> TimeSeriesData:
@@ -165,6 +169,7 @@ def get_cost_time_series(
         start_date: Optional start date (default: 30 days ago)
         end_date: Optional end date (default: now)
         cluster_id: Optional cluster filter
+        team_id: Optional team filter
         current_user: Authenticated user
         db: Database session
 
@@ -174,7 +179,8 @@ def get_cost_time_series(
     filters = MetricFilter(
         start_date=start_date or (datetime.utcnow() - timedelta(days=30)),
         end_date=end_date or datetime.utcnow(),
-        cluster_id=cluster_id
+        cluster_id=cluster_id,
+        team_id=team_id
     )
     service = get_metrics_service(db)
     return service.get_cost_time_series(current_user.id, filters)
@@ -210,3 +216,41 @@ def get_cluster_metrics(
     """
     service = get_metrics_service(db)
     return service.get_cluster_metrics(cluster_id, current_user.id)
+
+
+@router.get(
+    "/teams/{team_id}/summary",
+    summary="Get team consolidated stats",
+    description="Get aggregated metrics for all members in a team (Admin/Lead view)"
+)
+def get_team_summary(
+    team_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Get consolidated team statistics for Admin/Lead dashboard.
+    
+    Aggregates cost, waste, instance counts across all team members.
+    Only accessible by ORG_ADMIN, CLIENT, or TEAM_LEAD of the team.
+    
+    Args:
+        team_id: Team UUID
+        current_user: Authenticated user
+        db: Database session
+        
+    Returns:
+        Consolidated team stats
+    """
+    from backend.models.user import UserRole
+    from fastapi import HTTPException
+    
+    # Security Check: Only Leads/Admins can view consolidated data
+    is_admin = current_user.role in [UserRole.ORG_ADMIN, UserRole.CLIENT, UserRole.SUPER_ADMIN]
+    is_team_lead_of_team = current_user.role == UserRole.TEAM_LEAD and str(current_user.team_id) == team_id
+    
+    if not (is_admin or is_team_lead_of_team):
+        raise HTTPException(403, "Access denied: consolidated view is restricted to admins and team leads.")
+    
+    service = get_metrics_service(db)
+    return service.get_team_consolidated_stats(team_id)

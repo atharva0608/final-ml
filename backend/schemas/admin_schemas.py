@@ -102,6 +102,7 @@ class OrganizationSummary(BaseModel):
     slug: str
     owner_email: Optional[str] = None
     total_users: int = 0
+    total_accounts: int = 0
     total_clusters: int = 0
     total_instances: int = 0
     created_at: datetime

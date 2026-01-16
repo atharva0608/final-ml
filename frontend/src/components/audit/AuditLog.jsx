@@ -7,7 +7,7 @@ import { auditAPI } from '../../services/api';
 import { Card, Button, Input, Badge } from '../shared';
 import { FiDownload, FiEye, FiFilter, FiX, FiChevronLeft, FiChevronRight } from 'react-icons/fi';
 import toast from 'react-hot-toast';
-import { formatDate, formatDateTime } from '../../utils/formatters';
+import { formatDateTime } from '../../utils/formatters';
 
 const EVENT_TYPES = [
   'user.signup',
@@ -32,7 +32,7 @@ const EVENT_TYPES = [
   'experiment.completed',
 ];
 
-const AuditLog = () => {
+const AuditLog = ({ isAdminView = false }) => {
   const [logs, setLogs] = useState([]);
   const [loading, setLoading] = useState(false);
   const [selectedLog, setSelectedLog] = useState(null);
@@ -52,6 +52,7 @@ const AuditLog = () => {
     end_date: '',
     actor_id: '',
     resource_id: '',
+    actor_role: '',
   });
   const [showFilters, setShowFilters] = useState(false);
 
@@ -149,6 +150,7 @@ const AuditLog = () => {
       end_date: '',
       actor_id: '',
       resource_id: '',
+      actor_role: '',
     });
     setCurrentPage(1);
   };
@@ -234,6 +236,26 @@ const AuditLog = () => {
                   setCurrentPage(1);
                 }}
               />
+
+              {isAdminView && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Actor Role</label>
+                  <select
+                    value={filters.actor_role}
+                    onChange={(e) => {
+                      setFilters({ ...filters, actor_role: e.target.value });
+                      setCurrentPage(1);
+                    }}
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    <option value="">All Roles</option>
+                    <option value="SUPER_ADMIN">Platform Admin</option>
+                    <option value="ORG_ADMIN">Org Admin</option>
+                    <option value="CLIENT">Client</option>
+                    <option value="MEMBER">Member</option>
+                  </select>
+                </div>
+              )}
             </div>
 
             <div className="flex justify-end">

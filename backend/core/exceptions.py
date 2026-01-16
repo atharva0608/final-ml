@@ -71,6 +71,12 @@ UnauthorizedError = AuthorizationError
 ForbiddenError = AuthorizationError
 
 
+class GovernanceError(SpotOptimizerException):
+    """Raised when JIT governance check fails (No active ticket)"""
+    def __init__(self, message: str, details: Optional[Dict[str, Any]] = None):
+        super().__init__(message, status.HTTP_403_FORBIDDEN, details)
+
+
 # Resource Exceptions
 
 class ResourceNotFoundError(SpotOptimizerException):

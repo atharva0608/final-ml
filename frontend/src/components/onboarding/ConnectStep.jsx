@@ -1,28 +1,53 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { FiExternalLink, FiCopy, FiCheckCircle, FiAlertCircle } from 'react-icons/fi';
+import { FiExternalLink, FiCopy, FiCheckCircle, FiAlertCircle, FiDownload } from 'react-icons/fi';
 import { Button } from '../shared';
 import { onboardingAPI } from '../../services/api';
 import toast from 'react-hot-toast';
 
 const ConnectStep = ({ onNext }) => {
     const [awsLink, setAwsLink] = useState('');
+    const [externalId, setExternalId] = useState(''); // New state
     const [roleArn, setRoleArn] = useState('');
     const [verifying, setVerifying] = useState(false);
     const [error, setError] = useState(null);
 
     useEffect(() => {
-        // Generate Deep Link on mount
-        const getLink = async () => {
+        // Fetch state to get External ID and Link
+        const init = async () => {
             try {
-                const res = await onboardingAPI.getAwsLink('READ_ONLY');
-                setAwsLink(res.data.url);
+                const [linkRes, stateRes] = await Promise.all([
+                    onboardingAPI.getAwsLink('READ_ONLY'),
+                    onboardingAPI.getState()
+                ]);
+                setAwsLink(linkRes.data.url);
+                setExternalId(stateRes.data.external_id);
             } catch (err) {
-                toast.error("Failed to generate AWS Link");
+                toast.error("Failed to initialize onboarding data");
             }
         };
-        getLink();
+        init();
     }, []);
+
+    const handleDownloadTemplate = async () => {
+        try {
+            const res = await onboardingAPI.getTemplate('READ_ONLY');
+            const url = window.URL.createObjectURL(new Blob([res.data]));
+            const link = document.createElement('a');
+            link.href = url;
+            link.setAttribute('download', 'spot-optimizer-role.yaml');
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+        } catch (err) {
+            toast.error("Failed to download template");
+        }
+    };
+
+    const copyExternalId = () => {
+        navigator.clipboard.writeText(externalId);
+        toast.success("External ID copied!");
+    };
 
     const handleVerify = async () => {
         if (!roleArn.startsWith('arn:aws:iam::')) {
@@ -35,7 +60,8 @@ const ConnectStep = ({ onNext }) => {
 
         try {
             await onboardingAPI.verify(roleArn);
-            onNext(); // Move to next step (or success)
+            toast.success("Successfully Connected!");
+            onNext();
         } catch (err) {
             console.error(err);
             setError("Verification failed. Please check the ARN and try again.");
@@ -52,7 +78,22 @@ const ConnectStep = ({ onNext }) => {
             exit={{ opacity: 0, x: -20 }}
             className="bg-white rounded-2xl shadow-xl p-10"
         >
-            <h2 className="text-2xl font-bold text-gray-900 mb-6">Connect your AWS Account</h2>
+            <h2 className="text-2xl font-bold text-gray-900 mb-2">Connect your AWS Account</h2>
+            <p className="text-gray-500 mb-8">Create a secure IAM Role to grant SpotOptimizer visibility.</p>
+
+            {/* External ID Display - CRITICAL for user trust/manual setup */}
+            <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 mb-8 flex items-center justify-between">
+                <div>
+                    <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">Your Unique External ID</label>
+                    <code className="text-lg font-mono font-bold text-gray-800">{externalId || 'Loading...'}</code>
+                </div>
+                <button
+                    onClick={copyExternalId}
+                    className="p-2 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-md transition-colors"
+                >
+                    <FiCopy size={20} />
+                </button>
+            </div>
 
             <div className="space-y-8">
                 {/* Step 1 */}
@@ -61,16 +102,24 @@ const ConnectStep = ({ onNext }) => {
                     <div className="flex-1">
                         <h3 className="font-semibold text-gray-900 mb-1">Launch CloudFormation Stack</h3>
                         <p className="text-sm text-gray-500 mb-3">
-                            Click below to open the AWS Console. This will create a read-only IAM Role with a unique External ID.
+                            Check the pre-filled parameters in the CloudFormation console (External ID is auto-injected).
                         </p>
-                        <a
-                            href={awsLink}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="inline-flex items-center gap-2 px-4 py-2 bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-colors font-medium text-sm"
-                        >
-                            <FiExternalLink /> Launch AWS Console
-                        </a>
+                        <div className="flex gap-3">
+                            <a
+                                href={awsLink}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="inline-flex items-center gap-2 px-4 py-2 bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-colors font-medium text-sm"
+                            >
+                                <FiExternalLink /> Launch Console
+                            </a>
+                            <button
+                                onClick={handleDownloadTemplate}
+                                className="inline-flex items-center gap-2 px-4 py-2 border border-gray-300 text-gray-700 bg-white rounded-lg hover:bg-gray-50 transition-colors font-medium text-sm"
+                            >
+                                <FiDownload /> Download YAML
+                            </button>
+                        </div>
                     </div>
                 </div>
 
@@ -78,20 +127,9 @@ const ConnectStep = ({ onNext }) => {
                 <div className="flex gap-4">
                     <div className="flex-shrink-0 w-8 h-8 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center font-bold">2</div>
                     <div className="flex-1">
-                        <h3 className="font-semibold text-gray-900 mb-1">Review & Create</h3>
-                        <p className="text-sm text-gray-500">
-                            In the AWS Console, scroll to the bottom, check the "I acknowledge..." box, and click <strong>Create stack</strong>. Wait for the status to reach <strong>CREATE_COMPLETE</strong>.
-                        </p>
-                    </div>
-                </div>
-
-                {/* Step 3 */}
-                <div className="flex gap-4">
-                    <div className="flex-shrink-0 w-8 h-8 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center font-bold">3</div>
-                    <div className="flex-1">
                         <h3 className="font-semibold text-gray-900 mb-1">Enter Role ARN</h3>
                         <p className="text-sm text-gray-500 mb-3">
-                            Go to the <strong>Outputs</strong> tab in CloudFormation and copy the value of <code>RoleArn</code>.
+                            Copy the <code>RoleArn</code> from the CloudFormation <strong>Outputs</strong> tab.
                         </p>
 
                         <div className="relative">

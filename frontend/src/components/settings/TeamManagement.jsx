@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { teamAPI, organizationAPI, rolesAPI } from '../../services/api';
+import { useNavigate } from 'react-router-dom';
+import { teamAPI, organizationAPI, rolesAPI, userAPI } from '../../services/api';
+import PermissionMatrix from '../policies/PermissionMatrix';
 import { FiPlus, FiUser, FiSearch, FiMoreVertical, FiEdit2, FiTrash2, FiLock, FiShield, FiUsers, FiCheckSquare, FiSquare, FiDollarSign, FiCpu, FiGrid, FiX } from 'react-icons/fi';
 import { Card, Badge } from '../shared';
 import toast from 'react-hot-toast';
@@ -105,16 +107,11 @@ const TeamManagement = () => {
 
     // ========== TEAM ACTIONS ==========
 
-    const handleTeamClick = async (team) => {
-        setViewingTeam(team);
-        setTeamStats(null); // Reset stats while loading
-        setShowTeamDetailsModal(true);
-        try {
-            const res = await teamAPI.getStats(team.id);
-            setTeamStats(res.data);
-        } catch (err) {
-            toast.error("Failed to load team statistics");
-        }
+    const navigate = useNavigate();
+
+    const handleTeamClick = (team) => {
+        // Navigate to full TeamDetails page instead of opening modal
+        navigate(`/teams/${team.id}`);
     };
 
     const handleCreateTeam = async () => {
@@ -164,9 +161,15 @@ const TeamManagement = () => {
         if (!selectedMember || !moveToTeamId) return;
         try {
             await teamAPI.assign(moveToTeamId, selectedMember.id);
+
+            // Optimistic Update: Update local state immediately
+            setAllMembers(prev => prev.map(m => m.id === selectedMember.id ? { ...m, team_id: moveToTeamId } : m));
+
             setShowMoveTeamModal(false);
             setSelectedMember(null);
             setMoveToTeamId('');
+
+            // Background refresh to ensure consistency
             await Promise.all([fetchMembers(), fetchTeams()]);
             toast.success(`Member moved to new team`);
         } catch (err) {
@@ -177,30 +180,27 @@ const TeamManagement = () => {
     const handleEditAccess = async () => {
         if (!selectedMember) return;
         try {
-            let roleIdToAssign = null;
-
             if (assignmentType === 'POLICY') {
-                // Create a unique custom role for this user
-                const roleName = `Custom: ${selectedMember.email}`;
-                const res = await rolesAPI.createRole({
-                    name: roleName,
-                    description: `Custom policy for ${selectedMember.email}`,
-                    permission_slugs: customPolicySlugs,
-                    type: 'CUSTOM'
-                });
-                roleIdToAssign = res.data.id;
+                // Direct Permissions Assignment (Union with Base Role)
+                // We'll enforce MEMBER role as base, and add custom permissions on top
+                // First, ensure the user has MEMBER role (or keep existing if compatible)
+                await organizationAPI.updateMemberRole(selectedMember.id, 'MEMBER', selectedMember.access_level || 'READ_ONLY');
+
+                // Then update direct permissions
+                await userAPI.updatePermissions(selectedMember.id, customPolicySlugs);
             } else {
                 // Standard Role assignment
-                // Map the enum string back to a role ID if needed, or use the legacy update endpoint
-                const targetRole = roles.find(r => r.name === (editMemberRole === 'ORG_ADMIN' ? 'Organization Admin' : editMemberRole === 'TEAM_LEAD' ? 'Team Lead' : 'Member'));
-                if (targetRole) roleIdToAssign = targetRole.id;
-            }
+                // Clear custom permissions when switching back to Standard Role to avoid confusion?
+                // Or keep them? Usually switching to Standard implies resetting to that role's defaults.
+                await userAPI.updatePermissions(selectedMember.id, []);
 
-            if (roleIdToAssign) {
-                await rolesAPI.assignRole(selectedMember.id, roleIdToAssign);
-            } else {
-                // Fallback
-                await organizationAPI.updateMemberRole(selectedMember.id, editMemberRole, selectedMember.access_level || 'READ_ONLY');
+                // Assign the role
+                const targetRole = roles.find(r => r.name === (editMemberRole === 'ORG_ADMIN' ? 'Organization Admin' : editMemberRole === 'TEAM_LEAD' ? 'Team Lead' : 'Member'));
+                if (targetRole) {
+                    await rolesAPI.assignRole(selectedMember.id, targetRole.id);
+                } else {
+                    await organizationAPI.updateMemberRole(selectedMember.id, editMemberRole, selectedMember.access_level || 'READ_ONLY');
+                }
             }
 
             setShowEditModal(false);
@@ -210,6 +210,7 @@ const TeamManagement = () => {
             await fetchMembers();
             toast.success('Member access updated');
         } catch (err) {
+            console.error(err);
             toast.error(err.response?.data?.detail || 'Failed to update access');
         }
     };
@@ -702,39 +703,19 @@ const TeamManagement = () => {
                             {/* Custom Policy Grid */}
                             {assignmentType === 'POLICY' && (
                                 <div className="col-span-2">
-                                    {showInviteModal && <div className="mb-4 text-sm text-amber-600 bg-amber-50 p-3 rounded border border-amber-200">
-                                        Warning: Inviting directly with a custom policy is not yet supported. Please invite as 'Member' first, then edit their access.
-                                    </div>}
-
-                                    <div className="border rounded-xl max-h-80 overflow-y-auto">
-                                        <div className="bg-gray-50 px-4 py-2 border-b sticky top-0 z-10 flex justify-between items-center">
-                                            <h4 className="font-semibold text-gray-700 text-sm">Select Permissions</h4>
-                                            <span className="text-xs text-gray-500">{customPolicySlugs.length} selected</span>
-                                        </div>
-                                        <div className="p-4 grid grid-cols-2 gap-6">
-                                            {Object.entries(permissionsByModule).map(([mod, perms]) => (
-                                                <div key={mod}>
-                                                    <h5 className="font-bold text-gray-800 text-xs uppercase mb-2 border-b pb-1">{mod}</h5>
-                                                    <div className="space-y-2">
-                                                        {perms.map(perm => (
-                                                            <label key={perm.slug} className="flex items-start gap-2 cursor-pointer group">
-                                                                <div className="pt-0.5">
-                                                                    <input type="checkbox"
-                                                                        checked={customPolicySlugs.includes(perm.slug)}
-                                                                        onChange={() => toggleCustomPolicySlug(perm.slug)}
-                                                                        className="w-4 h-4 text-emerald-500 rounded border-gray-300 focus:ring-emerald-500"
-                                                                    />
-                                                                </div>
-                                                                <div>
-                                                                    <div className="text-sm font-medium text-gray-700 group-hover:text-gray-900 transition-colors">{perm.slug.split(':')[1]?.replace(/_/g, ' ') || perm.slug}</div>
-                                                                    <div className="text-xs text-gray-400 leading-tight">{perm.description}</div>
-                                                                </div>
-                                                            </label>
-                                                        ))}
-                                                    </div>
-                                                </div>
-                                            ))}
-                                        </div>
+                                    <div className="mb-4 text-sm text-blue-600 bg-blue-50 p-3 rounded border border-blue-200">
+                                        Assigning extra permissions on top of <strong>Member</strong> role.
+                                    </div>
+                                    <div className="border rounded-xl max-h-96 overflow-y-auto p-4 bg-gray-50/50">
+                                        <PermissionMatrix
+                                            allPermissions={permissions}
+                                            selectedSlugs={customPolicySlugs}
+                                            onChange={setCustomPolicySlugs}
+                                            inheritedSlugs={
+                                                // Get permissions of the MEMBER role to show as inherited
+                                                roles.find(r => r.name === 'Member')?.permissions?.map(p => p.slug) || []
+                                            }
+                                        />
                                     </div>
                                 </div>
                             )}
@@ -770,28 +751,13 @@ const TeamManagement = () => {
                             </div>
                         </div>
 
-                        <div className="border rounded-lg bg-gray-50 overflow-hidden">
-                            <div className="px-4 py-3 border-b bg-gray-100 font-medium text-sm text-gray-700">Permissions</div>
-                            <div className="p-4 grid grid-cols-2 md:grid-cols-3 gap-6">
-                                {Object.entries(permissionsByModule).map(([mod, perms]) => (
-                                    <div key={mod} className="bg-white p-3 rounded border shadow-sm">
-                                        <h4 className="font-semibold text-gray-800 mb-2 border-b pb-1 text-xs uppercase tracking-wide">{mod}</h4>
-                                        <div className="space-y-2">
-                                            {perms.map(perm => (
-                                                <label key={perm.slug} className="flex items-start gap-2 cursor-pointer hover:bg-gray-50 -mx-1 px-1 rounded transition-colors">
-                                                    <div className="pt-0.5">
-                                                        <input type="checkbox" checked={roleForm.permission_slugs.includes(perm.slug)} onChange={() => togglePermission(perm.slug)}
-                                                            className="w-3.5 h-3.5 text-emerald-500 rounded border-gray-300 focus:ring-emerald-500" />
-                                                    </div>
-                                                    <div className="text-xs text-gray-700 leading-tight">
-                                                        <span className="font-medium block">{perm.slug.split(':')[1] || perm.slug}</span>
-                                                    </div>
-                                                </label>
-                                            ))}
-                                        </div>
-                                    </div>
-                                ))}
-                            </div>
+                        <div className="border rounded-lg bg-gray-50 max-h-[500px] overflow-y-auto p-4">
+                            <div className="mb-2 text-sm text-gray-500">Define permissions for this role:</div>
+                            <PermissionMatrix
+                                allPermissions={permissions}
+                                selectedSlugs={roleForm.permission_slugs}
+                                onChange={(slugs) => setRoleForm({ ...roleForm, permission_slugs: slugs })}
+                            />
                         </div>
 
                         <div className="flex justify-end gap-3 mt-4 pt-4 border-t sticky bottom-0 bg-white">

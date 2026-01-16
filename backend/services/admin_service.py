@@ -37,7 +37,8 @@ class AdminService:
 
     def list_clients(self, requesting_user: User, filters: ClientFilter) -> ClientList:
         self.verify_super_admin(requesting_user)
-        query = self.db.query(User).filter(User.role == UserRole.CLIENT)
+        # Include both legacy CLIENT role and ORG_ADMIN (primary tenant owners)
+        query = self.db.query(User).filter(User.role.in_([UserRole.CLIENT, UserRole.ORG_ADMIN]))
         
         if filters.search:
             search_pattern = f"%{filters.search}%"
@@ -106,10 +107,13 @@ class AdminService:
 
     def get_platform_stats(self, requesting_user: User) -> PlatformStats:
         self.verify_super_admin(requesting_user)
-        total_users = self.db.query(User).filter(User.role == UserRole.CLIENT).count()
-        active_users = self.db.query(User).filter(and_(User.role == UserRole.CLIENT, User.is_active == "Y")).count()
+        # Include both legacy CLIENT role and ORG_ADMIN (primary tenant owners)
+        target_roles = [UserRole.CLIENT, UserRole.ORG_ADMIN]
+        
+        total_users = self.db.query(User).filter(User.role.in_(target_roles)).count()
+        active_users = self.db.query(User).filter(and_(User.role.in_(target_roles), User.is_active == "Y")).count()
         thirty_days_ago = datetime.utcnow() - timedelta(days=30)
-        recent_signups = self.db.query(User).filter(and_(User.role == UserRole.CLIENT, User.created_at >= thirty_days_ago)).count()
+        recent_signups = self.db.query(User).filter(and_(User.role.in_(target_roles), User.created_at >= thirty_days_ago)).count()
         total_clusters = self.db.query(Cluster).count()
         active_clusters = self.db.query(Cluster).filter(Cluster.status.in_(['ACTIVE', 'DISCOVERED'])).count()
         total_instances = self.db.query(Instance).count()
@@ -140,16 +144,48 @@ class AdminService:
             if not owner:
                 owner = self.db.query(User).filter(and_(User.organization_id == org.id, User.role == UserRole.ORG_ADMIN)).first()
             total_users = self.db.query(User).filter(User.organization_id == org.id).count()
+            total_accounts = self.db.query(Account).filter(Account.organization_id == org.id).count()
             total_clusters = self.db.query(Cluster).join(Account).filter(Account.organization_id == org.id).count()
             total_instances = self.db.query(Instance).join(Cluster).join(Account).filter(Account.organization_id == org.id).count()
             org_summaries.append(OrganizationSummary(
                 id=org.id, name=org.name, slug=org.slug,
                 owner_email=owner.email if owner else None,
-                total_users=total_users, total_clusters=total_clusters,
+                total_users=total_users, total_accounts=total_accounts, total_clusters=total_clusters,
                 total_instances=total_instances, created_at=org.created_at,
                 is_active=org.status == "active"
             ))
         return OrganizationList(organizations=org_summaries, total=total, page=filters.page, page_size=filters.page_size)
+
+    def toggle_organization_status(self, requesting_user: User, org_id: str) -> OrganizationSummary:
+        self.verify_super_admin(requesting_user)
+        org = self.db.query(Organization).filter(Organization.id == org_id).first()
+        if not org:
+            raise ResourceNotFoundError("Organization", org_id)
+        
+        org.status = "inactive" if org.status == "active" else "active"
+        org.updated_at = datetime.utcnow()
+        self.db.commit()
+        self.db.refresh(org)
+        
+        # Return summary
+        owner = None
+        if org.owner_user_id:
+            owner = self.db.query(User).filter(User.id == org.owner_user_id).first()
+        if not owner:
+            owner = self.db.query(User).filter(and_(User.organization_id == org.id, User.role == UserRole.ORG_ADMIN)).first()
+            
+        total_users = self.db.query(User).filter(User.organization_id == org.id).count()
+        total_accounts = self.db.query(Account).filter(Account.organization_id == org.id).count()
+        total_clusters = self.db.query(Cluster).join(Account).filter(Account.organization_id == org.id).count()
+        total_instances = self.db.query(Instance).join(Cluster).join(Account).filter(Account.organization_id == org.id).count()
+
+        return OrganizationSummary(
+            id=org.id, name=org.name, slug=org.slug,
+            owner_email=owner.email if owner else None,
+            total_users=total_users, total_accounts=total_accounts, total_clusters=total_clusters,
+            total_instances=total_instances, created_at=org.created_at,
+            is_active=org.status == "active"
+        )
 
     def _get_client_stats(self, user_id: str) -> ClientStats:
         user = self.db.query(User).filter(User.id == user_id).first()
@@ -200,7 +236,23 @@ class AdminService:
         self.verify_super_admin(requesting_user)
         platform_stats = self.get_platform_stats(requesting_user)
         platform_stats.mrr = f"${platform_stats.total_cost:,.2f}"
-        return {"stats": platform_stats, "savings_chart": [], "activity_feed": []}
+        
+        # Fetch real activity feed from AuditLog
+        from backend.models.audit_log import AuditLog
+        recent_logs = self.db.query(AuditLog).order_by(desc(AuditLog.timestamp)).limit(10).all()
+        
+        activity_feed = []
+        for log in recent_logs:
+            activity_feed.append({
+                "id": log.id,
+                "user": log.actor_name,
+                "action": log.event,
+                "detail": f"{log.resource_type}: {log.resource}",
+                "time": log.timestamp.strftime("%Y-%m-%d %H:%M:%S"), # Simple string format
+                "type": "audit" # Marker
+            })
+            
+        return {"stats": platform_stats, "savings_chart": [], "activity_feed": activity_feed}
 
     # ==============================================
     # Platform Identity Management

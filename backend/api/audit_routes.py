@@ -35,6 +35,7 @@ def get_audit_logs(
     end_date: Optional[datetime] = Query(None, description="Filter logs before this date"),
     event: Optional[str] = Query(None, description="Filter by event type"),
     resource_type: Optional[str] = Query(None, description="Filter by resource type"),
+    actor_role: Optional[str] = Query(None, description="Filter by actor role"),
     outcome: Optional[str] = Query(None, description="Filter by outcome (SUCCESS/FAILURE)"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(50, ge=1, le=100, description="Items per page"),
@@ -51,6 +52,7 @@ def get_audit_logs(
         end_date=end_date,
         event=event,
         resource_type=resource_type,
+        actor_role=actor_role,
         outcome=outcome,
         page=page,
         page_size=page_size

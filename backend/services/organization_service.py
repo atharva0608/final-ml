@@ -249,14 +249,18 @@ class OrganizationService:
         }
 
     def _map_to_response(self, user: User) -> MemberResponse:
+        role_value = user.role.value if user.role else "MEMBER"
         return MemberResponse(
             id=user.id,
             email=user.email,
-            org_role=user.role.value if user.role else "MEMBER",
+            org_role=role_value,
+            role=role_value,  # Alias for frontend
             access_level=user.access_level.value if user.access_level else "READ_ONLY",
             is_active=user.is_active == "Y",
-            status=user.status if hasattr(user, 'status') else "ACTIVE",
-            created_at=user.created_at
+            status=user.status if hasattr(user, 'status') and user.status else "ACTIVE",
+            created_at=user.created_at,
+            team_id=user.team_id if hasattr(user, 'team_id') else None,
+            full_name=user.full_name if hasattr(user, 'full_name') else None
         )
 
 def get_organization_service(db: Session):

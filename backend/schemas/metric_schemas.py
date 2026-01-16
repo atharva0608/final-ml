@@ -68,6 +68,7 @@ class MetricFilter(BaseModel):
     cluster_id: Optional[str] = None
     start_date: Optional[datetime] = None
     end_date: Optional[datetime] = None
+    team_id: Optional[str] = None
 
 # Aliases for dashboard
 class KPISet(DashboardKPIs): pass

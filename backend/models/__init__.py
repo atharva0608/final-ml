@@ -18,6 +18,8 @@ from backend.models.team import Team
 from backend.models.authorized_resource import AuthorizedResource
 from backend.models.permission import Permission
 from backend.models.role import Role, RoleType, role_permissions
+from backend.models.ticket import Ticket, TicketType, TicketStatus, ReasonCategory
+from backend.models.platform_settings import PlatformSettings
 
 __all__ = [
     "User",
@@ -38,6 +40,9 @@ __all__ = [
     "Permission",
     "Role",
     "RoleType",
+    "RoleType",
     "role_permissions",
+    "Ticket",
+    "PlatformSettings",
 ]
 

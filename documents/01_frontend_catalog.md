@@ -12,7 +12,7 @@
 | **FE-ASST::Public::Manifest** | `frontend/public/manifest.json` | Asset | PWA Manifest file. | `N/A` | `N/A` |
 | **FE-CMP::Auth::Login** | `frontend/src/components/auth/Login.jsx` | Page | User Login form. | `email`, `password` | `useAuth`, `Input`, `Button` |
 | **FE-CMP::Auth::Signup** | `frontend/src/components/auth/Signup.jsx` | Page | User Signup form. | `email`, `password` | `useAuth`, `Input`, `Button` |
-| **FE-CMP::Dash::Main** | `frontend/src/components/dashboard/Dashboard.jsx` | Page | Main KPI Dashboard (Backend Simplified: 70% savings assumption). | `kpiStats` | `StatsCard`, `recharts` |
+| **FE-CMP::Dash::Main** | `frontend/src/components/dashboard/Dashboard.jsx` | Page | Main KPI Dashboard. **UPDATED (2026-01-16)**: "Connect AWS Account" card now RBAC-enforced (TEAM_LEAD/ORG_ADMIN/CLIENT only when accounts.length === 0). | `kpiStats` | `StatsCard`, `recharts` |
 | **FE-CMP::Layout::Main** | `frontend/src/components/layout/MainLayout.jsx` | Layout | Sidebar, Header, and Wrapper. | `children` | `Sidebar`, `Header` |
 | **FE-CMP::Cluster::List** | `frontend/src/components/clusters/ClusterList.jsx` | Page | List of K8s clusters. | `clusters` | `useClusterStore` |
 | **FE-CMP::Cluster::Detail** | `frontend/src/components/clusters/ClusterDetails.jsx` | Page | Cluster details view. | `cluster` | `clusterAPI` |
@@ -25,8 +25,9 @@
 | **FE-CMP::Lab::Main** | `frontend/src/components/lab/ExperimentLab.jsx` | Page | ML Experimentation dashboard. | `experiments` | `labAPI` |
 | **FE-CMP::Right::Main** | `frontend/src/components/right-sizing/RightSizing.jsx` | Page | Rightsizing recommendations. | `recommendations` | `Card` |
 | **FE-CMP::Audit::Log** | `frontend/src/components/audit/AuditLog.jsx` | Page | System Audit Log viewer. | `logs` | `auditAPI` |
-| **FE-CMP::Admin::Dash** | `frontend/src/components/admin/AdminDashboard.jsx` | Admin | Super Admin Overview. Fetches real stats/charts from adminAPI. | `stats`, `activityFeed` | `StatsCard`, `recharts` |
-| **FE-CMP::Admin::Orgs** | `frontend/src/components/admin/AdminOrganizations.jsx` | Admin | Organization management table. | `orgs` | `adminAPI` |
+| **FE-CMP::Admin::Dash** | `frontend/src/components/admin/AdminDashboard.jsx` | Admin | **Super Admin Command Center**. Tabbed interface (Overview, Tenants, Health, Models, Config, Audit). Central navigation hub. | `activeTab` | `AdminOverview`, `AdminOrganizations` |
+| **FE-CMP::Admin::Overview** | `frontend/src/components/admin/AdminOverview.jsx` | Admin | **Real**: Platform HUD. Displays Total MRR, Active Users (Real Count), Cluster Stats, and **Live Activity Feed** (Audit Logs). | `stats`, `activity` | `adminAPI`, `StatsCard` |
+| **FE-CMP::Admin::Orgs** | `frontend/src/components/admin/AdminOrganizations.jsx` | Admin | Organization management table. **FIXED (2026-01-16)**: Added missing state variables (searchQuery, page, totalPages, selectedOrg), React import, fetchOrganizations function. | `orgs` | `adminAPI` |
 | **FE-CMP::Admin::Clients** | `frontend/src/components/admin/AdminClients.jsx` | Admin | Client management table. | `clients` | `adminAPI` |
 | **FE-CMP::Admin::Billing** | `frontend/src/components/admin/AdminBilling.jsx` | Page | Billing overview and Plans (Backend Mocked Data). | `stats`, `plans` | `Card`, `Button`, `Icons` |
 | **FE-CMP::Admin::Health** | `frontend/src/components/admin/AdminHealth.jsx` | Admin | System health status. | `health` | `useDashboard` |
@@ -38,8 +39,15 @@
 | **FE-CMP::Set::Teams** | `frontend/src/components/settings/TeamManagement.jsx` | Component | **Real**: 4-Tier Role Management (Super Admin, Org Admin, Team Lead, Member). Accordion view for hierarchical team/member management. **Team-Specific Governance** integration via collapsible "Configure Approval Policies" section. | `teams`, `members`, `showGovernanceForTeam` | `teamAPI`, `TeamGovernance` |
 | **FE-CMP::Set::Profile** | `frontend/src/components/settings/UserProfile.jsx` | Component | **New**: User Profile settings (Full Name update). | `user` | `userAPI` |
 | **FE-CMP::Set::TeamGov** | `frontend/src/components/settings/TeamGovernance.jsx` | Component | **Real**: Team-Specific Approval Policies UI. Toggle switches for 5 actions (CONNECT_ACCOUNT, TERMINATE_INSTANCE, DELETE_VOLUME, DELETE_SNAPSHOT, RELEASE_IP). Fetches/saves to `PUT /teams/{id}/governance`. | `config`, `teamId` | `api`, `toast` |
+| **FE-CMP::Set::PermMat** | `frontend/src/components/policies/PermissionMatrix.jsx` | Component | **Real**: Interactive matrix for editing Role permissions. Used in TeamManagement. | `roles` | `rolesAPI` |
+| **FE-CMP::Team::Details** | `frontend/src/pages/TeamDetails.jsx` | Page | **Real**: Comprehensive Team Dashboard. **Consolidated View**: Top Spenders Leaderboard, Waste Breakdown (Pie Chart), Cost Trends (Area Chart). **Member Details**: Accordion list of members and connected accounts. **Governance**: Integrated Policy settings. | `teamId` | `metricsAPI`, `teamAPI`, `recharts` |
 | **FE-CMP::Approv::Main** | `frontend/src/components/approvals/ApprovalCenter.jsx` | Page | **Real**: Approval Center for Maker-Checker (Four-Eyes) workflows. Lists pending requests and allows Team Leads to Approve/Reject destructive actions. | `requests` | `approvalsAPI`, `Badge` |
 | **FE-CMP::Gov::Settings** | `frontend/src/components/settings/GovernanceSettings.jsx` | Page | **Real**: Automated Governance / Policy-as-Code settings. Master toggle, policy cards, required tags configuration. | `config`, `policies` | `governanceAPI`, `toast` |
+| **FE-CMP::Ticket::Center** | `frontend/src/pages/TicketCenter.jsx` | Page | **Real (JIT, Audited 2026-01-14)**: Role-based ticket management with real API data. Admin: Stats cards, "Pending Requests" + "Active Grants" tabs. Team Lead: Incoming/Outgoing/Team Access. Member: My Requests. Includes `CLIENT` role support. Real timestamps, expiry countdown. | `tickets`, `activeTab`, `loading` | `ticketsAPI`, `date-fns`, `format` |
+| **FE-CMP::Ticket::Modal** | `frontend/src/components/tickets/TicketRequestModal.jsx` | Component | **Real (JIT)**: Role-adaptive access request/grant modal. Admin: Grant Mode (pick recipients). Team Lead: Toggle between Grant/Request. Member: Request Only. Gradient header, duration slider, recipient selection with role badges. | `isGrantMode`, `members` | `organizationAPI`, `ticketsAPI` |
+| **FE-CMP::Ticket::Banner** | `frontend/src/components/tickets/ActiveWindowBanner.jsx` | Component | **Real (JIT)**: Active access window countdown banner. Shows remaining time for approved access grants. | `activeWindow` | `ticketsAPI`, `date-fns` |
+| **FE-PG::Team::Main** | `frontend/src/pages/Teams.jsx` | Page | **Real (RBAC Fixed 2026-01-14)**: Tabbed view for Team Structure and Roles & Policies. **RBAC Enforced**: Roles tab is HIDDEN from MEMBER and TEAM_LEAD. Only ORG_ADMIN, SUPER_ADMIN, CLIENT can see/access Roles. Uses `useAuthStore` for role check. | `activeTab`, `user` | `TeamManagement`, `Roles`, `useAuthStore` |
+| **FE-PG::Roles::Main** | `frontend/src/pages/Roles.jsx` | Page | **Real (RBAC)**: Role management page. Lists all roles as cards. Click to edit permissions via `PermissionMatrix`. System roles (ORG_ADMIN, CLIENT) are read-only to prevent lockout. | `roles`, `editingRole` | `rolesAPI`, `PermissionMatrix` |
 
 ### 6. Documentation Components
 | **FE-LIB::UI::Card** | `frontend/src/components/shared/Card.jsx` | UI | Reusable Card. | `children` | `N/A` |
@@ -48,9 +56,10 @@
 | **FE-LIB::UI::StatsCard** | `frontend/src/components/shared/StatsCard.jsx` | UI | Dashboard Metric Card. | `title`, `value` | `N/A` |
 | **FE-LIB::UI::GaugeChart** | `frontend/src/components/shared/GaugeChart.jsx` | UI | Animated Semi-Circular Gauge for metrics. | `value`, `maxValue` | `useEffect` |
 | **FE-LIB::UI::EmptyState** | `frontend/src/components/shared/EmptyState.jsx` | UI | Empty state placeholder for no-data scenarios. | `title`, `message`, `action` | `FiInbox` |
+| **FE-LIB::UI::Switch** | `frontend/src/components/shared/Switch.jsx` | UI | Reusable Toggle Switch. | `checked`, `onChange` | `N/A` |
 | **FE-HK::Auth::UseAuth** | `frontend/src/hooks/useAuth.js` | Hook | Authentication logic hook. | `user` | `authAPI` |
 | **FE-HK::Dash::UseDash** | `frontend/src/hooks/useDashboard.js` | Hook | Dashboard data fetching hook. | `data` | `metricsAPI` |
-| **FE-SVC::API::Client** | `frontend/src/services/api.js`| Service | Central Axios instance and API method definitions. | `axios` | `axios` |
+| **FE-SVC::API::Client** | `frontend/src/services/api.js`| Service | Central Axios instance and API method definitions. Includes `ticketsAPI` for JIT Ticket System (create, grantAccess, approve, revoke, acceptGrant, rejectGrant, list, getActiveWindow). | `axios` | `axios` |
 | **FE-STR::Store::Global** | `frontend/src/store/useStore.js` | Store | Global State (Zustand). | `state` | `zustand` |
 | **FE-UTL::Fmt::Format** | `frontend/src/utils/formatters.js` | Utility | Currency/Date formatters. | `value` | `Intl` |
 | **FE-APP::Style::Global** | `frontend/src/index.css` | Style | Global CSS styles. | `N/A` | `N/A` |

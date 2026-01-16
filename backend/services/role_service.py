@@ -13,65 +13,66 @@ logger = logging.getLogger(__name__)
 
 
 # Default permissions to seed - SOC2 Compliant List
+# Default permissions to seed - SOC2 Compliant List
 DEFAULT_PERMISSIONS = [
     # Compute & Resource Management
-    {"slug": "compute:view", "module": "Compute", "description": "View read-only lists of EC2 instances, clusters, and resource details"},
-    {"slug": "compute:terminate:own", "module": "Compute", "description": "Terminate instances or resources created specifically by the user"},
-    {"slug": "compute:terminate:any", "module": "Compute", "description": "Terminate any instance within the user's assigned Team or Organization"},
-    {"slug": "storage:delete:own", "module": "Compute", "description": "Delete EBS volumes, Snapshots, or S3 buckets created by the user"},
-    {"slug": "storage:delete:any", "module": "Compute", "description": "Delete any storage resource within the assigned Team or Organization"},
-    {"slug": "network:modify", "module": "Compute", "description": "Modify Security Groups, release Elastic IPs, or change Route Tables"},
-    {"slug": "db:delete", "module": "Compute", "description": "Delete RDS instances or DynamoDB tables (High Risk)"},
-    {"slug": "lab:create", "module": "Compute", "description": "Provision new temporary lab environments or experimental clusters"},
+    {"slug": "compute:view", "name": "View Compute Resources", "module": "Compute", "description": "View read-only lists of EC2 instances, clusters, and resource details"},
+    {"slug": "compute:terminate:own", "name": "Terminate Own Instances", "module": "Compute", "description": "Terminate instances or resources created specifically by the user"},
+    {"slug": "compute:terminate:any", "name": "Terminate Any Instance", "module": "Compute", "description": "Terminate any instance within the user's assigned Team or Organization"},
+    {"slug": "storage:delete:own", "name": "Delete Own Storage", "module": "Compute", "description": "Delete EBS volumes, Snapshots, or S3 buckets created by the user"},
+    {"slug": "storage:delete:any", "name": "Delete Any Storage", "module": "Compute", "description": "Delete any storage resource within the assigned Team or Organization"},
+    {"slug": "network:modify", "name": "Modify Network Settings", "module": "Compute", "description": "Modify Security Groups, release Elastic IPs, or change Route Tables"},
+    {"slug": "db:delete", "name": "Delete Databases", "module": "Compute", "description": "Delete RDS instances or DynamoDB tables (High Risk)"},
+    {"slug": "lab:create", "name": "Create Lab Environment", "module": "Compute", "description": "Provision new temporary lab environments or experimental clusters"},
 
     # Cloud Integration & Hygiene
-    {"slug": "cloud:connect", "module": "Cloud Integration", "description": "Register a new AWS Account (Access Keys/Role ARN)"},
-    {"slug": "cloud:disconnect", "module": "Cloud Integration", "description": "Remove an existing AWS Account connection"},
-    {"slug": "hygiene:scan", "module": "Resource Hygiene", "description": "Manually trigger a Resource Hygiene scan"},
-    {"slug": "hygiene:view_costs", "module": "Resource Hygiene", "description": "View financial data regarding wasted resources"},
-    {"slug": "hygiene:execute", "module": "Resource Hygiene", "description": "Execute cleanup actions (bulk delete) on identified wasted resources"},
+    {"slug": "cloud:connect", "name": "Connect Cloud Account", "module": "Cloud Integration", "description": "Register a new AWS Account (Access Keys/Role ARN)"},
+    {"slug": "cloud:disconnect", "name": "Disconnect Cloud Account", "module": "Cloud Integration", "description": "Remove an existing AWS Account connection"},
+    {"slug": "hygiene:scan", "name": "Run Hygiene Scan", "module": "Resource Hygiene", "description": "Manually trigger a Resource Hygiene scan"},
+    {"slug": "hygiene:view_costs", "name": "View Wasted Costs", "module": "Resource Hygiene", "description": "View financial data regarding wasted resources"},
+    {"slug": "hygiene:execute", "name": "Execute Cleanup", "module": "Resource Hygiene", "description": "Execute cleanup actions (bulk delete) on identified wasted resources"},
 
     # Governance & Approvals
-    {"slug": "approval:approve", "module": "Governance", "description": "Authorize a pending request"},
-    {"slug": "approval:reject", "module": "Governance", "description": "Deny a pending request"},
-    {"slug": "approval:bypass", "module": "Governance", "description": "Execute post-actions immediately without approval"},
-    {"slug": "policy:manage", "module": "Governance", "description": "Create, edit, or disable automated governance rules"},
+    {"slug": "approval:approve", "name": "Approve Requests", "module": "Governance", "description": "Authorize a pending request"},
+    {"slug": "approval:reject", "name": "Reject Requests", "module": "Governance", "description": "Deny a pending request"},
+    {"slug": "approval:bypass", "name": "Bypass Approval", "module": "Governance", "description": "Execute post-actions immediately without approval"},
+    {"slug": "policy:manage", "name": "Manage Policies", "module": "Governance", "description": "Create, edit, or disable automated governance rules"},
 
     # Team & User Administration
-    {"slug": "team:create", "module": "Team Management", "description": "Create new Teams within the Organization"},
-    {"slug": "team:invite", "module": "Team Management", "description": "Invite new users to the Organization or specific Team"},
-    {"slug": "team:remove_member", "module": "Team Management", "description": "Remove a user from a Team or revoking their access"},
-    {"slug": "team:promote", "module": "Team Management", "description": "Elevate a user's role (e.g., promoting a Member to Team Lead)"},
-    {"slug": "audit:view", "module": "Team Management", "description": "Access the global Audit Logs"},
+    {"slug": "team:create", "name": "Create Teams", "module": "Team Management", "description": "Create new Teams within the Organization"},
+    {"slug": "team:invite", "name": "Invite Users", "module": "Team Management", "description": "Invite new users to the Organization or specific Team"},
+    {"slug": "team:remove_member", "name": "Remove Members", "module": "Team Management", "description": "Remove a user from a Team or revoking their access"},
+    {"slug": "team:promote", "name": "Promote Members", "module": "Team Management", "description": "Elevate a user's role (e.g., promoting a Member to Team Lead)"},
+    {"slug": "audit:view", "name": "View Audit Logs", "module": "Team Management", "description": "Access the global Audit Logs"},
 
     # Billing & Financials
-    {"slug": "billing:view_spend", "module": "Billing", "description": "View aggregate cost graphs and team spending dashboards"},
-    {"slug": "billing:view_invoices", "module": "Billing", "description": "Download official PDF invoices"},
-    {"slug": "billing:manage_cc", "module": "Billing", "description": "Add, remove, or update credit card details"},
+    {"slug": "billing:view_spend", "name": "View Spending", "module": "Billing", "description": "View aggregate cost graphs and team spending dashboards"},
+    {"slug": "billing:view_invoices", "name": "View Invoices", "module": "Billing", "description": "Download official PDF invoices"},
+    {"slug": "billing:manage_cc", "name": "Manage Payment Methods", "module": "Billing", "description": "Add, remove, or update credit card details"},
 
     # Security & Identity Governance (SOC 2)
-    {"slug": "auth:manage_mfa", "module": "Security", "description": "Enforce Multi-Factor Authentication policies"},
-    {"slug": "auth:manage_sso", "module": "Security", "description": "Configure or update Single Sign-On (SAML/OIDC)"},
-    {"slug": "auth:revoke_session", "module": "Security", "description": "Forcefully invalidate a user's active session"},
-    {"slug": "auth:view_login_history", "module": "Security", "description": "View successful and failed login attempts"},
-    {"slug": "api_key:manage", "module": "Security", "description": "Create, rotate, or delete Service Account API keys"},
-    {"slug": "security:manage_ip", "module": "Security", "description": "Configure IP Whitelisting or CIDR restrictions"},
+    {"slug": "auth:manage_mfa", "name": "Manage MFA Policies", "module": "Security", "description": "Enforce Multi-Factor Authentication policies"},
+    {"slug": "auth:manage_sso", "name": "Manage SSO", "module": "Security", "description": "Configure or update Single Sign-On (SAML/OIDC)"},
+    {"slug": "auth:revoke_session", "name": "Revoke Sessions", "module": "Security", "description": "Forcefully invalidate a user's active session"},
+    {"slug": "auth:view_login_history", "name": "View Login History", "module": "Security", "description": "View successful and failed login attempts"},
+    {"slug": "api_key:manage", "name": "Manage API Keys", "module": "Security", "description": "Create, rotate, or delete Service Account API keys"},
+    {"slug": "security:manage_ip", "name": "Manage IP Whitelist", "module": "Security", "description": "Configure IP Whitelisting or CIDR restrictions"},
 
     # Audit & Compliance (SOC 2)
-    {"slug": "audit:export", "module": "Audit", "description": "Export tamper-proof audit logs to external formats"},
-    {"slug": "audit:view_sensitive", "module": "Audit", "description": "View highly sensitive audit events"},
-    {"slug": "compliance:view_reports", "module": "Audit", "description": "Access generated compliance reports"},
-    {"slug": "config:manage_retention", "module": "Audit", "description": "Change data retention periods for logs"},
+    {"slug": "audit:export", "name": "Export Audit Logs", "module": "Audit", "description": "Export tamper-proof audit logs to external formats"},
+    {"slug": "audit:view_sensitive", "name": "View Sensitive Events", "module": "Audit", "description": "View highly sensitive audit events"},
+    {"slug": "compliance:view_reports", "name": "View Compliance Reports", "module": "Audit", "description": "Access generated compliance reports"},
+    {"slug": "config:manage_retention", "name": "Manage Log Retention", "module": "Audit", "description": "Change data retention periods for logs"},
 
     # Data Privacy & Confidentiality (SOC 2)
-    {"slug": "pii:view", "module": "Privacy", "description": "Unmask Personally Identifiable Information in the UI"},
-    {"slug": "pii:export", "module": "Privacy", "description": "Download lists containing customer PII"},
-    {"slug": "support:impersonate", "module": "Privacy", "description": "Log in as another user to debug issues"},
+    {"slug": "pii:view", "name": "View PII", "module": "Privacy", "description": "Unmask Personally Identifiable Information in the UI"},
+    {"slug": "pii:export", "name": "Export PII", "module": "Privacy", "description": "Download lists containing customer PII"},
+    {"slug": "support:impersonate", "name": "Impersonate Users", "module": "Privacy", "description": "Log in as another user to debug issues"},
 
     # System Operations (SOC 2)
-    {"slug": "system:manage_maintenance", "module": "System", "description": "Enable/Disable Maintenance Mode"},
-    {"slug": "system:view_health", "module": "System", "description": "View detailed backend health metrics"},
-    {"slug": "alert:manage_destinations", "module": "System", "description": "Configure where critical system alerts are sent"},
+    {"slug": "system:manage_maintenance", "name": "Manage Maintenance", "module": "System", "description": "Enable/Disable Maintenance Mode"},
+    {"slug": "system:view_health", "name": "View System Health", "module": "System", "description": "View detailed backend health metrics"},
+    {"slug": "alert:manage_destinations", "name": "Manage Alert Destinations", "module": "System", "description": "Configure where critical system alerts are sent"},
 ]
 
 # Default system roles with their permissions - aligned with WebEngage specification
@@ -260,11 +261,29 @@ class RoleService:
         return user
 
     def get_user_permissions(self, user: User) -> List[str]:
-        """Get all permission slugs for a user"""
+        """
+        Get all permission slugs for a user.
+        Merges permissions from:
+        1. Assigned Role
+        2. Custom/Direct Permissions
+        """
+        permissions = set()
+
+        # 1. Role Permissions
         if user.assigned_role:
-            return user.assigned_role.permission_slugs
+            permissions.update(user.assigned_role.permission_slugs)
         
-        # Fallback to legacy role mapping
+        # 2. Custom/Direct Permissions
+        # Note: custom_permissions relationship must be loaded
+        if user.custom_permissions:
+            permissions.update([p.slug for p in user.custom_permissions])
+            
+        # If we found permissions via DB, return them
+        if permissions:
+            return list(permissions)
+        
+        # 3. Fallback to legacy role mapping (if no DB role/perms found)
+        # This ensures backward compatibility during migration
         legacy_mapping = {
             "SUPER_ADMIN": [p["slug"] for p in DEFAULT_PERMISSIONS],
             "ORG_ADMIN": [p["slug"] for p in DEFAULT_PERMISSIONS],
@@ -277,3 +296,26 @@ class RoleService:
     def user_has_permission(self, user: User, permission: str) -> bool:
         """Check if user has a specific permission"""
         return permission in self.get_user_permissions(user)
+
+    def update_user_permissions(self, user_id: str, permission_slugs: List[str]) -> User:
+        """
+        Update direct/custom permissions for a user.
+        Replaces existing custom permissions with the new list.
+        """
+        user = self.db.query(User).filter(User.id == user_id).first()
+        if not user:
+            raise ResourceNotFoundError("User", user_id)
+
+        # Clear existing custom permissions
+        user.custom_permissions.clear()
+
+        # Add new permissions
+        for slug in permission_slugs:
+            perm = self.db.query(Permission).filter(Permission.slug == slug).first()
+            if perm:
+                user.custom_permissions.append(perm)
+        
+        self.db.commit()
+        self.db.refresh(user)
+        logger.info(f"Updated custom permissions for user {user.email}: {len(permission_slugs)} permissions")
+        return user

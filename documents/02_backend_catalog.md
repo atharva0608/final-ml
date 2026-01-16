@@ -1,6 +1,6 @@
 # Backend Component Catalog
 
-**Date:** 2026-01-12 (Last Updated)
+**Date:** 2026-01-14 (Last Updated)
 **Scope:** `backend/` Directory
 
 ## ID Naming Convention
@@ -12,30 +12,36 @@
 | ID (Unique Tracking Code) | File Path | Type | Function / Feature Description | Main Dependencies |
 | :--- | :--- | :--- | :--- | :--- |
 | **BE-SVC::Auth::Main** | `backend/services/auth_service.py` | Service | User authentication, signup, login, token management (JWT). | `User`, `Organization`, `crypto` |
-| **BE-SVC::Admin::Main** | `backend/services/admin_service.py` | Service | Super Admin operations: Client management, Platform stats (Real MRR/Costs), Logic to "verify_super_admin". | `User`, `Cluster`, `Instance` |
+| **BE-SVC::Admin::Main** | `backend/services/admin_service.py` | Service | Super Admin operations: Client management (Counts ORG_ADMIN + CLIENT), Platform stats (Real metrics), **Toggle Org Status** (Suspension), Dashboard real-time audit feed. | `User`, `AuditLog` |
 | **BE-SVC::Organization::Main** | `backend/services/organization_service.py` | Service | Member management (Invite, Remove, Update Role). RBAC enforcement (Org Admin vs Team Lead). | `User`, `OrganizationInvitation` |
 | **BE-SVC::Account::Main** | `backend/services/account_service.py` | Service | Managing AWS accounts, Platform Identity integration, and STS assume_role validation. | `Account`, `boto3` |
+| **BE-SVC::Account::Cache** | `backend/services/account_cache_service.py` | Service | **NEW (2026-01-16)**: Temporary encrypted credential storage in Redis for MEMBER account connection approval flow. 7-day TTL. | `redis`, `crypto` (encrypt_data/decrypt_data) |
 | **BE-SVC::Cluster::Main** | `backend/services/cluster_service.py` | Service | **Real**: Cluster discovery via `boto3.eks.list_clusters/describe_cluster` with STS assume_role. DB upsert for discovered clusters. | `Cluster`, `Account`, `boto3` |
 | **BE-SVC::Template::Main** | `backend/services/template_service.py` | Service | Node Template CRUD. Logic for setting default templates. | `NodeTemplate`, `User` |
 | **BE-SVC::Policy::Main** | `backend/services/policy_service.py` | Service | Policy management. Validates spot percentages, min/max nodes, and resource limits. | `ClusterPolicy`, `Cluster`, `NodeTemplate` |
 | **BE-SVC::Hibernation::Main** | `backend/services/hibernation_service.py` | Service | Hibernation schedule logic. Validates cron-like schedule matrix and timezone. | `HibernationSchedule` |
 | **BE-SVC::Metrics::Main** | `backend/services/metrics_service.py` | Service | Metrics aggregation (Cost, Savings, Usage). Generates Dashboard KPIs and Time Series data. | `Instance`, `OptimizationJob` |
-| **BE-SVC::Audit::Main** | `backend/services/audit_service.py` | Service | Audit logging and querying. tracks actor, event, resource, outcome, and diffs. | `AuditLog` |
+| **BE-SVC::Audit::Main** | `backend/services/audit_service.py` | Service | Audit logging and querying. tracks actor, event, resource, outcome. **Filter by Role** support. | `AuditLog` |
 | **BE-SVC::Lab::Main** | `backend/services/lab_service.py` | Service | ML Experimentation (A/B Testing). Manage experiments, variants, and calculate results/winners. | `LabExperiment`, `MLModel` |
 | **BE-SVC::Cleanup::Main** | `backend/services/cleanup_service.py` | Service | **Real (Optimized)**: Parallel multi-region scanning, **1-Hour Cache Persistence**, **Authorization** filtering, **Dependency Check**, **Tag Compliance**. **Advanced Hygiene**: Network (Idle LBs, Unattached ENIs via elbv2/ec2), Database (Idle RDS via CloudWatch, Legacy Generation detection), Identity (Dormant IAM Users via iam), Storage (Incomplete S3 Uploads via s3). All scanners populate `reason` field. | `boto3`, `redis`, `AuthorizedResource` |
-| **BE-API::Admin::Main** | `backend/api/admin_routes.py` | API | Super Admin Endpoints. List Orgs/Clients, Billing, Dashboard Stats, Platform Stats. | `AdminService` |
-| **BE-API::Account::Main** | `backend/api/account_routes.py` | API | AWS Account Management. Link, List, Delete accounts. | `AccountService` |
+| **BE-API::Admin::Main** | `backend/api/admin_routes.py` | API | Super Admin Endpoints. List Orgs/Clients, Billing, Dashboard Stats (Live Feed), Platform Stats, **Toggle Org Status** (POST /{id}/toggle). | `AdminService` |
+| **BE-API::Account::Main** | `backend/api/account_routes.py` | API | AWS Account Management. Link, List, Delete accounts. **NEW**: POST /cache-credentials (MEMBER approval flow - stores encrypted creds in Redis until ticket approved). | `AccountService`, `AccountCacheService` |
 | **BE-API::Cluster::Main** | `backend/api/cluster_routes.py` | API | Cluster Operations. Discover, Register, Connect (AWS), Agent Install, Heartbeat. | `ClusterService` |
 | **BE-API::Organization::Main** | `backend/api/organization_routes.py` | API | Organization Management. List Members, Invite (ORG_ADMIN), Update Role, Remove Member. | `OrganizationService` |
 | **BE-API::Policy::Main** | `backend/api/policy_routes.py` | API | Optimization Policy Management. Create, List, Update, Delete, Toggle policies. | `PolicyService` |
 | **BE-API::Hibernation::Main** | `backend/api/hibernation_routes.py` | API | Hibernation Schedule Management. Create, List, Update, Delete schedules. | `HibernationService` |
-| **BE-API::Metrics::Main** | `backend/api/metrics_routes.py` | API | Dashboard Metrics. Savings, Costs, Instance Stats, Time Series. | `MetricsService` |
+| **BE-API::Metrics::Main** | `backend/api/metrics_routes.py` | API | Dashboard Metrics. Savings, Costs, Instance Stats. **Updated**: `GET /teams/{id}/summary` for Team Consolidated View (Lead/Admin). | `MetricsService` |
 | **BE-API::Audit::Main** | `backend/api/audit_routes.py` | API | Audit Log Querying. Filter logs by actor, event, resource type. | `AuditService` |
 | **BE-API::Lab::Main** | `backend/api/lab_routes.py` | API | Lab Experiments. Create, List, Start, Stop, Get Results for A/B testing. | `LabService` |
 | **BE-API::Cleanup::Main** | `backend/api/cleanup_routes.py` | API | Endpoints for resource hygiene scanning and action execution. | `CleanupService` |
 | **BE-API::Health::System** | `backend/api/health_routes.py` | API | System Health Monitoring. Get detailed health status (DB, Redis, Workers). | `HealthService` |
 | **BE-API::Optimization::Main** | `backend/api/optimization_routes.py` | API | Rightsizing Recommendations. Analyze cluster workloads and return resize advice. | `RightSizer` |
 | **BE-API::Billing::Main** | `backend/api/billing_routes.py` | API | **Real**: Stripe Billing. Create portal session, webhook handler, subscription status. | `stripe` |
+| **BE-MOD::Gov::Ticket** | `backend/models/ticket.py` | Model | Just-in-Time Permission Ticket with Delegation. Enums: `TicketType` (ACTION, ACCESS_WINDOW, **ACCOUNT_CONNECTION**), `TicketStatus` (8 states). Fields: `parent_id`, `action_type`, `resource_id`, `duration_hours`, `activated_at`. **NEW (2026-01-16)**: ACCOUNT_CONNECTION type for MEMBER AWS account approval flow. | `Organization` |
+| **BE-SVC::JIT::Ticket** | `backend/services/ticket_service.py` | Service | **Real (JIT)**: Ticket CRUD operations. Methods: create_ticket, list_tickets, approve_ticket, revoke_ticket, get_active_window. Auto-expiry logic. `_check_approver_auth` includes `CLIENT` role (legacy ORG_ADMIN) and org check. Role-based filtering in `list_tickets` (Admin=All, Lead=Team, Member=Own). | `Ticket`, `User`, `UserRole` |
+| **BE-SVC::JIT::Permission** | `backend/services/permission_service.py` | Service | **Real (JIT)**: Central gatekeeper for JIT access. Checks if user has active ACCESS_WINDOW ticket before allowing protected actions. Integrated with CleanupService. | `Ticket`, `TicketService` |
+| **BE-API::JIT::Ticket** | `backend/api/ticket_routes.py` | API | **Real (JIT)**: JIT Ticket endpoints. POST `/` (create), POST `/grant` (admin grant), GET `/` (list), POST `/{id}/approve`, POST `/{id}/revoke`, POST `/{id}/accept`, POST `/{id}/reject`, GET `/active-window`. | `TicketService` |
+| **BE-SCH::JIT::Ticket** | `backend/schemas/ticket_schemas.py` | Schema | **Real (JIT)**: Pydantic schemas for tickets. `TicketCreate` (type, reason, duration, action, resource). `TicketResponse` (full ticket data with status and timestamps). | `Pydantic` |
 | **BE-API::Admin::Platform** | `backend/api/admin_routes.py` | API | **Real**: Platform Identity Management. Get connection status, connect (STS verify), disconnect. | `AdminService`, `boto3` |
 | **BE-API::Templates::Main** | `backend/api/template_routes.py` | API | **Real**: Serves CloudFormation templates. Includes `GET /` (List) and `GET /aws-onboarding` (Download). | `FileResponse` |
 | **BE-SVC::Admin::Platform** | `backend/services/admin_service.py` | Service | **Real**: Platform credential management with STS verification. | `boto3`, `SystemConfig` |
@@ -49,8 +55,8 @@
 | **BE-MOD::Auth::User** | `backend/models/user.py` | Model | **Updated (Feature 6)**: 4-Tier `UserRole` enum (SUPER_ADMIN, ORG_ADMIN, TEAM_LEAD, MEMBER) and `team_id`. | `Base` |
 | **BE-MOD::Auth::Org** | `backend/models/organization.py` | Model | **Updated (Feature 6)**: Governance Flags (`is_governance_enabled`, `is_strict_approval_mode`). | `Base` |
 | **BE-MOD::Auth::Team** | `backend/models/team.py` | Model | **Real**: Team Model. Groups users within an org. **governance_config** (JSON) stores team-specific approval rules. | `Base` |
-| **BE-SVC::Team::Main** | `backend/services/team_service.py` | Service | **New**: Team Management. Create, Rename, Assign members. | `Team`, `User` |
-| **BE-API::Team::Main** | `backend/api/team_routes.py` | API | **Real**: Team Endpoints (CRUD). **Team-Specific Governance**: `GET/PUT /teams/{id}/governance` for approval policy configuration. | `TeamService`, `Team` |
+| **BE-SVC::Team::Main** | `backend/services/team_service.py` | Service | **New**: Team Management. Create, Rename, Assign members, **Remove Member**. | `Team`, `User` |
+| **BE-API::Team::Main** | `backend/api/team_routes.py` | API | **Real**: Team Endpoints (CRUD). **Remove API**: `POST /teams/{id}/remove`. **Team-Specific Governance**: `GET/PUT /teams/{id}/governance`. | `TeamService`, `Team` |
 | **BE-MOD::Auth::Invite** | `backend/models/invitation.py` | Model | Organization Invitation Table. | `Base` |
 | **BE-SVC::Governance::Main** | `backend/services/governance_service.py` | Service | **Real**: Automated Governance / Policy-as-Code. Executes cleanup based on org policies with "System Autopilot" actor. | `CleanupService`, `AuditLog` |
 | **BE-API::Governance::Main** | `backend/api/governance_routes.py` | API | **Real**: Governance Endpoints. Get/Update policies, trigger autopilot. | `GovernanceService` |
@@ -66,13 +72,13 @@
 | **BE-MOD::Ops::AuditLog** | `backend/models/audit_log.py` | Model | Audit Log Table. | `Base` |
 | **BE-MOD::Ops::OptJob** | `backend/models/optimization_job.py` | Model | Optimization Job Table. | `Base` |
 | **BE-MOD::Ops::Onboarding** | `backend/models/onboarding.py` | Model | Onboarding State Table. | `Base` |
-| **BE-SCH::Auth::Main** | `backend/schemas/auth_schemas.py` | Schema | Pydantic Schemas for Auth (Login, Signup, UserProfile). | `Pydantic` |
+| **BE-SCH::Auth::Main** | `backend/schemas/auth_schemas.py` | Schema | Pydantic Schemas for Auth. **Updated**: `MemberResponse` now includes `role`, `access_level`, `team_id`, and `full_name`. | `Pydantic` |
 | **BE-SCH::Admin::Main** | `backend/schemas/admin_schemas.py` | Schema | Pydantic Schemas for Admin (ClientList, PlatformStats). | `Pydantic` |
 | **BE-SCH::Cluster::Main** | `backend/schemas/cluster_schemas.py` | Schema | Pydantic Schemas for Cluster (Create, Update, Response). | `Pydantic` |
 | **BE-SCH::Template::Main** | `backend/schemas/template_schemas.py` | Schema | Pydantic Schemas for Template (Create, Update, Response). | `Pydantic` |
 | **BE-SCH::Policy::Main** | `backend/schemas/policy_schemas.py` | Schema | Pydantic Schemas for Policy (Create, Update, Response). | `Pydantic` |
 | **BE-SCH::Metrics::Main** | `backend/schemas/metric_schemas.py` | Schema | Pydantic Schemas for Metrics (DashboardKPIs, TimeSeries). | `Pydantic` |
-| **BE-API::Onboarding::Main** | `backend/api/onboarding_routes.py` | API | **Real**: Onboarding Endpoints. Get State, AWS Deep Link, Verify Role (creates Account + triggers `discovery_worker_loop`), Skip. | `OnboardingService`, `discovery` |
+| **BE-API::Onboarding::Main** | `backend/api/onboarding_routes.py` | API | AWS Account Onboarding Flow. Get State, CloudFormation Deep Links, Verify Credentials, Complete. **UPDATED (2026-01-16)**: POST /skip (resets state, NOT complete), POST /reset (allows restart if no accounts). | `OnboardingService` |
 | **BE-MOD::System::AgentAction** | `backend/models/agent_action.py` | Model | Pending actions for K8s Agent (e.g. cordon, drain). | `Base` |
 | **BE-MOD::Auth::APIKey** | `backend/models/api_key.py` | Model | API Keys for programmatic access. | `Base` |
 | **BE-CORE::Config::Main** | `backend/core/config.py` | Core | Global application configuration (Env vars). | `pydantic_settings` |
