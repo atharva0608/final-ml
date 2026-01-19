@@ -263,6 +263,39 @@ class OrganizationService:
             full_name=user.full_name if hasattr(user, 'full_name') else None
         )
 
+    def get_organization(self, organization_id: str):
+        """Get organization by ID"""
+        from backend.models.organization import Organization
+        org = self.db.query(Organization).filter(Organization.id == organization_id).first()
+        if not org:
+            raise ResourceNotFoundError("Organization", organization_id)
+        
+        # Ensure external_ID exists
+        if not org.external_id:
+            org.external_id = f"spot-optimizer-{secrets.token_hex(8)}"
+            self.db.commit()
+            self.db.refresh(org)
+            
+        return org
+
+    def regenerate_external_id(self, organization_id: str, requesting_user: User):
+        """Regenerate the External ID for the organization"""
+        from backend.models.organization import Organization
+        
+        # Only Admins can regenerate
+        if requesting_user.role not in [UserRole.ORG_ADMIN, UserRole.SUPER_ADMIN, UserRole.CLIENT]:
+             raise ForbiddenError("Only organization administrators can regenerate external IDs")
+
+        org = self.get_organization(organization_id)
+        
+        # Generate new ID
+        new_id = f"spot-optimizer-{secrets.token_hex(8)}"
+        org.external_id = new_id
+        
+        self.db.commit()
+        self.db.refresh(org)
+        return org.external_id
+
 def get_organization_service(db: Session):
     return OrganizationService(db)
 

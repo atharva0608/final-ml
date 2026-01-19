@@ -174,19 +174,66 @@ def get_connection_info(
     service = get_organization_service(db)
     organization = service.get_organization(current_user.organization_id)
     
-    # Get Platform AWS Account ID from config or env
+    # Get Platform AWS Account ID - Priority Order:
+    # 1. SystemConfig in DB (Admin-configured)
+    # 2. Environment Variable
+    # 3. Auto-detect via STS GetCallerIdentity
     import os
+    import boto3
     from backend.models.system_config import SystemConfig
     
-    # Try DB config first
+    platform_account_id = None
+    detection_method = "unknown"
+    
+    # 1. Try DB config first
     platform_account_config = db.query(SystemConfig).filter(SystemConfig.key == "PLATFORM_AWS_ACCOUNT_ID").first()
-    platform_account_id = platform_account_config.value if platform_account_config else os.getenv("PLATFORM_AWS_ACCOUNT_ID", "123456789012")
+    if platform_account_config and platform_account_config.value:
+        platform_account_id = platform_account_config.value
+        detection_method = "database_config"
+    
+    # 2. Try environment variable
+    if not platform_account_id:
+        env_id = os.getenv("PLATFORM_AWS_ACCOUNT_ID")
+        if env_id and env_id != "123456789012":  # Ignore placeholder
+            platform_account_id = env_id
+            detection_method = "environment_variable"
+    
+    # 3. Auto-detect via STS
+    if not platform_account_id:
+        try:
+            sts = boto3.client('sts')
+            identity = sts.get_caller_identity()
+            platform_account_id = identity.get('Account')
+            detection_method = "auto_detected"
+        except Exception as e:
+            # Fallback to placeholder if AWS creds not configured
+            platform_account_id = "NOT_CONFIGURED"
+            detection_method = "error"
     
     # Get Template URL
-    template_url = os.getenv("AWS_CLOUDFORMATION_TEMPLATE_URL", "https://spot-optimizer-assets.s3.amazonaws.com/connect-role.yaml")
+    api_url = os.getenv("API_URL", "http://localhost:8000")
+    template_url = f"{api_url}/api/v1/onboarding/template?external_id={organization.external_id}"
     
     return {
         "external_id": organization.external_id,
         "platform_account_id": platform_account_id,
+        "platform_account_id_source": detection_method,
         "template_url": template_url
     }
+
+@router.post(
+    "/connection-info/regenerate",
+    summary="Regenerate External ID",
+    description="Regenerate the Organization's External ID. WARNING: This will break existing setups if not updated."
+)
+def regenerate_connection_info(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    if not current_user.organization_id:
+        raise HTTPException(status_code=400, detail="User does not belong to an organization")
+        
+    service = get_organization_service(db)
+    new_id = service.regenerate_external_id(current_user.organization_id, current_user)
+    
+    return {"external_id": new_id, "message": "External ID regenerated successfully"}

@@ -10,11 +10,11 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
-      - "${POSTGRES_PORT:-5433}:5432"  # Changed to 5433 to avoid conflicts with local PostgreSQL
+      - "${POSTGRES_PORT:-5433}:5432" # Changed to 5433 to avoid conflicts with local PostgreSQL
     networks:
       - app-network
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      test: [ "CMD-SHELL", "pg_isready -U postgres" ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -32,7 +32,7 @@ services:
     networks:
       - app-network
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: [ "CMD", "redis-cli", "ping" ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -150,6 +150,9 @@ services:
       - "443:443"
     depends_on:
       - backend
+    volumes:
+      - ../frontend:/app/frontend
+      - /app/frontend/node_modules
     networks:
       - app-network
     restart: unless-stopped

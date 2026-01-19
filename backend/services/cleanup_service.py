@@ -173,7 +173,12 @@ class CleanupService:
             idle_rds_count=len([r for r in resources if r.type == ResourceType.RDS_DB and not r.is_authorized]),
             dormant_user_count=len([r for r in resources if r.type == ResourceType.IAM_USER and not r.is_authorized]),
             untagged_waste_cost=untagged_waste,
-            resources=resources
+            resources=resources,
+            metadata={
+                'scan_time': datetime.now(timezone.utc).isoformat(),
+                'region_count': len(target_regions),
+                'resource_count': len(resources)
+            }
         )
         
         # 2. Set Cache (TTL 1 hour)
@@ -209,17 +214,42 @@ class CleanupService:
                 all_vols = ec2.describe_volumes()['Volumes']
                 all_vol_ids = {v['VolumeId'] for v in all_vols}
                 
-                # 1. ORPHANED VOLUMES (Filter in memory - no duplicate API call)
-                orphaned_vols = [v for v in all_vols if v['State'] == 'available']
-                for v in orphaned_vols:
-                    cost = (v['Size'] * 0.1) # Approx $0.10/GB/month for gp2/3
-                    created_at = v['CreateTime']
-                    status = CleanupStatus.SAFE_TO_DELETE if created_at < safe_threshold else CleanupStatus.ORPHANED
-                    
-                    # Feature 2: Tag Compliance Check
+                # NEW LOGIC: Show ALL EBS volumes with status:
+                # - ATTACHED: In-use, skip flagging (but show in list)
+                # - AUTHORIZED: Unattached but properly tagged 
+                # - ORPHANED: Unattached and missing required tags
+                # - SAFE_TO_DELETE: Unattached and old (>30 days)
+                
+                for v in all_vols:
+                    vol_state = v['State']  # 'available', 'in-use', etc.
                     tags = v.get('Tags', [])
                     tag_keys = {t['Key'] for t in tags}
                     missing = [rt for rt in required_tags if rt not in tag_keys]
+                    created_at = v['CreateTime']
+                    cost = (v['Size'] * 0.1)  # Approx $0.10/GB/month for gp2/3
+                    
+                    # Determine status based on attachment and compliance
+                    if vol_state == 'in-use':
+                        # Attached volume - show but don't flag for deletion
+                        status = CleanupStatus.ACTIVE
+                        reason = "Attached to instance"
+                        # Don't add to savings since we're not recommending deletion
+                        vol_cost = 0.0
+                    elif len(missing) == 0:
+                        # Unattached but properly tagged = "Authorized" unattached storage
+                        status = CleanupStatus.ORPHANED  # Using ORPHANED but reason will clarify
+                        reason = "Unattached (Compliant - Has required tags)"
+                        vol_cost = cost
+                    elif created_at < safe_threshold:
+                        # Unattached, missing tags, AND old = highest confidence for deletion
+                        status = CleanupStatus.SAFE_TO_DELETE
+                        reason = f"Unattached for >30 days, missing tags: {', '.join(missing)}"
+                        vol_cost = cost
+                    else:
+                        # Unattached, missing tags = "Unauthorized"
+                        status = CleanupStatus.NOT_COMPLIANT
+                        reason = f"Unattached, missing tags: {', '.join(missing)}"
+                        vol_cost = cost
                     
                     item = ResourceItem(
                         id=v['VolumeId'],
@@ -227,13 +257,21 @@ class CleanupService:
                         type=ResourceType.VOLUME,
                         status=status,
                         region=region,
-                        cost_per_month=cost,
-                        metadata={'Size': v['Size'], 'Type': v['VolumeType'], 'Created': str(created_at)},
+                        cost_per_month=vol_cost,
+                        reason=reason,
+                        metadata={
+                            'Size': v['Size'], 
+                            'Type': v['VolumeType'], 
+                            'Created': str(created_at),
+                            'State': vol_state,
+                            'AttachmentStatus': 'Attached' if vol_state == 'in-use' else 'Unattached'
+                        },
                         is_compliant=len(missing) == 0,
                         missing_tags=missing
                     )
                     resources.append(item)
-                    savings += cost
+                    if vol_state != 'in-use':  # Only count savings for unattached
+                        savings += vol_cost
                 
                 # 2. ORPHANED SNAPSHOTS (Use cached vol_ids - no redundant describe_volumes call)
                 snaps = ec2.describe_snapshots(OwnerIds=['self'])
@@ -362,6 +400,26 @@ class CleanupService:
                 s3_res, s3_sav = self._scan_storage(session, required_tags)
                 resources.extend(s3_res)
                 savings += s3_sav
+                
+                # S3 Lifecycle (New)
+                s3_lc_res, s3_lc_sav = self._scan_s3_lifecycle(session, region)
+                resources.extend(s3_lc_res)
+                savings += s3_lc_sav
+
+            # 8. RI Waste (Regional/Zonal RIs)
+            ri_res, ri_sav = self._scan_reserved_instances(session, region)
+            resources.extend(ri_res)
+            savings += ri_sav
+            
+            # 9. RDS Multi-AZ (Region)
+            rds_az_res, rds_az_sav = self._scan_rds_deployment(session, region, required_tags)
+            resources.extend(rds_az_res)
+            savings += rds_az_sav
+            
+            # 10. Data Transfer
+            dt_res, dt_sav = self._scan_data_transfer(session, region)
+            resources.extend(dt_res)
+            savings += dt_sav
 
         except Exception as e:
             logger.error(f"Failed to scan region {region}: {e}")
@@ -652,41 +710,294 @@ class CleanupService:
         return resources, savings
 
     def _scan_storage(self, session, required_tags):
+        """Scan S3 buckets for untagged, empty, or old buckets"""
+        resources = []
+        savings = 0.0
+        try:
+            s3 = session.client('s3')
+            buckets = s3.list_buckets().get('Buckets', [])
+            
+            from datetime import timezone
+            
+            for bucket in buckets:
+                bucket_name = bucket['Name']
+                created = bucket['CreationDate']
+                
+                # Get tags
+                tags = []
+                try:
+                    tag_resp = s3.get_bucket_tagging(Bucket=bucket_name)
+                    tags = tag_resp.get('TagSet', [])
+                except Exception:
+                    pass  # No tags or access denied
+                
+                tag_keys = {t['Key'] for t in tags}
+                missing = [rt for rt in required_tags if rt not in tag_keys]
+                
+                # Check if bucket is empty (by listing first object)
+                is_empty = False
+                try:
+                    objects = s3.list_objects_v2(Bucket=bucket_name, MaxKeys=1)
+                    if objects.get('KeyCount', 0) == 0:
+                        is_empty = True
+                except Exception:
+                    pass
+                
+                # Determine status
+                status = CleanupStatus.ACTIVE
+                reason = None
+                cost = 0.0
+                
+                if is_empty:
+                    status = CleanupStatus.SAFE_TO_DELETE
+                    reason = "Empty bucket"
+                    cost = 0.5  # Minimal storage cost for bucket itself
+                elif missing:
+                    status = CleanupStatus.NOT_COMPLIANT
+                    reason = f"Missing tags: {', '.join(missing)}"
+                
+                if status != CleanupStatus.ACTIVE:
+                    item = ResourceItem(
+                        id=bucket_name,
+                        name=bucket_name,
+                        type=ResourceType.S3_BUCKET,
+                        status=status,
+                        region='global',
+                        cost_per_month=cost,
+                        reason=reason,
+                        metadata={'Created': str(created)},
+                        is_compliant=len(missing) == 0,
+                        missing_tags=missing
+                    )
+                    resources.append(item)
+                    savings += cost
+                    
+        except Exception as e:
+            logger.error(f"S3 Scan Error: {e}")
+        return resources, savings
+
+    def _scan_reserved_instances(self, session, region):
+        resources = []
+        savings = 0.0
+        try:
+            ec2 = session.client('ec2')
+            # 1. Get Active RIs
+            ris = ec2.describe_reserved_instances(Filters=[{'Name': 'state', 'Values': ['active']}])['ReservedInstances']
+            
+            # 2. Get Running Instances
+            instances = []
+            paginator = ec2.get_paginator('describe_instances')
+            for page in paginator.paginate(Filters=[{'Name': 'instance-state-name', 'Values': ['running']}]):
+                for r in page['Reservations']:
+                    instances.extend(r['Instances'])
+            
+            # Simple matching logic (Type + AZ/Region scope) - Simplified for MVP
+            # A real nice implementation would basically check utilization metrics from Cur/Cost Explorer but that's slow/expensive.
+            # We will use a basic count match per type.
+            
+            usage_map = {}
+            for i in instances:
+                key = (i['InstanceType'], i.get('Placement', {}).get('AvailabilityZone'))
+                usage_map[key] = usage_map.get(key, 0) + 1
+                
+            for ri in ris:
+                # Calculate utilization
+                count = ri['InstanceCount']
+                ri_type = ri['InstanceType']
+                scope = ri['Scope'] # Availability Zone or Region
+                
+                matched = 0
+                if scope == 'Region':
+                    # Match any AZ in region
+                    for (itype, az), run_count in usage_map.items():
+                        if itype == ri_type:
+                            taken = min(count - matched, run_count)
+                            matched += taken
+                            usage_map[(itype, az)] -= taken # consume
+                else:
+                    # Match specific AZ
+                    az = ri.get('AvailabilityZone')
+                    key = (ri_type, az)
+                    run_count = usage_map.get(key, 0)
+                    taken = min(count, run_count)
+                    matched = taken
+                    usage_map[key] -= taken
+
+                utilization = matched / count if count > 0 else 0
+                
+                if utilization < 1.0:
+                    # Partial or Zero Utilization
+                    wasted_count = count - matched
+                    cost_per_ri = 20.0 # Placeholder for specific RI hourly rate amortized
+                    waste_cost = wasted_count * cost_per_ri 
+                    
+                    status = CleanupStatus.ORPHANED
+                    reason = f"Utilization: {utilization*100:.1f}% ({matched}/{count} used)"
+                    
+                    item = ResourceItem(
+                        id=ri['ReservedInstancesId'],
+                        name=f"RI {ri_type}",
+                        type=ResourceType.INSTANCE, # Closest type
+                        status=status,
+                        region=region,
+                        cost_per_month=waste_cost,
+                        reason=reason,
+                        metadata={'RI_Type': ri_type, 'Count': count, 'Unused': wasted_count, 'End': str(ri['End'])},
+                        is_compliant=True
+                    )
+                    resources.append(item)
+                    savings += waste_cost
+                    
+        except Exception as e:
+            logger.error(f"RI Scan Error: {e}")
+        return resources, savings
+
+    def _scan_s3_lifecycle(self, session, region):
         resources = []
         savings = 0.0
         try:
             s3 = session.client('s3')
             buckets = s3.list_buckets()['Buckets']
-            from datetime import datetime, timezone, timedelta
-            threshold = datetime.now(timezone.utc) - timedelta(days=7)
-
+            
             for b in buckets:
                 b_name = b['Name']
-                # Check Incomplete Multipart Uploads
+                has_lifecycle = False
                 try:
-                    uploads = s3.list_multipart_uploads(Bucket=b_name).get('Uploads', [])
-                    old_uploads = [u for u in uploads if u['Initiated'] < threshold]
+                    lc = s3.get_bucket_lifecycle_configuration(Bucket=b_name)
+                    if lc and lc.get('Rules'):
+                        has_lifecycle = True
+                except ClientError as e:
+                    if e.response['Error']['Code'] == 'NoSuchLifecycleConfiguration':
+                        has_lifecycle = False
+                    else:
+                        continue # Access denied or other
+                
+                if not has_lifecycle:
+                    # Get size estimate (List objects limited or Metric)
+                    # Use CloudWatch for size
+                    cw = session.client('cloudwatch')
+                    size_bytes = 0
+                    try:
+                        metrics = cw.get_metric_statistics(
+                            Namespace='AWS/S3',
+                            MetricName='BucketSizeBytes',
+                            Dimensions=[
+                                {'Name': 'BucketName', 'Value': b_name},
+                                {'Name': 'StorageType', 'Value': 'StandardStorage'}
+                            ],
+                            StartTime=datetime.now() - timedelta(days=2),
+                            EndTime=datetime.now(),
+                            Period=86400,
+                            Statistics=['Average']
+                        )
+                        if metrics['Datapoints']:
+                            size_bytes = metrics['Datapoints'][-1]['Average']
+                    except: pass
                     
-                    if old_uploads:
-                        oldest = min(u['Initiated'] for u in old_uploads)
-                        age_days = (datetime.now(timezone.utc) - oldest).days
-                        cost = len(old_uploads) * 0.5  # Rough estimate per incomplete upload
+                    if size_bytes > 1 * 1024 * 1024 * 1024: # > 1GB
+                        cost = (size_bytes / (1024**3)) * 0.023 # Standard cost
+                        potential_saving = cost * 0.4 # Assuming 40% saving by moving to IA/Glacier
+                        
                         item = ResourceItem(
                             id=b_name,
                             name=b_name,
                             type=ResourceType.S3_BUCKET,
-                            status=CleanupStatus.ORPHANED,
+                            status=CleanupStatus.LEGACY_UPGRADE,
                             region='global',
+                            cost_per_month=potential_saving,
+                            reason="No Lifecycle Policy on >1GB Bucket",
+                            metadata={'SizeBytes': size_bytes},
+                            is_compliant=False 
+                        )
+                        resources.append(item)
+                        savings += potential_saving
+
+        except Exception as e:
+             logger.error(f"S3 Lifecycle Error: {e}")
+        return resources, savings
+
+    def _scan_rds_deployment(self, session, region, required_tags):
+        resources = []
+        savings = 0.0
+        try:
+            rds = session.client('rds')
+            dbs = rds.describe_db_instances()['DBInstances']
+            
+            for db in dbs:
+                if db['MultiAZ']:
+                    # Check if Production
+                    tags = db.get('TagList', [])
+                    tag_keys = {t['Key']: t['Value'] for t in tags}
+                    
+                    env = tag_keys.get('Environment', '').lower()
+                    if env in ['dev', 'test', 'staging', 'development']:
+                        # Multi-AZ in non-prod is waste
+                        cost = 100.0 # Estimate surcharge for Multi-AZ
+                        
+                        item = ResourceItem(
+                            id=db['DBInstanceIdentifier'],
+                            name=db['DBInstanceIdentifier'],
+                            type=ResourceType.RDS_DB,
+                            status=CleanupStatus.LEGACY_UPGRADE, # Downgrade needed
+                            region=region,
                             cost_per_month=cost,
-                            reason=f"{len(old_uploads)} incomplete uploads (oldest: {age_days} days)",
-                            metadata={'IncompleteUploads': len(old_uploads), 'OldestUploadDays': age_days},
+                            reason=f"Multi-AZ enabled in {env} environment",
+                            metadata={'MultiAZ': True, 'Environment': env},
                             is_compliant=True
                         )
                         resources.append(item)
                         savings += cost
-                except Exception: pass
         except Exception as e:
-            logger.error(f"S3 Scan Error: {e}")
+            logger.error(f"RDS MultiAZ Error: {e}")
+        return resources, savings
+
+    def _scan_data_transfer(self, session, region):
+        resources = []
+        savings = 0.0
+        # Data Transfer difficult to attribute without Cost Explorer at resource level.
+        # Implemented as a placeholder scanning NAT Gateways which are common sources.
+        try:
+            ec2 = session.client('ec2')
+            nats = ec2.describe_nat_gateways()['NatGateways']
+            for nat in nats:
+                if nat['State'] == 'available':
+                    # Just flagging NAT GWs as potential review items if they exist
+                    # Real data transfer metrics need CloudWatch "BytesOutToDestination"
+                    cw = session.client('cloudwatch')
+                    bytes_out = 0
+                    try:
+                        metrics = cw.get_metric_statistics(
+                            Namespace='AWS/NATGateway',
+                            MetricName='BytesOutToDestination',
+                            Dimensions=[{'Name': 'NatGatewayId', 'Value': nat['NatGatewayId']}],
+                            StartTime=datetime.now() - timedelta(days=7),
+                            EndTime=datetime.now(),
+                            Period=86400 * 7,
+                            Statistics=['Sum']
+                        )
+                        if metrics['Datapoints']:
+                            bytes_out = metrics['Datapoints'][0]['Sum']
+                    except: pass
+                    
+                    gb_out = bytes_out / (1024**3)
+                    if gb_out > 100: # Warning threshold > 100GB/week
+                        cost = gb_out * 0.045 # Approx per GB processing
+                        item = ResourceItem(
+                            id=nat['NatGatewayId'],
+                            name="NAT Gateway",
+                            type=ResourceType.NAT_GATEWAY,
+                            status=CleanupStatus.RISK,
+                            region=region,
+                            cost_per_month=cost * 4, # Monthly estimate
+                            reason=f"High Data Transfer: {gb_out:.1f} GB/week",
+                            metadata={'WeeklyGB': gb_out},
+                            is_compliant=True
+                        )
+                        resources.append(item)
+                        savings += (cost * 4)
+                        
+        except Exception as e:
+            logger.error(f"DataTransfer Error: {e}")
         return resources, savings
 
     def execute_action(self, account_id: str, action_data: CleanupAction, user: User = None, bypass_approval: bool = False):

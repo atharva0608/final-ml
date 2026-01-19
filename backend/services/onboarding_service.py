@@ -9,10 +9,27 @@ from backend.core.config import settings
 import urllib.parse
 
 # Constants
+import os
 TEMPLATE_BUCKET_URL = "https://your-public-bucket.s3.amazonaws.com" # Replace with real bucket
 READ_ONLY_TEMPLATE_URL = f"{TEMPLATE_BUCKET_URL}/read-only-role.yaml"
 FULL_ACCESS_TEMPLATE_URL = f"{TEMPLATE_BUCKET_URL}/full-access-role.yaml"
-TRUSTED_ROLE_ARN = "arn:aws:iam::123456789012:role/SpotOptimizerBackendRole" # Replace with real ARN
+
+def get_platform_account_id():
+    """Get Platform Account ID - Auto-detect if not configured"""
+    # 1. Try environment variable first
+    env_id = os.getenv("PLATFORM_AWS_ACCOUNT_ID")
+    if env_id and env_id != "123456789012":
+        return env_id
+    
+    # 2. Auto-detect via STS
+    try:
+        sts = boto3.client('sts')
+        identity = sts.get_caller_identity()
+        return identity.get('Account', 'NOT_CONFIGURED')
+    except Exception:
+        return 'NOT_CONFIGURED'
+
+PLATFORM_ACCOUNT_ID = get_platform_account_id()  # Cache at module load
 
 class OnboardingService:
     def __init__(self, db: Session):
@@ -43,7 +60,7 @@ class OnboardingService:
             "stackName": stack_name,
             "templateURL": template_url,
             "param_ExternalId": state.external_id,
-            "param_TrustedRoleARN": TRUSTED_ROLE_ARN
+            "param_PlatformAccountId": PLATFORM_ACCOUNT_ID
         }
         
         # Build URL
@@ -97,11 +114,13 @@ class OnboardingService:
 
     def get_template(self, user_id: str, mode: ConnectionMode) -> str:
         state = self.get_or_create_state(user_id)
-        
-        # Determine policies based on mode
-        # In a real app, these would be loaded from a file or template engine
-        # Here we embed a simple functional CloudFormation template
-        
+        return self.get_template_by_external_id(state.external_id, mode)
+
+    def get_template_by_external_id(self, external_id: str, mode: ConnectionMode) -> str:
+        # Validate existence (optional but good for security)
+        # state = self.db.query(OnboardingState).filter(OnboardingState.external_id == external_id).first()
+        # if not state: raise HTTPException(404, "Invalid External ID")
+
         policy_document = ""
         if mode == ConnectionMode.READ_ONLY:
             policy_document = """
@@ -111,9 +130,23 @@ class OnboardingService:
                     Action:
                       - 'ec2:Describe*'
                       - 'cloudwatch:GetMetricData'
+                      - 'cloudwatch:GetMetricStatistics'
                       - 'autoscaling:Describe*'
                       - 'eks:Describe*'
                       - 'eks:List*'
+                      - 'rds:Describe*'
+                      - 'rds:List*'
+                      - 's3:GetBucket*'
+                      - 's3:ListBucket'
+                      - 's3:ListAllMyBuckets'
+                      - 's3:GetBucketTagging'
+                      - 's3:GetBucketLocation'
+                      - 's3:GetLifecycleConfiguration'
+                      - 'iam:ListUsers'
+                      - 'iam:GetUser'
+                      - 'iam:ListAccessKeys'
+                      - 'elasticloadbalancing:Describe*'
+                      - 'ce:GetCostAndUsage'
                     Resource: '*'
             """
         else:
@@ -132,11 +165,11 @@ Parameters:
   ExternalId:
     Type: String
     Description: 'The Unique External ID provided by SpotOptimizer'
-    Default: '{state.external_id}'
-  TrustedRoleARN:
+    Default: '{external_id}'
+  PlatformAccountId:
     Type: String
-    Description: 'The ARN of the SpotOptimizer Backend Role to trust'
-    Default: '{TRUSTED_ROLE_ARN}'
+    Description: 'The AWS Account ID of the SpotOptimizer Platform to trust'
+    Default: '{PLATFORM_ACCOUNT_ID}'
 
 Resources:
   SpotOptimizerRole:
@@ -148,7 +181,7 @@ Resources:
         Statement:
           - Effect: Allow
             Principal:
-              AWS: !Ref TrustedRoleARN
+              AWS: !Sub 'arn:aws:iam::${{PlatformAccountId}}:root'
             Action: 'sts:AssumeRole'
             Condition:
               StringEquals:

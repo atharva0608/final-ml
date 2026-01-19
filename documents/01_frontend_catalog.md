@@ -71,10 +71,15 @@
 | **FE-LIB::UI::Index** | `frontend/src/components/shared/index.js` | UI | Export barrel for shared components. | `N/A` | `N/A` |
 | **FE-CMP::Onboard::Page** | `frontend/src/pages/Onboarding.jsx` | Page | Wrapper page for the onboarding flow. | `step` | `WelcomeStep`, `ConnectStep` |
 | **FE-CMP::Onboard::Welcome** | `frontend/src/components/onboarding/WelcomeStep.jsx` | Component | Onboarding Step 1: Welcome. | `onNext` | `Button` |
-| **FE-CMP::Onboard::Connect** | `frontend/src/components/onboarding/ConnectStep.jsx` | Component | **Real**: Onboarding Step 2: AWS Connect. Has loading state (`isLoading`), ARN validation, disabled button handling. | `onNext`, `roleArn`, `verifying` | `Input`, `Button`, `onboardingAPI` |
+| **FE-CMP::Onboard::Connect** | `frontend/src/components/onboarding/ConnectStep.jsx` | Component | **REAL (Updated 2026-01-19)**: AWS Account connection step. Added explicit instructions and warning boxes specifying that Role ARN and Account ID belong to the *client's* AWS account. Enhanced UI with a clear "Warning" card to prevent confusion. | `onNext`, `roleArn`, `externalId` | `onboardingAPI`, `Button`, `Icons` |
 | **FE-CMP::Onboard::Verify** | `frontend/src/components/onboarding/VerifyStep.jsx` | Component | Onboarding Step 3: Visual loading spinner during verification. | `onNext` | `motion` |
 | **FE-CMP::Onboard::Success** | `frontend/src/components/onboarding/SuccessStep.jsx` | Component | Onboarding Step 4: Success. | `onComplete` | `Button` |
-| **FE-CMP::Cleanup::Main** | `frontend/src/components/cleanup/CleanupDashboard.jsx` | Page | **Real (Complete)**: Resource Hygiene Dashboard. Multi-Region Scanning, **Authorization** (Authorize/Unauthorize resources, filter views), **Persistence** (1-hour cache), **Tag Compliance** (Shameback card), **Dependency Check** (Warning Modal), **Advanced Hygiene**: 9 resource tabs (Instances, Volumes, Snapshots, IPs, Load Balancers, Network Interfaces, Databases, Identity, Storage), **Reason column** for explaining why resources flagged. | `scanResult`, `selectedAccount` | `cleanupAPI`, `GaugeChart` |
+| **FE-CMP::Cleanup::Main** | `frontend/src/components/cleanup/CleanupDashboard.jsx` | Page | **REAL (Redesigned 2026-01-19)**: Central hub for AWS cost hygiene. Features a **Static Action Bar** (Authorize, Unauthorize, Cleanup) for bulk operations and an **Integrated Side Navigation** for 9 resource categories. Displays **Live Potential Savings Gauge** tracking selection. | `scanResult`, `selectedAccount`, `selectedItems` | `cleanupAPI`, `SavingsGauge`, `ResourceTable` |
+| **FE-CMP::Cleanup::Sidebar** | `frontend/src/components/cleanup/layout/CleanupSidebar.jsx` | Layout | **NEW (2026-01-19)**: Vertical navigation sidebar within the Cleanup dashboard. Grouped categories (Compute, Storage, Network, Identity, RI/Optimization). Collapsible for maximum workspace. | `activeTab`, `onTabChange` | `Icons` |
+| **FE-CMP::Cleanup::Filter** | `frontend/src/components/cleanup/layout/FilterPanel.jsx` | Component | **REAL (Updated 2026-01-19)**: Top-bar filtering utility. Includes Account/Region selectors, Refresh trigger, and **Real-Time "Last Scanned" timestamp** display (fixed ReferenceError). | `accounts`, `lastScan` | `Icons` |
+| **FE-CMP::Cleanup::Hero** | `frontend/src/components/cleanup/summary/HeroMetricsPanel.jsx` | Component | **NEW (2026-01-19)**: Top-level summary cards showing Total Potential Savings, Untagged Waste, and Health Score. | `summary` | `StatsCard` |
+| **FE-CMP::Cleanup::Gauge** | `frontend/src/components/cleanup/summary/SavingsGauge.jsx` | Component | **NEW (2026-01-19)**: **Animated semi-circle meter** with live dollar counter. Features: (1) **Dynamic Normalization**: Scales selected cost against total potential savings. (2) **Smooth Motion**: Uses `framer-motion`'s `animate` function for high-frequency value updates. (3) **SVG Meter**: Custom semi-circle `PieChart` via `recharts`. | `selectedSavings`, `total` | `recharts`, `framer-motion` |
+| **FE-CMP::Cleanup::Table** | `frontend/src/components/cleanup/tables/ResourceTable.jsx` | Table | **REAL (Updated 2026-01-19)**: High-performance list view with row-level actions. Added **Inline Action Buttons** (Authorize, Unauthorize, Cleanup) and detailed EBS volume breakdown (State, Attachment Status). | `resources`, `isAuthorized` | `Icons`, `Badge` |
 | **FE-CMP::RI::Card** | `frontend/src/components/ri/RIHealthCard.jsx` | Widget | Dashboard widget for RI coverage/waste. | `data` | `api` |
 | **FE-CMP::RI::Page** | `frontend/src/components/ri/RIAnalysis.jsx` | Page | Detailed RI Analysis page. | `data` | `api` |
 | **FE-CMP::S3::Card** | `frontend/src/components/s3/S3HealthCard.jsx` | Widget | Dashboard widget for S3 optimizations. | `data` | `api` |
@@ -131,3 +136,27 @@ These components are fully implemented in Frontend but rely on Backend services 
 | **FE-CMP::Admin::Billing** | `frontend/src/components/admin/AdminBilling.jsx` | **Mocked Data** | Billing plans and history are mocked responses, not real Stripe/AWS data. |
 | ~~**FE-CMP::Set::Cloud**~~ | ~~`frontend/src/components/settings/CloudIntegrations.jsx`~~ | ~~**Mocked Logic**~~ | **RESOLVED (2026-01-12)**: Backend `AccountService` now validates AWS STS credentials. Onboarding triggers discovery. |
 | **FE-CMP::Set::Account** | `frontend/src/components/settings/AccountSettings.jsx` | **Mocked** | Profile updates (Name, Email) are not permanently persisted to DB (Backend: `SettingsService`). |
+| **FE-CMP::RI::Analysis** | `frontend/src/components/ri/RIAnalysis.jsx` | **Partial** | Full visualization of optimization logic requires real Cost Explorer historical data beyond 30 days. |
+
+---
+
+## 🏗️ Core Design Systems (2026-01-19 Update)
+
+### 🎨 Visual Language: "Performance Minimalism"
+The frontend has evolved from a generic dashboard to a high-density, performance-oriented UI inspired by CAST AI and modern DevOps tools.
+*   **Color Palette**: Shifted to a white-base theme with subtle grays (`bg-gray-50`) to reduce visual fatigue. Use of high-contrast actions (Blue for navigation, Green for savings, Red for critical cleanup).
+*   **Typography**: Transitioned to **Inter/System Sans** for maximum readability in data-intensive tables.
+*   **Motion**: Strategic use of `framer-motion` for transitions and `recharts` for visualization to make data feel "alive" rather than static.
+
+### 📐 Structural Evolution: Sidebar-First UX
+To eliminate horizontal scrolling and improve navigation depth, the platform has moved away from top-level tabs:
+1.  **Global Level**: Left-hand sidebar manages primary domains (Clusters, Hygiene, Policies).
+2.  **Domain Level**: Nested sidebars (like in `CleanupDashboard`) manage sub-categories and filters, keeping the main content area focused on tables and actions.
+3.  **Contextual Actions**: Introduction of **Bulk Action Toolbars** and **Inline Actions** to reduce the number of clicks required for routine cleanup tasks.
+
+### 🔌 API Integration Strategy
+*   **Persistence**: Scan results are cached for 1 hour via Redis (Backend) and held in local state (Zustand/React hooks) to ensure zero-latency tab switching.
+*   **Real-Time Feedback**: Integration of `react-hot-toast` for immediate execution feedback and animated gauges for live impact analysis.
+
+---
+

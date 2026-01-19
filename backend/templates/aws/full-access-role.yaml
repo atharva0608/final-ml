@@ -44,6 +44,12 @@ Resources:
                   - 'autoscaling:SetDesiredCapacity'
                   - 'eks:DescribeCluster'
                   - 'eks:ListClusters'
+                  - 'ec2:DescribeReservedInstances'
+                  - 's3:GetBucketLifecycleConfiguration'
+                  - 's3:GetBucketTagging'
+                  - 'rds:ListTagsForResource'
+                  - 'cloudwatch:ListMetrics'
+                  - 'cloudwatch:GetMetricStatistics'
                 Resource: '*'
         - PolicyName: 'SpotOptimizerCostExplorerRead'
           PolicyDocument:

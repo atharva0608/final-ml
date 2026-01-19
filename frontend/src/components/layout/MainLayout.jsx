@@ -46,20 +46,25 @@ const MainLayout = () => {
   const isSuperAdmin = user?.role === 'SUPER_ADMIN' || user?.role === 'super_admin';
   const navItems = isSuperAdmin ? adminNavigation : navigation;
 
+  const [isSidebarOpen, setIsSidebarOpen] = React.useState(true);
+
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-screen bg-gray-50 flex">
       <ActiveWindowBanner />
+
       {/* Sidebar */}
-      <div className="fixed inset-y-0 left-0 w-64 bg-white border-r border-gray-200">
+      <div
+        className={`fixed inset-y-0 left-0 bg-white border-r border-gray-200 transition-all duration-300 z-30 ${isSidebarOpen ? 'w-64' : 'w-0 -translate-x-full'}`}
+      >
         {/* Logo */}
-        <div className="h-16 flex items-center px-6 border-b border-gray-200">
-          <h1 className="text-xl font-bold text-gray-900">
+        <div className="h-16 flex items-center px-6 border-b border-gray-200 justify-between">
+          <h1 className="text-xl font-bold text-gray-900 truncate">
             {isSuperAdmin ? 'Admin Console' : 'Spot Optimizer'}
           </h1>
         </div>
 
         {/* Navigation */}
-        <nav className="flex-1 px-4 py-4 space-y-1">
+        <nav className="flex-1 px-4 py-4 space-y-1 overflow-y-auto h-[calc(100vh-8rem)]">
           {navItems.map((item) => {
             const Icon = item.icon;
             return (
@@ -71,17 +76,17 @@ const MainLayout = () => {
                   : 'text-gray-700 hover:bg-gray-50'
                   }`}
               >
-                <Icon className="w-5 h-5 mr-3" />
-                {item.name}
+                <Icon className="w-5 h-5 mr-3 flex-shrink-0" />
+                <span className="truncate">{item.name}</span>
               </Link>
             );
           })}
 
-          {/* Admin Impersonation Notice (Optional Placeholder) */}
+          {/* Admin Impersonation Notice */}
           {isSuperAdmin && (
             <div className="mt-8 px-4">
               <div className="p-3 bg-yellow-50 rounded-lg border border-yellow-200">
-                <p className="text-xs text-yellow-800 font-medium">Client View Hidden</p>
+                <p className="text-xs text-yellow-800 font-medium truncate">Client View Hidden</p>
                 <p className="text-xs text-yellow-700 mt-1">Use "Clients" page to impersonate users.</p>
               </div>
             </div>
@@ -89,22 +94,22 @@ const MainLayout = () => {
         </nav>
 
         {/* User Profile */}
-        <div className="absolute bottom-0 w-64 p-4 border-t border-gray-200 bg-white">
+        <div className="absolute bottom-0 w-full p-4 border-t border-gray-200 bg-white">
           <div className="flex items-center justify-between">
-            <div className="flex items-center">
-              <div className="w-8 h-8 bg-blue-600 rounded-full flex items-center justify-center">
+            <div className="flex items-center overflow-hidden">
+              <div className="w-8 h-8 bg-blue-600 rounded-full flex items-center justify-center flex-shrink-0">
                 <span className="text-white text-sm font-medium">
                   {user?.email?.[0].toUpperCase()}
                 </span>
               </div>
-              <div className="ml-3">
-                <p className="text-sm font-medium text-gray-900">{user?.email}</p>
-                <p className="text-xs text-gray-500">{user?.role}</p>
+              <div className="ml-3 truncate">
+                <p className="text-sm font-medium text-gray-900 truncate">{user?.email}</p>
+                <p className="text-xs text-gray-500 truncate">{user?.role}</p>
               </div>
             </div>
             <button
               onClick={logout}
-              className="p-2 text-gray-400 hover:text-gray-600 transition-colors"
+              className="p-2 text-gray-400 hover:text-gray-600 transition-colors flex-shrink-0"
             >
               <FiLogOut className="w-5 h-5" />
             </button>
@@ -113,10 +118,19 @@ const MainLayout = () => {
       </div>
 
       {/* Main Content */}
-      <div className="pl-64">
+      <div className={`flex-1 flex flex-col min-w-0 transition-all duration-300 ${isSidebarOpen ? 'pl-64' : 'pl-0'}`}>
         {/* Header */}
-        <header className="h-16 bg-white border-b border-gray-200 flex items-center justify-between px-8">
-          <div className="flex items-center">
+        <header className="h-16 bg-white border-b border-gray-200 flex items-center justify-between px-4 sm:px-6 lg:px-8 z-20">
+          <div className="flex items-center gap-4">
+            <button
+              onClick={() => setIsSidebarOpen(!isSidebarOpen)}
+              className="p-2 -ml-2 text-gray-500 hover:text-gray-700 rounded-md hover:bg-gray-100 focus:outline-none"
+              aria-label="Toggle sidebar"
+            >
+              <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+              </svg>
+            </button>
             <h2 className="text-lg font-semibold text-gray-900">
               {navigation.find(item => isActive(item.path))?.name || 'Dashboard'}
             </h2>
@@ -127,8 +141,10 @@ const MainLayout = () => {
         </header>
 
         {/* Page Content */}
-        <main className="p-8">
-          <Outlet />
+        <main className="flex-1 overflow-y-auto">
+          <div className="p-8 h-full">
+            <Outlet />
+          </div>
         </main>
       </div>
     </div>

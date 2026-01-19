@@ -52,6 +52,23 @@ const CloudIntegrations = () => {
       setFormData(prev => ({ ...prev, external_id: res.data.external_id }));
     } catch (err) {
       console.error("Failed to fetch connection info", err);
+      // If 500, it might be due to missing org or ID, but we just updated backend to handle that.
+    }
+  };
+
+  const handleRegenerateExternalId = async () => {
+    if (!window.confirm("WARNING: Regenerating the External ID will break trust with any EXISTING AWS connection that uses the old ID. You will need to update your IAM Roles in AWS. Are you sure?")) {
+      return;
+    }
+    try {
+      const res = await authService.regenerateConnectionInfo();
+      if (res.data.external_id) {
+        setConnectionInfo(prev => ({ ...prev, external_id: res.data.external_id }));
+        setFormData(prev => ({ ...prev, external_id: res.data.external_id }));
+        toast.success("External ID regenerated. Please update your AWS IAM Roles.");
+      }
+    } catch (err) {
+      toast.error("Failed to regenerate External ID");
     }
   };
 
@@ -312,15 +329,27 @@ const CloudIntegrations = () => {
               This is the fastest and most secure way to connect.
             </p>
             <div className="flex flex-wrap gap-3">
-              <a
-                href={connectionInfo?.template_url}
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium"
+              <button
+                onClick={async () => {
+                  try {
+                    const response = await import('../../services/api').then(m => m.onboardingAPI.getTemplate('READ_ONLY'));
+                    // Create blob link to download
+                    const url = window.URL.createObjectURL(new Blob([response.data]));
+                    const link = document.createElement('a');
+                    link.href = url;
+                    link.setAttribute('download', 'spot-optimizer-role.yaml');
+                    document.body.appendChild(link);
+                    link.click();
+                    link.parentNode.removeChild(link);
+                  } catch (e) {
+                    import('react-hot-toast').then(m => m.default.error("Failed to download template"));
+                  }
+                }}
+                className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium cursor-pointer"
               >
                 <FiDownload className="w-4 h-4" />
                 Download CloudFormation Template
-              </a>
+              </button>
               <a
                 href={`https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?stackName=SpotOptimizer-Connection-${connectionInfo?.external_id?.substring(0, 8)}&templateURL=${encodeURIComponent(connectionInfo?.template_url)}&param_ExternalId=${connectionInfo?.external_id}&param_TrustedRoleARN=arn:aws:iam::${connectionInfo?.platform_account_id}:role/SpotOptimizerBackendRole`}
                 target="_blank"
@@ -335,14 +364,26 @@ const CloudIntegrations = () => {
               <p className="text-sm text-gray-700 font-medium mb-2">Connection Parameters:</p>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
                 <div>
-                  <span className="text-gray-500 block">Platform Account ID (Trust this):</span>
-                  <code className="bg-gray-100 px-2 py-1 rounded">{connectionInfo?.platform_account_id || 'Loading...'}</code>
+                  <span className="text-gray-500 block">Platform Account ID <span className="text-xs text-blue-600">(SpotOptimizer's AWS Account - Trust This)</span>:</span>
+                  <div className="flex items-center gap-2">
+                    <code className="bg-gray-100 px-2 py-1 rounded">{connectionInfo?.platform_account_id || 'Loading...'}</code>
+                    {connectionInfo?.platform_account_id_source === 'auto_detected' && (
+                      <span className="text-xs bg-green-100 text-green-700 px-1 rounded">Auto-detected</span>
+                    )}
+                    {connectionInfo?.platform_account_id === 'NOT_CONFIGURED' && (
+                      <span className="text-xs bg-red-100 text-red-700 px-1 rounded">Not Configured</span>
+                    )}
+                  </div>
+                  <p className="text-xs text-gray-400 mt-1">This is NOT your AWS Account. It's the SpotOptimizer backend's account.</p>
                 </div>
                 <div>
-                  <span className="text-gray-500 block">Your Organization External ID:</span>
+                  <span className="text-gray-500 block">Your Organization External ID <span className="text-xs text-blue-600">(Unique Security Key)</span>:</span>
                   <div className="flex items-center gap-2">
                     <code className="bg-gray-100 px-2 py-1 rounded font-bold text-blue-700">{connectionInfo?.external_id || 'Loading...'}</code>
-                    <button onClick={() => { navigator.clipboard.writeText(connectionInfo?.external_id); toast.success('Copied External ID') }} className="text-gray-400 hover:text-blue-600"><FiCopy /></button>
+                    <button onClick={() => { navigator.clipboard.writeText(connectionInfo?.external_id); toast.success('Copied External ID') }} className="text-gray-400 hover:text-blue-600" title="Copy ID"><FiCopy /></button>
+                    {(currentUser.role === 'ORG_ADMIN' || currentUser.role === 'CLIENT') && (
+                      <button onClick={handleRegenerateExternalId} className="text-gray-400 hover:text-red-600 text-xs underline ml-2" title="Regenerate ID">Regenerate</button>
+                    )}
                   </div>
                 </div>
               </div>

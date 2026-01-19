@@ -174,10 +174,12 @@ class AccountService:
             )
             self.db.add(approval_req)
             self.db.commit()
-            return {"status": "pending", "message": "Connection request sent to Team Lead", "account": account}
+            self.db.refresh(account)
+            # Return account regardless - status indicates pending
+            return account
 
         self.db.refresh(account)
-        return {"status": "success", "account": account}
+        return account
     def delete_account(self, account_id: str, organization_id: str) -> bool:
         """Delete/unlink an AWS account"""
         account = self.get_account(account_id, organization_id)

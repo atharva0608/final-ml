@@ -128,7 +128,20 @@ const ConnectStep = ({ onNext }) => {
                                 <FiExternalLink /> Launch Console
                             </a>
                             <button
-                                onClick={handleDownloadTemplate}
+                                onClick={async () => {
+                                    try {
+                                        const response = await onboardingAPI.getTemplate('READ_ONLY');
+                                        const url = window.URL.createObjectURL(new Blob([response.data]));
+                                        const link = document.createElement('a');
+                                        link.href = url;
+                                        link.setAttribute('download', 'spot-optimizer-role.yaml');
+                                        document.body.appendChild(link);
+                                        link.click();
+                                        link.parentNode.removeChild(link);
+                                    } catch (e) {
+                                        toast.error("Failed to download template");
+                                    }
+                                }}
                                 className="inline-flex items-center gap-2 px-4 py-2 border border-gray-300 text-gray-700 bg-white rounded-lg hover:bg-gray-50 transition-colors font-medium text-sm"
                             >
                                 <FiDownload /> Download YAML
@@ -141,9 +154,12 @@ const ConnectStep = ({ onNext }) => {
                 <div className="flex gap-4">
                     <div className="flex-shrink-0 w-8 h-8 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center font-bold">2</div>
                     <div className="flex-1">
-                        <h3 className="font-semibold text-gray-900 mb-1">Enter Role ARN</h3>
-                        <p className="text-sm text-gray-500 mb-3">
+                        <h3 className="font-semibold text-gray-900 mb-1">Enter Role ARN <span className="text-xs text-blue-600">(From YOUR AWS Account)</span></h3>
+                        <p className="text-sm text-gray-500 mb-2">
                             Copy the <code>RoleArn</code> from the CloudFormation <strong>Outputs</strong> tab.
+                        </p>
+                        <p className="text-xs text-amber-600 bg-amber-50 p-2 rounded mb-3">
+                            ⚠️ <strong>Important:</strong> This should be the Role ARN from <strong>your AWS account</strong> (the one you're connecting), NOT the SpotOptimizer Platform account.
                         </p>
 
                         <div className="relative">
@@ -151,7 +167,7 @@ const ConnectStep = ({ onNext }) => {
                                 type="text"
                                 value={roleArn}
                                 onChange={(e) => setRoleArn(e.target.value)}
-                                placeholder="arn:aws:iam::123456789012:role/SpotOptimizer-Access-Role..."
+                                placeholder="arn:aws:iam::<YOUR_ACCOUNT_ID>:role/SpotOptimizer-Access-Role..."
                                 className={`w-full px-4 py-3 rounded-lg border ${error ? 'border-red-300 focus:ring-red-500' : 'border-gray-300 focus:ring-blue-500'} focus:outline-none focus:ring-2`}
                             />
                         </div>

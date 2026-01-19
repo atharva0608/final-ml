@@ -57,6 +57,7 @@ export const authAPI = {
     updatePreferences: (preferences) => api.patch('/api/v1/users/me/preferences', preferences),
     // Standardized Organization Connection Info
     getConnectionInfo: () => api.get('/api/v1/organization/connection-info'),
+    regenerateConnectionInfo: () => api.post('/api/v1/organization/connection-info/regenerate'),
 };
 export const authService = authAPI;
 

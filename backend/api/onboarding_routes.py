@@ -6,7 +6,7 @@ from typing import Optional
 from backend.models.base import get_db
 from backend.models.user import User
 from backend.services.onboarding_service import get_onboarding_service, OnboardingService
-from backend.core.dependencies import get_current_user, verify_tenant_action
+from backend.core.dependencies import get_current_user, verify_tenant_action, get_optional_user
 from backend.models.onboarding import ConnectionMode
 
 router = APIRouter(prefix="/onboarding", tags=["Onboarding"])
@@ -49,11 +49,25 @@ from fastapi import Response
 @router.get("/template")
 def get_template(
     mode: ConnectionMode = ConnectionMode.READ_ONLY,
-    current_user: User = Depends(get_current_user),
+    external_id: Optional[str] = None,
+    current_user: Optional[User] = Depends(get_optional_user), # Use optional auth
     db: Session = Depends(get_db)
 ):
+    if not current_user and not external_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated. Provide Bearer token or external_id."
+        )
+
     service = get_onboarding_service(db)
-    yaml_content = service.get_template(current_user.id, mode)
+    
+    if external_id:
+        # Public access mode
+        yaml_content = service.get_template_by_external_id(external_id, mode)
+    else:
+        # Authenticated mode
+        yaml_content = service.get_template(current_user.id, mode)
+        
     return Response(content=yaml_content, media_type="application/x-yaml", headers={
         "Content-Disposition": "attachment; filename=spot-optimizer-role.yaml"
     })

@@ -55,6 +55,7 @@ class CleanupSummary(BaseModel):
     dormant_user_count: int = 0
     untagged_waste_cost: float = 0.0  # Feature 2: Total cost of non-compliant resources
     resources: List[ResourceItem]
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 class CleanupActionType(str, Enum):
     AUTHORIZE = "AUTHORIZE"

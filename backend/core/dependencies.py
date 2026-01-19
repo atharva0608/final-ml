@@ -361,13 +361,16 @@ async def verify_rate_limit(
         This is a placeholder. Actual implementation should use Redis
         for distributed rate limiting.
     """
-    # TODO: Implement Redis-based rate limiting
-    # For now, always return True
+        # For now, always return True
     return True
 
 
+# Optional HTTP Bearer for loose authentication
+security_optional = HTTPBearer(auto_error=False)
+
 def get_optional_user(
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+    request: Request,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_optional),
     db: Session = Depends(get_db)
 ) -> Optional[User]:
     """
@@ -386,8 +389,21 @@ def get_optional_user(
         return None
 
     try:
-        user_context = get_current_user_context(credentials, db)
-        return get_current_user(user_context, db)
+        # We manually call get_current_user_context logic here to avoid the strict dependency
+        token = credentials.credentials
+        payload = decode_token(token)
+        if not payload:
+            return None
+
+        user_id = payload.get("sub")
+        if not user_id:
+            return None
+
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            return None
+
+        return user
     except Exception:
         # If authentication fails, return None instead of raising
         return None

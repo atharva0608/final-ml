@@ -1,104 +1,1185 @@
-Here are the detailed, non-code functional instructions to implement **Role-Based Dashboard Customization** with persistent user preferences. This approach shifts your dashboard from a hard-coded layout to a dynamic, widget-based system driven by database configuration.
+# Resource Hygiene Dashboard - Professional UX/UI Specification
 
-### Phase 1: Database & Backend Architecture
+## Core Philosophy
+Create an **enterprise-grade analytics and optimization platform** that transforms cloud waste detection from reactive cleanup into proactive cost governance. The interface should function as a decision-support system that combines data visualization, dependency analysis, and guided workflows.
 
-You need to store *how* a user wants to see their dashboard. Instead of creating complex new tables, you can leverage the existing `User` model.
+---
 
-**1. Update the User Model**
+## **SECTION 1: Dashboard Landing - Intelligence Overview**
 
-* **Schema Change:** Add a new column to your `User` table (e.g., `preferences` or `dashboard_config`).
-* **Data Type:** Use a **JSON/JSONB** type. This allows flexibility to store layout arrays, theme choices, or widget settings without changing the schema again later.
-* **Migration:** Create a database migration script to add this column to existing users, defaulting to `NULL` or an empty object `{}`.
+### Hero Metrics Panel (Full Width, 4 Equal Columns)
 
-**2. API Endpoints for Preferences**
+#### Column 1: Total Waste Summary
+- **Large numeral display**: Total monthly waste across all categories
+  - Animated count-up on load
+  - Comparison indicator: "↑ $450 vs last scan" or "↓ 12% from last week"
+  - Percentage of total AWS spend shown below in smaller text
+- **Mini trend sparkline**: Last 10 scans showing waste trajectory
+  - Subtle line chart, no axes, just the pattern
+  - Click to expand into detailed trend modal
 
-* **Update `GET /auth/me` (or User Profile):** Ensure the login/profile response includes this new `preferences` object so the frontend has it immediately upon loading.
-* **Create `PATCH /users/me/preferences`:**
-* **Input:** Accepts a JSON object (e.g., `{ dashboard_layout: [...] }`).
-* **Logic:** Updates the logged-in user's record in the database.
-* **Validation:** Ensure the user isn't trying to inject settings for restricted widgets (e.g., a "Member" trying to enable "Global Revenue" widget).
+#### Column 2: Resource Distribution
+- **Donut chart**: Resources by category
+  - Segments: Compute (red tones), Storage (blue tones), Network (green tones), Database (purple tones), Identity (orange tones)
+  - Center displays total resource count flagged
+  - Interactive: Hover shows exact count + percentage
+  - Click segment to filter entire dashboard to that category
+- **Legend below**: Icon + Label + Count for each segment
 
+#### Column 3: Compliance Health
+- **Semi-circular gauge chart**: Tag compliance percentage
+  - Needle points to current compliance score
+  - Color zones: 0-50% (warning), 50-80% (caution), 80-100% (healthy)
+  - Center text: "X resources untagged"
+- **Breakdown bar** beneath gauge:
+  - Horizontal stacked bar showing compliant (green) vs non-compliant (red) ratio
+  - Exact counts on hover
 
+#### Column 4: Safety Assessment
+- **Three-tier safety distribution**:
+  - Horizontal bar chart with 3 bars stacked:
+    - Safe to Delete (green bar)
+    - Needs Review (yellow bar)
+    - Risky/Has Dependencies (red bar)
+  - Each bar shows count and percentage
+  - Click bar to filter table to that safety level
+- **Quick Action Recommendation**: 
+  - Text: "XX resources ready for immediate cleanup"
+  - Button: "Review Safe Items"
 
-### Phase 2: Frontend Component Architecture
+---
 
-Refactor the monolithic `Dashboard.jsx` into a modular "Widget Engine".
+## **SECTION 2: Category Navigation & Filtering System**
 
-**1. Create a "Widget Registry"**
+### Primary Category Tabs (Horizontal, Sticky on Scroll)
 
-* Define a central directory of all available dashboard components (Widgets).
-* **Break Down Existing Components:** Extract parts of your current dashboard into small, standalone files:
-* `CostKPICard`
-* `SavingsChart`
-* `ClusterHealthMap`
-* `ActivityFeed`
-* `PendingApprovalsCard` (New for Team Leads)
-* `PlatformHealthMetrics` (New for Super Admins)
+**13 Category Tabs with Visual Hierarchy:**
 
+#### Tier 1: Existing Resource Types (9 tabs)
+1. **Compute** - Unauthorized instances
+2. **Volumes** - Orphaned EBS volumes
+3. **Snapshots** - Zombie snapshots
+4. **Elastic IPs** - Unused IPs
+5. **Load Balancers** - Idle LBs
+6. **Network** - Unattached ENIs
+7. **Databases** - Idle/Legacy RDS
+8. **Identity** - Dormant IAM users
+9. **Storage** - Incomplete S3 uploads
 
-* **Registry Map:** Create a mapping object where string keys point to these components.
-* *Example:* `'kpi_cost': <CostKPICard />`
+#### Tier 2: NEW Optimization Categories (4 tabs with "NEW" badge)
+10. **Reserved Instances** - RI waste detection
+11. **S3 Lifecycle** - Intelligent-Tiering opportunities
+12. **RDS Multi-AZ** - Over-provisioned redundancy
+13. **Data Transfer** - Network cost optimization
 
+**Tab Design:**
+- Each tab shows: Icon + Label + Count Badge + Savings Badge
+  - Example: [Server Icon] Compute (23) [$1,450/mo]
+- Active tab: Underline indicator with smooth slide animation
+- Inactive tabs: Subtle hover effect
+- "NEW" badge: Small pill in accent color for new categories
 
+### Advanced Filter Panel (Collapsible, Below Tabs)
 
-**2. Define Default Role Layouts**
+**Two-Row Filter Layout:**
 
-* Create a configuration constant file (e.g., `roleDefaults.js`).
-* Define the "Standard Layout" for each `UserRole`:
-* **SUPER_ADMIN:** `['platform_health', 'tenant_list', 'global_audit', 'revenue_chart']`
-* **ORG_ADMIN:** `['net_savings', 'current_spend', 'savings_projection', 'cluster_map']`
-* **TEAM_LEAD:** `['team_budget', 'pending_approvals', 'team_activity', 'member_list']`
-* **MEMBER:** `['my_active_resources', 'my_tickets', 'recent_logs']`
+#### Row 1: Scope Filters
+- **Account Selector**: Dropdown with multi-select capability
+  - Shows account name + AWS account ID
+  - "Select All" option
+  - Selected count badge
+- **Region Multi-Select**: 
+  - Chip-based selection (click to toggle)
+  - "All Regions" quick toggle
+  - Visual map thumbnail showing selected regions highlighted
+- **Date Range**: Scan history selector
+  - Quick picks: "Latest", "Last 7 days", "Last 30 days"
+  - Custom range picker
 
+#### Row 2: Attribute Filters
+- **Safety Level**: Three toggle buttons (Safe / Review / Risky)
+  - Multiple can be active simultaneously
+  - Show counts for each level
+- **Compliance Status**: Two toggle buttons (Compliant / Non-Compliant)
+- **Cost Range**: Dual-handle slider
+  - Min/Max inputs for precise values
+  - Histogram background showing cost distribution
+- **Age Range**: Slider for resource age (0-365+ days)
 
+**Active Filter Summary Bar:**
+- Displays active filters as dismissible pills
+- "Clear All" link
+- "Save Filter Preset" option for frequently used combinations
+- Filter count indicator
 
-### Phase 3: The Dynamic Dashboard Logic
+---
 
-Update the main `Dashboard` page to render based on data, not hard-coded JSX.
+## **SECTION 3: Category-Specific Visualization Dashboards**
 
-**1. The Loading Sequence**
+### Layout Pattern for Each Tab
 
-* **Step A:** When the dashboard loads, check the user's `preferences.dashboard_layout` from the store/API.
-* **Step B:** If it exists, use that array of widget keys.
-* **Step C:** If it is `null` (first time login), look up the `UserRole` in your `roleDefaults` file and use that array.
+**Three-Section Vertical Flow:**
 
-**2. The Rendering Engine**
+#### Top: Category Summary Cards (3-Card Row)
+Each category gets three KPI cards specific to that resource type
 
-* Instead of writing `<KPICard />` directly, map over the list of widget keys.
-* For each key, look it up in the **Widget Registry** and render the corresponding component.
-* **Safety Check:** If a key exists in preferences but not in the registry (e.g., feature removed), skip it gracefully to prevent crashes.
+**Middle: Interactive Visualization Area (Single Large Chart)**
+Primary analytical chart for pattern discovery
 
-### Phase 4: User Customization Features
+**Bottom: Resource Data Table**
+Detailed list with advanced features
 
-Give users the UI to change their view.
+---
 
-**1. "Customize Dashboard" Mode**
+### **TAB 1-9: Existing Resource Types - Enhanced Visualizations**
 
-* Add a button (e.g., "Edit Layout") to the dashboard header.
-* When clicked, switch the dashboard to **Edit Mode**.
-* **Visual Cues:** Add borders or "drag handles" to widgets to indicate they are editable.
+#### Compute Tab (Unauthorized Instances)
+**Summary Cards:**
+1. Total unauthorized instances running
+2. Daily waste cost (instances × hourly rate × 24)
+3. Average instance age
 
-**2. The Customization Toolbar/Drawer**
+**Visualization: Regional Heat Map Matrix**
+- Rows: Instance types (t3.micro, m5.large, etc.)
+- Columns: Regions
+- Cell color intensity: Number of unauthorized instances
+- Cell value: Count + monthly cost
+- Click cell: Filters table to that instance type + region combination
+- Tooltip on hover: Instance IDs preview
 
-* **Toggle Visibility:** Show a list of *all available widgets* for that user's role with checkboxes.
-* *Constraint:* Filter this list by role. Do not show "Platform Health" in the list for an Org Admin.
+#### Storage Tab (Volumes + Snapshots)
+**Summary Cards:**
+1. Total orphaned storage (GB)
+2. Oldest orphaned resource age
+3. GP2→GP3 upgrade opportunities count
 
+**Visualization: Age Distribution Histogram**
+- X-axis: Age buckets (0-30d, 31-60d, 61-90d, 91-180d, 181-365d, 365d+)
+- Y-axis: Count of resources
+- Stacked bars: Volumes (bottom) + Snapshots (top) in different shades
+- Second Y-axis: Cumulative cost curve overlaid
+- Click bar: Filters table to that age range
+- Special highlight: Resources >90 days (recommended cleanup threshold)
 
-* **Reorder (Optional):** Allow users to drag and drop widgets to change their order, or provide "Move Up/Down" buttons.
+#### Network Tab (EIPs, LBs, ENIs)
+**Summary Cards:**
+1. Unused Elastic IPs count + monthly cost
+2. Idle load balancers (0 targets)
+3. Unattached network interfaces
 
-**3. Saving Changes**
+**Visualization: Sankey Flow Diagram**
+- Left side: Resource categories (EIPs, LBs, ENIs)
+- Middle: State (Active, Idle, Unattached)
+- Right side: Cost impact (High, Medium, Low)
+- Flow width: Proportional to resource count
+- Color coding by cost severity
+- Click flow path: Filters to that combination
 
-* When the user clicks "Save Layout":
-1. Capture the current list of active widget keys.
-2. Send this list to the `PATCH /users/me/preferences` endpoint.
-3. Update the local state/store immediately to reflect changes without reloading.
+#### Database Tab (RDS)
+**Summary Cards:**
+1. Idle databases (0 connections in 7 days)
+2. Legacy generation instances (t2, m4)
+3. Multi-AZ savings opportunity preview
 
+**Visualization: Generation Matrix**
+- Table-style heat map
+- Rows: Database engines (MySQL, PostgreSQL, MariaDB, Oracle, SQL Server)
+- Columns: Instance generations (t2, t3, m4, m5, m6, r4, r5, r6)
+- Cell shows: Instance count
+- Legacy generations (t2, m4, r4) have warning border
+- Color intensity: Cost impact
+- Tooltip: "XX instances, upgrade to YY generation to save $ZZZ/mo"
+- Click cell: Opens upgrade wizard for those instances
 
+#### Identity Tab (IAM Users)
+**Summary Cards:**
+1. Dormant users (>90 days no activity)
+2. Users with unused access keys
+3. Total potential security risk score
 
-### Summary of Data Flow
+**Visualization: Activity Timeline Grid**
+- Rows: IAM usernames (sorted by last activity, oldest first)
+- Columns: Last 90 days (each day is a thin column)
+- Cell color: Activity level (dark = active, light = inactive, white = no activity)
+- Pattern recognition: Easily spot users with no recent activity
+- Hover: Shows exact activity details for that day
+- Click row: Expands to show detailed access history
 
-1. **Login:** Backend sends `user.role = 'ORG_ADMIN'` and `user.preferences = null`.
-2. **Dashboard Load:** Frontend sees `null` preferences. Loads `ORG_ADMIN_DEFAULTS` (Cost, Savings, Clusters).
-3. **User Action:** User clicks "Edit", hides "Cluster Map", adds "Recent Activity". Clicks Save.
-4. **API Call:** `PATCH` sends `{ dashboard_layout: ['cost', 'savings', 'activity'] }`.
-5. **Next Login:** Backend sends the saved layout. Frontend renders exactly what the user saved.
+---
+
+### **TAB 10: Reserved Instance Waste - NEW**
+
+#### Summary Cards
+1. **Underutilized RIs**: Count of RIs <70% utilization
+2. **Monthly Wasted Spend**: Dollar amount on unused RI capacity
+3. **Marketplace Recovery Potential**: Estimated resale value
+
+#### Primary Visualization: RI Utilization Matrix
+**Bubble Chart:**
+- X-axis: RI Utilization Percentage (0-100%)
+- Y-axis: Months Until Expiration
+- Bubble size: Monthly commitment cost
+- Bubble color: RI type (Standard = blue, Convertible = green)
+- Quadrant lines:
+  - Vertical line at 70% (utilization threshold)
+  - Horizontal line at 12 months (expiration urgency)
+- **Four Quadrants**:
+  - Top-Left (Urgent + Underutilized): "Sell/Modify Now" - Red zone
+  - Top-Right (Urgent + Well-Utilized): "Renew on Expiration" - Yellow zone
+  - Bottom-Left (Time + Underutilized): "Monitor/Optimize" - Orange zone
+  - Bottom-Right (Time + Well-Utilized): "Healthy" - Green zone
+- Click bubble: Opens detailed RI analysis panel
+
+#### Secondary Visualization: Utilization Trend Line Chart
+- X-axis: Last 30 days
+- Y-axis: Average utilization percentage
+- Multiple lines: One per RI
+- Highlight RIs with declining utilization trend
+- Alert indicator when utilization drops below threshold
+
+#### Action Panel (Right Sidebar)
+**For Selected RI(s):**
+- **Modify RI** button (if Convertible)
+  - Opens wizard to change instance family/size
+- **List on Marketplace** button
+  - Shows calculated listing price based on remaining term
+  - Preview potential recovery amount
+- **Convert to Savings Plan** calculator
+  - Comparison widget showing cost difference
+  - "What-if" scenario builder
+
+---
+
+### **TAB 11: S3 Lifecycle Optimization - NEW**
+
+#### Summary Cards
+1. **Buckets Without Lifecycle Policies**: Count
+2. **Storage in Wrong Tier**: TB of data in Standard that should be cheaper tier
+3. **Monthly Savings Opportunity**: Projected savings from optimization
+
+#### Primary Visualization: Storage Class Flow Diagram
+**Sankey Diagram:**
+- Left: S3 buckets (sized by total storage)
+- Middle: Current storage classes (Standard, Standard-IA, Glacier, Deep Archive, Intelligent-Tiering)
+- Right: Recommended storage classes
+- Flows show where data should move
+- Width = Amount of data (GB/TB)
+- Color: Cost impact (green = savings, gray = already optimal)
+- Click flow: Shows detailed policy recommendation
+
+#### Secondary Visualization: Access Pattern Analysis
+**Scatter Plot per Bucket:**
+- X-axis: Object age (days)
+- Y-axis: Access frequency (requests/day)
+- Each dot = Group of objects
+- Color zones:
+  - Hot (frequently accessed) = Standard tier appropriate
+  - Warm (occasional access) = Consider Standard-IA
+  - Cold (rare access) = Move to Glacier
+  - Frozen (no access >180d) = Deep Archive candidate
+- Trend lines showing optimal tier boundaries
+- Click zone: Generates lifecycle policy for that pattern
+
+#### Bucket Detail Cards (Below Chart)
+**Scrollable horizontal card carousel:**
+Each card represents one bucket with:
+- Bucket name + region
+- Total size (GB) + Object count
+- Current monthly cost
+- **Storage Class Breakdown**: Mini donut chart showing distribution
+- **Lifecycle Status**: Badge (None / Suboptimal / Optimized)
+- **Recommended Action**: One-line summary
+- **Projected Savings**: Dollar amount with percentage
+- **Quick Apply** button: One-click policy implementation
+
+#### Lifecycle Policy Builder (Modal)
+**Visual Policy Constructor:**
+- Drag-and-drop timeline interface
+- Add rules: "After X days → Move to Y tier"
+- Visual preview of object movement over time
+- Cost impact calculator (Before/After comparison)
+- Simulation mode: "What would happen if I applied this 30 days ago?"
+- Export policy as JSON/Terraform
+
+---
+
+### **TAB 12: RDS Multi-AZ Analysis - NEW**
+
+#### Summary Cards
+1. **Multi-AZ Databases**: Total count
+2. **Non-Production with Multi-AZ**: Count flagged as waste
+3. **Potential Monthly Savings**: If disabled on non-prod
+
+#### Primary Visualization: Environment Risk Matrix
+**2D Heat Map:**
+- X-axis: Database environment tags (Production, Staging, Development, Testing)
+- Y-axis: Multi-AZ status (Enabled, Disabled)
+- Cell shows: Count of databases + total monthly cost
+- Color intensity: Cost magnitude
+- **Flagged cells**: 
+  - Dev/Test + Multi-AZ Enabled = Warning color (waste)
+  - Production + Multi-AZ Disabled = Alert color (risk)
+- Click cell: Filters table to those databases
+
+#### Secondary Visualization: Cost Impact Bar Chart
+**Horizontal stacked bars per database:**
+- Each bar represents one RDS instance
+- Stack segments:
+  - Primary instance cost (solid)
+  - Multi-AZ standby cost (striped)
+- Bars sorted by total cost (highest first)
+- Color coded by environment (Production = green, Staging = yellow, Dev = red)
+- Hover: Shows exact cost breakdown
+- Click bar: Opens database detail panel
+
+#### Database Decision Assistant (Right Panel)
+**For each selected database, show:**
+- **Environment Classification**: Auto-detected + manual override
+- **Traffic Analysis**: Last 30 days connection count
+- **Uptime Requirements**: Inferred from tags/application SLA
+- **Backup Status**: Snapshot frequency + retention
+- **Failover History**: How many times has failover been used (if ever)
+- **Risk Assessment**: "Safe to Disable" or "Keep Multi-AZ" recommendation
+- **Trial Period Option**: "Disable for 30 days with monitoring"
+
+---
+
+### **TAB 13: Data Transfer Optimization - NEW**
+
+#### Summary Cards
+1. **Total Monthly Transfer Cost**: Across all categories
+2. **Cross-Region Traffic**: GB + cost
+3. **NAT Gateway Processing**: GB + cost
+4. **Top Optimization**: Biggest single opportunity
+
+#### Primary Visualization: Traffic Flow Map
+**Geographical Network Diagram:**
+- Nodes: AWS regions (sized by data volume)
+- Edges: Data transfer paths between regions
+- Edge thickness: Proportional to GB transferred
+- Edge color: Cost per GB (red = expensive internet egress, orange = cross-region, yellow = cross-AZ)
+- **Annotations on edges**: "$XXX/mo" cost labels
+- Click edge: Shows detailed traffic breakdown for that path
+- Highlight opportunities: "Add VPC endpoint here to save $XXX"
+
+#### Secondary Visualization: Transfer Cost Breakdown
+**Treemap:**
+- Top level: Transfer categories (Internet Egress, NAT Gateway, Cross-Region, Cross-AZ, VPC Peering)
+- Second level: Specific source/destination pairs
+- Third level: Resource types (EC2, S3, RDS, etc.)
+- Size = Cost magnitude
+- Color = Optimization potential (green = already optimal, yellow = minor savings, red = major savings)
+- Click rectangle: Drills down or shows recommendation
+
+#### Optimization Opportunity Cards (Below Chart)
+**Prioritized list of actionable recommendations:**
+
+Each card shows:
+- **Issue Icon + Title**: "S3 Traffic via NAT Gateway"
+- **Current State**: "8.2 TB/month through NAT = $369"
+- **Recommended Solution**: "Create S3 VPC Endpoint"
+- **Impact**: "Reduce cost to $0 (100% savings)"
+- **Effort**: Badge (Low/Medium/High)
+- **Implementation Time**: "5 minutes"
+- **Risk**: Badge (None/Low/Medium)
+- **Action Button**: "Create Endpoint" or "Learn More"
+
+**Card Types:**
+1. **CloudFront Opportunity**: Buckets serving traffic without CDN
+2. **VPC Endpoint Missing**: S3/DynamoDB traffic via NAT
+3. **Cross-Region Service Calls**: Apps calling services in wrong region
+4. **NAT Gateway Consolidation**: Multiple NATs where one would suffice
+5. **Transfer Acceleration**: Slow uploads from distant locations
+
+---
+
+## **SECTION 4: Universal Resource Table (Bottom of Each Tab)**
+
+### Table Header Controls
+
+#### Left Side
+- **View Mode Toggle**: Three buttons (Table / Cards / Compact)
+- **Density Selector**: Dropdown (Comfortable / Standard / Compact)
+- **Grouping Options**: Dropdown (None / By Region / By Account / By Safety Level / By Cost Range)
+
+#### Center
+- **Search Bar**: 
+  - Icon prefix
+  - Placeholder: "Search by ID, name, tag, or attribute..."
+  - Real-time filtering with highlighting
+  - Search chips for complex queries
+
+#### Right Side
+- **Column Customizer**: Icon button opens drawer
+  - Checklist of available columns
+  - Drag to reorder
+  - Reset to defaults button
+- **Export Options**: Icon button dropdown
+  - Export visible rows (CSV / Excel / JSON)
+  - Export all filtered results
+  - Generate PDF report
+- **Refresh Button**: Manual refresh (with last updated timestamp)
+
+### Table Column Structure
+
+**Universal Columns (All Tabs):**
+1. **Selection**: Checkbox with tri-state (all/some/none) header
+2. **Resource Icon**: Visual type identifier
+3. **Resource ID**: Monospace font, truncated with tooltip, copy icon
+4. **Name/Tags**: Primary name + tag count badge
+5. **Region**: Flag icon + region code
+6. **Age**: Days since creation, color-coded by threshold
+7. **Compliance**: Icon badge (✓ or ⚠)
+8. **Safety Level**: Dot + label + dependency count
+9. **Cost/Month**: Bold number + bar chart indicator (relative to max in view)
+10. **Actions**: Kebab menu
+
+**Category-Specific Columns:**
+
+**Compute Tab Adds:**
+- Instance Type
+- State (Running/Stopped) with status dot
+- Uptime %
+
+**Storage Tab Adds:**
+- Size (GB/TB)
+- Storage Class
+- Attached To (instance ID or "Orphaned")
+
+**Network Tab Adds:**
+- Associated Resource (LB → Targets, IP → Instance)
+- Traffic (if metrics available)
+
+**Database Tab Adds:**
+- Engine + Version
+- Instance Class
+- Multi-AZ Status (✓/✗)
+- Connection Count (last 7 days)
+
+**RI Tab Adds:**
+- RI Type (Standard/Convertible)
+- Utilization % (with bar chart)
+- Expiration Date (with urgency indicator)
+
+**S3 Lifecycle Tab Adds:**
+- Total Objects
+- Access Pattern (Hot/Warm/Cold)
+- Current Lifecycle Policy (badge)
+
+**RDS Multi-AZ Tab Adds:**
+- Environment Tag
+- SLA Requirement
+- Failover History Count
+
+**Data Transfer Tab Adds:**
+- Source → Destination
+- Data Volume (GB)
+- Transfer Type (Internet/Cross-Region/NAT)
+
+### Row Interactions
+
+**Expandable Row Detail Panel:**
+Click any row to expand inline details below it:
+
+- **Left Section (60%)**: Metadata organized in labeled sections
+  - General Info
+  - Technical Details
+  - Cost Breakdown (daily/weekly/monthly)
+  - Tags (with inline editor)
+  
+- **Right Section (40%)**: 
+  - **Dependency Graph** (if applicable): Visual node diagram
+  - **Action History Timeline**: Previous scans, state changes
+  - **Related Resources**: Links to connected resources
+
+**Bulk Selection Features:**
+- Select multiple rows via checkboxes
+- **Floating Action Bar** appears at bottom when items selected:
+  - Shows: "X items selected | Total: $Y/month"
+  - Buttons: Authorize / Tag / Cleanup / Export / Clear Selection
+  - Safety aggregate: "X safe, Y need review, Z risky"
+
+### Table Row Styling
+
+**Visual Hierarchy:**
+- **Safe to Delete**: Subtle green left border
+- **Needs Review**: Yellow left border
+- **Risky/Dependencies**: Red left border
+- **Authorized**: Blue background tint + lock icon
+- **Pending Approval**: Gray strikethrough + clock icon
+
+**Hover State:**
+- Entire row highlights
+- Action menu appears
+- Quick preview tooltip for truncated fields
+
+### Contextual Actions Menu (Kebab)
+
+**Common Actions:**
+- View Details (opens detail modal)
+- Authorize Resource
+- Add to Cleanup Queue
+- Edit Tags
+- Copy Resource ARN
+- View in AWS Console (deep link)
+
+**Category-Specific Actions:**
+- **RI**: Modify / List on Marketplace / View Utilization Report
+- **S3**: Configure Lifecycle / View Access Logs / Estimate Savings
+- **RDS**: Disable Multi-AZ / Schedule Maintenance / View Metrics
+- **Network**: Create VPC Endpoint / Analyze Traffic / Associate Resource
+
+---
+
+## **SECTION 5: Cleanup Wizards - Step-by-Step Guided Workflows**
+
+### **Wizard 1: Reserved Instance Optimization Wizard**
+
+**Entry Point:** "Optimize RIs" button on RI tab
+
+#### Step 1: Issue Identification
+- **Header**: "Reserved Instance Analysis"
+- **Content**: 
+  - Visual summary of underutilized RIs
+  - Categorized list:
+    - **Critical**: 0% utilization (complete waste)
+    - **Warning**: <50% utilization
+    - **Monitor**: 50-70% utilization
+  - Each item shows: RI ID, Type, Utilization %, Monthly waste
+- **Selection**: Auto-select Critical + Warning, allow user to adjust
+- **Next Button**: "Analyze X Selected RIs"
+
+#### Step 2: Recommendation Engine
+- **Header**: "Optimization Recommendations"
+- **For Each Selected RI, Show Card:**
+  - **Current State**: Instance type, region, utilization chart
+  - **Recommended Action** (automatically determined):
+    - **If 0% utilization**: "Sell on Marketplace" or "Modify to different type"
+    - **If <50%**: "Combine workloads" or "Right-size applications"
+    - **If Convertible**: "Modify to match actual usage pattern"
+  - **Impact Preview**: 
+    - Current waste: $XXX/month
+    - After action: $YYY/month (or recovered amount)
+    - Net benefit: $ZZZ/month or $AAA one-time
+  - **Effort**: Low/Medium/High badge
+  - **Risk**: None/Low/Medium badge
+  - **User Choice**: Accept / Modify / Skip
+- **Summary Footer**: Total savings if all accepted: $X/month
+- **Next Button**: "Review Plan"
+
+#### Step 3: Execution Plan
+- **Header**: "Optimization Plan Summary"
+- **Timeline View**:
+  - Gantt-style chart showing sequence of actions
+  - Dependencies indicated (e.g., "Create new instance before terminating old RI")
+  - Estimated duration for each step
+- **Grouped by Action Type**:
+  - **Marketplace Listings**: X RIs (estimated recovery: $Y)
+  - **Modifications**: X RIs (will change to types: A, B, C)
+  - **Workload Adjustments**: X RIs (require application changes)
+- **Risk Assessment**:
+  - Downtime estimate: "XX minutes expected"
+  - Rollback plan: Automated description
+- **Approval Required**: If governance rules apply, shows which approvers
+- **Next Button**: "Execute Plan" or "Schedule Execution"
+
+#### Step 4: Execution Monitoring
+- **Header**: "Optimization in Progress"
+- **Progress Bar**: Overall completion percentage
+- **Live Activity Log**:
+  - Timestamped entries
+  - Color-coded by status (success, in-progress, warning, error)
+  - Example: "14:32 - Listed ri-abc123 on Marketplace (asking $1,234)"
+- **Pause/Cancel Controls**: Emergency stop if needed
+- **Real-Time Savings Counter**: Incrementing as actions complete
+
+#### Step 5: Completion Summary
+- **Header**: "Optimization Complete"
+- **Results Dashboard**:
+  - Total savings realized: $X/month (with celebration visual)
+  - Actions completed: Y/Z successful
+  - Marketplace listings created: X (total value: $Y)
+  - RIs modified: X
+- **Next Steps Recommendations**:
+  - "Monitor modified RIs for 30 days"
+  - "Review marketplace listing performance weekly"
+  - "Schedule next RI review for [date]"
+- **Report Generation**: Download detailed PDF report
+- **Close Button**: Return to RI tab (with refresh)
+
+---
+
+### **Wizard 2: S3 Lifecycle Policy Wizard**
+
+**Entry Point:** "Optimize Lifecycle" button on S3 tab
+
+#### Step 1: Bucket Selection
+- **Header**: "Select Buckets to Optimize"
+- **Filter Panel**: 
+  - Buckets without policies
+  - Buckets with suboptimal policies
+  - All buckets
+- **Bucket Cards Grid**:
+  - Each card shows:
+    - Bucket name + icon
+    - Size (TB/GB) + object count
+    - Current storage class distribution (mini bar chart)
+    - Monthly cost
+    - Savings opportunity badge
+    - Checkbox for selection
+- **Bulk Actions**: "Select All Without Policies", "Select Top 10 by Savings"
+- **Next Button**: "Analyze X Buckets"
+
+#### Step 2: Access Pattern Analysis (Auto-Run)
+- **Header**: "Analyzing Access Patterns..."
+- **Progress Indicators**: For each bucket:
+  - Fetching access logs (if enabled)
+  - Analyzing object age distribution
+  - Calculating access frequency
+  - Estimating optimal tiers
+- **Results Display** (when complete):
+  - **For Each Bucket, Show**:
+    - Access pattern chart (scatter plot: Age vs Access)
+    - Objects categorized:
+      - Hot (keep in Standard): X objects, Y GB
+      - Warm (move to IA): X objects, Y GB
+      - Cold (move to Glacier): X objects, Y GB
+      - Frozen (Deep Archive): X objects, Y GB
+    - Recommended policy summary
+- **Next Button**: "Configure Policies"
+
+#### Step 3: Policy Configuration
+- **Header**: "Configure Lifecycle Policies"
+- **For Each Bucket, Interactive Timeline Builder**:
+  - Visual timeline: Day 0 → Day 30 → Day 90 → Day 180 → Day 365+
+  - Drag transition points to adjust:
+    - Standard → Standard-IA (default: 30 days)
+    - Standard-IA → Glacier (default: 90 days)
+    - Glacier → Deep Archive (default: 180 days)
+    - Delete after (default: never / or based on compliance)
+  - **Policy Templates**: Quick apply buttons
+    - "Aggressive Savings" (fast transitions)
+    - "Balanced" (default)
+    - "Conservative" (slower transitions)
+    - "Compliance Hold" (no deletion, archive only)
+  - **Exclusions**: Path-based rules
+    - "Keep /thumbnails/ in Standard always"
+    - "Exclude /temp/ from lifecycle (manual deletion)"
+- **Cost Impact Simulator**:
+  - Before: $X/month
+  - After Month 1: $Y/month (policies take effect)
+  - After Month 3: $Z/month (steady state)
+  - Annual savings: $AAA
+- **Next Button**: "Preview & Apply"
+
+#### Step 4: Pre-Application Review
+- **Header**: "Review Lifecycle Changes"
+- **Summary Table**:
+  - Bucket | Objects Affected | Current Cost | New Cost | Savings | Policy Actions
+- **Warnings/Alerts**:
+  - "X objects will become archived (retrieval fees apply if accessed)"
+  - "Bucket Y has deletion rule - ensure compliance team approval"
+- **Simulation Mode**:
+  - "Test run this policy on sample data?"
+  - Shows what would have happened if applied 90 days ago
+- **Approval Routing**: If required, shows who will approve
+- **Apply Options**:
+  - Apply now (immediate effect)
+  - Schedule for maintenance window
+  - Staged rollout (10% of buckets, then review, then all)
+- **Next Button**: "Apply Policies"
+
+#### Step 5: Application & Monitoring
+- **Header**: "Applying Lifecycle Policies"
+- **Progress**:
+  - Bucket-by-bucket application status
+  - "Policy applied to bucket-X (12/15)"
+- **Post-Application Dashboard**:
+  - Policies active: X buckets
+  - Objects in transition: Y
+  - Estimated time to savings: Z days
+- **Monitoring Setup**:
+  - "Enable weekly email reports on policy effectiveness?"
+  - "Set alert if storage costs increase unexpectedly?"
+- **Next Steps**:
+  - "Check back in 30 days to verify savings"
+  - "Review access logs for any retrieval patterns"
+- **Finish Button**: Return to S3 tab
+
+---
+
+### **Wizard 3: RDS Multi-AZ Removal Wizard**
+
+**Entry Point:** "Optimize Multi-AZ" button on RDS tab
+
+#### Step 1: Database Risk Assessment
+- **Header**: "Multi-AZ Analysis"
+- **Auto-Categorization**:
+  - **Safe to Disable** (green section):
+    - Databases tagged dev/test/staging
+    - No active connections in 30 days
+    - Backup snapshots enabled
+    - List with checkboxes (pre-selected)
+  - **Needs Review** (yellow section):
+    - Production tag but internal tools
+    - Low connection count
+    - No formal SLA
+    - List with checkboxes (not pre-selected)
+  - **Keep Multi-AZ** (red section):
+    - Production customer-facing
+    - High traffic
+    - PCI/HIPAA compliance tags
+    - List (disabled checkboxes, informational only)
+- **Manual Override**: Button to move database between categories
+- **Next Button**: "Analyze X Databases"
+
+#### Step 2: Impact Analysis
+- **Header**: "Removal Impact Assessment"
+- **For Each Selected Database**:
+  - **Database Card**:
+    - Name + engine + instance class
+    - Current cost: $X/month (Primary: $Y, Standby: $Z)
+    - Environment tag
+  - **Pre-Flight Checks** (automated):
+    - ✅ Automated backups enabled (RPO: X hours)
+    - ✅ Point-in-time recovery active
+    - ✅ No active connections during proposed window
+    - ✅ Replica lag: 0 seconds (healthy)
+    - ⚠ Last failover: Never / 365+ days ago (Multi-AZ unused)
+  - **Risk Score**: Low / Medium / High (with explanation)
+  - **Estimated Downtime**: 2-3 minutes during restart
+  - **Savings**: $Z/month (50% reduction)
+- **Aggregate Summary**:
+  - Total databases to modify: X
+  - Total monthly savings: $Y
+  - Total expected downtime: Z minutes
+- **Next Button**: "Schedule Changes"
+
+#### Step 3: Scheduling & Notifications
+- **Header**: "Schedule Multi-AZ Removal"
+- **Timing Options**:
+  - **Immediate**: Apply changes now (with confirmation)
+  - **Maintenance Window**: Use existing DB maintenance window
+    - Shows next window: "Sunday 2:00 AM UTC (in 3 days)"
+    - Option to modify window
+  - **Custom Schedule**: Date + time picker
+- **Staggered Rollout**:
+  - "Disable 25% of databases, wait 1 week, then continue?"
+  - Checkbox to enable
+- **Notification Setup**:
+  - Email: Database owner (auto-detected from tags)
+  - Slack/Teams: Select channels
+  - ServiceNow/Jira: Auto-create change ticket
+  - Pre-populated templates with customization
+- **Rollback Plan**:
+  - **Automatic Re-enable Triggers**:
+    - Checkbox: "Re-enable if downtime exceeds 10 minutes in 7 days"
+    - Checkbox: "Re-enable if connection failures spike"
+    - Checkbox: "Allow manual re-enable request from team lead"
+- **Next Button**: "Confirm & Schedule"
+
+#### Step 4: Confirmation & Execution
+- **Header**: "Review Scheduled Changes"
+- **Change Summary Table**:
+  - Database | Environment | Current Multi-AZ | New Multi-AZ | Savings | Schedule | Notifications
+- **Final Confirmation Checklist**:
+  - [ ] I understand database will restart (2-3 min downtime)
+  - [ ] I have notified stakeholders
+  - [ ] I have verified backup status
+  - [ ] I accept rollback plan terms
+- **Execution Options**:
+  - "Schedule Changes" (green button)
+  - "Save as Draft" (gray button)
+  - "Cancel" (link)
+
+#### Step 5: Monitoring & Results
+- **Header**: "Multi-AZ Removal Progress"
+- **Timeline View**:
+  - Shows scheduled execution time
+  - Real-time updates during execution
+- **Live Status Panel** (during execution):
+  - Database name
+  - Status: "Preparing..." → "Disabling Multi-AZ..." → "Restarting..." → "Complete"
+  - Progress bar
+  - Time elapsed / estimated remaining
+- **Post-Execution Dashboard** (after completion):
+  - **30-Day Trial Metrics**:
+    - Uptime: 99.97%
+    - Incidents: 1 (planned maintenance)
+    - Avg response time: 42ms (no change)
+    - Connection errors: 0
+  - **Savings Tracker**:
+    - Days since change: 15
+    - Savings so far: $110
+    - Projected annual: $2,640
+  - **Health Status**: ✅ No issues detected
+- **Actions**:
+  - "Make Permanent" (removes trial monitoring)
+  - "Re-enable Multi-AZ" (rollback)
+  - "Extend Trial Period"
+- **Finish Button**: Return to RDS tab
+
+---
+
+### **Wizard 4: Data Transfer Optimization Wizard**
+
+**Entry Point:** "Optimize Transfer" button on Data Transfer tab
+
+#### Step 1: Traffic Pattern Discovery
+- **Header**: "Analyzing Data Transfer Patterns"
+- **Auto-Scan Process** (with progress indicators):
+  - Collecting VPC Flow Logs (last 30 days)
+  - Analyzing NAT Gateway metrics
+  - Identifying cross-region traffic
+  - Detecting public S3 access patterns
+  - Mapping service endpoints
+- **Findings Dashboard**:
+  - **High-Cost Flows** (Top 10):
+    - Source → Destination
+    - Volume (TB)
+    - Cost
+    - Transfer type (Internet/Cross-Region/NAT)
+  - **Pattern Categories**:
+    - NAT Gateway overuse: X GB to services with VPC endpoints available
+    - Cross-region calls: Y GB between regions
+    - Direct S3 egress: Z GB without CloudFront
+    - Inefficient routing: Other
+- **Select Issues to Address**: Checkboxes with pre-selection based on ROI
+- **Next Button**: "Generate Solutions"
+
+#### Step 2: Solution Recommendations
+- **Header**: "Transfer Optimization Opportunities"
+- **Prioritized Recommendation Cards**:
+
+  **Card Format** (one per opportunity):
+  - **Title**: "Create S3 VPC Endpoint" (or other solution)
+  - **Current State**:
+    - "8.2 TB/month to S3 via NAT Gateway"
+    - Cost breakdown: NAT processing $369 + egress $XXX
+  - **Proposed Solution**:
+    - "Deploy S3 Gateway Endpoint to VPC"
+    - Visual diagram: Current flow vs. Optimized flow
+  - **Impact Metrics**:
+    - Cost: $369/month → $0 (100% savings)
+    - Performance: 40% faster (no NAT hop)
+    - Implementation time: 5 minutes
+    - Risk: None (no downtime)
+  - **Effort Badge**: Low / Medium / High
+  - **Prerequisites**: "Requires VPC admin access"
+  - **Implementation Button**: "Apply This Fix"
+  - **Dismiss/Skip Option**
+
+  **Common Recommendation Types**:
+  1. Create VPC Endpoints (S3, DynamoDB, ECR, etc.)
+  2. Enable CloudFront for S3 buckets
+  3. Migrate resources to same region
+  4. Configure S3 Transfer Acceleration
+  5. Replace NAT Gateway with NAT Instance (if low traffic)
+  6. Use PrivateLink for cross-account access
+
+- **Selection**: User can multi-select recommendations to batch apply
+- **Total Impact Calculation**:
+  - Combined savings: $X/month
+  - One-time costs: $Y (if any)
+  - Payback period: Z days
+- **Next Button**: "Review Implementation Plan"
+
+#### Step 3: Implementation Planning
+- **Header**: "Data Transfer Optimization Plan"
+- **Dependency Resolution**:
+  - Auto-detects if some changes depend on others
+  - Shows sequence: "Step 1 → Step 2 → Step 3"
+  - Parallel execution where possible
+- **For Each Selected Optimization**:
+  - **Action Card**:
+    - What will be created/modified
+    - Affected resources (EC2 instances, route tables, etc.)
+    - Configuration details
+  - **Terraform/CloudFormation Preview**:
+    - Expandable code block showing infrastructure-as-code
+    - "Copy to clipboard" button
+  - **Manual Steps** (if automation not available):
+    - Numbered instruction list
+    - Screenshots/diagrams where helpful
+- **Execution Options**:
+  - **Automated**: "Apply via API" (where supported)
+  - **Semi-Automated**: "Generate CloudFormation stack"
+  - **Manual Guidance**: "Step-by-step instructions"
+- **Testing Plan**:
+  - "Apply to 10% of traffic first"
+  - Validation checks after each step
+- **Next Button**: "Execute Optimizations"
+
+#### Step 4: Execution & Validation
+- **Header**: "Applying Transfer Optimizations"
+- **Progress Tracker**:
+  - Overall: X of Y optimizations complete
+  - Current action: "Creating VPC Endpoint for S3..."
+  - Estimated time remaining: Z minutes
+- **Live Log Stream**:
+  - Timestamped events
+  - Color-coded: Success (green), In-Progress (blue), Warning (yellow), Error (red)
+  - Example: "14:45 - VPC Endpoint vpce-123abc created successfully"
+- **Validation Tests** (auto-run after each change):
+  - Connectivity test: "EC2 can still reach S3? ✅"
+  - Performance test: "Transfer speed improved by 38%"
+  - Cost verification: "NAT traffic reduced by 95%"
+- **Rollback Controls**:
+  - "Pause" button (stops further changes)
+  - "Revert Last Change" (undo if issue detected)
+  - Auto-rollback if validation fails
+
+#### Step 5: Results & Ongoing Monitoring
+- **Header**: "Transfer Optimization Results"
+- **Immediate Impact Dashboard**:
+  - **Before/After Comparison**:
+    - Visual: Sankey diagram showing traffic flow before and after
+    - Cost reduction: $X/month → $Y/month (Z% savings)
+    - Performance improvement: Average latency reduced by W%
+  - **Changes Summary**:
+    - VPC Endpoints created: X
+    - CloudFront distributions added: Y
+    - Resources migrated: Z
+- **Savings Breakdown Table**:
+  - Optimization Type | Monthly Savings | Annual Savings | Status
+- **Monitoring Setup**:
+  - **Enable Continuous Tracking**:
+    - Checkbox: "Monitor data transfer costs weekly"
+    - Checkbox: "Alert if costs increase >10% month-over-month"
+    - Checkbox: "Track VPC endpoint usage metrics"
+  - **Baseline Establishment**:
+    - "Set current state as new baseline for future comparisons"
+- **Next Steps Recommendations**:
+  - "Review CloudWatch metrics in 7 days"
+  - "Check for new optimization opportunities monthly"
+  - "Audit application architectures for cross-region calls"
+- **Report Generation**:
+  - Download detailed PDF with:
+    - Before/after architecture diagrams
+    - Cost analysis
+    - Implementation log
+    - Recommendations for future
+- **Finish Button**: Return to Data Transfer tab (with refreshed data)
+
+---
+
+## **SECTION 6: Global Features Across All Tabs**
+
+### Comparison Mode
+**Toggle in header:** "Compare Scans"
+- Select two scan timestamps from dropdown
+- Table shows side-by-side comparison:
+  - New resources (highlighted green)
+  - Removed resources (highlighted red)
+  - Changed resources (highlighted yellow with diff indicator)
+- Metrics show delta: "↑ $150" or "↓ 23 resources"
+
+### Export & Reporting Suite
+
+**Report Generator Modal:**
+- **Report Type Selection**:
+  - Executive Summary (high-level metrics + charts)
+  - Technical Detail (full resource list + recommendations)
+  - Compliance Report (tag compliance + policy violations)
+  - Cost Optimization Roadmap (prioritized opportunities)
+- **Filters**: 
+  - Date range
+  - Accounts
+  - Resource categories
+  - Minimum cost threshold
+- **Format Options**: PDF / Excel / CSV / JSON
+- **Scheduling**: 
+  - One-time download
+  - Weekly email delivery
+  - Monthly report to stakeholders
+- **Branding**: 
+  - Include company logo
+  - Custom report title
+
+### Saved Views & Presets
+
+**Filter Preset Manager:**
+- **Save Current Filters As**: Name + description
+- **Saved Presets List**:
+  - "High-Value Targets" (cost >$100, safe to delete)
+  - "Quick Wins" (compliant + no dependencies)
+  - "Compliance Violations" (untagged resources)
+  - Custom user-created presets
+- **Share Presets**: Generate shareable link for team
+- **Schedule Preset**: "Run 'High-Value Targets' filter weekly and email results"
+
+### Collaboration Features
+
+**Resource Annotation System:**
+- Add comment to any resource: "Checked with dev team, safe to delete after Friday deployment"
+- @mention team members: Sends notification
+- Comment thread per resource (preserved across scans)
+- Status flags: "Under Review", "Approved for Cleanup", "Escalated"
+
+**Assignment Workflow:**
+- Select resources → "Assign to" button
+- Choose team member from list
+- Set due date
+- Add instructions
+- Assignee receives task in notification center
+- Track assignment completion in dashboard
+
+---
+
+## **SECTION 7: Contextual Help & Education**
+
+### In-Context Learning
+
+**Tooltip System:**
+- Hover over any metric: Shows definition + calculation method
+- Click "?" icon: Opens detailed explanation modal with:
+  - What this metric means
+  - Why it matters
+  - How to improve it
+  - Related AWS documentation links
+
+**Empty State Education:**
+- When no resources found in category:
+  - "No orphaned volumes detected - here's what we checked:"
+  - Bullet list of validation criteria
+  - "Best practices to prevent future waste" section
+  - Link to setup guide for automated scanning
+
+**First-Time User Onboarding:**
+- **Welcome Tour** (dismissible):
+  - Step 1: "This is your waste overview" (highlights hero metrics)
+  - Step 2: "Filter by category" (highlights tabs)
+  - Step 3: "Take action on resources" (highlights table actions)
+  - Step 4: "Run optimization wizards" (highlights wizard buttons)
+- **Progress Checklist**:
+  - [ ] Complete first scan
+  - [ ] Authorize safe resources
+  - [ ] Run cleanup on 5 items
+  - [ ] Create filter preset
+  - [ ] Schedule recurring scan
+
+### Recommendation Explanations
+
+**"Why am I seeing this?" Links:**
+- Next to each flagged resource
+- Opens modal with:
+  - Detection criteria (e.g., "Volume unattached for 45 days")
+  - AWS best practices reference
+  - Cost impact calculation details
+  - Alternative considerations
+  - "Mark as false positive" option with reason field
+
+---
+
+## **SECTION 8: Performance & Loading States**
+
+### Progressive Loading Strategy
+
+**Hero Metrics First:**
+- Load summary cards immediately (cached data)
+- Show skeleton loaders for charts while data fetches
+- Category tabs load counts in background (don't block UI)
+
+**Table Virtualization:**
+- Only render visible rows (50 at a time)
+- Lazy load more as user scrolls
+- "Load All" button if user needs full dataset
+
+**Chart Streaming:**
+- Start rendering chart with partial data
+- Update as more data arrives
+- Smooth transition animations
+
+### Loading Indicators
+
+**Skeleton Screens:**
+- Replace spinners with content-shaped placeholders
+- Pulsing animation to indicate loading
+- Maintains layout stability (no shifting)
+
+**Progress Indicators:**
+- During scan: "Scanning region 3 of 12... 42% complete"
+- During bulk action: "Processing 15 of 47 resources..."
+- Time estimate: "~2 minutes remaining"
+
+**Timeout Handling:**
+- If operation >10 seconds: "This is taking longer than usual... still working"
+- If operation >60 seconds: "Large dataset detected. Results will be cached for faster access next time."
+- Offer to email results when complete
+
+---
+
+## **SECTION 9: Error States & Validation**
+
+### Error Handling
+
+**Graceful Degradation:**
+- If scan fails for one region: Show partial results + warning banner
+  - "Unable to scan us-west-2 (permission denied). Showing results for other regions."
+- If cost data unavailable: Show resource counts without cost estimates
+  - "Cost calculation temporarily unavailable. Contact support."
+
+**Actionable Error Messages:**
+- **Bad**: "Error 403"
+- **Good**: "Access Denied: Your AWS credentials don't have permission to describe volumes. Grant ec2:DescribeVolumes permission and try again. [View IAM Policy]"
+
+**Retry Mechanisms:**
+- Automatic retry for transient failures (with exponential backoff)
+- Manual retry button for user-initiated actions
+- "Report Issue" button with pre-populated diagnostic info
+
+### Validation
+
+**Pre-Action Validation:**
+- Before cleanup: Check resource still exists (prevent stale data issues)
+- Before bulk action: Confirm user has permission for all selected resources
+- Before wizard: Validate prerequisites (e.g., VPC Flow Logs enabled)
+
+**Confirmation Dialogs:**
+- For destructive actions: Require typing resource ID or "DELETE" to confirm
+- Show impact preview: "This will delete 23 snapshots totaling 1.2 TB"
+- Remember choice checkbox: "Don't ask again for safe resources"
+
+---
+
+## **SECTION 10: Accessibility & Responsiveness**
+
+### Keyboard Navigation
+- **Tab order** follows logical flow: Filters → Tabs → Table → Actions
+- **Shortcuts**:
+  - `/` - Focus search
+  - `s` - Trigger scan
+  - `r` - Refresh current view
+  - `Esc` - Close modals/drawers
+  - `Ctrl+A` - Select all visible
+  - Arrow keys - Navigate table rows
+
+### Screen Reader Support
+- All charts have accessible data table fallback
+- Table headers properly associated
+- Button labels descriptive ("Delete 5 selected volumes" not just "Delete")
+- ARIA live regions announce dynamic updates
+
+### Responsive Breakpoints
+
+**Desktop (>1200px)**: Full multi-column layout as described
+
+**Tablet (768-1200px)**:
+- Hero metrics: 2x2 grid instead of 4 columns
+- Visualizations: Full width, stack vertically
+- Table: Horizontal scroll enabled, pinned columns
+- Wizards: Narrower modals, maintain step flow
+
+**Mobile (<768px)**:
+- Hero metrics: Single column, swipeable cards
+- Tabs: Horizontal scrollable pills
+- Table: Convert to card list:
+  - Each resource as expandable card
+  - Key info visible, tap to expand
+  - Swipe gestures: Left = Actions menu, Right = Select
+- Filters: Bottom sheet modal
+- Wizards: Full-screen modals, simplified layouts
+
+---
+
+This comprehensive specification provides a professional, analytics-driven Resource Hygiene platform that balances powerful functionality with intuitive user experience, enabling enterprise teams to efficiently manage cloud waste while maintaining governance and safety.
