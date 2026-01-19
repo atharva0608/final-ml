@@ -6,6 +6,9 @@ from backend.core.dependencies import get_db, get_current_user, verify_tenant_ac
 from backend.services.cleanup_service import CleanupService
 from backend.schemas.cleanup_schemas import CleanupSummary, CleanupAction
 from backend.models.user import User
+import logging
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/cleanup",
@@ -29,6 +32,7 @@ def scan_resources(
     try:
         return service.scan_resources(account_id, regions, organization=current_user.organization, force_refresh=force_refresh)
     except Exception as e:
+        logger.exception(f"Scan failed for account {account_id}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/check-dependencies")
@@ -69,5 +73,24 @@ def execute_cleanup_action(
         if result.get("status") == "pending_approval":
             return Response(status_code=202, content=result, media_type="application/json")
         return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/discover")
+def discover_resources(
+    account_id: str = Query(...),
+    resource_type: str = Query(...),
+    region: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Resource Discovery for JIT Tickets.
+    Allows searching for Resource IDs by type (INSTANCE, VOLUME, RDS_DB).
+    """
+    service = CleanupService(db)
+    try:
+        return service.get_discoverable_resources(account_id, resource_type, region)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

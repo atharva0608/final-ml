@@ -1,24 +1,33 @@
 import React, { useState, useEffect } from 'react';
 import { ticketsAPI } from '../../services/api';
 import { formatDistanceToNow } from 'date-fns';
+import { useAuthStore } from '../../store/useStore';
 
 const ActiveWindowBanner = () => {
     const [ticket, setTicket] = useState(null);
+    const { isAuthenticated, accessToken } = useAuthStore();
 
     const checkWindow = async () => {
+        if (!isAuthenticated || !accessToken) return;
+
         try {
             const res = await ticketsAPI.getActiveWindow();
             setTicket(res.data); // Null or ticket object
         } catch (err) {
-            console.error("Failed to check active window", err);
+            // Silently handle 401s as they are caught by the global interceptor
+            if (err.response?.status !== 401) {
+                console.error("Failed to check active window", err);
+            }
         }
     };
 
     useEffect(() => {
-        checkWindow();
-        const interval = setInterval(checkWindow, 60000); // Check every minute
-        return () => clearInterval(interval);
-    }, []);
+        if (isAuthenticated && accessToken) {
+            checkWindow();
+            const interval = setInterval(checkWindow, 60000); // Check every minute
+            return () => clearInterval(interval);
+        }
+    }, [isAuthenticated, accessToken]);
 
     if (!ticket) return null;
 

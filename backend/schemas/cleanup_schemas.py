@@ -25,6 +25,7 @@ class CleanupStatus(str, Enum):
     SAFE_TO_DELETE = "SAFE_TO_DELETE"
     RISK = "RISK" # For IAM Keys
     LEGACY_UPGRADE = "LEGACY_UPGRADE" # For Feature 5
+    NOT_COMPLIANT = "NOT_COMPLIANT"
 
 class ResourceItem(BaseModel):
     id: str

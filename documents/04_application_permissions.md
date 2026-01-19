@@ -180,6 +180,39 @@ def require_execution_access(user: User):
 | View all org tickets | ✅ | ✅ | ❌ | ❌ | See full ticket history | Low |
 | View team tickets | ✅ | ✅ | ✅ | ❌ | See team ticket history | Low |
 | View own tickets | ✅ | ✅ | ✅ | ✅ | Personal ticket history | Low |
+| **Discover Resources** | ✅ | ✅ | ✅ | ✅ | Find Resource IDs for JIT requests | Low |
+
+#### 3.6.1 Supported JIT Action Types
+
+When creating an ACTION ticket, users must specify an `action_type` and `resource_id`. Below are the supported actions:
+
+| Action Type | Resource ID Format | Description | Example Resource ID |
+|:------------|:-------------------|:------------|:--------------------|
+| `TERMINATE_INSTANCE` | EC2 Instance ID | Terminate an EC2 instance | `i-0a1b2c3d4e5f6g7h8` |
+| `DELETE_VOLUME` | EBS Volume ID | Delete an EBS volume | `vol-0a1b2c3d4e5f6g7h8` |
+| `DELETE_SNAPSHOT` | Snapshot ID | Delete an EBS snapshot | `snap-0a1b2c3d4e5f6g7h8` |
+| `RELEASE_IP` | Allocation ID | Release an Elastic IP | `eipalloc-0a1b2c3d4e` |
+| `STOP_RDS` | DB Instance ID | Stop an RDS instance | `my-database-prod` |
+| `DELETE_RDS` | DB Instance ID | Delete an RDS instance | `my-database-staging` |
+| `DELETE_AMI` | AMI ID | Deregister an AMI | `ami-0a1b2c3d4e5f6g7h8` |
+
+#### 3.6.2 Resource Discovery
+
+Users can use the **🔍 Discover** button in the JIT Request Modal to find valid Resource IDs:
+
+1. Select a **Target Account** from the dropdown
+2. Enter an **Action Name** (e.g., `TERMINATE_INSTANCE`)
+3. Click **🔍 Discover** to search for matching resources
+4. Select a resource from the results to auto-fill the Resource ID
+
+The discovery API (`GET /api/v1/cleanup/discover`) maps action types to resource types:
+
+| Action Contains | Resource Type Searched |
+|:----------------|:----------------------|
+| `INSTANCE`, `TERMINATE` | EC2 Instances |
+| `VOLUME` | EBS Volumes |
+| `SNAPSHOT` | EBS Snapshots |
+| `RDS`, `DATABASE` | RDS Instances |
 
 ### 3.7 Audit & Compliance
 
@@ -387,6 +420,8 @@ graph LR
 | `/api/v1/organization/connection-info` | GET | AWS connection params |
 | `/api/v1/clusters/` | GET | List clusters |
 | `/api/v1/cleanup/scan` | POST | Scan for resources |
+| `/api/v1/cleanup/discover` | GET | Discover resources for JIT requests |
+| `/api/v1/templates/options` | GET | Get dynamic template options (families, disk types) |
 | `/api/v1/ri/overview` | GET | RI Analysis summary |
 | `/api/v1/s3/overview` | GET | S3 Analysis summary |
 | `/api/v1/rds/overview` | GET | RDS Analysis summary |
@@ -413,6 +448,8 @@ graph LR
 | Org External ID | ✅ | ✅ | ✅ | Standardized AWS trust |
 | Credential Encryption | ✅ | ✅ | - | Fernet encryption |
 | Cost Optimization (4 Features) | ✅ | ✅ | ✅ | RI, S3, RDS, Transfer Analysis (Models, Services, API, UI) |
+| **Resource Discovery** | ✅ | ✅ | ✅ | `GET /api/v1/cleanup/discover` - Find resource IDs for JIT |
+| **Dynamic Template Options** | ✅ | ✅ | ✅ | `GET /api/v1/templates/options` - Dynamic disk types, architectures |
 
 ### 8.2 Partially Implemented
 

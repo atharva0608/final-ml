@@ -60,10 +60,22 @@ class AdminService:
                 id=user.id, email=user.email,
                 organization_name=user.organization.name if user.organization else None,
                 is_active=user.is_active == "Y", created_at=user.created_at, last_login=None,
-                total_clusters=stats.total_clusters, total_instances=stats.total_instances, total_cost=stats.total_cost
+                total_clusters=stats.total_clusters, total_instances=stats.total_instances, total_cost=stats.total_cost,
+                # Frontend aliases
+                account_count=stats.total_accounts,
+                cluster_count=stats.total_clusters,
+                instance_count=stats.total_instances,
+                monthly_cost=stats.total_cost
             ))
         
-        return ClientList(clients=client_summaries, total=total, page=filters.page, page_size=filters.page_size)
+        return ClientList(
+            clients=client_summaries, 
+            total=total, 
+            total_count=total,
+            total_pages=max(1, (total + filters.page_size - 1) // filters.page_size),
+            page=filters.page, 
+            page_size=filters.page_size
+        )
 
     def get_client_details(self, requesting_user: User, client_id: str) -> UserManagement:
         self.verify_super_admin(requesting_user)

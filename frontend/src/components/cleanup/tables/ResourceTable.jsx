@@ -89,8 +89,20 @@ const ResourceTable = ({
                                                 {getIcon(resource.type)}
                                             </div>
                                             <div className="ml-4">
-                                                <div className="text-sm font-medium text-gray-900 font-mono">{resource.id}</div>
-                                                <div className="text-sm text-gray-500">{resource.name || resource.type}</div>
+                                                <div className="text-sm font-medium text-gray-900 font-mono">
+                                                    {resource.name && resource.name !== "Unknown" ? resource.name : resource.id}
+                                                </div>
+                                                <div className="text-sm text-gray-500 flex items-center gap-2">
+                                                    <span>{resource.type}</span>
+                                                    {resource.metadata?.State && (
+                                                        <span className={`px-1.5 py-0.5 rounded text-[10px] uppercase font-bold tracking-wide ${resource.metadata.State === 'running' ? 'bg-green-100 text-green-700' :
+                                                                resource.metadata.State === 'stopped' ? 'bg-red-100 text-red-700' :
+                                                                    'bg-gray-100 text-gray-700'
+                                                            }`}>
+                                                            {resource.metadata.State}
+                                                        </span>
+                                                    )}
+                                                </div>
                                             </div>
                                         </div>
                                     </td>

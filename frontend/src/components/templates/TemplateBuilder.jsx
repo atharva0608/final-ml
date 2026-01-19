@@ -2,22 +2,29 @@ import React, { useState, useEffect } from 'react';
 import { Card, Button, Input } from '../shared';
 import { FiSave, FiX, FiCpu, FiHardDrive, FiActivity, FiTag, FiAlertCircle } from 'react-icons/fi';
 import toast from 'react-hot-toast';
+import { templatesAPI } from '../../services/api';
 
 const TemplateBuilder = ({ template, onSave, onCancel }) => {
     const [activeTab, setActiveTab] = useState('compute');
+    const [options, setOptions] = useState({
+        families: [],
+        architectures: [],
+        disk_types: [],
+        strategies: []
+    });
 
     const [formData, setFormData] = useState({
         name: '',
         description: '',
         // Compute
-        architecture: 'amd64',
+        architecture: 'x86_64',
         os: 'linux',
-        instance_families: ['c5', 'm5', 'r5'],
+        instance_families: [],
         excluded_families: [],
         min_cpu: 2,
         min_memory: 4,
         // Storage
-        root_volume_type: 'gp3',
+        root_volume_type: 'GP3',
         root_volume_size: 20,
         root_volume_iops: 3000,
         root_volume_throughput: 125,
@@ -27,20 +34,38 @@ const TemplateBuilder = ({ template, onSave, onCancel }) => {
         // Kubernetes
         taints: [],
         labels: {},
-        user_data: ''
+        user_data: '',
+        strategy: 'BALANCED'
     });
 
     useEffect(() => {
-        if (template) {
-            setFormData({
-                ...formData,
-                ...template // Merge existing template data
-            });
-        }
+        const fetchOptions = async () => {
+            try {
+                const response = await templatesAPI.getOptions();
+                setOptions(response.data);
+                // Initialize instance_families if creating new
+                if (!template) {
+                    setFormData(prev => ({
+                        ...prev,
+                        instance_families: response.data.families.slice(0, 5)
+                    }));
+                }
+            } catch (error) {
+                console.error('Failed to fetch template options', error);
+                toast.error('Failed to load configuration options');
+            }
+        };
+        fetchOptions();
     }, [template]);
 
-    // Mock Data
-    const families = ['t3', 'm5', 'c5', 'r5', 'g4dn', 'p3', 'i3', 'z1d'];
+    useEffect(() => {
+        if (template) {
+            setFormData(prev => ({
+                ...prev,
+                ...template // Merge existing template data
+            }));
+        }
+    }, [template]);
 
     const handleSave = (e) => {
         e.preventDefault();
@@ -147,8 +172,12 @@ const TemplateBuilder = ({ template, onSave, onCancel }) => {
                                             onChange={e => setFormData({ ...formData, architecture: e.target.value })}
                                             className="w-full form-select rounded-lg border-gray-300"
                                         >
-                                            <option value="amd64">AMD64 (x86_64)</option>
-                                            <option value="arm64">ARM64 (Graviton)</option>
+                                            {options.architectures.map(arch => (
+                                                <option key={arch} value={arch}>{arch === 'x86_64' ? 'x86_64 (Intel/AMD)' : 'arm64 (AWS Graviton)'}</option>
+                                            ))}
+                                            {options.architectures.length === 0 && (
+                                                <option value={formData.architecture}>{formData.architecture}</option>
+                                            )}
                                         </select>
                                     </div>
                                     <div>
@@ -167,7 +196,7 @@ const TemplateBuilder = ({ template, onSave, onCancel }) => {
                                 <div>
                                     <label className="block text-sm font-medium text-gray-700 mb-2">Allowed Families</label>
                                     <div className="grid grid-cols-4 gap-3">
-                                        {families.map(fam => (
+                                        {options.families.map(fam => (
                                             <label key={fam} className="flex items-center space-x-2 p-2 border rounded hover:bg-gray-50 cursor-pointer">
                                                 <input
                                                     type="checkbox"
@@ -183,6 +212,11 @@ const TemplateBuilder = ({ template, onSave, onCancel }) => {
                                                 <span className="text-sm font-medium uppercase">{fam}</span>
                                             </label>
                                         ))}
+                                        {options.families.length === 0 && (
+                                            <div className="col-span-4 py-4 text-center text-gray-400 animate-pulse">
+                                                Loading instance families...
+                                            </div>
+                                        )}
                                     </div>
                                 </div>
 
@@ -215,10 +249,12 @@ const TemplateBuilder = ({ template, onSave, onCancel }) => {
                                             onChange={e => setFormData({ ...formData, root_volume_type: e.target.value })}
                                             className="w-full form-select rounded-lg border-gray-300"
                                         >
-                                            <option value="gp2">GP2 (General Purpose)</option>
-                                            <option value="gp3">GP3 (General Purpose)</option>
-                                            <option value="io1">IO1 (Provisioned IOPS)</option>
-                                            <option value="io2">IO2 (Provisioned IOPS)</option>
+                                            {options.disk_types.map(dt => (
+                                                <option key={dt} value={dt}>{dt} (General Purpose)</option>
+                                            ))}
+                                            {options.disk_types.length === 0 && (
+                                                <option value={formData.root_volume_type}>{formData.root_volume_type}</option>
+                                            )}
                                         </select>
                                     </div>
                                     <Input

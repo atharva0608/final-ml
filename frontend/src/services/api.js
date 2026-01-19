@@ -25,10 +25,19 @@ api.interceptors.request.use(
     }
 );
 
-// Add a response interceptor for Global Error Handling (JIT Governance)
+// Add a response interceptor for Global Error Handling
 api.interceptors.response.use(
     (response) => response,
     (error) => {
+        // Handle 401 Unauthorized (Expired token or missing auth)
+        if (error.response && error.response.status === 401) {
+            // Clear local storage and redirect if not already on login page
+            if (!window.location.pathname.includes('/login')) {
+                localStorage.clear();
+                window.location.href = '/login';
+            }
+        }
+
         // Check for JIT Logic Interception (403 + detail flag)
         if (error.response && error.response.status === 403) {
             const data = error.response.data;
@@ -144,6 +153,7 @@ export const templateAPI = {
     update: (id, data) => api.put(`/api/v1/templates/${id}`, data),
     delete: (id) => api.delete(`/api/v1/templates/${id}`),
     setDefault: (id) => api.post(`/api/v1/templates/${id}/set-default`),
+    getOptions: () => api.get('/api/v1/templates/options'),
 };
 export const templatesAPI = templateAPI;
 
@@ -212,6 +222,9 @@ export const cleanupAPI = {
     execute: (payload, accountId) => api.post(`/api/v1/cleanup/action?account_id=${accountId}`, payload),
     checkDependencies: (accountId, resourceType, resourceId, region) => api.get('/api/v1/cleanup/check-dependencies', {
         params: { account_id: accountId, resource_type: resourceType, resource_id: resourceId, region }
+    }),
+    discover: (accountId, resourceType, region) => api.get('/api/v1/cleanup/discover', {
+        params: { account_id: accountId, resource_type: resourceType, region }
     }),
 };
 

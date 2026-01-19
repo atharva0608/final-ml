@@ -3,6 +3,7 @@ import logging
 from typing import List, Dict, Any, Optional
 from sqlalchemy.orm import Session
 from botocore.exceptions import ClientError
+from datetime import datetime, timezone
 
 from backend.models.account import Account
 from backend.models.instance import Instance
@@ -1179,5 +1180,74 @@ class CleanupService:
         if action_data.action_type == CleanupActionType.AUTHORIZE:
             # Mark instances as authorized in DB
             pass # Implementation dependent on DB model changes which we might skip for this task if strict
+
+    def get_discoverable_resources(self, account_id: str, resource_type: str, region: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        List resources of a specific type in an account/region for JIT discovery.
+        This allows users to find Resource IDs (e.g., Instance IDs) when creating tickets.
+        """
+        account = self.db.query(Account).filter(Account.aws_account_id == account_id).first()
+        if not account:
+            # Try searching by ID if aws_account_id is not provided
+            account = self.db.query(Account).filter(Account.id == account_id).first()
+            if not account:
+                raise Exception(f"Account {account_id} not found")
+
+        # Use ALL regions if none provided
+        regions_to_scan = [region] if region and region != 'ALL' else self._get_all_regions(self._get_platform_session())
+        
+        discovered = []
+        
+        for r_name in regions_to_scan:
+            try:
+                session = self._get_account_session(account, r_name)
+                
+                if resource_type.upper() == ResourceType.INSTANCE.value:
+                    ec2 = session.client('ec2')
+                    paginator = ec2.get_paginator('describe_instances')
+                    for page in paginator.paginate():
+                        for reservation in page['Reservations']:
+                            for instance in reservation['Instances']:
+                                name_tag = next((tag['Value'] for tag in instance.get('Tags', []) if tag['Key'] == 'Name'), "Unknown")
+                                discovered.append({
+                                    "id": instance['InstanceId'],
+                                    "name": name_tag,
+                                    "type": "INSTANCE",
+                                    "region": r_name,
+                                    "status": instance['State']['Name']
+                                })
+                
+                elif resource_type.upper() == ResourceType.VOLUME.value:
+                    ec2 = session.client('ec2')
+                    paginator = ec2.get_paginator('describe_volumes')
+                    for page in paginator.paginate():
+                        for volume in page['Volumes']:
+                            name_tag = next((tag['Value'] for tag in volume.get('Tags', []) if tag['Key'] == 'Name'), "Unknown")
+                            discovered.append({
+                                "id": volume['VolumeId'],
+                                "name": name_tag,
+                                "type": "VOLUME",
+                                "region": r_name,
+                                "status": volume['State']
+                            })
+
+                elif resource_type.upper() == ResourceType.RDS_DB.value:
+                    rds = session.client('rds')
+                    paginator = rds.get_paginator('describe_db_instances')
+                    for page in paginator.paginate():
+                        for db in page['DBInstances']:
+                            discovered.append({
+                                "id": db['DBInstanceIdentifier'],
+                                "name": db.get('DBInstanceIdentifier', 'Unknown'),
+                                "type": "RDS_DB",
+                                "region": r_name,
+                                "status": db['DBInstanceStatus']
+                            })
+
+            except Exception as e:
+                logger.error(f"Discovery error in {r_name} for {resource_type}: {e}")
+                continue
+
+        return discovered
         
 

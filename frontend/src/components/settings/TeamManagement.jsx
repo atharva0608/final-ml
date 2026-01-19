@@ -371,7 +371,7 @@ const TeamManagement = () => {
                         </div>
                     </div>
 
-                    <div className="bg-white rounded-lg border border-gray-200 overflow-hidden shadow-sm">
+                    <div className="bg-white rounded-lg border border-gray-200 shadow-sm">
                         <table className="min-w-full divide-y divide-gray-200">
                             <thead className="bg-gray-50">
                                 <tr>
@@ -418,7 +418,7 @@ const TeamManagement = () => {
                                                         <FiMoreVertical className="w-5 h-5" />
                                                     </button>
                                                     {openDropdown === member.id && (
-                                                        <div className="absolute right-0 mt-1 w-48 bg-white rounded-lg shadow-lg border z-10 py-1">
+                                                        <div className="absolute right-0 mt-1 w-48 bg-white rounded-lg shadow-lg border z-50 py-1">
                                                             <button onClick={() => { setSelectedMember(member); setEditMemberRole(member.role); setAssignmentType('ROLE'); setShowEditModal(true); setOpenDropdown(null); }}
                                                                 className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2">
                                                                 <FiEdit2 className="w-4 h-4" /> Configure Access

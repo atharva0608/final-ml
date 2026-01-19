@@ -1,11 +1,67 @@
 import React, { useState, useEffect } from 'react';
 import { useAuthStore } from '../../store/useStore';
-import { organizationAPI, ticketsAPI } from '../../services/api';
+import { organizationAPI, ticketsAPI, cleanupAPI, accountsAPI } from '../../services/api';
 import { Button } from '../shared';
 import toast from 'react-hot-toast';
 
 const TicketRequestModal = ({ isOpen, onClose, initialData }) => {
     const { user } = useAuthStore();
+    const [accounts, setAccounts] = useState([]);
+    const [selectedAccountId, setSelectedAccountId] = useState('');
+    const [discoveryLoading, setDiscoveryLoading] = useState(false);
+    const [discoveredResources, setDiscoveredResources] = useState([]);
+    const [showDiscovery, setShowDiscovery] = useState(false);
+
+    // Fetch accounts on mount
+    useEffect(() => {
+        if (isOpen) {
+            accountsAPI.list().then(res => {
+                const accts = res.data?.items || res.data || [];
+                setAccounts(accts);
+                if (accts.length > 0 && !selectedAccountId) {
+                    setSelectedAccountId(accts[0].aws_account_id || accts[0].id);
+                }
+            }).catch(err => console.error('Failed to load accounts', err));
+        }
+    }, [isOpen]);
+
+    const handleDiscover = async () => {
+        if (!selectedAccountId) {
+            toast.error("Please select an account first");
+            return;
+        }
+
+        // Map action name to resource type
+        let resourceType = 'INSTANCE';
+        const action = formData.action_type.toUpperCase();
+        if (action.includes('VOLUME')) resourceType = 'VOLUME';
+        if (action.includes('SNAPSHOT')) resourceType = 'SNAPSHOT';
+        if (action.includes('RDS') || action.includes('DATABASE')) resourceType = 'RDS_DB';
+
+        setDiscoveryLoading(true);
+        try {
+            const res = await cleanupAPI.discover(selectedAccountId, resourceType);
+            setDiscoveredResources(res.data || []);
+            setShowDiscovery(true);
+            if (res.data?.length === 0) {
+                toast.error(`No ${resourceType} resources found in this account`);
+            }
+        } catch (err) {
+            console.error('Discovery failed', err);
+            toast.error('Failed to discover resources. Make sure action name is valid.');
+        } finally {
+            setDiscoveryLoading(false);
+        }
+    };
+
+    const selectDiscovered = (res) => {
+        setFormData(prev => ({
+            ...prev,
+            resource_id: res.id,
+            reason_text: prev.reason_text || `Action ${formData.action_type} for ${res.name || res.id} (${res.region})`
+        }));
+        setShowDiscovery(false);
+    };
 
     const isOrgAdmin = user?.role === 'ORG_ADMIN' || user?.role === 'SUPER_ADMIN';
     const isTeamLead = user?.role === 'TEAM_LEAD';
@@ -208,8 +264,8 @@ const TicketRequestModal = ({ isOpen, onClose, initialData }) => {
                                             <label
                                                 key={member.id}
                                                 className={`flex items-center p-3 cursor-pointer transition-colors ${selectedRecipients.includes(member.id)
-                                                        ? 'bg-emerald-50'
-                                                        : 'hover:bg-gray-100'
+                                                    ? 'bg-emerald-50'
+                                                    : 'hover:bg-gray-100'
                                                     }`}
                                             >
                                                 <input
@@ -225,8 +281,8 @@ const TicketRequestModal = ({ isOpen, onClose, initialData }) => {
                                                     <p className="text-xs text-gray-500">{member.email}</p>
                                                 </div>
                                                 <span className={`text-xs px-2 py-0.5 rounded-full ${member.role === 'ORG_ADMIN' ? 'bg-purple-100 text-purple-700' :
-                                                        member.role === 'TEAM_LEAD' ? 'bg-blue-100 text-blue-700' :
-                                                            'bg-gray-100 text-gray-600'
+                                                    member.role === 'TEAM_LEAD' ? 'bg-blue-100 text-blue-700' :
+                                                        'bg-gray-100 text-gray-600'
                                                     }`}>
                                                     {member.role}
                                                 </span>
@@ -268,27 +324,80 @@ const TicketRequestModal = ({ isOpen, onClose, initialData }) => {
                     )}
 
                     {/* Action/Resource inputs for Manual Grant */}
-                    {isGrantMode && formData.type === 'ACTION' && (
-                        <div className="grid grid-cols-2 gap-4">
-                            <div>
-                                <label className="block text-sm font-semibold text-gray-700 mb-2">Action Name</label>
-                                <input
-                                    type="text"
-                                    className="w-full px-4 py-2.5 rounded-xl border-2 border-gray-200 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-200 transition-all text-sm"
-                                    placeholder="e.g. TERMINATE_INSTANCE"
-                                    value={formData.action_type}
-                                    onChange={e => setFormData({ ...formData, action_type: e.target.value })}
-                                />
+                    {(isGrantMode || (!isGrantMode && !initialData)) && formData.type === 'ACTION' && (
+                        <div className="space-y-4">
+                            <div className="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label className="block text-sm font-semibold text-gray-700 mb-2">Target Account</label>
+                                    <select
+                                        className="w-full px-4 py-2.5 rounded-xl border-2 border-gray-200 focus:border-indigo-500 transition-all text-sm bg-white"
+                                        value={selectedAccountId}
+                                        onChange={e => setSelectedAccountId(e.target.value)}
+                                    >
+                                        <option value="">Select Account</option>
+                                        {accounts.map(acc => (
+                                            <option key={acc.id} value={acc.aws_account_id || acc.id}>
+                                                {acc.aws_account_id} {acc.name ? `(${acc.name})` : ''}
+                                            </option>
+                                        ))}
+                                    </select>
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-semibold text-gray-700 mb-2">Action Name</label>
+                                    <input
+                                        type="text"
+                                        className={`w-full px-4 py-2.5 rounded-xl border-2 border-gray-200 ${isGrantMode ? 'focus:border-emerald-500' : 'focus:border-indigo-500'} transition-all text-sm`}
+                                        placeholder="e.g. TERMINATE_INSTANCE"
+                                        value={formData.action_type}
+                                        onChange={e => setFormData({ ...formData, action_type: e.target.value })}
+                                    />
+                                </div>
                             </div>
+
                             <div>
                                 <label className="block text-sm font-semibold text-gray-700 mb-2">Resource ID</label>
-                                <input
-                                    type="text"
-                                    className="w-full px-4 py-2.5 rounded-xl border-2 border-gray-200 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-200 transition-all text-sm"
-                                    placeholder="e.g. i-123456"
-                                    value={formData.resource_id}
-                                    onChange={e => setFormData({ ...formData, resource_id: e.target.value })}
-                                />
+                                <div className="flex space-x-2">
+                                    <input
+                                        type="text"
+                                        className={`flex-1 px-4 py-2.5 rounded-xl border-2 border-gray-200 ${isGrantMode ? 'focus:border-emerald-500' : 'focus:border-indigo-500'} transition-all text-sm font-mono`}
+                                        placeholder="e.g. i-123456"
+                                        value={formData.resource_id}
+                                        onChange={e => setFormData({ ...formData, resource_id: e.target.value })}
+                                    />
+                                    <Button
+                                        type="button"
+                                        variant="outline"
+                                        disabled={discoveryLoading || !formData.action_type}
+                                        onClick={handleDiscover}
+                                    >
+                                        {discoveryLoading ? '...' : '🔍 Discover'}
+                                    </Button>
+                                </div>
+
+                                {showDiscovery && discoveredResources.length > 0 && (
+                                    <div className="mt-2 border-2 border-gray-100 rounded-xl max-h-40 overflow-y-auto bg-gray-50 shadow-inner">
+                                        <div className="p-2 text-xs font-bold text-gray-400 uppercase tracking-widest border-b bg-gray-100/50 flex justify-between">
+                                            <span>Select identified resource</span>
+                                            <button onClick={() => setShowDiscovery(false)} className="hover:text-gray-600">close</button>
+                                        </div>
+                                        <div className="divide-y divide-gray-100">
+                                            {discoveredResources.map(res => (
+                                                <button
+                                                    key={res.id}
+                                                    type="button"
+                                                    onClick={() => selectDiscovered(res)}
+                                                    className="w-full text-left p-3 hover:bg-white transition-colors flex justify-between items-center group"
+                                                >
+                                                    <div>
+                                                        <p className="text-sm font-mono font-bold text-gray-800 group-hover:text-indigo-600">{res.id}</p>
+                                                        <p className="text-xs text-gray-500">{res.name} • {res.region} • <span className="text-emerald-500">{res.status}</span></p>
+                                                    </div>
+                                                    <div className="opacity-0 group-hover:opacity-100 transition-opacity text-indigo-500 font-bold text-xs">SELECT</div>
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
                             </div>
                         </div>
                     )}
@@ -354,8 +463,8 @@ const TicketRequestModal = ({ isOpen, onClose, initialData }) => {
                         onClick={handleSubmit}
                         disabled={loading}
                         className={`px-6 py-2.5 rounded-xl font-semibold text-white transition-all disabled:opacity-50 ${isGrantMode
-                                ? 'bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 shadow-lg shadow-emerald-200'
-                                : 'bg-gradient-to-r from-indigo-500 to-purple-600 hover:from-indigo-600 hover:to-purple-700 shadow-lg shadow-indigo-200'
+                            ? 'bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 shadow-lg shadow-emerald-200'
+                            : 'bg-gradient-to-r from-indigo-500 to-purple-600 hover:from-indigo-600 hover:to-purple-700 shadow-lg shadow-indigo-200'
                             }`}
                     >
                         {loading ? (

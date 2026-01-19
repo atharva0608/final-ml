@@ -12,6 +12,11 @@ class ClientSummary(BaseModel):
     is_active: bool = True
     created_at: datetime
     last_login: Optional[datetime] = None
+    # Frontend-expected aliases
+    account_count: int = 0
+    cluster_count: int = 0
+    instance_count: int = 0
+    monthly_cost: float = 0.0
 
 class ClientFilter(BaseModel):
     search: Optional[str] = None
@@ -64,6 +69,10 @@ class ClientListItem(ClientSummary): pass
 class ClientList(BaseModel):
     clients: List[ClientSummary]
     total: int
+    total_count: int = 0
+    total_pages: int = 1
+    page: int = 1
+    page_size: int = 50
 
 class ClientOrganization(BaseModel):
     id: str

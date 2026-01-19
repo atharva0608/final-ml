@@ -560,14 +560,73 @@ class MetricsService:
         total_cost = float(total_instances * avg_hourly_cost * hours_in_month)
         
         # 5. Calculate Waste Distribution (for Pie Chart)
-        # In production, query ResourceItem grouped by resource_type
-        # For now, generate mock data based on total_cost
-        waste_categories = [
-            {"name": "Idle Volumes", "value": round(total_cost * 0.06, 2)},
-            {"name": "Stopped Instances", "value": round(total_cost * 0.04, 2)},
-            {"name": "Old Snapshots", "value": round(total_cost * 0.03, 2)},
-            {"name": "Unused IPs", "value": round(total_cost * 0.02, 2)},
-        ]
+        # Query real cleanup data from cached scans in Redis or calculate from account data
+        waste_categories = []
+        
+        # Try to get real data from cleanup_service if possible
+        try:
+            from backend.services.cleanup_service import CleanupService
+            from backend.core.redis_client import get_redis_client
+            import json
+            
+            cleanup_service = CleanupService(self.db)
+            
+            # Calculate waste from all team accounts
+            total_volume_cost = 0.0
+            total_snapshot_cost = 0.0
+            total_ip_cost = 0.0
+            total_instance_cost = 0.0
+            total_lb_cost = 0.0
+            total_rds_cost = 0.0
+            
+            for acc in accounts:
+                # Try cache first
+                redis_client = None
+                try:
+                    redis_client = get_redis_client()
+                    cache_key = f"cleanup:scan:{acc.id}:ALL"
+                    cached_data = redis_client.get(cache_key)
+                    if cached_data:
+                        data = json.loads(cached_data)
+                        # Aggregate costs by resource type
+                        for resource in data.get('resources', []):
+                            if not resource.get('is_authorized', False):
+                                cost = resource.get('cost_per_month', 0.0)
+                                rtype = resource.get('type', '')
+                                if rtype == 'VOLUME':
+                                    total_volume_cost += cost
+                                elif rtype == 'SNAPSHOT':
+                                    total_snapshot_cost += cost
+                                elif rtype == 'ELASTIC_IP':
+                                    total_ip_cost += cost
+                                elif rtype == 'INSTANCE':
+                                    total_instance_cost += cost
+                                elif rtype == 'LOAD_BALANCER':
+                                    total_lb_cost += cost
+                                elif rtype == 'RDS_DB':
+                                    total_rds_cost += cost
+                except Exception as e:
+                    logger.warning(f"Could not fetch cleanup cache for {acc.id}: {e}")
+                    continue
+            
+            waste_categories = [
+                {"name": "Orphaned Volumes", "value": round(total_volume_cost, 2)},
+                {"name": "Old Snapshots", "value": round(total_snapshot_cost, 2)},
+                {"name": "Unused IPs", "value": round(total_ip_cost, 2)},
+                {"name": "Idle Instances", "value": round(total_instance_cost, 2)},
+                {"name": "Idle Load Balancers", "value": round(total_lb_cost, 2)},
+                {"name": "Idle RDS", "value": round(total_rds_cost, 2)},
+            ]
+        except Exception as e:
+            logger.warning(f"Failed to get real waste distribution, using estimates: {e}")
+            # Fallback to estimate based on total_cost
+            waste_categories = [
+                {"name": "Orphaned Volumes", "value": round(total_cost * 0.06, 2)},
+                {"name": "Stopped Instances", "value": round(total_cost * 0.04, 2)},
+                {"name": "Old Snapshots", "value": round(total_cost * 0.03, 2)},
+                {"name": "Unused IPs", "value": round(total_cost * 0.02, 2)},
+            ]
+        
         # Filter out zero values
         waste_distribution = [w for w in waste_categories if w["value"] > 0]
         total_waste = sum(w["value"] for w in waste_distribution)
@@ -636,13 +695,69 @@ class MetricsService:
         hours_in_month = 720
         total_cost = float(total_instances * avg_hourly_cost * hours_in_month)
         
-        # Waste (Mock - same categories)
-        waste_categories = [
-            {"name": "Idle Volumes", "value": round(total_cost * 0.06, 2)},
-            {"name": "Stopped Instances", "value": round(total_cost * 0.04, 2)},
-            {"name": "Old Snapshots", "value": round(total_cost * 0.03, 2)},
-            {"name": "Unused IPs", "value": round(total_cost * 0.02, 2)},
-        ]
+        # Waste Distribution - Get real data from cleanup cache
+        waste_categories = []
+        try:
+            from backend.core.redis_client import get_redis_client
+            import json
+            
+            redis_client = get_redis_client()
+            cache_key = f"cleanup:scan:{account_id}:ALL"
+            cached_data = redis_client.get(cache_key)
+            
+            if cached_data:
+                data = json.loads(cached_data)
+                # Aggregate costs by resource type
+                total_volume_cost = 0.0
+                total_snapshot_cost = 0.0
+                total_ip_cost = 0.0
+                total_instance_cost = 0.0
+                total_lb_cost = 0.0
+                total_rds_cost = 0.0
+                
+                for resource in data.get('resources', []):
+                    if not resource.get('is_authorized', False):
+                        cost = resource.get('cost_per_month', 0.0)
+                        rtype = resource.get('type', '')
+                        if rtype == 'VOLUME':
+                            total_volume_cost += cost
+                        elif rtype == 'SNAPSHOT':
+                            total_snapshot_cost += cost
+                        elif rtype == 'ELASTIC_IP':
+                            total_ip_cost += cost
+                        elif rtype == 'INSTANCE':
+                            total_instance_cost += cost
+                        elif rtype == 'LOAD_BALANCER':
+                            total_lb_cost += cost
+                        elif rtype == 'RDS_DB':
+                            total_rds_cost += cost
+                
+                waste_categories = [
+                    {"name": "Orphaned Volumes", "value": round(total_volume_cost, 2)},
+                    {"name": "Old Snapshots", "value": round(total_snapshot_cost, 2)},
+                    {"name": "Unused IPs", "value": round(total_ip_cost, 2)},
+                    {"name": "Idle Instances", "value": round(total_instance_cost, 2)},
+                    {"name": "Idle Load Balancers", "value": round(total_lb_cost, 2)},
+                    {"name": "Idle RDS", "value": round(total_rds_cost, 2)},
+                ]
+            else:
+                # No cached data - fallback to estimates
+                waste_categories = [
+                    {"name": "Orphaned Volumes", "value": round(total_cost * 0.06, 2)},
+                    {"name": "Stopped Instances", "value": round(total_cost * 0.04, 2)},
+                    {"name": "Old Snapshots", "value": round(total_cost * 0.03, 2)},
+                    {"name": "Unused IPs", "value": round(total_cost * 0.02, 2)},
+                ]
+        except Exception as e:
+            logger.warning(f"Failed to get real waste for account {account_id}: {e}")
+            # Fallback to estimates
+            waste_categories = [
+                {"name": "Orphaned Volumes", "value": round(total_cost * 0.06, 2)},
+                {"name": "Stopped Instances", "value": round(total_cost * 0.04, 2)},
+                {"name": "Old Snapshots", "value": round(total_cost * 0.03, 2)},
+                {"name": "Unused IPs", "value": round(total_cost * 0.02, 2)},
+            ]
+        
         waste_distribution = [w for w in waste_categories if w["value"] > 0]
         total_waste = sum(w["value"] for w in waste_distribution)
         
