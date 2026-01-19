@@ -18,6 +18,7 @@ class TeamMemberResponse(BaseModel):
     status: str
     aws_accounts_count: int = 0  # Computed field
     accounts: List[AccountSummary] = [] # List of connected accounts
+    team_member_permissions: dict = {}  # Granular permission overrides
 
     class Config:
         from_attributes = True
@@ -35,3 +36,7 @@ class TeamResponse(BaseModel):
 
 class TeamGovernanceUpdate(BaseModel):
     config: dict = Field(..., description="Governance configuration (key-value pairs)")
+
+class TeamMemberPermissionsUpdate(BaseModel):
+    """Schema for updating a team member's granular permissions"""
+    permissions: dict = Field(..., description="Key-value pairs for permission overrides (e.g., {'allow_termination': false})")

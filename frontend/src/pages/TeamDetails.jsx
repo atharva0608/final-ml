@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { teamAPI, metricsAPI } from '../services/api';
 import {
     FiChevronDown, FiChevronRight, FiUser, FiDollarSign, FiTrash2,
-    FiLayers, FiTrendingUp, FiArrowLeft, FiSettings, FiUsers, FiEdit2, FiXCircle
+    FiLayers, FiTrendingUp, FiArrowLeft, FiSettings, FiUsers, FiEdit2, FiXCircle, FiShield
 } from 'react-icons/fi';
 import { StatsCard, Card, Badge, Button, Dropdown } from '../components/shared';
 import {
@@ -11,7 +11,9 @@ import {
     PieChart, Pie, Cell, Legend
 } from 'recharts';
 import TeamGovernance from '../components/settings/TeamGovernance';
+import MemberPermissionsModal from '../components/settings/MemberPermissionsModal';
 import toast from 'react-hot-toast';
+import { useAuthStore } from '../store/useStore';
 
 // Chart Color Palette
 const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884d8'];
@@ -19,11 +21,16 @@ const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884d8'];
 const TeamDetails = () => {
     const { teamId } = useParams();
     const navigate = useNavigate();
+    const { user: currentUser } = useAuthStore();
     const [team, setTeam] = useState(null);
     const [stats, setStats] = useState(null);
     const [activeTab, setActiveTab] = useState('CONSOLIDATED');
     const [expandedMember, setExpandedMember] = useState(null);
     const [loading, setLoading] = useState(true);
+
+    // Permissions Modal State
+    const [permissionsModalOpen, setPermissionsModalOpen] = useState(false);
+    const [selectedMemberForPermissions, setSelectedMemberForPermissions] = useState(null);
 
     useEffect(() => {
         fetchData();
@@ -328,6 +335,15 @@ const TeamDetails = () => {
                                     <div onClick={(e) => e.stopPropagation()}>
                                         <Dropdown
                                             items={[
+                                                // Permissions button only for TEAM_LEAD or ORG_ADMIN
+                                                ...(currentUser?.role === 'TEAM_LEAD' || currentUser?.role === 'ORG_ADMIN' ? [{
+                                                    label: 'Member Permissions',
+                                                    icon: <FiShield />,
+                                                    onClick: () => {
+                                                        setSelectedMemberForPermissions(member);
+                                                        setPermissionsModalOpen(true);
+                                                    }
+                                                }] : []),
                                                 {
                                                     label: 'Edit Role',
                                                     icon: <FiEdit2 />,
@@ -418,6 +434,27 @@ const TeamDetails = () => {
                     <TeamGovernance teamId={teamId} />
                 </div>
             )}
+
+            {/* Member Permissions Modal */}
+            <MemberPermissionsModal
+                isOpen={permissionsModalOpen}
+                onClose={() => {
+                    setPermissionsModalOpen(false);
+                    setSelectedMemberForPermissions(null);
+                }}
+                member={selectedMemberForPermissions}
+                onSave={async (memberId, permissions) => {
+                    try {
+                        await teamAPI.updateMemberPermissions(teamId, memberId, permissions);
+                        toast.success('Member permissions updated');
+                        setPermissionsModalOpen(false);
+                        fetchData(); // Refresh to show updated permissions
+                    } catch (err) {
+                        console.error("Failed to update permissions", err);
+                        toast.error(err.response?.data?.detail || 'Failed to update permissions');
+                    }
+                }}
+            />
         </div>
     );
 };

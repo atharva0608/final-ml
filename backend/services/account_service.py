@@ -44,7 +44,10 @@ class AccountService:
             return boto3.client(service_name, region_name=region_name)
 
     def verify_connection(self, role_arn: str, external_id: str) -> bool:
-        """Verify AWS connection by attempting to assume role"""
+        """
+        Verify AWS connection by attempting to assume role.
+        The external_id MUST match the Trust Policy condition on the target role.
+        """
         try:
             sts = self._get_platform_client('sts')
             sts.assume_role(
@@ -54,6 +57,10 @@ class AccountService:
             )
             return True
         except ClientError as e:
+            # Check for AccessDenied which likely means ExternalID mismatch
+            error_code = e.response.get('Error', {}).get('Code', 'Unknown')
+            if error_code == 'AccessDenied':
+                raise HTTPException(400, "Access Denied: Please ensure the External ID in your Role Trust Policy matches exactly.")
             raise HTTPException(400, f"AWS Connection Failed: {str(e)}")
 
     def list_accounts(self, user: "User") -> List[Account]:
@@ -97,15 +104,26 @@ class AccountService:
         organization_id: str,
         aws_account_id: str,
         role_arn: str,
-        external_id: str,
+        external_id: str, # Kept for API compatibility, but we overwrite it with Org's ID
         requester
     ) -> dict:
         """Link a new AWS account after verifying credentials"""
         from backend.models.user import UserRole
         from backend.models.approval import ApprovalRequest
+        from backend.models.organization import Organization
         
-        # Verify connection first
-        self.verify_connection(role_arn, external_id)
+        # SECURITY: Always enforce the Organization's unique External ID
+        # Accessing Organization directly here to avoid circular imports with OrgService
+        org = self.db.query(Organization).filter(Organization.id == organization_id).first()
+        if not org or not org.external_id:
+            raise HTTPException(500, "Organization configuration error: Missing External ID")
+            
+        secure_external_id = org.external_id
+        
+        # Verify using the SECURE ID
+        self.verify_connection(role_arn, secure_external_id)
+        
+        # ... rest ...
         
         # Check if account already exists
         existing = self.db.query(Account).filter(
@@ -136,7 +154,7 @@ class AccountService:
             organization_id=organization_id,
             aws_account_id=aws_account_id,
             role_arn=role_arn,
-            external_id=external_id,
+            external_id=secure_external_id, # Persist the ID that was actually used
             status=status,
             created_at=datetime.utcnow(),
             updated_at=datetime.utcnow()

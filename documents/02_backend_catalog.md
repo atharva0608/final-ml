@@ -1,6 +1,6 @@
 # Backend Component Catalog
 
-**Date:** 2026-01-14 (Last Updated)
+**Date:** 2026-01-19 (Last Updated)
 **Scope:** `backend/` Directory
 
 ## ID Naming Convention
@@ -16,6 +16,7 @@
 | **BE-SVC::Organization::Main** | `backend/services/organization_service.py` | Service | Member management (Invite, Remove, Update Role). RBAC enforcement (Org Admin vs Team Lead). | `User`, `OrganizationInvitation` |
 | **BE-SVC::Account::Main** | `backend/services/account_service.py` | Service | Managing AWS accounts, Platform Identity integration, and STS assume_role validation. | `Account`, `boto3` |
 | **BE-SVC::Account::Cache** | `backend/services/account_cache_service.py` | Service | **NEW (2026-01-16)**: Temporary encrypted credential storage in Redis for MEMBER account connection approval flow. 7-day TTL. | `redis`, `crypto` (encrypt_data/decrypt_data) |
+| **BE-API::User::Preferences** | `backend/api/user_routes.py` | API | **NEW (2026-01-16)**: GET/PATCH `/users/me/preferences` - Dashboard layout customization with role-based widget validation. Stores preferences in User.preferences JSON column. | `User` |
 | **BE-SVC::Cluster::Main** | `backend/services/cluster_service.py` | Service | **Real**: Cluster discovery via `boto3.eks.list_clusters/describe_cluster` with STS assume_role. DB upsert for discovered clusters. | `Cluster`, `Account`, `boto3` |
 | **BE-SVC::Template::Main** | `backend/services/template_service.py` | Service | Node Template CRUD. Logic for setting default templates. | `NodeTemplate`, `User` |
 | **BE-SVC::Policy::Main** | `backend/services/policy_service.py` | Service | Policy management. Validates spot percentages, min/max nodes, and resource limits. | `ClusterPolicy`, `Cluster`, `NodeTemplate` |
@@ -56,7 +57,7 @@
 | **BE-MOD::Auth::Org** | `backend/models/organization.py` | Model | **Updated (Feature 6)**: Governance Flags (`is_governance_enabled`, `is_strict_approval_mode`). | `Base` |
 | **BE-MOD::Auth::Team** | `backend/models/team.py` | Model | **Real**: Team Model. Groups users within an org. **governance_config** (JSON) stores team-specific approval rules. | `Base` |
 | **BE-SVC::Team::Main** | `backend/services/team_service.py` | Service | **New**: Team Management. Create, Rename, Assign members, **Remove Member**. | `Team`, `User` |
-| **BE-API::Team::Main** | `backend/api/team_routes.py` | API | **Real**: Team Endpoints (CRUD). **Remove API**: `POST /teams/{id}/remove`. **Team-Specific Governance**: `GET/PUT /teams/{id}/governance`. | `TeamService`, `Team` |
+| **BE-API::Team::Main** | `backend/api/team_routes.py` | API | **Real**: Team Endpoints (CRUD). **Remove API**: `POST /teams/{id}/remove`. **Team-Specific Governance**: `GET/PUT /teams/{id}/governance`. **Member Permissions**: `PUT /teams/{id}/members/{member_id}/permissions`. | `TeamService`, `Team` |
 | **BE-MOD::Auth::Invite** | `backend/models/invitation.py` | Model | Organization Invitation Table. | `Base` |
 | **BE-SVC::Governance::Main** | `backend/services/governance_service.py` | Service | **Real**: Automated Governance / Policy-as-Code. Executes cleanup based on org policies with "System Autopilot" actor. | `CleanupService`, `AuditLog` |
 | **BE-API::Governance::Main** | `backend/api/governance_routes.py` | API | **Real**: Governance Endpoints. Get/Update policies, trigger autopilot. | `GovernanceService` |
@@ -112,6 +113,7 @@
 | **BE-MIG::Ver::001_Initial** | `migrations/versions/001_initial_schema.py` | Migration | Initial database schema creation script. | `Alembic` |
 | **BE-MIG::Ver::002_Seed** | `migrations/versions/002_seed_data.py` | Migration | Script to seed database with default data. | `Alembic` |
 | **BE-MIG::Ver::003_Governance** | `migrations/versions/003_add_governance_columns.py` | Migration | Adds `team_id` (users), `required_tags` (organizations), `approval_requests` table. | `Alembic` |
+| **BE-MIG::Ver::004_TeamPerms** | `migrations/versions/20260119_0550_5f5416e8114a_add_team_member_permissions.py` | Migration | **NEW (2026-01-19)**: Adds `team_member_permissions` JSON column to users table for granular permission overrides. | `Alembic` |
 | **BE-AST::AWS::IAM_Full** | `backend/templates/aws/full-access-role.yaml` | Asset | CloudFormation template for Full Access IAM Role. | `AWS` |
 | **BE-AST::AWS::IAM_Full** | `backend/templates/aws/full-access-role.yaml` | Asset | CloudFormation template for Full Access IAM Role. | `AWS` |
 | **BE-AST::AWS::IAM_ReadOnly** | `backend/templates/aws/read-only-role.yaml` | Asset | CloudFormation template for Read-Only IAM Role. Updated with `SpotOptimizerCleanupPolicy`. | `AWS` |
@@ -260,3 +262,15 @@ These components are present but their implementation status is questionable (po
 | **BE-CORE::Logic::Executor** | `backend/core/action_executor.py` | **Partial** | Spot Replacement implemented (AWS). Rightsizing/Consolidation pending. |
 
 > **Note**: `HealthService` and `DecisionEngine` were audited and found to contain **Real** implementation logic, contrary to initial assumptions.
+| **BE-MOD::Cost::RI** | `backend/models/ri_utilization.py` | Model | Reserved Instance Utilization and Waste Tracking. | `Base` |
+| **BE-MOD::Cost::S3** | `backend/models/s3_analysis.py` | Model | S3 Intelligent-Tiering Analysis results. | `Base` |
+| **BE-MOD::Cost::RDS** | `backend/models/rds_analysis.py` | Model | RDS Multi-AZ Analysis results. | `Base` |
+| **BE-MOD::Cost::Transfer** | `backend/models/transfer_analysis.py` | Model | Data Transfer and NAT Gateway analysis. | `Base` |
+| **BE-SVC::Cost::RI** | `backend/services/ri_analysis_service.py` | Service | Logic to analyze RI coverage and utilization. | `CostExplorer` |
+| **BE-SVC::Cost::S3** | `backend/services/s3_tiering_service.py` | Service | Logic to analyze S3 buckets for tiering. | `CloudWatch`, `S3` |
+| **BE-SVC::Cost::RDS** | `backend/services/rds_analysis_service.py` | Service | Logic to detect RDS Multi-AZ in non-prod. | `RDS`, `CloudWatch` |
+| **BE-SVC::Cost::Transfer** | `backend/services/transfer_service.py` | Service | Logic to analyze transfer costs via Cost Explorer. | `CostExplorer` |
+| **BE-API::Cost::RI** | `backend/api/ri_routes.py` | API | RI Analysis Endpoints. | `RIService` |
+| **BE-API::Cost::S3** | `backend/api/s3_routes.py` | API | S3 Analysis Endpoints. | `S3Service` |
+| **BE-API::Cost::RDS** | `backend/api/rds_routes.py` | API | RDS Analysis Endpoints. | `RDSService` |
+| **BE-API::Cost::Transfer** | `backend/api/transfer_routes.py` | API | Data Transfer Analysis Endpoints. | `TransferService` |

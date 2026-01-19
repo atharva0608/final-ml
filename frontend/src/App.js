@@ -40,6 +40,10 @@ import Teams from './pages/Teams';
 import TeamDetails from './pages/TeamDetails';
 import Roles from './pages/Roles';
 import InviteAcceptance from './components/auth/InviteAcceptance';
+import RIAnalysis from './components/ri/RIAnalysis';
+import S3Analysis from './components/s3/S3Analysis';
+import RDSAnalysis from './components/rds/RDSAnalysis';
+import TransferAnalysis from './components/transfer/TransferAnalysis';
 import AccountAnalytics from './pages/AccountAnalytics';
 import TicketCenter from './pages/TicketCenter';
 import TicketRequestModal from './components/tickets/TicketRequestModal';
@@ -228,6 +232,10 @@ function App() {
             <Route path="teams/:teamId" element={<TeamDetails />} />
             <Route path="roles" element={<Roles />} />
             <Route path="accounts/:accountId/analytics" element={<AccountAnalytics />} />
+            <Route path="ri-analysis" element={<RIAnalysis />} />
+            <Route path="s3-analysis" element={<S3Analysis />} />
+            <Route path="rds-analysis" element={<RDSAnalysis />} />
+            <Route path="transfer-analysis" element={<TransferAnalysis />} />
 
             {/* Admin Routes (SUPER_ADMIN only) */}
             <Route path="admin" element={<AdminRoute><AdminDashboard /></AdminRoute>} />

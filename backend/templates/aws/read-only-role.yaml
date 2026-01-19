@@ -1,47 +1,142 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: 'Creates a cross-account IAM Role for the Spot Optimization Platform.'
+Description: |
+  SpotOptimizer Cross-Account IAM Role
+  ====================================
+  This template creates a secure cross-account IAM role that allows the SpotOptimizer
+  platform to analyze and optimize your AWS resources. The role uses External ID
+  authentication for enhanced security (AWS Confused Deputy protection).
+  
+  Security Features:
+  - External ID verification prevents unauthorized access
+  - Read-only managed policies for safe analysis
+  - Optional cleanup permissions with explicit consent
+  - No credentials stored - uses STS AssumeRole
+  
+  For support: https://spotoptimizer.io/docs
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: "Required Configuration"
+        Parameters:
+          - ExternalId
+      - Label:
+          default: "Advanced (Do Not Modify)"
+        Parameters:
+          - PlatformAccountId
+    ParameterLabels:
+      ExternalId:
+        default: "Your Organization External ID (auto-filled from dashboard)"
+      PlatformAccountId:
+        default: "SpotOptimizer Platform Account ID"
 
 Parameters:
   ExternalId:
     Type: String
-    Description: 'Unique Security Token provided by the dashboard'
-  PlatformPrincipal:
+    Description: 'Your unique security token from the SpotOptimizer dashboard. This prevents unauthorized access to your account.'
+    MinLength: 36
+    MaxLength: 36
+    AllowedPattern: '^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$'
+    ConstraintDescription: 'Must be a valid UUID format (e.g., 12345678-1234-1234-1234-123456789abc)'
+  
+  PlatformAccountId:
     Type: String
-    Description: 'The AWS Account ID of the Optimization Platform'
+    Description: 'The AWS Account ID of the SpotOptimizer platform (do not modify)'
+    Default: '123456789012'
+    AllowedPattern: '^\d{12}$'
+    ConstraintDescription: 'Must be a 12-digit AWS Account ID'
 
 Resources:
-  OptimizationRole:
+  SpotOptimizerRole:
     Type: 'AWS::IAM::Role'
     Properties:
-      RoleName: !Sub 'SpotOptimizer-Role-${ExternalId}'
+      RoleName: !Sub 'SpotOptimizer-${ExternalId}'
+      Description: 'Cross-account access role for SpotOptimizer platform'
+      MaxSessionDuration: 3600
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
-          - Effect: Allow
+          - Sid: 'AllowSpotOptimizerAssumeRole'
+            Effect: Allow
             Principal:
-              AWS: !Ref PlatformPrincipal
+              AWS: !Sub 'arn:aws:iam::${PlatformAccountId}:root'
             Action: 'sts:AssumeRole'
             Condition:
               StringEquals:
                 'sts:ExternalId': !Ref ExternalId
       ManagedPolicyArns:
+        # Read-Only Policies for Analysis
         - 'arn:aws:iam::aws:policy/SecurityAudit'
         - 'arn:aws:iam::aws:policy/AmazonEC2ReadOnlyAccess'
         - 'arn:aws:iam::aws:policy/CloudWatchReadOnlyAccess'
+        - 'arn:aws:iam::aws:policy/AmazonEKSReadOnlyAccess'
       Policies:
-        - PolicyName: 'SpotOptimizerCleanupPolicy'
+        - PolicyName: 'SpotOptimizerAnalysis'
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
-              - Effect: Allow
+              # EKS Cluster Discovery
+              - Sid: 'EKSDiscovery'
+                Effect: Allow
+                Action:
+                  - 'eks:DescribeCluster'
+                  - 'eks:DescribeNodegroup'
+                  - 'eks:ListClusters'
+                  - 'eks:ListNodegroups'
+                Resource: '*'
+              # Cost Explorer for Savings Analysis
+              - Sid: 'CostAnalysis'
+                Effect: Allow
+                Action:
+                  - 'ce:GetCostAndUsage'
+                  - 'ce:GetReservationUtilization'
+                  - 'ce:GetSavingsPlansUtilization'
+                Resource: '*'
+              # Pricing for Optimization Recommendations
+              - Sid: 'PricingData'
+                Effect: Allow
+                Action:
+                  - 'pricing:GetProducts'
+                  - 'pricing:DescribeServices'
+                Resource: '*'
+        - PolicyName: 'SpotOptimizerCleanup'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # Resource Cleanup Actions (Requires Approval)
+              - Sid: 'CleanupActions'
+                Effect: Allow
                 Action:
                   - 'ec2:TerminateInstances'
+                  - 'ec2:StopInstances'
                   - 'ec2:DeleteVolume'
                   - 'ec2:DeleteSnapshot'
                   - 'ec2:ReleaseAddress'
+                  - 'ec2:DeleteNetworkInterface'
                 Resource: '*'
+                Condition:
+                  StringEquals:
+                    'ec2:ResourceTag/SpotOptimizer': 'managed'
+      Tags:
+        - Key: 'ManagedBy'
+          Value: 'SpotOptimizer'
+        - Key: 'Environment'
+          Value: 'Production'
+        - Key: 'ExternalId'
+          Value: !Ref ExternalId
 
 Outputs:
   RoleArn:
-    Description: 'The ARN of the created role to paste in the dashboard'
-    Value: !GetAtt OptimizationRole.Arn
+    Description: 'Copy this ARN and paste it in the SpotOptimizer dashboard to complete the connection.'
+    Value: !GetAtt SpotOptimizerRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-RoleArn'
+  
+  ExternalId:
+    Description: 'Your unique External ID (for reference)'
+    Value: !Ref ExternalId
+  
+  Instructions:
+    Description: 'Next Steps'
+    Value: 'Stack created successfully! Copy the RoleArn above and paste it in your SpotOptimizer dashboard.'

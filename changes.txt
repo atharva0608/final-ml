@@ -1,83 +1,104 @@
-Here are the **Functional Specifications** and **Implementation Guidelines** to introduce the **Super Admin (Platform Admin)** role. This role is strictly separated from Client Data operations.
+Here are the detailed, non-code functional instructions to implement **Role-Based Dashboard Customization** with persistent user preferences. This approach shifts your dashboard from a hard-coded layout to a dynamic, widget-based system driven by database configuration.
 
-### 1. The Core Principle: "Platform vs. Tenant" Separation
+### Phase 1: Database & Backend Architecture
 
-You must architecturally enforce that the **Super Admin** manages the *Container*, while the **Organization Admin** manages the *Content*.
+You need to store *how* a user wants to see their dashboard. Instead of creating complex new tables, you can leverage the existing `User` model.
 
-* **Super Admin Scope:** The Application Infrastructure (Database health, ML Models, Global Pricing Config, Tenant Billing Status).
-* **Organization Admin Scope:** The Client Cloud Resources (AWS Accounts, EC2 Instances, Team Members, Cost Savings).
+**1. Update the User Model**
 
-### 2. Permission Constraints (The "Iron Wall")
+* **Schema Change:** Add a new column to your `User` table (e.g., `preferences` or `dashboard_config`).
+* **Data Type:** Use a **JSON/JSONB** type. This allows flexibility to store layout arrays, theme choices, or widget settings without changing the schema again later.
+* **Migration:** Create a database migration script to add this column to existing users, defaulting to `NULL` or an empty object `{}`.
 
-To ensure the Super Admin cannot touch client accounts, implement these logic rules in your **Authorization Middleware**:
+**2. API Endpoints for Preferences**
 
-#### **A. Explicit Deny on Resource Actions**
-
-* **The Rule:** Any API endpoint that interacts with a cloud provider (AWS/GCP/Azure) or modifies specific client resources must **Block** the Super Admin role.
-* **Affected Actions:** `Terminate Instance`, `Delete Volume`, `Connect Cloud Account`, `Scan Infrastructure`, `Execute Cleanup`.
-* **Implementation Note:** In your permission checker, if `user.role == 'SUPER_ADMIN'`, these endpoints should return `403 Forbidden` with a message: *"Platform Admins cannot modify client resources."*
-
-#### **B. Read-Only "Shadow" View (Optional but Restricted)**
-
-* If you allow Super Admins to *see* client data for support purposes, it must be strictly **Read-Only**.
-* **Masking:** Sensitive data like AWS Access Keys, Cost details, or PII must be masked even for the Super Admin.
-
----
-
-### 3. Super Admin Capabilities (What they CAN do)
-
-The Super Admin dashboard should look completely different from the Client dashboard. It focuses on **System Health** and **Tenant Governance**.
-
-#### **Feature 1: Tenant & License Management**
-
-* **Organization Oversight:** A list of all registered clients (Organizations).
-* **Actions:**
-* **Onboard/Offboard:** Create new client environments or suspend non-paying clients.
-* **Feature Toggles:** Enable/Disable specific modules per client (e.g., "Grant Client A access to *Spot Instance Optimization* feature").
-* **Limit Configuration:** Set limits on how many team members or AWS accounts a client can add.
+* **Update `GET /auth/me` (or User Profile):** Ensure the login/profile response includes this new `preferences` object so the frontend has it immediately upon loading.
+* **Create `PATCH /users/me/preferences`:**
+* **Input:** Accepts a JSON object (e.g., `{ dashboard_layout: [...] }`).
+* **Logic:** Updates the logged-in user's record in the database.
+* **Validation:** Ensure the user isn't trying to inject settings for restricted widgets (e.g., a "Member" trying to enable "Global Revenue" widget).
 
 
 
-#### **Feature 2: ML Model Governance**
+### Phase 2: Frontend Component Architecture
 
-* **Centralized Model Registry:** The Super Admin manages the AI/ML models used by the optimization engine.
-* **Actions:**
-* **Push Updates:** Upload a new version of the "Rightsizing Algorithm" that applies to all clients.
-* **Model Config:** Tweak global hyperparameters (e.g., "Aggressiveness of savings recommendations") without touching client data directly.
+Refactor the monolithic `Dashboard.jsx` into a modular "Widget Engine".
+
+**1. Create a "Widget Registry"**
+
+* Define a central directory of all available dashboard components (Widgets).
+* **Break Down Existing Components:** Extract parts of your current dashboard into small, standalone files:
+* `CostKPICard`
+* `SavingsChart`
+* `ClusterHealthMap`
+* `ActivityFeed`
+* `PendingApprovalsCard` (New for Team Leads)
+* `PlatformHealthMetrics` (New for Super Admins)
+
+
+* **Registry Map:** Create a mapping object where string keys point to these components.
+* *Example:* `'kpi_cost': <CostKPICard />`
 
 
 
-#### **Feature 3: System Performance & Health**
+**2. Define Default Role Layouts**
 
-* **Application Metrics:** View the CPU, Memory, and Latency of the *SaaS Platform itself* (not the client's servers).
-* **Job Queues:** Monitor the status of background workers (e.g., "10,000 optimization jobs pending").
-* **Global Audit:** A master log showing *which* Organization Admin did what, for compliance and platform security.
+* Create a configuration constant file (e.g., `roleDefaults.js`).
+* Define the "Standard Layout" for each `UserRole`:
+* **SUPER_ADMIN:** `['platform_health', 'tenant_list', 'global_audit', 'revenue_chart']`
+* **ORG_ADMIN:** `['net_savings', 'current_spend', 'savings_projection', 'cluster_map']`
+* **TEAM_LEAD:** `['team_budget', 'pending_approvals', 'team_activity', 'member_list']`
+* **MEMBER:** `['my_active_resources', 'my_tickets', 'recent_logs']`
 
----
 
-### 4. Dashboard UX: The "God View"
 
-#### **Navigation Menu**
+### Phase 3: The Dynamic Dashboard Logic
 
-Remove all "Resource" tabs. Replace them with:
+Update the main `Dashboard` page to render based on data, not hard-coded JSX.
 
-1. **Tenants:** (List of Organizations, Subscription Status, Active Users).
-2. **Platform Health:** (Redis Status, API Latency, Error Rates).
-3. **Model Registry:** (Manage ML versions).
-4. **Global Config:** (Pricing APIs, System Maintenance Mode).
+**1. The Loading Sequence**
 
-#### **The "Impersonation" Risk**
+* **Step A:** When the dashboard loads, check the user's `preferences.dashboard_layout` from the store/API.
+* **Step B:** If it exists, use that array of widget keys.
+* **Step C:** If it is `null` (first time login), look up the `UserRole` in your `roleDefaults` file and use that array.
 
-* **Decision:** You must decide if a Super Admin can "Log in as Client".
-* **Recommendation:** **Disable this by default.** If implemented for support, it requires a "Break Glass" procedure that logs a critical alert and notifies the Client Org Admin immediately.
+**2. The Rendering Engine**
 
-### Summary of Hierarchical Access
+* Instead of writing `<KPICard />` directly, map over the list of widget keys.
+* For each key, look it up in the **Widget Registry** and render the corresponding component.
+* **Safety Check:** If a key exists in preferences but not in the registry (e.g., feature removed), skip it gracefully to prevent crashes.
 
-| Action | Super Admin (Platform) | Org Admin (Client) |
-| --- | --- | --- |
-| **Update App Version** | ✅ **Yes** | ❌ No |
-| **Disable Client Org** | ✅ **Yes** | ❌ No |
-| **Update Billing Plan** | ✅ **Yes** | ❌ No |
-| **Delete Client EC2** | ❌ **BLOCK** | ✅ **Yes** |
-| **Add AWS Account** | ❌ **BLOCK** | ✅ **Yes** |
-| **Invite Team Member** | ❌ **BLOCK** | ✅ **Yes** |
+### Phase 4: User Customization Features
+
+Give users the UI to change their view.
+
+**1. "Customize Dashboard" Mode**
+
+* Add a button (e.g., "Edit Layout") to the dashboard header.
+* When clicked, switch the dashboard to **Edit Mode**.
+* **Visual Cues:** Add borders or "drag handles" to widgets to indicate they are editable.
+
+**2. The Customization Toolbar/Drawer**
+
+* **Toggle Visibility:** Show a list of *all available widgets* for that user's role with checkboxes.
+* *Constraint:* Filter this list by role. Do not show "Platform Health" in the list for an Org Admin.
+
+
+* **Reorder (Optional):** Allow users to drag and drop widgets to change their order, or provide "Move Up/Down" buttons.
+
+**3. Saving Changes**
+
+* When the user clicks "Save Layout":
+1. Capture the current list of active widget keys.
+2. Send this list to the `PATCH /users/me/preferences` endpoint.
+3. Update the local state/store immediately to reflect changes without reloading.
+
+
+
+### Summary of Data Flow
+
+1. **Login:** Backend sends `user.role = 'ORG_ADMIN'` and `user.preferences = null`.
+2. **Dashboard Load:** Frontend sees `null` preferences. Loads `ORG_ADMIN_DEFAULTS` (Cost, Savings, Clusters).
+3. **User Action:** User clicks "Edit", hides "Cluster Map", adds "Recent Activity". Clicks Save.
+4. **API Call:** `PATCH` sends `{ dashboard_layout: ['cost', 'savings', 'activity'] }`.
+5. **Next Login:** Backend sends the saved layout. Frontend renders exactly what the user saved.

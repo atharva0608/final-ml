@@ -1,5 +1,5 @@
 # Frontend-Backend Gap Analysis
-**Date:** 2026-01-14 (Last Updated)
+**Date:** 2026-01-19 (Last Updated)
 **Scope:** `frontend/src/services/api.js` vs `backend/api/*.py`
 
 This document outlines the discrepancies found between the Frontend's expected API calls and the Backend's actual routes.
@@ -7,7 +7,7 @@ This document outlines the discrepancies found between the Frontend's expected A
 ## Summary
 | Category | Count | Description |
 | :--- | :--- | :--- |
-| **Real APIs** | 50+ | Endpoints that exist and are correctly linked (includes JIT Ticket System). |
+| **Real APIs** | 60+ | Endpoints that exist and are correctly linked (includes JIT Ticket System, Cost Optimization). |
 | **Missing / Fake APIs** | 0 | Endpoints called by Frontend but **NOT** implemented in Backend. |
 | **Zombie APIs** | 1 | Backend endpoints that exist but appear unused. |
 
@@ -26,6 +26,24 @@ This document outlines the discrepancies found between the Frontend's expected A
 *   **Hibernation**: Schedule Management.
 *   **Audit**: Activity logs.
 
+### Newly Implemented APIs (Cost Optimization - 2026-01-19)
+*   **Feature 1: RI Waste Detection**:
+    *   `GET /api/v1/ri/overview` - Summary stats.
+    *   `GET /api/v1/ri/list` - List RIs.
+    *   `POST /api/v1/ri/analyze` - Trigger analysis.
+    *   `GET /api/v1/ri/{id}/recommendations` - Detailed actions.
+*   **Feature 2: S3 Intelligent-Tiering**:
+    *   `GET /api/v1/s3/overview` - Storage breakdown.
+    *   `GET /api/v1/s3/buckets` - Bucket list.
+    *   `POST /api/v1/s3/analyze` - Trigger scan.
+*   **Feature 3: RDS Multi-AZ Analysis**:
+    *   `GET /api/v1/rds/overview` - Multi-AZ savings.
+    *   `GET /api/v1/rds/instances` - Instance list.
+    *   `POST /api/v1/rds/analyze` - Trigger scan.
+*   **Feature 4: Data Transfer Optimization**:
+    *   `GET /api/v1/transfer/overview` - Transfer costs.
+    *   `GET /api/v1/transfer/analyze` - Trigger analysis.
+
 ### Newly Implemented APIs (2026-01-14)
 *   **JIT Tickets**: Full CRUD + workflow endpoints at `/api/v1/tickets` (NEW - JIT System).
     *   `POST /` - Create access request
@@ -36,7 +54,7 @@ This document outlines the discrepancies found between the Frontend's expected A
     *   `POST /{id}/accept` - Accept delegated grant (PENDING_CONSENT → APPROVED_ACTIVE)
     *   `POST /{id}/reject` - Decline delegated grant
     *   `GET /active-window` - Get user's current active access window
-    
+
 ### Newly Implemented APIs (Admin Dashboard Reset)
 *   **Super Admin Command Center**:
     *   `GET /admin/dashboard` - Real-time Platform Stats and Live Activity Feed (sourced from Audit Logs).
@@ -60,6 +78,7 @@ This document outlines the discrepancies found between the Frontend's expected A
 ### Status Notes
 | Feature | Backend Status | Notes |
 | :--- | :--- | :--- |
+| **Cost Optimization (4 Features)** | **Real + UI** | Complete implementation of RI, S3, RDS, Transfer analysis with Cost Explorer/CloudWatch integration. |
 | **Governance (Autopilot)** | **Real** | Policy-as-Code auto-cleanup with "System Autopilot" actor. |
 | **Dependency Check (Feature 1)** | **Real + UI** | Pre-flight verification with Warning Modal in CleanupDashboard. |
 | **Tag Compliance (Feature 2)** | **Real + UI** | Shameback card + Compliance column with missing tags tooltip. |

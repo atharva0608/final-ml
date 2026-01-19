@@ -52,6 +52,11 @@ export const authAPI = {
     refresh: (token) => api.post('/api/v1/auth/refresh', { refresh_token: token }),
     changePassword: (data) => api.post('/api/v1/auth/change-password', data),
     respondToInvitation: (data) => api.post('/api/v1/auth/invitation-response', data),
+    // Dashboard Preferences
+    getPreferences: () => api.get('/api/v1/users/me/preferences'),
+    updatePreferences: (preferences) => api.patch('/api/v1/users/me/preferences', preferences),
+    // Standardized Organization Connection Info
+    getConnectionInfo: () => api.get('/api/v1/organization/connection-info'),
 };
 export const authService = authAPI;
 
@@ -79,6 +84,7 @@ export const accountsAPI = accountAPI;
 export const adminAPI = {
     listClients: (params) => api.get('/api/v1/admin/clients', { params }),
     listOrganizations: (params) => api.get('/api/v1/admin/organizations', { params }),
+    getOrganizations: (page, query) => api.get('/api/v1/admin/organizations', { params: { page, query } }),
     toggleOrg: (id) => api.post(`/api/v1/admin/organizations/${id}/toggle`),
     getClient: (id) => api.get(`/api/v1/admin/clients/${id}`),
     toggleClient: (id) => api.post(`/api/v1/admin/clients/${id}/toggle`),
@@ -187,6 +193,7 @@ export const teamAPI = {
     invite: (teamId, email, role = "MEMBER") => api.post(`/api/v1/teams/${teamId}/invite`, { email, role }),
     getStats: (teamId) => api.get(`/api/v1/teams/${teamId}/stats`),
     updateGovernance: (teamId, config) => api.put(`/api/v1/teams/${teamId}/governance`, { config: config }),
+    updateMemberPermissions: (teamId, memberId, permissions) => api.put(`/api/v1/teams/${teamId}/members/${memberId}/permissions`, { permissions }),
 };
 
 export const userAPI = {

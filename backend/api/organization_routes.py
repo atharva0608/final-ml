@@ -155,3 +155,38 @@ def accept_invitation(
         temporary_password=result["temporary_password"]
     )
 
+@router.get(
+    "/connection-info",
+    summary="Get AWS connection parameters",
+    description="Get the unique External ID and Platform Account ID for configuring AWS trust"
+)
+def get_connection_info(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Get standard connection parameters for AWS Trust Policy.
+    Returns the Organization's unique External ID.
+    """
+    if not current_user.organization_id:
+        raise HTTPException(status_code=400, detail="User does not belong to an organization")
+        
+    service = get_organization_service(db)
+    organization = service.get_organization(current_user.organization_id)
+    
+    # Get Platform AWS Account ID from config or env
+    import os
+    from backend.models.system_config import SystemConfig
+    
+    # Try DB config first
+    platform_account_config = db.query(SystemConfig).filter(SystemConfig.key == "PLATFORM_AWS_ACCOUNT_ID").first()
+    platform_account_id = platform_account_config.value if platform_account_config else os.getenv("PLATFORM_AWS_ACCOUNT_ID", "123456789012")
+    
+    # Get Template URL
+    template_url = os.getenv("AWS_CLOUDFORMATION_TEMPLATE_URL", "https://spot-optimizer-assets.s3.amazonaws.com/connect-role.yaml")
+    
+    return {
+        "external_id": organization.external_id,
+        "platform_account_id": platform_account_id,
+        "template_url": template_url
+    }

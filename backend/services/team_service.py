@@ -166,5 +166,35 @@ class TeamService:
             "currency": "USD"
         }
 
+    def update_member_permissions(self, current_user: User, team_id: str, member_id: str, new_permissions: dict):
+        """
+        Updates a team member's granular permissions.
+        
+        Allowed by: ORG_ADMIN (of the same org) or TEAM_LEAD (of the specific team).
+        """
+        # Authorization Check
+        is_org_admin = current_user.role == UserRole.ORG_ADMIN or current_user.role == UserRole.CLIENT
+        is_team_lead_of_team = current_user.role == UserRole.TEAM_LEAD and current_user.team_id == team_id
+        
+        if not (is_org_admin or is_team_lead_of_team):
+            raise ForbiddenError("Not authorized to update member permissions for this team")
+        
+        # Member Lookup
+        member = self.db.query(User).filter(
+            User.id == member_id,
+            User.team_id == team_id,
+            User.organization_id == current_user.organization_id
+        ).first()
+        
+        if not member:
+            raise ResourceNotFoundError("Member", member_id)
+        
+        # Update Permissions
+        member.team_member_permissions = new_permissions
+        self.db.commit()
+        self.db.refresh(member)
+        
+        return member
+
 def get_team_service(db: Session):
     return TeamService(db)

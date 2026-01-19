@@ -22,6 +22,7 @@ class Organization(Base):
     
     name = Column(String(255), nullable=False)
     slug = Column(String(255), unique=True, index=True)
+    external_id = Column(String(36), unique=True, nullable=True) # Unique External ID for AWS Trust Policies
     billing_email = Column(String(255), nullable=True)
     stripe_customer_id = Column(String(255), nullable=True)
     stripe_customer_id = Column(String(255), nullable=True)

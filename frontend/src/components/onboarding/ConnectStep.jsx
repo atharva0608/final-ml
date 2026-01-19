@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { FiExternalLink, FiCopy, FiCheckCircle, FiAlertCircle, FiDownload } from 'react-icons/fi';
 import { Button } from '../shared';
-import { onboardingAPI } from '../../services/api';
+import { onboardingAPI, authAPI } from '../../services/api';
 import toast from 'react-hot-toast';
 
 const ConnectStep = ({ onNext }) => {
@@ -13,35 +13,49 @@ const ConnectStep = ({ onNext }) => {
     const [error, setError] = useState(null);
 
     useEffect(() => {
-        // Fetch state to get External ID and Link
-        const init = async () => {
+        // Fetch Standardized Connection Info using Organization External ID
+        const fetchConnectionInfo = async () => {
             try {
-                const [linkRes, stateRes] = await Promise.all([
-                    onboardingAPI.getAwsLink('READ_ONLY'),
-                    onboardingAPI.getState()
-                ]);
-                setAwsLink(linkRes.data.url);
-                setExternalId(stateRes.data.external_id);
+                // Use the standardized organization endpoint
+                // This ensures every user in the org uses the SAME External ID
+                const res = await authAPI.getConnectionInfo();
+
+                if (res.data.external_id) {
+                    setExternalId(res.data.external_id);
+
+                    // Construct CloudFormation Quick-Create Link with auto-filled parameters
+                    const stackName = `SpotOptimizer-${res.data.external_id.substring(0, 8)}`;
+                    const templateUrl = res.data.template_url || `${window.location.origin}/api/v1/templates/aws-onboarding`;
+
+                    const params = new URLSearchParams({
+                        stackName: stackName,
+                        templateURL: templateUrl,
+                        'param_ExternalId': res.data.external_id,
+                        'param_PlatformAccountId': res.data.platform_account_id || '123456789012'
+                    });
+
+                    setAwsLink(`https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?${params.toString()}`);
+                }
             } catch (err) {
-                toast.error("Failed to initialize onboarding data");
+                console.error("Failed to load connection info:", err);
+                // Fallback: Try onboarding state endpoint
+                try {
+                    const fallbackRes = await onboardingAPI.getState();
+                    if (fallbackRes.data.external_id) {
+                        setExternalId(fallbackRes.data.external_id);
+                    }
+                } catch (fallbackErr) {
+                    toast.error("Failed to load connection info. Please refresh the page.");
+                }
             }
         };
-        init();
+
+        fetchConnectionInfo();
     }, []);
 
-    const handleDownloadTemplate = async () => {
-        try {
-            const res = await onboardingAPI.getTemplate('READ_ONLY');
-            const url = window.URL.createObjectURL(new Blob([res.data]));
-            const link = document.createElement('a');
-            link.href = url;
-            link.setAttribute('download', 'spot-optimizer-role.yaml');
-            document.body.appendChild(link);
-            link.click();
-            link.remove();
-        } catch (err) {
-            toast.error("Failed to download template");
-        }
+    const handleDownloadTemplate = () => {
+        // Direct download link logic or open info modal
+        toast.success("Please use the 'Launch Console' button for the most secure setup.");
     };
 
     const copyExternalId = () => {

@@ -115,6 +115,50 @@ def skip_onboarding(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    service = get_onboarding_service(db)
-    service.complete_onboarding(current_user.id)
-    return {"status": "skipped"}
+    """
+    Skip onboarding temporarily - does NOT mark as complete.
+    User can restart anytime by clicking the Dashboard card.
+    """
+    # Just return skipped status - don't complete onboarding
+    # This allows the Dashboard card to reappear since onboarding_completed stays False
+    return {"status": "skipped", "message": "You can connect your AWS account anytime from the Dashboard."}
+
+
+@router.post("/reset")
+def reset_onboarding(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Reset onboarding state to allow user to restart the AWS connection process.
+    Only allowed if user has no connected accounts.
+    """
+    from backend.models.account import Account
+    from backend.models.onboarding import OnboardingState, OnboardingStep
+    import uuid
+    
+    # Check if user has any accounts
+    existing_accounts = db.query(Account).filter(
+        Account.organization_id == current_user.organization_id
+    ).count()
+    
+    if existing_accounts > 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot reset onboarding - accounts are already connected. Remove accounts first."
+        )
+    
+    # Reset onboarding state
+    state = db.query(OnboardingState).filter(OnboardingState.user_id == current_user.id).first()
+    if state:
+        state.current_step = OnboardingStep.WELCOME
+        state.aws_role_arn = None
+        state.aws_account_id = None
+        state.external_id = str(uuid.uuid4())  # Generate new External ID
+        db.commit()
+    
+    # Reset user flag
+    current_user.onboarding_completed = False
+    db.commit()
+    
+    return {"status": "reset", "message": "Onboarding reset. You can start fresh."}

@@ -68,6 +68,7 @@ class UserContext(BaseModel):
     must_reset_password: bool = Field(False, description="Whether user must reset password on next login")
     status: str = Field("ACTIVE", description="User status (ACTIVE/PENDING_INVITE)")
     team_id: Optional[str] = Field(None, description="Team UUID")
+    preferences: Optional[dict] = Field(None, description="User dashboard preferences")
 
     model_config = {
         "json_schema_extra": {

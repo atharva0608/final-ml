@@ -13,6 +13,9 @@
 | **FE-CMP::Auth::Login** | `frontend/src/components/auth/Login.jsx` | Page | User Login form. | `email`, `password` | `useAuth`, `Input`, `Button` |
 | **FE-CMP::Auth::Signup** | `frontend/src/components/auth/Signup.jsx` | Page | User Signup form. | `email`, `password` | `useAuth`, `Input`, `Button` |
 | **FE-CMP::Dash::Main** | `frontend/src/components/dashboard/Dashboard.jsx` | Page | Main KPI Dashboard. **UPDATED (2026-01-16)**: "Connect AWS Account" card now RBAC-enforced (TEAM_LEAD/ORG_ADMIN/CLIENT only when accounts.length === 0). | `kpiStats` | `StatsCard`, `recharts` |
+| **FE-CMP::Dash::Widgets** | `frontend/src/components/dashboard/widgets/*` | Widget | **NEW (2026-01-16)**: 9 modular dashboard widgets for role-based customization: CostKPICard, SavingsKPICard, SavingsChart, FleetComposition, ActivityFeed, ClusterHealthCard, PendingApprovalsCard, PlatformHealthCard, TenantListCard. | `data` | `recharts`, `formatters` |
+| **FE-CFG::Dash::Registry** | `frontend/src/components/dashboard/widgetRegistry.js` | Config | **NEW (2026-01-16)**: Widget Registry mapping keys to React components. Central registry for dynamic dashboard rendering. | N/A | Widget components |
+| **FE-CFG::Dash::Defaults** | `frontend/src/components/dashboard/roleDefaults.js` | Config | **NEW (2026-01-16)**: Role-based default dashboard layouts. Defines which widgets each role sees by default. | N/A | N/A |
 | **FE-CMP::Layout::Main** | `frontend/src/components/layout/MainLayout.jsx` | Layout | Sidebar, Header, and Wrapper. | `children` | `Sidebar`, `Header` |
 | **FE-CMP::Cluster::List** | `frontend/src/components/clusters/ClusterList.jsx` | Page | List of K8s clusters. | `clusters` | `useClusterStore` |
 | **FE-CMP::Cluster::Detail** | `frontend/src/components/clusters/ClusterDetails.jsx` | Page | Cluster details view. | `cluster` | `clusterAPI` |
@@ -25,9 +28,9 @@
 | **FE-CMP::Lab::Main** | `frontend/src/components/lab/ExperimentLab.jsx` | Page | ML Experimentation dashboard. | `experiments` | `labAPI` |
 | **FE-CMP::Right::Main** | `frontend/src/components/right-sizing/RightSizing.jsx` | Page | Rightsizing recommendations. | `recommendations` | `Card` |
 | **FE-CMP::Audit::Log** | `frontend/src/components/audit/AuditLog.jsx` | Page | System Audit Log viewer. | `logs` | `auditAPI` |
-| **FE-CMP::Admin::Dash** | `frontend/src/components/admin/AdminDashboard.jsx` | Admin | **Super Admin Command Center**. Tabbed interface (Overview, Tenants, Health, Models, Config, Audit). Central navigation hub. | `activeTab` | `AdminOverview`, `AdminOrganizations` |
+| **FE-CMP::Admin::Dash** | `frontend/src/components/admin/AdminDashboard.jsx` | Admin | **Super Admin Command Center**. **SIMPLIFIED (2026-01-19)**: No tabs, directly renders `AdminOverview`. All admin sections accessible via sidebar. | `-` | `AdminOverview` |
 | **FE-CMP::Admin::Overview** | `frontend/src/components/admin/AdminOverview.jsx` | Admin | **Real**: Platform HUD. Displays Total MRR, Active Users (Real Count), Cluster Stats, and **Live Activity Feed** (Audit Logs). | `stats`, `activity` | `adminAPI`, `StatsCard` |
-| **FE-CMP::Admin::Orgs** | `frontend/src/components/admin/AdminOrganizations.jsx` | Admin | Organization management table. **FIXED (2026-01-16)**: Added missing state variables (searchQuery, page, totalPages, selectedOrg), React import, fetchOrganizations function. | `orgs` | `adminAPI` |
+| **FE-CMP::Admin::Orgs** | `frontend/src/components/admin/AdminOrganizations.jsx` | Admin | Organization management table. **FIXED (2026-01-19)**: Added missing state variables, fetchOrganizations logic, and corrected response parsing (`response.data.organizations` instead of `.items`). | `organizations`, `searchQuery`, `page` | `adminAPI` |
 | **FE-CMP::Admin::Clients** | `frontend/src/components/admin/AdminClients.jsx` | Admin | Client management table. | `clients` | `adminAPI` |
 | **FE-CMP::Admin::Billing** | `frontend/src/components/admin/AdminBilling.jsx` | Page | Billing overview and Plans (Backend Mocked Data). | `stats`, `plans` | `Card`, `Button`, `Icons` |
 | **FE-CMP::Admin::Health** | `frontend/src/components/admin/AdminHealth.jsx` | Admin | System health status. | `health` | `useDashboard` |
@@ -39,8 +42,10 @@
 | **FE-CMP::Set::Teams** | `frontend/src/components/settings/TeamManagement.jsx` | Component | **Real**: 4-Tier Role Management (Super Admin, Org Admin, Team Lead, Member). Accordion view for hierarchical team/member management. **Team-Specific Governance** integration via collapsible "Configure Approval Policies" section. | `teams`, `members`, `showGovernanceForTeam` | `teamAPI`, `TeamGovernance` |
 | **FE-CMP::Set::Profile** | `frontend/src/components/settings/UserProfile.jsx` | Component | **New**: User Profile settings (Full Name update). | `user` | `userAPI` |
 | **FE-CMP::Set::TeamGov** | `frontend/src/components/settings/TeamGovernance.jsx` | Component | **Real**: Team-Specific Approval Policies UI. Toggle switches for 5 actions (CONNECT_ACCOUNT, TERMINATE_INSTANCE, DELETE_VOLUME, DELETE_SNAPSHOT, RELEASE_IP). Fetches/saves to `PUT /teams/{id}/governance`. | `config`, `teamId` | `api`, `toast` |
+| **FE-CMP::Set::MemberPerms** | `frontend/src/components/settings/MemberPermissionsModal.jsx` | Component | **NEW (2026-01-19)**: Modal for managing granular team member permission overrides. Displays toggles for predefined permissions (allow_termination, allow_cleanup, view_audit_logs, etc.). Saves via `PUT /teams/{team_id}/members/{member_id}/permissions`. | `member`, `permissions` | `teamAPI`, `Button` |
 | **FE-CMP::Set::PermMat** | `frontend/src/components/policies/PermissionMatrix.jsx` | Component | **Real**: Interactive matrix for editing Role permissions. Used in TeamManagement. | `roles` | `rolesAPI` |
 | **FE-CMP::Team::Details** | `frontend/src/pages/TeamDetails.jsx` | Page | **Real**: Comprehensive Team Dashboard. **Consolidated View**: Top Spenders Leaderboard, Waste Breakdown (Pie Chart), Cost Trends (Area Chart). **Member Details**: Accordion list of members and connected accounts. **Governance**: Integrated Policy settings. | `teamId` | `metricsAPI`, `teamAPI`, `recharts` |
+| **FE-CMP::Account::Analytics** | `frontend/src/pages/AccountAnalytics.jsx` | Page | **Real**: Detailed Account Analytics view. Shows cost breakdown, usage trends, and optimization opportunities for a specific AWS account. | `accountId` | `metricsAPI` |
 | **FE-CMP::Approv::Main** | `frontend/src/components/approvals/ApprovalCenter.jsx` | Page | **Real**: Approval Center for Maker-Checker (Four-Eyes) workflows. Lists pending requests and allows Team Leads to Approve/Reject destructive actions. | `requests` | `approvalsAPI`, `Badge` |
 | **FE-CMP::Gov::Settings** | `frontend/src/components/settings/GovernanceSettings.jsx` | Page | **Real**: Automated Governance / Policy-as-Code settings. Master toggle, policy cards, required tags configuration. | `config`, `policies` | `governanceAPI`, `toast` |
 | **FE-CMP::Ticket::Center** | `frontend/src/pages/TicketCenter.jsx` | Page | **Real (JIT, Audited 2026-01-14)**: Role-based ticket management with real API data. Admin: Stats cards, "Pending Requests" + "Active Grants" tabs. Team Lead: Incoming/Outgoing/Team Access. Member: My Requests. Includes `CLIENT` role support. Real timestamps, expiry countdown. | `tickets`, `activeTab`, `loading` | `ticketsAPI`, `date-fns`, `format` |
@@ -70,6 +75,14 @@
 | **FE-CMP::Onboard::Verify** | `frontend/src/components/onboarding/VerifyStep.jsx` | Component | Onboarding Step 3: Visual loading spinner during verification. | `onNext` | `motion` |
 | **FE-CMP::Onboard::Success** | `frontend/src/components/onboarding/SuccessStep.jsx` | Component | Onboarding Step 4: Success. | `onComplete` | `Button` |
 | **FE-CMP::Cleanup::Main** | `frontend/src/components/cleanup/CleanupDashboard.jsx` | Page | **Real (Complete)**: Resource Hygiene Dashboard. Multi-Region Scanning, **Authorization** (Authorize/Unauthorize resources, filter views), **Persistence** (1-hour cache), **Tag Compliance** (Shameback card), **Dependency Check** (Warning Modal), **Advanced Hygiene**: 9 resource tabs (Instances, Volumes, Snapshots, IPs, Load Balancers, Network Interfaces, Databases, Identity, Storage), **Reason column** for explaining why resources flagged. | `scanResult`, `selectedAccount` | `cleanupAPI`, `GaugeChart` |
+| **FE-CMP::RI::Card** | `frontend/src/components/ri/RIHealthCard.jsx` | Widget | Dashboard widget for RI coverage/waste. | `data` | `api` |
+| **FE-CMP::RI::Page** | `frontend/src/components/ri/RIAnalysis.jsx` | Page | Detailed RI Analysis page. | `data` | `api` |
+| **FE-CMP::S3::Card** | `frontend/src/components/s3/S3HealthCard.jsx` | Widget | Dashboard widget for S3 optimizations. | `data` | `api` |
+| **FE-CMP::S3::Page** | `frontend/src/components/s3/S3Analysis.jsx` | Page | Detailed S3 Analysis page. | `data` | `api` |
+| **FE-CMP::RDS::Card** | `frontend/src/components/rds/RDSHealthCard.jsx` | Widget | Dashboard widget for RDS Multi-AZ analysis. | `data` | `api` |
+| **FE-CMP::RDS::Page** | `frontend/src/components/rds/RDSAnalysis.jsx` | Page | Detailed RDS Analysis page. | `data` | `api` |
+| **FE-CMP::Transfer::Card** | `frontend/src/components/transfer/TransferHealthCard.jsx` | Widget | Dashboard widget for Data Transfer analysis. | `data` | `api` |
+| **FE-CMP::Transfer::Page** | `frontend/src/components/transfer/TransferAnalysis.jsx` | Page | Detailed Data Transfer Analysis page. | `data` | `api` |
 
 ### 6. Documentation Components
 

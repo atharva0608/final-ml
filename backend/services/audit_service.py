@@ -83,10 +83,6 @@ class AuditService:
 
         return audit_entry
 
-from backend.models.user import User
-
-# ... existing code ...
-
     def get_audit_logs(
         self,
         filters: AuditLogFilter

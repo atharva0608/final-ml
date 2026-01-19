@@ -18,6 +18,7 @@ from backend.schemas.admin_schemas import (
     PasswordReset,
     OrganizationList,
     OrganizationFilter,
+    OrganizationSummary,
     BillingResponse,
     DashboardResponse,
 )

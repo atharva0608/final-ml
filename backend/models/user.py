@@ -1,7 +1,7 @@
 """
 User model - Platform users (clients and admins)
 """
-from sqlalchemy import Column, String, DateTime, Enum as SQLEnum, Boolean, ForeignKey, Table
+from sqlalchemy import Column, String, DateTime, Enum as SQLEnum, Boolean, ForeignKey, Table, JSON
 from sqlalchemy.orm import relationship
 from datetime import datetime
 import enum
@@ -79,6 +79,14 @@ class User(Base):
 
     # Status: ACTIVE vs PENDING_INVITE
     status = Column(String(20), default="ACTIVE", nullable=False)
+    
+    # Dashboard Preferences (JSON for flexibility)
+    # Stores: { dashboard_layout: ['widget1', 'widget2', ...], theme: 'dark', ... }
+    preferences = Column(JSON, nullable=True, default=None)
+    
+    # Team-Specific Permission Overrides (set by Team Lead)
+    # Stores: { "allow_termination": false, "view_audit_logs": true, ... }
+    team_member_permissions = Column(JSON, default={}, nullable=True)
 
     # Timestamps
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)

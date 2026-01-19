@@ -1,3 +1,5 @@
+import React, { useState, useEffect } from 'react';
+
 import {
     FiSearch,
     FiFilter,
@@ -12,9 +14,39 @@ import { format } from 'date-fns';
 import toast from 'react-hot-toast';
 
 const AdminOrganizations = () => {
-    // ... (state)
+    const [organizations, setOrganizations] = useState([]);
+    const [loading, setLoading] = useState(true);
+    const [searchQuery, setSearchQuery] = useState('');
+    const [page, setPage] = useState(1);
+    const [totalPages, setTotalPages] = useState(1);
+    const [selectedOrg, setSelectedOrg] = useState(null);
 
-    // ... (fetchOrganizations)
+    const fetchOrganizations = async () => {
+        try {
+            setLoading(true);
+            const response = await adminAPI.getOrganizations(page, searchQuery);
+            // Backend returns { organizations: [...], total, page, page_size }
+            if (response.data.organizations) {
+                setOrganizations(response.data.organizations);
+                setTotalPages(Math.ceil(response.data.total / (response.data.page_size || 50)));
+            } else if (Array.isArray(response.data)) {
+                setOrganizations(response.data);
+                setTotalPages(1);
+            } else {
+                setOrganizations([]);
+                setTotalPages(1);
+            }
+        } catch (error) {
+            console.error("Failed to fetch organizations", error);
+            toast.error("Failed to load organizations");
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    useEffect(() => {
+        fetchOrganizations();
+    }, []);
 
     const handleToggleStatus = async (org) => {
         if (!window.confirm(`Are you sure you want to ${org.is_active ? 'suspend' : 'activate'} ${org.name}?`)) return;

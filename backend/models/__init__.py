@@ -20,9 +20,15 @@ from backend.models.permission import Permission
 from backend.models.role import Role, RoleType, role_permissions
 from backend.models.ticket import Ticket, TicketType, TicketStatus, ReasonCategory
 from backend.models.platform_settings import PlatformSettings
+from backend.models.organization import Organization
+from backend.models.ri_utilization import RIUtilization
+from backend.models.s3_analysis import S3BucketAnalysis
+from backend.models.rds_analysis import RDSInstanceAnalysis
+from backend.models.transfer_analysis import DataTransferAnalysis
 
 __all__ = [
     "User",
+    "Organization",
     "Account",
     "Cluster",
     "Instance",

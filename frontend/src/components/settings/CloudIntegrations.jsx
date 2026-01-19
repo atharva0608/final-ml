@@ -3,9 +3,9 @@
  * AWS account linking and credential management
  */
 import React, { useState, useEffect } from 'react';
-import { accountAPI } from '../../services/api';
+import { accountAPI, authService } from '../../services/api';
 import { Card, Button, Input, Badge } from '../shared';
-import { FiPlus, FiTrash2, FiCheck, FiAlertCircle, FiExternalLink, FiDownload, FiCloudLightning } from 'react-icons/fi';
+import { FiPlus, FiTrash2, FiCheck, FiAlertCircle, FiExternalLink, FiDownload, FiCloudLightning, FiCopy } from 'react-icons/fi';
 import toast from 'react-hot-toast';
 
 import { useAuthStore } from '../../store/useStore';
@@ -15,6 +15,7 @@ const CloudIntegrations = () => {
   const [accounts, setAccounts] = useState([]);
   const [loading, setLoading] = useState(false);
   const [showAddModal, setShowAddModal] = useState(false);
+  const [connectionInfo, setConnectionInfo] = useState(null);
 
   const [formData, setFormData] = useState({
     aws_account_id: '',
@@ -40,7 +41,19 @@ const CloudIntegrations = () => {
 
   useEffect(() => {
     fetchAccounts();
+    fetchConnectionInfo();
   }, []);
+
+  const fetchConnectionInfo = async () => {
+    try {
+      const res = await authService.getConnectionInfo();
+      setConnectionInfo(res.data);
+      // Pre-fill external ID in form data
+      setFormData(prev => ({ ...prev, external_id: res.data.external_id }));
+    } catch (err) {
+      console.error("Failed to fetch connection info", err);
+    }
+  };
 
   const fetchAccounts = async () => {
     setLoading(true);
@@ -300,33 +313,39 @@ const CloudIntegrations = () => {
             </p>
             <div className="flex flex-wrap gap-3">
               <a
-                href={`${process.env.REACT_APP_API_URL || 'http://localhost:8000'}/api/v1/templates/aws-onboarding`}
-                download="spot-optimizer-role.yaml"
+                href={connectionInfo?.template_url}
+                target="_blank"
+                rel="noreferrer"
                 className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium"
               >
                 <FiDownload className="w-4 h-4" />
                 Download CloudFormation Template
               </a>
               <a
-                href="https://console.aws.amazon.com/cloudformation/home#/stacks/create/template"
+                href={`https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?stackName=SpotOptimizer-Connection-${connectionInfo?.external_id?.substring(0, 8)}&templateURL=${encodeURIComponent(connectionInfo?.template_url)}&param_ExternalId=${connectionInfo?.external_id}&param_TrustedRoleARN=arn:aws:iam::${connectionInfo?.platform_account_id}:role/SpotOptimizerBackendRole`}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="inline-flex items-center gap-2 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors font-medium"
               >
                 <FiExternalLink className="w-4 h-4" />
-                Open AWS CloudFormation Console
+                Launch CloudFormation Console
               </a>
             </div>
             <div className="mt-4 p-3 bg-white rounded-lg border border-blue-200">
-              <p className="text-sm text-gray-700 font-medium mb-2">Steps to deploy:</p>
-              <ol className="text-sm text-gray-600 space-y-1 list-decimal list-inside">
-                <li>Download the CloudFormation template above</li>
-                <li>Click "Generate External ID" in the form below and copy it</li>
-                <li>Upload the template in AWS CloudFormation Console</li>
-                <li>Enter your External ID when prompted</li>
-                <li>Wait for stack creation to complete</li>
-                <li>Copy the Role ARN from the Outputs tab and paste below</li>
-              </ol>
+              <p className="text-sm text-gray-700 font-medium mb-2">Connection Parameters:</p>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+                <div>
+                  <span className="text-gray-500 block">Platform Account ID (Trust this):</span>
+                  <code className="bg-gray-100 px-2 py-1 rounded">{connectionInfo?.platform_account_id || 'Loading...'}</code>
+                </div>
+                <div>
+                  <span className="text-gray-500 block">Your Organization External ID:</span>
+                  <div className="flex items-center gap-2">
+                    <code className="bg-gray-100 px-2 py-1 rounded font-bold text-blue-700">{connectionInfo?.external_id || 'Loading...'}</code>
+                    <button onClick={() => { navigator.clipboard.writeText(connectionInfo?.external_id); toast.success('Copied External ID') }} className="text-gray-400 hover:text-blue-600"><FiCopy /></button>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -360,20 +379,14 @@ const CloudIntegrations = () => {
 
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
-                  External ID
+                  External ID (Auto-assigned)
                 </label>
-                <div className="flex gap-2">
-                  <Input
-                    value={formData.external_id}
-                    onChange={(e) => setFormData({ ...formData, external_id: e.target.value })}
-                    placeholder="spot-optimizer-xxxxx"
-                    required
-                    help="Used for secure cross-account access"
-                  />
-                  <Button type="button" variant="outline" onClick={generateExternalId}>
-                    Generate
-                  </Button>
-                </div>
+                <Input
+                  value={formData.external_id}
+                  disabled
+                  className="bg-gray-100 text-gray-500 cursor-not-allowed"
+                  help="Unique Identifier for your Organization (Fixed)"
+                />
               </div>
 
               <div>

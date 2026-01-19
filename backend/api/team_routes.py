@@ -7,7 +7,7 @@ from backend.services.team_service import TeamService
 from backend.models.user import User, UserRole
 from backend.models.team import Team
 
-from backend.schemas.team_schemas import TeamResponse, TeamMemberResponse
+from backend.schemas.team_schemas import TeamResponse, TeamMemberResponse, TeamMemberPermissionsUpdate
 
 router = APIRouter(prefix="/teams", tags=["Teams"])
 
@@ -61,7 +61,8 @@ def get_team(team_id: str, db: Session = Depends(get_db), user: User = Depends(g
             "role": m.role.value if hasattr(m.role, "value") else str(m.role),
             "status": m.status.value if hasattr(m.status, "value") else str(m.status),
             "aws_accounts_count": len(m.accounts),
-            "accounts": [{"id": str(a.id), "aws_account_id": a.aws_account_id, "status": a.status} for a in m.accounts]
+            "accounts": [{"id": str(a.id), "aws_account_id": a.aws_account_id, "status": a.status} for a in m.accounts],
+            "team_member_permissions": m.team_member_permissions or {}
         })
 
     return {
@@ -114,3 +115,27 @@ def get_team_stats(
     """Get team statistics (member count, resource count, cost)"""
     service = TeamService(db)
     return service.get_team_stats(current_user, team_id)
+
+
+@router.put("/{team_id}/members/{member_id}/permissions")
+def update_member_permissions(
+    team_id: str,
+    member_id: str,
+    body: TeamMemberPermissionsUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user)
+):
+    """
+    Update a team member's granular permissions.
+    
+    Allows Team Leads and Org Admins to set overrides for specific members.
+    Example: { "permissions": { "allow_termination": false, "view_audit_logs": true } }
+    """
+    service = TeamService(db)
+    member = service.update_member_permissions(user, team_id, member_id, body.permissions)
+    
+    return {
+        "id": member.id,
+        "email": member.email,
+        "team_member_permissions": member.team_member_permissions
+    }

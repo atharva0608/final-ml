@@ -25,6 +25,17 @@ export const useAuthStore = create(
 
       updateUser: (user) => set({ user }),
 
+      updatePreferences: (preferences) =>
+        set((state) => ({
+          user: {
+            ...state.user,
+            preferences: {
+              ...(state.user?.preferences || {}),
+              ...preferences
+            }
+          }
+        })),
+
       logout: () =>
         set({
           user: null,

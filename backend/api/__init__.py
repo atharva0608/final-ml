@@ -21,6 +21,10 @@ from backend.api.user_routes import router as user_router
 from backend.api.governance_routes import router as governance_router
 from backend.api.role_routes import router as role_router
 from backend.api.ticket_routes import router as ticket_router
+from backend.api.ri_routes import router as ri_router
+from backend.api.s3_routes import router as s3_router
+from backend.api.rds_routes import router as rds_router
+from backend.api.transfer_routes import router as transfer_router
 
 api_router = APIRouter()
 
@@ -45,3 +49,7 @@ api_router.include_router(governance_router)
 api_router.include_router(role_router)
 api_router.include_router(team_router)
 api_router.include_router(ticket_router)
+api_router.include_router(ri_router)
+api_router.include_router(s3_router)
+api_router.include_router(rds_router)
+api_router.include_router(transfer_router)
