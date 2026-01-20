@@ -3,10 +3,10 @@
  * Tabbed interface for Account, Integrations, and Billing
  */
 import React, { useState } from 'react';
-import { FiUser, FiCloud, FiCreditCard, FiShield, FiUsers } from 'react-icons/fi';
+import { FiUser, FiCloud, FiCreditCard } from 'react-icons/fi';
 import AccountSettings from './AccountSettings';
 import CloudIntegrations from './CloudIntegrations';
-import { Card, Button, Input } from '../shared';
+import { Card, Button } from '../shared';
 import toast from 'react-hot-toast';
 import { useAuth } from '../../hooks/useAuth';
 
@@ -14,15 +14,10 @@ const Settings = () => {
     const [activeTab, setActiveTab] = useState('account');
     const { user } = useAuth();
 
-    // ORG_ADMIN can manage all teams, TEAM_LEAD can see and manage their own team
-    const myRole = user?.role;
-    const canSeeTeamTab = myRole === 'ORG_ADMIN' || myRole === 'SUPER_ADMIN' || myRole === 'CLIENT' || myRole === 'TEAM_LEAD';
-
     const tabs = [
         { id: 'account', label: 'Account', icon: FiUser },
         { id: 'integrations', label: 'Cloud Integrations', icon: FiCloud },
         { id: 'billing', label: 'Billing', icon: FiCreditCard },
-        { id: 'security', label: 'Security', icon: FiShield },
     ];
 
     const renderTabContent = () => {
@@ -33,8 +28,6 @@ const Settings = () => {
                 return <CloudIntegrations />;
             case 'billing':
                 return <BillingTab />;
-            case 'security':
-                return <SecurityTab />;
             default:
                 return <AccountSettings />;
         }
@@ -150,77 +143,6 @@ const BillingTab = () => {
                             </div>
                         </div>
                     ))}
-                </div>
-            </Card>
-        </div>
-    );
-};
-
-// Security Tab Component
-const SecurityTab = () => {
-    const [mfaEnabled, setMfaEnabled] = useState(false);
-
-    const sessions = [
-        { device: 'Chrome on macOS', location: 'Mumbai, India', last_active: '2 minutes ago', current: true },
-        { device: 'Safari on iPhone', location: 'Mumbai, India', last_active: '1 hour ago', current: false },
-    ];
-
-    return (
-        <div className="space-y-6">
-            {/* Two-Factor Authentication */}
-            <Card>
-                <div className="flex justify-between items-center">
-                    <div>
-                        <h3 className="text-lg font-semibold text-gray-900">Two-Factor Authentication</h3>
-                        <p className="text-sm text-gray-600 mt-1">Add an extra layer of security to your account</p>
-                    </div>
-                    <button
-                        onClick={() => {
-                            setMfaEnabled(!mfaEnabled);
-                            toast.success(mfaEnabled ? '2FA disabled' : '2FA enabled');
-                        }}
-                        className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${mfaEnabled ? 'bg-green-500' : 'bg-gray-300'
-                            }`}
-                    >
-                        <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${mfaEnabled ? 'translate-x-6' : 'translate-x-1'
-                            }`} />
-                    </button>
-                </div>
-            </Card>
-
-            {/* Active Sessions */}
-            <Card>
-                <h3 className="text-lg font-semibold text-gray-900 mb-4">Active Sessions</h3>
-                <div className="space-y-3">
-                    {sessions.map((session, idx) => (
-                        <div key={idx} className="flex justify-between items-center p-3 bg-gray-50 rounded-lg">
-                            <div>
-                                <p className="font-medium text-gray-900">{session.device}</p>
-                                <p className="text-sm text-gray-500">{session.location} • {session.last_active}</p>
-                            </div>
-                            {session.current ? (
-                                <span className="text-xs font-medium text-green-600 bg-green-100 px-2 py-1 rounded">Current</span>
-                            ) : (
-                                <Button variant="outline" size="sm">Revoke</Button>
-                            )}
-                        </div>
-                    ))}
-                </div>
-            </Card>
-
-            {/* API Keys */}
-            <Card>
-                <div className="flex justify-between items-center mb-4">
-                    <h3 className="text-lg font-semibold text-gray-900">API Keys</h3>
-                    <Button variant="outline" size="sm" onClick={() => toast.success('New API key generated')}>
-                        Generate New Key
-                    </Button>
-                </div>
-                <p className="text-sm text-gray-600">
-                    API keys allow external applications to access your Spot Optimizer data.
-                </p>
-                <div className="mt-4 p-3 bg-gray-50 rounded-lg font-mono text-sm text-gray-700">
-                    sk_live_••••••••••••••••••••••••••••
                 </div>
             </Card>
         </div>

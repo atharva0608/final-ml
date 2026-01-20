@@ -150,9 +150,9 @@ services:
       - "443:443"
     depends_on:
       - backend
-    volumes:
-      - ../frontend:/app/frontend
-      - /app/frontend/node_modules
+    # volumes:
+    #   - ../frontend:/app/frontend  # DISABLED: This overrides the built app with source files
+    #   - /app/frontend/node_modules
     networks:
       - app-network
     restart: unless-stopped

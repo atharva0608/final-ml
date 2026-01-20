@@ -58,6 +58,11 @@ class S3BucketAnalysis(Base):
     recommendation_type = Column(String(50), nullable=True)  # intelligent_tiering, lifecycle_glacier, lifecycle_deep, none
     recommendation_detail = Column(JSON, nullable=True)
     
+    # Production Metadata
+    analysis_method = Column(String(50), nullable=True)  # storage_lens, cloudwatch, inventory, error
+    pricing_source = Column(String(50), nullable=True)  # price_list_api, estimated
+    storage_lens_config_arn = Column(String(512), nullable=True)
+    
     # Timestamps
     last_analyzed_at = Column(DateTime, default=datetime.utcnow)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)

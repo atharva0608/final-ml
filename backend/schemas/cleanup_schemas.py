@@ -66,6 +66,7 @@ class CleanupActionType(str, Enum):
     RELEASE = "RELEASE"
     SNAPSHOT_STOP = "SNAPSHOT_STOP"
     DISABLE = "DISABLE"
+    NOTIFY = "NOTIFY"
 
 class CleanupAction(BaseModel):
     resource_ids: List[str]

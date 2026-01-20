@@ -215,42 +215,86 @@ class CleanupService:
                 all_vols = ec2.describe_volumes()['Volumes']
                 all_vol_ids = {v['VolumeId'] for v in all_vols}
                 
-                # NEW LOGIC: Show ALL EBS volumes with status:
-                # - ATTACHED: In-use, skip flagging (but show in list)
-                # - AUTHORIZED: Unattached but properly tagged 
-                # - ORPHANED: Unattached and missing required tags
-                # - SAFE_TO_DELETE: Unattached and old (>30 days)
+                # [NEW] Fetch Active Policies
+                from backend.models.cleanup_policy import CleanupPolicy
+                from backend.schemas.cleanup_policy_schemas import CleanupConditionRule
                 
+                # Fetch all active policies for this resource type
+                # Optimization: We could fetch this once per scan, but for now fetching per region worker is fine 
+                # (or pass it down from scan_resources)
+                active_policies = self.db.query(CleanupPolicy).filter(
+                    CleanupPolicy.is_active == True,
+                    CleanupPolicy.resource_type == ResourceType.VOLUME
+                ).order_by(CleanupPolicy.priority.desc()).all()
+
                 for v in all_vols:
-                    vol_state = v['State']  # 'available', 'in-use', etc.
+                    vol_state = v['State']
                     tags = v.get('Tags', [])
                     tag_keys = {t['Key'] for t in tags}
-                    missing = [rt for rt in required_tags if rt not in tag_keys]
                     created_at = v['CreateTime']
-                    cost = (v['Size'] * 0.1)  # Approx $0.10/GB/month for gp2/3
+                    cost = (v['Size'] * 0.1)
                     
-                    # Determine status based on attachment and compliance
+                    status = CleanupStatus.ACTIVE
+                    reason = "Active"
+                    
+                    # 1. Attachment Check (Hardcoded safety)
                     if vol_state == 'in-use':
-                        # Attached volume - show but don't flag for deletion
                         status = CleanupStatus.ACTIVE
                         reason = "Attached to instance"
-                        # Don't add to savings since we're not recommending deletion
                         vol_cost = 0.0
-                    elif len(missing) == 0:
-                        # Unattached but properly tagged = "Authorized" unattached storage
-                        status = CleanupStatus.ORPHANED  # Using ORPHANED but reason will clarify
-                        reason = "Unattached (Compliant - Has required tags)"
-                        vol_cost = cost
-                    elif created_at < safe_threshold:
-                        # Unattached, missing tags, AND old = highest confidence for deletion
-                        status = CleanupStatus.SAFE_TO_DELETE
-                        reason = f"Unattached for >30 days, missing tags: {', '.join(missing)}"
-                        vol_cost = cost
                     else:
-                        # Unattached, missing tags = "Unauthorized"
-                        status = CleanupStatus.NOT_COMPLIANT
-                        reason = f"Unattached, missing tags: {', '.join(missing)}"
                         vol_cost = cost
+                        status = CleanupStatus.ORPHANED # Default if unattached
+                        reason = "Unattached volume"
+                        
+                        # 2. Apply Dynamic Policies
+                        policy_applied = False
+                        if active_policies:
+                            for policy in active_policies:
+                                # Evaluate Conditions
+                                match = True
+                                for rule_dict in policy.conditions.get('rules', []):
+                                    field = rule_dict.get('field')
+                                    op = rule_dict.get('op')
+                                    val = rule_dict.get('value')
+                                    
+                                    if field == 'age_days':
+                                        age = (datetime.now(timezone.utc) - created_at).days
+                                        if op == 'gt' and not (age > val): match = False
+                                        elif op == 'lt' and not (age < val): match = False
+                                    
+                                    elif field.startswith('tag:'):
+                                        key = field.split(':', 1)[1]
+                                        tag_val = self._get_tag_value(tags, key)
+                                        if op == 'missing' and key in tag_keys: match = False
+                                        elif op == 'exists' and key not in tag_keys: match = False
+                                        elif op == 'eq' and tag_val != val: match = False
+                                    
+                                    if not match: break
+                                
+                                if match:
+                                    # Apply Policy Action
+                                    policy_applied = True
+                                    reason = f"Matched Policy: {policy.name}"
+                                    if policy.action == CleanupActionType.DELETE:
+                                        status = CleanupStatus.SAFE_TO_DELETE
+                                    elif policy.action == CleanupActionType.NOTIFY:
+                                        status = CleanupStatus.ORPHANED
+                                    elif policy.action == CleanupActionType.SNAPSHOT_STOP:
+                                        status = CleanupStatus.SAFE_TO_DELETE # Treat as actionable
+                                    break # Stop at highest priority match
+                        
+                        # Fallback for legacy compliance (if no policy matched or to augment)
+                        missing = [rt for rt in required_tags if rt not in tag_keys]
+                        if not policy_applied:
+                             # Use old logic as fallback or just mark compliant/non-compliant
+                             if len(missing) > 0:
+                                 status = CleanupStatus.NOT_COMPLIANT
+                                 reason = f"Unattached, missing tags: {', '.join(missing)}"
+                             elif created_at < safe_threshold:
+                                 # Default 30 day rule if no specific policy overrides
+                                 status = CleanupStatus.SAFE_TO_DELETE
+                                 reason = f"Unattached > 30 days (Default Rule)"
                     
                     item = ResourceItem(
                         id=v['VolumeId'],

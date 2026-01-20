@@ -7,7 +7,7 @@ import React from 'react';
 import { Outlet, Link, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../../hooks/useAuth';
 import { Button } from '../shared';
-import { FiHome, FiServer, FiFileText, FiSettings, FiTarget, FiClock, FiBarChart2, FiUsers, FiActivity, FiLogOut, FiClipboard, FiBriefcase, FiCheckSquare, FiShield, FiLock } from 'react-icons/fi';
+import { FiHome, FiServer, FiFileText, FiSettings, FiTarget, FiClock, FiBarChart2, FiUsers, FiActivity, FiLogOut, FiClipboard, FiBriefcase, FiCheckSquare, FiShield, FiLock, FiTag } from 'react-icons/fi';
 
 import ActiveWindowBanner from '../tickets/ActiveWindowBanner';
 
@@ -18,10 +18,11 @@ const MainLayout = () => {
 
   const navigation = [
     { name: 'Dashboard', path: '/dashboard', icon: FiHome },
-    { name: 'Approvals', path: '/approvals', icon: FiCheckSquare }, // JIT Tickets & Approvals
-    { name: 'Teams', path: '/teams', icon: FiUsers }, // Now includes Roles & Permissions
+    { name: 'Approvals', path: '/approvals', icon: FiCheckSquare },
+    { name: 'Teams', path: '/teams', icon: FiUsers },
     { name: 'Clusters', path: '/clusters', icon: FiServer },
     { name: 'Policies', path: '/policies', icon: FiTarget },
+    { name: 'Tag Management', path: '/tag-management', icon: FiTag },
     { name: 'Templates', path: '/templates', icon: FiFileText },
     { name: 'Right-Sizing', path: '/right-sizing', icon: FiBarChart2 },
     { name: 'Resource Hygiene', path: '/cleanup', icon: FiActivity },

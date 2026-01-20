@@ -25,6 +25,13 @@ from backend.api.ri_routes import router as ri_router
 from backend.api.s3_routes import router as s3_router
 from backend.api.rds_routes import router as rds_router
 from backend.api.transfer_routes import router as transfer_router
+from backend.api.cleanup_policy_routes import router as cleanup_policy_router
+
+# Tag Management Routes
+from backend.api.tag_policy_routes import router as tag_policy_router
+from backend.api.tag_management_routes import router as tag_management_router
+from backend.api.tag_template_routes import router as tag_template_router
+from backend.api.auto_tag_routes import router as auto_tag_router
 
 api_router = APIRouter()
 
@@ -51,5 +58,13 @@ api_router.include_router(team_router)
 api_router.include_router(ticket_router)
 api_router.include_router(ri_router)
 api_router.include_router(s3_router)
+api_router.include_router(s3_router)
 api_router.include_router(rds_router)
+api_router.include_router(cleanup_policy_router)
 api_router.include_router(transfer_router)
+
+# Tag Management
+api_router.include_router(tag_policy_router)
+api_router.include_router(tag_management_router)
+api_router.include_router(tag_template_router)
+api_router.include_router(auto_tag_router)

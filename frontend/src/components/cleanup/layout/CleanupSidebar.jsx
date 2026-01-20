@@ -45,6 +45,12 @@ const CleanupSidebar = ({ activeTab, onTabChange, scanResult }) => {
             items: [
                 { type: 'IAM_USER', label: 'IAM Users', icon: FiUsers },
             ]
+        },
+        {
+            title: 'Governance',
+            items: [
+                { type: 'POLICIES', label: 'Cleanup Policies', icon: FiArchive, isNew: true },
+            ]
         }
     ];
 

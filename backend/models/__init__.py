@@ -21,10 +21,14 @@ from backend.models.role import Role, RoleType, role_permissions
 from backend.models.ticket import Ticket, TicketType, TicketStatus, ReasonCategory
 from backend.models.platform_settings import PlatformSettings
 from backend.models.organization import Organization
-from backend.models.ri_utilization import RIUtilization
-from backend.models.s3_analysis import S3BucketAnalysis
 from backend.models.rds_analysis import RDSInstanceAnalysis
+from backend.models.savings_plan_utilization import SavingsPlanUtilization
 from backend.models.transfer_analysis import DataTransferAnalysis
+
+# Tag Management Models
+from backend.models.tag_policy import TagPolicy, EnforcementLevel, ValueMode
+from backend.models.tag_template import TagTemplate
+from backend.models.auto_tag_rule import AutoTagRule, RunMode
 
 __all__ = [
     "User",
@@ -45,10 +49,17 @@ __all__ = [
     "AuthorizedResource",
     "Permission",
     "Role",
-    "RoleType",
-    "RoleType",
-    "role_permissions",
     "Ticket",
-    "PlatformSettings",
+    "RIUtilization",
+    "S3BucketAnalysis",
+    "RDSAnalysis",
+    "DataTransferAnalysis",
+    "SavingsPlanUtilization",
+    # Tag Management
+    "TagPolicy",
+    "TagTemplate",
+    "AutoTagRule",
+    "EnforcementLevel",
+    "ValueMode",
+    "RunMode",
 ]
-

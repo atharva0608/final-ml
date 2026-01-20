@@ -32,6 +32,11 @@ class DataTransferAnalysis(Base):
     estimated_savings = Column(Float, default=0.0)
     recommendation_detail = Column(JSON, nullable=True)
     
+    # Production Metadata
+    traffic_direction = Column(String(50), nullable=True)  # internet_egress, inter_az, inter_region, nat_gateway
+    free_tier_consumed = Column(Integer, default=0)  # Whether free tier was applied
+    lookback_days = Column(Integer, default=30)  # Analysis period used
+    
     last_analyzed_at = Column(DateTime, default=datetime.utcnow)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)

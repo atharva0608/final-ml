@@ -27,8 +27,11 @@ from backend.api import (
     optimization_router,
     cleanup_router,
     approval_router,
+    approval_router,
     team_router,
     user_router,
+    governance_router,
+    cleanup_policy_router,
 )
 
 __all__ = [
@@ -374,6 +377,7 @@ app.include_router(optimization_router, prefix="/api/v1")
 
 # Cleanup routes
 app.include_router(cleanup_router, prefix="/api/v1")
+app.include_router(cleanup_policy_router, prefix="/api/v1")
 
 # Approval routes
 app.include_router(approval_router, prefix="/api/v1")
@@ -395,6 +399,9 @@ app.include_router(role_router, prefix="/api/v1")
 # Ticket routes (JIT)
 from backend.api.ticket_routes import router as ticket_router
 app.include_router(ticket_router, prefix="/api/v1")
+
+# Governance routes
+app.include_router(governance_router, prefix="/api/v1")
 
 
 # Startup and shutdown events

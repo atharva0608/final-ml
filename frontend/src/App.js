@@ -35,6 +35,7 @@ import AdminOrganizations from './components/admin/AdminOrganizations';
 import RightSizing from './components/right-sizing/RightSizing';
 import CleanupDashboard from './components/cleanup/CleanupDashboard';
 import GovernanceSettings from './components/settings/GovernanceSettings';
+import TagPoliciesManager from './components/settings/TagPoliciesManager';
 
 import Teams from './pages/Teams';
 import TeamDetails from './pages/TeamDetails';
@@ -225,8 +226,8 @@ function App() {
             <Route path="cleanup" element={<CleanupDashboard />} />
             <Route path="approvals" element={<TicketCenter />} />
             <Route path="settings" element={<Settings />} />
-            <Route path="settings" element={<Settings />} />
             <Route path="settings/governance" element={<GovernanceSettings />} />
+            <Route path="tag-management" element={<TagPoliciesManager />} />
 
             <Route path="teams" element={<Teams />} />
             <Route path="teams/:teamId" element={<TeamDetails />} />

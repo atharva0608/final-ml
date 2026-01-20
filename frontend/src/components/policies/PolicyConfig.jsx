@@ -7,6 +7,7 @@ import { usePolicyStore, useClusterStore, useTemplateStore } from '../../store/u
 import { Card, Button, Input } from '../shared';
 import { FiSave, FiToggleLeft, FiToggleRight, FiInfo, FiLayers, FiShield, FiZap, FiCalendar, FiServer } from 'react-icons/fi';
 import toast from 'react-hot-toast';
+import GovernanceSettings from '../settings/GovernanceSettings';
 
 const PolicyConfig = ({ clusterId }) => {
   const { policies, setPolicies, setLoading, loading } = usePolicyStore();
@@ -182,6 +183,7 @@ const PolicyConfig = ({ clusterId }) => {
     { id: 'constraints', label: 'Constraints', icon: FiShield },
     { id: 'aggressiveness', label: 'Aggressiveness', icon: FiZap },
     { id: 'scheduling', label: 'Scheduling', icon: FiCalendar },
+    { id: 'governance', label: 'Governance', icon: FiShield },
   ];
 
   return (
@@ -530,12 +532,18 @@ const PolicyConfig = ({ clusterId }) => {
                 </div>
               )}
 
-              {/* Action Bar */}
-              <div className="mt-8 pt-4 border-t flex justify-end">
-                <Button type="submit" variant="primary" icon={<FiSave />} size="lg">
-                  {existingPolicy ? 'Update Configuration' : 'Create Configuration'}
-                </Button>
-              </div>
+              {activeTab === 'governance' && (
+                <GovernanceSettings />
+              )}
+
+              {/* Action Bar - Only show for non-governance tabs */}
+              {activeTab !== 'governance' && (
+                <div className="mt-8 pt-4 border-t flex justify-end">
+                  <Button type="submit" variant="primary" icon={<FiSave />} size="lg">
+                    {existingPolicy ? 'Update Configuration' : 'Create Configuration'}
+                  </Button>
+                </div>
+              )}
             </Card>
           </div>
         </div>

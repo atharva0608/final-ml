@@ -1,8 +1,256 @@
 # API Usage Matrix & Reference
 **Last Updated:** 2026-01-19
-**Scope:** Frontend Implementation ↔ Backend Logic Mapping
+# 📡 API Information & Usage Guide
+**Last Updated:** 2026-01-20
+**Purpose:** Complete reference for all backend API endpoints with request/response examples.
 
-> This document details the complete API surface area, mapping every endpoint to its consuming frontend component, the backend service handling the logic, and the specific functional scenario it supports.
+---
+
+## Authentication
+
+All endpoints except `/auth/*` and `/health` require JWT token:
+
+```bash
+Authorization: Bearer <jwt_token>
+```
+
+---
+
+## Cost Analysis APIs (Production-Grade)
+
+### S3 Storage Optimization
+
+#### GET /api/v1/s3/overview
+**Purpose:** Get S3 optimization summary
+
+**Response:**
+```json
+{
+  "total_buckets": 45,
+  "buckets_needs_optimization": 12,
+  "total_estimated_savings": 2847.50,
+  "buckets_no_lifecycle": 8
+}
+```
+
+#### POST /api/v1/s3/analyze  
+**Purpose:** Trigger S3 analysis (Storage Lens + dynamic pricing)
+
+**Features:**
+- Uses S3 Storage Lens API (scalable to billions of objects)
+- Falls back to CloudWatch if Storage Lens unavailable
+- Dynamic regional pricing via AWS Price List API
+
+**Response:**
+```json
+{
+  "buckets_analyzed": 45,
+  "total_estimated_savings": 2847.50,
+  "details": [
+    {
+      "bucket_name": "my-bucket",
+      "analysis_method": "storage_lens",
+      "pricing_source": "price_list_api",
+      "monthly_cost": 234.50,
+      "estimated_savings": 140.70
+    }
+  ]
+}
+```
+
+---
+
+### Data Transfer Analysis
+
+#### GET /api/v1/transfer/overview
+**Purpose:** Get transfer cost summary
+
+**Response:**
+```json
+{
+  "total_monthly_transfer_cost": 1250.00,
+  "total_estimated_savings": 187.50,
+  "top_opportunities": [...]
+}
+```
+
+#### POST /api/v1/transfer/analyze?lookback_days=30
+**Purpose:** Analyze data transfer costs with configurable period
+
+**Query Parameters:**
+- `lookback_days` (integer, 7-90, default: 30): Analysis period
+
+**Lookback Period Guide:**
+- **7 days**: Quick recent snapshot
+- **30 days**: Standard monthly analysis (recommended)
+- **90 days**: Quarterly trend (most reliable for decisions)
+
+**Features:**
+- Granular traffic categorization (internet_egress, inter_az, inter_region, nat_gateway)
+- Actual Cost Explorer costs (no hardcoded estimates)
+- Conservative, realistic savings projections
+
+**Response:**
+```json
+{
+  "items_analyzed": 5,
+  "lookback_days": 30,
+  "total_estimated_savings": 187.50,
+  "details": [
+    {
+      "transfer_type": "NAT Gateway Data Processing",
+      "traffic_direction": "nat_gateway",
+      "monthly_cost": 450.00,
+      "estimated_savings": 135.00,
+      "recommendation": "use_vpc_endpoint"
+    }
+  ]
+}
+```
+
+---
+
+### Reserved Instances & Savings Plans
+
+#### GET /api/v1/ri/overview
+**Purpose:** Get RI health summary
+
+**Response:**
+```json
+{
+  "total_ris": 24,
+  "underutilized_count": 6,
+  "wasted_spend_monthly": 1840.00,
+  "health_status": "warning"
+}
+```
+
+#### POST /api/v1/ri/analyze?lookback_days=30
+**Purpose:** Analyze RI utilization with configurable lookback
+
+**Query Parameters:**
+- `lookback_days` (integer, 7-90, default: 30): Analysis period
+
+**Features:**
+- Configurable lookback for reliable analysis
+- Recommendations prioritize Savings Plans migration
+- Modern AWS best practices
+
+**Response:**
+```json
+{
+  "status": "success",
+  "lookback_days": 30,
+  "summary": {
+    "total_ris": 24,
+    "underutilized_count": 6,
+    "monthly_waste": 1840.00,
+    "annual_waste": 22080.00
+  }
+}
+```
+
+#### GET /api/v1/ri/savings-plans/overview
+**Purpose:** Get Savings Plans health summary
+
+**Response:**
+```json
+{
+  "total_plans": 8,
+  "underutilized_count": 2,
+  "total_monthly_commitment": 5000.00,
+  "wasted_spend_monthly": 450.00,
+  "actual_savings_monthly": 3200.00,
+  "avg_coverage_percentage": 78.5,
+  "health_status": "good"
+}
+```
+
+#### POST /api/v1/ri/savings-plans/analyze?lookback_days=30
+**Purpose:** Analyze Savings Plans utilization
+
+**Query Parameters:**
+- `lookback_days` (integer, 7-90, default: 30): Analysis period
+
+**Features:**
+- Modern alternative to Reserved Instances
+- More flexible coverage across services/regions
+- Actual savings tracking from Cost Explorer
+
+**Response:**
+```json
+{
+  "status": "success",
+  "lookback_days": 30,
+  "summary": {
+    "total_plans": 8,
+    "underutilized_count": 2,
+    "monthly_waste": 450.00,
+    "actual_savings": 3200.00
+  }
+}
+```
+
+#### GET /api/v1/ri/unified-coverage
+**Purpose:** Combined RI + Savings Plans coverage report
+
+**Features:**
+- Prevents double-counting commitments
+- Shows total organizational coverage
+- Aggregated health status
+
+**Response:**
+```json
+{
+  "reserved_instances": {
+    "count": 24,
+    "underutilized": 6,
+    "monthly_waste": 1840.00
+  },
+  "savings_plans": {
+    "count": 8,
+    "underutilized": 2,
+    "monthly_waste": 450.00,
+    "actual_savings": 3200.00
+  },
+  "unified": {
+    "total_monthly_commitment": 10000.00,
+    "total_monthly_waste": 2290.00,
+    "coverage_percentage": 78.5,
+    "health_status": "warning"
+  }
+}
+```
+
+---
+
+## Implementation Notes
+
+### Pricing Cache
+- All pricing data cached in Redis for 24 hours
+- First request per region: ~500ms (API call)
+- Subsequent requests: ~5ms (Redis hit)
+- TTL configurable via `PRICING_CACHE_TTL` env var
+
+### IAM Permissions Required
+```json
+{
+  "Effect": "Allow",
+  "Action": [
+    "pricing:GetProducts",
+    "s3:ListStorageLensConfigurations",
+    "ce:GetSavingsPlansUtilization",
+    "ce:GetSavingsPlansCoverage"
+  ],
+  "Resource": "*"
+}
+```
+
+### Best Practices
+- Use 30-day lookback for standard analysis
+- Use 90-day lookback for financial planning decisions
+- Enable S3 Storage Lens for optimal bucket analysis
+- Check Savings Plans coverage before buying new RIs
 
 ---
 

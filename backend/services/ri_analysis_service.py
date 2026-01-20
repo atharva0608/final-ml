@@ -58,8 +58,11 @@ class RIAnalysisService:
             region_name='us-east-1'  # CE is global, always us-east-1
         )
 
-    def analyze_all_accounts(self, user: User) -> Dict[str, Any]:
-        """Analyze RI utilization across all accounts in user's organization"""
+    def analyze_all_accounts(self, user: User, lookback_days: int = 30) -> Dict[str, Any]:
+        """
+        Analyze RI utilization across all accounts - PRODUCTION GRADE
+        Includes configurable lookback period for more accurate analysis
+        """
         accounts = self.db.query(Account).filter(
             Account.organization_id == user.organization_id
         ).all()
@@ -71,7 +74,7 @@ class RIAnalysisService:
         
         for account in accounts:
             try:
-                account_analysis = self.analyze_account(account)
+                account_analysis = self.analyze_account(account, lookback_days)
                 results.append(account_analysis)
                 total_ris += account_analysis['total_ris']
                 total_waste += account_analysis['total_waste']
@@ -89,17 +92,21 @@ class RIAnalysisService:
             'total_monthly_waste': total_waste,
             'total_annual_waste': total_waste * 12,
             'accounts_analyzed': len(results),
+            'lookback_days': lookback_days,
             'accounts': results
         }
 
-    def analyze_account(self, account: Account, analysis_days: int = 30) -> Dict[str, Any]:
-        """Analyze RI utilization for a specific account"""
+    def analyze_account(self, account: Account, lookback_days: int = 30) -> Dict[str, Any]:
+        """
+        Analyze RI utilization for a specific account - PRODUCTION GRADE
+        Configurable lookback period: 7, 30, or 90 days for better insights
+        """
         try:
             ce_client = self._get_ce_client(account)
             
-            # Calculate date range
+            # Calculate date range based on configurable lookback period
             end_date = datetime.utcnow().date()
-            start_date = end_date - timedelta(days=analysis_days)
+            start_date = end_date - timedelta(days=lookback_days)
             
             # Get RI utilization from Cost Explorer
             response = ce_client.get_reservation_utilization(
@@ -123,7 +130,7 @@ class RIAnalysisService:
                     ri_data = self._process_ri_group(
                         ri_group, 
                         account, 
-                        analysis_days
+                        lookback_days
                     )
                     ris.append(ri_data)
                     
@@ -181,14 +188,18 @@ class RIAnalysisService:
         }
 
     def _generate_recommendation(self, utilization_pct: float, monthly_waste: float) -> Dict[str, Any]:
-        """Generate actionable recommendation based on RI utilization"""
+        """
+        Generate actionable recommendation - PRODUCTION GRADE
+        Now recommends Savings Plans over RIs (modern AWS best practice)
+        """
         if utilization_pct == 0:
             return {
-                'type': 'sell',
+                'type': 'sell_or_convert',
                 'priority': 'critical',
                 'title': 'Reserved Instance Not Used',
-                'description': 'This RI has 0% utilization. Sell on RI Marketplace to recover value.',
+                'description': 'This RI has 0% utilization. Consider converting to Savings Plan or sell on RI Marketplace.',
                 'actions': [
+                    {'action': 'convert_savings_plan', 'label': 'Convert to Savings Plan (Recommended)', 'priority': 'high'},
                     {'action': 'sell_marketplace', 'label': 'Sell on RI Marketplace', 'recovery_estimate': 0.6},
                     {'action': 'modify', 'label': 'Modify Instance Type'},
                     {'action': 'share', 'label': 'Share with Linked Account'}
@@ -200,8 +211,9 @@ class RIAnalysisService:
                 'type': 'review',
                 'priority': 'high',
                 'title': 'Severely Underutilized RI',
-                'description': f'Only {utilization_pct:.1f}% utilized. Consider selling or consolidating workloads.',
+                'description': f'Only {utilization_pct:.1f}% utilized. Consider migrating to Savings Plans for flexibility.',
                 'actions': [
+                    {'action': 'convert_savings_plan', 'label': 'Migrate to Savings Plan (Recommended)'},
                     {'action': 'analyze_workload', 'label': 'Analyze Workload Pattern'},
                     {'action': 'modify', 'label': 'Modify to Match Usage'},
                     {'action': 'sell_marketplace', 'label': 'Sell on Marketplace'}
@@ -213,10 +225,10 @@ class RIAnalysisService:
                 'type': 'optimize',
                 'priority': 'medium',
                 'title': 'Underutilized RI',
-                'description': f'{utilization_pct:.1f}% utilized. Consider consolidating workloads or modifying RI.',
+                'description': f'{utilization_pct:.1f}% utilized. Modern alternative: Compute Savings Plans offer more flexibility.',
                 'actions': [
                     {'action': 'consolidate', 'label': 'Consolidate Workloads'},
-                    {'action': 'convert', 'label': 'Convert to Savings Plan'},
+                    {'action': 'convert_savings_plan', 'label': 'Convert to Savings Plan'},
                     {'action': 'monitor', 'label': 'Continue Monitoring'}
                 ],
                 'monthly_impact': monthly_waste
@@ -226,9 +238,10 @@ class RIAnalysisService:
                 'type': 'keep',
                 'priority': 'low',
                 'title': 'RI Well Utilized',
-                'description': f'Good utilization at {utilization_pct:.1f}%. No action needed.',
+                'description': f'Good utilization at {utilization_pct:.1f}%. When it expires, consider Savings Plans for more flexibility.',
                 'actions': [
-                    {'action': 'monitor', 'label': 'Continue Monitoring'}
+                    {'action': 'monitor', 'label': 'Continue Monitoring'},
+                    {'action': 'plan_migration', 'label': 'Plan Savings Plan Migration at Expiry'}
                 ],
                 'monthly_impact': 0
             }

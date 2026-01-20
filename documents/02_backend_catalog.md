@@ -35,6 +35,7 @@
 | **BE-API::Audit::Main** | `backend/api/audit_routes.py` | API | Audit Log Querying. Filter logs by actor, event, resource type. | `AuditService` |
 | **BE-API::Lab::Main** | `backend/api/lab_routes.py` | API | Lab Experiments. Create, List, Start, Stop, Get Results for A/B testing. | `LabService` |
 | **BE-API::Cleanup::Main** | `backend/api/cleanup_routes.py` | API | Endpoints for resource hygiene scanning and action execution. | `CleanupService` |
+| **BE-API::Clean::Policy** | `backend/api/cleanup_policy_routes.py` | API | **NEW (2026-01-20)**: Cleanup Policy CRUD. List, Create, Update, Delete rule-based policies. | `CleanupPolicy` |
 | **BE-API::Health::System** | `backend/api/health_routes.py` | API | System Health Monitoring. Get detailed health status (DB, Redis, Workers). | `HealthService` |
 | **BE-API::Optimization::Main** | `backend/api/optimization_routes.py` | API | Rightsizing Recommendations. Analyze cluster workloads and return resize advice. | `RightSizer` |
 | **BE-API::Billing::Main** | `backend/api/billing_routes.py` | API | **Real**: Stripe Billing. Create portal session, webhook handler, subscription status. | `stripe` |
@@ -72,6 +73,7 @@
 | **BE-MOD::Lab::MLModel** | `backend/models/ml_model.py` | Model | Machine Learning Model Table. | `Base` |
 | **BE-MOD::Ops::AuditLog** | `backend/models/audit_log.py` | Model | Audit Log Table. | `Base` |
 | **BE-MOD::Ops::OptJob** | `backend/models/optimization_job.py` | Model | Optimization Job Table. | `Base` |
+| **BE-MOD::Clean::Policy** | `backend/models/cleanup_policy.py` | Model | **NEW (2026-01-20)**: Cleanup Policy Table. Stores rule-based conditions (JSON) for dynamic resource hygiene. | `Base` |
 | **BE-MOD::Ops::Onboarding** | `backend/models/onboarding.py` | Model | Onboarding State Table. | `Base` |
 | **BE-SCH::Auth::Main** | `backend/schemas/auth_schemas.py` | Schema | Pydantic Schemas for Auth. **Updated**: `MemberResponse` now includes `role`, `access_level`, `team_id`, and `full_name`. | `Pydantic` |
 | **BE-SCH::Admin::Main** | `backend/schemas/admin_schemas.py` | Schema | Pydantic Schemas for Admin (ClientList, PlatformStats). | `Pydantic` |
@@ -114,6 +116,7 @@
 | **BE-MIG::Ver::002_Seed** | `migrations/versions/002_seed_data.py` | Migration | Script to seed database with default data. | `Alembic` |
 | **BE-MIG::Ver::003_Governance** | `migrations/versions/003_add_governance_columns.py` | Migration | Adds `team_id` (users), `required_tags` (organizations), `approval_requests` table. | `Alembic` |
 | **BE-MIG::Ver::004_TeamPerms** | `migrations/versions/20260119_0550_5f5416e8114a_add_team_member_permissions.py` | Migration | **NEW (2026-01-19)**: Adds `team_member_permissions` JSON column to users table for granular permission overrides. | `Alembic` |
+| **BE-MIG::Ver::007_Policy** | `backend/migrations/versions/007_cleanup_policies.py` | Migration | **NEW (2026-01-20)**: Creates `cleanup_policies` table with JSONB conditions. | `Alembic` |
 | **BE-AST::AWS::IAM_Full** | `backend/templates/aws/full-access-role.yaml` | Asset | CloudFormation template for Full Access IAM Role. | `AWS` |
 | **BE-AST::AWS::IAM_Full** | `backend/templates/aws/full-access-role.yaml` | Asset | CloudFormation template for Full Access IAM Role. | `AWS` |
 | **BE-AST::AWS::IAM_ReadOnly** | `backend/templates/aws/read-only-role.yaml` | Asset | CloudFormation template for Read-Only IAM Role. Updated with `SpotOptimizerCleanupPolicy`. | `AWS` |
@@ -144,6 +147,7 @@
 | **BE-CFG::System::EnvExample** | `.env.example` | Config | Template for environment variables. | `Env` |
 | **BE-MIG::TPL::Script** | `migrations/script.py.mako` | Config | Mako template used by Alembic. | `Mako` |
 | **BE-SCH::System::Registry** | `backend/schemas/__init__.py` | Schema | Exports all schemas. | `Python` |
+| **BE-SCH::Clean::Policy** | `backend/schemas/cleanup_policy_schemas.py` | Schema | **NEW (2026-01-20)**: Pydantic schemas for Cleanup Policies (Conditions, Actions, Priority). | `Pydantic` |
 | **BE-MODL::System::Registry** | `backend/modules/__init__.py` | Module | Exports all optimization modules. | `Python` |
 
 ### 5. Agent Components (Remote Execution)
@@ -197,6 +201,8 @@ These are tracking codes for the documentation suite.
 | **DOC-EXT::Context::ScenarioApp** | `docs/application_scenario.md` | Context | Detailed application scenario. |
 | **DOC-EXT::Meta::LLM** | `docs/LLM_INSTRUCTIONS.md` | Meta | Instructions for LLM interaction with codebase. |
 | **DOC-EXT::Meta::Desc** | `docs/description.md` | Meta | High-level project description. |
+| **BE-UTL::Pricing::Helper** | `backend/utils/pricing_helper.py` | Utility | AWS Price List API integration with Redis caching for dynamic regional pricing. Methods: `get_s3_storage_price()`, `get_data_transfer_price()`, `clear_cache()`. Features: 24-hour caching, fallback pricing, region mapping. Impact: Eliminates hardcoded pricing constants, ensures accuracy. | `boto3`, `redis` |
+| **BE-SVC::Cost::SavingsPlan** | `backend/services/savings_plan_service.py` | Service | Logic to analyze Savings Plan utilization and recommendations. Methods: `get_savings_plan_coverage()`, `recommend_savings_plan()`. Features: Integrates with Cost Explorer, provides actionable insights. | `boto3`, `CostExplorer` |
 | **DOC-INT::Utils::Info** | `backend/utils/INFO.md` | Internal | Documentation for backend utilities. |
 | **DOC-INT::Scripts::Info** | `scripts/INFO.md` | Internal | Overview of the scripts directory. |
 | **DOC-INT::Scripts::AWS** | `scripts/aws/INFO.md` | Internal | Documentation for AWS specific scripts. |

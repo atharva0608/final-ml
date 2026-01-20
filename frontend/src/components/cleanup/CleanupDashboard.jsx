@@ -16,6 +16,7 @@ import CleanupSidebar from './layout/CleanupSidebar';
 import RIWizard from './wizards/RIWizard';
 import S3Wizard from './wizards/S3Wizard';
 import RDSWizard from './wizards/RDSWizard';
+import CleanupPolicies from '../policies/CleanupPolicies';
 import { FiCheck, FiX, FiTrash2 } from 'react-icons/fi';
 
 const CleanupDashboard = () => {
@@ -226,31 +227,38 @@ const CleanupDashboard = () => {
                                     <h2 className="text-xl font-bold text-gray-900">{getTabLabel(activeTab)}</h2>
                                     <p className="text-sm text-gray-500 mt-1">Review and action logical resources.</p>
                                 </div>
-                                <div className="flex bg-gray-200 rounded-lg p-1 gap-1">
-                                    <button
-                                        className={`px-4 py-1.5 text-xs font-semibold rounded-md transition-all ${!showAuthorized ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-600 hover:text-gray-900'}`}
-                                        onClick={() => setShowAuthorized(false)}
-                                    >
-                                        Issues
-                                    </button>
-                                    <button
-                                        className={`px-4 py-1.5 text-xs font-semibold rounded-md transition-all ${showAuthorized ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-600 hover:text-gray-900'}`}
-                                        onClick={() => setShowAuthorized(true)}
-                                    >
-                                        Authorized
-                                    </button>
-                                </div>
+
+                                {activeTab !== 'POLICIES' && (
+                                    <div className="flex bg-gray-200 rounded-lg p-1 gap-1">
+                                        <button
+                                            className={`px-4 py-1.5 text-xs font-semibold rounded-md transition-all ${!showAuthorized ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-600 hover:text-gray-900'}`}
+                                            onClick={() => setShowAuthorized(false)}
+                                        >
+                                            Issues
+                                        </button>
+                                        <button
+                                            className={`px-4 py-1.5 text-xs font-semibold rounded-md transition-all ${showAuthorized ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-600 hover:text-gray-900'}`}
+                                            onClick={() => setShowAuthorized(true)}
+                                        >
+                                            Authorized
+                                        </button>
+                                    </div>
+                                )}
                             </div>
 
-                            <ResourceTable
-                                resources={filteredResources}
-                                loading={loading}
-                                selectedItems={selectedItems}
-                                toggleSelection={toggleSelection}
-                                setSelectedItems={setSelectedItems}
-                                activeTab={activeTab}
-                                showAuthorized={showAuthorized}
-                            />
+                            {activeTab === 'POLICIES' ? (
+                                <CleanupPolicies />
+                            ) : (
+                                <ResourceTable
+                                    resources={filteredResources}
+                                    loading={loading}
+                                    selectedItems={selectedItems}
+                                    toggleSelection={toggleSelection}
+                                    setSelectedItems={setSelectedItems}
+                                    activeTab={activeTab}
+                                    showAuthorized={showAuthorized}
+                                />
+                            )}
                         </div>
                     </div>
                 </main>

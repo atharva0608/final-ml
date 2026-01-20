@@ -43,6 +43,11 @@ class Organization(Base):
     accounts = relationship("Account", back_populates="organization", cascade="all, delete-orphan")
     teams = relationship("Team", back_populates="organization", cascade="all, delete-orphan")
     custom_roles = relationship("Role", back_populates="organization", cascade="all, delete-orphan")
+    
+    # Tag Management Relationships
+    tag_policies = relationship("TagPolicy", back_populates="organization", cascade="all, delete-orphan")
+    tag_templates = relationship("TagTemplate", back_populates="organization", cascade="all, delete-orphan")
+    auto_tag_rules = relationship("AutoTagRule", back_populates="organization", cascade="all, delete-orphan")
 
     def __repr__(self):
         return f"<Organization(id={self.id}, name={self.name})>"
