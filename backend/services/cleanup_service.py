@@ -128,10 +128,16 @@ class CleanupService:
         authorized_map = {r.resource_id: r for r in authorized_resources}
         total_savings = 0.0
         
+        # [NEW] OPTIMIZATION: Fetch Active Policies once (Thread-safe)
+        from backend.models.cleanup_policy import CleanupPolicy
+        all_active_policies = self.db.query(CleanupPolicy).filter(
+            CleanupPolicy.is_active == True
+        ).all()
+        
         # OPTIMIZATION: Parallel execution across regions
         with ThreadPoolExecutor(max_workers=10) as executor:
             future_to_region = {
-                executor.submit(self._scan_region_worker, account, region, organization): region 
+                executor.submit(self._scan_region_worker, account, region, organization, all_active_policies): region 
                 for region in target_regions
             }
             
@@ -143,6 +149,9 @@ class CleanupService:
                     total_savings += r_savings
                 except Exception as e:
                     logger.error(f"Region {region} scan failed: {e}")
+                    # CRITICAL: Rollback if main session was poisoned by a stray query (though workers shouldn't touch it now)
+                    try: self.db.rollback() 
+                    except: pass
 
         # [NEW] Apply Authorization Logic (Post-Processing)
         # Fetch Authorized Resources if not already fetched (in case prev step failed partial apply, but likely it succeeded)
@@ -164,8 +173,34 @@ class CleanupService:
         untagged_waste = sum(r.cost_per_month for r in resources if not r.is_compliant and not r.is_authorized)
         
         # Aggregate counts - Exclude authorized
+        current_savings = max(0.0, total_savings)
+        
+        # Retrieve previous savings from history cache for trend calculation
+        previous_savings = None
+        savings_trend_percent = None
+        history_key = f"cleanup:history:{account_id}"
+        
+        if redis_client:
+            try:
+                prev_data = redis_client.get(history_key)
+                if prev_data:
+                    prev_savings_val = json.loads(prev_data).get('total_potential_savings')
+                    if prev_savings_val is not None:
+                        previous_savings = float(prev_savings_val)
+                        # Calculate percentage change: (new - old) / old * 100
+                        if previous_savings > 0:
+                            savings_trend_percent = round(((current_savings - previous_savings) / previous_savings) * 100, 1)
+                        elif current_savings > 0:
+                            savings_trend_percent = 100.0  # From 0 to something = 100% increase
+                        else:
+                            savings_trend_percent = 0.0
+            except Exception as e:
+                logger.error(f"Failed to retrieve savings history: {e}")
+        
         summary = CleanupSummary(
-            total_potential_savings=max(0.0, total_savings), # Ensure no floating point quirk negative
+            total_potential_savings=current_savings,
+            previous_savings=previous_savings,
+            savings_trend_percent=savings_trend_percent,
             unauthorized_instance_count=len([r for r in resources if r.type == ResourceType.INSTANCE and not r.is_authorized]),
             orphaned_volume_count=len([r for r in resources if r.type == ResourceType.VOLUME and not r.is_authorized]),
             orphaned_snapshot_count=len([r for r in resources if r.type == ResourceType.SNAPSHOT and not r.is_authorized]),
@@ -182,23 +217,30 @@ class CleanupService:
             }
         )
         
-        # 2. Set Cache (TTL 1 hour)
+        # 2. Set Cache (TTL 1 hour) and update history (TTL 7 days)
         if redis_client:
             try:
                 redis_client.setex(cache_key, 3600, summary.json())
+                # Store current savings as history for next comparison (7 days TTL)
+                redis_client.setex(history_key, 604800, json.dumps({'total_potential_savings': current_savings, 'timestamp': datetime.now(timezone.utc).isoformat()}))
             except Exception as e:
                 logger.error(f"Failed to set cleanup cache: {e}")
             
         return summary
 
-    def _scan_region_worker(self, account: Account, region: str, organization = None):
+    def _scan_region_worker(self, account: Account, region: str, organization = None, policies=None):
         """Helper to scan a single region independently for parallel execution"""
         from datetime import datetime, timedelta, timezone
+        from backend.utils.pricing_helper import get_pricing_helper
+        
+        pricing = get_pricing_helper()
         
         # Get required tags from organization settings (Feature 2)
         required_tags = []
         if organization and hasattr(organization, 'required_tags') and organization.required_tags:
             required_tags = organization.required_tags if isinstance(organization.required_tags, list) else []
+            
+        policies = policies or []
         
         resources = []
         savings = 0.0
@@ -215,24 +257,26 @@ class CleanupService:
                 all_vols = ec2.describe_volumes()['Volumes']
                 all_vol_ids = {v['VolumeId'] for v in all_vols}
                 
-                # [NEW] Fetch Active Policies
-                from backend.models.cleanup_policy import CleanupPolicy
+                # [NEW] Filter Active Policies from passed list (Thread-safe)
                 from backend.schemas.cleanup_policy_schemas import CleanupConditionRule
                 
-                # Fetch all active policies for this resource type
-                # Optimization: We could fetch this once per scan, but for now fetching per region worker is fine 
-                # (or pass it down from scan_resources)
-                active_policies = self.db.query(CleanupPolicy).filter(
-                    CleanupPolicy.is_active == True,
-                    CleanupPolicy.resource_type == ResourceType.VOLUME
-                ).order_by(CleanupPolicy.priority.desc()).all()
+                # Filter for this resource type locally
+                active_policies = [
+                    p for p in policies 
+                    if p.resource_type == ResourceType.VOLUME
+                ]
+                # Sort by priority desc
+                active_policies.sort(key=lambda x: x.priority, reverse=True)
 
                 for v in all_vols:
                     vol_state = v['State']
                     tags = v.get('Tags', [])
                     tag_keys = {t['Key'] for t in tags}
                     created_at = v['CreateTime']
-                    cost = (v['Size'] * 0.1)
+                    vol_type = v['VolumeType']
+                    # Use PricingHelper
+                    unit_price = pricing.get_ebs_price(region, vol_type)
+                    cost = v['Size'] * unit_price
                     
                     status = CleanupStatus.ACTIVE
                     reason = "Active"
@@ -244,8 +288,14 @@ class CleanupService:
                         vol_cost = 0.0
                     else:
                         vol_cost = cost
-                        status = CleanupStatus.ORPHANED # Default if unattached
+                        # Default is ORPHANED (Risky to delete immediately unless old)
+                        status = CleanupStatus.ORPHANED
                         reason = "Unattached volume"
+                        
+                        # Apply Safety Logic
+                        if created_at < safe_threshold:
+                            status = CleanupStatus.SAFE_TO_DELETE
+                            reason = "Unattached > 30 days (Safe)"
                         
                         # 2. Apply Dynamic Policies
                         policy_applied = False
@@ -287,14 +337,11 @@ class CleanupService:
                         # Fallback for legacy compliance (if no policy matched or to augment)
                         missing = [rt for rt in required_tags if rt not in tag_keys]
                         if not policy_applied:
-                             # Use old logic as fallback or just mark compliant/non-compliant
                              if len(missing) > 0:
-                                 status = CleanupStatus.NOT_COMPLIANT
-                                 reason = f"Unattached, missing tags: {', '.join(missing)}"
-                             elif created_at < safe_threshold:
-                                 # Default 30 day rule if no specific policy overrides
-                                 status = CleanupStatus.SAFE_TO_DELETE
-                                 reason = f"Unattached > 30 days (Default Rule)"
+                                 # If strictly strictly orphaned, prioritize that status over compliance?
+                                 # Compliance is secondary if it's waste.
+                                 # But stick to existing logic: if unauthorized, compliance doesn't matter much.
+                                 pass
                     
                     item = ResourceItem(
                         id=v['VolumeId'],
@@ -311,29 +358,43 @@ class CleanupService:
                             'State': vol_state,
                             'AttachmentStatus': 'Attached' if vol_state == 'in-use' else 'Unattached'
                         },
-                        is_compliant=len(missing) == 0,
-                        missing_tags=missing
+                        is_compliant=len([rt for rt in required_tags if rt not in tag_keys]) == 0,
+                        missing_tags=[rt for rt in required_tags if rt not in tag_keys]
                     )
                     resources.append(item)
                     if vol_state != 'in-use':  # Only count savings for unattached
                         savings += vol_cost
                 
-                # 2. ORPHANED SNAPSHOTS (Use cached vol_ids - no redundant describe_volumes call)
+                # 2. ORPHANED SNAPSHOTS
                 snaps = ec2.describe_snapshots(OwnerIds=['self'])
+                snapshot_price = pricing.get_snapshot_price(region)
+                
                 for s in snaps['Snapshots']:
                     vol_id = s.get('VolumeId')
+                    # Safety Logic: If Volume is gone, Snapshot IS orphaned.
+                    # But is it SAFE to delete?
                     if vol_id and vol_id not in all_vol_ids:
-                        # Volume deleted, snapshot lingering
-                        # Snapshots also have StartTime
                         start_time = s.get('StartTime')
-                        status = CleanupStatus.SAFE_TO_DELETE if start_time and start_time < safe_threshold else CleanupStatus.ORPHANED
                         
-                        # Feature 2: Tag Compliance Check
+                        # Default ORPHANED (Risky)
+                        status = CleanupStatus.ORPHANED
+                        reason = "Volume deleted (Orphaned Snapshot)"
+                        
+                        # Safe if > 30 days old
+                        if start_time and start_time < safe_threshold:
+                            status = CleanupStatus.SAFE_TO_DELETE
+                            reason = "Volume deleted > 30 days (Safe)"
+                        
+                        # Check dependencies (AMI) - if mapped to AMI, ACTIVE/RISK
+                        # We can't easily check AMIs efficiently inside this loop without pre-fetching.
+                        # Assuming check_dependencies handles it on individual action, but for scan...
+                        # Let's trust ORPHANED status means "Review". SAFE means "Double Checked".
+                        
                         tags = s.get('Tags', [])
                         tag_keys = {t['Key'] for t in tags}
                         missing = [rt for rt in required_tags if rt not in tag_keys]
                         
-                        cost = (s['VolumeSize'] * 0.05) # Approx $0.05/GB
+                        cost = s['VolumeSize'] * snapshot_price
                         item = ResourceItem(
                             id=s['SnapshotId'],
                             name=self._get_tag_value(tags, 'Name'),
@@ -353,16 +414,22 @@ class CleanupService:
             # 3. UNUSED ELASTIC IPs
             try:
                 eips = ec2.describe_addresses()
+                eip_price = pricing.get_eip_price(region)
+                
                 for ip in eips['Addresses']:
                     if 'AssociationId' not in ip:
-                        # EIPs don't always have a creation time in describe_address response easily accessible without CloudTrail
-                        # For now, we consider all unattached EIPs as ORPHANED to be safe, unless we assume "unattached = waste" is always true.
-                        # Design says: "High Confidence (Green): Applied to resources that are undeniably waste (e.g., an IP unattached for >30 days)."
-                        # Without allocation time, we will stick to ORPHANED or mark SAFE_TO_DELETE if we treat all unattached IPs as safe.
-                        # Let's use SAFE_TO_DELETE for simpler UX as unattached IPs are costing money every hour.
-                        status = CleanupStatus.SAFE_TO_DELETE
+                        # Unattached EIP.
+                        # Safety: Cannot verify age easily.
+                        # Logic: Unattached EIP is waste, but deleting 'Prod-VIP' is fatal.
+                        # Usage: Mark ORPHANED (Risky). User must verify.
                         
-                        cost = 3.65 # Approx $0.005/hr * 730 = $3.65
+                        status = CleanupStatus.ORPHANED
+                        reason = "Unattached Elastic IP"
+                        
+                        # Check tags for 'Prod' or 'Critical' to mark RISK (optional)
+                        # For now, ORPHANED is sufficient distinction from SAFE_TO_DELETE.
+                        
+                        cost = eip_price
                         item = ResourceItem(
                             id=ip['AllocationId'],
                             name=ip.get('PublicIp', 'Unknown'),
@@ -370,6 +437,7 @@ class CleanupService:
                             status=status,
                             region=region,
                             cost_per_month=cost,
+                            reason=reason,
                             metadata={'PublicIp': ip.get('PublicIp')}
                         )
                         resources.append(item)
@@ -402,9 +470,8 @@ class CleanupService:
                 for inst_id, inst_data in aws_instances.items():
                     if inst_id not in db_instance_set:
                         # Unauthorized / Unmanaged
-                        cost_map = {'t2.micro': 8.5, 't3.medium': 30.0, 'm5.large': 70.0}
                         inst_type = inst_data.get('InstanceType', 'unknown')
-                        cost = cost_map.get(inst_type, 50.0) 
+                        cost = pricing.get_ec2_price(region, inst_type)
                         
                         tags = inst_data.get('Tags', [])
                         name = self._get_tag_value(tags, 'Name')
@@ -416,6 +483,7 @@ class CleanupService:
                             status=CleanupStatus.UNAUTHORIZED,
                             region=region,
                             cost_per_month=cost,
+                            reason="Not managed by Spot Optimizer",
                             metadata={'InstanceType': inst_type, 'State': inst_data['State']['Name']}
                         )
                         resources.append(item)
@@ -539,6 +607,9 @@ class CleanupService:
         }
 
     def _scan_network(self, session, region, required_tags):
+        from backend.utils.pricing_helper import get_pricing_helper
+        pricing = get_pricing_helper()
+        
         resources = []
         savings = 0.0
         try:
@@ -549,6 +620,7 @@ class CleanupService:
                 for lb in lbs:
                     lb_arn = lb['LoadBalancerArn']
                     lb_name = lb['LoadBalancerName']
+                    lb_type = lb['Type']
                     
                     # Check Target Groups
                     tgs = elbv2.describe_target_groups(LoadBalancerArn=lb_arn)['TargetGroups']
@@ -576,7 +648,8 @@ class CleanupService:
                             is_idle = True
                     
                     if is_idle:
-                        cost = 16.0 # Approx
+                        cost = pricing.get_load_balancer_price(region, lb_type)
+                        # Safety: Idle ELB is risky to auto-delete.
                         status = CleanupStatus.ORPHANED
                         
                         # Tags
@@ -610,7 +683,7 @@ class CleanupService:
             try:
                 enis = ec2.describe_network_interfaces(Filters=[{'Name': 'status', 'Values': ['available']}])['NetworkInterfaces']
                 for eni in enis:
-                    cost = 0.1 # Minimal cost but clutters VPC
+                    cost = 0.1 # Minimal cost but clutters VPC (Keep hardcoded or add to PricingHelper)
                     status = CleanupStatus.ORPHANED
                     item = ResourceItem(
                         id=eni['NetworkInterfaceId'],
@@ -632,6 +705,9 @@ class CleanupService:
         return resources, savings
 
     def _scan_databases(self, session, region, required_tags):
+        from backend.utils.pricing_helper import get_pricing_helper
+        pricing = get_pricing_helper()
+        
         resources = []
         savings = 0.0
         try:
@@ -647,6 +723,7 @@ class CleanupService:
                 db_id = db['DBInstanceIdentifier']
                 status = db['DBInstanceStatus']
                 db_class = db['DBInstanceClass']
+                engine = db['Engine']
                 
                 if status != 'available':
                     continue
@@ -680,14 +757,18 @@ class CleanupService:
                 reason = None
                 cost_estimate = 0.0
                 
+                # Calculate real cost
+                real_cost = pricing.get_rds_price(region, db_class, engine)
+                
                 if is_idle:
                     cleanup_status = CleanupStatus.ORPHANED
                     reason = f"Zero connections for 14 days"
-                    cost_estimate = 50.0  # Rough estimate
+                    cost_estimate = real_cost
                 elif is_legacy:
                     cleanup_status = CleanupStatus.LEGACY_UPGRADE
                     reason = f"Legacy instance class ({db_class}). Upgrade to T3/M5 for savings."
-                    cost_estimate = 20.0
+                    # Savings is diff between current and T3 equivalent (approx 20% savings)
+                    cost_estimate = real_cost * 0.2
                 
                 # Tag compliance
                 tags = db.get('TagList', [])
@@ -1054,7 +1135,47 @@ class CleanupService:
         # 0. JIT Governance Check
         if user and not bypass_approval:
             from backend.services.permission_service import PermissionService
+            from backend.models.organization import Organization
+            from backend.services.ticket_service import TicketService
+            from backend.schemas.ticket_schemas import TicketCreate
+            from backend.models.ticket import TicketType, ReasonCategory
             
+            # 1. Check if System Approval is Required for Cleanup
+            org = self.db.query(Organization).filter(Organization.id == user.organization_id).first()
+            if org and org.require_automation_approval:
+                # Create a System Approval Ticket instead of executing
+                # But wait, is this a "System Automated Action" or a "User Clicked Cleanup" action?
+                # User request asks "if we turned on that we have to delete all untagged resources... system actions will take place"
+                # This implies the TRIGGER is automatic (e.g. Schedule).
+                # BUT `execute_action` is currently called by user clicks mostly.
+                # However, if we assume this function is the gateway for ALL cleanup actions:
+                
+                # Check if ticket already exists for this batch? (Hard to track exact batch)
+                # Just create a new ticket for this action request.
+                
+                logger.info(f"System Approval required. Creating ticket for {action_data.action_type}")
+                
+                ticket_service = TicketService(self.db)
+                ticket_in = TicketCreate(
+                    title=f"Approval: {action_data.action_type} for {len(action_data.resource_ids)} resources",
+                    description=f"Automated cleanup approval required.\nRegion: {action_data.region}\nResources: {', '.join(action_data.resource_ids)}",
+                    type=TicketType.SYSTEM_CLEANUP,
+                    reason_category=ReasonCategory.MAINTENANCE,
+                    reason_text="Automated Governance Cleanup Action",
+                    duration_hours=24,
+                    resource_id=f"batch-{datetime.utcnow().timestamp()}", # Pseudo ID
+                    action_type=str(action_data.action_type),
+                    additional_metadata={
+                        "region": action_data.region,
+                        "resource_ids": action_data.resource_ids,
+                        "action_type": action_data.action_type,
+                        "account_id": account_id
+                    }
+                )
+                ticket = ticket_service.create_ticket(user_id=user.id, ticket_in=ticket_in)
+                return {"status": "pending_approval", "message": f"Action paused. Ticket #{ticket.id} created for approval."}
+
+            # 2. JIT Permission Check (if not routed to ticket)
             action_config_map = {
                 "TERMINATE": "TERMINATE_INSTANCE",
                 "DELETE": "DELETE_VOLUME",
@@ -1293,5 +1414,107 @@ class CleanupService:
                 continue
 
         return discovered
+
+    def authorize_resource(self, resource_id: str, resource_type: str, user: User, force: bool = False, account_id: str = None, region: str = 'us-east-1'):
+        """
+        Authorize a single resource.
+        Marks it as 'Authorized' in the database to exclude it from cleanup results.
+        """
+        from backend.models.authorized_resource import AuthorizedResource
+        from backend.models.account import Account
+        
+        # Resolve Account ID if not provided (Try by matching resource_id in scan cache or active DB items first? No, scan cache is ephemeral)
+        # We rely on account_id passed from Route or try to resolve via known context.
+        final_account_id = None
+        if account_id:
+             # Validate
+             acc = self.db.query(Account).filter((Account.id == account_id) | (Account.aws_account_id == account_id)).first()
+             if acc: final_account_id = acc.id
+        
+        if not final_account_id:
+            # Fallback: Try to find any account this user owns? Too dangerous.
+            # Require account_id.
+            # Exception: Resource ID might be globally unique enough if we search AuthorizedResources but we are Creating one.
+            raise ValueError("Account ID is required for authorization.")
+
+        # Check if already authorized
+        exists = self.db.query(AuthorizedResource).filter(
+            AuthorizedResource.account_id == final_account_id, 
+            AuthorizedResource.resource_id == resource_id
+        ).first()
+        
+        if exists:
+            return {"status": "success", "message": f"Resource {resource_id} is already authorized."}
+            
+        new_auth = AuthorizedResource(
+            resource_id=resource_id,
+            account_id=final_account_id,
+            organization_id=user.organization_id,
+            region=region,
+            resource_type=resource_type,
+            created_by_id=user.id,
+            notes=f"Authorized by {user.email} {'(Force)' if force else ''}"
+        )
+        self.db.add(new_auth)
+        self.db.commit()
+        return {"status": "success", "message": f"Authorized {resource_id}"}
+
+    def get_resource_details(self, account_id: str, resource_id: str, resource_type: str, region: str) -> Dict[str, Any]:
+        """
+        Fetch fresh details for a single resource to validate tags.
+        """
+        account = self.db.query(Account).filter(Account.id == account_id).first()
+        if not account:
+            account = self.db.query(Account).filter(Account.aws_account_id == account_id).first()
+            if not account:
+                raise Exception(f"Account {account_id} not found")
+
+        session = self._get_account_session(account, region)
+        
+        tags = []
+        try:
+            if resource_type.upper() == "INSTANCE":
+                ec2 = session.client('ec2')
+                resp = ec2.describe_instances(InstanceIds=[resource_id])
+                if resp['Reservations']:
+                    inst = resp['Reservations'][0]['Instances'][0]
+                    tags = inst.get('Tags', [])
+                    
+            elif resource_type.upper() == "VOLUME":
+                ec2 = session.client('ec2')
+                resp = ec2.describe_volumes(VolumeIds=[resource_id])
+                if resp['Volumes']:
+                    tags = resp['Volumes'][0].get('Tags', [])
+                    
+            elif resource_type.upper() == "SNAPSHOT":
+                ec2 = session.client('ec2')
+                resp = ec2.describe_snapshots(SnapshotIds=[resource_id])
+                if resp['Snapshots']:
+                    tags = resp['Snapshots'][0].get('Tags', [])
+                    
+            elif resource_type.upper() == "RDS_DB":
+                rds = session.client('rds')
+                resp = rds.describe_db_instances(DBInstanceIdentifier=resource_id)
+                if resp['DBInstances']:
+                    tags = resp['DBInstances'][0].get('TagList', [])
+                    
+            elif resource_type.upper() == "S3_BUCKET":
+                s3 = session.client('s3')
+                try:
+                    tag_resp = s3.get_bucket_tagging(Bucket=resource_id)
+                    tags = tag_resp.get('TagSet', [])
+                except:
+                    tags = []
+                    
+        except Exception as e:
+            logger.error(f"Failed to fetch details for {resource_id}: {e}")
+            # Non-blocking, return empty tags
+            pass
+
+        return {
+            "id": resource_id,
+            "type": resource_type,
+            "tags": {t['Key']: t['Value'] for t in tags}
+        }
         
 

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional
@@ -175,4 +175,71 @@ def reset_onboarding(
     current_user.onboarding_completed = False
     db.commit()
     
+    
     return {"status": "reset", "message": "Onboarding reset. You can start fresh."}
+
+@router.post("/authorize")
+def authorize_resource(
+    resource_id: str = Query(...),
+    resource_type: str = Query(...),
+    account_id: str = Query(..., description="AWS Account ID"),
+    region: str = Query(..., description="AWS Region"),
+    force: bool = Query(False),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(verify_tenant_action)
+):
+    """
+    Authorize a discovered resource.
+    - Standard Users: Must meet tag policies.
+    - Org Admins: Can force authorize (override policies).
+    """
+    from backend.services.tag_policy_service import TagPolicyService
+    from backend.services.cleanup_service import CleanupService 
+
+    # 1. Check Compliance if not forcing or not admin
+    if not force or current_user.role != "ORG_ADMIN":
+        policy_service = TagPolicyService(db, str(current_user.organization_id))
+        
+        # We need resource tags. 
+        # For now, we fetch the resource details from CleanupService which should have current state.
+        cleanup_service = CleanupService(db)
+        # Assuming get_resource_details exists or similar
+        try:
+            # We use check_dependencies logic to find the resource or implemented a get
+            # For this MVP, we will rely on client passing tags OR fetch fresh. 
+            # Safest is to fetch fresh from Cloud or DB cache.
+            # Let's use the TagManagementService to scan it fresh? Expensive.
+            # Let's trust the DB state for now.
+            resource = cleanup_service.get_resource_details(account_id, resource_id, resource_type, region)
+            current_tags = resource.get('tags', {})
+            
+            compliant, violations = policy_service.validate_resource_compliance(resource_type, current_tags, region)
+            
+            if not compliant:
+                 raise HTTPException(
+                    status_code=400, 
+                    detail=f"Tag Policy Violation. Missing required tags: {', '.join(violations)}"
+                )
+        except HTTPException:
+            raise
+        except Exception as e:
+            # If we can't fetch resource to validate, fail open? No, fail closed.
+            logger.error(f"Could not validate tags for {resource_id}: {e}")
+            raise HTTPException(status_code=400, detail="Could not validate resource tags. Please try again.")
+
+    # 2. Authorize
+    service = CleanupService(db)
+    try:
+        # Pass user info to service for policy enforcement
+        result = service.authorize_resource(
+            resource_id=resource_id, 
+            resource_type=resource_type, 
+            user=current_user,
+            force=force
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        # logger.error(f"Authorization failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

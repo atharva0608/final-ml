@@ -32,6 +32,7 @@ from backend.api.tag_policy_routes import router as tag_policy_router
 from backend.api.tag_management_routes import router as tag_management_router
 from backend.api.tag_template_routes import router as tag_template_router
 from backend.api.auto_tag_routes import router as auto_tag_router
+from backend.api.smart_tag_routes import router as smart_tag_router
 
 api_router = APIRouter()
 
@@ -68,3 +69,4 @@ api_router.include_router(tag_policy_router)
 api_router.include_router(tag_management_router)
 api_router.include_router(tag_template_router)
 api_router.include_router(auto_tag_router)
+api_router.include_router(smart_tag_router)

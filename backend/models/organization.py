@@ -33,6 +33,7 @@ class Organization(Base):
     is_strict_approval_mode = Column(Boolean, default=False)    # If True, even Admins need approval
     governance_config = Column(JSON, default={})                # JSON config for specific actions
     required_tags = Column(JSON, default=["Owner", "Environment"])  # Feature 2: Required tag keys for compliance
+    require_automation_approval = Column(Boolean, default=True) # New: Require approval for automated cleanup actions
 
     
     created_at = Column(DateTime, default=datetime.utcnow)

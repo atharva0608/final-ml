@@ -1,162 +1,192 @@
-Here are the detailed, non-code functional instructions for implementing the **Tag Management System**. These instructions act as a blueprint for the frontend and product teams, detailing every popup, button, and user interaction required.
+Here are the detailed **Non-Code Functional Instructions** to implement the "Authorization Gate" and "Template-Based Bulk Tagging" systems.
 
-### 1. Admin Interface: Tag Policy Management
-
-**Location:** `Settings` > `Governance` > `Tag Policies` (New Tab)
-
-**A. The "Tag Policies" List View**
-
-* **Display:** Create a table listing all active tag policies.
-* **Columns:**
-* **Tag Key:** (e.g., "Owner", "CostCenter")
-* **Enforcement:** Badge showing "Advisory" (Yellow), "Required" (Red), or "Strict" (Black).
-* **Scope:** Icons representing resource types (EC2, S3, RDS).
-* **Compliance:** A progress bar showing % of resources that currently have this tag.
-* **Actions:** "Edit" (Pencil icon) and "Delete" (Trash icon) buttons.
-
-
-* **Primary Action:** Add a prominent **"Create Tag Policy"** button at the top right.
-
-**B. The "Create/Edit Policy" Modal**
-
-* **Trigger:** Clicking "Create Tag Policy" or "Edit".
-* **Header:** "Configure Tag Governance".
-* **Form Fields:**
-1. **Tag Key (Input):** The exact name of the tag (e.g., `Environment`).
-2. **Description (Text Area):** Help text for users (e.g., "Defines the deployment stage").
-3. **Allowed Values (Dynamic List):**
-* Radio toggle: "Free Text" vs. "Pre-defined List".
-* If "List": Show an input field with an "Add" button to build a list of valid options (e.g., `Prod`, `Dev`, `Staging`).
-
-
-4. **Validation (Input):** Optional Regex field (e.g., `^CC-\d{4}$`) for format checking.
-5. **Enforcement Level (Dropdown):** Options: `Advisory` (Warning only), `Required` (Blocks cleanup actions).
-
-
-* **Footer Actions:** "Cancel" and "Save Policy".
+These instructions map directly to the **Resource Hygiene** and **Governance** modules of your application.
 
 ---
 
-### 2. Resource Table Enhancements
+### 1. The "Authorization Gate" Workflow (Strict Enforcement)
 
-**Location:** `Cleanup Dashboard` (Compute, Storage, etc.)
+This feature modifies the **Onboarding/Discovery** process. It prevents "dirty" (untagged) resources from entering the "managed" state unless specific criteria are met.
 
-**A. The "Tags" Column Redesign**
+#### **A. The "Discovered Resources" Table Logic**
 
-* **Current State:** Replace the simple badge (e.g., "3 Tags").
-* **New Visual State:**
-* **Compliant:** Show a **Green Checkmark** if all "Required" policies are met.
-* **Non-Compliant:** Show a **Red Warning Icon** with a count of missing required tags (e.g., "⚠ Missing: Owner").
-* **Hover Interaction:**
-* Hovering over the icon must trigger a **Tooltip**.
-* Tooltip content: A mini-list of all current tags on that resource (`Key: Value`).
+**Location:** `Resource Hygiene` > `Discovered Assets` (or `Onboarding` tab).
+
+1. **New Column: "Compliance Status"**
+* Add a column next to the resource name/ID.
+* **Logic:** For every row, the frontend checks the resource's current tags against the **Active Tag Policies** (fetched from Settings).
+* **Visual States:**
+* 🟢 **Ready:** All "Required" tags are present and valid.
+* 🔴 **Violation:** One or more "Required" tags are missing or invalid.
 
 
 
 
-* **Click Interaction:** Clicking anywhere in the "Tags" cell must open the **Inline Tag Editor Modal**.
+2. **The "Authorize" Button Behavior (Role-Dependent)**
+* **Scenario:** A resource has a 🔴 **Violation** status.
+* **If User is MEMBER or TEAM_LEAD:**
+* **Button State:** **Disabled (Greyed out).**
+* **Tooltip:** Hovering over the button displays: *"Mandatory tags missing. You must fix tags before authorizing."*
+* **Required Action:** The user *must* click the **"Edit Tags"** icon in the row, add the required tags, save, and wait for the status to turn 🟢 before they can click Authorize.
 
-**B. Selection & Bulk Actions**
 
-* **Trigger:** User checks the checkboxes next to multiple resources.
-* **Floating Action Bar:** When items are selected, show a floating bar at the bottom or top of the table.
-* **Action Button:** Add a button labeled **"Tag Selected Resources (X)"**.
-* **Click Interaction:** Opens the **Bulk Tagging Modal**.
+* **If User is ORG_ADMIN:**
+* **Button State:** **Enabled.**
+* **Action:** Clicking "Authorize" triggers a **Override Warning Modal**.
+* **Modal Content:** *"This resource violates tag policies (Missing: CostCenter). Authorizing it now will lower your compliance score. Do you want to proceed?"*
+* **Buttons:** [Cancel] [**Force Authorize**] (Logs the bypass in Audit Logs).
+
+
+
+
+
+#### **B. Backend Enforcement (Safety Net)**
+
+* **Endpoint:** `POST /api/onboarding/authorize`
+* **Logic Update:**
+* If `user.role != ORG_ADMIN`, the backend validates the tags again.
+* If validation fails, return `400 Bad Request` with message: *"Tag policy violation. Authorization denied."*
+* This prevents users from bypassing the UI via API calls.
+
+
 
 ---
 
-### 3. The "Inline Tag Editor" Popup
+### 2. Feature: Tag Template Management
 
-**Trigger:** Clicking the "Tags" column of a specific resource.
+**Location:** `Settings` > `Governance` > `Tag Templates` (New Tab).
 
-**A. Modal Layout**
+**Goal:** Allow users to define standard sets of tags (presets) to apply quickly later.
 
-* **Title:** "Edit Tags for [Resource ID]" (e.g., `vol-0x123...`).
-* **Section 1: Required Tags (The Compliance Check)**
-* Display a list of all "Required" tag keys defined in Admin settings.
-* **Visual Cue:** If a required tag is missing, highlight the input field in **Red**.
-* **Input Type:**
-* If the policy has "Allowed Values," render a **Dropdown**.
-* If the policy is "Free Text," render a **Text Input**.
+#### **A. The "Create Template" Workflow**
 
-
-
-
-* **Section 2: Optional Tags**
-* Display existing AWS tags that are not in the "Required" list.
-* Action: **"+ Add New Tag"** link to add a blank row (Key/Value inputs).
-
-
-* **Section 3: Smart Suggestions (AI)**
-* Display a "Suggested Tags" panel if the system detects patterns.
-* *Example:* "We detected 'Environment: Prod' based on the resource name."
-* Action: **"Accept"** button next to the suggestion to auto-fill the field.
+1. **Button:** "Create New Template".
+2. **The Form:**
+* **Template Name:** (e.g., "Production Standard", "Dev Team Alpha").
+* **Resource Scope:** Dropdown to select if this applies to `All Resources`, `EC2 Only`, `S3 Only`, etc.
+* **Tag Builder:** A dynamic list of Key-Value pairs.
+* *Row 1:* `Environment` = `Production`
+* *Row 2:* `CostCenter` = `CC-Fin-01`
+* *Row 3:* `CreatedBy` = `{CURRENT_USER_EMAIL}` (Dynamic Variable).
 
 
 
-**B. Footer Actions**
 
-* **"Propagate to Related":** A checkbox option: "Also apply these tags to attached Snapshots/Volumes".
-* **Buttons:** "Cancel" and **"Save Changes"**.
-* **Submission Logic:** On Save, show a loading spinner, send API request to AWS, then refresh the row's compliance icon immediately.
+3. **Validation:**
+* If a user adds a tag key that contradicts a "Strict Policy" (e.g., enters an invalid CostCenter format), show an error immediately: *"Value does not match the Regex required for CostCenter."*
+
+
+
+#### **B. Visibility Scope**
+
+* **ORG_ADMIN templates:** Visible to the **Entire Organization**.
+* **TEAM_LEAD templates:** Visible only to their **Specific Team**.
 
 ---
 
-### 4. The "Bulk Tagging" Interface
+### 3. Feature: Bulk Tagging Wizard
 
-**Trigger:** Clicking "Tag Selected Resources" from the table.
+**Location:** `Resource Hygiene` > `Tag Management` (or any Resource Table).
 
-**A. Modal Layout**
+**Goal:** Apply templates to hundreds of resources in 3 clicks.
 
-* **Title:** "Bulk Tagging [X] Resources".
-* **Operation Mode Toggle:**
-* **"Update/Merge":** Adds new tags or updates existing ones (leaves others alone).
-* **"Replace All":** Wipes all existing tags and sets only the new ones (Show a warning alert if selected).
+#### **Step 1: Selection & Filter**
 
+* Add a **"Resource Class" Filter** at the top (e.g., "Show: EC2 Instances", "Show: S3 Buckets").
+* User selects 10, 50, or "Select All" rows.
+* **Action:** Click the **"Bulk Tag"** button in the floating action bar.
 
-* **The Tagging Form:**
-* Standard "Key" and "Value" input pairs.
-* **"Apply Template" Dropdown:** Allow selecting a preset (e.g., "Cost Center Standard") which pre-fills the rows.
+#### **Step 2: The Wizard Modal**
 
-
-* **Preview Section:**
-* Show a summary: "This will apply 'Owner: Alice' to 45 volumes."
-* **Conflict Warning:** If selected resources have *different* existing values for a tag, show a warning: "Mixed values detected for 'Owner'. This action will overwrite them all to 'Alice'."
-
+* **Title:** "Tagging 24 Selected Resources".
+* **Tab 1: Use Template (Default)**
+* **Dropdown:** Select a template (e.g., "Dev Team Alpha").
+* **Preview:** Shows the list of tags that will be applied.
+* **"Variable Input":** If the template has a variable (like `{ProjectID}`), ask the user to input the value *once* here.
 
 
-**B. Footer Actions**
+* **Tab 2: Manual Entry**
+* Add Key/Value pairs manually for ad-hoc tagging.
 
-* **Buttons:** "Cancel" and **"Apply Tags"**.
-* **Feedback:** Upon completion, show a "Toast" notification: "Successfully tagged 45 resources."
+
+
+#### **Step 3: Collision Handling (Crucial)**
+
+* **Question:** *"Some resources already have these tags. What should we do?"*
+* **Radio Options:**
+* ⚪ **Skip Existing:** If `Environment` tag exists, do not change it. Only add missing tags.
+* 🔘 **Overwrite (Force):** Update all selected resources to match this template exactly.
+
+
+
+#### **Step 4: Execution**
+
+* Show a progress bar: *"Updating 14/24 resources..."*
+* **Result:** *"Success: 22 Updated. 2 Failed (Insufficient Permissions)."*
 
 ---
 
-### 5. Automation: Auto-Tagging Rules (Future Phase)
+### 4. Advanced "Smart Tags" Logic
 
-**Location:** `Settings` > `Governance` > `Automation`
+These are backend logic rules that look for *specific* tags to perform automated actions.
 
-**A. "Create Auto-Tag Rule" Workflow**
+#### **A. The "TTL" (Time-To-Live) Tag**
 
-* **Step 1: Scope Definition**
-* Dropdowns to select: "Region" (e.g., us-east-1), "Resource Type" (e.g., EC2).
-* **Name Pattern Input:** "If Resource Name contains..." (e.g., `prod-`).
-
-
-* **Step 2: Tag Definition**
-* Define the tag to apply automatically (e.g., Key: `Environment`, Value: `Production`).
-
-
-* **Step 3: Review**
-* **"Test Rule" Button:** clearly display "This rule would currently match 14 resources."
-
-
-* **Step 4: Save**
-* Option to "Run Now" (Retroactive) or "Active for Future" (New resources only).
+* **Tag Key:** `auto:termination_date`
+* **Value Format:** `YYYY-MM-DD` (e.g., `2026-12-31`).
+* **Logic:**
+* Create a daily background job (Cron).
+* Scan all resources with this tag.
+* **Check:** `IF Today > Tag_Value`.
+* **Action:**
+1. **Mark as "Expired"** in the Resource Hygiene Dashboard (High Severity).
+2. Send an email/Slack alert to the resource owner: *"Your instance expired yesterday."*
+3. (Optional Config) **Stop** the instance.
 
 
 
-### Summary of Critical UX Flows
 
-1. **The "Fix-It" Loop:** User sees Red Icon  Clicks Icon  Pop-up shows missing field in Red  User fills it  Clicks Save  Icon turns Green.
-2. **The "Governance" Setup:** Admin defines "Owner" is required  All existing resources without "Owner" instantly turn Red in the dashboard.
+
+#### **B. The "Scheduler" Tag**
+
+* **Tag Key:** `auto:schedule`
+* **Value Enum:** `Weekdays-Only`, `Office-Hours`, `Always-On`.
+* **Logic:**
+* Integrate with your **Hibernation Service**.
+* Instead of manually assigning schedules in the UI, the Hibernation Service simply reads this tag.
+* *Example:* If tag is `Weekdays-Only` and today is Sunday  **Stop Instance**.
+
+
+
+#### **C. The "Budget Scope" Tag**
+
+* **Tag Key:** `finance:budget_code`
+* **Logic:**
+* In the **Billing Dashboard**, add a "Group By" dropdown.
+* Select "Budget Code".
+* The system aggregates costs based purely on this tag.
+* **Anomaly Detection:** Any resource *missing* this tag is grouped into a red bucket labeled **"Unallocated Spend"** to prompt immediate fixing.
+
+
+
+---
+
+### 5. Role-Based Capabilities Summary
+
+| Feature | 👷 Member | 👮 Team Lead | 🏢 Org Admin |
+| --- | --- | --- | --- |
+| **Authorize Untagged** | ❌ **Blocked** | ❌ **Blocked** | ✅ **Force Allow** |
+| **Create Template** | ❌ | ✅ (Team Scope) | ✅ (Global Scope) |
+| **Bulk Tagging** | ❌ | ✅ (Own Team) | ✅ (All Resources) |
+| **Define Policies** | 👁️ View Only | 👁️ View Only | ✅ Create/Edit |
+| **View "Unallocated"** | ❌ | ✅ (Team Budget) | ✅ (Global Budget) |
+
+### 6. Implementation Checklist
+
+* [ ] **Frontend (Hygiene):** Add `ComplianceStatus` column with Red/Green indicators.
+* [ ] **Frontend (Hygiene):** Disable "Authorize" button for non-admins if Red.
+* [ ] **Frontend (Governance):** Build `TemplateManager` UI (Create/Edit/Delete templates).
+* [ ] **Frontend (Bulk):** Build `BulkTagWizard` modal with Template selection.
+* [ ] **Backend (API):** Update `authorize` endpoint to enforce tag validation.
+* [ ] **Backend (DB):** Create `TagTemplate` table (`id`, `name`, `scope`, `tags_json`, `org_id`).
+* [ ] **Backend (Worker):** Implement `TTL_Scanner` task for `auto:termination_date`.

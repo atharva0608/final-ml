@@ -18,7 +18,7 @@ class TeamMemberResponse(BaseModel):
     status: str
     aws_accounts_count: int = 0  # Computed field
     accounts: List[AccountSummary] = [] # List of connected accounts
-    team_member_permissions: dict = {}  # Granular permission overrides
+    team_member_permissions: Optional[dict] = None  # Granular permission overrides
 
     class Config:
         from_attributes = True

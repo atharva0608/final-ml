@@ -217,6 +217,26 @@ class MetricsService:
         amd64 = instance_query.filter(Instance.architecture == 'amd64').count()
         arm64 = instance_query.filter(Instance.architecture == 'arm64').count()
 
+        # [NEW] Calculate type distribution
+        # Group by instance_type and count
+        type_counts = self.db.query(
+            Instance.instance_type, 
+            func.count(Instance.id)
+        ).join(Cluster).join(Account).filter(
+            Account.organization_id == user.organization_id
+        )
+        
+        if filters.cluster_id:
+            type_counts = type_counts.filter(Cluster.id == filters.cluster_id)
+            
+        type_counts = type_counts.group_by(Instance.instance_type).all()
+        
+        # Convert to dictionary (handle None types)
+        distribution = {
+            (t[0] or "unknown"): t[1] 
+            for t in type_counts
+        }
+
         return InstanceMetrics(
             total_instances=instance_query.count(),
             running_instances=running,
@@ -227,7 +247,8 @@ class MetricsService:
             spot_instances=spot,
             on_demand_instances=on_demand,
             amd64_instances=amd64,
-            arm64_instances=arm64
+            arm64_instances=arm64,
+            type_distribution=distribution
         )
 
     def get_cost_time_series(

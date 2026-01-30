@@ -47,6 +47,8 @@ class ResourceItem(BaseModel):
 
 class CleanupSummary(BaseModel):
     total_potential_savings: float = 0.0
+    previous_savings: Optional[float] = None  # Previous scan's savings for trend calculation
+    savings_trend_percent: Optional[float] = None  # Calculated percentage change from last scan
     unauthorized_instance_count: int = 0
     orphaned_volume_count: int = 0
     orphaned_snapshot_count: int = 0

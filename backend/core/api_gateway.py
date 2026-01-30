@@ -34,6 +34,17 @@ from backend.api import (
     cleanup_policy_router,
 )
 
+# Additional Analysis Routes
+from backend.api.ri_routes import router as ri_router
+from backend.api.s3_routes import router as s3_router
+from backend.api.rds_routes import router as rds_router
+from backend.api.transfer_routes import router as transfer_router
+
+# Tag Management Routes
+from backend.api.tag_policy_routes import router as tag_policy_router
+from backend.api.tag_management_routes import router as tag_management_router
+from backend.api.tag_template_routes import router as tag_template_router
+
 __all__ = [
     "auth_router",
     "template_router",
@@ -402,6 +413,17 @@ app.include_router(ticket_router, prefix="/api/v1")
 
 # Governance routes
 app.include_router(governance_router, prefix="/api/v1")
+
+# Analysis routes (RI, S3, RDS, Transfer)
+app.include_router(ri_router, prefix="/api/v1")
+app.include_router(s3_router, prefix="/api/v1")
+app.include_router(rds_router, prefix="/api/v1")
+app.include_router(transfer_router, prefix="/api/v1")
+
+# Tag Management routes
+app.include_router(tag_policy_router, prefix="/api/v1")
+app.include_router(tag_management_router, prefix="/api/v1")
+app.include_router(tag_template_router, prefix="/api/v1")
 
 
 # Startup and shutdown events

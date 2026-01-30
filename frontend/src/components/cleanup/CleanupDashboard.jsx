@@ -16,8 +16,10 @@ import CleanupSidebar from './layout/CleanupSidebar';
 import RIWizard from './wizards/RIWizard';
 import S3Wizard from './wizards/S3Wizard';
 import RDSWizard from './wizards/RDSWizard';
+import TagPoliciesManager from '../settings/TagPoliciesManager';
+import BulkTagEditor from './BulkTagEditor';
 import CleanupPolicies from '../policies/CleanupPolicies';
-import { FiCheck, FiX, FiTrash2 } from 'react-icons/fi';
+import { FiCheck, FiX, FiTrash2, FiTag } from 'react-icons/fi';
 
 const CleanupDashboard = () => {
     // -------------------------------------------------------------------------
@@ -41,6 +43,7 @@ const CleanupDashboard = () => {
     const [showRIWizard, setShowRIWizard] = useState(false);
     const [showS3Wizard, setShowS3Wizard] = useState(false);
     const [showRDSWizard, setShowRDSWizard] = useState(false);
+    const [showBulkTagWizard, setShowBulkTagWizard] = useState(false);
 
     const regionsList = [
         { id: 'ALL', name: 'All Regions (Global)' },
@@ -163,6 +166,13 @@ const CleanupDashboard = () => {
                         >
                             <FiX className="text-red-500" /> Unauthorize
                         </button>
+                        <button
+                            onClick={() => setShowBulkTagWizard(true)}
+                            disabled={selectedItems.length === 0}
+                            className="flex items-center gap-2 px-3 py-1.5 bg-white border border-gray-300 text-gray-700 hover:bg-gray-50 rounded-lg text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                            <FiTag className="text-gray-500" /> Tag
+                        </button>
                         <div className="h-6 w-px bg-gray-200 mx-2"></div>
                         <button
                             onClick={() => {
@@ -248,6 +258,8 @@ const CleanupDashboard = () => {
 
                             {activeTab === 'POLICIES' ? (
                                 <CleanupPolicies />
+                            ) : activeTab === 'TAG_POLICIES' ? (
+                                <TagPoliciesManager />
                             ) : (
                                 <ResourceTable
                                     resources={filteredResources}
@@ -280,6 +292,13 @@ const CleanupDashboard = () => {
                 onClose={() => setShowRDSWizard(false)}
                 selectedResources={selectedResourceObjects}
             />
+            {showBulkTagWizard && (
+                <BulkTagEditor
+                    resources={selectedResourceObjects}
+                    onClose={() => setShowBulkTagWizard(false)}
+                    onSuccess={() => handleScan(true)}
+                />
+            )}
 
             {/* Floating Action Bars for Optimization Tabs */}
             {activeTab === 'RI_WASTE' && (

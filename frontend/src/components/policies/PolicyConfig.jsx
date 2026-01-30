@@ -533,7 +533,7 @@ const PolicyConfig = ({ clusterId }) => {
               )}
 
               {activeTab === 'governance' && (
-                <GovernanceSettings />
+                <GovernanceSettings embedded={true} />
               )}
 
               {/* Action Bar - Only show for non-governance tabs */}

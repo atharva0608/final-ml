@@ -8,14 +8,67 @@ import { FiPieChart } from 'react-icons/fi';
 
 const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4'];
 
-const FleetComposition = ({ data = {}, widgetKey }) => {
-    const chartData = data.chartData || [
-        { name: 'm5.large', value: 35 },
-        { name: 'c5.xlarge', value: 25 },
-        { name: 'r5.2xlarge', value: 20 },
-        { name: 't3.medium', value: 15 },
-        { name: 'Other', value: 5 }
-    ];
+const FleetComposition = ({ widgetKey }) => {
+    const [chartData, setChartData] = React.useState([]);
+    const [loading, setLoading] = React.useState(true);
+    const [error, setError] = React.useState(null);
+
+    React.useEffect(() => {
+        const fetchData = async () => {
+            try {
+                const token = localStorage.getItem('token');
+                const response = await fetch('http://localhost:8000/api/v1/metrics/instances', {
+                    headers: {
+                        'Authorization': `Bearer ${token}`
+                    }
+                });
+
+                if (!response.ok) throw new Error('Failed to fetch metrics');
+
+                const data = await response.json();
+
+                // Transform type_distribution dictionary to chart array
+                // Example: {"t3.medium": 5, "m5.large": 10} -> [{name: "t3.medium", value: 5}, ...]
+                const distribution = data.type_distribution || {};
+                const transformed = Object.entries(distribution).map(([name, value]) => ({
+                    name,
+                    value
+                }));
+
+                // Sort by value desc and take top 5, group others
+                transformed.sort((a, b) => b.value - a.value);
+
+                let finalData = transformed;
+                if (transformed.length > 5) {
+                    const top5 = transformed.slice(0, 5);
+                    const others = transformed.slice(5).reduce((acc, curr) => acc + curr.value, 0);
+                    finalData = [...top5, { name: 'Other', value: others }];
+                }
+
+                setChartData(finalData.length > 0 ? finalData : [{ name: 'No Data', value: 1 }]);
+                setLoading(false);
+            } catch (err) {
+                console.error("Error fetching fleet composition:", err);
+                setError(err.message);
+                setLoading(false);
+                // Fallback to empty state
+                setChartData([{ name: 'No Data', value: 1 }]);
+            }
+        };
+
+        fetchData();
+        // Refresh every 5 minutes
+        const interval = setInterval(fetchData, 300000);
+        return () => clearInterval(interval);
+    }, []);
+
+    if (loading) {
+        return (
+            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 h-full flex items-center justify-center">
+                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-purple-600"></div>
+            </div>
+        );
+    }
 
     return (
         <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 hover:shadow-md transition-shadow">
@@ -47,7 +100,8 @@ const FleetComposition = ({ data = {}, widgetKey }) => {
                                 <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
                             ))}
                         </Pie>
-                        <Tooltip formatter={(value) => [`${value}%`, 'Share']} />
+                        <Tooltip formatter={(value) => [value, 'Instances']} />
+                        <Legend />
                     </PieChart>
                 </ResponsiveContainer>
             </div>

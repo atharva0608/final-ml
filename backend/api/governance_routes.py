@@ -23,9 +23,13 @@ def get_policies(
 ):
     """Get governance policies for the current user's organization"""
     service = GovernanceService(db)
+    # Check if we need to reload the user/org to get fresh data
+    db.refresh(current_user) # Ensure relations are loaded
+    
     return {
         "is_governance_enabled": current_user.organization.is_governance_enabled if current_user.organization else False,
         "is_strict_mode": current_user.organization.is_strict_approval_mode if current_user.organization else False,
+        "require_automation_approval": current_user.organization.require_automation_approval if current_user.organization else True,
         "required_tags": current_user.organization.required_tags if current_user.organization else [],
         "policies": service.get_organization_policies(current_user.organization_id)
     }
@@ -51,6 +55,9 @@ def update_policies(
     
     if "is_strict_mode" in policy_updates:
         org.is_strict_approval_mode = policy_updates["is_strict_mode"]
+
+    if "require_automation_approval" in policy_updates:
+        org.require_automation_approval = policy_updates["require_automation_approval"]
     
     # Update required tags
     if "required_tags" in policy_updates:

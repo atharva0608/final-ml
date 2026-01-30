@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import {
     FiServer, FiHardDrive, FiCamera, FiGlobe,
     FiShare2, FiLink, FiDatabase, FiUsers, FiFolder,
-    FiTrendingUp, FiArchive, FiActivity, FiChevronDown, FiChevronRight
+    FiTrendingUp, FiArchive, FiActivity, FiChevronDown, FiChevronRight, FiTag
 } from 'react-icons/fi';
 
 const CleanupSidebar = ({ activeTab, onTabChange, scanResult }) => {
@@ -49,7 +49,8 @@ const CleanupSidebar = ({ activeTab, onTabChange, scanResult }) => {
         {
             title: 'Governance',
             items: [
-                { type: 'POLICIES', label: 'Cleanup Policies', icon: FiArchive, isNew: true },
+                { type: 'POLICIES', label: 'Cleanup Policies', icon: FiArchive },
+                { type: 'TAG_POLICIES', label: 'Tag Policies', icon: FiTag, isNew: true },
             ]
         }
     ];

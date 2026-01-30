@@ -1,84 +1,77 @@
-from fastapi import APIRouter, Depends, HTTPException, Body
-from sqlalchemy.orm import Session
-from typing import List, Optional
-from backend.models.base import get_db
-from backend.core.dependencies import get_current_user
-from backend.models.user import User, UserRole
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from typing import List
+
+from backend.models.user import User
 from backend.services.ticket_service import TicketService
+from backend.core.dependencies import get_current_user
+from backend.models.base import get_db
+from sqlalchemy.orm import Session
 from backend.schemas.ticket_schemas import TicketCreate, TicketResponse, TicketGrantCreate
+from backend.core.exceptions import ResourceNotFoundError, ForbiddenError
 
-router = APIRouter(prefix="/tickets", tags=["JIT Tickets"])
+router = APIRouter(prefix="/tickets", tags=["tickets"])
 
-def get_service(db: Session = Depends(get_db)):
+def get_ticket_service(db: Session = Depends(get_db)) -> TicketService:
     return TicketService(db)
 
-@router.post("/", response_model=TicketResponse)
+@router.post("", response_model=TicketResponse)
 def create_ticket(
-    ticket: TicketCreate,
-    service: TicketService = Depends(get_service),
-    user: User = Depends(get_current_user)
+    ticket_data: TicketCreate,
+    current_user: User = Depends(get_current_user),
+    service: TicketService = Depends(get_ticket_service)
 ):
-    """Create a new JIT access request"""
-    return service.create_ticket(user, ticket.dict())
+    """
+    Submit a new access request ticket
+    """
+    try:
+        # Pass data as dict/compatible format to service
+        return service.create_ticket(current_user, ticket_data.model_dump())
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
-@router.get("/", response_model=List[TicketResponse])
+@router.get("", response_model=List[TicketResponse])
 def list_tickets(
-    status: Optional[str] = None,
-    service: TicketService = Depends(get_service),
-    user: User = Depends(get_current_user)
+    status: str = None,
+    current_user: User = Depends(get_current_user),
+    service: TicketService = Depends(get_ticket_service)
 ):
-    """List tickets (scoped to user/team/org based on role)"""
-    return service.list_tickets(user, status)
+    """
+    List tickets visible to the current user (Own, Team, or Org based on role)
+    """
+    return service.list_tickets(current_user, status)
 
-@router.get("/active-window", response_model=Optional[TicketResponse])
-def get_active_window(
-    service: TicketService = Depends(get_service),
-    user: User = Depends(get_current_user)
-):
-    """Check if current user has an active access window"""
-    return service.get_active_window(user.id)
-
-@router.post("/{ticket_id}/approve", response_model=TicketResponse)
-def approve_ticket(
-    ticket_id: str,
-    service: TicketService = Depends(get_service),
-    user: User = Depends(get_current_user)
-):
-    """Approve a ticket (Team Lead or Admin only)"""
-    return service.approve_ticket(user, ticket_id)
-
-@router.post("/{ticket_id}/revoke", response_model=TicketResponse)
-def revoke_ticket(
-    ticket_id: str,
-    service: TicketService = Depends(get_service),
-    user: User = Depends(get_current_user)
-):
-    """Revoke/Reject a ticket"""
-    return service.revoke_ticket(user, ticket_id)
-
-@router.post("/grant", response_model=List[TicketResponse])
-def grant_access(
+@router.post("/delegate", response_model=List[TicketResponse])
+def create_delegated_tickets(
     grant_data: TicketGrantCreate,
-    service: TicketService = Depends(get_service),
-    user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    service: TicketService = Depends(get_ticket_service)
 ):
-    """Admin grants access to multiple users"""
-    return service.create_delegated_tickets(user, grant_data.dict())
+    """
+    Admin: Grant access to multiple users (Delegated Grant)
+    """
+    try:
+        return service.create_delegated_tickets(current_user, grant_data.model_dump())
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except ForbiddenError as e:
+        raise HTTPException(status_code=403, detail=str(e))
 
-@router.post("/{ticket_id}/accept", response_model=TicketResponse)
-def accept_grant(
-    ticket_id: str,
-    service: TicketService = Depends(get_service),
-    user: User = Depends(get_current_user)
+@router.get("/active-window")
+def get_active_window(
+    current_user: User = Depends(get_current_user),
+    service: TicketService = Depends(get_ticket_service)
 ):
-    """User accepts a delegated grant"""
-    return service.accept_grant(user, ticket_id)
+    """
+    Check if there's an active execution window for the current user.
+    Returns the active ticket with time-limited access if one exists.
+    """
+    active_ticket = service.get_active_window(current_user.id)
+    if active_ticket:
+        return {
+            "has_active_window": True,
+            "ticket_id": str(active_ticket.id),
+            "expires_at": active_ticket.expires_at.isoformat() if active_ticket.expires_at else None
+        }
+    return {"has_active_window": False, "ticket_id": None, "expires_at": None}
 
-@router.post("/{ticket_id}/reject", response_model=TicketResponse)
-def reject_grant(
-    ticket_id: str,
-    service: TicketService = Depends(get_service),
-    user: User = Depends(get_current_user)
-):
-    """User rejects a delegated grant"""
-    return service.reject_grant(user, ticket_id)

@@ -49,6 +49,7 @@ class InstanceMetrics(BaseModel):
     on_demand_instances: int = 0
     amd64_instances: int = 0
     arm64_instances: int = 0
+    type_distribution: Dict[str, int] = Field(default_factory=dict)
 
 class SavingsBreakdown(BaseModel):
     """Savings breakdown metrics"""

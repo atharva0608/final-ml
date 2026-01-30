@@ -7,12 +7,13 @@ import toast from 'react-hot-toast';
  * GovernanceSettings - Feature 4: Automated Governance / Policy-as-Code
  * Admin-only page for configuring automated cleanup policies and approval workflows.
  */
-const GovernanceSettings = () => {
+const GovernanceSettings = ({ embedded = false }) => {
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
     const [config, setConfig] = useState({
         is_governance_enabled: false,
         is_strict_mode: false,
+        require_automation_approval: false,
         required_tags: ['Owner', 'Environment'],
         policies: {
             critical_actions: []
@@ -126,46 +127,76 @@ const GovernanceSettings = () => {
     }
 
     return (
-        <div className="p-6 space-y-6 bg-gray-50 min-h-screen">
-            {/* Header */}
-            <div className="bg-white p-6 rounded-lg shadow-sm border border-gray-200">
-                <div className="flex justify-between items-center">
-                    <div>
-                        <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
-                            <FiSettings className="text-indigo-600" /> Automated Governance
-                        </h1>
-                        <p className="text-sm text-gray-500 mt-1">
-                            Configure policy-as-code rules for automatic resource cleanup and approval workflows.
-                        </p>
+        <div className={embedded ? "space-y-6" : "p-6 space-y-6 bg-gray-50 min-h-screen"}>
+            {/* Header - Show only if NOT embedded */}
+            {!embedded && (
+                <div className="bg-white p-6 rounded-lg shadow-sm border border-gray-200">
+                    <div className="flex justify-between items-center">
+                        <div>
+                            <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
+                                <FiSettings className="text-indigo-600" /> Automated Governance
+                            </h1>
+                            <p className="text-sm text-gray-500 mt-1">
+                                Configure policy-as-code rules for automatic resource cleanup and approval workflows.
+                            </p>
+                        </div>
+                        <button
+                            onClick={handleSave}
+                            disabled={saving}
+                            className="flex items-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded-md hover:bg-indigo-700 disabled:opacity-50 transition-colors"
+                        >
+                            <FiSave /> {saving ? 'Saving...' : 'Save Changes'}
+                        </button>
                     </div>
+
+                    {/* Master Toggle for Non-Embedded Page */}
+                    <div className="mt-6 p-4 bg-indigo-50 rounded-lg border border-indigo-100 flex justify-between items-center">
+                        <div className="flex items-center gap-3">
+                            <div className="bg-indigo-100 p-2 rounded-full text-indigo-600">
+                                <FiZap className="w-6 h-6" />
+                            </div>
+                            <div>
+                                <h3 className="font-semibold text-indigo-900">Enable Automated Governance</h3>
+                                <p className="text-sm text-indigo-700">When enabled, the system will automatically execute cleanup actions based on the rules below.</p>
+                            </div>
+                        </div>
+                        <button
+                            onClick={toggleMasterSwitch}
+                            className={`text-4xl transition-colors ${config.is_governance_enabled ? 'text-green-500' : 'text-gray-300'}`}
+                        >
+                            {config.is_governance_enabled ? <FiToggleRight /> : <FiToggleLeft />}
+                        </button>
+                    </div>
+                </div>
+            )}
+
+            {/* Embedded Header Bar */}
+            {embedded && (
+                <div className="flex justify-between items-center mb-4">
+                    <div className="flex items-center gap-3 bg-indigo-50 px-4 py-3 rounded-lg border border-indigo-100 flex-1 mr-4">
+                        <div className="bg-indigo-100 p-1.5 rounded-full text-indigo-600">
+                            <FiZap className="w-5 h-5" />
+                        </div>
+                        <div className="flex-1">
+                            <h3 className="text-sm font-semibold text-indigo-900">Enable Automated Governance</h3>
+                        </div>
+                        <button
+                            onClick={toggleMasterSwitch}
+                            className={`text-3xl transition-colors ${config.is_governance_enabled ? 'text-green-500' : 'text-gray-300'}`}
+                        >
+                            {config.is_governance_enabled ? <FiToggleRight /> : <FiToggleLeft />}
+                        </button>
+                    </div>
+
                     <button
                         onClick={handleSave}
                         disabled={saving}
-                        className="flex items-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded-md hover:bg-indigo-700 disabled:opacity-50 transition-colors"
+                        className="flex items-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded-md hover:bg-indigo-700 disabled:opacity-50 transition-colors text-sm"
                     >
                         <FiSave /> {saving ? 'Saving...' : 'Save Changes'}
                     </button>
                 </div>
-
-                {/* Master Toggle */}
-                <div className="mt-6 p-4 bg-indigo-50 rounded-lg border border-indigo-100 flex justify-between items-center">
-                    <div className="flex items-center gap-3">
-                        <div className="bg-indigo-100 p-2 rounded-full text-indigo-600">
-                            <FiZap className="w-6 h-6" />
-                        </div>
-                        <div>
-                            <h3 className="font-semibold text-indigo-900">Enable Automated Governance</h3>
-                            <p className="text-sm text-indigo-700">When enabled, the system will automatically execute cleanup actions based on the rules below.</p>
-                        </div>
-                    </div>
-                    <button
-                        onClick={toggleMasterSwitch}
-                        className={`text-4xl transition-colors ${config.is_governance_enabled ? 'text-green-500' : 'text-gray-300'}`}
-                    >
-                        {config.is_governance_enabled ? <FiToggleRight /> : <FiToggleLeft />}
-                    </button>
-                </div>
-            </div>
+            )}
 
             {/* Approval Workflows */}
             <div className="bg-white p-6 rounded-lg shadow-sm border border-gray-200">
@@ -179,6 +210,7 @@ const GovernanceSettings = () => {
                 </div>
 
                 <div className="space-y-6">
+                    {/* Strict Mode */}
                     <div className="flex items-center justify-between p-4 bg-yellow-50 rounded-lg border border-yellow-200">
                         <div className="flex items-center gap-3">
                             <div className="bg-yellow-100 p-2 rounded-full text-yellow-600">
@@ -197,6 +229,26 @@ const GovernanceSettings = () => {
                         </button>
                     </div>
 
+                    {/* System Action Approval - THIS IS THE MISSING TOGGLE */}
+                    <div className="flex items-center justify-between p-4 bg-purple-50 rounded-lg border border-purple-200">
+                        <div className="flex items-center gap-3">
+                            <div className="bg-purple-100 p-2 rounded-full text-purple-600">
+                                <FiShield />
+                            </div>
+                            <div>
+                                <h3 className="font-medium text-purple-900">System Action Approval</h3>
+                                <p className="text-sm text-purple-700">Require approval for automated system actions (e.g., Scheduled Cleanup).</p>
+                            </div>
+                        </div>
+                        <button
+                            onClick={() => setConfig(prev => ({ ...prev, require_automation_approval: !prev.require_automation_approval }))}
+                            className={`text-4xl transition-colors ${config.require_automation_approval ? 'text-green-500' : 'text-gray-300'}`}
+                        >
+                            {config.require_automation_approval ? <FiToggleRight /> : <FiToggleLeft />}
+                        </button>
+                    </div>
+
+                    {/* Critical Actions */}
                     <div>
                         <h3 className="font-medium text-gray-700 mb-3 flex items-center gap-2">
                             Critical Actions
@@ -219,7 +271,7 @@ const GovernanceSettings = () => {
                 </div>
             </div>
 
-            {/* Policy Cards */}
+            {/* Cleanup Policies */}
             <h2 className="text-lg font-semibold text-gray-900 px-1">Cleanup Policies</h2>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                 {policyCards.map(policy => {

@@ -23,6 +23,7 @@ import { useAuthStore } from '../../store/useStore';
 // Widget System
 import { renderWidget } from './widgetRegistry';
 import { getDefaultLayout, WIDGET_METADATA, getWidgetsForRole } from './roleDefaults';
+import AccessRequestModal from '../tickets/AccessRequestModal';
 
 // Invitation Acceptance Modal Component
 const InvitationModal = ({ user, onAccept, onDecline, loading }) => {
@@ -92,12 +93,16 @@ const Dashboard = () => {
   const [accounts, setAccounts] = useState([]);
   const [inviteLoading, setInviteLoading] = useState(false);
   const [tenants, setTenants] = useState([]); // For Super Admin
+  const [dataLoading, setDataLoading] = useState(true);
 
   // Layout State
   const [activeLayout, setActiveLayout] = useState([]);
   const [isEditing, setIsEditing] = useState(false);
   const [showWidgetDrawer, setShowWidgetDrawer] = useState(false);
   const [availableWidgets, setAvailableWidgets] = useState([]);
+
+  // Access Modal State
+  const [showAccessModal, setShowAccessModal] = useState(false);
 
   // Check if user has pending invitation
   const showInvitationModal = user?.status === 'PENDING_INVITE';
@@ -118,6 +123,7 @@ const Dashboard = () => {
   // Fetch Data (Consolidated)
   useEffect(() => {
     const fetchData = async () => {
+      setDataLoading(true);
       try {
         // Common Data
         const logsRes = await auditAPI.list({ limit: 5 });
@@ -132,10 +138,7 @@ const Dashboard = () => {
 
         if (user?.role === 'SUPER_ADMIN') {
           // Fetch Tenants List
-          const clientsRes = await auditAPI.listClients({ limit: 5 }); // Using existing adminAPI mapped as auditAPI just strictly for this example or assume adminAPI exists
-          // Note: In real app import adminAPI correctly. Assuming adminAPI is available via imports or auth store context if needed.
-          // For now using mock/empty if adminAPI not fully setup here, but we imported it above as part of 'api'. 
-          // Actually adminAPI is imported from '../../services/api'. 
+          const clientsRes = await auditAPI.listClients({ limit: 5 });
           // setTenants(...)
         } else {
           // Fetch Clusters & Accounts for standard users
@@ -147,6 +150,8 @@ const Dashboard = () => {
 
       } catch (error) {
         console.error('Failed to fetch dashboard data:', error);
+      } finally {
+        setDataLoading(false);
       }
     };
     fetchData();
@@ -241,7 +246,7 @@ const Dashboard = () => {
       case 'savings_chart':
         return { chartData: savingsProjectionData };
       case 'fleet_composition':
-        return { chartData: [] }; // Populate if data available
+        return { chartData: [] };
       case 'activity_feed':
       case 'global_audit':
         return { activities: activityFeed };
@@ -250,9 +255,9 @@ const Dashboard = () => {
         return { clusters: clusters };
       case 'pending_approvals':
       case 'my_tickets':
-        return { tickets: [] }; // Fetch real tickets if available
+        return { tickets: [] };
       case 'platform_health':
-        return { metrics: { uptime: '99.99%', active_workers: 4 } };
+        return { metrics: { metrics: { uptime: '99.99%', active_workers: 4 } } };
       case 'tenant_list':
         return { tenants: tenants };
       default:
@@ -268,16 +273,33 @@ const Dashboard = () => {
     );
   }
 
-  // Show onboarding card only when:
-  // 1. Not loading
-  // 2. No accounts connected
-  // 3. Not SUPER_ADMIN (they don't connect accounts)
-  // 4. Not MEMBER (they can only request connection via JIT ticket)
+  // Show onboarding card checks
   const canConnectDirectly = ['ORG_ADMIN', 'CLIENT', 'TEAM_LEAD'].includes(user?.role);
-  const hasNoData = !loading && accounts.length === 0 && user?.role !== 'SUPER_ADMIN' && canConnectDirectly;
+  // Allow everyone to see the button, but restricted roles see JIT modal
+  const hasNoData = !loading && !dataLoading && accounts.length === 0 && user?.role !== 'SUPER_ADMIN';
+
+  const handleConnectClick = () => {
+    const allowedRoles = ['ORG_ADMIN', 'CLIENT', 'TEAM_LEAD'];
+    if (allowedRoles.includes(user?.role)) {
+      navigate('/onboarding');
+    } else {
+      setShowAccessModal(true);
+    }
+  };
 
   return (
     <>
+      <AccessRequestModal
+        isOpen={showAccessModal}
+        onClose={() => setShowAccessModal(false)}
+        resourceName="Add AWS Account"
+        actionType="CONNECT_AWS_ACCOUNT"
+        onSuccess={() => {
+          setShowAccessModal(false);
+          toast.success("Request sent to Team Lead");
+        }}
+      />
+
       {showInvitationModal && (
         <InvitationModal
           user={user}
@@ -316,7 +338,7 @@ const Dashboard = () => {
           </div>
         </div>
 
-        {/* Customization Drawer (Simple Inline for now) */}
+        {/* Customization Drawer */}
         {showWidgetDrawer && isEditing && (
           <Card className="bg-gray-50 border-blue-100 mb-6 animate-fadeIn">
             <div className="flex justify-between items-center mb-4">
@@ -329,7 +351,6 @@ const Dashboard = () => {
                 return (
                   <div key={widget.key} className={`p-3 rounded-lg border flex items-center justify-between ${isActive ? 'bg-blue-50 border-blue-200' : 'bg-white border-gray-200'}`}>
                     <div className="flex items-center gap-3">
-                      {/* Icon placeholder if needed */}
                       <div>
                         <p className="font-medium text-sm">{widget.name}</p>
                         <p className="text-xs text-gray-500">{widget.description}</p>
@@ -358,7 +379,7 @@ const Dashboard = () => {
                   Connect your AWS account to discover clusters, optimize costs, and track savings.
                 </p>
                 <div className="mt-3">
-                  <Button variant="primary" size="sm" onClick={() => navigate('/onboarding')}>
+                  <Button variant="primary" size="sm" onClick={handleConnectClick}>
                     Connect AWS Account →
                   </Button>
                 </div>
@@ -370,16 +391,12 @@ const Dashboard = () => {
         {/* Dynamic Widget Grid */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
           {activeLayout.map((widgetKey) => {
-            // Determine grid span based on widget type
             const isWide = ['savings_chart', 'activity_feed', 'global_audit', 'tenant_list', 'cluster_map'].includes(widgetKey);
             const colSpan = isWide ? 'md:col-span-2' : 'md:col-span-1';
 
             return (
               <div key={widgetKey} className={`relative ${colSpan} animate-fadeIn`}>
-                {/* Render Widget */}
                 {renderWidget(widgetKey, getWidgetData(widgetKey))}
-
-                {/* Remove Button (Edit Mode) */}
                 {isEditing && (
                   <button
                     onClick={() => removeWidget(widgetKey)}

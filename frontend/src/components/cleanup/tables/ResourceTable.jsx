@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
-import { FiCheckCircle, FiAlertTriangle, FiAlertOctagon, FiTag, FiServer, FiHardDrive, FiCamera, FiGlobe, FiShare2, FiLink, FiDatabase, FiUsers, FiFolder, FiMoreVertical, FiTrash2 } from 'react-icons/fi';
-import Badge from '../../shared/Badge';
+import { FiCheckCircle, FiAlertTriangle, FiAlertOctagon, FiTag, FiServer, FiHardDrive, FiCamera, FiGlobe, FiFolder, FiTrash2, FiXCircle } from 'react-icons/fi';
+import { toast } from 'react-hot-toast';
+import { useAuthStore } from '../../../store/useStore';
+import api from '../../../services/api';
 
 const ResourceTable = ({
     resources,
@@ -9,8 +11,14 @@ const ResourceTable = ({
     toggleSelection,
     setSelectedItems,
     activeTab,
-    showAuthorized
+    showAuthorized,
+    onAuthorize,
+    onUnauthorize,
+    onCleanup,
+    requiredTags = [] // Passed from parent or store
 }) => {
+    const { user } = useAuthStore();
+    const isOrgAdmin = user?.role === 'ORG_ADMIN';
 
     // Helper to get icon
     const getIcon = (type) => {
@@ -23,12 +31,48 @@ const ResourceTable = ({
         }
     };
 
-    // Helper safety level (re-used from dashboard logic or consolidated)
+    // Helper safety level
     const getSafetyLevel = (resource) => {
         if (resource.is_authorized) return 'HIGH';
         if (resource.status === 'SAFE_TO_DELETE') return 'HIGH';
         if (['VOLUME', 'SNAPSHOT', 'ELASTIC_IP'].includes(resource.type) && resource.status === 'ORPHANED') return 'HIGH';
         return 'LOW';
+    };
+
+    // Check tag compliance
+    const checkCompliance = (resource) => {
+        if (!requiredTags || requiredTags.length === 0) return { compliant: true, missing: [] };
+
+        // Convert resource tags to normalized keys
+        const existingKeys = Object.keys(resource.tags || {}).map(k => k.toLowerCase());
+        const missing = requiredTags.filter(req => !existingKeys.includes(req.toLowerCase()));
+
+        return {
+            compliant: missing.length === 0,
+            missing
+        };
+    };
+
+    const handleAuthorizeClick = async (resource) => {
+        const compliance = checkCompliance(resource);
+
+        if (!compliance.compliant) {
+            if (!isOrgAdmin) {
+                toast.error(`Compliance violation: Missing required tags: ${compliance.missing.join(', ')}`);
+                return;
+            }
+            // Admin override confirmation
+            if (!window.confirm(`Warning: This resource is missing required tags (${compliance.missing.join(', ')}). Authorizing it will lower your compliance score. Force authorize?`)) {
+                return;
+            }
+        }
+
+        if (onAuthorize) {
+            onAuthorize(resource.id);
+        } else {
+            // Fallback if prop not provided (for older implementations)
+            console.log('Authorize', resource.id);
+        }
     };
 
     if (loading) return <div className="p-12 text-center text-gray-500">Loading resources...</div>;
@@ -45,8 +89,6 @@ const ResourceTable = ({
 
     return (
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-            {/* Table Controls Header (Density, Search etc. - keeping simple for now) */}
-
             <div className="overflow-x-auto">
                 <table className="min-w-full divide-y divide-gray-200">
                     <thead className="bg-gray-50">
@@ -63,6 +105,7 @@ const ResourceTable = ({
                                 />
                             </th>
                             <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Resource</th>
+                            <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Compliance</th>
                             <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Region</th>
                             <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Reason</th>
                             <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Safety</th>
@@ -73,6 +116,8 @@ const ResourceTable = ({
                     <tbody className="bg-white divide-y divide-gray-200">
                         {resources.map(resource => {
                             const safety = getSafetyLevel(resource);
+                            const compliance = checkCompliance(resource);
+
                             return (
                                 <tr key={resource.id} className={`hover:bg-gray-50 transition-colors ${selectedItems.includes(resource.id) ? 'bg-blue-50' : ''}`}>
                                     <td className="px-6 py-4">
@@ -96,8 +141,8 @@ const ResourceTable = ({
                                                     <span>{resource.type}</span>
                                                     {resource.metadata?.State && (
                                                         <span className={`px-1.5 py-0.5 rounded text-[10px] uppercase font-bold tracking-wide ${resource.metadata.State === 'running' ? 'bg-green-100 text-green-700' :
-                                                                resource.metadata.State === 'stopped' ? 'bg-red-100 text-red-700' :
-                                                                    'bg-gray-100 text-gray-700'
+                                                            resource.metadata.State === 'stopped' ? 'bg-red-100 text-red-700' :
+                                                                'bg-gray-100 text-gray-700'
                                                             }`}>
                                                             {resource.metadata.State}
                                                         </span>
@@ -105,6 +150,23 @@ const ResourceTable = ({
                                                 </div>
                                             </div>
                                         </div>
+                                    </td>
+                                    <td className="px-6 py-4 whitespace-nowrap">
+                                        {compliance.compliant ? (
+                                            <div className="flex items-center text-green-600" title="All required tags present">
+                                                <FiCheckCircle className="w-5 h-5 mr-1" />
+                                                <span className="text-xs font-medium">Ready</span>
+                                            </div>
+                                        ) : (
+                                            <div className="group relative flex items-center text-red-500 cursor-help">
+                                                <FiXCircle className="w-5 h-5 mr-1" />
+                                                <span className="text-xs font-medium">Violation</span>
+                                                {/* Tooltip */}
+                                                <div className="absolute left-full ml-2 hidden group-hover:block w-48 bg-gray-900 text-white text-xs rounded p-2 z-10 shadow-lg">
+                                                    Missing: {compliance.missing.join(', ')}
+                                                </div>
+                                            </div>
+                                        )}
                                     </td>
                                     <td className="px-6 py-4 whitespace-nowrap">
                                         <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-800">
@@ -138,25 +200,29 @@ const ResourceTable = ({
                                         <div className="flex justify-end gap-2">
                                             {!resource.is_authorized && (
                                                 <button
-                                                    onClick={() => console.log('Authorize', resource.id)}
-                                                    className="text-gray-400 hover:text-green-600"
-                                                    title="Authorize"
+                                                    onClick={() => handleAuthorizeClick(resource)}
+                                                    className={`transition-colors p-1 rounded ${!compliance.compliant && !isOrgAdmin
+                                                            ? 'text-gray-300 cursor-not-allowed'
+                                                            : 'text-gray-400 hover:text-green-600 hover:bg-green-50'
+                                                        }`}
+                                                    title={!compliance.compliant && !isOrgAdmin ? "Fix tags to authorize" : "Authorize"}
+                                                    disabled={!compliance.compliant && !isOrgAdmin}
                                                 >
                                                     <FiCheckCircle className="w-5 h-5" />
                                                 </button>
                                             )}
                                             {resource.is_authorized && (
                                                 <button
-                                                    onClick={() => console.log('Unauthorize', resource.id)}
-                                                    className="text-gray-400 hover:text-red-500"
+                                                    onClick={() => onUnauthorize ? onUnauthorize(resource.id) : console.log('Unauthorize', resource.id)}
+                                                    className="text-gray-400 hover:text-red-500 hover:bg-red-50 p-1 rounded"
                                                     title="Unauthorize"
                                                 >
                                                     <FiAlertTriangle className="w-5 h-5" />
                                                 </button>
                                             )}
                                             <button
-                                                onClick={() => console.log('Cleanup', resource.id)}
-                                                className="text-gray-400 hover:text-red-600"
+                                                onClick={() => onCleanup ? onCleanup(resource.id) : console.log('Cleanup', resource.id)}
+                                                className="text-gray-400 hover:text-red-600 hover:bg-red-50 p-1 rounded"
                                                 title="Cleanup Resource"
                                             >
                                                 <FiTrash2 className="w-5 h-5" />

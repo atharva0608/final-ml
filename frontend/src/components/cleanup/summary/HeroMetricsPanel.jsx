@@ -3,12 +3,17 @@ import { FiTrendingUp, FiTrendingDown, FiAlertOctagon, FiAlertTriangle, FiCheckC
 import GaugeChart from '../../shared/GaugeChart';
 
 const HeroMetricsPanel = ({ scanResult, stats }) => {
-    // Column 1: Total Waste Summary
+    // Column 1: Total Waste Summary - Use real trend data from API
     const wasteTrend = useMemo(() => {
-        // Real trend requires historical data which we might not have yet in this 'scanResult' object alone.
-        // Returning neutral 0 for now to avoid fake data.
-        return { isUp: false, value: 0, diff: 0 };
-    }, [scanResult]);
+        // Use real trend data from backend if available
+        if (stats?.savings_trend_percent !== null && stats?.savings_trend_percent !== undefined) {
+            const trendValue = Math.abs(stats.savings_trend_percent);
+            const isUp = stats.savings_trend_percent > 0; // Positive = waste increased (bad), Negative = waste decreased (good)
+            return { isUp, value: trendValue, diff: stats.savings_trend_percent };
+        }
+        // Fallback: No historical data yet
+        return { isUp: false, value: 0, diff: 0, noData: true };
+    }, [stats]);
 
     // Column 2: Resource Distribution (Mocked for now as we don't have chart lib explicitly mentioned, using CSS donut or simple bars)
     // Actually we can use the same logic as existing but improved visuals.
@@ -50,9 +55,15 @@ const HeroMetricsPanel = ({ scanResult, stats }) => {
                     </span>
                     <span className="text-sm text-gray-500">/mo</span>
                 </div>
-                <div className={`mt-2 flex items-center text-sm ${wasteTrend.isUp ? 'text-red-600' : 'text-green-600'}`}>
-                    {wasteTrend.isUp ? <FiTrendingUp className="mr-1" /> : <FiTrendingDown className="mr-1" />}
-                    <span>{wasteTrend.isUp ? '↑' : '↓'} {wasteTrend.value}% from last scan</span>
+                <div className={`mt-2 flex items-center text-sm ${wasteTrend.noData ? 'text-gray-400' : wasteTrend.isUp ? 'text-red-600' : 'text-green-600'}`}>
+                    {wasteTrend.noData ? (
+                        <span className="text-gray-400 text-xs">First scan - no comparison available</span>
+                    ) : (
+                        <>
+                            {wasteTrend.isUp ? <FiTrendingUp className="mr-1" /> : <FiTrendingDown className="mr-1" />}
+                            <span>{wasteTrend.isUp ? '↑' : '↓'} {wasteTrend.value}% from last scan</span>
+                        </>
+                    )}
                 </div>
                 {/* Sparkline placeholder */}
                 <div className="absolute bottom-0 left-0 right-0 h-1 bg-gradient-to-r from-blue-500 to-purple-500 opacity-20"></div>

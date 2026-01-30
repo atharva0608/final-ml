@@ -1,59 +1,85 @@
-from fastapi import APIRouter, Depends, HTTPException, Path
+
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from typing import List, Dict
 
-from backend.core.dependencies import get_db, get_current_user
-from backend.services.approval_service import ApprovalService
 from backend.models.user import User
+from backend.services.ticket_service import TicketService
+from backend.core.dependencies import get_current_user
+from backend.models.base import get_db
+from backend.schemas.ticket_schemas import TicketResponse
+from backend.core.exceptions import ResourceNotFoundError, ForbiddenError
 
-router = APIRouter(
-    prefix="/approvals",
-    tags=["approvals"]
-)
+router = APIRouter(prefix="/approvals", tags=["approvals"])
 
-@router.get("/pending", summary="List pending approval requests")
-def list_pending_approvals(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+def get_ticket_service(db: Session = Depends(get_db)) -> TicketService:
+    return TicketService(db)
+
+@router.post("/{ticket_id}/approve", response_model=TicketResponse)
+def approve_ticket(
+    ticket_id: str,
+    current_user: User = Depends(get_current_user),
+    service: TicketService = Depends(get_ticket_service)
 ):
     """
-    List all pending requests for the current user's organization.
+    Approve a pending ticket (Team Lead / Admin)
     """
-    if not current_user.organization_id:
-        raise HTTPException(status_code=400, detail="User not part of an organization")
-        
-    service = ApprovalService(db)
-    # Filter? or just return all for the org?
-    # Ideally should check if user is allowed to see them (Team Lead+)
-    # But for now transparency is fine.
-    return service.get_pending_requests(current_user.organization_id)
-
-@router.post("/{request_id}/approve", summary="Approve a request")
-def approve_request(
-    request_id: str = Path(..., title="The ID of the request to approve"),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
-):
-    """
-    Approve and execute a pending request.
-    """
-    service = ApprovalService(db)
     try:
-        return service.approve_request(current_user, request_id)
+        return service.approve_ticket(current_user, ticket_id)
+    except ResourceNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ForbiddenError as e:
+        raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-@router.post("/{request_id}/reject", summary="Reject a request")
-def reject_request(
-    request_id: str = Path(..., title="The ID of the request to reject"),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+@router.post("/{ticket_id}/revoke", response_model=TicketResponse)
+def revoke_ticket(
+    ticket_id: str,
+    current_user: User = Depends(get_current_user),
+    service: TicketService = Depends(get_ticket_service)
 ):
     """
-    Reject a pending request.
+    Revoke an active ticket immediately
     """
-    service = ApprovalService(db)
     try:
-        return service.reject_request(current_user, request_id)
-    except Exception as e:
+        return service.revoke_ticket(current_user, ticket_id)
+    except ResourceNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ForbiddenError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
+@router.post("/{ticket_id}/accept", response_model=TicketResponse)
+def accept_grant(
+    ticket_id: str,
+    current_user: User = Depends(get_current_user),
+    service: TicketService = Depends(get_ticket_service)
+):
+    """
+    User: Accept a delegated grant offering
+    """
+    try:
+        return service.accept_grant(current_user, ticket_id)
+    except ResourceNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ForbiddenError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.post("/{ticket_id}/reject", response_model=TicketResponse)
+def reject_grant(
+    ticket_id: str,
+    current_user: User = Depends(get_current_user),
+    service: TicketService = Depends(get_ticket_service)
+):
+    """
+    User: Reject a delegated grant offering
+    """
+    try:
+        return service.reject_grant(current_user, ticket_id)
+    except ResourceNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ForbiddenError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

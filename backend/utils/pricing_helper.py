@@ -18,13 +18,26 @@ class PricingHelper:
     
     def __init__(self):
         self.redis = get_redis_client()
-        # Price List API is only available in us-east-1 and ap-south-1
-        self.pricing_client = boto3.client(
-            'pricing',
-            aws_access_key_id=settings.AWS_ACCESS_KEY,
-            aws_secret_access_key=settings.AWS_SECRET_KEY,
-            region_name='us-east-1'
-        )
+        self.pricing_client = None
+        
+        # Only create pricing client if AWS credentials are available
+        aws_access = getattr(settings, 'AWS_ACCESS_KEY', None)
+        aws_secret = getattr(settings, 'AWS_SECRET_KEY', None)
+        
+        if aws_access and aws_secret:
+            try:
+                # Price List API is only available in us-east-1 and ap-south-1
+                self.pricing_client = boto3.client(
+                    'pricing',
+                    aws_access_key_id=aws_access,
+                    aws_secret_access_key=aws_secret,
+                    region_name='us-east-1'
+                )
+            except Exception as e:
+                print(f"Warning: Failed to initialize AWS Pricing client: {e}")
+                self.pricing_client = None
+        else:
+            print("Info: AWS credentials not configured. Using fallback pricing.")
     
     def get_s3_storage_price(self, region: str, storage_class: str = 'Standard') -> float:
         """
@@ -40,9 +53,13 @@ class PricingHelper:
         cache_key = f"pricing:s3:{region}:{storage_class}"
         
         # Check cache first
-        cached = self.redis.get(cache_key)
+        cached = self.redis.get(cache_key) if self.redis else None
         if cached:
             return float(cached)
+        
+        # Return fallback if no pricing client available
+        if not self.pricing_client:
+            return self._get_fallback_s3_price(storage_class)
         
         try:
             # Map storage class to AWS terminology
@@ -171,6 +188,64 @@ class PricingHelper:
         }
         return region_map.get(region, 'US East (N. Virginia)')
     
+    
+    def get_ebs_price(self, region: str, volume_type: str = 'gp3') -> float:
+        """Get EBS storage price per GB-month"""
+        # Fallback rates (approximate public pricing)
+        rates = {
+            'gp2': 0.10,
+            'gp3': 0.08,
+            'io1': 0.125,
+            'io2': 0.125,
+            'st1': 0.045,
+            'sc1': 0.025,
+            'standard': 0.05
+        }
+        return rates.get(volume_type, 0.10)
+
+    def get_snapshot_price(self, region: str, storage_class: str = 'standard') -> float:
+        """Get EBS Snapshot price per GB-month"""
+        return 0.05
+
+    def get_eip_price(self, region: str) -> float:
+        """Get Elastic IP price per month"""
+        # $0.005/hr * 730 hours
+        return 3.65
+
+    def get_ec2_price(self, region: str, instance_type: str) -> float:
+        """Get EC2 On-Demand price per month"""
+        # Simplified lookup for common types, others default to estimation
+        # In a real app, this should query the Pricing API with instance type filter
+        prices = {
+            't2.micro': 8.50,
+            't2.small': 17.00,
+            't2.medium': 34.00,
+            't3.micro': 7.50,
+            't3.small': 15.00,
+            't3.medium': 30.00,
+            'm5.large': 70.00,
+            'm5.xlarge': 140.00,
+            'c5.large': 62.00,
+            'c5.xlarge': 124.00,
+            'r5.large': 91.00,
+            'g4dn.xlarge': 380.00
+        }
+        return prices.get(instance_type, 50.00)
+
+    def get_rds_price(self, region: str, instance_class: str, engine: str) -> float:
+        """Get RDS On-Demand price per month"""
+        # Simplified lookup
+        prices = {
+            'db.t3.micro': 15.00,
+            'db.t3.small': 30.00,
+            'db.t3.medium': 60.00,
+            'db.m5.large': 140.00
+        }
+        return prices.get(instance_class, 50.00)
+
+    def get_load_balancer_price(self, region: str, type: str) -> float:
+        return 16.00  # Approx $0.0225/hr
+
     def _get_fallback_s3_price(self, storage_class: str) -> float:
         """Fallback pricing when API fails (us-east-1 rates)"""
         fallback_prices = {
