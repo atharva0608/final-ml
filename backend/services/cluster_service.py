@@ -75,6 +75,32 @@ class ClusterService:
             "cluster_name": cluster.name
         }
 
+    def update_resource_costs(self, cluster_id: str, user_id: str, costs: dict) -> dict:
+        """
+        Update resource costs for a cluster
+        """
+        cluster = self._get_cluster_with_access(cluster_id, user_id)
+        
+        # Store costs in cluster tags (or could use a separate table)
+        if not cluster.tags:
+            cluster.tags = {}
+        
+        cluster.tags['resource_costs'] = {
+            'cpu_cost': costs.get('cpu_cost', '0'),
+            'memory_cost': costs.get('memory_cost', '0'),
+            'storage_cost': costs.get('storage_cost', '0'),
+            'ingress_cost': costs.get('ingress_cost', '0'),
+            'egress_cost': costs.get('egress_cost', '0'),
+        }
+        cluster.updated_at = datetime.utcnow()
+        self.db.commit()
+        
+        return {
+            "status": "success",
+            "cluster_id": cluster.id,
+            "costs": cluster.tags['resource_costs']
+        }
+
     def discover_clusters(self, account_id: str, user_id: str) -> List[Dict[str, Any]]:
         account = self.db.query(Account).filter(Account.id == account_id).first()
         if not account: return []

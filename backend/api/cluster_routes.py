@@ -275,3 +275,18 @@ def get_cluster_nodes(
         return service.get_cluster_nodes(cluster_id, current_user.id)
     except ResourceNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+@router.post("/{cluster_id}/costs")
+def update_resource_costs(
+    cluster_id: str,
+    costs: dict,
+    current_user: User = Depends(get_current_user),
+    service: ClusterService = Depends(get_cluster_service)
+):
+    """
+    Update resource costs for a cluster (CPU, Memory, Storage, Ingress, Egress)
+    """
+    try:
+        return service.update_resource_costs(cluster_id, current_user.id, costs)
+    except ResourceNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
