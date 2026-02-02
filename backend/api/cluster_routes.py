@@ -79,6 +79,97 @@ def connect_aws_cluster(
     except (ResourceAlreadyExistsError, ResourceNotFoundError, ValidationError) as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+@router.get("/agent-manifest")
+def get_agent_manifest():
+    """
+    Public endpoint - Returns the Kubernetes agent manifest YAML
+    No authentication required for kubectl to fetch
+    """
+    from fastapi.responses import Response
+    
+    manifest = """
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spot-optimizer-agent
+  namespace: spot-optimizer
+  labels:
+    app: spot-optimizer-agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: spot-optimizer-agent
+  template:
+    metadata:
+      labels:
+        app: spot-optimizer-agent
+    spec:
+      serviceAccountName: spot-optimizer-agent
+      containers:
+      - name: agent
+        image: spotoptimizer/agent:latest
+        imagePullPolicy: Always
+        env:
+        - name: API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: spot-agent-config
+              key: API_KEY
+        - name: BACKEND_URL
+          valueFrom:
+            secretKeyRef:
+              name: spot-agent-config
+              key: BACKEND_URL
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: spot-optimizer-agent
+  namespace: spot-optimizer
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: spot-optimizer-agent
+rules:
+- apiGroups: [""]
+  resources: ["nodes", "pods", "namespaces", "services", "configmaps"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "replicasets", "daemonsets", "statefulsets"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["metrics.k8s.io"]
+  resources: ["nodes", "pods"]
+  verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: spot-optimizer-agent
+subjects:
+- kind: ServiceAccount
+  name: spot-optimizer-agent
+  namespace: spot-optimizer
+roleRef:
+  kind: ClusterRole
+  name: spot-optimizer-agent
+  apiGroup: rbac.authorization.k8s.io
+"""
+    
+    return Response(
+        content=manifest.strip(),
+        media_type="text/yaml",
+        headers={"Content-Disposition": "inline; filename=agent-manifest.yaml"}
+    )
+
 @router.get("/{cluster_id}", response_model=ClusterResponse)
 def get_cluster(
     cluster_id: str,
