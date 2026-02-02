@@ -27,9 +27,7 @@ const ClusterConnectModal = ({ isOpen, onClose, onSuccess }) => {
   const [step, setStep] = useState(1); // 1: Provider, 2: Script, 3: Success/Costs
   const [connectionMethod, setConnectionMethod] = useState('agentless'); // Default to agentless for EKS
   const [provider, setProvider] = useState('eks'); // Default to EKS
-  const [clusterName, setClusterName] = useState('');
   const [region, setRegion] = useState('');
-  const [customImage, setCustomImage] = useState('');
   const [roleArn, setRoleArn] = useState('');
   // Generate random external ID on mount/modal open
   const [externalId, setExternalId] = useState(`spot-optimizer-${Math.random().toString(36).substr(2, 9)}`);
@@ -103,11 +101,7 @@ const ClusterConnectModal = ({ isOpen, onClose, onSuccess }) => {
       // 2. ⚡ YOUR SPECIFIC NGROK URL (Hardcoded for automation)
       // 3. Generate One-Click Install Command (Helm via curl | bash)
       const PUBLIC_URL = BACKEND_URL;
-      let scriptUrl = `${PUBLIC_URL}/api/v1/clusters/${cluster_id}/script`;
-
-      if (customImage && customImage.trim()) {
-        scriptUrl += `?image=${encodeURIComponent(customImage.trim())}`;
-      }
+      const scriptUrl = `${PUBLIC_URL}/api/v1/clusters/${cluster_id}/script`;
 
       const magicCommand = `curl -fsSL "${scriptUrl}" | bash`;
 
@@ -285,22 +279,6 @@ const ClusterConnectModal = ({ isOpen, onClose, onSuccess }) => {
                       className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                     />
                     <p className="text-xs text-gray-500 mt-1">Leave empty for default (us-east-1)</p>
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">
-                      CUSTOM AGENT IMAGE (Optional):
-                    </label>
-                    <input
-                      type="text"
-                      value={customImage}
-                      onChange={(e) => setCustomImage(e.target.value)}
-                      placeholder="e.g. 123456789.dkr.ecr.us-east-1.amazonaws.com/spot-optimizer-agent:latest"
-                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm"
-                    />
-                    <p className="text-xs text-gray-500 mt-1">
-                      Required for EKS if using private registry or ECR. Leave empty for default.
-                    </p>
                   </div>
 
                   <div className="flex justify-end">

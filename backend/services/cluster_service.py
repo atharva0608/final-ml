@@ -638,12 +638,7 @@ EOF
             instructions=["Run the command in your terminal", "Monitor the connection status in dashboard"]
         )
 
-    def generate_helm_install_script(
-        self, 
-        cluster_id: str, 
-        user_id: str, 
-        image: Optional[str] = None
-    ) -> str:
+    def generate_helm_install_script(self, cluster_id: str, user_id: str) -> str:
         """
         Generate a shell script to install the agent via Helm
         One-click experience: curl | bash
@@ -679,19 +674,6 @@ HELM_CMD="helm upgrade --install spot-optimizer-agent $CHART_URI \\
   --set config.clusterId='{cluster.id}' \\
   --wait"
 
-# Inject custom image if provided
-"""
-        if image:
-            # Split repo and tag if possible, or just set repository/tag?
-            # Helm chart values: image.repository, image.tag
-            # Assuming input is full URI "repo/image:tag"
-            if ':' in image:
-                repo, tag = image.split(':', 1)
-                script += f'HELM_CMD="$HELM_CMD --set image.repository={repo} --set image.tag={tag}"\n'
-            else:
-                script += f'HELM_CMD="$HELM_CMD --set image.repository={image}"\n'
-
-        script += """
 # Execute
 eval "$HELM_CMD"
 
