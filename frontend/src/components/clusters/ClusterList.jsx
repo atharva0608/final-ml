@@ -9,7 +9,7 @@ import { useClusterStore } from '../../store/useStore';
 import { useAuth } from '../../hooks/useAuth';
 import { Button, Badge, Card } from '../shared'; // Assuming Card is a simple white container
 import { formatCurrency, formatClusterType } from '../../utils/formatters';
-import { FiRefreshCw, FiPlus, FiMoreHorizontal, FiHardDrive, FiCpu, FiActivity, FiServer } from 'react-icons/fi'; // Icons
+import { FiRefreshCw, FiPlus, FiMoreHorizontal, FiHardDrive, FiCpu, FiActivity, FiServer, FiTrash2 } from 'react-icons/fi'; // Icons
 import { PieChart, Pie, Cell, ResponsiveContainer } from 'recharts'; // For Donut Charts
 import toast from 'react-hot-toast';
 import ClusterConnectModal from './ClusterConnectModal';
@@ -23,6 +23,7 @@ const ClusterList = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [showConnectModal, setShowConnectModal] = useState(false);
   const [selectedClusterId, setSelectedClusterId] = useState(null);
+  const [openMenuId, setOpenMenuId] = useState(null); // For dropdown menu
 
   // Mock KPI Data State
   const [kpiData, setKpiData] = useState({
@@ -45,19 +46,8 @@ const ClusterList = () => {
     try {
       const response = await clusterAPI.list({});
       const fetchedClusters = response.data.clusters || [];
-
-      // Enrich clusters with mock usage data for visualization if missing
-      const enrichedClusters = fetchedClusters.map(c => ({
-        ...c,
-        cpu_total: c.node_count * 4, // Mock: 4 vCPU per node avg
-        mem_total: c.node_count * 16, // Mock: 16 GB per node avg
-        cpu_usage: Math.floor(Math.random() * (c.node_count * 4)),
-        mem_usage: Math.floor(Math.random() * (c.node_count * 16)),
-        provider: 'aws' // Default to AWS for now
-      }));
-
-      setClusters(enrichedClusters);
-      calculateKPIs(enrichedClusters);
+      setClusters(fetchedClusters);
+      calculateKPIs(fetchedClusters);
 
     } catch (error) {
       toast.error('Failed to load clusters');
@@ -202,6 +192,20 @@ const ClusterList = () => {
       return;
     }
     setShowConnectModal(true);
+  };
+
+  const handleDeleteCluster = async (clusterId, e) => {
+    e.stopPropagation(); // Prevent row click
+    setOpenMenuId(null);
+    if (!window.confirm('Are you sure you want to delete this cluster?')) return;
+    try {
+      await clusterAPI.deleteCluster(clusterId);
+      toast.success('Cluster deleted successfully');
+      fetchClusters();
+    } catch (error) {
+      toast.error('Failed to delete cluster');
+      console.error(error);
+    }
   };
 
   if (loading && clusters.length === 0) {
@@ -349,10 +353,27 @@ const ClusterList = () => {
                       {cluster.status === 'ACTIVE' ? 'Connected' : cluster.status}
                     </span>
                   </td>
-                  <td className="py-4 px-6 text-right">
-                    <button className="text-gray-400 hover:text-gray-600">
+                  <td className="py-4 px-6 text-right relative">
+                    <button
+                      className="text-gray-400 hover:text-gray-600"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setOpenMenuId(openMenuId === cluster.id ? null : cluster.id);
+                      }}
+                    >
                       <FiMoreHorizontal className="w-5 h-5" />
                     </button>
+                    {openMenuId === cluster.id && (
+                      <div className="absolute right-6 top-10 bg-white border border-gray-200 rounded-lg shadow-lg z-20 py-1 min-w-[120px]">
+                        <button
+                          className="w-full px-4 py-2 text-left text-sm text-red-600 hover:bg-red-50 flex items-center gap-2"
+                          onClick={(e) => handleDeleteCluster(cluster.id, e)}
+                        >
+                          <FiTrash2 className="w-4 h-4" />
+                          Delete
+                        </button>
+                      </div>
+                    )}
                   </td>
                 </tr>
               ))}

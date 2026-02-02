@@ -16,17 +16,14 @@ import { Card, Button } from '../shared';
 import {
   FiX, FiCopy, FiCheck, FiAlertCircle, FiRefreshCw
 } from 'react-icons/fi';
-import {
-  SiAmazonaws, SiMicrosoftazure, SiGooglecloud,
-  SiRedhat, SiKubernetes
-} from 'react-icons/si';
+import { SiAmazonaws } from 'react-icons/si';
 import toast from 'react-hot-toast';
 import { clusterAPI } from '../../services/api';
 
 const ClusterConnectModal = ({ isOpen, onClose, onSuccess }) => {
   const [step, setStep] = useState(1); // 1: Provider, 2: Script, 3: Success/Costs
-  const [connectionMethod, setConnectionMethod] = useState('agent'); // 'agent' or 'agentless'
-  const [provider, setProvider] = useState('');
+  const [connectionMethod, setConnectionMethod] = useState('agentless'); // Default to agentless for EKS
+  const [provider, setProvider] = useState('eks'); // Default to EKS
   const [clusterName, setClusterName] = useState('');
   const [region, setRegion] = useState('');
   const [roleArn, setRoleArn] = useState('');
@@ -76,11 +73,6 @@ const ClusterConnectModal = ({ isOpen, onClose, onSuccess }) => {
 
   const providers = [
     { id: 'eks', name: 'EKS', icon: SiAmazonaws, color: 'orange' },
-    { id: 'aks', name: 'AKS', icon: SiMicrosoftazure, color: 'blue' },
-    { id: 'gke', name: 'GKE', icon: SiGooglecloud, color: 'blue' },
-    { id: 'openshift', name: 'OpenShift', label: 'on AWS', icon: SiRedhat, color: 'red' },
-    { id: 'kops', name: 'kOps', label: 'on AWS', icon: SiKubernetes, color: 'blue' },
-    { id: 'other', name: 'Other', label: 'anywhere', icon: SiKubernetes, color: 'blue' },
   ];
 
   const handleProviderSelect = async () => {

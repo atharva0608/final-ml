@@ -17,8 +17,10 @@ import RIWizard from './wizards/RIWizard';
 import S3Wizard from './wizards/S3Wizard';
 import RDSWizard from './wizards/RDSWizard';
 import TagPoliciesManager from '../settings/TagPoliciesManager';
-import BulkTagEditor from './BulkTagEditor';
-import CleanupPolicies from '../policies/CleanupPolicies';
+import BulkTagWizard from './BulkTagWizard';
+import TagTemplateManager from '../settings/TagTemplateManager';
+
+import GovernanceManager from '../settings/GovernanceManager';
 import { FiCheck, FiX, FiTrash2, FiTag } from 'react-icons/fi';
 
 const CleanupDashboard = () => {
@@ -167,7 +169,10 @@ const CleanupDashboard = () => {
                             <FiX className="text-red-500" /> Unauthorize
                         </button>
                         <button
-                            onClick={() => setShowBulkTagWizard(true)}
+                            onClick={() => {
+                                if (selectedItems.length === 0) return;
+                                setShowBulkTagWizard(true);
+                            }}
                             disabled={selectedItems.length === 0}
                             className="flex items-center gap-2 px-3 py-1.5 bg-white border border-gray-300 text-gray-700 hover:bg-gray-50 rounded-lg text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                         >
@@ -256,10 +261,8 @@ const CleanupDashboard = () => {
                                 )}
                             </div>
 
-                            {activeTab === 'POLICIES' ? (
-                                <CleanupPolicies />
-                            ) : activeTab === 'TAG_POLICIES' ? (
-                                <TagPoliciesManager />
+                            {activeTab === 'GOVERNANCE' ? (
+                                <GovernanceManager />
                             ) : (
                                 <ResourceTable
                                     resources={filteredResources}
@@ -293,10 +296,13 @@ const CleanupDashboard = () => {
                 selectedResources={selectedResourceObjects}
             />
             {showBulkTagWizard && (
-                <BulkTagEditor
-                    resources={selectedResourceObjects}
+                <BulkTagWizard
+                    isOpen={showBulkTagWizard}
                     onClose={() => setShowBulkTagWizard(false)}
-                    onSuccess={() => handleScan(true)}
+                    selectedResources={selectedResourceObjects}
+                    onComplete={() => handleScan(true)}
+                    accountId={selectedAccount}
+                    regionId={selectedRegion}
                 />
             )}
 

@@ -36,6 +36,7 @@ import RightSizing from './components/right-sizing/RightSizing';
 import CleanupDashboard from './components/cleanup/CleanupDashboard';
 import GovernanceSettings from './components/settings/GovernanceSettings';
 import TagPoliciesManager from './components/settings/TagPoliciesManager';
+import TagTemplateManager from './components/settings/TagTemplateManager';
 
 import Teams from './pages/Teams';
 import TeamDetails from './pages/TeamDetails';
@@ -228,6 +229,7 @@ function App() {
             <Route path="settings" element={<Settings />} />
             <Route path="settings/governance" element={<GovernanceSettings />} />
             <Route path="tag-management" element={<TagPoliciesManager />} />
+            <Route path="tag-templates" element={<TagTemplateManager />} />
 
             <Route path="teams" element={<Teams />} />
             <Route path="teams/:teamId" element={<TeamDetails />} />

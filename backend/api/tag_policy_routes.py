@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from typing import List
 
 from backend.core.dependencies import get_db, get_current_user
-from backend.models.user import User
+from backend.models.user import User, UserRole
 from backend.services.tag_policy_service import TagPolicyService
 from backend.schemas.tag_policy_schemas import (
     TagPolicyCreate,
@@ -26,7 +26,7 @@ def create_tag_policy(
     current_user: User = Depends(get_current_user)
 ):
     """Create a new tag policy (Admin only)"""
-    if not current_user.is_org_admin:
+    if current_user.role not in [UserRole.ORG_ADMIN, UserRole.SUPER_ADMIN]:
         raise HTTPException(status_code=403, detail="Admin access required")
     
     service = TagPolicyService(db, current_user.organization_id)
@@ -84,7 +84,7 @@ def update_tag_policy(
     current_user: User = Depends(get_current_user)
 ):
     """Update a tag policy (Admin only)"""
-    if not current_user.is_org_admin:
+    if current_user.role not in [UserRole.ORG_ADMIN, UserRole.SUPER_ADMIN]:
         raise HTTPException(status_code=403, detail="Admin access required")
     
     service = TagPolicyService(db, current_user.organization_id)
@@ -104,7 +104,7 @@ def delete_tag_policy(
     current_user: User = Depends(get_current_user)
 ):
     """Delete a tag policy (Admin only)"""
-    if not current_user.is_org_admin:
+    if current_user.role not in [UserRole.ORG_ADMIN, UserRole.SUPER_ADMIN]:
         raise HTTPException(status_code=403, detail="Admin access required")
     
     service = TagPolicyService(db, current_user.organization_id)

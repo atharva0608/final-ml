@@ -17,7 +17,9 @@ from backend.schemas.cluster_schemas import (
     ClusterUpdate, 
     AWSConnectRequest, 
     AgentInstallCommand,
-    ClusterFilter
+    ClusterFilter,
+    InstallScriptRequest,
+    InstallScriptResponse
 )
 from backend.core.exceptions import ResourceNotFoundError, ResourceAlreadyExistsError, ValidationError
 
@@ -134,5 +136,37 @@ def get_install_command(
     """
     try:
         return service.generate_agent_install_command(cluster_id, current_user.id)
+    except ResourceNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ResourceNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+@router.post("/install-script", response_model=InstallScriptResponse)
+def generate_install_script(
+    request: InstallScriptRequest,
+    current_user: User = Depends(get_current_user),
+    service: ClusterService = Depends(get_cluster_service)
+):
+    """
+    Generate install script for a new cluster
+    """
+    try:
+        return service.generate_install_script_provider(current_user.id, request)
+    except Exception as e:
+        import traceback
+        traceback.print_exc() # Print full stack trace to logs
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.get("/{cluster_id}/nodes")
+def get_cluster_nodes(
+    cluster_id: str,
+    current_user: User = Depends(get_current_user),
+    service: ClusterService = Depends(get_cluster_service)
+):
+    """
+    Get nodes/instances associated with a cluster
+    """
+    try:
+        return service.get_cluster_nodes(cluster_id, current_user.id)
     except ResourceNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))

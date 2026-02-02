@@ -1,5 +1,6 @@
 """
 Auto-Tag Rule API Routes
+Includes dynamic tag preview and available variables endpoints
 """
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
@@ -13,7 +14,10 @@ from backend.schemas.auto_tag_schemas import (
     AutoTagRuleResponse,
     AutoTagRuleList,
     RuleTestResult,
-    RuleExecutionResult
+    RuleExecutionResult,
+    TagPreviewRequest,
+    TagPreviewResponse,
+    AvailableVariablesResponse
 )
 
 router = APIRouter(prefix="/tags/rules", tags=["Auto-Tag Rules"])
@@ -132,3 +136,40 @@ def delete_auto_tag_rule(
     service.db.commit()
     
     return None
+
+
+# ============================================================================
+# NEW: Smart Auto-Tag Preview & Variables Endpoints
+# ============================================================================
+
+@router.post("/preview", response_model=TagPreviewResponse)
+def preview_generated_tags(
+    request: TagPreviewRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Preview what tags would be generated for a resource.
+    This is the "Live Preview" feature for the Policy Builder Wizard.
+    
+    Returns resolved tag values including dynamic variables.
+    """
+    service = AutoTagService(db, current_user.organization_id)
+    
+    try:
+        return service.preview_tags(request, current_user)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/variables", response_model=AvailableVariablesResponse)
+def get_available_variables(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Get list of available dynamic variables for tag values.
+    Used by the frontend to populate the "Value Type" dropdown.
+    """
+    service = AutoTagService(db, current_user.organization_id)
+    return service.get_available_variables()

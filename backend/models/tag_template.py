@@ -25,6 +25,7 @@ class TagTemplate(Base):
     name = Column(String(255), nullable=False)                  # e.g., "Cost Center Standard"
     description = Column(Text, nullable=True)                   # Purpose of this template
     tags = Column(JSON, nullable=False)                         # {"Owner": "TeamA", "Environment": "Prod"}
+    resource_scope = Column(String(50), nullable=False, default='all')  # Scope (all, ec2, s3, etc)
     
     # Metadata
     is_default = Column(Boolean, default=False, index=True)     # Default template for quick access

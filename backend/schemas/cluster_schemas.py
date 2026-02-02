@@ -305,3 +305,13 @@ class AgentInstallCommand(BaseModel):
     install_command: str = Field(..., description="kubectl apply command")
     yaml_manifest: str = Field(..., description="Full YAML manifest content")
     instructions: List[str] = Field(..., description="Step-by-step installation instructions")
+
+class InstallScriptRequest(BaseModel):
+    """Request to generate install script for a new cluster"""
+    provider: str = Field(..., description="K8s provider (eks, aks, etc.)")
+    cluster_name: str = Field(..., description="Cluster name")
+
+class InstallScriptResponse(BaseModel):
+    """Response with install script and cluster ID"""
+    cluster_id: str = Field(..., description="Cluster UUID")
+    script: str = Field(..., description="Installation script/command")

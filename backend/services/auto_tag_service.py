@@ -1,30 +1,245 @@
 """
 Auto-Tag Service
-Executes automated tagging rules
+Executes automated tagging rules with dynamic value resolution
 """
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, Tuple
 from sqlalchemy.orm import Session
 from datetime import datetime
 import boto3
 from botocore.exceptions import ClientError
 import logging
+import os
 
 logger = logging.getLogger(__name__)
 
-from backend.models.auto_tag_rule import AutoTagRule, RunMode
+from backend.models.auto_tag_rule import AutoTagRule, RunMode, ValueSourceType, OverrideBehavior, ResourceScope
 from backend.models.account import Account
+from backend.models.user import User
+from backend.models.organization import Organization
 from backend.services.tag_management_service import TagManagementService
-from backend.schemas.auto_tag_schemas import RuleTestResult, RuleExecutionResult
+from backend.schemas.auto_tag_schemas import (
+    RuleTestResult, RuleExecutionResult, TagPreviewRequest, TagPreviewResponse,
+    AvailableVariable, AvailableVariablesResponse, ValueSourceType as SchemaValueSourceType
+)
 from backend.schemas.tag_management_schemas import ResourceTagUpdate
 
 
+# System tag that identifies resources managed by this platform
+SYSTEM_TAG_KEY = "ManagedBy"
+SYSTEM_TAG_VALUE = "SpotOptimizer"
+
+
 class AutoTagService:
-    """Service for managing and executing auto-tag rules"""
+    """Service for managing and executing auto-tag rules with dynamic value resolution"""
     
     def __init__(self, db: Session, organization_id: str):
         self.db = db
         self.organization_id = organization_id
         self.tag_mgmt_service = TagManagementService(db, organization_id)
+    
+    def generate_tags(
+        self,
+        resource_type: str,
+        resource_name: Optional[str] = None,
+        region: Optional[str] = None,
+        user: Optional[User] = None,
+        rule_ids: Optional[List[str]] = None,
+        include_system_tags: bool = True
+    ) -> Tuple[Dict[str, str], List[str]]:
+        """
+        Generate resolved tags for a resource based on active rules.
+        This is the central "Generator" function for the Smart Auto-Tag system.
+        
+        Args:
+            resource_type: Type of resource (EC2, S3, RDS, etc.)
+            resource_name: Optional resource name for pattern matching
+            region: AWS region
+            user: User context for dynamic value resolution
+            rule_ids: Specific rule IDs to apply (all active if None)
+            include_system_tags: Whether to inject ManagedBy system tag
+        
+        Returns:
+            Tuple of (resolved_tags_dict, list_of_applied_rule_names)
+        """
+        final_tags = {}
+        applied_rules = []
+        
+        # Get applicable rules
+        if rule_ids:
+            rules = self.db.query(AutoTagRule).filter(
+                AutoTagRule.id.in_(rule_ids),
+                AutoTagRule.organization_id == self.organization_id,
+                AutoTagRule.is_active == True
+            ).order_by(AutoTagRule.priority).all()
+        else:
+            rules = self.list_rules(active_only=True)
+        
+        # Get organization for context
+        org = self.db.query(Organization).filter(
+            Organization.id == self.organization_id
+        ).first()
+        
+        for rule in rules:
+            # Check if rule matches this resource
+            if resource_name and not rule.matches_resource(resource_type, resource_name, region):
+                continue
+            
+            # Check resource scope
+            if not self._matches_resource_scope(resource_type, rule.resource_scope):
+                continue
+            
+            applied_rules.append(rule.name)
+            
+            # Apply static tags
+            if rule.tags_to_apply:
+                for key, value in rule.tags_to_apply.items():
+                    if key not in final_tags or rule.override_behavior == OverrideBehavior.OVERWRITE.value:
+                        final_tags[key] = value
+            
+            # Apply dynamic tags
+            if rule.dynamic_tags:
+                for key, config in rule.dynamic_tags.items():
+                    if key not in final_tags or rule.override_behavior == OverrideBehavior.OVERWRITE.value:
+                        resolved_value = self._resolve_dynamic_value(config, user, org)
+                        if resolved_value:
+                            final_tags[key] = resolved_value
+        
+        # Inject system tags if enabled
+        if include_system_tags and any(r.inject_system_tags for r in rules if r.name in applied_rules):
+            final_tags[SYSTEM_TAG_KEY] = SYSTEM_TAG_VALUE
+        
+        return final_tags, applied_rules
+    
+    def _resolve_dynamic_value(
+        self,
+        config: Dict[str, Any],
+        user: Optional[User],
+        org: Optional[Organization]
+    ) -> Optional[str]:
+        """Resolve a dynamic tag value based on its source type"""
+        source = config.get("source", "static")
+        
+        if source == ValueSourceType.STATIC.value:
+            return config.get("static_value", "")
+        
+        elif source == ValueSourceType.USER_EMAIL.value:
+            return user.email if user else "unknown@user"
+        
+        elif source == ValueSourceType.USER_ID.value:
+            return user.id if user else "unknown"
+        
+        elif source == ValueSourceType.USER_NAME.value:
+            return user.full_name if user and user.full_name else (user.email.split("@")[0] if user else "unknown")
+        
+        elif source == ValueSourceType.ORG_ID.value:
+            return org.id if org else self.organization_id
+        
+        elif source == ValueSourceType.ORG_NAME.value:
+            return org.name if org else "Unknown Org"
+        
+        elif source == ValueSourceType.CREATION_DATE.value:
+            return datetime.utcnow().strftime("%Y-%m-%d")
+        
+        elif source == ValueSourceType.CREATION_TIME.value:
+            return datetime.utcnow().isoformat()
+        
+        elif source == ValueSourceType.ENV_VARIABLE.value:
+            env_var_name = config.get("env_var_name", "")
+            return os.environ.get(env_var_name, f"${{{env_var_name}}}")
+        
+        return None
+    
+    def _matches_resource_scope(self, resource_type: str, scope: str) -> bool:
+        """Check if resource type matches the scope filter"""
+        if scope == ResourceScope.ALL.value or not scope:
+            return True
+        
+        compute_types = ["EC2", "ECS", "LAMBDA", "EKS"]
+        storage_types = ["S3", "EBS", "EFS", "GLACIER"]
+        database_types = ["RDS", "DYNAMODB", "ELASTICACHE", "REDSHIFT"]
+        network_types = ["VPC", "ELB", "ALB", "NLB", "ENI", "EIP", "NAT"]
+        
+        if scope == ResourceScope.COMPUTE_ONLY.value:
+            return resource_type.upper() in compute_types
+        elif scope == ResourceScope.STORAGE_ONLY.value:
+            return resource_type.upper() in storage_types
+        elif scope == ResourceScope.DATABASE_ONLY.value:
+            return resource_type.upper() in database_types
+        elif scope == ResourceScope.NETWORK_ONLY.value:
+            return resource_type.upper() in network_types
+        
+        return True
+    
+    def get_available_variables(self) -> AvailableVariablesResponse:
+        """Get list of available dynamic variables for the UI"""
+        variables = [
+            AvailableVariable(
+                name="User Email",
+                source_type=SchemaValueSourceType.USER_EMAIL,
+                description="Email of the user creating the resource",
+                example_value="user@company.com"
+            ),
+            AvailableVariable(
+                name="User ID",
+                source_type=SchemaValueSourceType.USER_ID,
+                description="Unique ID of the user",
+                example_value="usr-abc123"
+            ),
+            AvailableVariable(
+                name="User Name",
+                source_type=SchemaValueSourceType.USER_NAME,
+                description="Full name of the user",
+                example_value="John Doe"
+            ),
+            AvailableVariable(
+                name="Organization ID",
+                source_type=SchemaValueSourceType.ORG_ID,
+                description="ID of the organization",
+                example_value="org-xyz789"
+            ),
+            AvailableVariable(
+                name="Organization Name",
+                source_type=SchemaValueSourceType.ORG_NAME,
+                description="Name of the organization",
+                example_value="Acme Corp"
+            ),
+            AvailableVariable(
+                name="Creation Date",
+                source_type=SchemaValueSourceType.CREATION_DATE,
+                description="Date when resource is created (YYYY-MM-DD)",
+                example_value=datetime.utcnow().strftime("%Y-%m-%d")
+            ),
+            AvailableVariable(
+                name="Creation Timestamp",
+                source_type=SchemaValueSourceType.CREATION_TIME,
+                description="Full ISO timestamp of resource creation",
+                example_value=datetime.utcnow().isoformat()
+            ),
+            AvailableVariable(
+                name="Environment Variable",
+                source_type=SchemaValueSourceType.ENV_VARIABLE,
+                description="Value from a server environment variable",
+                example_value="${ENV_NAME}"
+            ),
+        ]
+        return AvailableVariablesResponse(variables=variables)
+    
+    def preview_tags(self, request: TagPreviewRequest, user: Optional[User] = None) -> TagPreviewResponse:
+        """Preview what tags would be generated for a resource"""
+        tags, applied_rules = self.generate_tags(
+            resource_type=request.resource_type,
+            resource_name=request.resource_name,
+            region=request.region,
+            user=user,
+            rule_ids=request.rule_ids,
+            include_system_tags=True
+        )
+        
+        return TagPreviewResponse(
+            tags=tags,
+            applied_rules=applied_rules,
+            system_tags_injected=SYSTEM_TAG_KEY in tags
+        )
     
     def create_rule(self, rule_data: Dict[str, Any], created_by: str) -> AutoTagRule:
         """Create a new auto-tag rule"""
@@ -58,6 +273,7 @@ class AutoTagService:
         
         return query.order_by(AutoTagRule.priority).all()
     
+
     def test_rule(self, rule_id: str, account_id: str) -> RuleTestResult:
         """Test a rule to preview which resources would match"""
         import time

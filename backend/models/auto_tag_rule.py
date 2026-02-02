@@ -15,6 +15,34 @@ class RunMode(str, Enum):
     RETROACTIVE = "retroactive"      # Apply to existing resources too
 
 
+class ValueSourceType(str, Enum):
+    """Dynamic tag value source types"""
+    STATIC = "static"                # User-provided static text
+    USER_EMAIL = "user_email"        # Current user's email
+    USER_ID = "user_id"              # Current user's ID
+    USER_NAME = "user_name"          # Current user's full name
+    ORG_ID = "org_id"                # Organization ID
+    ORG_NAME = "org_name"            # Organization name
+    CREATION_DATE = "creation_date"  # Resource creation date (YYYY-MM-DD)
+    CREATION_TIME = "creation_time"  # Resource creation timestamp (ISO)
+    ENV_VARIABLE = "env_variable"    # Read from environment variable
+
+
+class OverrideBehavior(str, Enum):
+    """Behavior when tag already exists on resource"""
+    SKIP_EXISTING = "skip_existing"  # Don't overwrite existing tags
+    OVERWRITE = "overwrite"          # Replace existing tag values
+
+
+class ResourceScope(str, Enum):
+    """Resource scope for auto-tag rules"""
+    ALL = "all"                      # All resource types
+    COMPUTE_ONLY = "compute_only"    # EC2, ECS, Lambda
+    STORAGE_ONLY = "storage_only"    # S3, EBS, EFS
+    DATABASE_ONLY = "database_only"  # RDS, DynamoDB, ElastiCache
+    NETWORK_ONLY = "network_only"    # VPC, ELB, ENI
+
+
 class AutoTagRule(Base):
     """
     Auto-Tag Rule model for automated tag application.
@@ -41,6 +69,15 @@ class AutoTagRule(Base):
     
     # Tags to Apply
     tags_to_apply = Column(JSON, nullable=False)                # {"Environment": "Production", "Team": "Backend"}
+    
+    # Dynamic Tags Configuration (NEW: Smart Auto-Tag System)
+    # Format: {"key": {"source": "user_email", "static_value": null, "env_var_name": null}}
+    dynamic_tags = Column(JSON, nullable=True, default=dict)    # Tags with dynamic value sources
+    
+    # Enhanced Scope & Behavior (NEW)
+    resource_scope = Column(String(50), default=ResourceScope.ALL.value)  # Broader scope filter
+    override_behavior = Column(String(20), default=OverrideBehavior.SKIP_EXISTING.value)
+    inject_system_tags = Column(Boolean, default=True)          # Auto-inject ManagedBy tag
     
     # Execution Settings
     run_mode = Column(String(20), default=RunMode.FUTURE_ONLY.value)

@@ -10,6 +10,7 @@ class TagTemplateCreate(BaseModel):
     """Schema for creating a tag template"""
     name: str = Field(..., min_length=1, max_length=255, description="Template name")
     description: Optional[str] = Field(None, description="Template description")
+    resource_scope: str = Field("all", description="Resource scope (all, ec2, s3, etc)")
     tags: Dict[str, str] = Field(..., min_items=1, description="Tag key-value pairs")
     is_default: bool = Field(False, description="Set as default template")
     
@@ -43,6 +44,7 @@ class TagTemplateResponse(BaseModel):
     organization_id: str
     name: str
     description: Optional[str]
+    resource_scope: str
     tags: Dict[str, str]
     tag_count: int
     is_default: bool

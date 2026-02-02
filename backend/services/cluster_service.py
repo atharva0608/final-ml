@@ -17,11 +17,15 @@ from backend.models.user import User
 from backend.models.instance import Instance
 from backend.schemas.cluster_schemas import (
     ClusterCreate, ClusterUpdate, ClusterResponse, ClusterList, 
-    AWSConnectRequest, AgentInstallCommand, ClusterFilter
+    AWSConnectRequest, AgentInstallCommand, ClusterFilter,
+    InstallScriptRequest, InstallScriptResponse
 )
 from backend.core.exceptions import (
     ResourceNotFoundError, ResourceAlreadyExistsError, ValidationError
 )
+from backend.models.cluster import ClusterType, ClusterStatus
+from backend.core.validators import validate_cluster_name, validate_aws_region
+from backend.schemas.cluster_schemas import ClusterListItem
 
 logger = logging.getLogger(__name__)
 
@@ -176,11 +180,7 @@ class ClusterService:
         self.db.refresh(new_cluster)
 
         logger.info(
-            "Cluster registered",
-            cluster_id=new_cluster.id,
-            cluster_name=new_cluster.name,
-            region=new_cluster.region,
-            user_id=user_id
+            f"Cluster registered: id={new_cluster.id} name={new_cluster.name} region={new_cluster.region} user_id={user_id}"
         )
 
         return self._to_response(new_cluster)
@@ -263,10 +263,7 @@ class ClusterService:
         self.db.refresh(new_cluster)
 
         logger.info(
-            "Cluster connected via AWS STS",
-            cluster_id=new_cluster.id,
-            name=new_cluster.name,
-            role_arn=new_cluster.aws_role_arn
+            f"Cluster connected via AWS STS: id={new_cluster.id} name={new_cluster.name} role_arn={new_cluster.aws_role_arn}"
         )
 
         return self._to_response(new_cluster)
@@ -351,11 +348,23 @@ class ClusterService:
             (filters.page - 1) * filters.page_size
         ).limit(filters.page_size).all()
 
-        # Convert to response schemas
-        cluster_responses = [self._to_response(cluster) for cluster in clusters]
+        # Convert to ClusterListItem schemas
+        cluster_list_items = []
+        for cluster in clusters:
+            cluster_list_items.append(ClusterListItem(
+                id=cluster.id,
+                name=cluster.name,
+                region=cluster.region,
+                status=cluster.status.value,
+                node_count=0, # Placeholder until metrics integration
+                spot_count=0, # Placeholder
+                monthly_cost=0.0, # Placeholder
+                agent_installed=cluster.agent_installed == 'Y',
+                last_heartbeat=cluster.last_heartbeat
+            ))
 
         return ClusterList(
-            clusters=cluster_responses,
+            clusters=cluster_list_items,
             total=total,
             page=filters.page,
             page_size=filters.page_size
@@ -406,10 +415,7 @@ class ClusterService:
         self.db.refresh(cluster)
 
         logger.info(
-            "Cluster updated",
-            cluster_id=cluster_id,
-            updated_fields=list(update_dict.keys()),
-            user_id=user_id
+            f"Cluster updated: id={cluster_id} fields={list(update_dict.keys())} user_id={user_id}"
         )
 
         return self._to_response(cluster)
@@ -460,10 +466,7 @@ class ClusterService:
         self.db.commit()
 
         logger.info(
-            "Cluster deleted",
-            cluster_id=cluster_id,
-            cluster_name=cluster.name,
-            user_id=user_id
+            f"Cluster deleted: id={cluster_id} name={cluster.name} user_id={user_id}"
         )
 
         return True
@@ -552,16 +555,83 @@ EOF
 """
 
         logger.info(
-            "Agent install command generated",
-            cluster_id=cluster_id,
-            user_id=user_id
+            f"Agent install command generated: cluster_id={cluster_id} user_id={user_id}"
         )
 
         return AgentInstallCommand(
             cluster_id=cluster.id,
             cluster_name=cluster.name,
             install_command=install_command,
-            namespace="spot-optimizer"
+            yaml_manifest=install_command,  # Reusing for simplicity as per requirements
+            instructions=["Run the command in your terminal", "Monitor the connection status in dashboard"]
+        )
+
+    def generate_install_script_provider(
+        self,
+        user_id: str,
+        request: InstallScriptRequest
+    ) -> InstallScriptResponse:
+        """
+        Generate install script for a new cluster based on provider
+        """
+        user = self.db.query(User).filter(User.id == user_id).first()
+        if not user or not user.organization_id:
+             raise ResourceNotFoundError("User or Organization", user_id)
+
+        # 1. Get or Create Default Account for Org
+        account = self.db.query(Account).filter(Account.organization_id == user.organization_id).first()
+        if not account:
+            account = Account(
+                id=str(uuid.uuid4()),
+                organization_id=user.organization_id,
+                aws_account_id="000000000000", # Placeholder
+                role_arn="", 
+                status=AccountStatus.ACTIVE,
+                created_at=datetime.utcnow(),
+                updated_at=datetime.utcnow()
+            )
+            self.db.add(account)
+            self.db.flush()
+
+        # 2. Check if cluster exists
+        cluster = self.db.query(Cluster).filter(
+            and_(
+                Cluster.account_id == account.id,
+                Cluster.name == request.cluster_name
+            )
+        ).first()
+
+        if not cluster:
+            # Create new cluster
+            try:
+                cluster_type = ClusterType[request.provider.upper()]
+            except KeyError:
+                # Fallback or error if provider not in Enum (e.g., 'other')
+                cluster_type = ClusterType.EKS
+
+            cluster = Cluster(
+                id=str(uuid.uuid4()),
+                account_id=account.id,
+                name=request.cluster_name,
+                arn=f"arn:aws:{request.provider}:region:account:cluster/{request.cluster_name}",
+                region="us-east-1", # Default
+                cluster_type=cluster_type,
+                status=ClusterStatus.DISCOVERED,
+                agent_installed="N",
+                is_agentless="N",
+                created_at=datetime.utcnow(),
+                updated_at=datetime.utcnow()
+            )
+            self.db.add(cluster)
+            self.db.commit()
+            self.db.refresh(cluster)
+        
+        # 3. Generate script
+        cmd = self.generate_agent_install_command(cluster.id, user_id)
+        
+        return InstallScriptResponse(
+            cluster_id=cluster.id,
+            script=cmd.install_command
         )
 
     def update_heartbeat(self, cluster_id: str) -> bool:
@@ -589,9 +659,7 @@ EOF
         self.db.commit()
 
         logger.debug(
-            "Cluster heartbeat updated",
-            cluster_id=cluster_id,
-            cluster_name=cluster.name
+            f"Cluster heartbeat updated: id={cluster_id} name={cluster.name}"
         )
 
         return True
@@ -644,6 +712,31 @@ EOF
             created_at=cluster.created_at,
             updated_at=cluster.updated_at
         )
+
+    def get_cluster_nodes(self, cluster_id: str, user_id: str) -> dict:
+        """
+        Get nodes/instances for a cluster
+        """
+        cluster = self._get_cluster_with_access(cluster_id, user_id)
+        
+        # Query instances for this cluster
+        instances = self.db.query(Instance).filter(
+            Instance.cluster_id == cluster_id
+        ).all()
+        
+        nodes = []
+        for inst in instances:
+            nodes.append({
+                "id": inst.id,
+                "type": inst.instance_type,
+                "lifecycle": inst.lifecycle.value if hasattr(inst.lifecycle, 'value') else str(inst.lifecycle),
+                "cpu_util": 0, # Would come from metrics in production
+                "memory_util": 0,
+                "az": inst.availability_zone,
+                "launch_time": inst.launch_time.isoformat() if inst.launch_time else None
+            })
+        
+        return {"nodes": nodes, "total": len(nodes)}
 
 
 def get_cluster_service(db: Session) -> ClusterService:
