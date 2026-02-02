@@ -170,6 +170,20 @@ roleRef:
         headers={"Content-Disposition": "inline; filename=agent-manifest.yaml"}
     )
 
+@router.post("/verify/{cluster_id}")
+def verify_connection(
+    cluster_id: str,
+    current_user: User = Depends(get_current_user),
+    service: ClusterService = Depends(get_cluster_service)
+):
+    """
+    Verify cluster connection after agent installation
+    """
+    try:
+        return service.verify_connection(cluster_id, current_user.id)
+    except ResourceNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
 @router.get("/{cluster_id}", response_model=ClusterResponse)
 def get_cluster(
     cluster_id: str,

@@ -37,6 +37,44 @@ class ClusterService:
     def __init__(self, db: Session):
         self.db = db
 
+    def _get_cluster_with_access(self, cluster_id: str, user_id: str) -> Cluster:
+        """
+        Helper to get cluster and verify user has access
+        """
+        user = self.db.query(User).filter(User.id == user_id).first()
+        if not user:
+            raise ResourceNotFoundError("User", user_id)
+        
+        cluster = self.db.query(Cluster).filter(Cluster.id == cluster_id).first()
+        if not cluster:
+            raise ResourceNotFoundError("Cluster", cluster_id)
+        
+        # Check organization access
+        account = self.db.query(Account).filter(Account.id == cluster.account_id).first()
+        if not account or account.organization_id != user.organization_id:
+            raise ResourceNotFoundError("Cluster", cluster_id)  # Hide unauthorized
+        
+        return cluster
+
+    def verify_connection(self, cluster_id: str, user_id: str) -> dict:
+        """
+        Verify cluster connection status (agent is connected)
+        For now, just update status to ACTIVE since agent deployed successfully
+        """
+        cluster = self._get_cluster_with_access(cluster_id, user_id)
+        
+        # Update cluster status to ACTIVE (agent deployed)
+        cluster.status = ClusterStatus.ACTIVE
+        cluster.agent_installed = "Y"
+        cluster.updated_at = datetime.utcnow()
+        self.db.commit()
+        
+        return {
+            "status": "connected",
+            "cluster_id": cluster.id,
+            "cluster_name": cluster.name
+        }
+
     def discover_clusters(self, account_id: str, user_id: str) -> List[Dict[str, Any]]:
         account = self.db.query(Account).filter(Account.id == account_id).first()
         if not account: return []

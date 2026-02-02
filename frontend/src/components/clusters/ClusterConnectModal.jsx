@@ -133,7 +133,7 @@ kubectl apply -f ${PUBLIC_URL}/api/v1/clusters/agent-manifest
     try {
       const response = await clusterAPI.verifyConnection(clusterId);
 
-      if (response.data.connected) {
+      if (response.data.status === 'connected') {
         toast.success('Cluster connected successfully!');
         setStep(3);
       } else {

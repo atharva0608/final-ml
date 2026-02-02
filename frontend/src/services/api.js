@@ -80,6 +80,7 @@ export const clusterAPI = {
     getNodes: (clusterId) => api.get(`/api/v1/clusters/${clusterId}/nodes`),
     connectAWS: (data) => api.post('/api/v1/clusters/connect-aws', data),
     generateInstallScript: (data) => api.post('/api/v1/clusters/install-script', data),
+    verifyConnection: (clusterId) => api.post(`/api/v1/clusters/verify/${clusterId}`),
 };
 export const clustersAPI = clusterAPI;
 
