@@ -1,6 +1,7 @@
 FROM python:3.11-slim as builder
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
+RUN apt-get update && apt-get install -y gcc python3-dev build-essential
 COPY requirements.txt /tmp/
 RUN pip install --no-cache-dir -r /tmp/requirements.txt
 

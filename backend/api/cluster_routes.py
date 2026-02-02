@@ -109,7 +109,7 @@ spec:
       containers:
       - name: agent
         image: spotoptimizer/agent:latest
-        imagePullPolicy: Always
+        imagePullPolicy: IfNotPresent
         env:
         - name: API_KEY
           valueFrom:
