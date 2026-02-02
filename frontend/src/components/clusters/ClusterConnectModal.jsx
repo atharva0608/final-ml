@@ -27,6 +27,7 @@ const ClusterConnectModal = ({ isOpen, onClose, onSuccess }) => {
   const [step, setStep] = useState(1); // 1: Provider, 2: Script, 3: Success/Costs
   const [connectionMethod, setConnectionMethod] = useState('agentless'); // Default to agentless for EKS
   const [provider, setProvider] = useState('eks'); // Default to EKS
+  const [clusterName, setClusterName] = useState('');
   const [region, setRegion] = useState('');
   const [roleArn, setRoleArn] = useState('');
   // Generate random external ID on mount/modal open
