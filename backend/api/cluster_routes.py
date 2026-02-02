@@ -79,98 +79,6 @@ def connect_aws_cluster(
     except (ResourceAlreadyExistsError, ResourceNotFoundError, ValidationError) as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-@router.get("/agent-manifest")
-def get_agent_manifest(
-    image: str = Query("spotoptimizer/agent:latest", description="Custom agent image URI")
-):
-    """
-    Get Kubernetes manifest for agent deployment with dynamic image support
-    """
-    from fastapi.responses import Response
-    
-    manifest = f"""
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: spot-optimizer-agent
-  namespace: spot-optimizer
-  labels:
-    app: spot-optimizer-agent
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: spot-optimizer-agent
-  template:
-    metadata:
-      labels:
-        app: spot-optimizer-agent
-    spec:
-      serviceAccountName: spot-optimizer-agent
-      containers:
-      - name: agent
-        image: {image}
-        imagePullPolicy: IfNotPresent
-        env:
-        - name: API_KEY
-          valueFrom:
-            secretKeyRef:
-              name: spot-agent-config
-              key: API_KEY
-        - name: BACKEND_URL
-          valueFrom:
-            secretKeyRef:
-              name: spot-agent-config
-              key: BACKEND_URL
-        resources:
-          requests:
-            memory: "64Mi"
-            cpu: "50m"
-          limits:
-            memory: "128Mi"
-            cpu: "100m"
----
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: spot-optimizer-agent
-  namespace: spot-optimizer
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: spot-optimizer-agent
-rules:
-- apiGroups: [""]
-  resources: ["nodes", "pods", "namespaces", "services", "configmaps"]
-  verbs: ["get", "list", "watch"]
-- apiGroups: ["apps"]
-  resources: ["deployments", "replicasets", "daemonsets", "statefulsets"]
-  verbs: ["get", "list", "watch"]
-- apiGroups: ["metrics.k8s.io"]
-  resources: ["nodes", "pods"]
-  verbs: ["get", "list"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: spot-optimizer-agent
-subjects:
-- kind: ServiceAccount
-  name: spot-optimizer-agent
-  namespace: spot-optimizer
-roleRef:
-  kind: ClusterRole
-  name: spot-optimizer-agent
-  apiGroup: rbac.authorization.k8s.io
-"""
-    
-    return Response(
-        content=manifest.strip(),
-        media_type="text/yaml",
-        headers={"Content-Disposition": "inline; filename=agent-manifest.yaml"}
-    )
-
 @router.post("/verify/{cluster_id}")
 def verify_connection(
     cluster_id: str,
@@ -231,38 +139,6 @@ def delete_cluster(
     except ValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-@router.get("/{cluster_id}/install", response_model=AgentInstallCommand)
-def get_install_command(
-    cluster_id: str,
-    current_user: User = Depends(get_current_user),
-    service: ClusterService = Depends(get_cluster_service)
-):
-    """
-    Get Kubernetes Agent installation command and manifest
-    """
-    try:
-        return service.generate_agent_install_command(cluster_id, current_user.id)
-    except ResourceNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except ResourceNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-
-@router.get("/{cluster_id}/script")
-def get_install_script(
-    cluster_id: str,
-    current_user: User = Depends(get_current_user),
-    service: ClusterService = Depends(get_cluster_service)
-):
-    """
-    Get 1-click install shell script (Helm)
-    """
-    from fastapi.responses import PlainTextResponse
-    try:
-        script = service.generate_helm_install_script(cluster_id, current_user.id)
-        return PlainTextResponse(content=script)
-    except ResourceNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-
 @router.post("/install-script", response_model=InstallScriptResponse)
 def generate_install_script(
     request: InstallScriptRequest,
@@ -270,9 +146,10 @@ def generate_install_script(
     service: ClusterService = Depends(get_cluster_service)
 ):
     """
-    Generate install script for a new cluster
+    Register cluster and return credentials for manual Helm install
     """
     try:
+        # Note: This checks credentials but assumes client will generate command
         return service.generate_install_script_provider(current_user.id, request)
     except Exception as e:
         import traceback

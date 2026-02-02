@@ -58,218 +58,25 @@ The agent consists of four main components:
 
 ## Installation
 
-### Option 1: Helm Installation (Recommended)
+### Prerequisites
+1.  **Kubernetes Cluster** (v1.20+)
+2.  **Helm 3** installed
+3.  **Outbound Internet Access** from the cluster
+
+### Install via Helm (Recommended)
+
+1.  **Register Cluster**: Go to the Spot Optimizer Dashboard -> **Connect Cluster** to get your API Key and Cluster ID.
+2.  **Run Command**:
 
 ```bash
-# Add the Helm repository
-helm repo add ml-optimizer https://charts.ml-optimizer.com
-helm repo update
-
-# Create namespace
-kubectl create namespace ml-optimizer
-
-# Create secret with credentials
-kubectl create secret generic agent-credentials \
-  --namespace ml-optimizer \
-  --from-literal=api-key=YOUR_API_KEY \
-  --from-literal=secret-key=YOUR_SECRET_KEY
-
-# Install the agent
-helm install ml-agent ml-optimizer/kubernetes-agent \
-  --namespace ml-optimizer \
-  --set cluster.id=YOUR_CLUSTER_ID \
-  --set backend.url=https://api.ml-optimizer.com \
-  --set backend.wsUrl=wss://api.ml-optimizer.com/ws
+# Replace <CHART_URI>, <API_KEY>, <CLUSTER_ID>, <BACKEND_URL> with values from the dashboard
+helm upgrade --install spot-agent oci://public.ecr.aws/spot-optimizer/spot-optimizer-agent \
+  --namespace spot-optimizer --create-namespace \
+  --set config.apiKey=YOUR_API_KEY \
+  --set config.clusterId=YOUR_CLUSTER_ID \
+  --set config.backendUrl=https://bb82fb1026ad.ngrok-free.app/ws/cluster/YOUR_CLUSTER_ID
 ```
-
-### Option 2: Manual Installation
-
-#### Step 1: Create Namespace
-
-```bash
-kubectl create namespace ml-optimizer
-```
-
-#### Step 2: Create Service Account and RBAC
-
-```yaml
-# serviceaccount.yaml
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: ml-agent
-  namespace: ml-optimizer
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: ml-agent
-rules:
-  # Read cluster resources
-  - apiGroups: [""]
-    resources: ["nodes", "pods", "events", "namespaces"]
-    verbs: ["get", "list", "watch"]
-
-  # Read deployments
-  - apiGroups: ["apps"]
-    resources: ["deployments", "replicasets", "statefulsets"]
-    verbs: ["get", "list", "watch"]
-
-  # Update deployments for scaling
-  - apiGroups: ["apps"]
-    resources: ["deployments"]
-    verbs: ["update", "patch"]
-
-  # Pod eviction
-  - apiGroups: [""]
-    resources: ["pods/eviction"]
-    verbs: ["create"]
-
-  # Node management
-  - apiGroups: [""]
-    resources: ["nodes"]
-    verbs: ["update", "patch"]
-
-  # Read metrics
-  - apiGroups: ["metrics.k8s.io"]
-    resources: ["nodes", "pods"]
-    verbs: ["get", "list"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: ml-agent
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: ml-agent
-subjects:
-  - kind: ServiceAccount
-    name: ml-agent
-    namespace: ml-optimizer
-```
-
-Apply the RBAC configuration:
-
-```bash
-kubectl apply -f serviceaccount.yaml
-```
-
-#### Step 3: Create Secret
-
-```bash
-kubectl create secret generic agent-credentials \
-  --namespace ml-optimizer \
-  --from-literal=api-key=YOUR_API_KEY \
-  --from-literal=secret-key=YOUR_SECRET_KEY
-```
-
-#### Step 4: Deploy Agent
-
-```yaml
-# deployment.yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: ml-agent
-  namespace: ml-optimizer
-  labels:
-    app: ml-agent
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: ml-agent
-  template:
-    metadata:
-      labels:
-        app: ml-agent
-    spec:
-      serviceAccountName: ml-agent
-      containers:
-        - name: agent
-          image: ml-optimizer/kubernetes-agent:latest
-          imagePullPolicy: Always
-          ports:
-            - name: http
-              containerPort: 8080
-              protocol: TCP
-          env:
-            - name: BACKEND_URL
-              value: "https://api.ml-optimizer.com"
-            - name: BACKEND_WS_URL
-              value: "wss://api.ml-optimizer.com/ws"
-            - name: CLUSTER_ID
-              value: "YOUR_CLUSTER_ID"
-            - name: API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: agent-credentials
-                  key: api-key
-            - name: SECRET_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: agent-credentials
-                  key: secret-key
-            - name: COLLECTION_INTERVAL
-              value: "60"
-            - name: ACTION_POLL_INTERVAL
-              value: "10"
-          livenessProbe:
-            httpGet:
-              path: /healthz
-              port: http
-            initialDelaySeconds: 30
-            periodSeconds: 10
-            timeoutSeconds: 5
-            failureThreshold: 3
-          readinessProbe:
-            httpGet:
-              path: /readyz
-              port: http
-            initialDelaySeconds: 15
-            periodSeconds: 5
-            timeoutSeconds: 3
-            failureThreshold: 3
-          resources:
-            requests:
-              cpu: 100m
-              memory: 256Mi
-            limits:
-              cpu: 500m
-              memory: 512Mi
-          securityContext:
-            runAsNonRoot: true
-            runAsUser: 1000
-            readOnlyRootFilesystem: true
-            allowPrivilegeEscalation: false
-            capabilities:
-              drop:
-                - ALL
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: ml-agent
-  namespace: ml-optimizer
-  labels:
-    app: ml-agent
-spec:
-  type: ClusterIP
-  ports:
-    - port: 8080
-      targetPort: http
-      protocol: TCP
-      name: http
-  selector:
-    app: ml-agent
-```
-
-Apply the deployment:
-
-```bash
-kubectl apply -f deployment.yaml
-```
+*(Note: The link above uses the default OCI registry. If you published your own chart, use your registry URI.)*
 
 ## Configuration
 

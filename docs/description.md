@@ -611,8 +611,7 @@ This Month's Savings: $4,250.00
 - Metadata Import: Auto-fetches tags (Team, Owner)
 
 **Step 3: Agent Installation**
-- **Helm Chart**: Copy-pasteable command
-- **Direct Manifest**: `kubectl apply -f ...` URL
+- **Helm Chart**: Copy-pasteable OCI command (Standard)
 - **Pre-Flight Check**: Verifies IAM permissions
 
 **Step 4: Connection Verification**

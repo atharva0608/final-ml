@@ -715,83 +715,40 @@ echo "✅ Agent successfully deployed!"
                 Cluster.account_id == account.id,
                 Cluster.name == request.cluster_name
             )
+            Cluster.name == request.cluster_name,
+            Cluster.user_id == user_id,
+            Cluster.provider == request.provider
         ).first()
 
         if not cluster:
-            # Create new cluster
-            try:
-                cluster_type = ClusterType[request.provider.upper()]
-            except KeyError:
-                # Fallback or error if provider not in Enum (e.g., 'other')
-                cluster_type = ClusterType.EKS
-
-            # Auto-generate secure API key
-            api_key_chars = string.ascii_letters + string.digits
-            generated_api_key = "sk_live_" + "".join(secrets.choice(api_key_chars) for _ in range(32))
-
+            # Create new
             cluster = Cluster(
                 id=str(uuid.uuid4()),
-                account_id=account.id,
                 name=request.cluster_name,
-                arn=f"arn:aws:{request.provider}:region:account:cluster/{request.cluster_name}",
-                region="us-east-1", # Default
-                cluster_type=cluster_type,
-                status=ClusterStatus.PENDING,  # PENDING until agent connection verified
-                agent_installed="N",
-                is_agentless="N",
-                api_key=generated_api_key,  # Store auto-generated key
-                created_at=datetime.utcnow(),
-                updated_at=datetime.utcnow()
+                user_id=user_id,
+                provider=request.provider,
+                region=request.region or 'us-east-1',
+                status='pending',
+                api_key=secrets.token_urlsafe(32)
             )
             self.db.add(cluster)
             self.db.commit()
             self.db.refresh(cluster)
         
-        # 3. Generate one-click install script with Helm
+        # 2. Get Configuration
         backend_url = os.environ.get('BACKEND_PUBLIC_URL', 'https://bb82fb1026ad.ngrok-free.app')
         ws_url = backend_url.replace('https://', 'wss://').replace('http://', 'ws://')
         
-        install_script = f'''# Spot Optimizer Agent Installation
-# Cluster: {cluster.name}
-# One-Click Connection Script
+        # Placeholder - updated by publish_to_dockerhub.sh
+        CHART_URI="oci://public.ecr.aws/spot-optimizer/spot-optimizer-agent" # Updated via script
 
-helm repo add spot-optimizer https://charts.spotoptimizer.com 2>/dev/null || true
-helm repo update
-
-helm upgrade --install spot-agent spot-optimizer/spot-agent \\
-  --namespace spot-optimizer --create-namespace \\
-  --set config.apiKey="{cluster.api_key}" \\
-  --set config.clusterId="{cluster.id}" \\
-  --set config.backendUrl="{ws_url}/ws/cluster/{cluster.id}"
-
-# Alternative: Manual kubectl installation
-kubectl create namespace spot-optimizer 2>/dev/null || true
-
-kubectl create secret generic spot-optimizer-secret \\
-  --from-literal=API_KEY="{cluster.api_key}" \\
-  --namespace spot-optimizer --dry-run=client -o yaml | kubectl apply -f -
-
-kubectl apply -f - <<EOF
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: spot-optimizer-config
-  namespace: spot-optimizer
-data:
-  CLUSTER_ID: "{cluster.id}"
-  API_ENDPOINT: "{backend_url}"
-  WS_ENDPOINT: "{ws_url}/ws/cluster/{cluster.id}"
-  REGION: "{cluster.region}"
-EOF
-
-echo "✅ Spot Optimizer Agent installed successfully!"
-echo "🔗 Cluster ID: {cluster.id}"
-'''
+        # 3. Return Data (Script field used for command template or left empty)
+        # We reuse the existing response model to assume 'script' might hold the URI or we assume frontend doesn't need 'script'
         
         return InstallScriptResponse(
             cluster_id=cluster.id,
-            script=install_script,
-            api_key=cluster.api_key  # Return API key for frontend display
+            api_key=cluster.api_key,
+            script=CHART_URI # Hijacking script field to pass Chart URI to frontend
         )
 
     def update_heartbeat(self, cluster_id: str) -> bool:
