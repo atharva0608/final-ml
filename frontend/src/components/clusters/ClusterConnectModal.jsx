@@ -103,6 +103,12 @@ const ClusterConnectModal = ({ isOpen, onClose, onSuccess }) => {
       const PUBLIC_URL = BACKEND_URL;
       const WEBSOCKET_URL = BACKEND_URL.replace('https://', 'wss://');
 
+      // Build manifest URL with optional custom image
+      let manifestUrl = `${PUBLIC_URL}/api/v1/clusters/agent-manifest`;
+      if (customImage && customImage.trim()) {
+        manifestUrl += `?image=${encodeURIComponent(customImage.trim())}`;
+      }
+
       // 3. Generate the combined install script - clean format for copy/paste
       const magicCommand = `# Step 1: Configure kubectl
 aws eks update-kubeconfig --region ${actualRegion} --name ${clusterName}
@@ -113,7 +119,7 @@ kubectl create secret generic spot-agent-config \\
   --from-literal=API_KEY="${api_key}" \\
   --from-literal=BACKEND_URL="${WEBSOCKET_URL}/ws/cluster/${cluster_id}" \\
   --namespace spot-optimizer --dry-run=client -o yaml | kubectl apply -f - && \\
-kubectl apply -f ${PUBLIC_URL}/api/v1/clusters/agent-manifest`.trim();
+kubectl apply -f "${manifestUrl}"`.trim();
 
       setInstallScript(magicCommand);
       setStep(2);
@@ -289,6 +295,22 @@ kubectl apply -f ${PUBLIC_URL}/api/v1/clusters/agent-manifest`.trim();
                       className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                     />
                     <p className="text-xs text-gray-500 mt-1">Leave empty for default (us-east-1)</p>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      CUSTOM AGENT IMAGE (Optional):
+                    </label>
+                    <input
+                      type="text"
+                      value={customImage}
+                      onChange={(e) => setCustomImage(e.target.value)}
+                      placeholder="e.g. 123456789.dkr.ecr.us-east-1.amazonaws.com/spot-optimizer-agent:latest"
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm"
+                    />
+                    <p className="text-xs text-gray-500 mt-1">
+                      Required for EKS if using private registry or ECR. Leave empty for default.
+                    </p>
                   </div>
 
                   <div className="flex justify-end">

@@ -80,14 +80,15 @@ def connect_aws_cluster(
         raise HTTPException(status_code=400, detail=str(e))
 
 @router.get("/agent-manifest")
-def get_agent_manifest():
+def get_agent_manifest(
+    image: str = Query("spotoptimizer/agent:latest", description="Custom agent image URI")
+):
     """
-    Public endpoint - Returns the Kubernetes agent manifest YAML
-    No authentication required for kubectl to fetch
+    Get Kubernetes manifest for agent deployment with dynamic image support
     """
     from fastapi.responses import Response
     
-    manifest = """
+    manifest = f"""
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -108,7 +109,7 @@ spec:
       serviceAccountName: spot-optimizer-agent
       containers:
       - name: agent
-        image: spotoptimizer/agent:latest
+        image: {image}
         imagePullPolicy: IfNotPresent
         env:
         - name: API_KEY
