@@ -20,6 +20,9 @@ import { SiAmazonaws } from 'react-icons/si';
 import toast from 'react-hot-toast';
 import { clusterAPI } from '../../services/api';
 
+// Backend URL for agent connection (update with your ngrok URL)
+const BACKEND_URL = 'https://bb82fb1026ad.ngrok-free.app';
+
 const ClusterConnectModal = ({ isOpen, onClose, onSuccess }) => {
   const [step, setStep] = useState(1); // 1: Provider, 2: Script, 3: Success/Costs
   const [connectionMethod, setConnectionMethod] = useState('agentless'); // Default to agentless for EKS
@@ -82,17 +85,39 @@ const ClusterConnectModal = ({ isOpen, onClose, onSuccess }) => {
     }
 
     try {
-      // Generate installation script
+      setVerifying(true);
+
+      // 1. Create Cluster in Backend and get API key
       const response = await clusterAPI.generateInstallScript({
         provider,
         cluster_name: clusterName
       });
 
-      setInstallScript(response.data.script);
-      setClusterId(response.data.cluster_id);
+      const { cluster_id, api_key } = response.data;
+      setClusterId(cluster_id);
+
+      // 2. ⚡ YOUR SPECIFIC NGROK URL (Hardcoded for automation)
+      const PUBLIC_URL = BACKEND_URL;
+      const WEBSOCKET_URL = BACKEND_URL.replace('https://', 'wss://');
+
+      // 3. Generate the "One-Click" Command
+      // This command creates the Namespace, Secret, Config, and Deployment in one go.
+      const magicCommand = `
+kubectl create namespace spot-optimizer --dry-run=client -o yaml | kubectl apply -f - && \\
+kubectl create secret generic spot-agent-config \\
+  --from-literal=API_KEY="${api_key}" \\
+  --from-literal=BACKEND_URL="${WEBSOCKET_URL}/ws/cluster/${cluster_id}" \\
+  --namespace spot-optimizer --dry-run=client -o yaml | kubectl apply -f - && \\
+kubectl apply -f ${PUBLIC_URL}/api/v1/clusters/agent-manifest
+      `.trim();
+
+      setInstallScript(magicCommand);
       setStep(2);
     } catch (error) {
       toast.error('Failed to generate installation script');
+      console.error(error);
+    } finally {
+      setVerifying(false);
     }
   };
 
