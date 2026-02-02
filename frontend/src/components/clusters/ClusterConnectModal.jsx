@@ -29,6 +29,7 @@ const ClusterConnectModal = ({ isOpen, onClose, onSuccess }) => {
   const [provider, setProvider] = useState('eks'); // Default to EKS
   const [clusterName, setClusterName] = useState('');
   const [region, setRegion] = useState('');
+  const [customImage, setCustomImage] = useState('');
   const [roleArn, setRoleArn] = useState('');
   // Generate random external ID on mount/modal open
   const [externalId, setExternalId] = useState(`spot-optimizer-${Math.random().toString(36).substr(2, 9)}`);
