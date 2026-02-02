@@ -103,26 +103,17 @@ const ClusterConnectModal = ({ isOpen, onClose, onSuccess }) => {
       const PUBLIC_URL = BACKEND_URL;
       const WEBSOCKET_URL = BACKEND_URL.replace('https://', 'wss://');
 
-      // 3. Generate the combined install script with Step 1 (kubeconfig) and Step 2 (agent)
-      const magicCommand = `# ═══════════════════════════════════════════════════════════════
-# STEP 1: Configure kubectl for your EKS cluster
-# ═══════════════════════════════════════════════════════════════
+      // 3. Generate the combined install script - clean format for copy/paste
+      const magicCommand = `# Step 1: Configure kubectl
 aws eks update-kubeconfig --region ${actualRegion} --name ${clusterName}
 
-# ═══════════════════════════════════════════════════════════════
-# STEP 2: Install Spot Optimizer Agent (one-click connection)
-# ═══════════════════════════════════════════════════════════════
+# Step 2: Install Spot Optimizer Agent
 kubectl create namespace spot-optimizer --dry-run=client -o yaml | kubectl apply -f - && \\
 kubectl create secret generic spot-agent-config \\
   --from-literal=API_KEY="${api_key}" \\
   --from-literal=BACKEND_URL="${WEBSOCKET_URL}/ws/cluster/${cluster_id}" \\
   --namespace spot-optimizer --dry-run=client -o yaml | kubectl apply -f - && \\
-kubectl apply -f ${PUBLIC_URL}/api/v1/clusters/agent-manifest
-
-# ═══════════════════════════════════════════════════════════════
-# TROUBLESHOOTING: If cluster not found, create one first:
-# eksctl create cluster --name ${clusterName} --region ${actualRegion} --managed
-# ═══════════════════════════════════════════════════════════════`.trim();
+kubectl apply -f ${PUBLIC_URL}/api/v1/clusters/agent-manifest`.trim();
 
       setInstallScript(magicCommand);
       setStep(2);
