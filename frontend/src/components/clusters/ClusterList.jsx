@@ -9,11 +9,12 @@ import { useClusterStore } from '../../store/useStore';
 import { useAuth } from '../../hooks/useAuth';
 import { Button, Badge, Card } from '../shared'; // Assuming Card is a simple white container
 import { formatCurrency, formatClusterType } from '../../utils/formatters';
-import { FiRefreshCw, FiPlus, FiMoreHorizontal, FiHardDrive, FiCpu, FiActivity, FiServer, FiTrash2 } from 'react-icons/fi'; // Icons
+import { FiRefreshCw, FiPlus, FiMoreHorizontal, FiHardDrive, FiCpu, FiActivity, FiServer, FiTrash2, FiLink, FiLink2 } from 'react-icons/fi'; // Icons
 import { PieChart, Pie, Cell, ResponsiveContainer } from 'recharts'; // For Donut Charts
 import toast from 'react-hot-toast';
 import ClusterConnectModal from './ClusterConnectModal';
 import ClusterDetails from './ClusterDetails';
+import ClusterDisconnectModal from './ClusterDisconnectModal';
 import { FaAws, FaGoogle, FaMicrosoft, FaLinux } from 'react-icons/fa'; // Provider icons
 
 const ClusterList = () => {
@@ -24,6 +25,7 @@ const ClusterList = () => {
   const [showConnectModal, setShowConnectModal] = useState(false);
   const [selectedClusterId, setSelectedClusterId] = useState(null);
   const [openMenuId, setOpenMenuId] = useState(null); // For dropdown menu
+  const [disconnectCluster, setDisconnectCluster] = useState(null); // For disconnect modal
 
   // Mock KPI Data State
   const [kpiData, setKpiData] = useState({
@@ -194,16 +196,44 @@ const ClusterList = () => {
     setShowConnectModal(true);
   };
 
-  const handleDeleteCluster = async (clusterId, e) => {
-    e.stopPropagation(); // Prevent row click
-    setOpenMenuId(null);
-    if (!window.confirm('Are you sure you want to delete this cluster?')) return;
+  const handleDisconnectCluster = async (clusterId, deleteNodes) => {
     try {
-      await clusterAPI.deleteCluster(clusterId);
-      toast.success('Cluster deleted successfully');
+      // Update cluster status to DISCONNECTED instead of deleting
+      await clusterAPI.updateCluster(clusterId, {
+        status: 'DISCONNECTED',
+        deleteNodes: deleteNodes
+      });
+      toast.success('Cluster disconnected successfully');
       fetchClusters();
     } catch (error) {
-      toast.error('Failed to delete cluster');
+      toast.error('Failed to disconnect cluster');
+      console.error(error);
+    }
+  };
+
+  const handleReconnectCluster = async (clusterId, e) => {
+    e.stopPropagation();
+    setOpenMenuId(null);
+    try {
+      await clusterAPI.updateCluster(clusterId, { status: 'ACTIVE' });
+      toast.success('Cluster reconnected successfully');
+      fetchClusters();
+    } catch (error) {
+      toast.error('Failed to reconnect cluster');
+      console.error(error);
+    }
+  };
+
+  const handleRemoveCluster = async (clusterId, e) => {
+    e.stopPropagation();
+    setOpenMenuId(null);
+    if (!window.confirm('Are you sure you want to permanently remove this cluster? This cannot be undone.')) return;
+    try {
+      await clusterAPI.deleteCluster(clusterId);
+      toast.success('Cluster removed successfully');
+      fetchClusters();
+    } catch (error) {
+      toast.error('Failed to remove cluster');
       console.error(error);
     }
   };
@@ -345,12 +375,18 @@ const ClusterList = () => {
                   </td>
                   <td className="py-4 px-6">
                     <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium ${cluster.status === 'ACTIVE'
-                      ? 'bg-green-50 text-green-700'
-                      : 'bg-gray-100 text-gray-700'
+                        ? 'bg-green-50 text-green-700'
+                        : cluster.status === 'DISCONNECTED'
+                          ? 'bg-orange-50 text-orange-700'
+                          : 'bg-gray-100 text-gray-700'
                       }`}>
-                      <span className={`w-1.5 h-1.5 rounded-full ${cluster.status === 'ACTIVE' ? 'bg-green-500' : 'bg-gray-400'
+                      <span className={`w-1.5 h-1.5 rounded-full ${cluster.status === 'ACTIVE'
+                          ? 'bg-green-500'
+                          : cluster.status === 'DISCONNECTED'
+                            ? 'bg-orange-500'
+                            : 'bg-gray-400'
                         }`} />
-                      {cluster.status === 'ACTIVE' ? 'Connected' : cluster.status}
+                      {cluster.status === 'ACTIVE' ? 'Connected' : cluster.status === 'DISCONNECTED' ? 'Disconnected' : cluster.status}
                     </span>
                   </td>
                   <td className="py-4 px-6 text-right relative">
@@ -364,13 +400,34 @@ const ClusterList = () => {
                       <FiMoreHorizontal className="w-5 h-5" />
                     </button>
                     {openMenuId === cluster.id && (
-                      <div className="absolute right-6 top-10 bg-white border border-gray-200 rounded-lg shadow-lg z-20 py-1 min-w-[120px]">
+                      <div className="absolute right-6 top-10 bg-white border border-gray-200 rounded-lg shadow-lg z-20 py-1 min-w-[160px]">
+                        {cluster.status === 'DISCONNECTED' ? (
+                          <button
+                            className="w-full px-4 py-2 text-left text-sm text-blue-600 hover:bg-blue-50 flex items-center gap-2"
+                            onClick={(e) => handleReconnectCluster(cluster.id, e)}
+                          >
+                            <FiLink className="w-4 h-4" />
+                            Reconnect
+                          </button>
+                        ) : (
+                          <button
+                            className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setOpenMenuId(null);
+                              setDisconnectCluster(cluster);
+                            }}
+                          >
+                            <FiLink2 className="w-4 h-4" />
+                            Disconnect
+                          </button>
+                        )}
                         <button
                           className="w-full px-4 py-2 text-left text-sm text-red-600 hover:bg-red-50 flex items-center gap-2"
-                          onClick={(e) => handleDeleteCluster(cluster.id, e)}
+                          onClick={(e) => handleRemoveCluster(cluster.id, e)}
                         >
                           <FiTrash2 className="w-4 h-4" />
-                          Delete
+                          Remove cluster
                         </button>
                       </div>
                     )}
@@ -407,6 +464,14 @@ const ClusterList = () => {
           onClose={() => setSelectedClusterId(null)}
         />
       )}
+
+      {/* Disconnect Modal */}
+      <ClusterDisconnectModal
+        isOpen={!!disconnectCluster}
+        onClose={() => setDisconnectCluster(null)}
+        cluster={disconnectCluster}
+        onConfirm={handleDisconnectCluster}
+      />
     </div>
   );
 };
