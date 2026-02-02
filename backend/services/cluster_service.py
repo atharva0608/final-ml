@@ -645,7 +645,7 @@ EOF
         """
         cluster = self._get_cluster_with_access(cluster_id, user_id)
         
-        backend_url = os.environ.get('BACKEND_PUBLIC_URL', 'http://localhost:8000')
+        backend_url = os.environ.get('BACKEND_PUBLIC_URL', 'https://bb82fb1026ad.ngrok-free.app')
         ws_url = backend_url.replace('https://', 'wss://').replace('http://', 'ws://')
 
         script = f"""#!/bin/bash
@@ -748,7 +748,7 @@ echo "✅ Agent successfully deployed!"
             self.db.refresh(cluster)
         
         # 3. Generate one-click install script with Helm
-        backend_url = os.environ.get('BACKEND_PUBLIC_URL', 'http://localhost:8000')
+        backend_url = os.environ.get('BACKEND_PUBLIC_URL', 'https://bb82fb1026ad.ngrok-free.app')
         ws_url = backend_url.replace('https://', 'wss://').replace('http://', 'ws://')
         
         install_script = f'''# Spot Optimizer Agent Installation
