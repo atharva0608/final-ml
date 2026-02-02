@@ -35,6 +35,7 @@ class Cluster(Base):
     # Connection/Agent details
     agent_installed = Column(String, default="N") # 'Y' or 'N'
     is_agentless = Column(String, default="Y") # 'Y' or 'N'
+    api_key = Column(String, nullable=True)  # Auto-generated for agent auth
     
     # AWS Auth
     aws_role_arn = Column(String, nullable=True)

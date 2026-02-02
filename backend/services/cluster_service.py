@@ -8,6 +8,9 @@ from typing import List, Optional, Dict, Any
 
 import uuid
 import logging
+import secrets
+import string
+import os
 from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_, desc
@@ -609,6 +612,10 @@ EOF
                 # Fallback or error if provider not in Enum (e.g., 'other')
                 cluster_type = ClusterType.EKS
 
+            # Auto-generate secure API key
+            api_key_chars = string.ascii_letters + string.digits
+            generated_api_key = "sk_live_" + "".join(secrets.choice(api_key_chars) for _ in range(32))
+
             cluster = Cluster(
                 id=str(uuid.uuid4()),
                 account_id=account.id,
@@ -619,6 +626,7 @@ EOF
                 status=ClusterStatus.DISCOVERED,
                 agent_installed="N",
                 is_agentless="N",
+                api_key=generated_api_key,  # Store auto-generated key
                 created_at=datetime.utcnow(),
                 updated_at=datetime.utcnow()
             )
@@ -626,12 +634,51 @@ EOF
             self.db.commit()
             self.db.refresh(cluster)
         
-        # 3. Generate script
-        cmd = self.generate_agent_install_command(cluster.id, user_id)
+        # 3. Generate one-click install script with Helm
+        backend_url = os.environ.get('BACKEND_PUBLIC_URL', 'http://localhost:8000')
+        ws_url = backend_url.replace('https://', 'wss://').replace('http://', 'ws://')
+        
+        install_script = f'''# Spot Optimizer Agent Installation
+# Cluster: {cluster.name}
+# One-Click Connection Script
+
+helm repo add spot-optimizer https://charts.spotoptimizer.com 2>/dev/null || true
+helm repo update
+
+helm upgrade --install spot-agent spot-optimizer/spot-agent \\
+  --namespace spot-optimizer --create-namespace \\
+  --set config.apiKey="{cluster.api_key}" \\
+  --set config.clusterId="{cluster.id}" \\
+  --set config.backendUrl="{ws_url}/ws/cluster/{cluster.id}"
+
+# Alternative: Manual kubectl installation
+kubectl create namespace spot-optimizer 2>/dev/null || true
+
+kubectl create secret generic spot-optimizer-secret \\
+  --from-literal=API_KEY="{cluster.api_key}" \\
+  --namespace spot-optimizer --dry-run=client -o yaml | kubectl apply -f -
+
+kubectl apply -f - <<EOF
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spot-optimizer-config
+  namespace: spot-optimizer
+data:
+  CLUSTER_ID: "{cluster.id}"
+  API_ENDPOINT: "{backend_url}"
+  WS_ENDPOINT: "{ws_url}/ws/cluster/{cluster.id}"
+  REGION: "{cluster.region}"
+EOF
+
+echo "✅ Spot Optimizer Agent installed successfully!"
+echo "🔗 Cluster ID: {cluster.id}"
+'''
         
         return InstallScriptResponse(
             cluster_id=cluster.id,
-            script=cmd.install_command
+            script=install_script,
+            api_key=cluster.api_key  # Return API key for frontend display
         )
 
     def update_heartbeat(self, cluster_id: str) -> bool:

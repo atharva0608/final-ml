@@ -315,3 +315,4 @@ class InstallScriptResponse(BaseModel):
     """Response with install script and cluster ID"""
     cluster_id: str = Field(..., description="Cluster UUID")
     script: str = Field(..., description="Installation script/command")
+    api_key: Optional[str] = Field(None, description="Auto-generated API key for agent auth")
