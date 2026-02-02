@@ -1,0 +1,23 @@
+image:
+  repository: spotoptimizer/agent
+  tag: latest
+  pullPolicy: IfNotPresent
+
+config:
+  apiKey: ""
+  backendUrl: ""
+  clusterId: ""
+
+resources:
+  limits:
+    cpu: 100m
+    memory: 128Mi
+  requests:
+    cpu: 50m
+    memory: 64Mi
+
+serviceAccount:
+  create: true
+  name: "spot-optimizer-agent"
+
+namespace: "spot-optimizer"

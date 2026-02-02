@@ -638,6 +638,68 @@ EOF
             instructions=["Run the command in your terminal", "Monitor the connection status in dashboard"]
         )
 
+    def generate_helm_install_script(
+        self, 
+        cluster_id: str, 
+        user_id: str, 
+        image: Optional[str] = None
+    ) -> str:
+        """
+        Generate a shell script to install the agent via Helm
+        One-click experience: curl | bash
+        """
+        cluster = self._get_cluster_with_access(cluster_id, user_id)
+        
+        backend_url = os.environ.get('BACKEND_PUBLIC_URL', 'http://localhost:8000')
+        ws_url = backend_url.replace('https://', 'wss://').replace('http://', 'ws://')
+
+        script = f"""#!/bin/bash
+set -e
+
+echo "🚀 Starting Spot Optimizer Agent Installation (Helm)..."
+echo "📍 Cluster: {cluster.name}"
+
+# 1. Dependency Checks
+if ! command -v helm &> /dev/null; then
+    echo "⚙️  Helm not found. Installing Helm..."
+    curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+fi
+
+# 2. Chart Location
+CHART_URI="oci://public.ecr.aws/spot-optimizer/spot-optimizer-agent" # Example Placeholder
+
+echo "📦 Installing Chart from $CHART_URI..."
+
+# 3. Construct Helm Command
+HELM_CMD="helm upgrade --install spot-optimizer-agent $CHART_URI \\
+  --namespace spot-optimizer \\
+  --create-namespace \\
+  --set config.apiKey='{cluster.api_key}' \\
+  --set config.backendUrl='{ws_url}/ws/cluster/{cluster.id}' \\
+  --set config.clusterId='{cluster.id}' \\
+  --wait"
+
+# Inject custom image if provided
+"""
+        if image:
+            # Split repo and tag if possible, or just set repository/tag?
+            # Helm chart values: image.repository, image.tag
+            # Assuming input is full URI "repo/image:tag"
+            if ':' in image:
+                repo, tag = image.split(':', 1)
+                script += f'HELM_CMD="$HELM_CMD --set image.repository={repo} --set image.tag={tag}"\n'
+            else:
+                script += f'HELM_CMD="$HELM_CMD --set image.repository={image}"\n'
+
+        script += """
+# Execute
+eval "$HELM_CMD"
+
+echo ""
+echo "✅ Agent successfully deployed!"
+"""
+        return script
+
     def generate_install_script_provider(
         self,
         user_id: str,

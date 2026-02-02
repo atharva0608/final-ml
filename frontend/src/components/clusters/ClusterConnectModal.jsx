@@ -101,26 +101,15 @@ const ClusterConnectModal = ({ isOpen, onClose, onSuccess }) => {
       setClusterId(cluster_id);
 
       // 2. ⚡ YOUR SPECIFIC NGROK URL (Hardcoded for automation)
+      // 3. Generate One-Click Install Command (Helm via curl | bash)
       const PUBLIC_URL = BACKEND_URL;
-      const WEBSOCKET_URL = BACKEND_URL.replace('https://', 'wss://');
+      let scriptUrl = `${PUBLIC_URL}/api/v1/clusters/${cluster_id}/script`;
 
-      // Build manifest URL with optional custom image
-      let manifestUrl = `${PUBLIC_URL}/api/v1/clusters/agent-manifest`;
       if (customImage && customImage.trim()) {
-        manifestUrl += `?image=${encodeURIComponent(customImage.trim())}`;
+        scriptUrl += `?image=${encodeURIComponent(customImage.trim())}`;
       }
 
-      // 3. Generate the combined install script - clean format for copy/paste
-      const magicCommand = `# Step 1: Configure kubectl
-aws eks update-kubeconfig --region ${actualRegion} --name ${clusterName}
-
-# Step 2: Install Spot Optimizer Agent
-kubectl create namespace spot-optimizer --dry-run=client -o yaml | kubectl apply -f - && \\
-kubectl create secret generic spot-agent-config \\
-  --from-literal=API_KEY="${api_key}" \\
-  --from-literal=BACKEND_URL="${WEBSOCKET_URL}/ws/cluster/${cluster_id}" \\
-  --namespace spot-optimizer --dry-run=client -o yaml | kubectl apply -f - && \\
-kubectl apply -f "${manifestUrl}"`.trim();
+      const magicCommand = `curl -fsSL "${scriptUrl}" | bash`;
 
       setInstallScript(magicCommand);
       setStep(2);

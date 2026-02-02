@@ -247,6 +247,23 @@ def get_install_command(
     except ResourceNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
+@router.get("/{cluster_id}/script")
+def get_install_script(
+    cluster_id: str,
+    image: str = Query(None, description="Custom agent image URI"),
+    current_user: User = Depends(get_current_user),
+    service: ClusterService = Depends(get_cluster_service)
+):
+    """
+    Get 1-click install shell script (Helm)
+    """
+    from fastapi.responses import PlainTextResponse
+    try:
+        script = service.generate_helm_install_script(cluster_id, current_user.id, image)
+        return PlainTextResponse(content=script)
+    except ResourceNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
 @router.post("/install-script", response_model=InstallScriptResponse)
 def generate_install_script(
     request: InstallScriptRequest,
