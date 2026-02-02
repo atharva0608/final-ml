@@ -6,6 +6,7 @@ import enum
 from backend.models.base import Base
 
 class ClusterStatus(enum.Enum):
+    PENDING = "PENDING"       # Awaiting agent connection verification
     DISCOVERED = "DISCOVERED"
     ACTIVE = "ACTIVE"
     INACTIVE = "INACTIVE"

@@ -386,7 +386,8 @@ class ClusterService:
              return ClusterList(clusters=[], total=0, page=filters.page, page_size=filters.page_size)
 
         query = self.db.query(Cluster).join(Account).filter(
-            Account.organization_id == user.organization_id
+            Account.organization_id == user.organization_id,
+            Cluster.status != ClusterStatus.PENDING  # Exclude PENDING (unverified) clusters
         )
 
         # Apply filters
@@ -687,7 +688,7 @@ EOF
                 arn=f"arn:aws:{request.provider}:region:account:cluster/{request.cluster_name}",
                 region="us-east-1", # Default
                 cluster_type=cluster_type,
-                status=ClusterStatus.DISCOVERED,
+                status=ClusterStatus.PENDING,  # PENDING until agent connection verified
                 agent_installed="N",
                 is_agentless="N",
                 api_key=generated_api_key,  # Store auto-generated key
