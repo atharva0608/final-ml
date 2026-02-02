@@ -147,13 +147,13 @@ kubectl apply -f ${PUBLIC_URL}/api/v1/clusters/agent-manifest
       const response = await clusterAPI.verifyConnection(clusterId);
 
       if (response.data.status === 'connected') {
-        toast.success('Cluster connected successfully!');
+        toast.success('Cluster connected successfully! Agent is active.');
         setStep(3);
       } else {
-        toast.error('Agent not detected yet. Please run the script and try again.');
+        toast.error('⏳ Agent not detected yet. Run the script and wait 30 seconds, then retry.');
       }
     } catch (error) {
-      toast.error('Connection verification failed');
+      toast.error('Connection verification failed. Check if the script was executed.');
     } finally {
       setVerifying(false);
     }

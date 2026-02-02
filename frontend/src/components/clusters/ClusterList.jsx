@@ -374,20 +374,32 @@ const ClusterList = () => {
                     <span className="text-sm font-medium text-gray-900">{formatCurrency(cluster.monthly_cost)} /mo</span>
                   </td>
                   <td className="py-4 px-6">
-                    <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium ${cluster.status === 'ACTIVE'
-                        ? 'bg-green-50 text-green-700'
-                        : cluster.status === 'DISCONNECTED'
-                          ? 'bg-orange-50 text-orange-700'
-                          : 'bg-gray-100 text-gray-700'
-                      }`}>
-                      <span className={`w-1.5 h-1.5 rounded-full ${cluster.status === 'ACTIVE'
-                          ? 'bg-green-500'
-                          : cluster.status === 'DISCONNECTED'
-                            ? 'bg-orange-500'
-                            : 'bg-gray-400'
-                        }`} />
-                      {cluster.status === 'ACTIVE' ? 'Connected' : cluster.status === 'DISCONNECTED' ? 'Disconnected' : cluster.status}
-                    </span>
+                    {(() => {
+                      // Real-time status check based on last_heartbeat
+                      const isReallyConnected = () => {
+                        if (cluster.status !== 'ACTIVE') return false;
+                        if (!cluster.last_heartbeat) return false;
+                        const lastHB = new Date(cluster.last_heartbeat);
+                        const twoMinAgo = new Date(Date.now() - 2 * 60 * 1000);
+                        return lastHB > twoMinAgo;
+                      };
+                      const connected = isReallyConnected();
+                      const statusText = connected ? 'Connected' :
+                        cluster.status === 'DISCONNECTED' ? 'Disconnected' :
+                          cluster.status === 'PENDING' ? 'Pending' : 'Offline';
+                      const bgColor = connected ? 'bg-green-50 text-green-700' :
+                        cluster.status === 'PENDING' ? 'bg-yellow-50 text-yellow-700' :
+                          'bg-orange-50 text-orange-700';
+                      const dotColor = connected ? 'bg-green-500' :
+                        cluster.status === 'PENDING' ? 'bg-yellow-500' :
+                          'bg-orange-500';
+                      return (
+                        <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium ${bgColor}`}>
+                          <span className={`w-1.5 h-1.5 rounded-full ${dotColor}`} />
+                          {statusText}
+                        </span>
+                      );
+                    })()}
                   </td>
                   <td className="py-4 px-6 text-right relative">
                     <button

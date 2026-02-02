@@ -59,20 +59,24 @@ class ClusterService:
     def verify_connection(self, cluster_id: str, user_id: str) -> dict:
         """
         Verify cluster connection status (agent is connected)
-        For now, just update status to ACTIVE since agent deployed successfully
+        Only returns connected=True if agent has sent a heartbeat
         """
         cluster = self._get_cluster_with_access(cluster_id, user_id)
         
-        # Update cluster status to ACTIVE (agent deployed)
-        cluster.status = ClusterStatus.ACTIVE
-        cluster.agent_installed = "Y"
-        cluster.updated_at = datetime.utcnow()
-        self.db.commit()
+        # Check if agent has sent heartbeat (real connection)
+        is_connected = cluster.status == ClusterStatus.ACTIVE and cluster.last_heartbeat is not None
+        
+        # Also check if heartbeat is recent (within 2 minutes)
+        if is_connected and cluster.last_heartbeat:
+            from datetime import timedelta
+            threshold = datetime.utcnow() - timedelta(minutes=2)
+            is_connected = cluster.last_heartbeat > threshold
         
         return {
-            "status": "connected",
+            "status": "connected" if is_connected else "pending",
             "cluster_id": cluster.id,
-            "cluster_name": cluster.name
+            "cluster_name": cluster.name,
+            "last_heartbeat": cluster.last_heartbeat.isoformat() if cluster.last_heartbeat else None
         }
 
     def update_resource_costs(self, cluster_id: str, user_id: str, costs: dict) -> dict:
