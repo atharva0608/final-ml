@@ -87,6 +87,9 @@ const ClusterConnectModal = ({ isOpen, onClose, onSuccess }) => {
     try {
       setVerifying(true);
 
+      // Use default region if not provided
+      const actualRegion = region || 'us-east-1';
+
       // 1. Create Cluster in Backend and get API key
       const response = await clusterAPI.generateInstallScript({
         provider,
@@ -100,16 +103,26 @@ const ClusterConnectModal = ({ isOpen, onClose, onSuccess }) => {
       const PUBLIC_URL = BACKEND_URL;
       const WEBSOCKET_URL = BACKEND_URL.replace('https://', 'wss://');
 
-      // 3. Generate the "One-Click" Command
-      // This command creates the Namespace, Secret, Config, and Deployment in one go.
-      const magicCommand = `
+      // 3. Generate the combined install script with Step 1 (kubeconfig) and Step 2 (agent)
+      const magicCommand = `# ═══════════════════════════════════════════════════════════════
+# STEP 1: Configure kubectl for your EKS cluster
+# ═══════════════════════════════════════════════════════════════
+aws eks update-kubeconfig --region ${actualRegion} --name ${clusterName}
+
+# ═══════════════════════════════════════════════════════════════
+# STEP 2: Install Spot Optimizer Agent (one-click connection)
+# ═══════════════════════════════════════════════════════════════
 kubectl create namespace spot-optimizer --dry-run=client -o yaml | kubectl apply -f - && \\
 kubectl create secret generic spot-agent-config \\
   --from-literal=API_KEY="${api_key}" \\
   --from-literal=BACKEND_URL="${WEBSOCKET_URL}/ws/cluster/${cluster_id}" \\
   --namespace spot-optimizer --dry-run=client -o yaml | kubectl apply -f - && \\
 kubectl apply -f ${PUBLIC_URL}/api/v1/clusters/agent-manifest
-      `.trim();
+
+# ═══════════════════════════════════════════════════════════════
+# TROUBLESHOOTING: If cluster not found, create one first:
+# eksctl create cluster --name ${clusterName} --region ${actualRegion} --managed
+# ═══════════════════════════════════════════════════════════════`.trim();
 
       setInstallScript(magicCommand);
       setStep(2);
@@ -271,6 +284,20 @@ kubectl apply -f ${PUBLIC_URL}/api/v1/clusters/agent-manifest
                       placeholder="my-cluster-name"
                       className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                     />
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      ENTER AWS REGION:
+                    </label>
+                    <input
+                      type="text"
+                      value={region}
+                      onChange={(e) => setRegion(e.target.value)}
+                      placeholder="us-east-1"
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                    <p className="text-xs text-gray-500 mt-1">Leave empty for default (us-east-1)</p>
                   </div>
 
                   <div className="flex justify-end">
