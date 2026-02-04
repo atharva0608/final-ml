@@ -429,6 +429,10 @@ app.include_router(tag_template_router, prefix="/api/v1")
 from backend.api.installer_routes import router as installer_router
 app.include_router(installer_router, prefix="/api")
 
+# Agent routes (used by Kubernetes agent for registration/heartbeat)
+from backend.api.agent_routes import router as agent_router
+app.include_router(agent_router, prefix="/api/v1")
+
 
 # Startup and shutdown events
 

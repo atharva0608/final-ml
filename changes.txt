@@ -1,68 +1,156 @@
-Based on a review of your current setup (files `install.sh`, `ClusterConnectModal.jsx`, and backend structure), you have a working "MVP" (Minimum Viable Product).
+There are **two distinct issues** happening here. Let's fix the "Not Connected" status first, as it is blocking you right now.
 
-However, to make this truly "Enterprise Grade" and automated (like Datadog or CAST.AI), you should move away from hosting the script on GitHub and instead **serve the script dynamically from your Backend**.
+### 🔴 Issue 1: Why the UI is still "Disconnected"
 
-Here are the **Non-Code Instructions** to upgrade to this "Automated 2.0" approach.
+The logs show `deployment.apps/spot-agent unchanged`. This is the problem.
 
-### 🚀 The Goal: "Dynamic Scripting"
+Because you ran the script before (when the image was missing), Kubernetes created a broken Pod. Running the script again **did nothing** because Kubernetes looked at the file, saw it was the same, and said "I don't need to change anything." It did **not** try to pull the new image you just pushed.
 
-**Current State:** User copies a long command. The Frontend hardcodes the URL.
-**Future State:** User copies a short command. The Backend writes the script instantly for *that specific user*.
+**Fix Step 1: Force a Restart**
+Run this command in your terminal to force Kubernetes to download your new image:
 
----
-
-### 1. 🧠 Backend: Create the "Smart Installer" Endpoint
-
-Instead of a static file on GitHub, your backend will generate the installation script on the fly.
-
-* **Create a Route:** Add a new public endpoint: `GET /api/installer/linux`.
-* **The Logic:**
-1. Accept a query parameter: `?cluster_id=...&api_key=...`.
-2. Read the content of your `install.sh` file from the local disk.
-3. **Find & Replace:** Search for the hardcoded placeholders in the text (e.g., `BACKEND_URL="..."`) and replace them with the *actual* server URL where this request came from.
-4. **Return:** Send the modified text back with a header `Content-Type: text/x-shellscript`.
-
-
-
-**Why this is better:** You never have to ask the user to type `BACKEND_URL=...` again. The script "knows" where it came from.
-
-### 2. ⚡ Frontend: The "Truly One-Click" Command
-
-Update your `ClusterConnectModal` to generate the shortest possible command.
-
-* **The Command:**
 ```bash
-curl -sL "https://your-api.com/api/installer/linux?cluster_id=123&api_key=abc" | bash
+kubectl rollout restart deployment spot-agent -n spot-optimizer
+
+```
+
+**Fix Step 2: Verify the Bridge (Ngrok)**
+If you restarted Ngrok, your URL changed. The Agent inside the cluster might still be trying to talk to the **old** URL because the ConfigMap was also "unchanged."
+
+1. Check the configured URL:
+```bash
+kubectl get configmap spot-agent-config -n spot-optimizer -o yaml
 
 ```
 
 
+*Does the `BACKEND_URL` match your **current** Ngrok window?*
+2. **If it connects to the wrong URL:**
+* Delete the stuck config: `kubectl delete configmap spot-agent-config -n spot-optimizer`
+* Run your **One-Click Install command** again. It will now generate the new config.
+
+
+
+---
+
+### 🟡 Issue 2: Why didn't "Hybrid/Agentless" work?
+
+You asked: *"It should already search for clusters and then... we should have installed/injected agent."*
+
+**The Gap:** You created the cluster using `eksctl` (Manual AWS Console), but you haven't told your **Platform** about your AWS Account yet. The "Hybrid Discovery" cannot see your AWS account until you link them.
+
+**The Workflow you expected requires this one-time setup:**
+
+1. **Link Account:** Go to **Settings** > **Cloud Integrations** -> **Add AWS Account**.
+* This launches a CloudFormation stack to give your backend "Read Access".
+
+
+2. **Discovery Runs:** Once linked, your backend (specifically `discovery.py`) will scan `us-east-1` and automatically populate the **Clusters** page with `spot-demo-1` (Status: *Discovered*).
+3. **One-Click Inject:**
+* **Then** you would see an "Activate" button on the UI.
+* Clicking that runs `agent_injector.py` (the agentless injection) which installs the agent *without* you running any terminal commands.
+
+
+
+**Summary:**
+
+* To fix **current** cluster -> Run `kubectl rollout restart...`
+* To fix **future** clusters (Auto-Discovery) -> Go to **Settings > Cloud Integrations** and add your AWS account.
+
+Here is the comprehensive **Non-Code Master Guide** to fix your current "Disconnected" state and implement the sophisticated "Hybrid Agentless" architecture you want.
+
+---
+
+### 🚨 Phase 1: The Immediate Fix (Get the Dashboard Green)
+
+**Problem:** Your script ran, but Kubernetes said "unchanged" because it didn't know you pushed a new Docker image. It is still trying to run the old, broken version.
+
+**Action Plan:**
+
+1. **Nuke the Broken Agent:**
+* Open your terminal (connected to the cluster).
+* Run a command to **delete the entire namespace** `spot-optimizer`.
+* *Why:* This forces a "Clean Slate". The next time you run the script, Kubernetes will be forced to download your new, working Docker image.
+
+
+2. **Verify Public Access:**
+* Ensure your Docker Hub repository (`atharva0608/spot-optimizer-agent`) is set to **Public**. If it is Private, the cluster cannot download it.
+
+
+3. **Run the Installer Again:**
+* Go to your Dashboard -> "Connect Cluster".
+* Copy the `curl` command.
+* Run it.
+* *Result:* You should see "Created" (not unchanged). The dashboard will turn Green in ~30 seconds.
+
+
+
+---
+
+### ☁️ Phase 2: Hybrid "Discovery" (Seeing the Clusters)
+
+**Goal:** You want to see "Discovered" clusters in your dashboard *before* installing anything, just by linking an AWS Account.
+
+**Action Plan:**
+
+1. **Update the CloudFormation Template (`full-access-role.yaml`):**
+* You must add specific permissions that allow your backend to "Look" at the EKS service.
+* **Add Actions:** `eks:ListClusters`, `eks:DescribeCluster`, `ec2:DescribeInstances`, `autoscaling:DescribeAutoScalingGroups`.
+
+
+2. **Update Backend Logic (The Scanner):**
+* Create a periodic background task (e.g., "Discovery Worker").
 * **Logic:**
-* Construct this string using the variables you already have (`id`, `api_key`).
-* Use `window.location.origin` (or your config) to dynamically get the domain so it works on localhost, ngrok, AND production without changing code.
+1. Fetch all linked AWS Accounts from your database.
+2. For each account, use `boto3` (AWS SDK) to **Assume Role** (using the ARN the user gave you).
+3. Call `eks.list_clusters()`.
+4. Compare this list with your local database.
+5. **New Cluster Found?** Save it to your DB with status **"Discovered"** (Gray dot).
 
 
 
-### 3. 🛡️ Verification: Automated "Success"
 
-Don't make the user guess if it worked.
-
-* **Auto-Close Modal:**
-* In the "Connect Cluster" popup, add a **Background Polling** timer (e.g., every 3 seconds).
-* It should call your backend: `GET /api/clusters/{id}/status`.
-* **Action:** If the status changes to `Active` (Green), automatically **close the modal** and show a "Success! Cluster Connected" toast notification.
+3. **Update Frontend:**
+* Change the "Clusters" page to show two lists:
+* **Managed Clusters:** Active agents (Green).
+* **Discovered Clusters:** Found in AWS but no agent yet (Gray).
 
 
 
-### 4. 📦 Repository Cleanup (Simplification)
 
-* **Move `install.sh`:** Move it from the root folder to `backend/templates/install.sh`. It is now a *template*, not a standalone script.
-* **Docker Image:** Keep the `agent/` folder for building the Docker image, but removing the manual `yaml` files will stop people from trying the "hard way."
 
-### ✅ Summary of the Upgrade
+---
 
-1. **Backend** serves the script (handling the URL logic).
-2. **Frontend** generates a short 1-line URL.
-3. **Frontend** listens for the heartbeat and auto-verifies the connection.
+### 💉 Phase 3: Hybrid "Auto-Injection" (Controlling the Clusters)
 
-This approach creates the smoothest possible "One-Click" experience for your clients.
+**Goal:** Instead of asking the user to copy-paste `curl`, they click "Activate" on a "Discovered" cluster, and your backend installs the agent for them.
+
+**Action Plan:**
+
+1. **Add "Break-Glass" Permissions:**
+* Update the CloudFormation Role again.
+* **Crucial Additions:** `eks:CreateAccessEntry`, `eks:AssociateAccessPolicy`.
+* *Why:* This allows your backend role to say "I am an Admin of this cluster" without needing a password.
+
+
+2. **Build the "Injector" Service:**
+* Create a backend function triggered by the "Activate" button.
+* **Step 1 (The Handshake):** Call AWS API `create_access_entry` to add your Role ARN to the cluster's authentication map.
+* **Step 2 (The Keys):** Generate a temporary **Kubernetes Auth Token** using the AWS STS service.
+* **Step 3 (The Injection):** Connect to the cluster's API Server directly using Python (not `kubectl`).
+* **Step 4 (The Payload):** Send the Deployment YAML (the same stuff in your `install.sh`) directly to the API.
+
+
+3. **Frontend "Activate" Flow:**
+* On a "Discovered" cluster card, add an **"Optimize"** button.
+* When clicked, show a loader: *"Establishing Trust... Injecting Agent..."*.
+* Once the backend confirms success, the card moves to the "Managed Clusters" list.
+
+
+
+### 📝 Summary Checklist for You
+
+1. [ ] **Fix Now:** Delete `spot-optimizer` namespace & re-run `curl` to fix the `ImagePullBackOff`.
+2. [ ] **AWS Template:** Add `eks:List...` and `eks:CreateAccessEntry` to your YAML.
+3. [ ] **UI:** Build the "Discovered vs. Connected" view.
+4. [ ] **Backend:** Write the "Discovery Worker" to populate that view.

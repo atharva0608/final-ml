@@ -74,7 +74,7 @@ helm upgrade --install spot-agent oci://public.ecr.aws/spot-optimizer/spot-optim
   --namespace spot-optimizer --create-namespace \
   --set config.apiKey=YOUR_API_KEY \
   --set config.clusterId=YOUR_CLUSTER_ID \
-  --set config.backendUrl=https://bb82fb1026ad.ngrok-free.app/ws/cluster/YOUR_CLUSTER_ID
+  --set config.backendUrl=https://34c3-103-147-161-240.ngrok-free.app/ws/cluster/YOUR_CLUSTER_ID
 ```
 *(Note: The link above uses the default OCI registry. If you published your own chart, use your registry URI.)*
 

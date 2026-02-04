@@ -67,7 +67,8 @@ AGENT_IMAGE="atharva608/spot-optimizer-agent:${{AGENT_VERSION}}"
 # --- Dynamic Configuration (Auto-generated) ---
 CLUSTER_ID="{cluster_id}"
 API_KEY="{api_key}"
-BACKEND_URL="{ws_endpoint}"
+BACKEND_URL="{backend_url}"
+BACKEND_WS_URL="{ws_endpoint}"
 
 # --- Pre-flight Checks ---
 echo "🔍 Running pre-flight checks..."
@@ -92,6 +93,7 @@ echo "🚀 Starting Spot Optimizer Agent Installation..."
 echo "   Agent Version: $AGENT_VERSION"
 echo "   Cluster ID:    $CLUSTER_ID"
 echo "   Backend URL:   $BACKEND_URL"
+echo "   WebSocket URL: $BACKEND_WS_URL"
 echo ""
 
 # --- 1. Setup Namespace ---
@@ -108,6 +110,7 @@ kubectl create secret generic spot-agent-secret \\
 kubectl create configmap spot-agent-config \\
     --namespace $NAMESPACE \\
     --from-literal=BACKEND_URL="$BACKEND_URL" \\
+    --from-literal=BACKEND_WS_URL="$BACKEND_WS_URL" \\
     --from-literal=CLUSTER_ID="$CLUSTER_ID" \\
     --dry-run=client -o yaml | kubectl apply -f -
 
@@ -185,6 +188,11 @@ spec:
                 configMapKeyRef:
                   name: spot-agent-config
                   key: CLUSTER_ID
+            - name: BACKEND_WS_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: spot-agent-config
+                  key: BACKEND_WS_URL
           resources:
             requests:
               cpu: "50m"

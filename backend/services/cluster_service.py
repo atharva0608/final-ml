@@ -645,7 +645,7 @@ EOF
         """
         cluster = self._get_cluster_with_access(cluster_id, user_id)
         
-        backend_url = os.environ.get('BACKEND_PUBLIC_URL', 'https://bb82fb1026ad.ngrok-free.app')
+        backend_url = os.environ.get('BACKEND_PUBLIC_URL', 'https://34c3-103-147-161-240.ngrok-free.app')
         ws_url = backend_url.replace('https://', 'wss://').replace('http://', 'ws://')
 
         script = f"""#!/bin/bash
@@ -732,7 +732,7 @@ echo "✅ Agent successfully deployed!"
             self.db.refresh(cluster)
         
         # 2. Get Configuration
-        backend_url = os.environ.get('BACKEND_PUBLIC_URL', 'https://bb82fb1026ad.ngrok-free.app')
+        backend_url = os.environ.get('BACKEND_PUBLIC_URL', 'https://34c3-103-147-161-240.ngrok-free.app')
         ws_url = backend_url.replace('https://', 'wss://').replace('http://', 'ws://')
         
         # Placeholder - updated by publish_to_dockerhub.sh
