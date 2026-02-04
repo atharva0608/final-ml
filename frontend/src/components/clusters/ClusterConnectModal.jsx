@@ -64,23 +64,41 @@ const ClusterConnectModal = ({ isOpen, onClose, onSuccess }) => {
       const { cluster_id, api_key, script: chartUri } = response.data;
       setClusterId(cluster_id);
 
-      const WS_URL = BACKEND_URL.replace('https://', 'wss://').replace('http://', 'ws://');
-
-      const INSTALL_SCRIPT_URL = "https://raw.githubusercontent.com/atharva0608/final-ml/main/install.sh";
-
-      // Ensure backendUrl uses wss:// if it's the websocket endpoint
-      const wsUrl = BACKEND_URL.replace('http', 'ws').replace('https', 'wss');
-
-      const oneLiner = `curl -sL ${INSTALL_SCRIPT_URL} | CLUSTER_ID=${cluster_id} API_KEY=${api_key} BACKEND_URL=${wsUrl}/ws/cluster/${cluster_id} sh`;
+      // Generate the "truly one-click" command using the dynamic installer endpoint
+      // This automatically gets the correct backend URL from where it's being served
+      const installerUrl = `${BACKEND_URL}/api/installer/linux?cluster_id=${cluster_id}&api_key=${api_key}`;
+      const oneLiner = `curl -sL "${installerUrl}" | bash`;
 
       setInstallScript(oneLiner);
       setStep(2);
+
+      // Start auto-polling for connection status
+      startConnectionPolling(cluster_id);
     } catch (error) {
       toast.error('Failed to register cluster');
       console.error(error);
     } finally {
       setVerifying(false);
     }
+  };
+
+  // Auto-polling for connection status
+  const startConnectionPolling = (id) => {
+    const pollInterval = setInterval(async () => {
+      try {
+        const response = await clusterAPI.verifyConnection(id);
+        if (response.data.status === 'connected') {
+          clearInterval(pollInterval);
+          toast.success('🎉 Cluster connected successfully!');
+          setStep(3);
+        }
+      } catch (error) {
+        // Silent fail - keep polling
+      }
+    }, 5000); // Poll every 5 seconds
+
+    // Stop polling after 5 minutes
+    setTimeout(() => clearInterval(pollInterval), 300000);
   };
 
   const handleCopyScript = () => {

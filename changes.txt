@@ -1,87 +1,68 @@
-Here is the detailed, **non-code** implementation guide to finalize your **One-Click Installation** and fix the missing components of the **Hybrid (Agentless)** approach.
+Based on a review of your current setup (files `install.sh`, `ClusterConnectModal.jsx`, and backend structure), you have a working "MVP" (Minimum Viable Product).
+
+However, to make this truly "Enterprise Grade" and automated (like Datadog or CAST.AI), you should move away from hosting the script on GitHub and instead **serve the script dynamically from your Backend**.
+
+Here are the **Non-Code Instructions** to upgrade to this "Automated 2.0" approach.
+
+### 🚀 The Goal: "Dynamic Scripting"
+
+**Current State:** User copies a long command. The Frontend hardcodes the URL.
+**Future State:** User copies a short command. The Backend writes the script instantly for *that specific user*.
 
 ---
 
-### 🟢 Part 1: Finalizing the "One-Click" Installation
+### 1. 🧠 Backend: Create the "Smart Installer" Endpoint
 
-*This is the primary method where the user copies a command and runs it. It is currently 90% ready but needs "Production Polish."*
+Instead of a static file on GitHub, your backend will generate the installation script on the fly.
 
-#### **Step 1: Publicize the Agent Image (Critical)**
-
-Your Kubernetes cluster acts as an independent entity in the cloud. It cannot see images stored on your laptop.
-
-* **Instruction:** You must build your Agent Docker image and push it to a public registry (like Docker Hub or GitHub Container Registry).
-* **Verification:** Go to Docker Hub. Can you see your image `atharva0608/spot-optimizer-agent`? If not, the installation will fail with `ImagePullBackOff`.
-
-#### **Step 2: Host the Installation Script**
-
-The `curl` command needs a stable URL to download the `install.sh` file.
-
-* **Instruction:** Commit and push your `install.sh` file to your GitHub repository's `main` branch.
-* **Verification:** Open your GitHub repo in a browser, click `install.sh`, then click **"Raw"**. Copy that URL. This is the URL your Frontend must use.
-
-#### **Step 3: Hardcode the "Bridge" URL**
-
-When the user runs the script, the agent inside the cluster needs to know where to send data.
-
-* **Instruction:** In your Frontend code (specifically the "Connect Cluster" modal), you must ensure that the `BACKEND_URL` variable does **not** say `localhost`. It **must** be your public Ngrok address (e.g., `https://xyz.ngrok-free.app`).
-* **Logic:** The Frontend should dynamically generate the command using this public address so the user doesn't have to edit the command manually.
-
----
-
-### 🟠 Part 2: Fixing the "Hybrid / Agentless" Approach
-
-*This is the advanced feature where your backend "breaks in" to the cluster to install the agent automatically. This part is currently missing the "Brain" (Logic) and the "Keys" (Permissions).*
-
-#### **Step 1: Fix Permissions (The "Keys")**
-
-Your CloudFormation template (`full-access-role.yaml`) allows you to view costs, but it currently lacks permission to modify the cluster.
-
-* **Instruction:** Open your CloudFormation template. You need to add specific **EKS Write Permissions** to the IAM Role.
-* **Missing Actions to Add:**
-* `eks:CreateAccessEntry` (Allows your backend to add itself as an admin).
-* `eks:AssociateAccessPolicy` (Grants the permissions).
-* `eks:ListClusters` & `eks:DescribeCluster` (To find the targets).
+* **Create a Route:** Add a new public endpoint: `GET /api/installer/linux`.
+* **The Logic:**
+1. Accept a query parameter: `?cluster_id=...&api_key=...`.
+2. Read the content of your `install.sh` file from the local disk.
+3. **Find & Replace:** Search for the hardcoded placeholders in the text (e.g., `BACKEND_URL="..."`) and replace them with the *actual* server URL where this request came from.
+4. **Return:** Send the modified text back with a header `Content-Type: text/x-shellscript`.
 
 
 
-#### **Step 2: Build the Injector Service (The "Brain")**
+**Why this is better:** You never have to ask the user to type `BACKEND_URL=...` again. The script "knows" where it came from.
 
-You have the shell script, but you don't have the Python logic to execute it remotely. You need to create a new backend service (`agent_injector.py`).
+### 2. ⚡ Frontend: The "Truly One-Click" Command
 
-* **Instruction:** Create a service that performs this specific 4-step sequence:
-1. **Assume Role:** Use the AWS "Assume Role" feature to pretend to be the customer's Cross-Account Role.
-2. **Grant Access:** Call the AWS API to add your Role ARN to the EKS Cluster's access list (using the permissions added in Step 1).
-3. **Get Token:** Generate a Kubernetes Authentication Token programmatically (similar to how `aws eks get-token` works).
-4. **Deploy:** Use the standard Kubernetes Python Client. Connect to the cluster using the Token from step 3, and deploy the same YAML manifests found in your `install.sh` script.
+Update your `ClusterConnectModal` to generate the shortest possible command.
+
+* **The Command:**
+```bash
+curl -sL "https://your-api.com/api/installer/linux?cluster_id=123&api_key=abc" | bash
+
+```
 
 
-
-#### **Step 3: Update the Frontend Flow**
-
-The Dashboard needs to differentiate between "Discovered" clusters and "Connected" clusters.
-
-* **Instruction:** On the Clusters page, add a section called **"Discovered via Cloud Account"**.
 * **Logic:**
-* Fetch the list of EKS clusters from AWS (using the `discovery` worker).
-* If a cluster is found but no Agent is connected, show an **"Auto-Install Agent"** button.
-* Clicking this button triggers the "Injector Service" (Step 2) in the backend.
+* Construct this string using the variables you already have (`id`, `api_key`).
+* Use `window.location.origin` (or your config) to dynamically get the domain so it works on localhost, ngrok, AND production without changing code.
 
 
 
----
+### 3. 🛡️ Verification: Automated "Success"
 
-### 🧹 Part 3: Cleanup & Safety
+Don't make the user guess if it worked.
 
-*Remove configuration drift to avoid confusion.*
+* **Auto-Close Modal:**
+* In the "Connect Cluster" popup, add a **Background Polling** timer (e.g., every 3 seconds).
+* It should call your backend: `GET /api/clusters/{id}/status`.
+* **Action:** If the status changes to `Active` (Green), automatically **close the modal** and show a "Success! Cluster Connected" toast notification.
 
-1. **Remove Legacy Methods:** In the Frontend "Connect" modal, remove any tabs referring to "Manual YAML" or "Helm" if you are sticking to the **Script** method. One single, working method is better than three confusing ones.
-2. **Versioning:** In your `install.sh`, add a version check. Ensure it pulls the specific version of the agent image (e.g., `v1.0.0`) rather than `latest` to prevent future updates from breaking existing installations.
-3. **Safety Check:** In the `install.sh` script, add a check at the very top: `command -v kubectl >/dev/null`. If `kubectl` is missing, the script should exit with a clear error message: *"Error: kubectl is required to install this agent."*
 
-### 📝 Final Summary of Work Required
 
-1. **DevOps:** `docker push` your agent image.
-2. **Backend:** Update `full-access-role.yaml` to include `eks:CreateAccessEntry`.
-3. **Backend:** Write the Python logic to generate K8s tokens from IAM roles.
-4. **Frontend:** Hardcode the Ngrok URL so the generated command always works for the client.
+### 4. 📦 Repository Cleanup (Simplification)
+
+* **Move `install.sh`:** Move it from the root folder to `backend/templates/install.sh`. It is now a *template*, not a standalone script.
+* **Docker Image:** Keep the `agent/` folder for building the Docker image, but removing the manual `yaml` files will stop people from trying the "hard way."
+
+### ✅ Summary of the Upgrade
+
+1. **Backend** serves the script (handling the URL logic).
+2. **Frontend** generates a short 1-line URL.
+3. **Frontend** listens for the heartbeat and auto-verifies the connection.
+
+This approach creates the smoothest possible "One-Click" experience for your clients.

@@ -425,6 +425,10 @@ app.include_router(tag_policy_router, prefix="/api/v1")
 app.include_router(tag_management_router, prefix="/api/v1")
 app.include_router(tag_template_router, prefix="/api/v1")
 
+# Installer routes (public - no auth required)
+from backend.api.installer_routes import router as installer_router
+app.include_router(installer_router, prefix="/api")
+
 
 # Startup and shutdown events
 
