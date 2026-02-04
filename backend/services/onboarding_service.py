@@ -75,8 +75,8 @@ class OnboardingService:
             # Attempt to Assume Role using the specific ExternalId
             sts_client = boto3.client(
                 'sts',
-                aws_access_key_id=settings.AWS_ACCESS_KEY,
-                aws_secret_access_key=settings.AWS_SECRET_KEY,
+                aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+                aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
                 region_name='us-east-1'
             )
             
