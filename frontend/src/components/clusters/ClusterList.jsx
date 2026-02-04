@@ -386,13 +386,16 @@ const ClusterList = () => {
                       const connected = isReallyConnected();
                       const statusText = connected ? 'Connected' :
                         cluster.status === 'DISCONNECTED' ? 'Disconnected' :
-                          cluster.status === 'PENDING' ? 'Pending' : 'Offline';
+                          cluster.status === 'PENDING' ? 'Pending' :
+                            cluster.status === 'DISCOVERED' ? 'Discovered' : 'Offline';
                       const bgColor = connected ? 'bg-green-50 text-green-700' :
                         cluster.status === 'PENDING' ? 'bg-yellow-50 text-yellow-700' :
-                          'bg-orange-50 text-orange-700';
+                          cluster.status === 'DISCOVERED' ? 'bg-gray-100 text-gray-600' :
+                            'bg-orange-50 text-orange-700';
                       const dotColor = connected ? 'bg-green-500' :
                         cluster.status === 'PENDING' ? 'bg-yellow-500' :
-                          'bg-orange-500';
+                          cluster.status === 'DISCOVERED' ? 'bg-gray-400' :
+                            'bg-orange-500';
                       return (
                         <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium ${bgColor}`}>
                           <span className={`w-1.5 h-1.5 rounded-full ${dotColor}`} />
@@ -420,6 +423,25 @@ const ClusterList = () => {
                           >
                             <FiLink className="w-4 h-4" />
                             Reconnect
+                          </button>
+                        ) : cluster.status === 'DISCOVERED' ? (
+                          <button
+                            className="w-full px-4 py-2 text-left text-sm text-green-600 hover:bg-green-50 flex items-center gap-2"
+                            onClick={async (e) => {
+                              e.stopPropagation();
+                              setOpenMenuId(null);
+                              try {
+                                toast.loading('Activating cluster...', { id: 'activate' });
+                                await clusterAPI.autoInstallAgent(cluster.id);
+                                toast.success('Agent installation started!', { id: 'activate' });
+                                fetchClusters();
+                              } catch (error) {
+                                toast.error('Failed to activate cluster: ' + (error.response?.data?.detail || error.message), { id: 'activate' });
+                              }
+                            }}
+                          >
+                            <FiPlus className="w-4 h-4" />
+                            Activate
                           </button>
                         ) : (
                           <button
