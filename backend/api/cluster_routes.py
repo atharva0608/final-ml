@@ -184,3 +184,69 @@ def update_resource_costs(
         return service.update_resource_costs(cluster_id, current_user.id, costs)
     except ResourceNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+@router.post("/{cluster_id}/auto-install")
+def auto_install_agent(
+    cluster_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Automatically install the Spot Optimizer agent into an EKS cluster.
+    This uses AWS cross-account role assumption to deploy the agent.
+    
+    Requirements:
+    - Cluster must be discovered via AWS account connection
+    - CloudFormation role must have EKS access entry permissions
+    """
+    from backend.services.agent_injector import AgentInjectorService
+    from backend.models.cluster import Cluster
+    from backend.models.account import Account
+    import secrets
+    
+    try:
+        # Get cluster
+        cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+        if not cluster:
+            raise HTTPException(status_code=404, detail="Cluster not found")
+        
+        # Get associated account for role ARN
+        account = db.query(Account).filter(Account.id == cluster.account_id).first()
+        if not account or not account.role_arn:
+            raise HTTPException(
+                status_code=400, 
+                detail="Cluster must be associated with an AWS account with a valid role ARN"
+            )
+        
+        # Generate API key if not exists
+        if not cluster.api_key:
+            cluster.api_key = secrets.token_urlsafe(32)
+            db.commit()
+        
+        # Get cluster details from AWS
+        injector = AgentInjectorService(db)
+        
+        result = injector.inject_agent(
+            cluster_id=cluster.id,
+            cluster_name=cluster.name,
+            cluster_arn=cluster.arn or "",
+            cluster_endpoint=cluster.endpoint or cluster.api_endpoint or "",
+            cluster_ca_data=getattr(cluster, 'ca_data', '') or "",
+            role_arn=account.role_arn,
+            external_id=account.external_id or "",
+            api_key=cluster.api_key
+        )
+        
+        if result["status"] == "success":
+            cluster.agent_installed = True
+            cluster.status = "ACTIVE"
+            db.commit()
+        
+        return result
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))

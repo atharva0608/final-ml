@@ -1,28 +1,53 @@
 #!/bin/bash
 set -e
 
-# --- Configuration ---
-# ⚠️ REPLACE 'your-github-username' WITH YOUR ACTUAL USERNAME
-REPO_URL="https://raw.githubusercontent.com/atharva0608/final-ml/main"
-AGENT_IMAGE="atharva608/spot-optimizer-agent:latest" # Ensure this matches your DockerHub
+# ============================================
+# Spot Optimizer Agent - One-Click Installer
+# Version: 1.0.0
+# ============================================
+
+AGENT_VERSION="v1.0.0"
+AGENT_IMAGE="atharva608/spot-optimizer-agent:${AGENT_VERSION}"
 NAMESPACE="spot-optimizer"
 
-# --- 1. Validation ---
+# --- Pre-flight Checks ---
+echo "🔍 Running pre-flight checks..."
+
+# Check for kubectl
+if ! command -v kubectl &> /dev/null; then
+    echo "❌ Error: kubectl is required to install this agent."
+    echo "   Please install kubectl: https://kubernetes.io/docs/tasks/tools/"
+    exit 1
+fi
+
+# Verify kubectl can reach a cluster
+if ! kubectl cluster-info &> /dev/null; then
+    echo "❌ Error: Cannot connect to Kubernetes cluster."
+    echo "   Please ensure your kubeconfig is correctly configured."
+    exit 1
+fi
+
+# --- Environment Variable Validation ---
 if [ -z "$CLUSTER_ID" ] || [ -z "$API_KEY" ] || [ -z "$BACKEND_URL" ]; then
     echo "❌ Error: Missing required variables."
     echo "Usage: curl ... | CLUSTER_ID=... API_KEY=... BACKEND_URL=... sh"
     exit 1
 fi
 
+echo "✅ Pre-flight checks passed!"
+echo ""
 echo "🚀 Starting Spot Optimizer Agent Installation..."
-echo "📍 Cluster ID: $CLUSTER_ID"
-echo "🔌 Backend:    $BACKEND_URL"
+echo "   Agent Version: $AGENT_VERSION"
+echo "   Cluster ID:    $CLUSTER_ID"
+echo "   Backend URL:   $BACKEND_URL"
+echo ""
 
-# --- 2. Setup Namespace ---
+# --- 1. Setup Namespace ---
+echo "📦 Creating namespace..."
 kubectl create namespace $NAMESPACE --dry-run=client -o yaml | kubectl apply -f -
 
-# --- 3. Create Secrets & Config ---
-echo "🔐 Configuring secrets..."
+# --- 2. Create Secrets & Config ---
+echo "🔐 Configuring secrets and config..."
 kubectl create secret generic spot-agent-secret \
     --namespace $NAMESPACE \
     --from-literal=API_KEY="$API_KEY" \
@@ -34,11 +59,8 @@ kubectl create configmap spot-agent-config \
     --from-literal=CLUSTER_ID="$CLUSTER_ID" \
     --dry-run=client -o yaml | kubectl apply -f -
 
-# --- 4. Deploy Agent (Using files from your agent/ folder) ---
-# We download the YAML directly from your repo to ensure it's always up to date
-echo "📦 Fetching deployment manifest..."
-
-# Note: We construct the manifest dynamically here to inject the image
+# --- 3. Deploy Agent ---
+echo "🤖 Deploying Spot Optimizer Agent..."
 cat <<EOF | kubectl apply -f -
 apiVersion: v1
 kind: ServiceAccount
@@ -76,6 +98,9 @@ kind: Deployment
 metadata:
   name: spot-agent
   namespace: $NAMESPACE
+  labels:
+    app: spot-agent
+    version: "${AGENT_VERSION}"
 spec:
   replicas: 1
   selector:
@@ -85,6 +110,7 @@ spec:
     metadata:
       labels:
         app: spot-agent
+        version: "${AGENT_VERSION}"
     spec:
       serviceAccountName: spot-agent-sa
       containers:
@@ -107,6 +133,21 @@ spec:
                 configMapKeyRef:
                   name: spot-agent-config
                   key: CLUSTER_ID
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "256Mi"
 EOF
 
-echo "✅ Installation Complete! The agent should be running shortly."
+echo ""
+echo "✅ Installation Complete!"
+echo ""
+echo "📊 Verify the agent is running:"
+echo "   kubectl get pods -n $NAMESPACE"
+echo ""
+echo "📝 View agent logs:"
+echo "   kubectl logs -n $NAMESPACE -l app=spot-agent -f"
+echo ""
