@@ -1,0 +1,56 @@
+apiVersion: apps/v1
+kind: DaemonSet  # <--- Changed from Deployment
+metadata:
+  name: spot-agent
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: spot-agent
+spec:
+  selector:
+    matchLabels:
+      app: spot-agent
+  template:
+    metadata:
+      labels:
+        app: spot-agent
+    spec:
+      serviceAccountName: spot-agent-sa
+      # Host Network is often needed for deep node monitoring, 
+      # but standard mode is safer to start.
+      hostNetwork: false 
+      containers:
+        - name: agent
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: Always
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: spot-agent-secret
+                  key: API_KEY
+            - name: BACKEND_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: spot-agent-config
+                  key: BACKEND_URL
+            - name: BACKEND_WS_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: spot-agent-config
+                  key: BACKEND_WS_URL
+            - name: CLUSTER_ID
+              valueFrom:
+                configMapKeyRef:
+                  name: spot-agent-config
+                  key: CLUSTER_ID
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi

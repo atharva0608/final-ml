@@ -185,6 +185,53 @@ def scan_eks_clusters(account: Account, eks_client, db: Session) -> int:
             cluster_info = eks_client.describe_cluster(name=cluster_name)
             cluster_data = cluster_info['cluster']
 
+            # --- Cost Insights ---
+            total_cost = 0.0
+            potential_savings = 0.0
+            try:
+                # Initialize Cost Explorer
+                ce = boto3.client(
+                    'ce',
+                    region_name=account.region or 'us-east-1',
+                    aws_access_key_id=credentials['AccessKeyId'],
+                    aws_secret_access_key=credentials['SecretAccessKey'],
+                    aws_session_token=credentials['SessionToken']
+                )
+                
+                # Get cost for last 30 days
+                end_date = datetime.utcnow().date()
+                start_date = end_date.replace(day=1) # Simplified to start of month for now
+                
+                # Format dates
+                start_str = start_date.strftime('%Y-%m-%d')
+                end_str = end_date.strftime('%Y-%m-%d')
+                
+                # Fetch cost associated with this cluster (by tag)
+                cost_response = ce.get_cost_and_usage(
+                    TimePeriod={'Start': start_str, 'End': end_str},
+                    Granularity='MONTHLY',
+                    Metrics=['UnblendedCost'],
+                    Filter={
+                        'Tags': {
+                            'Key': 'eks:cluster-name',
+                            'Values': [cluster_name]
+                        }
+                    }
+                )
+                
+                # Extract cost
+                if cost_response['ResultsByTime']:
+                    amount = cost_response['ResultsByTime'][0]['Total']['UnblendedCost']['Amount']
+                    total_cost = float(amount)
+                    
+                    # Heuristic: 40% savings potential on Spot
+                    potential_savings = total_cost * 0.40
+                    
+                logger.info(f"[WORK-DISC-01] Cluster {cluster_name}: Cost=${total_cost:.2f}, Potential Savings=${potential_savings:.2f}")
+
+            except Exception as e:
+                logger.warning(f"[WORK-DISC-01] Failed to fetch costs for {cluster_name}: {e}")
+
             # Check if cluster already exists
             existing = db.query(Cluster).filter(
                 Cluster.account_id == account.id,
@@ -196,6 +243,8 @@ def scan_eks_clusters(account: Account, eks_client, db: Session) -> int:
                 existing.status = cluster_data.get('status', 'ACTIVE')
                 existing.k8s_version = cluster_data.get('version')
                 existing.api_endpoint = cluster_data.get('endpoint')
+                existing.monthly_cost = total_cost
+                existing.estimated_savings = potential_savings
                 existing.updated_at = datetime.utcnow()
             else:
                 # Create new cluster
@@ -206,7 +255,9 @@ def scan_eks_clusters(account: Account, eks_client, db: Session) -> int:
                     vpc_id=cluster_data.get('resourcesVpcConfig', {}).get('vpcId'),
                     api_endpoint=cluster_data.get('endpoint'),
                     k8s_version=cluster_data.get('version'),
-                    status='DISCOVERED'
+                    status='DISCOVERED',
+                    monthly_cost=total_cost,
+                    estimated_savings=potential_savings
                 )
                 db.add(new_cluster)
 

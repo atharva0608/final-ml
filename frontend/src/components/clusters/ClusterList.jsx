@@ -303,7 +303,7 @@ const ClusterList = () => {
                 <th className="py-4 px-6 text-xs font-bold text-gray-500 uppercase tracking-wider w-48">Nodes</th>
                 <th className="py-4 px-6 text-xs font-bold text-gray-500 uppercase tracking-wider w-32">CPU</th>
                 <th className="py-4 px-6 text-xs font-bold text-gray-500 uppercase tracking-wider w-32">Memo..</th>
-                <th className="py-4 px-6 text-xs font-bold text-gray-500 uppercase tracking-wider">Cpu Cost</th>
+                <th className="py-4 px-6 text-xs font-bold text-gray-500 uppercase tracking-wider">Potential Savings</th>
                 <th className="py-4 px-6 text-xs font-bold text-gray-500 uppercase tracking-wider">Compute Cost</th>
                 <th className="py-4 px-6 text-xs font-bold text-gray-500 uppercase tracking-wider">Status</th>
                 <th className="py-4 px-6 text-xs font-bold text-gray-500 uppercase tracking-wider w-10"></th> {/* Menu */}
@@ -368,7 +368,7 @@ const ClusterList = () => {
                     </div>
                   </td>
                   <td className="py-4 px-6">
-                    <span className="text-sm text-gray-700">$0.0464 /h</span>
+                    <span className="text-sm font-bold text-green-600">{formatCurrency(cluster.estimated_savings || 0)}</span>
                   </td>
                   <td className="py-4 px-6">
                     <span className="text-sm font-medium text-gray-900">{formatCurrency(cluster.monthly_cost)} /mo</span>

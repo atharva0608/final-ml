@@ -33,40 +33,33 @@ Resources:
         - 'arn:aws:iam::aws:policy/AWSBillingReadOnlyAccess'
         - 'arn:aws:iam::aws:policy/AmazonEC2FullAccess' # Scoped down in production
       Policies:
-        - PolicyName: 'SpotOptimizerOptimizationAccess'
+        - PolicyName: 'SpotOptimizerDiscovery'
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
               - Effect: Allow
                 Action:
-                  - 'autoscaling:UpdateAutoScalingGroup'
-                  - 'autoscaling:TerminateInstanceInAutoScalingGroup'
-                  - 'autoscaling:SetDesiredCapacity'
-                  - 'eks:DescribeCluster'
                   - 'eks:ListClusters'
-                  - 'eks:CreateAccessEntry'
-                  - 'eks:AssociateAccessPolicy'
-                  - 'eks:DeleteAccessEntry'
-                  - 'eks:DescribeAccessEntry'
-                  - 'eks:ListAccessEntries'
-                  - 'ec2:DescribeReservedInstances'
-                  - 's3:GetBucketLifecycleConfiguration'
-                  - 's3:GetBucketTagging'
-                  - 'rds:ListTagsForResource'
-                  - 'cloudwatch:ListMetrics'
-                  - 'cloudwatch:GetMetricStatistics'
-                Resource: '*'
-        - PolicyName: 'SpotOptimizerCostExplorerRead'
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
+                  - 'eks:DescribeCluster'
+                  - 'eks:ListNodegroups'
+                  - 'ec2:DescribeInstances'
+                  - 'autoscaling:DescribeAutoScalingGroups'
+                  # Cost Insights Permissions:
                   - 'ce:GetCostAndUsage'
                   - 'ce:GetCostForecast'
                 Resource: '*'
-
+        - PolicyName: 'SpotOptimizerInjection'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  # Injection Permissions:
+                  - 'eks:CreateAccessEntry'
+                  - 'eks:DeleteAccessEntry'
+                  - 'eks:ListAccessEntries'
+                  - 'eks:AssociateAccessPolicy'
+                Resource: '*'
 Outputs:
   RoleArn:
-    Description: 'The ARN of the created IAM Role'
     Value: !GetAtt SpotOptimizerRole.Arn

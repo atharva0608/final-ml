@@ -149,15 +149,13 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
 ---
 apiVersion: apps/v1
-kind: Deployment
+kind: DaemonSet
 metadata:
   name: spot-agent
   namespace: $NAMESPACE
   labels:
     app: spot-agent
-    version: "$AGENT_VERSION"
 spec:
-  replicas: 1
   selector:
     matchLabels:
       app: spot-agent
@@ -165,7 +163,6 @@ spec:
     metadata:
       labels:
         app: spot-agent
-        version: "$AGENT_VERSION"
     spec:
       serviceAccountName: spot-agent-sa
       containers:
@@ -173,6 +170,10 @@ spec:
           image: $AGENT_IMAGE
           imagePullPolicy: Always
           env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
             - name: API_KEY
               valueFrom:
                 secretKeyRef:

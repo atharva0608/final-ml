@@ -45,6 +45,10 @@ class Cluster(Base):
     # Health
     last_heartbeat = Column(DateTime, nullable=True)
     
+    # Cost Insights
+    monthly_cost = Column(Integer, default=0) # Stored in USD (or cents if needed, but float/int for display)
+    estimated_savings = Column(Integer, default=0)
+    
     tags = Column(JSON, default={})
     
     created_at = Column(DateTime, default=datetime.utcnow)
