@@ -713,9 +713,7 @@ echo "✅ Agent successfully deployed!"
         cluster = self.db.query(Cluster).filter(
             and_(
                 Cluster.account_id == account.id,
-                Cluster.name == request.cluster_name,
-                Cluster.user_id == user_id,
-                Cluster.provider == request.provider
+                Cluster.name == request.cluster_name
             )
         ).first()
 
@@ -724,10 +722,9 @@ echo "✅ Agent successfully deployed!"
             cluster = Cluster(
                 id=str(uuid.uuid4()),
                 name=request.cluster_name,
-                user_id=user_id,
-                provider=request.provider,
+                account_id=account.id,
                 region=request.region or 'us-east-1',
-                status='pending',
+                status=ClusterStatus.PENDING,
                 api_key=secrets.token_urlsafe(32)
             )
             self.db.add(cluster)
