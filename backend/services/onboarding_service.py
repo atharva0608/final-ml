@@ -8,11 +8,11 @@ from backend.models.onboarding import OnboardingState, OnboardingStep, Connectio
 from backend.core.config import settings
 import urllib.parse
 
+from pathlib import Path
+
 # Constants
-import os
-TEMPLATE_BUCKET_URL = "https://your-public-bucket.s3.amazonaws.com" # Replace with real bucket
-READ_ONLY_TEMPLATE_URL = f"{TEMPLATE_BUCKET_URL}/read-only-role.yaml"
-FULL_ACCESS_TEMPLATE_URL = f"{TEMPLATE_BUCKET_URL}/full-access-role.yaml"
+TEMPLATE_DIR = Path(__file__).parent.parent / "templates" / "aws"
+# Note: URLs are now generated dynamically based on request host
 
 def get_platform_account_id():
     """Get Platform Account ID - Auto-detect if not configured"""
@@ -48,14 +48,17 @@ class OnboardingService:
             self.db.refresh(state)
         return state
 
-    def get_cloudformation_deep_link(self, user_id: str, mode: ConnectionMode) -> str:
+    def get_cloudformation_deep_link(self, user_id: str, mode: ConnectionMode, base_url: str = "http://localhost:8000") -> str:
         state = self.get_or_create_state(user_id)
         
-        # Select Template
-        template_url = READ_ONLY_TEMPLATE_URL if mode == ConnectionMode.READ_ONLY else FULL_ACCESS_TEMPLATE_URL
+        # Select Template URL (Point to our own API)
+        # base_url should come from the request
+        template_url = f"{base_url}/api/v1/onboarding/template?external_id={state.external_id}&mode={mode.value}"
+        
         stack_name = f"SpotOptimizer-Connection-{state.external_id[:8]}"
         
-        # Parameters
+        # Parameters for CloudFormation Console
+        # These pre-fill the parameters in the CFN wizard
         params = {
             "stackName": stack_name,
             "templateURL": template_url,
@@ -64,9 +67,9 @@ class OnboardingService:
         }
         
         # Build URL
-        base_url = "https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review"
+        cfn_base = "https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review"
         query_string = urllib.parse.urlencode(params)
-        return f"{base_url}?{query_string}"
+        return f"{cfn_base}?{query_string}"
 
     def verify_role_connection(self, user_id: str, role_arn: str) -> bool:
         state = self.get_or_create_state(user_id)
@@ -86,13 +89,10 @@ class OnboardingService:
                 ExternalId=state.external_id
             )
             
-            # If successful, credentials are in response['Credentials']
-            # We can do a quick test call like listing costs to verify permissions
-            
             # Update State
             state.aws_role_arn = role_arn
             state.current_step = OnboardingStep.VERIFYING
-            # Extract Account ID from Role ARN if possible or from AssumeRoleUser
+            # Extract Account ID from Role ARN
             # arn:aws:iam::123456789012:role/...
             account_id = role_arn.split(":")[4]
             state.aws_account_id = account_id
@@ -117,85 +117,40 @@ class OnboardingService:
         return self.get_template_by_external_id(state.external_id, mode)
 
     def get_template_by_external_id(self, external_id: str, mode: ConnectionMode) -> str:
-        # Validate existence (optional but good for security)
-        # state = self.db.query(OnboardingState).filter(OnboardingState.external_id == external_id).first()
-        # if not state: raise HTTPException(404, "Invalid External ID")
+        """
+        Read the YAML template from disk and inject dynamic default values.
+        """
+        filename = "read-only-role.yaml" if mode == ConnectionMode.READ_ONLY else "full-access-role.yaml"
+        file_path = TEMPLATE_DIR / filename
+        
+        if not file_path.exists():
+            # Fallback for dev if file missing
+             return f"Error: Template {filename} not found at {file_path}"
 
-        policy_document = ""
-        if mode == ConnectionMode.READ_ONLY:
-            policy_document = """
-                Version: '2012-10-17'
-                Statement:
-                  - Effect: Allow
-                    Action:
-                      - 'ec2:Describe*'
-                      - 'cloudwatch:GetMetricData'
-                      - 'cloudwatch:GetMetricStatistics'
-                      - 'autoscaling:Describe*'
-                      - 'eks:Describe*'
-                      - 'eks:List*'
-                      - 'rds:Describe*'
-                      - 'rds:List*'
-                      - 's3:GetBucket*'
-                      - 's3:ListBucket'
-                      - 's3:ListAllMyBuckets'
-                      - 's3:GetBucketTagging'
-                      - 's3:GetBucketLocation'
-                      - 's3:GetLifecycleConfiguration'
-                      - 'iam:ListUsers'
-                      - 'iam:GetUser'
-                      - 'iam:ListAccessKeys'
-                      - 'elasticloadbalancing:Describe*'
-                      - 'ce:GetCostAndUsage'
-                    Resource: '*'
-            """
-        else:
-            policy_document = """
-                Version: '2012-10-17'
-                Statement:
-                  - Effect: Allow
-                    Action: '*'
-                    Resource: '*'
-            """
-
-        yaml_template = f"""
-AWSTemplateFormatVersion: '2010-09-09'
-Description: 'SpotOptimizer - Cross Account Access Role'
-Parameters:
-  ExternalId:
-    Type: String
-    Description: 'The Unique External ID provided by SpotOptimizer'
-    Default: '{external_id}'
-  PlatformAccountId:
-    Type: String
-    Description: 'The AWS Account ID of the SpotOptimizer Platform to trust'
-    Default: '{PLATFORM_ACCOUNT_ID}'
-
-Resources:
-  SpotOptimizerRole:
-    Type: 'AWS::IAM::Role'
-    Properties:
-      RoleName: !Sub 'SpotOptimizer-Access-Role-${{ExternalId}}'
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              AWS: !Sub 'arn:aws:iam::${{PlatformAccountId}}:root'
-            Action: 'sts:AssumeRole'
-            Condition:
-              StringEquals:
-                'sts:ExternalId': !Ref ExternalId
-      Policies:
-        - PolicyName: 'SpotOptimizerPermissions'
-          PolicyDocument: {policy_document}
-
-Outputs:
-  RoleArn:
-    Description: 'The ARN of the created Role'
-    Value: !GetAtt SpotOptimizerRole.Arn
-"""
-        return yaml_template.strip()
+        content = file_path.read_text()
+        
+        # Inject Defaults (Optional, but good for manual downloads)
+        # We replace the placeholder defaults with actual values
+        # Note: The template MUST have Default: '...' for this to work neatly, 
+        # or we rely on CFN params.
+        # Since we just updated full-access-role.yaml to have defaults:
+        
+        # Replace ExternalId default
+        # Looking for: Default: '{external_id}' (from old code) vs actual YAML.
+        # Actually, simpler to just return the content. 
+        # The Deep Link fills the params.
+        # But if user downloads file, they have to likely fill it manually or we pre-fill here.
+        
+        # Let's simple string replace specific keys if present to be helpful
+        # "Default: '123456789012'" -> "Default: 'REAL_ID'"
+        
+        content = content.replace("Default: '123456789012'", f"Default: '{PLATFORM_ACCOUNT_ID}'")
+        
+        # We don't have a placeholder for ExternalId in the file currently (it likely has no default or dummy).
+        # But we can try to inject it if we want.
+        # For now, relying on the URL params is safer and cleaner.
+        
+        return content
 
 def get_onboarding_service(db: Session = None):
     return OnboardingService(db)

@@ -14,7 +14,7 @@ spec:
       labels:
         app: spot-agent
     spec:
-      serviceAccountName: spot-agent-sa
+      serviceAccountName: {{ .Values.serviceAccount.name }}
       # Host Network is often needed for deep node monitoring, 
       # but standard mode is safer to start.
       hostNetwork: false 

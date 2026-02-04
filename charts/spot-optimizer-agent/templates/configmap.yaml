@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spot-agent-config
+  namespace: {{ .Values.namespace }}
+data:
+  BACKEND_URL: {{ .Values.config.backendUrl | quote }}
+  BACKEND_WS_URL: {{ .Values.config.backendUrl | replace "http" "ws" | replace "https" "wss" | quote }}
+  CLUSTER_ID: {{ .Values.config.clusterId | quote }}

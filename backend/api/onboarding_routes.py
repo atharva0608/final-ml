@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional
@@ -36,12 +36,19 @@ def get_state(
 
 @router.get("/aws-link")
 def get_aws_link(
+    request: Request,
     mode: ConnectionMode = ConnectionMode.READ_ONLY,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     service = get_onboarding_service(db)
-    url = service.get_cloudformation_deep_link(current_user.id, mode)
+    
+    # Extract Base URL from Request
+    scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
+    host = request.headers.get("x-forwarded-host", request.headers.get("host", "localhost:8000"))
+    base_url = f"{scheme}://{host}"
+
+    url = service.get_cloudformation_deep_link(current_user.id, mode, base_url)
     return {"url": url}
 
 from fastapi import Response

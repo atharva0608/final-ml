@@ -8,10 +8,12 @@ Parameters:
     MinLength: 36
     MaxLength: 36
 
-  TrustedRoleARN:
+  PlatformAccountId:
     Type: String
-    Description: 'ARN of the Spot Optimizer Backend Role'
-    Default: 'arn:aws:iam::123456789012:role/SpotOptimizerBackendRole' # TO BE REPLACED WITH REAL ARN
+    Description: 'The AWS Account ID of the Spot Optimizer Platform'
+    Default: '123456789012'
+    MinLength: 12
+    MaxLength: 12
 
 Resources:
   SpotOptimizerRole:
@@ -23,7 +25,7 @@ Resources:
         Statement:
           - Effect: Allow
             Principal:
-              AWS: !Ref TrustedRoleARN
+              AWS: !Sub 'arn:aws:iam::${PlatformAccountId}:root'
             Action: 'sts:AssumeRole'
             Condition:
               StringEquals:
