@@ -1,5 +1,6 @@
 import uuid
 import boto3
+import os
 from sqlalchemy.orm import Session
 from fastapi import HTTPException
 from botocore.exceptions import ClientError
