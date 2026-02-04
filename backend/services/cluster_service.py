@@ -713,11 +713,10 @@ echo "✅ Agent successfully deployed!"
         cluster = self.db.query(Cluster).filter(
             and_(
                 Cluster.account_id == account.id,
-                Cluster.name == request.cluster_name
+                Cluster.name == request.cluster_name,
+                Cluster.user_id == user_id,
+                Cluster.provider == request.provider
             )
-            Cluster.name == request.cluster_name,
-            Cluster.user_id == user_id,
-            Cluster.provider == request.provider
         ).first()
 
         if not cluster:
