@@ -310,6 +310,7 @@ class InstallScriptRequest(BaseModel):
     """Request to generate install script for a new cluster"""
     provider: str = Field(..., description="K8s provider (eks, aks, etc.)")
     cluster_name: str = Field(..., description="Cluster name")
+    region: Optional[str] = Field(None, description="AWS region (defaults to us-east-1)")
 
 class InstallScriptResponse(BaseModel):
     """Response with install script and cluster ID"""
