@@ -20,7 +20,7 @@ import toast from 'react-hot-toast';
 import { clusterAPI } from '../../services/api';
 
 // Backend URL for agent connection (update with your ngrok URL)
-const BACKEND_URL = 'https://bb82fb1026ad.ngrok-free.app';
+const BACKEND_URL = 'https://34c3-103-147-161-240.ngrok-free.app';
 
 const ClusterConnectModal = ({ isOpen, onClose, onSuccess }) => {
   const [step, setStep] = useState(1); // 1: Details, 2: Command, 3: Success
@@ -66,17 +66,14 @@ const ClusterConnectModal = ({ isOpen, onClose, onSuccess }) => {
 
       const WS_URL = BACKEND_URL.replace('https://', 'wss://').replace('http://', 'ws://');
 
-      // 2. Construct Raw Helm Command
-      // The backend returns the Chart URI in the 'script' field now
-      const finalChartUri = chartUri || 'oci://public.ecr.aws/spot-optimizer/spot-optimizer-agent';
+      const INSTALL_SCRIPT_URL = "https://raw.githubusercontent.com/atharva0608/final-ml/main/install.sh";
 
-      const helmCommand = `helm upgrade --install spot-optimizer-agent ${finalChartUri} \\
-  --namespace spot-optimizer --create-namespace \\
-  --set config.apiKey="${api_key}" \\
-  --set config.clusterId="${cluster_id}" \\
-  --set config.backendUrl="${WS_URL}/ws/cluster/${cluster_id}"`;
+      // Ensure backendUrl uses wss:// if it's the websocket endpoint
+      const wsUrl = BACKEND_URL.replace('http', 'ws').replace('https', 'wss');
 
-      setInstallScript(helmCommand);
+      const oneLiner = `curl -sL ${INSTALL_SCRIPT_URL} | CLUSTER_ID=${cluster_id} API_KEY=${api_key} BACKEND_URL=${wsUrl}/ws/cluster/${cluster_id} sh`;
+
+      setInstallScript(oneLiner);
       setStep(2);
     } catch (error) {
       toast.error('Failed to register cluster');

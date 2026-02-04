@@ -346,6 +346,7 @@ Authorization: Bearer <jwt_token>
 |:--- |:--- |:--- |:--- |:--- |
 | `GET /api/v1/clusters` | `ClusterList.jsx` | `ClusterService` | **Logic**: Lists K8s Clusters + Agent Status. | **K8s**: Viewing managed clusters. |
 | `POST /api/v1/clusters/connect-aws` | `ClusterConnectModal.jsx`| `ClusterService` | **Logic**: Registers Cluster via AWS API (No Agent). | **K8s**: Importing a cluster. |
+| `POST /api/v1/clusters/install-script`| `ClusterConnectModal.jsx`| `ClusterService` | **Logic**: Generates Helm Upgrade command with unique API key. | **K8s**: Installing Agent. |
 | `GET /api/v1/hibernation/schedule/{id}`| `HibernationSchedule.jsx`| `HibernationService`| **Logic**: Returns 24x7 CRON schedule matrix. | **Hibernate**: Viewing sleep schedules. |
 
 ## 10. Templates & Policies

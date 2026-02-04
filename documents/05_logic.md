@@ -212,7 +212,7 @@
 | `discover_clusters()` | Scans AWS account for EKS clusters | `boto3.client('eks')`, `Account` |
 | `register_cluster()` | Manually registers non-EKS cluster | `Cluster` |
 | `connect_aws_cluster()` | Agentless connection via STS | `Cluster`, `Account` |
-| `generate_agent_install_command()` | Creates kubectl command for agent deployment | `Cluster` |
+| `generate_agent_install_command()` | Creates Helm upgrade command for agent deployment | `Cluster` |
 | `update_heartbeat()` | Updates last_seen timestamp from agent | `Cluster` |
 
 **Scenario: Discovering and Registering EKS Clusters**
@@ -226,7 +226,7 @@
    - Creates/updates Cluster records
 4. User sees list of discovered clusters
 5. Clicks "Install Agent" for each
-6. Copies generated kubectl command
+6. Copies generated Helm upgrade command
 7. Runs in their cluster
 8. Agent starts sending heartbeats
 ```

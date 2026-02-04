@@ -1,29 +1,10 @@
-Based on the review of the current code and your requirements, here is the complete "One-Click" Agent Installation architecture.
-
-This solution ensures that the **Frontend** provides a simple `curl` command, and the **Backend/Script** handles all the complexity (installing dependencies, setting up secrets, and launching the agent) by pulling the necessary files directly from your `agent/` folder in the root directory.
-
-### ✅ Verification Logic
-
-* **Current State:** The `ClusterConnectModal.jsx` generates a command, but we need to ensure it points to a **universal installation script** (`install.sh`) that you will host in your repo root.
-* **Missing Piece:** You need to create the `install.sh` file in your root directory.
-* **Agent Logic:** The `agent/` folder is correctly structured to be used by this script.
-
----
-
-### 🟢 Step 1: Create the Master Install Script (`install.sh`)
-
-Create a new file named `install.sh` in the **root** of your repository. This script handles the "hardcoding" you requested.
-
-**File:** `install.sh`
-
-```bash
 #!/bin/bash
 set -e
 
 # --- Configuration ---
 # ⚠️ REPLACE 'your-github-username' WITH YOUR ACTUAL USERNAME
 REPO_URL="https://raw.githubusercontent.com/atharva0608/final-ml/main"
-AGENT_IMAGE="atharva0608/spot-optimizer-agent:latest" # Ensure this matches your DockerHub
+AGENT_IMAGE="atharva608/spot-optimizer-agent:latest" # Ensure this matches your DockerHub
 NAMESPACE="spot-optimizer"
 
 # --- 1. Validation ---
@@ -129,58 +110,3 @@ spec:
 EOF
 
 echo "✅ Installation Complete! The agent should be running shortly."
-
-```
-
----
-
-### 🟢 Step 2: Update Frontend to Use the Script
-
-Modify the modal to generate the "One-Liner" that calls this script.
-
-**File:** `frontend/src/components/clusters/ClusterConnectModal.jsx`
-
-```jsx
-// Find the logic where you set the 'command' state
-// Replace the command generation with this:
-
-const INSTALL_SCRIPT_URL = "https://raw.githubusercontent.com/atharva0608/final-ml/main/install.sh";
-
-// Ensure backendUrl uses wss:// if it's the websocket endpoint
-const wsUrl = backendUrl.replace('http', 'ws').replace('https', 'wss');
-
-const oneLiner = `curl -sL ${INSTALL_SCRIPT_URL} | CLUSTER_ID=${clusterId} API_KEY=${apiKey} BACKEND_URL=${wsUrl}/ws/cluster/${clusterId} sh`;
-
-setCommand(oneLiner);
-
-```
-
----
-
-### 🟢 Step 3: Build & Publish the Agent Image
-
-For the script to work, the Docker image defined in the script (`atharva0608/spot-optimizer-agent:latest`) must exist on Docker Hub.
-
-Run these commands in your terminal (root of the project):
-
-```bash
-# 1. Login to Docker Hub
-docker login
-
-# 2. Build the image
-docker build -t atharva0608/spot-optimizer-agent:latest ./agent
-
-# 3. Push to Docker Hub
-docker push atharva0608/spot-optimizer-agent:latest
-
-```
-
-### ✅ Final Check: Usage Flow
-
-1. **Developer:** Pushes `install.sh` to GitHub `main` branch.
-2. **Developer:** Pushes Docker image to Docker Hub.
-3. **User:** Opens Dashboard -> "Connect Cluster".
-4. **User:** Copies command: `curl -sL .../install.sh | ... sh`.
-5. **User:** Pastes in terminal.
-6. **Script:** Sets up permissions, secrets, and pulls the image you just pushed.
-7. **Result:** Cluster connects automatically.

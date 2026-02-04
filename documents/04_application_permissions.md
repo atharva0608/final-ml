@@ -140,7 +140,7 @@ def require_execution_access(user: User):
 | Discover clusters | ✅ | ✅ | ✅ | ✅ | Scan for EKS/Kubernetes clusters | Low |
 | Register new clusters | ✅ | ✅ | ✅ | ❌ | Add cluster to platform | Medium - Workload visibility |
 | View cluster details | ✅ | ✅ | ✅ | ✅ | Node groups, health status | Low |
-| Install agent | ✅ | ✅ | ✅ | ❌ | Deploy agent to cluster | High - Cluster modification |
+| Generate Helm Install Command | ✅ | ✅ | ✅ | ❌ | Get Helm URI for cluster | Medium - Cluster Access |
 | Create node templates | ✅ | ✅ | ✅ | ❌ | Define instance configurations | Medium |
 | Set default templates | ✅ | ✅ | ❌ | ❌ | Org-wide defaults | Medium |
 | Create cluster policies | ✅ | ✅ | ✅ | ❌ | Scaling/optimization rules | Medium |
@@ -256,7 +256,7 @@ Team Leads can set granular permission overrides for individual team members usi
 | `allow_policy_edit` | boolean | `true` | Can modify cluster policies | Protect critical configurations |
 | `allow_template_creation` | boolean | `true` | Can create node templates | Control infrastructure patterns |
 | `allow_account_request` | boolean | `true` | Can request AWS account connection | Limit connection requests |
-| `allow_agent_install` | boolean | `true` | Can install K8s agents | Protect cluster integrity |
+| `allow_agent_install` | boolean | `true` | Can generate Helm install command | Protect cluster registration |
 
 ### 4.2 Override Precedence
 
@@ -455,7 +455,7 @@ graph LR
 
 | Feature | Backend | Frontend | Missing |
 |:--------|:-------:|:--------:|:--------|
-| Account Connection Modal | ✅ | 🔲 | Frontend modal UX |
+| Account Connection Modal | ✅ | ✅ | Integrated in Dashboard |
 | Audit Log Export | 🔲 | 🔲 | Export endpoint |
 
 ---

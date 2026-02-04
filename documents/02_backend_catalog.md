@@ -17,7 +17,7 @@
 | **BE-SVC::Account::Main** | `backend/services/account_service.py` | Service | Managing AWS accounts, Platform Identity integration, and STS assume_role validation. | `Account`, `boto3` |
 | **BE-SVC::Account::Cache** | `backend/services/account_cache_service.py` | Service | **NEW (2026-01-16)**: Temporary encrypted credential storage in Redis for MEMBER account connection approval flow. 7-day TTL. | `redis`, `crypto` (encrypt_data/decrypt_data) |
 | **BE-API::User::Preferences** | `backend/api/user_routes.py` | API | **NEW (2026-01-16)**: GET/PATCH `/users/me/preferences` - Dashboard layout customization with role-based widget validation. Stores preferences in User.preferences JSON column. | `User` |
-| **BE-SVC::Cluster::Main** | `backend/services/cluster_service.py` | Service | **Real**: Cluster discovery via `boto3.eks.list_clusters/describe_cluster` with STS assume_role. DB upsert for discovered clusters. | `Cluster`, `Account`, `boto3` |
+| **BE-SVC::Cluster::Main** | `backend/services/cluster_service.py` | Service | **Real**: Generates Helm Chart URI and API Key for Agent installation. Cluster discovery via `boto3.eks.list_clusters/describe_cluster` with STS assume_role. DB upsert for discovered clusters. | `Cluster`, `Account`, `boto3` |
 | **BE-SVC::Template::Main** | `backend/services/template_service.py` | Service | Node Template CRUD. Logic for setting default templates. | `NodeTemplate`, `User` |
 | **BE-SVC::Policy::Main** | `backend/services/policy_service.py` | Service | Policy management. Validates spot percentages, min/max nodes, and resource limits. | `ClusterPolicy`, `Cluster`, `NodeTemplate` |
 | **BE-SVC::Hibernation::Main** | `backend/services/hibernation_service.py` | Service | Hibernation schedule logic. Validates cron-like schedule matrix and timezone. | `HibernationSchedule` |
@@ -27,7 +27,7 @@
 | **BE-SVC::Cleanup::Main** | `backend/services/cleanup_service.py` | Service | **REAL (Updated 2026-01-19)**: High-performance resource hygiene service. **New**: `_scan_storage` for S3 bucket analysis (Empty/Untagged/Old). **Refactored**: `_scan_volumes_and_snapshots` with 4-way EBS categorization (Active, Orphaned-Compliant, Non-Compliant, Safe-to-Delete). Features: Parallel multi-region scanning, 1-hour cache, authorization logic, and **dynamic scan_time metadata**. | `boto3`, `redis`, `AuthorizedResource` |
 | **BE-API::Admin::Main** | `backend/api/admin_routes.py` | API | Super Admin Endpoints. List Orgs/Clients, Billing, Dashboard Stats (Live Feed), Platform Stats, **Toggle Org Status** (POST /{id}/toggle). | `AdminService` |
 | **BE-API::Account::Main** | `backend/api/account_routes.py` | API | AWS Account Management. Link, List, Delete accounts. **NEW**: POST /cache-credentials (MEMBER approval flow - stores encrypted creds in Redis until ticket approved). | `AccountService`, `AccountCacheService` |
-| **BE-API::Cluster::Main** | `backend/api/cluster_routes.py` | API | Cluster Operations. Discover, Register, Connect (AWS), Agent Install, Heartbeat. | `ClusterService` |
+| **BE-API::Cluster::Main** | `backend/api/cluster_routes.py` | API | Cluster Operations. Discover, Register, Connect (AWS), Helm Config, Heartbeat. | `ClusterService` |
 | **BE-API::Organization::Main** | `backend/api/organization_routes.py` | API | Organization Management. List Members, Invite (ORG_ADMIN), Update Role, Remove Member. | `OrganizationService` |
 | **BE-API::Policy::Main** | `backend/api/policy_routes.py` | API | Optimization Policy Management. Create, List, Update, Delete, Toggle policies. | `PolicyService` |
 | **BE-API::Hibernation::Main** | `backend/api/hibernation_routes.py` | API | Hibernation Schedule Management. Create, List, Update, Delete schedules. | `HibernationService` |
@@ -82,7 +82,7 @@
 | **BE-MOD::Ops::Onboarding** | `backend/models/onboarding.py` | Model | Onboarding State Table. | `Base` |
 | **BE-SCH::Auth::Main** | `backend/schemas/auth_schemas.py` | Schema | Pydantic Schemas for Auth. **Updated**: `MemberResponse` now includes `role`, `access_level`, `team_id`, and `full_name`. | `Pydantic` |
 | **BE-SCH::Admin::Main** | `backend/schemas/admin_schemas.py` | Schema | Pydantic Schemas for Admin (ClientList, PlatformStats). | `Pydantic` |
-| **BE-SCH::Cluster::Main** | `backend/schemas/cluster_schemas.py` | Schema | Pydantic Schemas for Cluster (Create, Update, Response). | `Pydantic` |
+| **BE-SCH::Cluster::Main** | `backend/schemas/cluster_schemas.py` | Schema | Pydantic Schemas for Cluster (Create, Update, Response). **Note**: `InstallScriptResponse` reused to return Chart URI. | `Pydantic` |
 | **BE-SCH::Template::Main** | `backend/schemas/template_schemas.py` | Schema | Pydantic Schemas for Template (Create, Update, Response). | `Pydantic` |
 | **BE-SCH::Policy::Main** | `backend/schemas/policy_schemas.py` | Schema | Pydantic Schemas for Policy (Create, Update, Response). | `Pydantic` |
 | **BE-SCH::Metrics::Main** | `backend/schemas/metric_schemas.py` | Schema | Pydantic Schemas for Metrics (DashboardKPIs, TimeSeries). | `Pydantic` |
@@ -146,6 +146,7 @@
 | **BE-SCH::Settings::Main** | `backend/schemas/settings_schemas.py` | Schema | Pydantic models for Settings and Integrations. | `Pydantic` |
 | **BE-WRK::Core::App** | `backend/workers/app.py` | Worker | **Real**: Celery app with `beat_schedule`: `discovery-every-5-mins` (300s), `pricing-every-hour` (3600s). | `Celery`, `Redis` |
 | **BE-WRK::Task::Pricing** | `backend/workers/tasks/pricing_task.py` | Worker | **Real**: Fetches AWS pricing via `PricingCollector` and spot risks via `SpotAdvisorScraper`. Scheduled hourly. | `boto3`, `Scrapers` |
+| **BE-OPS::Deploy::Publish** | `scripts/publish_to_dockerhub.sh` | Script | **NEW (2026-02-04)**: OCI Automation. Builds and pushes Agent/Backend images to Docker Hub with strict versioning. | `Docker`, `Bash` |
 | **BE-OPS::Deploy::Main** | `scripts/deployment/deploy.sh` | Script | Main deployment shell script. | `Bash` |
 | **BE-OPS::Deploy::Setup** | `scripts/deployment/setup.sh` | Script | Environment setup shell script. | `Bash` |
 | **BE-CFG::Deps::Main** | `requirements.txt` | Config | Python dependency manifest for the backend. | `Pip` |

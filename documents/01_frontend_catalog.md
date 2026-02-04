@@ -20,7 +20,7 @@
 | **FE-CMP::Cluster::List** | `frontend/src/components/clusters/ClusterList.jsx` | Page | List of K8s clusters. | `clusters` | `useClusterStore` |
 | **FE-CMP::Cluster::Detail** | `frontend/src/components/clusters/ClusterDetails.jsx` | Page | Cluster details view. | `cluster` | `clusterAPI` |
 | **FE-CMP::Cluster::Nodes** | `frontend/src/components/clusters/NodeList.jsx` | Component | Node list within a cluster. | `nodes` | `Table` |
-| **FE-CMP::Cluster::Connect** | `frontend/src/components/clusters/ClusterConnectModal.jsx` | Component | Modal to register new clusters. | `step` | `clusterAPI` |
+| **FE-CMP::Cluster::Connect** | `frontend/src/components/clusters/ClusterConnectModal.jsx` | Component | Modal to register new clusters. **UPDATED (2026-02-04)**: Simplified to single Helm Command display. Removed Manual/Script tabs. | `step` | `clusterAPI` |
 | **FE-CMP::Tpl::List** | `frontend/src/components/templates/TemplateList.jsx` | Page | Node Template management list. | `templates` | `templateAPI` |
 | **FE-CMP::Tpl::Builder** | `frontend/src/components/templates/TemplateBuilder.jsx` | Component | Form to create/edit templates. | `formData` | `Input`, `Select` |
 | **FE-CMP::Pol::Config** | `frontend/src/components/policies/PolicyConfig.jsx` | Page | Optimization policy settings. | `policy` | `policyAPI` |

@@ -56,8 +56,10 @@ class Agent:
         # Validate required configuration
         if not self.api_key:
             raise ValueError("API_KEY environment variable is required")
+        # SECRET_KEY is optional; generate a default if not provided
         if not self.secret_key:
-            raise ValueError("SECRET_KEY environment variable is required")
+            self.secret_key = self._generate_agent_id()  # Use agent_id as fallback secret
+            logger.warning("SECRET_KEY not provided, using auto-generated value")
         if not self.cluster_id:
             raise ValueError("CLUSTER_ID environment variable is required")
 
