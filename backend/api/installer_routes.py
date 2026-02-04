@@ -62,7 +62,7 @@ set -e
 # --- Static Configuration ---
 NAMESPACE="spot-optimizer"
 AGENT_VERSION="v1.0.0"
-AGENT_IMAGE="atharva608/spot-optimizer-agent:${{AGENT_VERSION}}"
+AGENT_IMAGE="atharva0608/spot-optimizer-agent:${AGENT_VERSION}"
 
 # --- Dynamic Configuration (Auto-generated) ---
 CLUSTER_ID="{cluster_id}"
