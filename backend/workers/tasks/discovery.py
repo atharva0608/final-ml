@@ -284,7 +284,7 @@ def scan_eks_clusters(account: Account, eks_client, db: Session, credentials: Di
                     account_id=account.id,
                     name=cluster_name,
                     arn=cluster_data.get('arn'),
-                    region=account.region or 'us-east-1',
+                    region=cluster_data.get('arn').split(':')[3] if cluster_data.get('arn') else (account.region or 'us-east-1'),
                     endpoint=cluster_data.get('endpoint'),
                     version=cluster_data.get('version'),
                     status=ClusterStatus.DISCOVERED,

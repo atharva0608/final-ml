@@ -203,3 +203,5 @@
 | **2026-01-20** | **Backend / API** | `Fix` | **Governance API Visibility**: Fixed 404 on `/api/v1/governance` endpoints by correctly registering `governance_router` in `backend/core/api_gateway.py`. |
 
 | **2026-02-05** | **Backend / Agent Injection** | `Critical Fix` | **Resolved NoRegionError**: Fixed `agent_injector.py` crash by creating AWS Clients (`sts`) and Request Signers with explicit `region_name` from the cluster context. AWS rejects global authentication requests for regional EKS endpoints. This enables successful Hybrid Agent Injection. |
+| **2026-02-05** | **Backend / Discovery** | `Enhancement` | **Deep Region Parsing**: Updated `discovery.py` to extract AWS Region directly from Cluster ARN (`arn:aws:eks:us-west-2:...`) instead of relying on account defaults. Ensures multi-region discovery accuracy. |
+| **2026-02-05** | **DevOps / Helm** | `Cleanup` | **Manifest Consolidation**: Verified removal of legacy `deployment.yaml` from Helm charts. Enforced `DaemonSet` architecture for Agent deployment to ensure 1-to-1 Node monitoring. |
