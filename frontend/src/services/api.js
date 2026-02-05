@@ -185,8 +185,8 @@ export const settingsAPI = {
 
 export const onboardingAPI = {
     getState: () => api.get('/api/v1/onboarding/state'),
-    getAwsLink: (mode) => api.get(`/api/v1/onboarding/aws-link?mode=${mode || 'READ_ONLY'}`),
-    getTemplate: (mode) => api.get(`/api/v1/onboarding/template?mode=${mode || 'READ_ONLY'}`, { responseType: 'blob' }),
+    getAwsLink: (mode) => api.get(`/api/v1/onboarding/aws-link?mode=${mode || 'FULL_ACCESS'}`),
+    getTemplate: (mode) => api.get(`/api/v1/onboarding/template?mode=${mode || 'FULL_ACCESS'}`, { responseType: 'blob' }),
     verify: (roleArn) => api.post('/api/v1/onboarding/verify', { role_arn: roleArn }),
     skip: () => api.post('/api/v1/onboarding/skip'),
 };

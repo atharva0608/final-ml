@@ -19,14 +19,14 @@ const WelcomeStep = ({ onNext }) => {
                 Let's find your savings
             </h1>
             <p className="text-gray-600 text-lg mb-8 max-w-md mx-auto">
-                Connect your AWS account in read-only mode to see how much you can save. No agents or code changes required.
+                Connect your AWS account to see how much you can save and optimize your clusters automatically.
             </p>
 
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-10 text-left">
                 <div className="p-4 bg-gray-50 rounded-lg">
                     <FiShield className="w-6 h-6 text-green-600 mb-2" />
                     <h3 className="font-semibold text-gray-900">Secure</h3>
-                    <p className="text-sm text-gray-500">Read-only access via AWS STS. No long-term keys.</p>
+                    <p className="text-sm text-gray-500">Secure access via AWS STS. No long-term keys.</p>
                 </div>
                 <div className="p-4 bg-gray-50 rounded-lg">
                     <FiClock className="w-6 h-6 text-purple-600 mb-2" />
