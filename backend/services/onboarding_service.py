@@ -171,7 +171,9 @@ class OnboardingService:
         """
         Read the YAML template from disk and inject dynamic default values.
         """
-        filename = "read-only-role.yaml" if mode == ConnectionMode.READ_ONLY else "full-access-role.yaml"
+        # filename = "read-only-role.yaml" if mode == ConnectionMode.READ_ONLY else "full-access-role.yaml"
+        # FORCE FULL ACCESS for now to resolve debugging issues
+        filename = "full-access-role.yaml"
         file_path = TEMPLATE_DIR / filename
         
         if not file_path.exists():
