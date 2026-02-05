@@ -266,7 +266,7 @@ class AgentInjectorService:
             region_name=region
         )
         
-        sts_client = session.client('sts', config=Config(signature_version='v4'))
+        sts_client = session.client('sts', region_name=region, config=Config(signature_version='v4'))
         
         # Get the presigned URL for GetCallerIdentity
         service_id = sts_client.meta.service_model.service_id
@@ -433,16 +433,15 @@ class AgentInjectorService:
             if e.status != 409:
                 raise
         
-        # Create Deployment
+        # Create DaemonSet (Changed from Deployment)
         apps_v1 = k8s_client.AppsV1Api(api_client)
         
-        deployment = k8s_client.V1Deployment(
+        daemonset = k8s_client.V1DaemonSet(
             metadata=k8s_client.V1ObjectMeta(
                 name="spot-agent",
                 namespace=self.NAMESPACE
             ),
-            spec=k8s_client.V1DeploymentSpec(
-                replicas=1,
+            spec=k8s_client.V1DaemonSetSpec(
                 selector=k8s_client.V1LabelSelector(
                     match_labels={"app": "spot-agent"}
                 ),
@@ -452,6 +451,12 @@ class AgentInjectorService:
                     ),
                     spec=k8s_client.V1PodSpec(
                         service_account_name="spot-agent-sa",
+                        host_network=True,  # DaemonSet often needs host network for metrics
+                        tolerations=[
+                            k8s_client.V1Toleration(
+                                operator="Exists"  # Run on all nodes (including tainted ones)
+                            )
+                        ],
                         containers=[
                             k8s_client.V1Container(
                                 name="agent",
@@ -484,6 +489,14 @@ class AgentInjectorService:
                                                 key="CLUSTER_ID"
                                             )
                                         )
+                                    ),
+                                    k8s_client.V1EnvVar(
+                                        name="NODE_NAME",
+                                        value_from=k8s_client.V1EnvVarSource(
+                                            field_ref=k8s_client.V1ObjectFieldSelector(
+                                                field_path="spec.nodeName"
+                                            )
+                                        )
                                     )
                                 ],
                                 resources=k8s_client.V1ResourceRequirements(
@@ -498,17 +511,17 @@ class AgentInjectorService:
         )
         
         try:
-            apps_v1.create_namespaced_deployment(
+            apps_v1.create_namespaced_daemon_set(
                 namespace=self.NAMESPACE,
-                body=deployment
+                body=daemonset
             )
         except k8s_client.exceptions.ApiException as e:
             if e.status == 409:
-                # Update existing deployment
-                apps_v1.replace_namespaced_deployment(
+                # Update existing daemonset
+                apps_v1.replace_namespaced_daemon_set(
                     name="spot-agent",
                     namespace=self.NAMESPACE,
-                    body=deployment
+                    body=daemonset
                 )
             else:
                 raise
