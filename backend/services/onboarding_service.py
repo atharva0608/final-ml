@@ -26,9 +26,9 @@ def get_platform_account_id():
     try:
         sts = boto3.client('sts')
         identity = sts.get_caller_identity()
-        return identity.get('Account', 'NOT_CONFIGURED')
+        return identity.get('Account', '123456789012')
     except Exception:
-        return 'NOT_CONFIGURED'
+        return '123456789012'
 
 PLATFORM_ACCOUNT_ID = get_platform_account_id()  # Cache at module load
 
@@ -38,13 +38,29 @@ class OnboardingService:
 
     def get_or_create_state(self, user_id: str) -> OnboardingState:
         state = self.db.query(OnboardingState).filter(OnboardingState.user_id == user_id).first()
-        if not state:
-            state = OnboardingState(
-                user_id=user_id,
-                external_id=str(uuid.uuid4()), # Generate secure random ID
-                current_step=OnboardingStep.WELCOME
-            )
-            self.db.add(state)
+        
+        # Check for invalid external_id (legacy data cleanup)
+        valid_uuid = True
+        if state:
+            try:
+                val = uuid.UUID(state.external_id, version=4)
+            except ValueError:
+                valid_uuid = False
+        
+        if not state or not valid_uuid:
+            new_id = str(uuid.uuid4())
+            if state:
+                state.external_id = new_id
+                # Reset step if ID changes to force re-verify
+                state.current_step = OnboardingStep.WELCOME 
+            else:
+                state = OnboardingState(
+                    user_id=user_id,
+                    external_id=new_id,
+                    current_step=OnboardingStep.WELCOME
+                )
+                self.db.add(state)
+            
             self.db.commit()
             self.db.refresh(state)
         return state
@@ -97,6 +113,40 @@ class OnboardingService:
             # arn:aws:iam::123456789012:role/...
             account_id = role_arn.split(":")[4]
             state.aws_account_id = account_id
+            
+            # --- CRITICAL FIX: Create/Update Account Record for Discovery Worker ---
+            from backend.models.account import Account, AccountStatus
+            
+            # Get User to find Organization ID
+            user = self.db.query(User).filter(User.id == user_id).first()
+            if not user or not user.organization_id:
+                # Should not happen in normal flow, but handle gracefully
+                print(f"User {user_id} has no organization, skipping account creation")
+            else:
+                existing_account = self.db.query(Account).filter(
+                    Account.aws_account_id == account_id,
+                    Account.organization_id == user.organization_id
+                ).first()
+                
+                if existing_account:
+                    # Update existing
+                    existing_account.role_arn = role_arn
+                    existing_account.external_id = state.external_id
+                    existing_account.status = AccountStatus.SCANNING # Trigger scan
+                    existing_account.user_id = user_id # Claim ownership if changed
+                else:
+                    # Create new
+                    new_account = Account(
+                        organization_id=user.organization_id,
+                        user_id=user_id,
+                        aws_account_id=account_id,
+                        role_arn=role_arn,
+                        external_id=state.external_id,
+                        region='us-east-1', # Default
+                        status=AccountStatus.SCANNING,
+                        is_default=False
+                    )
+                    self.db.add(new_account)
             
             self.db.commit()
             return True

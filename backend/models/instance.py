@@ -25,8 +25,8 @@ class Instance(Base):
     # Primary key
     id = Column(String(36), primary_key=True, default=generate_uuid, index=True)
 
-    # Foreign key to clusters
-    cluster_id = Column(String(36), ForeignKey("clusters.id", ondelete="CASCADE"), nullable=False, index=True)
+    # Foreign key to clusters (nullable for standalone EC2 instances)
+    cluster_id = Column(String(36), ForeignKey("clusters.id", ondelete="CASCADE"), nullable=True, index=True)
 
     # Instance details
     instance_id = Column(String(20), nullable=False, unique=True, index=True)

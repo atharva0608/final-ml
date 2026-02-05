@@ -1,6 +1,7 @@
 from celery import Task
 from backend.workers import app
-from backend.models.base import get_db
+from backend.scrapers.pricing_collector import collect_spot_prices, collect_ondemand_prices
+from backend.scrapers.spot_advisor_scraper import scrape_spot_advisor_data
 import logging
 
 logger = logging.getLogger(__name__)
@@ -10,32 +11,31 @@ def fetch_aws_pricing(self: Task):
     """
     Fetch AWS On-Demand pricing and Spot interruption risks
     """
-    db = next(get_db())
     try:
         logger.info("Starting Pricing Data Fetch...")
         
-        # 1. Fetch On-Demand Pricing
-        # Assuming PricingCollector exists as per changes.txt
-        # If it doesn't exist, this will crash. Verify imports first?
-        # The user's changes.txt code block explicitly imports:
-        # from backend.scrapers.pricing_collector import PricingCollector
-        # from backend.scrapers.spot_advisor_scraper import SpotAdvisorScraper
-        
-        from backend.scrapers.pricing_collector import PricingCollector
-        from backend.scrapers.spot_advisor_scraper import SpotAdvisorScraper
+        # 1. Fetch Spot Prices
+        logger.info("Collecting Spot Prices...")
+        spot_stats = collect_spot_prices()
+        logger.info(f"Spot Price Collection Stats: {spot_stats}")
 
-        collector = PricingCollector()
-        prices = collector.fetch_pricing() 
-        logger.info(f"Fetched {len(prices)} pricing records.")
-
-        # 2. Fetch Spot Interruption Risks
-        spot_scraper = SpotAdvisorScraper()
-        risks = spot_scraper.scrape_data()
-        logger.info(f"Fetched spot risk data for {len(risks)} instance types.")
+        # 2. Fetch Spot Advisor Data (Interruption Risks)
+        logger.info("Collecting Spot Advisor Data...")
+        advisor_stats = scrape_spot_advisor_data()
+        logger.info(f"Spot Advisor Collection Stats: {advisor_stats}")
         
-        return {"status": "success", "message": "Pricing data updated successfully"}
+        # 3. Fetch On-Demand Prices (Optional, can be heavy)
+        # Uncomment if needed to run daily
+        # logger.info("Collecting On-Demand Prices...")
+        # ondemand_stats = collect_ondemand_prices()
+        # logger.info(f"On-Demand Price Collection Stats: {ondemand_stats}")
+
+        return {
+            "status": "success", 
+            "message": "Pricing data updated successfully",
+            "spot_stats": spot_stats,
+            "advisor_stats": advisor_stats
+        }
     except Exception as e:
-        logger.error(f"Error fetching pricing: {str(e)}")
+        logger.error(f"Error fetching pricing: {str(e)}", exc_info=True)
         return {"status": "failed", "error": str(e)}
-    finally:
-        db.close()

@@ -12,12 +12,38 @@ from botocore.exceptions import ClientError
 
 from backend.workers import app
 from backend.models.base import get_db
-from backend.models.account import Account
-from backend.models.cluster import Cluster
-from backend.models.instance import Instance
+from backend.models.account import Account, AccountStatus
+from backend.models.cluster import Cluster, ClusterStatus
+from backend.models.instance import Instance, InstanceLifecycle
+from backend.models.system_config import SystemConfig
 from backend.core.redis_client import get_redis_client
 
 logger = logging.getLogger(__name__)
+
+
+def _get_platform_sts_client(db: Session):
+    """
+    Get an STS client using platform credentials stored in SystemConfig.
+    This allows the discovery worker to assume roles in customer accounts.
+    """
+    access_key = db.query(SystemConfig).filter(SystemConfig.key == "PLATFORM_AWS_ACCESS_KEY").first()
+    secret_key = db.query(SystemConfig).filter(SystemConfig.key == "PLATFORM_AWS_SECRET").first()
+    region = db.query(SystemConfig).filter(SystemConfig.key == "PLATFORM_AWS_REGION").first()
+    
+    region_name = region.value if region and region.value else 'us-east-1'
+    
+    if access_key and secret_key and access_key.value and secret_key.value:
+        logger.info("[WORK-DISC-01] Using platform credentials from SystemConfig")
+        return boto3.client(
+            'sts',
+            aws_access_key_id=access_key.value,
+            aws_secret_access_key=secret_key.value,
+            region_name=region_name
+        )
+    else:
+        # Fallback to environment variables / instance profile
+        logger.warning("[WORK-DISC-01] Platform credentials not found in SystemConfig, falling back to env/instance profile")
+        return boto3.client('sts', region_name=region_name)
 
 
 
@@ -45,7 +71,7 @@ def discovery_worker_loop(self: Task) -> Dict[str, Any]:
     try:
         # Query all active accounts
         accounts = db.query(Account).filter(
-            Account.status.in_(['active', 'scanning'])
+            Account.status.in_([AccountStatus.ACTIVE, AccountStatus.SCANNING])
         ).all()
 
         logger.info(f"[WORK-DISC-01] Found {len(accounts)} active accounts to scan")
@@ -117,9 +143,14 @@ def scan_account(account: Account, db: Session, redis_client) -> Dict[str, int]:
     clusters_found = 0
     instances_found = 0
 
+    # Validate account has required fields
+    if not account.role_arn or not account.external_id:
+        logger.warning(f"[WORK-DISC-01] Account {account.aws_account_id} missing role_arn or external_id, skipping")
+        return {"clusters_found": 0, "instances_found": 0}
+    
     try:
-        # Assume IAM role via STS
-        sts_client = boto3.client('sts')
+        # Assume IAM role via STS using platform credentials
+        sts_client = _get_platform_sts_client(db)
         assumed_role = sts_client.assume_role(
             RoleArn=account.role_arn,
             RoleSessionName=f"SpotOptimizer-Discovery-{account.id}",
@@ -152,8 +183,8 @@ def scan_account(account: Account, db: Session, redis_client) -> Dict[str, int]:
         instances_found = scan_ec2_instances(account, ec2_client, db)
 
         # Update account status
-        if account.status == 'scanning':
-            account.status = 'active'
+        if account.status == AccountStatus.SCANNING:
+            account.status = AccountStatus.ACTIVE
             db.commit()
 
     except ClientError as e:
@@ -239,25 +270,26 @@ def scan_eks_clusters(account: Account, eks_client, db: Session) -> int:
             ).first()
 
             if existing:
-                # Update existing cluster
-                existing.status = cluster_data.get('status', 'ACTIVE')
-                existing.k8s_version = cluster_data.get('version')
-                existing.api_endpoint = cluster_data.get('endpoint')
-                existing.monthly_cost = total_cost
-                existing.estimated_savings = potential_savings
+                # Update existing cluster metadata (but don't change status if it's ACTIVE)
+                existing.version = cluster_data.get('version')
+                existing.endpoint = cluster_data.get('endpoint')
+                existing.monthly_cost = int(total_cost)
+                existing.estimated_savings = int(potential_savings)
                 existing.updated_at = datetime.utcnow()
             else:
-                # Create new cluster
+                # Create new cluster with DISCOVERED status
+                import uuid
                 new_cluster = Cluster(
+                    id=str(uuid.uuid4()),
                     account_id=account.id,
                     name=cluster_name,
+                    arn=cluster_data.get('arn'),
                     region=account.region or 'us-east-1',
-                    vpc_id=cluster_data.get('resourcesVpcConfig', {}).get('vpcId'),
-                    api_endpoint=cluster_data.get('endpoint'),
-                    k8s_version=cluster_data.get('version'),
-                    status='DISCOVERED',
-                    monthly_cost=total_cost,
-                    estimated_savings=potential_savings
+                    endpoint=cluster_data.get('endpoint'),
+                    version=cluster_data.get('version'),
+                    status=ClusterStatus.DISCOVERED,
+                    monthly_cost=int(total_cost),
+                    estimated_savings=int(potential_savings)
                 )
                 db.add(new_cluster)
 
@@ -286,7 +318,9 @@ def scan_ec2_instances(account: Account, ec2_client, db: Session) -> int:
             for instance_data in reservation.get('Instances', []):
                 instance_id = instance_data.get('InstanceId')
                 instance_type = instance_data.get('InstanceType')
-                lifecycle = instance_data.get('InstanceLifecycle', 'on-demand').upper()
+                # AWS returns 'spot' or None (for on-demand), normalize to enum
+                raw_lifecycle = instance_data.get('InstanceLifecycle', 'on-demand')
+                lifecycle = InstanceLifecycle.SPOT if raw_lifecycle == 'spot' else InstanceLifecycle.ON_DEMAND
                 az = instance_data.get('Placement', {}).get('AvailabilityZone')
 
                 # Find associated cluster (via tags)

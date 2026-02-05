@@ -9,10 +9,9 @@ import { useClusterStore } from '../../store/useStore';
 import { useAuth } from '../../hooks/useAuth';
 import { Button, Badge, Card } from '../shared'; // Assuming Card is a simple white container
 import { formatCurrency, formatClusterType } from '../../utils/formatters';
-import { FiRefreshCw, FiPlus, FiMoreHorizontal, FiHardDrive, FiCpu, FiActivity, FiServer, FiTrash2, FiLink, FiLink2 } from 'react-icons/fi'; // Icons
+import { FiRefreshCw, FiMoreHorizontal, FiHardDrive, FiCpu, FiActivity, FiServer, FiTrash2, FiLink, FiLink2, FiDownloadCloud } from 'react-icons/fi'; // Icons
 import { PieChart, Pie, Cell, ResponsiveContainer } from 'recharts'; // For Donut Charts
 import toast from 'react-hot-toast';
-import ClusterConnectModal from './ClusterConnectModal';
 import ClusterDetails from './ClusterDetails';
 import ClusterDisconnectModal from './ClusterDisconnectModal';
 import { FaAws, FaGoogle, FaMicrosoft, FaLinux } from 'react-icons/fa'; // Provider icons
@@ -22,10 +21,11 @@ const ClusterList = () => {
   const { user } = useAuth(); // Get authenticated user
   const { clusters, setClusters, setLoading, loading } = useClusterStore();
   const [searchTerm, setSearchTerm] = useState('');
-  const [showConnectModal, setShowConnectModal] = useState(false);
   const [selectedClusterId, setSelectedClusterId] = useState(null);
   const [openMenuId, setOpenMenuId] = useState(null); // For dropdown menu
   const [disconnectCluster, setDisconnectCluster] = useState(null); // For disconnect modal
+  const [refreshing, setRefreshing] = useState(false); // For refresh button loading
+  const [injectingClusterId, setInjectingClusterId] = useState(null); // For inject agent loading
 
   // Mock KPI Data State
   const [kpiData, setKpiData] = useState({
@@ -39,25 +39,45 @@ const ClusterList = () => {
   });
 
 
-  useEffect(() => {
-    fetchClusters();
-  }, []);
+  const [isDiscovering, setIsDiscovering] = useState(false);
 
-  const fetchClusters = async () => {
-    setLoading(true);
+  useEffect(() => {
+    fetchData();
+    // Poll for discovery if we are in discovering state
+    let interval;
+    if (isDiscovering) {
+      interval = setInterval(fetchData, 5000);
+    }
+    return () => clearInterval(interval);
+  }, [isDiscovering]);
+
+  const fetchData = async () => {
+    setLoading(true); // Initial load only? No, maybe silent refresh
     try {
-      const response = await clusterAPI.list({});
-      const fetchedClusters = response.data.clusters || [];
+      const [clusterRes, accountRes] = await Promise.all([
+        clusterAPI.list({}),
+        import('../../services/api').then(mod => mod.accountAPI.list({})).catch(() => ({ data: [] }))
+      ]);
+
+      const fetchedClusters = clusterRes.data.clusters || [];
+      const accounts = accountRes.data || [];
+
       setClusters(fetchedClusters);
       calculateKPIs(fetchedClusters);
 
+      // Check if any account is scanning
+      const scanning = accounts.some(a => a.status === 'SCANNING');
+      setIsDiscovering(scanning && fetchedClusters.length === 0);
+
     } catch (error) {
-      toast.error('Failed to load clusters');
+      toast.error('Failed to load data');
       console.error(error);
     } finally {
       setLoading(false);
     }
   };
+
+  const fetchClusters = fetchData;
 
   const calculateKPIs = (clusterData) => {
     let cost = 0;
@@ -188,12 +208,34 @@ const ClusterList = () => {
     cluster.name.toLowerCase().includes(searchTerm.toLowerCase())
   );
 
-  const handleConnectClick = () => {
-    if (user?.access_level === 'READ_ONLY') {
-      toast.error("Restricted: You don't have access to connect clusters. Please contact your Team Lead.");
-      return;
+  // Trigger discovery refresh
+  const handleRefreshDiscovery = async () => {
+    setRefreshing(true);
+    toast.loading('Refreshing cluster discovery...', { id: 'discovery' });
+    try {
+      await fetchClusters();
+      toast.success('Discovery refreshed!', { id: 'discovery' });
+    } catch (error) {
+      toast.error('Failed to refresh', { id: 'discovery' });
+    } finally {
+      setRefreshing(false);
     }
-    setShowConnectModal(true);
+  };
+
+  // Inject agent into discovered cluster
+  const handleInjectAgent = async (clusterId, clusterName, e) => {
+    e?.stopPropagation();
+    setInjectingClusterId(clusterId);
+    try {
+      toast.loading(`Injecting agent into ${clusterName}...`, { id: 'inject' });
+      await clusterAPI.autoInstallAgent(clusterId);
+      toast.success(`Agent injected into ${clusterName}!`, { id: 'inject' });
+      fetchClusters();
+    } catch (error) {
+      toast.error('Failed to inject agent: ' + (error.response?.data?.detail || error.message), { id: 'inject' });
+    } finally {
+      setInjectingClusterId(null);
+    }
   };
 
   const handleDisconnectCluster = async (clusterId, deleteNodes) => {
@@ -253,11 +295,12 @@ const ClusterList = () => {
         <h1 className="text-2xl font-bold text-gray-900">Clusters</h1>
         <Button
           variant="primary"
-          className={`bg-blue-600 hover:bg-blue-700 text-white shadow-none font-semibold px-6 ${user?.access_level === 'READ_ONLY' ? 'opacity-50 cursor-not-allowed' : ''
-            }`}
-          onClick={handleConnectClick}
+          className={`bg-blue-600 hover:bg-blue-700 text-white shadow-none font-semibold px-6 flex items-center gap-2`}
+          onClick={handleRefreshDiscovery}
+          disabled={refreshing}
         >
-          Connect cluster
+          <FiRefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
+          Refresh Discovery
         </Button>
       </div>
 
@@ -384,18 +427,39 @@ const ClusterList = () => {
                         return lastHB > twoMinAgo;
                       };
                       const connected = isReallyConnected();
+
+                      // Show prominent Inject Agent button for DISCOVERED clusters
+                      if (cluster.status === 'DISCOVERED') {
+                        return (
+                          <button
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-gradient-to-r from-green-500 to-emerald-600 text-white hover:from-green-600 hover:to-emerald-700 shadow-sm transition-all"
+                            onClick={async (e) => {
+                              e.stopPropagation();
+                              try {
+                                toast.loading('Injecting agent into cluster...', { id: 'inject-' + cluster.id });
+                                await clusterAPI.autoInstallAgent(cluster.id);
+                                toast.success('Agent injected successfully! Cluster is now active.', { id: 'inject-' + cluster.id });
+                                fetchClusters();
+                              } catch (error) {
+                                toast.error('Failed to inject agent: ' + (error.response?.data?.detail || error.message), { id: 'inject-' + cluster.id });
+                              }
+                            }}
+                          >
+                            <FiDownloadCloud className="w-3.5 h-3.5" />
+                            Inject Agent
+                          </button>
+                        );
+                      }
+
                       const statusText = connected ? 'Connected' :
                         cluster.status === 'DISCONNECTED' ? 'Disconnected' :
-                          cluster.status === 'PENDING' ? 'Pending' :
-                            cluster.status === 'DISCOVERED' ? 'Discovered' : 'Offline';
+                          cluster.status === 'PENDING' ? 'Pending' : 'Offline';
                       const bgColor = connected ? 'bg-green-50 text-green-700' :
                         cluster.status === 'PENDING' ? 'bg-yellow-50 text-yellow-700' :
-                          cluster.status === 'DISCOVERED' ? 'bg-gray-100 text-gray-600' :
-                            'bg-orange-50 text-orange-700';
+                          'bg-orange-50 text-orange-700';
                       const dotColor = connected ? 'bg-green-500' :
                         cluster.status === 'PENDING' ? 'bg-yellow-500' :
-                          cluster.status === 'DISCOVERED' ? 'bg-gray-400' :
-                            'bg-orange-500';
+                          'bg-orange-500';
                       return (
                         <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium ${bgColor}`}>
                           <span className={`w-1.5 h-1.5 rounded-full ${dotColor}`} />
@@ -416,15 +480,7 @@ const ClusterList = () => {
                     </button>
                     {openMenuId === cluster.id && (
                       <div className="absolute right-6 top-10 bg-white border border-gray-200 rounded-lg shadow-lg z-20 py-1 min-w-[160px]">
-                        {cluster.status === 'DISCONNECTED' ? (
-                          <button
-                            className="w-full px-4 py-2 text-left text-sm text-blue-600 hover:bg-blue-50 flex items-center gap-2"
-                            onClick={(e) => handleReconnectCluster(cluster.id, e)}
-                          >
-                            <FiLink className="w-4 h-4" />
-                            Reconnect
-                          </button>
-                        ) : cluster.status === 'DISCOVERED' ? (
+                        {cluster.status === 'DISCOVERED' && (
                           <button
                             className="w-full px-4 py-2 text-left text-sm text-green-600 hover:bg-green-50 flex items-center gap-2"
                             onClick={async (e) => {
@@ -440,10 +496,20 @@ const ClusterList = () => {
                               }
                             }}
                           >
-                            <FiPlus className="w-4 h-4" />
-                            Activate
+                            <FiDownloadCloud className="w-4 h-4" />
+                            Inject Agent
                           </button>
-                        ) : (
+                        )}
+                        {cluster.status === 'DISCONNECTED' && (
+                          <button
+                            className="w-full px-4 py-2 text-left text-sm text-blue-600 hover:bg-blue-50 flex items-center gap-2"
+                            onClick={(e) => handleReconnectCluster(cluster.id, e)}
+                          >
+                            <FiLink className="w-4 h-4" />
+                            Reconnect
+                          </button>
+                        )}
+                        {(cluster.status === 'ACTIVE' || cluster.status === 'PENDING') && (
                           <button
                             className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
                             onClick={(e) => {
@@ -472,7 +538,15 @@ const ClusterList = () => {
               {filteredClusters.length === 0 && (
                 <tr>
                   <td colSpan="10" className="py-12 text-center text-gray-500">
-                    No clusters found.
+                    {isDiscovering ? (
+                      <div className="flex flex-col items-center justify-center gap-2">
+                        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+                        <p className="font-medium text-gray-700">Discovering clusters from your AWS account...</p>
+                        <p className="text-sm text-gray-400">This usually takes about 1-2 minutes.</p>
+                      </div>
+                    ) : (
+                      "No clusters found."
+                    )}
                   </td>
                 </tr>
               )}
@@ -480,16 +554,6 @@ const ClusterList = () => {
           </table>
         </div>
       </div>
-
-      {/* Cluster Connect Modal */}
-      <ClusterConnectModal
-        isOpen={showConnectModal}
-        onClose={() => setShowConnectModal(false)}
-        onSuccess={() => {
-          setShowConnectModal(false);
-          fetchClusters();
-        }}
-      />
 
       {/* Cluster Details Modal - Kept for detailed view */}
       {selectedClusterId && (

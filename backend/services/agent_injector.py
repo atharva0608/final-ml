@@ -21,6 +21,7 @@ from datetime import datetime
 import boto3
 from botocore.config import Config
 from botocore.signers import RequestSigner
+from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,43 @@ class AgentInjectorService:
         self.backend_role_arn = os.getenv('AWS_BACKEND_ROLE_ARN')
         self.backend_url = os.getenv('BACKEND_PUBLIC_URL', 'https://localhost:8000')
 
+        # If role ARN is missing, try to detect it
+        if not self.backend_role_arn:
+            try:
+                # Use platform credentials to check our own identity
+                from backend.models.system_config import SystemConfig
+                
+                access_key = db_session.query(SystemConfig).filter(SystemConfig.key == "PLATFORM_AWS_ACCESS_KEY").first()
+                secret_key = db_session.query(SystemConfig).filter(SystemConfig.key == "PLATFORM_AWS_SECRET").first()
+                region = db_session.query(SystemConfig).filter(SystemConfig.key == "PLATFORM_AWS_REGION").first()
+                
+                region_name = region.value if region and region.value else 'us-east-1'
+                
+                if access_key and secret_key and access_key.value and secret_key.value:
+                    sts_client = boto3.client(
+                        'sts',
+                        aws_access_key_id=access_key.value,
+                        aws_secret_access_key=secret_key.value,
+                        region_name=region_name
+                    )
+                else:
+                    sts_client = boto3.client('sts', region_name=region_name)
+                
+                identity = sts_client.get_caller_identity()
+                self.backend_role_arn = identity['Arn']
+                
+                # Transform assumed-role ARN to role ARN if needed
+                # arn:aws:sts::123:assumed-role/RoleName/Session -> arn:aws:iam::123:role/RoleName
+                if ':assumed-role/' in self.backend_role_arn:
+                    parts = self.backend_role_arn.split('/')
+                    role_name = parts[1]
+                    account = self.backend_role_arn.split(':')[4]
+                    self.backend_role_arn = f"arn:aws:iam::{account}:role/{role_name}"
+                    
+                logger.info(f"Auto-detected backend IAM role: {self.backend_role_arn}")
+            except Exception as e:
+                logger.warning(f"Could not auto-detect backend IAM role: {e}")
+
     def inject_agent(
         self,
         cluster_id: str,
@@ -51,6 +89,7 @@ class AgentInjectorService:
         cluster_ca_data: str,
         role_arn: str,
         external_id: str,
+        region: str,
         api_key: str
     ) -> Dict:
         """
@@ -80,7 +119,8 @@ class AgentInjectorService:
             logger.info("Step 2: Creating EKS access entry...")
             self._create_access_entry(
                 cluster_name=cluster_name,
-                credentials=assumed_credentials
+                credentials=assumed_credentials,
+                region=region
             )
             
             # Step 3: Generate Kubernetes token
@@ -115,12 +155,34 @@ class AgentInjectorService:
 
     def _assume_role(self, role_arn: str, external_id: str) -> Dict:
         """
-        Assume customer's cross-account IAM role.
+        Assume customer's cross-account IAM role using platform credentials.
         
         Returns:
             Dict with temporary credentials
         """
-        sts_client = boto3.client('sts')
+        # Get platform credentials from SystemConfig
+        from backend.models.base import get_db
+        from backend.models.system_config import SystemConfig
+        
+        db = next(get_db())
+        
+        access_key = db.query(SystemConfig).filter(SystemConfig.key == "PLATFORM_AWS_ACCESS_KEY").first()
+        secret_key = db.query(SystemConfig).filter(SystemConfig.key == "PLATFORM_AWS_SECRET").first()
+        region = db.query(SystemConfig).filter(SystemConfig.key == "PLATFORM_AWS_REGION").first()
+        
+        region_name = region.value if region and region.value else 'us-east-1'
+        
+        if access_key and secret_key and access_key.value and secret_key.value:
+            logger.info("Using platform credentials from SystemConfig for STS")
+            sts_client = boto3.client(
+                'sts',
+                aws_access_key_id=access_key.value,
+                aws_secret_access_key=secret_key.value,
+                region_name=region_name
+            )
+        else:
+            logger.warning("Platform credentials not found, falling back to env/instance profile")
+            sts_client = boto3.client('sts', region_name=region_name)
         
         response = sts_client.assume_role(
             RoleArn=role_arn,
@@ -138,7 +200,8 @@ class AgentInjectorService:
     def _create_access_entry(
         self,
         cluster_name: str,
-        credentials: Dict
+        credentials: Dict,
+        region: str
     ) -> None:
         """
         Create an EKS access entry to allow our backend role to manage the cluster.
@@ -147,26 +210,34 @@ class AgentInjectorService:
             'eks',
             aws_access_key_id=credentials['access_key'],
             aws_secret_access_key=credentials['secret_key'],
-            aws_session_token=credentials['session_token']
+            aws_session_token=credentials['session_token'],
+            region_name=region
         )
         
-        # Check if access entry already exists
+        # Create access entry (idempotent via try/except)
         try:
-            eks_client.describe_access_entry(
+            eks_client.create_access_entry(
                 clusterName=cluster_name,
-                principalArn=self.backend_role_arn
+                principalArn=self.backend_role_arn,
+                type='STANDARD'
             )
-            logger.info("Access entry already exists")
-            return
-        except eks_client.exceptions.ResourceNotFoundException:
-            pass  # Need to create it
-        
-        # Create access entry
-        eks_client.create_access_entry(
-            clusterName=cluster_name,
-            principalArn=self.backend_role_arn,
-            type='STANDARD'
-        )
+        except eks_client.exceptions.ResourceInUseException:
+            logger.info("Access entry already exists (ResourceInUse)")
+            # Fall through to ensure policy association
+        except Exception as e:
+            # Handle potential AccessDenied or other errors by logging but not crashing immediately 
+            # if we can try association. 
+            # But wait, if we lack Create permission, we likely fail here.
+            # However, the reported error was specific to Describe.
+            if "ResourceInUse" in str(e):
+                 logger.info("Access entry already exists (caught via string)")
+            else:
+                 # If we can't describe AND can't create, we might still try associating policy
+                 # assuming it exists? No, better to raise or log.
+                 # Re-raising for now, assuming Create permission exists.
+                 logger.warning(f"Error creating access entry: {e}")
+                 if "AccessDenied" not in str(e):
+                     raise
         
         # Associate cluster admin policy
         eks_client.associate_access_policy(

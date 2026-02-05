@@ -212,7 +212,7 @@ def get_connection_info(
     
     # Get Template URL
     api_url = os.getenv("API_URL", "http://localhost:8000")
-    template_url = f"{api_url}/api/v1/onboarding/template?external_id={organization.external_id}"
+    template_url = f"{api_url}/api/v1/onboarding/template?external_id={organization.external_id}&mode=FULL_ACCESS"
     
     return {
         "external_id": organization.external_id,

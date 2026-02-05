@@ -25,7 +25,7 @@ const ConnectStep = ({ onNext }) => {
 
                     // Construct CloudFormation Quick-Create Link with auto-filled parameters
                     const stackName = `SpotOptimizer-${res.data.external_id.substring(0, 8)}`;
-                    const templateUrl = res.data.template_url || `${window.location.origin}/api/v1/templates/aws-onboarding`;
+                    const templateUrl = res.data.template_url || `${window.location.origin}/api/v1/onboarding/template?mode=FULL_ACCESS`;
 
                     const params = new URLSearchParams({
                         stackName: stackName,
@@ -130,7 +130,7 @@ const ConnectStep = ({ onNext }) => {
                             <button
                                 onClick={async () => {
                                     try {
-                                        const response = await onboardingAPI.getTemplate('READ_ONLY');
+                                        const response = await onboardingAPI.getTemplate('FULL_ACCESS');
                                         const url = window.URL.createObjectURL(new Blob([response.data]));
                                         const link = document.createElement('a');
                                         link.href = url;

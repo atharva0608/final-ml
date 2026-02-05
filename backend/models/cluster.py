@@ -49,6 +49,12 @@ class Cluster(Base):
     monthly_cost = Column(Integer, default=0) # Stored in USD (or cents if needed, but float/int for display)
     estimated_savings = Column(Integer, default=0)
     
+    # Node metrics (updated by discovery/agent)
+    node_count = Column(Integer, default=0)
+    spot_count = Column(Integer, default=0)
+    cpu_total = Column(Integer, default=0)
+    mem_total = Column(Integer, default=0)  # In GiB
+    
     tags = Column(JSON, default={})
     
     created_at = Column(DateTime, default=datetime.utcnow)

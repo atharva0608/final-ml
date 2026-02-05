@@ -35,23 +35,23 @@ Parameters:
   ExternalId:
     Type: String
     Description: 'Your unique security token from the SpotOptimizer dashboard. This prevents unauthorized access to your account.'
-    MinLength: 36
-    MaxLength: 36
-    AllowedPattern: '^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$'
-    ConstraintDescription: 'Must be a valid UUID format (e.g., 12345678-1234-1234-1234-123456789abc)'
+    MinLength: 1
+    MaxLength: 256
   
   PlatformAccountId:
     Type: String
     Description: 'The AWS Account ID of the SpotOptimizer platform (do not modify)'
     Default: '123456789012'
-    AllowedPattern: '^\d{12}$'
-    ConstraintDescription: 'Must be a 12-digit AWS Account ID'
+    MinLength: 1
+    MaxLength: 256
+
+Conditions:
+  IsDummyAccount: !Equals [!Ref PlatformAccountId, '123456789012']
 
 Resources:
   SpotOptimizerRole:
     Type: 'AWS::IAM::Role'
     Properties:
-      RoleName: !Sub 'SpotOptimizer-${ExternalId}'
       Description: 'Cross-account access role for SpotOptimizer platform'
       MaxSessionDuration: 3600
       AssumeRolePolicyDocument:
@@ -60,7 +60,7 @@ Resources:
           - Sid: 'AllowSpotOptimizerAssumeRole'
             Effect: Allow
             Principal:
-              AWS: !Sub 'arn:aws:iam::${PlatformAccountId}:root'
+              AWS: !If [IsDummyAccount, !Sub 'arn:aws:iam::${AWS::AccountId}:root', !Sub 'arn:aws:iam::${PlatformAccountId}:root']
             Action: 'sts:AssumeRole'
             Condition:
               StringEquals:
@@ -70,7 +70,6 @@ Resources:
         - 'arn:aws:iam::aws:policy/SecurityAudit'
         - 'arn:aws:iam::aws:policy/AmazonEC2ReadOnlyAccess'
         - 'arn:aws:iam::aws:policy/CloudWatchReadOnlyAccess'
-        - 'arn:aws:iam::aws:policy/AmazonEKSReadOnlyAccess'
       Policies:
         - PolicyName: 'SpotOptimizerAnalysis'
           PolicyDocument:

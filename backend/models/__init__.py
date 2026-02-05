@@ -23,7 +23,9 @@ from backend.models.platform_settings import PlatformSettings
 from backend.models.organization import Organization
 from backend.models.rds_analysis import RDSInstanceAnalysis
 from backend.models.savings_plan_utilization import SavingsPlanUtilization
+from backend.models.savings_plan_utilization import SavingsPlanUtilization
 from backend.models.transfer_analysis import DataTransferAnalysis
+from backend.models.onboarding import OnboardingState
 
 # Tag Management Models
 from backend.models.tag_policy import TagPolicy, EnforcementLevel, ValueMode
@@ -55,6 +57,7 @@ __all__ = [
     "RDSAnalysis",
     "DataTransferAnalysis",
     "SavingsPlanUtilization",
+    "OnboardingState",
     # Tag Management
     "TagPolicy",
     "TagTemplate",

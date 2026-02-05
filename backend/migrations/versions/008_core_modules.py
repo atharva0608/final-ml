@@ -33,6 +33,8 @@ def upgrade():
         sa.Column('aws_role_arn', sa.String(), nullable=True),
         sa.Column('aws_external_id', sa.String(), nullable=True),
         sa.Column('last_heartbeat', sa.DateTime(), nullable=True),
+        sa.Column('monthly_cost', sa.Integer(), nullable=True, server_default='0'),
+        sa.Column('estimated_savings', sa.Integer(), nullable=True, server_default='0'),
         sa.Column('tags', sa.JSON(), nullable=True),
         sa.Column('created_at', sa.DateTime(), nullable=True),
         sa.Column('updated_at', sa.DateTime(), nullable=True),

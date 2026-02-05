@@ -234,6 +234,7 @@ def auto_install_agent(
             cluster_ca_data=getattr(cluster, 'ca_data', '') or "",
             role_arn=account.role_arn,
             external_id=account.external_id or "",
+            region=cluster.region,
             api_key=cluster.api_key
         )
         

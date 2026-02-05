@@ -21,7 +21,7 @@ spec:
       containers:
         - name: agent
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
-          imagePullPolicy: Always
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
           env:
             - name: NODE_NAME
               valueFrom:

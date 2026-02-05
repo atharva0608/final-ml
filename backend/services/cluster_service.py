@@ -419,7 +419,7 @@ class ClusterService:
         clusters = query.order_by(desc(Cluster.created_at)).offset(
             (filters.page - 1) * filters.page_size
         ).limit(filters.page_size).all()
-
+        
         # Convert to ClusterListItem schemas
         cluster_list_items = []
         for cluster in clusters:
@@ -843,10 +843,10 @@ echo "✅ Agent successfully deployed!"
                 "id": inst.id,
                 "type": inst.instance_type,
                 "lifecycle": inst.lifecycle.value if hasattr(inst.lifecycle, 'value') else str(inst.lifecycle),
-                "cpu_util": 0, # Would come from metrics in production
-                "memory_util": 0,
-                "az": inst.availability_zone,
-                "launch_time": inst.launch_time.isoformat() if inst.launch_time else None
+                "cpu_util": inst.cpu_util or 0,
+                "memory_util": inst.memory_util or 0,
+                "az": inst.az,
+                "state": inst.state if hasattr(inst, 'state') else "running"
             })
         
         return {"nodes": nodes, "total": len(nodes)}

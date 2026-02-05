@@ -32,9 +32,9 @@ import json
 from sqlalchemy.orm import Session
 from sqlalchemy import and_
 
-from app.database.session import get_db
-from app.database.models import SpotAdvisorData
-from app.core.redis_client import get_redis_client
+from backend.models.base import get_db
+from backend.models.pricing import SpotAdvisorData
+from backend.core.redis_client import get_redis_client
 
 logger = logging.getLogger(__name__)
 
@@ -413,7 +413,7 @@ def refresh_cache_for_region(
 
 # Celery task wrapper (if using Celery)
 try:
-    from app.core.celery_app import app as celery_app
+    from backend.core.celery_app import app as celery_app
     from celery import Task
 
     @celery_app.task(bind=True, name="scrapers.spot_advisor.scrape")
