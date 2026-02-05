@@ -127,7 +127,8 @@ class AgentInjectorService:
             logger.info("Step 3: Generating Kubernetes token...")
             k8s_token = self._get_eks_token(
                 cluster_name=cluster_name,
-                credentials=assumed_credentials
+                credentials=assumed_credentials,
+                region=region
             )
             
             # Step 4: Deploy agent manifests
@@ -251,7 +252,7 @@ class AgentInjectorService:
         
         logger.info(f"Created access entry for {self.backend_role_arn}")
 
-    def _get_eks_token(self, cluster_name: str, credentials: Dict) -> str:
+    def _get_eks_token(self, cluster_name: str, credentials: Dict, region: str) -> str:
         """
         Generate a Kubernetes authentication token for EKS.
         
@@ -261,7 +262,8 @@ class AgentInjectorService:
         session = boto3.Session(
             aws_access_key_id=credentials['access_key'],
             aws_secret_access_key=credentials['secret_key'],
-            aws_session_token=credentials['session_token']
+            aws_session_token=credentials['session_token'],
+            region_name=region
         )
         
         sts_client = session.client('sts', config=Config(signature_version='v4'))
@@ -270,7 +272,7 @@ class AgentInjectorService:
         service_id = sts_client.meta.service_model.service_id
         signer = RequestSigner(
             service_id,
-            session.region_name,
+            region,
             'sts',
             'v4',
             session.get_credentials(),
@@ -280,7 +282,7 @@ class AgentInjectorService:
         # Generate presigned URL
         params = {
             'method': 'GET',
-            'url': f'https://sts.{session.region_name}.amazonaws.com/?Action=GetCallerIdentity&Version=2011-06-15',
+            'url': f'https://sts.{region}.amazonaws.com/?Action=GetCallerIdentity&Version=2011-06-15',
             'body': {},
             'headers': {
                 'x-k8s-aws-id': cluster_name
@@ -290,7 +292,7 @@ class AgentInjectorService:
         
         url = signer.generate_presigned_url(
             params,
-            region_name=session.region_name,
+            region_name=region,
             expires_in=60,
             operation_name=''
         )
