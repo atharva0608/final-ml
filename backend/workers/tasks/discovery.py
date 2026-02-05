@@ -177,7 +177,7 @@ def scan_account(account: Account, db: Session, redis_client) -> Dict[str, int]:
         )
 
         # Scan EKS clusters
-        clusters_found = scan_eks_clusters(account, eks_client, db)
+        clusters_found = scan_eks_clusters(account, eks_client, db, credentials)
 
         # Scan EC2 instances
         instances_found = scan_ec2_instances(account, ec2_client, db)
@@ -197,7 +197,7 @@ def scan_account(account: Account, db: Session, redis_client) -> Dict[str, int]:
     }
 
 
-def scan_eks_clusters(account: Account, eks_client, db: Session) -> int:
+def scan_eks_clusters(account: Account, eks_client, db: Session, credentials: Dict[str, str]) -> int:
     """
     Scan EKS clusters in the account
 

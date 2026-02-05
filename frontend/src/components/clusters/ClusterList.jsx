@@ -66,8 +66,13 @@ const ClusterList = () => {
       calculateKPIs(fetchedClusters);
 
       // Check if any account is scanning
-      const scanning = accounts.some(a => a.status === 'SCANNING');
-      setIsDiscovering(scanning && fetchedClusters.length === 0);
+      // Check if any account is scanning
+      const scanning = accounts.some(a => (a.status || '').toUpperCase() === 'SCANNING');
+
+      // If scanning, we are discovering. 
+      // Also keep discovering state if we have no clusters but just finished (heuristic) 
+      // or simply rely on scanning status.
+      setIsDiscovering(scanning);
 
     } catch (error) {
       toast.error('Failed to load data');
