@@ -321,225 +321,229 @@ class AgentInjectorService:
         except ImportError:
             raise ImportError("kubernetes package is required. Install with: pip install kubernetes")
         
-        # Configure Kubernetes client
-        config = Configuration()
-        config.host = cluster_endpoint
-        config.api_key = {"authorization": f"Bearer {k8s_token}"}
-        config.ssl_ca_cert = self._decode_ca_cert(cluster_ca_data)
-        config.verify_ssl = True
-        
-        api_client = ApiClient(configuration=config)
-        
-        # Create namespace
-        core_v1 = k8s_client.CoreV1Api(api_client)
-        try:
-            core_v1.create_namespace(
-                body=k8s_client.V1Namespace(
-                    metadata=k8s_client.V1ObjectMeta(name=self.NAMESPACE)
-                )
-            )
-        except k8s_client.exceptions.ApiException as e:
-            if e.status != 409:  # 409 = already exists
-                raise
-        
-        # Create secret
-        try:
-            core_v1.create_namespaced_secret(
-                namespace=self.NAMESPACE,
-                body=k8s_client.V1Secret(
-                    metadata=k8s_client.V1ObjectMeta(name="spot-agent-secret"),
-                    string_data={"API_KEY": api_key}
-                )
-            )
-        except k8s_client.exceptions.ApiException as e:
-            if e.status != 409:
-                raise
-        
-        # Create configmap
-        ws_url = self.backend_url.replace('https://', 'wss://').replace('http://', 'ws://')
-        backend_ws_url = f"{ws_url}/ws/cluster/{cluster_id}"
+        # Create temp file for CA cert
+        import tempfile
+        ca_cert_path = None
         
         try:
-            core_v1.create_namespaced_config_map(
-                namespace=self.NAMESPACE,
-                body=k8s_client.V1ConfigMap(
-                    metadata=k8s_client.V1ObjectMeta(name="spot-agent-config"),
-                    data={
-                        "BACKEND_URL": backend_ws_url,
-                        "CLUSTER_ID": cluster_id
-                    }
+            with tempfile.NamedTemporaryFile(delete=False) as ca_cert_file:
+                ca_cert_file.write(base64.b64decode(cluster_ca_data))
+                ca_cert_file.flush()
+                ca_cert_path = ca_cert_file.name
+
+            # Configure Kubernetes client
+            config = Configuration()
+            config.host = cluster_endpoint
+            config.api_key = {"authorization": f"Bearer {k8s_token}"}
+            config.ssl_ca_cert = ca_cert_path
+            config.verify_ssl = True
+            
+            api_client = ApiClient(configuration=config)
+        
+            # Create namespace
+            core_v1 = k8s_client.CoreV1Api(api_client)
+            try:
+                core_v1.create_namespace(
+                    body=k8s_client.V1Namespace(
+                        metadata=k8s_client.V1ObjectMeta(name=self.NAMESPACE)
+                    )
                 )
-            )
-        except k8s_client.exceptions.ApiException as e:
-            if e.status != 409:
-                raise
-        
-        # Create ServiceAccount
-        try:
-            core_v1.create_namespaced_service_account(
-                namespace=self.NAMESPACE,
-                body=k8s_client.V1ServiceAccount(
-                    metadata=k8s_client.V1ObjectMeta(name="spot-agent-sa")
+            except k8s_client.exceptions.ApiException as e:
+                if e.status != 409:  # 409 = already exists
+                    raise
+            
+            # Create secret
+            try:
+                core_v1.create_namespaced_secret(
+                    namespace=self.NAMESPACE,
+                    body=k8s_client.V1Secret(
+                        metadata=k8s_client.V1ObjectMeta(name="spot-agent-secret"),
+                        string_data={"API_KEY": api_key}
+                    )
                 )
-            )
-        except k8s_client.exceptions.ApiException as e:
-            if e.status != 409:
-                raise
-        
-        # Create ClusterRole and ClusterRoleBinding
-        rbac_v1 = k8s_client.RbacAuthorizationV1Api(api_client)
-        
-        cluster_role = k8s_client.V1ClusterRole(
-            metadata=k8s_client.V1ObjectMeta(name="spot-agent-role"),
-            rules=[
-                k8s_client.V1PolicyRule(
-                    api_groups=["", "apps", "batch", "extensions"],
-                    resources=["nodes", "pods", "deployments", "replicasets", "daemonsets", "statefulsets", "jobs"],
-                    verbs=["get", "list", "watch"]
-                ),
-                k8s_client.V1PolicyRule(
-                    api_groups=[""],
-                    resources=["pods/eviction"],
-                    verbs=["create"]
+            except k8s_client.exceptions.ApiException as e:
+                if e.status != 409:
+                    raise
+            
+            # Create configmap
+            ws_url = self.backend_url.replace('https://', 'wss://').replace('http://', 'ws://')
+            backend_ws_url = f"{ws_url}/ws/cluster/{cluster_id}"
+            
+            try:
+                core_v1.create_namespaced_config_map(
+                    namespace=self.NAMESPACE,
+                    body=k8s_client.V1ConfigMap(
+                        metadata=k8s_client.V1ObjectMeta(name="spot-agent-config"),
+                        data={
+                            "BACKEND_URL": backend_ws_url,
+                            "CLUSTER_ID": cluster_id
+                        }
+                    )
                 )
-            ]
-        )
-        
-        try:
-            rbac_v1.create_cluster_role(body=cluster_role)
-        except k8s_client.exceptions.ApiException as e:
-            if e.status != 409:
-                raise
-        
-        cluster_role_binding = k8s_client.V1ClusterRoleBinding(
-            metadata=k8s_client.V1ObjectMeta(name="spot-agent-binding"),
-            subjects=[
-                k8s_client.V1Subject(
-                    kind="ServiceAccount",
-                    name="spot-agent-sa",
-                    namespace=self.NAMESPACE
+            except k8s_client.exceptions.ApiException as e:
+                if e.status != 409:
+                    raise
+            
+            # Create ServiceAccount
+            try:
+                core_v1.create_namespaced_service_account(
+                    namespace=self.NAMESPACE,
+                    body=k8s_client.V1ServiceAccount(
+                        metadata=k8s_client.V1ObjectMeta(name="spot-agent-sa")
+                    )
                 )
-            ],
-            role_ref=k8s_client.V1RoleRef(
-                kind="ClusterRole",
-                name="spot-agent-role",
-                api_group="rbac.authorization.k8s.io"
-            )
-        )
-        
-        try:
-            rbac_v1.create_cluster_role_binding(body=cluster_role_binding)
-        except k8s_client.exceptions.ApiException as e:
-            if e.status != 409:
-                raise
-        
-        # Create DaemonSet (Changed from Deployment)
-        apps_v1 = k8s_client.AppsV1Api(api_client)
-        
-        daemonset = k8s_client.V1DaemonSet(
-            metadata=k8s_client.V1ObjectMeta(
-                name="spot-agent",
-                namespace=self.NAMESPACE
-            ),
-            spec=k8s_client.V1DaemonSetSpec(
-                selector=k8s_client.V1LabelSelector(
-                    match_labels={"app": "spot-agent"}
-                ),
-                template=k8s_client.V1PodTemplateSpec(
-                    metadata=k8s_client.V1ObjectMeta(
-                        labels={"app": "spot-agent"}
+            except k8s_client.exceptions.ApiException as e:
+                if e.status != 409:
+                    raise
+            
+            # Create ClusterRole and ClusterRoleBinding
+            rbac_v1 = k8s_client.RbacAuthorizationV1Api(api_client)
+            
+            cluster_role = k8s_client.V1ClusterRole(
+                metadata=k8s_client.V1ObjectMeta(name="spot-agent-role"),
+                rules=[
+                    k8s_client.V1PolicyRule(
+                        api_groups=["", "apps", "batch", "extensions"],
+                        resources=["nodes", "pods", "deployments", "replicasets", "daemonsets", "statefulsets", "jobs"],
+                        verbs=["get", "list", "watch"]
                     ),
-                    spec=k8s_client.V1PodSpec(
-                        service_account_name="spot-agent-sa",
-                        host_network=True,  # DaemonSet often needs host network for metrics
-                        tolerations=[
-                            k8s_client.V1Toleration(
-                                operator="Exists"  # Run on all nodes (including tainted ones)
-                            )
-                        ],
-                        containers=[
-                            k8s_client.V1Container(
-                                name="agent",
-                                image=self.AGENT_IMAGE,
-                                image_pull_policy="Always",
-                                env=[
-                                    k8s_client.V1EnvVar(
-                                        name="API_KEY",
-                                        value_from=k8s_client.V1EnvVarSource(
-                                            secret_key_ref=k8s_client.V1SecretKeySelector(
-                                                name="spot-agent-secret",
-                                                key="API_KEY"
-                                            )
-                                        )
-                                    ),
-                                    k8s_client.V1EnvVar(
-                                        name="BACKEND_URL",
-                                        value_from=k8s_client.V1EnvVarSource(
-                                            config_map_key_ref=k8s_client.V1ConfigMapKeySelector(
-                                                name="spot-agent-config",
-                                                key="BACKEND_URL"
-                                            )
-                                        )
-                                    ),
-                                    k8s_client.V1EnvVar(
-                                        name="CLUSTER_ID",
-                                        value_from=k8s_client.V1EnvVarSource(
-                                            config_map_key_ref=k8s_client.V1ConfigMapKeySelector(
-                                                name="spot-agent-config",
-                                                key="CLUSTER_ID"
-                                            )
-                                        )
-                                    ),
-                                    k8s_client.V1EnvVar(
-                                        name="NODE_NAME",
-                                        value_from=k8s_client.V1EnvVarSource(
-                                            field_ref=k8s_client.V1ObjectFieldSelector(
-                                                field_path="spec.nodeName"
-                                            )
-                                        )
-                                    )
-                                ],
-                                resources=k8s_client.V1ResourceRequirements(
-                                    requests={"cpu": "50m", "memory": "64Mi"},
-                                    limits={"cpu": "200m", "memory": "256Mi"}
+                    k8s_client.V1PolicyRule(
+                        api_groups=[""],
+                        resources=["pods/eviction"],
+                        verbs=["create"]
+                    )
+                ]
+            )
+            
+            try:
+                rbac_v1.create_cluster_role(body=cluster_role)
+            except k8s_client.exceptions.ApiException as e:
+                if e.status != 409:
+                    raise
+            
+            cluster_role_binding = k8s_client.V1ClusterRoleBinding(
+                metadata=k8s_client.V1ObjectMeta(name="spot-agent-binding"),
+                subjects=[
+                    k8s_client.V1Subject(
+                        kind="ServiceAccount",
+                        name="spot-agent-sa",
+                        namespace=self.NAMESPACE
+                    )
+                ],
+                role_ref=k8s_client.V1RoleRef(
+                    kind="ClusterRole",
+                    name="spot-agent-role",
+                    api_group="rbac.authorization.k8s.io"
+                    )
+            )
+            
+            try:
+                rbac_v1.create_cluster_role_binding(body=cluster_role_binding)
+            except k8s_client.exceptions.ApiException as e:
+                if e.status != 409:
+                    raise
+            
+            # Create DaemonSet (Changed from Deployment)
+            apps_v1 = k8s_client.AppsV1Api(api_client)
+            
+            daemonset = k8s_client.V1DaemonSet(
+                metadata=k8s_client.V1ObjectMeta(
+                    name="spot-agent",
+                    namespace=self.NAMESPACE
+                ),
+                spec=k8s_client.V1DaemonSetSpec(
+                    selector=k8s_client.V1LabelSelector(
+                        match_labels={"app": "spot-agent"}
+                    ),
+                    template=k8s_client.V1PodTemplateSpec(
+                        metadata=k8s_client.V1ObjectMeta(
+                            labels={"app": "spot-agent"}
+                        ),
+                        spec=k8s_client.V1PodSpec(
+                            service_account_name="spot-agent-sa",
+                            host_network=True,  # DaemonSet often needs host network for metrics
+                            tolerations=[
+                                k8s_client.V1Toleration(
+                                    operator="Exists"  # Run on all nodes (including tainted ones)
                                 )
-                            )
-                        ]
+                            ],
+                            containers=[
+                                k8s_client.V1Container(
+                                    name="agent",
+                                    image=self.AGENT_IMAGE,
+                                    image_pull_policy="Always",
+                                    env=[
+                                        k8s_client.V1EnvVar(
+                                            name="API_KEY",
+                                            value_from=k8s_client.V1EnvVarSource(
+                                                secret_key_ref=k8s_client.V1SecretKeySelector(
+                                                    name="spot-agent-secret",
+                                                    key="API_KEY"
+                                                )
+                                            )
+                                        ),
+                                        k8s_client.V1EnvVar(
+                                            name="BACKEND_URL",
+                                            value_from=k8s_client.V1EnvVarSource(
+                                                config_map_key_ref=k8s_client.V1ConfigMapKeySelector(
+                                                    name="spot-agent-config",
+                                                    key="BACKEND_URL"
+                                                )
+                                            )
+                                        ),
+                                        k8s_client.V1EnvVar(
+                                            name="CLUSTER_ID",
+                                            value_from=k8s_client.V1EnvVarSource(
+                                                config_map_key_ref=k8s_client.V1ConfigMapKeySelector(
+                                                    name="spot-agent-config",
+                                                    key="CLUSTER_ID"
+                                                )
+                                            )
+                                        ),
+                                        k8s_client.V1EnvVar(
+                                            name="NODE_NAME",
+                                            value_from=k8s_client.V1EnvVarSource(
+                                                field_ref=k8s_client.V1ObjectFieldSelector(
+                                                    field_path="spec.nodeName"
+                                                )
+                                            )
+                                        )
+                                    ],
+                                    resources=k8s_client.V1ResourceRequirements(
+                                        requests={"cpu": "50m", "memory": "64Mi"},
+                                        limits={"cpu": "200m", "memory": "256Mi"}
+                                    )
+                                )
+                            ]
+                        )
                     )
                 )
             )
-        )
-        
-        try:
-            apps_v1.create_namespaced_daemon_set(
-                namespace=self.NAMESPACE,
-                body=daemonset
-            )
-        except k8s_client.exceptions.ApiException as e:
-            if e.status == 409:
-                # Update existing daemonset
-                apps_v1.replace_namespaced_daemon_set(
-                    name="spot-agent",
+            
+            try:
+                apps_v1.create_namespaced_daemon_set(
                     namespace=self.NAMESPACE,
                     body=daemonset
                 )
-            else:
-                raise
-        
-        logger.info("Agent deployment created successfully")
+            except k8s_client.exceptions.ApiException as e:
+                if e.status == 409:
+                    # Update existing daemonset
+                    apps_v1.replace_namespaced_daemon_set(
+                        name="spot-agent",
+                        namespace=self.NAMESPACE,
+                        body=daemonset
+                    )
+                else:
+                    raise
+            
+            logger.info("Agent deployment created successfully")
 
-    def _decode_ca_cert(self, ca_data: str) -> str:
-        """
-        Decode base64 CA certificate and write to temp file.
-        Returns path to temp file.
-        """
-        import tempfile
-        
-        ca_bytes = base64.b64decode(ca_data)
-        
-        # Write to temp file
-        fd, path = tempfile.mkstemp(suffix='.crt')
-        with os.fdopen(fd, 'wb') as f:
-            f.write(ca_bytes)
-        
-        return path
+        finally:
+            # Cleanup temp certificate file
+            if ca_cert_path and os.path.exists(ca_cert_path):
+                try:
+                    os.remove(ca_cert_path)
+                except OSError:
+                    pass
+
+
