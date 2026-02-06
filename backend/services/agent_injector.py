@@ -479,7 +479,7 @@ class AgentInjectorService:
             cluster_role_binding = k8s_client.V1ClusterRoleBinding(
                 metadata=k8s_client.V1ObjectMeta(name="spot-agent-binding"),
                 subjects=[
-                    k8s_client.V1Subject(
+                    k8s_client.RbacV1Subject(
                         kind="ServiceAccount",
                         name="spot-agent-sa",
                         namespace=self.NAMESPACE
