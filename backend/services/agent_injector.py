@@ -447,25 +447,23 @@ class AgentInjectorService:
             cluster_role = k8s_client.V1ClusterRole(
                 metadata=k8s_client.V1ObjectMeta(name="spot-agent-role"),
                 rules=[
-                    k8s_client.V1PolicyRule(
-                        api_groups=["", "apps", "batch", "extensions"],
-                        resources=["nodes", "pods", "deployments", "replicasets", "daemonsets", "statefulsets", "jobs"],
-                        verbs=["get", "list", "watch", "patch", "update"]
-                    ),
+                    # Core Resources (Nodes, Pods)
                     k8s_client.V1PolicyRule(
                         api_groups=[""],
-                        resources=["pods/eviction"],
-                        verbs=["create"]
+                        resources=["nodes", "pods", "pods/eviction"],
+                        verbs=["get", "list", "watch", "patch", "create", "delete", "update"]
                     ),
+                    # Workload Controllers (DaemonSets, Deployments)
+                    k8s_client.V1PolicyRule(
+                        api_groups=["apps", "extensions"],
+                        resources=["daemonsets", "deployments", "replicasets", "statefulsets"],
+                        verbs=["get", "list", "watch", "patch"]
+                    ),
+                    # Policy (PDBs)
                     k8s_client.V1PolicyRule(
                         api_groups=["policy"],
                         resources=["poddisruptionbudgets"],
                         verbs=["get", "list", "watch"]
-                    ),
-                    k8s_client.V1PolicyRule(
-                        api_groups=[""],
-                        resources=["nodes"],
-                        verbs=["patch", "update"]  # For cordoning nodes
                     )
                 ]
             )
