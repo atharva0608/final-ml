@@ -317,6 +317,79 @@ const ClusterList = () => {
         <ResourceKPI label="GIB" total={kpiData.memTotal} unit="GiB" color="#6366f1" />
       </div>
 
+      {/* Discovery Animation Banner */}
+      {isDiscovering && (
+        <div className="mb-6 bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 rounded-xl p-6 shadow-lg relative overflow-hidden">
+          {/* Animated background elements */}
+          <div className="absolute inset-0 overflow-hidden">
+            {/* Radar sweep animation */}
+            <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-64 h-64">
+              <div className="absolute inset-0 border-2 border-white/20 rounded-full animate-ping" style={{ animationDuration: '2s' }}></div>
+              <div className="absolute inset-4 border-2 border-white/15 rounded-full animate-ping" style={{ animationDuration: '2.5s', animationDelay: '0.5s' }}></div>
+              <div className="absolute inset-8 border-2 border-white/10 rounded-full animate-ping" style={{ animationDuration: '3s', animationDelay: '1s' }}></div>
+            </div>
+            {/* Floating particles */}
+            <div className="absolute w-2 h-2 bg-white/30 rounded-full animate-pulse top-4 left-[20%]" style={{ animationDuration: '1.5s' }}></div>
+            <div className="absolute w-1.5 h-1.5 bg-white/20 rounded-full animate-pulse top-8 right-[30%]" style={{ animationDuration: '2s', animationDelay: '0.3s' }}></div>
+            <div className="absolute w-2.5 h-2.5 bg-white/25 rounded-full animate-pulse bottom-6 left-[40%]" style={{ animationDuration: '1.8s', animationDelay: '0.6s' }}></div>
+            <div className="absolute w-1 h-1 bg-white/20 rounded-full animate-pulse bottom-4 right-[15%]" style={{ animationDuration: '2.2s', animationDelay: '0.9s' }}></div>
+          </div>
+
+          {/* Content */}
+          <div className="relative z-10 flex items-center gap-6">
+            {/* Animated Icon */}
+            <div className="relative">
+              <div className="w-16 h-16 bg-white/10 backdrop-blur-sm rounded-xl flex items-center justify-center">
+                <FiActivity className="w-8 h-8 text-white animate-pulse" />
+              </div>
+              <div className="absolute -top-1 -right-1 w-4 h-4 bg-green-400 rounded-full animate-ping"></div>
+              <div className="absolute -top-1 -right-1 w-4 h-4 bg-green-400 rounded-full"></div>
+            </div>
+
+            {/* Text Content */}
+            <div className="flex-1">
+              <h3 className="text-xl font-bold text-white flex items-center gap-3">
+                <span className="inline-block animate-pulse">🔍</span>
+                Discovering Your Cloud Infrastructure
+              </h3>
+              <p className="text-white/80 mt-1 text-sm">
+                Scanning AWS regions • Analyzing EKS clusters • Calculating potential savings
+              </p>
+
+              {/* Progress Steps */}
+              <div className="flex items-center gap-4 mt-3">
+                <div className="flex items-center gap-2 text-xs text-white/70">
+                  <div className="w-5 h-5 bg-green-500/80 rounded-full flex items-center justify-center">
+                    <span className="text-white text-[10px]">✓</span>
+                  </div>
+                  <span>Authenticating</span>
+                </div>
+                <div className="flex items-center gap-2 text-xs text-white">
+                  <div className="w-5 h-5 bg-white/20 rounded-full flex items-center justify-center animate-spin">
+                    <FiRefreshCw className="w-3 h-3 text-white" />
+                  </div>
+                  <span>Scanning Clusters</span>
+                </div>
+                <div className="flex items-center gap-2 text-xs text-white/50">
+                  <div className="w-5 h-5 bg-white/10 rounded-full flex items-center justify-center">
+                    <span className="text-white/50 text-[10px]">3</span>
+                  </div>
+                  <span>Analyzing Costs</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Animated Counter */}
+            <div className="text-right">
+              <div className="text-3xl font-bold text-white tabular-nums">
+                <span className="animate-pulse">...</span>
+              </div>
+              <p className="text-white/70 text-xs mt-1">clusters found</p>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Filters / Search Bar */}
       <div className="flex justify-between items-center mb-4 bg-white p-2 rounded-lg border border-gray-200 shadow-sm">
         <div className="flex items-center flex-1 px-2">
