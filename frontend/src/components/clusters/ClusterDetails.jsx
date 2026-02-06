@@ -31,26 +31,26 @@ const ClusterDetails = ({ clusterId, onClose }) => {
     try {
       // Fetch cluster data, metrics, policy, and schedule in parallel
       const [clusterRes, metricsRes, policyRes, scheduleRes] = await Promise.allSettled([
-        clusterAPI.get(clusterId),
-        metricsAPI.getCluster(clusterId),
-        policyAPI.getByCluster(clusterId),
-        hibernationAPI.getByCluster(clusterId),
+        clusterAPI.getCluster(clusterId),
+        metricsAPI.getClusterMetrics(clusterId),
+        policyAPI.getPolicy(clusterId),
+        hibernationAPI.getSchedule(clusterId),
       ]);
 
       if (clusterRes.status === 'fulfilled') {
-        setCluster(clusterRes.value.data.cluster);
+        setCluster(clusterRes.value.data);
       }
 
       if (metricsRes.status === 'fulfilled') {
-        setMetrics(metricsRes.value.data.metrics);
+        setMetrics(metricsRes.value.data);
       }
 
       if (policyRes.status === 'fulfilled') {
-        setPolicy(policyRes.value.data.policy);
+        setPolicy(policyRes.value.data);
       }
 
       if (scheduleRes.status === 'fulfilled') {
-        setSchedule(scheduleRes.value.data.schedule);
+        setSchedule(scheduleRes.value.data);
       }
     } catch (error) {
       toast.error('Failed to load cluster details');
