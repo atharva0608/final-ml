@@ -107,7 +107,7 @@ def get_cluster(
     except ResourceNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
-@router.put("/{cluster_id}", response_model=ClusterResponse)
+@router.patch("/{cluster_id}", response_model=ClusterResponse)
 def update_cluster(
     cluster_id: str,
     update_data: ClusterUpdate,
