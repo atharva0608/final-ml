@@ -384,10 +384,25 @@ class ClusterService:
         Returns:
             ClusterList with paginated results
         """
+        import redis
+        import json
+        
         user = self.db.query(User).filter(User.id == user_id).first()
         if not user or not user.organization_id:
              # Return empty if no org
              return ClusterList(clusters=[], total=0, page=filters.page, page_size=filters.page_size)
+
+        # Try Redis cache for fast UX (30 second TTL)
+        cache_key = f"clusters:{user.organization_id}:{filters.page}:{filters.page_size}:{filters.status}:{filters.search or ''}"
+        try:
+            redis_url = os.getenv("REDIS_URL", "redis://redis:6379/0")
+            r = redis.from_url(redis_url)
+            cached = r.get(cache_key)
+            if cached:
+                cached_data = json.loads(cached)
+                return ClusterList(**cached_data)
+        except Exception as e:
+            logger.debug(f"Redis cache miss or error: {e}")
 
         query = self.db.query(Cluster).join(Account).filter(
             Account.organization_id == user.organization_id,
@@ -432,15 +447,30 @@ class ClusterService:
                 spot_count=cluster.spot_count or 0,
                 monthly_cost=float(cluster.monthly_cost or 0),
                 agent_installed=cluster.agent_installed == 'Y',
-                last_heartbeat=cluster.last_heartbeat
+                last_heartbeat=cluster.last_heartbeat,
+                # Include savings fields for frontend
+                estimated_savings=float(cluster.estimated_savings or 0),
+                potential_savings_monthly=float(cluster.potential_savings_monthly or 0),
+                cpu_total=cluster.cpu_total or 0,
+                mem_total=cluster.mem_total or 0,
+                on_demand_node_count=cluster.on_demand_node_count or 0
             ))
 
-        return ClusterList(
+        result = ClusterList(
             clusters=cluster_list_items,
             total=total,
             page=filters.page,
             page_size=filters.page_size
         )
+        
+        # Cache result in Redis for 30 seconds
+        try:
+            r = redis.from_url(os.getenv("REDIS_URL", "redis://redis:6379/0"))
+            r.setex(cache_key, 30, result.model_dump_json())
+        except Exception as e:
+            logger.debug(f"Failed to cache cluster list: {e}")
+        
+        return result
 
     def update_cluster(
         self,

@@ -3,13 +3,63 @@
  *
  * Layout with sidebar navigation and header
  */
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { Outlet, Link, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../../hooks/useAuth';
+import { clusterAPI } from '../../services/api';
 import { Button } from '../shared';
 import { FiHome, FiServer, FiFileText, FiSettings, FiTarget, FiClock, FiBarChart2, FiUsers, FiActivity, FiLogOut, FiClipboard, FiBriefcase, FiCheckSquare, FiShield, FiLock, FiTag } from 'react-icons/fi';
 
 import ActiveWindowBanner from '../tickets/ActiveWindowBanner';
+
+// Cluster Notification Badge Component
+const ClusterBadge = () => {
+  const [clusterStats, setClusterStats] = useState({ discovered: 0, errors: 0, potentialSavings: 0 });
+
+  useEffect(() => {
+    const fetchStats = async () => {
+      try {
+        const res = await clusterAPI.list({});
+        const clusters = res.data?.clusters || [];
+        const discovered = clusters.filter(c => c.status === 'DISCOVERED').length;
+        const errors = clusters.filter(c => c.status === 'ERROR').length;
+        const potentialSavings = clusters
+          .filter(c => c.status === 'DISCOVERED')
+          .reduce((sum, c) => sum + (c.potential_savings_monthly || c.estimated_savings || 0), 0);
+        setClusterStats({ discovered, errors, potentialSavings });
+      } catch (e) {
+        console.error('Failed to fetch cluster stats for badge', e);
+      }
+    };
+    fetchStats();
+    const interval = setInterval(fetchStats, 30000); // Refresh every 30s
+    return () => clearInterval(interval);
+  }, []);
+
+  if (clusterStats.errors > 0) {
+    return (
+      <span
+        className="ml-auto bg-red-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full min-w-[18px] text-center"
+        title={`${clusterStats.errors} clusters with errors`}
+      >
+        {clusterStats.errors}
+      </span>
+    );
+  }
+
+  if (clusterStats.discovered > 0) {
+    return (
+      <span
+        className="ml-auto bg-blue-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full min-w-[18px] text-center animate-pulse"
+        title={`${clusterStats.discovered} new clusters detected - Potential Savings: $${clusterStats.potentialSavings.toFixed(0)}/mo`}
+      >
+        {clusterStats.discovered}
+      </span>
+    );
+  }
+
+  return null;
+};
 
 const MainLayout = () => {
   const { user, logout } = useAuth();
@@ -68,17 +118,22 @@ const MainLayout = () => {
         <nav className="flex-1 px-4 py-4 space-y-1 overflow-y-auto h-[calc(100vh-8rem)]">
           {navItems.map((item) => {
             const Icon = item.icon;
+            // Add notification badge for Clusters
+            const showBadge = item.name === 'Clusters';
             return (
               <Link
                 key={item.path}
                 to={item.path}
-                className={`flex items-center px-4 py-3 text-sm font-medium rounded-lg transition-colors ${isActive(item.path)
+                className={`flex items-center px-4 py-3 text-sm font-medium rounded-lg transition-colors relative ${isActive(item.path)
                   ? 'bg-blue-50 text-blue-700'
                   : 'text-gray-700 hover:bg-gray-50'
                   }`}
               >
                 <Icon className="w-5 h-5 mr-3 flex-shrink-0" />
                 <span className="truncate">{item.name}</span>
+                {showBadge && (
+                  <ClusterBadge />
+                )}
               </Link>
             );
           })}

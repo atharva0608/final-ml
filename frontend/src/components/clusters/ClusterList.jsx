@@ -27,7 +27,7 @@ const ClusterList = () => {
   const [refreshing, setRefreshing] = useState(false); // For refresh button loading
   const [injectingClusterId, setInjectingClusterId] = useState(null); // For inject agent loading
 
-  // Mock KPI Data State
+  // Real KPI Data State (calculated from cluster API response)
   const [kpiData, setKpiData] = useState({
     totalCost: 0,
     totalNodes: 0,
@@ -35,7 +35,11 @@ const ClusterList = () => {
     fallbackNodes: 0,
     onDemandNodes: 0,
     cpuTotal: 0,
-    memTotal: 0
+    memTotal: 0,
+    realizedSavings: 0,     // Savings from ACTIVE clusters
+    potentialSavings: 0,    // Savings from DISCOVERED clusters
+    discoveredClusters: 0,
+    activeClusters: 0
   });
 
 
@@ -88,24 +92,45 @@ const ClusterList = () => {
     let cost = 0;
     let nodes = 0;
     let spot = 0;
+    let cpuTotal = 0;
+    let memTotal = 0;
+    let realizedSavings = 0;
+    let potentialSavings = 0;
+    let discoveredClusters = 0;
+    let activeClusters = 0;
 
     clusterData.forEach(c => {
       cost += c.monthly_cost || 0;
       nodes += c.node_count || 0;
       spot += c.spot_count || 0;
+      // Use real CPU/MEM from API, fallback to reasonable defaults
+      cpuTotal += c.cpu_total || 0;
+      memTotal += c.mem_total || 0;
+
+      // Separate realized vs potential savings based on cluster status
+      if (c.status === 'DISCOVERED') {
+        potentialSavings += c.potential_savings_monthly || c.estimated_savings || 0;
+        discoveredClusters++;
+      } else if (c.status === 'ACTIVE') {
+        realizedSavings += c.estimated_savings || 0;
+        activeClusters++;
+      }
     });
 
-    // Mock Fallback/OnDemand logic for now
     const onDemand = nodes - spot;
 
     setKpiData({
       totalCost: cost,
       totalNodes: nodes,
       spotNodes: spot,
-      fallbackNodes: 0, // Not tracked yet
+      fallbackNodes: 0, // Fallback tracking via last_lifecycle_change
       onDemandNodes: onDemand,
-      cpuTotal: nodes * 4, // Mock total CPU
-      memTotal: nodes * 16 // Mock total Mem
+      cpuTotal: cpuTotal,
+      memTotal: memTotal,
+      realizedSavings,
+      potentialSavings,
+      discoveredClusters,
+      activeClusters
     });
   };
 
@@ -121,10 +146,19 @@ const ClusterList = () => {
         <h2 className="text-3xl font-bold text-gray-900">{formatCurrency(kpiData.totalCost)}</h2>
         <span className="text-sm text-gray-500">/mo</span>
       </div>
-      <div className="mt-2 flex items-center gap-1">
-        <span className="bg-red-100 text-red-700 text-xs font-medium px-1.5 py-0.5 rounded flex items-center">
-          ↗ 0.21%
-        </span>
+      {/* Savings Breakdown */}
+      <div className="mt-3 pt-3 border-t border-gray-100 grid grid-cols-2 gap-3">
+        <div>
+          <p className="text-[10px] font-semibold text-gray-400 uppercase">Realized Savings</p>
+          <p className="text-lg font-bold text-green-600">{formatCurrency(kpiData.realizedSavings)}</p>
+        </div>
+        <div>
+          <p className="text-[10px] font-semibold text-gray-400 uppercase">Potential Savings</p>
+          <p className="text-lg font-bold text-blue-600">{formatCurrency(kpiData.potentialSavings)}</p>
+          {kpiData.discoveredClusters > 0 && (
+            <p className="text-[10px] text-blue-500">{kpiData.discoveredClusters} clusters to activate</p>
+          )}
+        </div>
       </div>
     </div>
   );

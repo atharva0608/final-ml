@@ -21,6 +21,9 @@ class ClusterListItem(BaseModel):
     # Teaser Fields
     potential_savings_monthly: float = Field(0.0, ge=0, description="Potential savings from Shallow Scan")
     on_demand_node_count: int = Field(0, ge=0, description="Count of On-Demand nodes")
+    estimated_savings: float = Field(0.0, ge=0, description="Realized savings from active optimization")
+    cpu_total: int = Field(0, ge=0, description="Total CPU cores across all nodes")
+    mem_total: int = Field(0, ge=0, description="Total memory in GiB across all nodes")
 
     model_config = {
         "json_schema_extra": {
