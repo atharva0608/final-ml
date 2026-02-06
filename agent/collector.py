@@ -277,6 +277,25 @@ class MetricsCollector:
                         ready = condition.status == 'True'
                         break
 
+                # Check node stability/warm-up (Metric Confidence)
+                creation_ts = node.metadata.creation_timestamp
+                is_warming_up = False
+                if creation_ts:
+                    # Parse timestamp if string, otherwise use as datetime
+                    if isinstance(creation_ts, str):
+                        # 2023-10-27T10:00:00Z format usually
+                        # Simplified for this context, usually client returns datetime
+                        pass 
+                    
+                    # Calculate age
+                    # creation_ts from K8s client is usually a datetime object with timezone
+                    now_tz = datetime.now(creation_ts.tzinfo)
+                    age_seconds = (now_tz - creation_ts).total_seconds()
+                    
+                    if age_seconds < 300: # 5 minutes
+                        is_warming_up = True
+                        logger.info(f"Node {node_name} is warming up (Age: {int(age_seconds)}s). Marking as CALIBRATING.")
+
                 node_metric = {
                     'cluster_id': self.cluster_id,
                     'node_name': node_name,
@@ -286,7 +305,8 @@ class MetricsCollector:
                     'ready': ready,
                     'unschedulable': node.spec.unschedulable or False,
                     'labels': node.metadata.labels or {},
-                    'timestamp': datetime.utcnow().isoformat()
+                    'timestamp': datetime.utcnow().isoformat(),
+                    'status': 'CALIBRATING' if is_warming_up else ('READY' if ready else 'NOT_READY')
                 }
 
                 node_metrics.append(node_metric)
@@ -329,9 +349,11 @@ class MetricsCollector:
         cpu_count = psutil.cpu_count()
         cpu_usage_millicores = (cpu_percent / 100.0) * cpu_count * 1000
 
-        # Memory Usage
+        # Memory Usage (True OS Memory Pressure)
+        # We use Total - Available because 'used' often excludes reclaimable cache.
+        # 'available' is what the OS says can be given to new processes.
         vm = psutil.virtual_memory()
-        memory_usage_bytes = vm.used
+        memory_usage_bytes = vm.total - vm.available
 
         return {
             'cluster_id': self.cluster_id,

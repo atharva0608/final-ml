@@ -112,12 +112,22 @@ class SpotOptimizationEngine:
                 total_score = (price_component * self.price_weight) + (risk_score * self.risk_weight)
 
                 # Recommendation
+                # Recommendation
                 if risk_score < 0.2:
                     recommendation = "SAFE"
                 elif risk_score < 0.5:
                     recommendation = "CAUTION"
                 else:
                     recommendation = "AVOID"
+
+                # Pricing Buffer & Safety (MOD-SPOT-06)
+                # Rule: Only migrate if savings > 20% compared to On-Demand
+                on_demand_price = self._get_on_demand_price(instance_type)
+                savings_pct = (on_demand_price - spot_price) / on_demand_price
+                
+                if savings_pct < 0.20:
+                    logger.info(f"[MOD-SPOT-06] Skipping {instance_type}: Savings {savings_pct:.1%} < 20% threshold")
+                    continue
 
                 scored_candidates.append({
                     "instance_type": instance_type,
@@ -126,7 +136,8 @@ class SpotOptimizationEngine:
                     "price": spot_price,
                     "risk_score": risk_score,
                     "total_score": total_score,
-                    "recommendation": recommendation
+                    "recommendation": recommendation,
+                    "savings_pct": savings_pct
                 })
 
         # Sort by total score (best first)
@@ -149,6 +160,55 @@ class SpotOptimizationEngine:
 
         logger.info(f"[MOD-SPOT-01] Selected {len(scored_candidates)} candidates")
         return scored_candidates
+
+    def handle_fallback_reversion(self, cluster_id: str) -> List[Dict[str, Any]]:
+        """
+        MOD-SPOT-04: Reversion Logic
+        Identify On-Demand nodes running as 'temporary-fallback' and try to move them back to Spot.
+        
+        Frequency: Hourly
+        """
+        logger.info(f"[MOD-SPOT-04] Checking fallback reversion opportunities for {cluster_id}")
+        
+        # 1. Find Fallback Nodes
+        # In a real implementation, check for 'spot-optimizer/fallback=true' tag
+        fallback_nodes = self.db.query(Instance).filter(
+            Instance.cluster_id == cluster_id,
+            Instance.lifecycle == 'ON_DEMAND',
+            Instance.state == 'running'
+            # Instance.tags.contains('fallback') # Placeholder
+        ).all()
+        
+        reversion_plans = []
+        
+        for node in fallback_nodes:
+            # Check if this is actually a fallback node (simplified since we don't have tags on model yet)
+            # In production: if not node.tags.get('spot-optimizer/fallback'): continue
+            
+            # 2. Check if Spot Market is healthy now
+            # Assume same requirements as node
+            candidates = self.select_best_instance(
+                pod_requirements={'cpu': 2, 'memory': 4}, # Placeholder: derive from node type
+                region='us-east-1', # Placeholder: derive from cluster
+                availability_zones=[node.az]
+            )
+            
+            # 3. If Safe Spot Option Found
+            spot_candidates = [c for c in candidates if c['lifecycle'] == 'SPOT' and c['recommendation'] == 'SAFE']
+            
+            if spot_candidates:
+                best_option = spot_candidates[0]
+                logger.info(f"[MOD-SPOT-04] Reversion Possible: Replace {node.instance_id} ({node.instance_type}) with {best_option['instance_type']} Spot")
+                
+                reversion_plans.append({
+                    "action": "REVERT_TO_SPOT",
+                    "target_node": node.instance_id,
+                    "replacement_type": best_option['instance_type'],
+                    "az": best_option['az'],
+                    "estimated_savings": 0.50 # Placeholder
+                })
+                
+        return reversion_plans
 
     def detect_opportunities(self, cluster_id: str) -> List[Dict[str, Any]]:
         """

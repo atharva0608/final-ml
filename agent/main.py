@@ -25,7 +25,10 @@ import requests
 from collector import MetricsCollector
 from actuator import ActionActuator
 from heartbeat import HeartbeatSender
+from actuator import ActionActuator
+from heartbeat import HeartbeatSender
 from websocket_client import WebSocketClient
+from poller import SpotPoller
 
 logging.basicConfig(
     level=logging.INFO,
@@ -67,13 +70,19 @@ class Agent:
         self.collector = None
         self.actuator = None
         self.heartbeat = None
+        self.actuator = None
+        self.heartbeat = None
         self.websocket_client = None
+        self.spot_poller = None
 
         # Threads
         self.collector_thread = None
         self.actuator_thread = None
         self.heartbeat_thread = None
+        self.actuator_thread = None
+        self.heartbeat_thread = None
         self.websocket_thread = None
+        self.spot_poller_thread = None
 
         # State
         self.running = False
@@ -215,7 +224,20 @@ class Agent:
             cluster_id=self.cluster_id,
             agent_id=self.agent_id
         )
+        self.websocket_client = WebSocketClient(
+            backend_ws_url=self.backend_ws_url,
+            api_key=self.api_key,
+            cluster_id=self.cluster_id,
+            agent_id=self.agent_id
+        )
         logger.info("WebSocket client initialized")
+
+        # Initialize Spot Poller (Runtime Safety)
+        self.spot_poller = SpotPoller(
+            actuator=self.actuator,
+            interval=5
+        )
+        logger.info("Spot Termination Poller initialized")
 
         logger.info("All components initialized successfully")
 
@@ -267,7 +289,17 @@ class Agent:
             daemon=True
         )
         self.websocket_thread.start()
+        self.websocket_thread.start()
         logger.info("WebSocket client started")
+
+        # Start Spot Poller
+        self.spot_poller_thread = threading.Thread(
+            target=self.spot_poller.run,
+            name="SpotPoller",
+            daemon=True
+        )
+        self.spot_poller_thread.start()
+        logger.info("Spot Termination Poller started")
 
         # Update health status
         if self.heartbeat:
@@ -323,6 +355,11 @@ class Agent:
                 logger.error(f"Error stopping WebSocket client: {e}")
             logger.info("WebSocket client stopped")
 
+        # Stop Spot Poller
+        if self.spot_poller:
+            self.spot_poller.stop()
+            logger.info("Spot Termination Poller stopped")
+
         # Stop heartbeat sender (last, so we can report shutdown)
         if self.heartbeat:
             self.heartbeat.stop()
@@ -331,7 +368,8 @@ class Agent:
         # Wait for threads to finish
         timeout = 10
         for thread in [self.collector_thread, self.actuator_thread,
-                      self.websocket_thread, self.heartbeat_thread]:
+                      self.websocket_thread, self.heartbeat_thread,
+                      self.spot_poller_thread]:
             if thread and thread.is_alive():
                 thread.join(timeout=timeout)
 
@@ -395,6 +433,16 @@ class Agent:
                     daemon=True
                 )
                 self.websocket_thread.start()
+
+            # Check Spot Poller thread
+            if self.spot_poller_thread and not self.spot_poller_thread.is_alive():
+                logger.error("Spot Poller thread died, restarting...")
+                self.spot_poller_thread = threading.Thread(
+                    target=self.spot_poller.run,
+                    name="SpotPoller",
+                    daemon=True
+                )
+                self.spot_poller_thread.start()
 
             # Sleep before next check
             time.sleep(30)

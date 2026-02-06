@@ -399,24 +399,43 @@ const ClusterList = () => {
                   </td>
                   <td className="py-4 px-6">
                     {/* CPU Usage Bar */}
-                    <div className="flex flex-col gap-1">
-                      <span className="text-sm font-medium text-gray-900">{cluster.cpu_total || '-'} CPU</span>
-                      <div className="h-1.5 w-24 bg-gray-200 rounded-full overflow-hidden">
-                        <div className="bg-blue-500 h-full w-1/3"></div> {/* Mock 33% */}
+                    {cluster.status === 'DISCOVERED' ? (
+                      <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-800">
+                        Agent Required
+                      </span>
+                    ) : (
+                      <div className="flex flex-col gap-1">
+                        <span className="text-sm font-medium text-gray-900">{cluster.cpu_total || '-'} CPU</span>
+                        <div className="h-1.5 w-24 bg-gray-200 rounded-full overflow-hidden">
+                          <div className="bg-blue-500 h-full w-1/3"></div> {/* Mock 33% */}
+                        </div>
                       </div>
-                    </div>
+                    )}
                   </td>
                   <td className="py-4 px-6">
                     {/* MEM Usage Bar */}
-                    <div className="flex flex-col gap-1">
-                      <span className="text-sm font-medium text-gray-900">{cluster.mem_total || '-'} GiB</span>
-                      <div className="h-1.5 w-24 bg-gray-200 rounded-full overflow-hidden">
-                        <div className="bg-indigo-500 h-full w-1/2"></div> {/* Mock 50% */}
+                    {cluster.status === 'DISCOVERED' ? (
+                      <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-800">
+                        Agent Required
+                      </span>
+                    ) : (
+                      <div className="flex flex-col gap-1">
+                        <span className="text-sm font-medium text-gray-900">{cluster.mem_total || '-'} GiB</span>
+                        <div className="h-1.5 w-24 bg-gray-200 rounded-full overflow-hidden">
+                          <div className="bg-indigo-500 h-full w-1/2"></div> {/* Mock 50% */}
+                        </div>
                       </div>
-                    </div>
+                    )}
                   </td>
                   <td className="py-4 px-6">
-                    <span className="text-sm font-bold text-green-600">{formatCurrency(cluster.estimated_savings || 0)}</span>
+                    <div className="flex flex-col">
+                      <span className="text-sm font-bold text-green-600">
+                        {formatCurrency(cluster.potential_savings_monthly || cluster.estimated_savings || 0)}
+                      </span>
+                      {cluster.status === 'DISCOVERED' && (cluster.potential_savings_monthly > 0) && (
+                        <span className="text-[10px] text-gray-500">potential savings</span>
+                      )}
+                    </div>
                   </td>
                   <td className="py-4 px-6">
                     <span className="text-sm font-medium text-gray-900">{formatCurrency(cluster.monthly_cost)} /mo</span>
@@ -451,7 +470,7 @@ const ClusterList = () => {
                             }}
                           >
                             <FiDownloadCloud className="w-3.5 h-3.5" />
-                            Inject Agent
+                            Activate Optimization
                           </button>
                         );
                       }

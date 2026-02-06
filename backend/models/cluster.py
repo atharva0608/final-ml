@@ -1,5 +1,5 @@
 
-from sqlalchemy import Column, String, DateTime, ForeignKey, Enum, Text, Boolean, Integer, JSON
+from sqlalchemy import Column, String, DateTime, ForeignKey, Enum, Text, Boolean, Integer, JSON, Float
 from sqlalchemy.orm import relationship
 from datetime import datetime
 import enum
@@ -51,6 +51,13 @@ class Cluster(Base):
     estimated_savings = Column(Integer, default=0)
     last_cost_update = Column(DateTime, nullable=True)
     
+    # "Teaser" / Shallow Scan Data (Phase 2 Enterprise)
+    potential_savings_monthly = Column(Float, default=0.0)
+    on_demand_node_count = Column(Integer, default=0)
+    # spot_node_count (reuse spot_count below)
+    last_assessed = Column(DateTime, nullable=True)
+    inventory_summary = Column(JSON, default={}) # {"total": 20, "on_demand": 10, "spot": 10}
+
     # Node metrics (updated by discovery/agent)
     node_count = Column(Integer, default=0)
     spot_count = Column(Integer, default=0)

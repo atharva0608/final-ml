@@ -17,6 +17,10 @@ class ClusterListItem(BaseModel):
     monthly_cost: float = Field(..., ge=0, description="Estimated monthly cost in USD")
     agent_installed: bool = Field(..., description="Whether Kubernetes Agent is installed")
     last_heartbeat: Optional[datetime] = Field(None, description="Last agent heartbeat timestamp")
+    
+    # Teaser Fields
+    potential_savings_monthly: float = Field(0.0, ge=0, description="Potential savings from Shallow Scan")
+    on_demand_node_count: int = Field(0, ge=0, description="Count of On-Demand nodes")
 
     model_config = {
         "json_schema_extra": {
@@ -297,6 +301,11 @@ class ClusterResponse(BaseModel):
     tags: Optional[Dict[str, str]] = Field(default_factory=dict, description="Resource tags")
     created_at: datetime = Field(..., description="Creation timestamp")
     updated_at: datetime = Field(..., description="Last update timestamp")
+
+    # Teaser Fields
+    potential_savings_monthly: float = Field(0.0, description="Potential savings")
+    on_demand_node_count: int = Field(0, description="OD Node Count")
+    inventory_summary: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Inventory breakdown")
 
 
 class AgentInstallCommand(BaseModel):

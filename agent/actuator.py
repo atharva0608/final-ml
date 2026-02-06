@@ -68,7 +68,9 @@ class ActionActuator:
                 raise
 
         self.core_v1 = client.CoreV1Api()
+        self.core_v1 = client.CoreV1Api()
         self.apps_v1 = client.AppsV1Api()
+        self.policy_v1 = client.PolicyV1Api()
 
         logger.info(f"ActionActuator initialized for cluster: {cluster_id}")
 
@@ -97,6 +99,33 @@ class ActionActuator:
             logger.error(f"Error verifying signature: {e}")
             return False
 
+    def check_pdb_violation(self, namespace: str, pod_name: str) -> bool:
+        """
+        Check if evicting this pod would violate any PodDisruptionBudget.
+        Returns True if violation would occur (SAFE TO EVICT = FALSE).
+        """
+        try:
+            pdbs = self.policy_v1.list_namespaced_pod_disruption_budget(namespace)
+            pod = self.core_v1.read_namespaced_pod(pod_name, namespace)
+            
+            for pdb in pdbs.items:
+                # Simple label selector match check (simplified for MVP)
+                # In real world, we need full label selector matching logic
+                # Here we assume if PDB selector matches pod labels, it applies.
+                selector = pdb.spec.selector
+                if selector and selector.match_labels:
+                    match = all(pod.metadata.labels.get(k) == v for k, v in selector.match_labels.items())
+                    if match:
+                         # Check allowed disruptions
+                         if pdb.status.disruptions_allowed < 1:
+                             logger.warning(f"PDB Violation: {pdb.metadata.name} prevents eviction of {pod_name}")
+                             return True
+            return False
+            
+        except Exception as e:
+            logger.error(f"Error checking PDBs: {e}")
+            return True # Fail safe: Assume violation if we can't check
+
     def evict_pod(self, namespace: str, pod_name: str,
                   grace_period: int = 30) -> Dict[str, Any]:
         """
@@ -112,47 +141,67 @@ class ActionActuator:
         """
         logger.info(f"Evicting pod {namespace}/{pod_name}")
 
-        try:
-            # Create eviction object
-            eviction = client.V1Eviction(
-                metadata=client.V1ObjectMeta(
-                    name=pod_name,
-                    namespace=namespace
-                ),
-                delete_options=client.V1DeleteOptions(
-                    grace_period_seconds=grace_period
+        retries = 5
+        retry_delay = 10
+
+        for attempt in range(1, retries + 2):
+            try:
+                # Create eviction object
+                eviction = client.V1Eviction(
+                    metadata=client.V1ObjectMeta(
+                        name=pod_name,
+                        namespace=namespace
+                    ),
+                    delete_options=client.V1DeleteOptions(
+                        grace_period_seconds=grace_period
+                    )
                 )
-            )
 
-            # Execute eviction
-            self.core_v1.create_namespaced_pod_eviction(
-                name=pod_name,
-                namespace=namespace,
-                body=eviction
-            )
+                # Execute eviction
+                self.core_v1.create_namespaced_pod_eviction(
+                    name=pod_name,
+                    namespace=namespace,
+                    body=eviction
+                )
 
-            logger.info(f"Successfully evicted pod {namespace}/{pod_name}")
-            return {
-                'success': True,
-                'message': f'Pod {namespace}/{pod_name} evicted successfully'
-            }
+                logger.info(f"Successfully evicted pod {namespace}/{pod_name}")
+                return {
+                    'success': True,
+                    'message': f'Pod {namespace}/{pod_name} evicted successfully'
+                }
 
-        except ApiException as e:
-            error_msg = f"Failed to evict pod {namespace}/{pod_name}: {e.reason}"
-            logger.error(error_msg)
-            return {
-                'success': False,
-                'message': error_msg,
-                'error': str(e)
-            }
-        except Exception as e:
-            error_msg = f"Unexpected error evicting pod {namespace}/{pod_name}: {e}"
-            logger.error(error_msg, exc_info=True)
-            return {
-                'success': False,
-                'message': error_msg,
-                'error': str(e)
-            }
+            except ApiException as e:
+                # 429 = PDB Violation (Too Many Requests)
+                if e.status == 429:
+                    if attempt <= retries:
+                        logger.warning(f"Eviction blocked by PDB (429) for {namespace}/{pod_name}. Retrying in {retry_delay}s ({attempt}/{retries})...")
+                        time.sleep(retry_delay)
+                        continue
+                    else:
+                        error_msg = f"Failed to evict pod {namespace}/{pod_name} after {retries} retries due to PDB violation"
+                        logger.error(error_msg)
+                        return {
+                            'success': False,
+                            'message': error_msg,
+                            'error': "PDB_VIOLATION_MAX_RETRIES"
+                        }
+                
+                # Other API errors
+                error_msg = f"Failed to evict pod {namespace}/{pod_name}: {e.reason}"
+                logger.error(error_msg)
+                return {
+                    'success': False,
+                    'message': error_msg,
+                    'error': str(e)
+                }
+            except Exception as e:
+                error_msg = f"Unexpected error evicting pod {namespace}/{pod_name}: {e}"
+                logger.error(error_msg, exc_info=True)
+                return {
+                    'success': False,
+                    'message': error_msg,
+                    'error': str(e)
+                }
 
     def cordon_node(self, node_name: str, uncordon: bool = False) -> Dict[str, Any]:
         """
@@ -239,6 +288,13 @@ class ActionActuator:
                 # Check if pod is managed by a controller
                 if not force and not self._has_controller(pod):
                     msg = f"Pod {pod.metadata.namespace}/{pod.metadata.name} not managed by controller"
+                    logger.warning(msg)
+                    failed_evictions.append(msg)
+                    continue
+
+                # Check PDBs (The Guardrail)
+                if self.check_pdb_violation(pod.metadata.namespace, pod.metadata.name):
+                    msg = f"Pod {pod.metadata.namespace}/{pod.metadata.name} protected by PDB"
                     logger.warning(msg)
                     failed_evictions.append(msg)
                     continue
@@ -601,6 +657,58 @@ class ActionActuator:
             time.sleep(self.poll_interval)
 
         logger.info("Action actuator stopped")
+
+    def handle_spot_interruption(self, notice: Dict[str, Any]):
+        """
+        Handle a Spot Instance interruption event.
+        1. Cordon the node immediately.
+        2. Drain the node gracefully.
+        """
+        node_name = os.getenv('NODE_NAME')
+        if not node_name:
+            logger.error("Cannot handle spot interruption: NODE_NAME env var not set")
+            return
+
+        logger.critical(f"Executing Spot Interruption Protocol for node {node_name}")
+        
+        # 1. Cordon
+        cordon_res = self.cordon_node(node_name, uncordon=False)
+        if not cordon_res['success']:
+            logger.error(f"Failed to cordon node during spot interruption: {cordon_res.get('message')}")
+            # Continue anyway to try and drain what we can
+            
+        # 2. Drain (Force=True to ensure we clear it)
+        drain_res = self.drain_node(node_name, force=True, grace_period=30)
+        if drain_res.get('success'):
+            logger.info(f"Node {node_name} successfully drained ahead of termination")
+        else:
+            logger.error(f"Failed to drain node during spot interruption: {drain_res.get('message')}")
+            
+        # 3. Trigger Fallback (The Safety Net)
+        self.request_fallback_node(node_name)
+
+    def request_fallback_node(self, node_name: str):
+        """
+        Call the backend to request an immediate On-Demand replacement.
+        """
+        url = f"{self.backend_url}/api/v1/clusters/{self.cluster_id}/fallback"
+        headers = {
+            'Authorization': f'Bearer {self.api_key}',
+            'Content-Type': 'application/json'
+        }
+        payload = {
+            'node_name': node_name,
+            'reason': 'SPOT_INTERRUPTION',
+            'timestamp': datetime.utcnow().isoformat()
+        }
+        
+        try:
+            logger.info(f"Requesting fallback node for {node_name}...")
+            # Fire and forget - don't wait long
+            requests.post(url, json=payload, headers=headers, timeout=5)
+            logger.info("Fallback request sent to backend")
+        except Exception as e:
+            logger.error(f"Failed to trigger fallback: {e}")
 
     def stop(self):
         """

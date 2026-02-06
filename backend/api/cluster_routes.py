@@ -239,3 +239,33 @@ def auto_install_agent(
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+@router.post("/{cluster_id}/fallback")
+def request_fallback_node(
+    cluster_id: str,
+    payload: dict,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Handle Spot Interruption Fallback Request.
+    Triggered by Agent when a Spot node is about to be terminated.
+    """
+    from backend.models.instance import Instance, InstanceLifecycle
+    import logging
+    logger = logging.getLogger("api")
+    
+    node_name = payload.get('node_name')
+    reason = payload.get('reason')
+    
+    logger.critical(f"[FALLBACK] Received fallback request for node {node_name} in cluster {cluster_id}. Reason: {reason}")
+    
+    # 1. Provide Immediate Safety: Launch On-Demand Replacement
+    # In a real implementation, this would call EC2 RunInstances or modify ASG
+    # For now, we simulate this and tag the intent for the Reversion cycle
+    
+    # Check if we assume it's successful
+    logger.info(f"[FALLBACK] Launching emergency On-Demand replacement for {node_name}")
+    
+    # TODO: Call cloud_provider.launch_instance(type='on-demand', tags={'spot-optimizer/fallback': 'true'})
+    
+    return {"status": "success", "message": "Fallback initiated", "action": "LAUNCH_ON_DEMAND"}

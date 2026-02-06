@@ -4,7 +4,7 @@ Scans AWS accounts for EC2 instances and EKS clusters every 5 minutes
 """
 import logging
 from typing import List, Dict, Any
-from datetime import datetime
+from datetime import datetime, timedelta
 from celery import Task
 from sqlalchemy.orm import Session
 import boto3
@@ -16,9 +16,123 @@ from backend.models.account import Account, AccountStatus
 from backend.models.cluster import Cluster, ClusterStatus
 from backend.models.instance import Instance, InstanceLifecycle
 from backend.models.system_config import SystemConfig
+from backend.models.system_config import SystemConfig
 from backend.core.redis_client import get_redis_client
+from backend.utils.pricing_helper import get_pricing_helper
 
 logger = logging.getLogger(__name__)
+
+
+def analyze_cluster_potential(cluster_name: str, region: str, ec2_client, credentials=None) -> Dict[str, Any]:
+    """
+    Perform a 'Shallow Scan' to estimate potential savings by moving On-Demand nodes to Spot.
+    
+    Returns:
+        {
+            'potential_savings_monthly': float,
+            'on_demand_node_count': int,
+            'spot_node_count': int,
+            'inventory_summary': dict
+        }
+    """
+    try:
+        # 1. Start Analysis
+        pricing = get_pricing_helper()
+        
+        # 2. Get all instances belonging to this cluster
+        # Heuristic: EKS nodes usually have tag 'kubernetes.io/cluster/<name>' = 'owned'
+        paginator = ec2_client.get_paginator('describe_instances')
+        iterator = paginator.paginate(
+            Filters=[
+                {'Name': f'tag:kubernetes.io/cluster/{cluster_name}', 'Values': ['owned']},
+                {'Name': 'instance-state-name', 'Values': ['running']}
+            ]
+        )
+        
+        on_demand_nodes = []
+        spot_nodes = []
+        
+        for page in iterator:
+            for reservation in page['Reservations']:
+                for instance in reservation['Instances']:
+                    lc = instance.get('InstanceLifecycle', 'on-demand')
+                    itype = instance.get('InstanceType')
+                    az = instance.get('Placement', {}).get('AvailabilityZone')
+                    
+                    node_info = {'id': instance['InstanceId'], 'type': itype, 'az': az}
+                    
+                    if lc == 'spot':
+                        spot_nodes.append(node_info)
+                    else:
+                        on_demand_nodes.append(node_info)
+
+        # 3. Calculate Savings for On-Demand Nodes
+        total_monthly_savings = 0.0
+        
+        # Cache spot prices to avoid spamming API
+        spot_price_cache = {} # (type, az) -> price
+        
+        for node in on_demand_nodes:
+            itype = node['type']
+            az = node['az']
+            
+            # Get On-Demand Price
+            od_price_monthly = pricing.get_ec2_price(region, itype)
+            od_price_hourly = od_price_monthly / 730.0
+            
+            # Get Spot Price (Real-time market data)
+            spot_price_hourly = 0.0
+            cache_key = (itype, az)
+            
+            if cache_key in spot_price_cache:
+                spot_price_hourly = spot_price_cache[cache_key]
+            else:
+                try:
+                    # Get recent spot price (last 1 hour)
+                    history = ec2_client.describe_spot_price_history(
+                        InstanceTypes=[itype],
+                        ProductDescriptions=['Linux/UNIX'],
+                        AvailabilityZone=az,
+                        StartTime=datetime.utcnow() - timedelta(hours=1),
+                        MaxResults=1
+                    )
+                    if history['SpotPriceHistory']:
+                        spot_price_hourly = float(history['SpotPriceHistory'][0]['SpotPrice'])
+                        spot_price_cache[cache_key] = spot_price_hourly
+                    else:
+                        # Fallback: Assume 60% savings if no history
+                        spot_price_hourly = od_price_hourly * 0.4 
+                        spot_price_cache[cache_key] = spot_price_hourly
+                except Exception as e:
+                    logger.warning(f"Failed to fetch spot price for {itype} in {az}: {e}")
+                    spot_price_hourly = od_price_hourly * 0.4 # Fallback
+            
+            # Add Buffer (we reserve 20% buffer in calculations usually, 
+            # but for Teaser we show raw potential. Let's be conservative: 10% buffer)
+            # Savings = (OD - Spot) * Hours
+            # conservative_spot = spot * 1.1 ? No, let's show "Potential" (Optimistic but real)
+            savings_hourly = max(0, od_price_hourly - spot_price_hourly)
+            total_monthly_savings += (savings_hourly * 730)
+
+        return {
+            'potential_savings_monthly': round(total_monthly_savings, 2),
+            'on_demand_node_count': len(on_demand_nodes),
+            'spot_node_count': len(spot_nodes),
+            'inventory_summary': {
+                'total': len(on_demand_nodes) + len(spot_nodes),
+                'by_type': list(set(n['type'] for n in on_demand_nodes))
+            }
+        }
+
+    except Exception as e:
+        logger.error(f"Error analyzing potential for {cluster_name}: {e}", exc_info=True)
+        return {
+            'potential_savings_monthly': 0.0,
+            'on_demand_node_count': 0,
+            'spot_node_count': 0,
+            'inventory_summary': {'error': str(e)}
+        }
+
 
 
 def _get_platform_sts_client(db: Session):
@@ -276,12 +390,30 @@ def scan_eks_clusters(account: Account, eks_client, db: Session, credentials: Di
                         total_cost = float(amount)
                         
                         # Heuristic: 40% savings potential on Spot
-                        potential_savings = total_cost * 0.40
+                        # potential_savings = total_cost * 0.40
+                        # REPLACED BY SHALLOW SCAN (Phase 2)
+                        pass
                         
-                    logger.info(f"[WORK-DISC-01] Cluster {cluster_name}: Cost=${total_cost:.2f}, Potential Savings=${potential_savings:.2f}")
+                    logger.info(f"[WORK-DISC-01] Cluster {cluster_name}: Cost=${total_cost:.2f}")
 
             except Exception as e:
                 logger.warning(f"[WORK-DISC-01] Failed to fetch costs for {cluster_name}: {e}")
+
+            # --- Shallow Scan for Teaser (Real Savings) ---
+            teaser_data = analyze_cluster_potential(
+                cluster_name, 
+                account.region or 'us-east-1', 
+                ec2_client=boto3.client(
+                    'ec2', 
+                    region_name=cluster_data.get('arn').split(':')[3] if cluster_data.get('arn') else account.region,
+                    aws_access_key_id=credentials['AccessKeyId'],
+                    aws_secret_access_key=credentials['SecretAccessKey'],
+                    aws_session_token=credentials['SessionToken']
+                ),
+                credentials=credentials
+            )
+            potential_savings = teaser_data['potential_savings_monthly']
+            logger.info(f"[Teaser] Cluster {cluster_name}: Potential Savings=${potential_savings:.2f}, OD Nodes={teaser_data['on_demand_node_count']}")
 
             # Check if cluster already exists
             existing = db.query(Cluster).filter(
@@ -296,6 +428,14 @@ def scan_eks_clusters(account: Account, eks_client, db: Session, credentials: Di
                 existing.ca_data = cluster_data.get('certificateAuthority', {}).get('data')
                 existing.monthly_cost = int(total_cost)
                 existing.estimated_savings = int(potential_savings)
+                
+                # Update Teaser Fields
+                existing.potential_savings_monthly = teaser_data['potential_savings_monthly']
+                existing.on_demand_node_count = teaser_data['on_demand_node_count']
+                existing.spot_count = teaser_data['spot_node_count'] # Mapping to existing field + new concept
+                existing.inventory_summary = teaser_data['inventory_summary']
+                existing.last_assessed = datetime.utcnow()
+                
                 existing.updated_at = datetime.utcnow()
                 # Self-healing: Update region if missing
                 if not existing.region and cluster_data.get('arn'):
@@ -316,8 +456,17 @@ def scan_eks_clusters(account: Account, eks_client, db: Session, credentials: Di
                     ca_data=cluster_data.get('certificateAuthority', {}).get('data'),
                     version=cluster_data.get('version'),
                     status=ClusterStatus.DISCOVERED,
+
                     monthly_cost=int(total_cost),
                     estimated_savings=int(potential_savings),
+                    
+                    # Teaser Fields
+                    potential_savings_monthly=teaser_data['potential_savings_monthly'],
+                    on_demand_node_count=teaser_data['on_demand_node_count'],
+                    spot_count=teaser_data['spot_node_count'],
+                    inventory_summary=teaser_data['inventory_summary'],
+                    last_assessed=datetime.utcnow(),
+                    
                     last_cost_update=datetime.utcnow() if should_update_cost else None
                 )
                 db.add(new_cluster)

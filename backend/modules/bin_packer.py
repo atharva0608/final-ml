@@ -23,8 +23,30 @@ class BinPackingModule:
     - Respect PodDisruptionBudgets during migrations
     """
 
+    # Namespaces that are strictly off-limits for consolidation
+    EXCLUDED_NAMESPACES = ["kube-system", "monitoring", "spot-optimizer", "cert-manager", "ingress-nginx"]
+
     def __init__(self, db: Session):
         self.db = db
+
+    def _is_safe_to_drain(self, instance: Dict[str, Any]) -> bool:
+        """
+        Check if a node is safe to drain.
+        
+        Criteria:
+        1. Not a control plane node (by name/role)
+        2. Not hosting critical system pods (requires Pod data, placeholder for now)
+        3. Not explicitly excluded by tag
+        """
+        instance_id = instance.get('instance_id', '')
+        # Simple name checks for now
+        if any(x in instance_id.lower() for x in ['master', 'control-plane']):
+            return False
+            
+        # TODO: Check labels/tags once synced to DB
+        # if instance.tags.get('spot-optimizer/force') == 'false': return False
+        
+        return True
 
     def analyze_fragmentation(self, cluster_id: str) -> Dict[str, Any]:
         """
@@ -224,12 +246,12 @@ class BinPackingModule:
         utilization_threshold = aggressiveness * 100  # Convert to percentage
         source_nodes = [
             node for node in analysis['node_details']
-            if node['avg_util'] < utilization_threshold
+            if node['avg_util'] < utilization_threshold and self._is_safe_to_drain(node)
         ]
 
         target_nodes = [
             node for node in analysis['node_details']
-            if node['avg_util'] >= 50 and node['avg_util'] < 80  # Healthy range
+            if node['avg_util'] >= 50 and node['avg_util'] < 80 and self._is_safe_to_drain(node) # Don't target unsafe nodes to be doubly safe
         ]
 
         if not source_nodes:
@@ -273,7 +295,8 @@ class BinPackingModule:
                         "pod_count": estimated_pods,
                         "respect_pdb": True,
                         "max_unavailable": "25%",
-                        "timeout": "10m"
+                        "timeout": "10m",
+                        "excluded_namespaces": self.EXCLUDED_NAMESPACES
                     },
                     {
                         "action": "WAIT_FOR_READY",
