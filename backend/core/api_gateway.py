@@ -429,9 +429,41 @@ app.include_router(tag_template_router, prefix="/api/v1")
 from backend.api.installer_routes import router as installer_router
 app.include_router(installer_router, prefix="/api")
 
+
 # Agent routes (used by Kubernetes agent for registration/heartbeat)
 from backend.api.agent_routes import router as agent_router
 app.include_router(agent_router, prefix="/api/v1")
+
+# Websocket endpoint for real-time agent communication
+from fastapi import WebSocket, WebSocketDisconnect
+from typing import Dict
+
+# Store active connections: cluster_id -> WebSocket
+active_connections: Dict[str, WebSocket] = {}
+
+@app.websocket("/ws/cluster/{cluster_id}")
+async def websocket_cluster_endpoint(websocket: WebSocket, cluster_id: str):
+    """
+    Websocket endpoint for cluster agents
+    """
+    await websocket.accept()
+    active_connections[cluster_id] = websocket
+    logger.info(f"Using Websocket connection for cluster {cluster_id}")
+    try:
+        while True:
+            # Keep connection alive and process messages
+            data = await websocket.receive_text()
+            # In future: Handle incoming messages (e.g. immediate alerts)
+            # For now just echo or ack
+            await websocket.send_text(f"Ack: {len(data)} bytes")
+    except WebSocketDisconnect:
+        logger.info(f"Websocket disconnected for cluster {cluster_id}")
+        if cluster_id in active_connections:
+            del active_connections[cluster_id]
+    except Exception as e:
+        logger.error(f"Websocket error for {cluster_id}: {e}")
+        if cluster_id in active_connections:
+            del active_connections[cluster_id]
 
 
 # Startup and shutdown events

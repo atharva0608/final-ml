@@ -213,9 +213,134 @@ class PricingHelper:
         return 3.65
 
     def get_ec2_price(self, region: str, instance_type: str) -> float:
-        """Get EC2 On-Demand price per month"""
-        # Simplified lookup for common types, others default to estimation
-        # In a real app, this should query the Pricing API with instance type filter
+        """
+        Get EC2 On-Demand price per month
+        
+        Args:
+            region: AWS region
+            instance_type: EC2 instance type (e.g. t3.medium)
+            
+        Returns:
+            Price per month in USD
+        """
+        cache_key = f"pricing:ec2:{region}:{instance_type}"
+        
+        # Check cache first
+        cached = self.redis.get(cache_key) if self.redis else None
+        if cached:
+            return float(cached)
+            
+        # Return fallback if no pricing client available
+        if not self.pricing_client:
+            return self._get_fallback_ec2_price(instance_type)
+            
+        try:
+            location = self._get_location_name(region)
+            
+            # Query Price List API
+            filters = [
+                {'Type': 'TERM_MATCH', 'Field': 'ServiceCode', 'Value': 'AmazonEC2'},
+                {'Type': 'TERM_MATCH', 'Field': 'location', 'Value': location},
+                {'Type': 'TERM_MATCH', 'Field': 'instanceType', 'Value': instance_type},
+                {'Type': 'TERM_MATCH', 'Field': 'preInstalledSw', 'Value': 'NA'},
+                {'Type': 'TERM_MATCH', 'Field': 'operatingSystem', 'Value': 'Linux'},
+                {'Type': 'TERM_MATCH', 'Field': 'tenancy', 'Value': 'Shared'},
+                {'Type': 'TERM_MATCH', 'Field': 'capacitystatus', 'Value': 'Used'}
+            ]
+            
+            response = self.pricing_client.get_products(
+                ServiceCode='AmazonEC2',
+                Filters=filters,
+                MaxResults=1
+            )
+            
+            if response['PriceList']:
+                price_item = json.loads(response['PriceList'][0])
+                on_demand = price_item['terms']['OnDemand']
+                price_dimensions = list(on_demand.values())[0]['priceDimensions']
+                price_per_hour = float(list(price_dimensions.values())[0]['pricePerUnit']['USD'])
+                
+                # Convert to monthly (730 hours)
+                price_per_month = price_per_hour * 730
+                
+                # Cache the result
+                if self.redis:
+                    self.redis.setex(cache_key, self.CACHE_TTL, str(price_per_month))
+                    
+                return price_per_month
+            else:
+                return self._get_fallback_ec2_price(instance_type)
+                
+        except Exception as e:
+            print(f"Error fetching EC2 pricing: {e}")
+            return self._get_fallback_ec2_price(instance_type)
+
+    def get_rds_price(self, region: str, instance_class: str, engine: str) -> float:
+        """
+        Get RDS On-Demand price per month
+        
+        Args:
+            region: AWS region
+            instance_class: RDS instance class (e.g. db.t3.medium)
+            engine: Database engine (e.g. mysql, postgres)
+        """
+        cache_key = f"pricing:rds:{region}:{instance_class}:{engine}"
+        
+        # Check cache first
+        cached = self.redis.get(cache_key) if self.redis else None
+        if cached:
+            return float(cached)
+            
+        if not self.pricing_client:
+             return self._get_fallback_rds_price(instance_class)
+             
+        try:
+            location = self._get_location_name(region)
+            
+            # Engine mapping
+            engine_map = {
+                'mysql': 'MySQL',
+                'postgres': 'PostgreSQL',
+                'oracle': 'Oracle',
+                'sqlserver': 'SQL Server'
+            }
+            aws_engine = engine_map.get(engine.lower(), 'MySQL')
+            
+            filters = [
+                {'Type': 'TERM_MATCH', 'Field': 'ServiceCode', 'Value': 'AmazonRDS'},
+                {'Type': 'TERM_MATCH', 'Field': 'location', 'Value': location},
+                {'Type': 'TERM_MATCH', 'Field': 'instanceType', 'Value': instance_class},
+                {'Type': 'TERM_MATCH', 'Field': 'databaseEngine', 'Value': aws_engine},
+                 {'Type': 'TERM_MATCH', 'Field': 'deploymentOption', 'Value': 'Single-AZ'}
+            ]
+            
+            response = self.pricing_client.get_products(
+                ServiceCode='AmazonRDS',
+                Filters=filters,
+                MaxResults=1
+            )
+            
+            if response['PriceList']:
+                price_item = json.loads(response['PriceList'][0])
+                on_demand = price_item['terms']['OnDemand']
+                price_dimensions = list(on_demand.values())[0]['priceDimensions']
+                price_per_hour = float(list(price_dimensions.values())[0]['pricePerUnit']['USD'])
+                
+                price_per_month = price_per_hour * 730
+                
+                if self.redis:
+                    self.redis.setex(cache_key, self.CACHE_TTL, str(price_per_month))
+                    
+                return price_per_month
+            else:
+                return self._get_fallback_rds_price(instance_class)
+
+        except Exception as e:
+            print(f"Error fetching RDS pricing: {e}")
+            return self._get_fallback_rds_price(instance_class)
+
+    def _get_fallback_ec2_price(self, instance_type: str) -> float:
+        """Fallback EC2 pricing"""
         prices = {
             't2.micro': 8.50,
             't2.small': 17.00,
@@ -232,9 +357,8 @@ class PricingHelper:
         }
         return prices.get(instance_type, 50.00)
 
-    def get_rds_price(self, region: str, instance_class: str, engine: str) -> float:
-        """Get RDS On-Demand price per month"""
-        # Simplified lookup
+    def _get_fallback_rds_price(self, instance_class: str) -> float:
+        """Fallback RDS pricing"""
         prices = {
             'db.t3.micro': 15.00,
             'db.t3.small': 30.00,

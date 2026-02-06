@@ -7,8 +7,8 @@ metadata:
     app.kubernetes.io/instance: {{ .Release.Name }}
 rules:
 - apiGroups: [""]
-  resources: ["nodes", "pods", "namespaces", "services", "configmaps"]
-  verbs: ["get", "list", "watch"]
+  resources: ["nodes", "pods", "pods/eviction", "namespaces", "services", "configmaps"]
+  verbs: ["get", "list", "watch", "patch", "update", "delete"]
 - apiGroups: ["apps"]
   resources: ["deployments", "replicasets", "daemonsets", "statefulsets"]
   verbs: ["get", "list", "watch"]
