@@ -32,7 +32,7 @@ class AgentInjectorService:
     into discovered EKS clusters.
     """
 
-    AGENT_IMAGE = "atharva608/spot-optimizer-agent:v1.0.0"
+    AGENT_IMAGE = "atharva608/spot-optimizer-agent:latest"
     NAMESPACE = "spot-optimizer"
     
     # AWS policy for cluster admin access
