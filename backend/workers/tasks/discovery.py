@@ -205,9 +205,11 @@ def scan_eks_clusters(account: Account, eks_client, db: Session, credentials: Di
         Number of clusters found
     """
     try:
-        # List all clusters
-        response = eks_client.list_clusters()
-        cluster_names = response.get('clusters', [])
+        # List all clusters using paginator
+        paginator = eks_client.get_paginator('list_clusters')
+        cluster_names = []
+        for page in paginator.paginate():
+            cluster_names.extend(page.get('clusters', []))
 
         logger.info(f"[WORK-DISC-01] Found {len(cluster_names)} EKS clusters")
 
@@ -219,46 +221,64 @@ def scan_eks_clusters(account: Account, eks_client, db: Session, credentials: Di
             # --- Cost Insights ---
             total_cost = 0.0
             potential_savings = 0.0
+
+            # Optimizing Cost Explorer Calls (Once per 24h)
+            should_update_cost = True
+            
+            existing = db.query(Cluster).filter(
+                Cluster.account_id == account.id,
+                Cluster.name == cluster_name
+            ).first()
+
+            if existing and existing.last_cost_update:
+                if (datetime.utcnow() - existing.last_cost_update).total_seconds() < 86400:
+                    should_update_cost = False
+                    # Preserve existing values if strictly necessary, but model update logic handles it
+                    total_cost = float(existing.monthly_cost or 0)
+                    potential_savings = float(existing.estimated_savings or 0)
+                    logger.info(f"[WORK-DISC-01] Skipping cost update for {cluster_name} (Updated < 24h ago)")
+
             try:
-                # Initialize Cost Explorer
-                ce = boto3.client(
-                    'ce',
-                    region_name=account.region or 'us-east-1',
-                    aws_access_key_id=credentials['AccessKeyId'],
-                    aws_secret_access_key=credentials['SecretAccessKey'],
-                    aws_session_token=credentials['SessionToken']
-                )
-                
-                # Get cost for last 30 days
-                end_date = datetime.utcnow().date()
-                start_date = end_date.replace(day=1) # Simplified to start of month for now
-                
-                # Format dates
-                start_str = start_date.strftime('%Y-%m-%d')
-                end_str = end_date.strftime('%Y-%m-%d')
-                
-                # Fetch cost associated with this cluster (by tag)
-                cost_response = ce.get_cost_and_usage(
-                    TimePeriod={'Start': start_str, 'End': end_str},
-                    Granularity='MONTHLY',
-                    Metrics=['UnblendedCost'],
-                    Filter={
-                        'Tags': {
-                            'Key': 'eks:cluster-name',
-                            'Values': [cluster_name]
+                if should_update_cost:
+                    # Initialize Cost Explorer
+                    ce = boto3.client(
+                        'ce',
+                        region_name=account.region or 'us-east-1',
+                        aws_access_key_id=credentials['AccessKeyId'],
+                        aws_secret_access_key=credentials['SecretAccessKey'],
+                        aws_session_token=credentials['SessionToken']
+                    )
+                    
+                    # Get cost for last 30 days
+                    end_date = datetime.utcnow().date()
+                    start_date = end_date.replace(day=1) # Simplified to start of month for now
+                    
+                    # Format dates
+                    start_str = start_date.strftime('%Y-%m-%d')
+                    end_str = end_date.strftime('%Y-%m-%d')
+                    
+                    # Fetch cost associated with this cluster (by tag)
+                    cost_response = ce.get_cost_and_usage(
+                        TimePeriod={'Start': start_str, 'End': end_str},
+                        Granularity='MONTHLY',
+                        Metrics=['UnblendedCost'],
+                        Filter={
+                            'Tags': {
+                                'Key': 'eks:cluster-name',
+                                'Values': [cluster_name]
+                            }
                         }
-                    }
-                )
-                
-                # Extract cost
-                if cost_response['ResultsByTime']:
-                    amount = cost_response['ResultsByTime'][0]['Total']['UnblendedCost']['Amount']
-                    total_cost = float(amount)
+                    )
                     
-                    # Heuristic: 40% savings potential on Spot
-                    potential_savings = total_cost * 0.40
-                    
-                logger.info(f"[WORK-DISC-01] Cluster {cluster_name}: Cost=${total_cost:.2f}, Potential Savings=${potential_savings:.2f}")
+                    # Extract cost
+                    if cost_response['ResultsByTime']:
+                        amount = cost_response['ResultsByTime'][0]['Total']['UnblendedCost']['Amount']
+                        total_cost = float(amount)
+                        
+                        # Heuristic: 40% savings potential on Spot
+                        potential_savings = total_cost * 0.40
+                        
+                    logger.info(f"[WORK-DISC-01] Cluster {cluster_name}: Cost=${total_cost:.2f}, Potential Savings=${potential_savings:.2f}")
 
             except Exception as e:
                 logger.warning(f"[WORK-DISC-01] Failed to fetch costs for {cluster_name}: {e}")
@@ -273,9 +293,12 @@ def scan_eks_clusters(account: Account, eks_client, db: Session, credentials: Di
                 # Update existing cluster metadata (but don't change status if it's ACTIVE)
                 existing.version = cluster_data.get('version')
                 existing.endpoint = cluster_data.get('endpoint')
+                existing.ca_data = cluster_data.get('certificateAuthority', {}).get('data')
                 existing.monthly_cost = int(total_cost)
                 existing.estimated_savings = int(potential_savings)
                 existing.updated_at = datetime.utcnow()
+                if should_update_cost:
+                    existing.last_cost_update = datetime.utcnow()
             else:
                 # Create new cluster with DISCOVERED status
                 import uuid
@@ -286,10 +309,12 @@ def scan_eks_clusters(account: Account, eks_client, db: Session, credentials: Di
                     arn=cluster_data.get('arn'),
                     region=cluster_data.get('arn').split(':')[3] if cluster_data.get('arn') else (account.region or 'us-east-1'),
                     endpoint=cluster_data.get('endpoint'),
+                    ca_data=cluster_data.get('certificateAuthority', {}).get('data'),
                     version=cluster_data.get('version'),
                     status=ClusterStatus.DISCOVERED,
                     monthly_cost=int(total_cost),
-                    estimated_savings=int(potential_savings)
+                    estimated_savings=int(potential_savings),
+                    last_cost_update=datetime.utcnow() if should_update_cost else None
                 )
                 db.add(new_cluster)
 
@@ -310,11 +335,12 @@ def scan_ec2_instances(account: Account, ec2_client, db: Session) -> int:
         Number of instances found
     """
     try:
-        # Describe all instances
-        response = ec2_client.describe_instances()
+        # Describe all instances using paginator
+        paginator = ec2_client.get_paginator('describe_instances')
         instance_count = 0
 
-        for reservation in response.get('Reservations', []):
+        for page in paginator.paginate():
+            for reservation in page.get('Reservations', []):
             for instance_data in reservation.get('Instances', []):
                 instance_id = instance_data.get('InstanceId')
                 instance_type = instance_data.get('InstanceType')

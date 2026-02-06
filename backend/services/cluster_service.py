@@ -428,9 +428,9 @@ class ClusterService:
                 name=cluster.name,
                 region=cluster.region,
                 status=cluster.status.value,
-                node_count=0, # Placeholder until metrics integration
-                spot_count=0, # Placeholder
-                monthly_cost=0.0, # Placeholder
+                node_count=cluster.node_count or 0,
+                spot_count=cluster.spot_count or 0,
+                monthly_cost=float(cluster.monthly_cost or 0),
                 agent_installed=cluster.agent_installed == 'Y',
                 last_heartbeat=cluster.last_heartbeat
             ))

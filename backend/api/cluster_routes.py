@@ -223,27 +223,15 @@ def auto_install_agent(
             cluster.api_key = secrets.token_urlsafe(32)
             db.commit()
         
-        # Get cluster details from AWS
-        injector = AgentInjectorService(db)
+        # Trigger background task
+        from backend.workers.tasks.agent_tasks import inject_agent_task
+        task = inject_agent_task.delay(cluster_id=cluster.id)
         
-        result = injector.inject_agent(
-            cluster_id=cluster.id,
-            cluster_name=cluster.name,
-            cluster_arn=cluster.arn or "",
-            cluster_endpoint=cluster.endpoint or cluster.api_endpoint or "",
-            cluster_ca_data=getattr(cluster, 'ca_data', '') or "",
-            role_arn=account.role_arn,
-            external_id=account.external_id or "",
-            region=cluster.region,
-            api_key=cluster.api_key
-        )
-        
-        if result["status"] == "success":
-            cluster.agent_installed = True
-            cluster.status = "ACTIVE"
-            db.commit()
-        
-        return result
+        return {
+            "status": "accepted", 
+            "message": "Agent injection started in background",
+            "task_id": str(task.id)
+        }
         
     except HTTPException:
         raise

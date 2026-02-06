@@ -246,21 +246,8 @@ class MetricsCollector:
                 cpu_usage = self.parse_cpu_value(item['usage'].get('cpu', '0'))
                 memory_usage = self.parse_memory_value(item['usage'].get('memory', '0'))
 
-                # Get node capacity
-                cpu_capacity = self.parse_cpu_value(
-                    node.status.capacity.get('cpu', '0')
-                )
-                memory_capacity = self.parse_memory_value(
-                    node.status.capacity.get('memory', '0')
-                )
-
-                # Get allocatable resources
-                cpu_allocatable = self.parse_cpu_value(
-                    node.status.allocatable.get('cpu', '0')
-                )
-                memory_allocatable = self.parse_memory_value(
-                    node.status.allocatable.get('memory', '0')
-                )
+                # Get node capacity and allocatable using helper
+                capacity_allocatable = self._get_node_capacity_allocatable(node)
 
                 # Check node conditions
                 ready = False
@@ -274,10 +261,7 @@ class MetricsCollector:
                     'node_name': node_name,
                     'cpu_usage_millicores': cpu_usage,
                     'memory_usage_bytes': memory_usage,
-                    'cpu_capacity_millicores': cpu_capacity,
-                    'memory_capacity_bytes': memory_capacity,
-                    'cpu_allocatable_millicores': cpu_allocatable,
-                    'memory_allocatable_bytes': memory_allocatable,
+                    **capacity_allocatable,
                     'ready': ready,
                     'unschedulable': node.spec.unschedulable or False,
                     'labels': node.metadata.labels or {},
@@ -288,12 +272,60 @@ class MetricsCollector:
 
             logger.info(f"Collected metrics for {len(node_metrics)} nodes")
 
-        except ApiException as e:
-            logger.error(f"Failed to collect node metrics: {e}")
         except Exception as e:
-            logger.error(f"Unexpected error collecting node metrics: {e}", exc_info=True)
+            logger.warning(f"Failed to collect node metrics via API (metrics-server might be missing): {e}")
+            logger.info("Falling back to local node metrics via psutil")
+            try:
+                # Fallback: Collect local node metrics using psutil (requires hostNetwork/host access)
+                local_metric = self._collect_local_node_metrics()
+                if local_metric:
+                    node_metrics.append(local_metric)
+                    logger.info("Collected local node metrics via fallback")
+            except Exception as fallback_error:
+                logger.error(f"Fallback collection also failed: {fallback_error}")
 
         return node_metrics
+
+    def _get_node_capacity_allocatable(self, node) -> Dict[str, float]:
+        """Helper to extract capacity and allocatable"""
+        return {
+            'cpu_capacity_millicores': self.parse_cpu_value(node.status.capacity.get('cpu', '0')),
+            'memory_capacity_bytes': self.parse_memory_value(node.status.capacity.get('memory', '0')),
+            'cpu_allocatable_millicores': self.parse_cpu_value(node.status.allocatable.get('cpu', '0')),
+            'memory_allocatable_bytes': self.parse_memory_value(node.status.allocatable.get('memory', '0'))
+        }
+
+    def _collect_local_node_metrics(self) -> Optional[Dict[str, Any]]:
+        """Collect metrics for the current node using psutil"""
+        import psutil
+
+        node_name = os.getenv('NODE_NAME', 'unknown-node')
+
+        # CPU Usage
+        # psutil.cpu_percent() gives % across all CPUs.
+        # Convert to millicores approximation: % * cores * 10
+        cpu_percent = psutil.cpu_percent(interval=1)
+        cpu_count = psutil.cpu_count()
+        cpu_usage_millicores = (cpu_percent / 100.0) * cpu_count * 1000
+
+        # Memory Usage
+        vm = psutil.virtual_memory()
+        memory_usage_bytes = vm.used
+
+        return {
+            'cluster_id': self.cluster_id,
+            'node_name': node_name,
+            'cpu_usage_millicores': cpu_usage_millicores,
+            'memory_usage_bytes': memory_usage_bytes,
+            'cpu_capacity_millicores': cpu_count * 1000, # Approx
+            'memory_capacity_bytes': vm.total,
+            'cpu_allocatable_millicores': cpu_count * 1000, # Approx
+            'memory_allocatable_bytes': vm.total, # Approx
+            'ready': True, # Assume ready if agent is running
+            'unschedulable': False,
+            'labels': {'kubernetes.io/hostname': node_name},
+            'timestamp': datetime.utcnow().isoformat()
+        }
 
     def collect_cluster_events(self, since_seconds: int = 300) -> List[Dict[str, Any]]:
         """

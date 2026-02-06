@@ -15,9 +15,8 @@ spec:
         app: spot-agent
     spec:
       serviceAccountName: {{ .Values.serviceAccount.name }}
-      # Host Network is often needed for deep node monitoring, 
-      # but standard mode is safer to start.
-      hostNetwork: false 
+      # Host Network is needed for deep node monitoring
+      hostNetwork: true 
       containers:
         - name: agent
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"

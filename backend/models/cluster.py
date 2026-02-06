@@ -30,6 +30,7 @@ class Cluster(Base):
     cluster_type = Column(Enum(ClusterType), default=ClusterType.EKS)
     version = Column(String, nullable=True)
     endpoint = Column(String, nullable=True)
+    ca_data = Column(Text, nullable=True)  # Base64 encoded CA certificate for K8s API auth
     
     status = Column(Enum(ClusterStatus), default=ClusterStatus.DISCOVERED)
     
@@ -48,6 +49,7 @@ class Cluster(Base):
     # Cost Insights
     monthly_cost = Column(Integer, default=0) # Stored in USD (or cents if needed, but float/int for display)
     estimated_savings = Column(Integer, default=0)
+    last_cost_update = Column(DateTime, nullable=True)
     
     # Node metrics (updated by discovery/agent)
     node_count = Column(Integer, default=0)
