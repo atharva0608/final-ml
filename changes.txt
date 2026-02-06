@@ -1,109 +1,56 @@
 # Spot Optimizer - Changes & Implementation Status
 
-This document tracks the current implementation status of UI enhancements and core features.
+## ✅ COMPLETED (2026-02-06)
 
----
+### Agent Injection Enhancements
 
-## ✅ COMPLETED FIXES
-
-### 1. Agent Injection - Region & SSL Handling (FIXED)
 **File:** `backend/services/agent_injector.py`
 
-| Issue | Status | Fix Location |
-|-------|--------|--------------|
-| No Region Error | ✅ Fixed | Lines 116, 189, 222, 273-276, 302 - region passed to all AWS clients |
-| SSL Certificate Error | ✅ Fixed | Lines 332-345 - CA cert written to temp file, path used for SSL |
+| Fix | Status | Details |
+|-----|--------|---------|
+| Region handling | ✅ | All AWS clients use explicit `region_name` |
+| SSL cert handling | ✅ | CA cert written to temp file |
+| RBAC permissions | ✅ | Added `patch`, `update` verbs for node cordoning |
+| PodDisruptionBudgets | ✅ | Added `policy` API group access |
+| HOST_PROC env | ✅ | Set to `/host/proc` for psutil |
+| /proc volume mount | ✅ | HostPath volume for host metrics |
 
-**How It Works:**
-1. Region extracted from cluster ARN in discovery
-2. All boto3 clients created with explicit `region_name=region`
-3. CA certificate written to temp file, path passed to Kubernetes client `ssl_ca_cert`
-
----
-
-### 2. Teaser Savings Calculation (IMPLEMENTED)
-**File:** `backend/workers/tasks/discovery.py`
-
-**Function:** `analyze_cluster_potential()` (Lines 26-134)
-
-**Calculation:**
+### RBAC Rules (ClusterRole)
+```yaml
+rules:
+  - apiGroups: ["", "apps", "batch", "extensions"]
+    resources: [nodes, pods, deployments, replicasets, daemonsets, statefulsets, jobs]
+    verbs: [get, list, watch, patch, update]
+  - apiGroups: [""]
+    resources: [pods/eviction]
+    verbs: [create]
+  - apiGroups: ["policy"]
+    resources: [poddisruptionbudgets]
+    verbs: [get, list, watch]
+  - apiGroups: [""]
+    resources: [nodes]
+    verbs: [patch, update]
 ```
-Potential Savings = (On-Demand Price - Spot Price) × 730 hours × Count of On-Demand Nodes
-```
 
-**Data Sources:**
-- On-Demand Price: `pricing_helper.get_ec2_price(region, instance_type)`
-- Spot Price: `ec2.describe_spot_price_history()` (real-time)
-- Fallback: 40% of On-Demand if API fails
-
----
-
-## ✅ COMPLETED UI ENHANCEMENTS
-
-### 1. Dual-Mode Cluster Cards
-**File:** `frontend/src/components/clusters/ClusterList.jsx`
-
-| Mode | Status | Display |
-|------|--------|---------|
-| DISCOVERED | Blue border | Potential savings, node count, "Activate" button |
-| ACTIVE | Green status | CPU/Memory gauges, real-time metrics |
-
-### 2. Savings KPI Split
-**File:** `frontend/src/components/clusters/ClusterList.jsx`
-
-- **Realized Savings**: From ACTIVE clusters (green)
-- **Potential Savings**: From DISCOVERED clusters (blue)
-
-### 3. Sidebar Notification Badge
-**File:** `frontend/src/components/layout/MainLayout.jsx`
-
-- 🔵 Blue pulsing badge: Discovered clusters count
-- 🔴 Red badge: Error clusters count
-- Auto-refresh every 30 seconds
-
-### 4. Discovery Animation Banner
-**File:** `frontend/src/components/clusters/ClusterList.jsx`
-
-- Radar pulse animation
-- Progress steps: Authenticating → Scanning → Analyzing
-- Floating particles effect
-
-### 5. Redis Caching
-**File:** `backend/services/cluster_service.py`
-
-- 30-second TTL cache for cluster list API
-- Graceful fallback on Redis errors
+### DaemonSet Configuration
+- ServiceAccount: `spot-agent-sa`
+- Namespace: `spot-optimizer`
+- Host Network: `true`
+- Tolerations: Run on ALL nodes
+- Volume: `/proc` mounted as `/host/proc`
+- Env: `HOST_PROC=/host/proc`
 
 ---
 
-## 📋 REMAINING ITEMS
-
-### Not Yet Implemented:
-1. **Waffle Chart** - Visual node grid in ClusterDetails
-2. **Savings Projection Simulator** - 12-month line chart with aggressiveness slider
-3. **Installation Wizard** - 4-step stepper with error handling
-4. **Protected Workloads List** - Collapsible list of excluded nodes
-
----
-
-## � TROUBLESHOOTING
+## 🔧 TROUBLESHOOTING
 
 ### If "Activate Optimization" fails:
 
-1. **Check Backend Logs:**
+1. **Check backend logs:**
    ```bash
    docker logs spot-optimizer-backend --tail 100
    ```
 
-2. **Verify Platform Credentials:**
-   - `PLATFORM_AWS_ACCESS_KEY` in SystemConfig
-   - `PLATFORM_AWS_SECRET` in SystemConfig
-   - `PLATFORM_AWS_REGION` in SystemConfig
+2. **Verify platform credentials in SystemConfig table**
 
-3. **Verify IAM Permissions:**
-   - Trust policy allows `sts:AssumeRole` from platform account
-   - External ID matches org ID
-
-4. **Check Cluster CA Data:**
-   - `cluster_ca_data` must be stored in database
-   - Run discovery refresh if missing
+3. **Check cluster accessibility from backend network**

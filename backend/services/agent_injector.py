@@ -412,12 +412,22 @@ class AgentInjectorService:
                     k8s_client.V1PolicyRule(
                         api_groups=["", "apps", "batch", "extensions"],
                         resources=["nodes", "pods", "deployments", "replicasets", "daemonsets", "statefulsets", "jobs"],
-                        verbs=["get", "list", "watch"]
+                        verbs=["get", "list", "watch", "patch", "update"]
                     ),
                     k8s_client.V1PolicyRule(
                         api_groups=[""],
                         resources=["pods/eviction"],
                         verbs=["create"]
+                    ),
+                    k8s_client.V1PolicyRule(
+                        api_groups=["policy"],
+                        resources=["poddisruptionbudgets"],
+                        verbs=["get", "list", "watch"]
+                    ),
+                    k8s_client.V1PolicyRule(
+                        api_groups=[""],
+                        resources=["nodes"],
+                        verbs=["patch", "update"]  # For cordoning nodes
                     )
                 ]
             )
@@ -514,12 +524,29 @@ class AgentInjectorService:
                                                     field_path="spec.nodeName"
                                                 )
                                             )
+                                        ),
+                                        k8s_client.V1EnvVar(
+                                            name="HOST_PROC",
+                                            value="/host/proc"
                                         )
                                     ],
                                     resources=k8s_client.V1ResourceRequirements(
                                         requests={"cpu": "50m", "memory": "64Mi"},
                                         limits={"cpu": "200m", "memory": "256Mi"}
-                                    )
+                                    ),
+                                    volume_mounts=[
+                                        k8s_client.V1VolumeMount(
+                                            name="host-proc",
+                                            mount_path="/host/proc",
+                                            read_only=True
+                                        )
+                                    ]
+                                )
+                            ],
+                            volumes=[
+                                k8s_client.V1Volume(
+                                    name="host-proc",
+                                    host_path=k8s_client.V1HostPathVolumeSource(path="/proc")
                                 )
                             ]
                         )
