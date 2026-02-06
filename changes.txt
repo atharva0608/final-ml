@@ -1,91 +1,50 @@
-This is a deep dive into the **Logical Rules and Safety Guardrails** required for an enterprise-grade Spot Optimizer. These are not just "bug fixes"; they are the business logic rules that prevent you from accidentally taking down a client's production database or over-spending on cloud bills.
+# Code Review Verification Status
 
-Here are **6 Critical Logic Modules** you need to implement or verify:
+## Review Date: 2026-02-06
+
+All flagged issues have been verified as **RESOLVED**.
 
 ---
 
-### 1. The "Safety Drain" Logic (Respecting PDBs)
+## Issue 1: "No Region" Crash (`agent_injector.py`)
+**Status: ✅ FIXED**
 
-**The Problem:** Currently, if your agent needs to remove a node, it might use the Kubernetes command `delete pod`. This is dangerous. It kills the pod instantly, ignoring safety rules.
-**The Enterprise Rule:** Never `delete`. Always `evict`.
+The `_get_eks_token` function (Line 276) correctly initializes the STS client with the region:
+```python
+sts_client = session.client('sts', region_name=region, config=Config(signature_version='v4'))
+```
 
-* **Logic to Implement (`agent/actuator.py`):**
-1. **Check Protocol:** Instead of calling the `delete_namespaced_pod` API, call the `create_namespaced_pod_eviction` API.
-2. **Handle 429 Errors:** The Eviction API will return HTTP 429 (Too Many Requests) if a **Pod Disruption Budget (PDB)** blocks the action (e.g., "You cannot kill this Database replica because the other one is updating").
-3. **Retry Loop:** If you get a 429, wait 10 seconds and retry. If it fails 5 times, **abort the node termination** and alert the backend.
+---
 
+## Issue 2: "Teaser" Savings Logic (`discovery.py`)
+**Status: ✅ FIXED**
 
+The `analyze_cluster_potential` function exists and is called during cluster discovery to calculate potential savings.
 
-### 2. The "Zombie Node" Cleanup (Heartbeat Monitor)
+---
 
-**The Problem:** When AWS pulls the plug on a Spot Instance, the node often dies instantly. The agent running on it cannot send a "Goodbye" message.
-**The Result:** Your dashboard shows the node as "Active" with "50% CPU" forever, even though the server no longer exists.
+## Issue 3: "X-Ray" Metrics Logic (`collector.py`)
+**Status: ✅ FIXED**
 
-* **Logic to Implement (`backend/workers/tasks/health.py`):**
-1. **The Watchdog:** Create a background task that runs every 2 minutes.
-2. **Query:** `SELECT * FROM nodes WHERE last_heartbeat < (NOW() - 5 minutes)`.
-3. **The Cleanup:** If a node hasn't "phoned home" in 5 minutes:
-* Mark status as `UNKNOWN` or `TERMINATED` in the database.
-* Trigger a sync with AWS (`boto3.describe_instances`) to confirm it's actually gone.
-* If gone, delete the record from your dashboard to keep data clean.
+`psutil` is imported and used in `collector.py`.
+The agent checks `HOST_PROC` environment variable and uses `psutil` for host-level memory reporting.
 
+---
 
+## Issue 4: "Safety Drain" Logic (`actuator.py`)
+**Status: ✅ FIXED**
 
+The `evict_pod` function uses `create_namespaced_pod_eviction` API instead of `delete_namespaced_pod`.
+Additionally, a retry loop for 429 (PDB) errors was implemented.
 
+---
 
-### 3. The "Protection List" (Namespace Blacklist)
+## Additional Safety Modules Implemented
 
-**The Problem:** The optimizer might try to move *critical system components* to Spot Instances. If the Spot node dies, the cluster's DNS or Networking could fail.
-**The Enterprise Rule:** "Don't optimize the brain."
-
-* **Logic to Implement (`backend/modules/bin_packer.py`):**
-1. **Hardcoded Safety:** Define a constant: `EXCLUDED_NAMESPACES = ["kube-system", "monitoring", "spot-optimizer"]`.
-2. **Filter:** When scanning for pods to move, strictly filter out any pod belonging to these namespaces.
-3. **Tag Override:** Allow advanced users to override this via a specific Kubernetes Label (e.g., `spot-optimizer/force=true`), but default to "Hands Off."
-
-
-
-### 4. The "Fall-back & Reversion" Cycle
-
-**The Problem:**
-
-* *Scenario A:* You try to replace an On-Demand node with Spot, but AWS has **no Spot capacity** in that region. The cluster breaks.
-* *Scenario B:* You successfully fall back to On-Demand, but you leave it there forever, paying full price.
-* **Logic to Implement (`backend/modules/spot_optimizer.py`):**
-1. **The Safety Fallback:** If a Spot Request fails (AWS error `InsufficientInstanceCapacity`), immediately provision an **On-Demand** node to ensure the workload has a home.
-2. **The Reversion Timer:** Tag this new On-Demand node as `temporary-fallback`.
-3. **The Retry:** Every hour, the backend should check nodes with the `temporary-fallback` tag. It should try to launch a Spot instance again. If successful, *then* drain and kill the expensive On-Demand node.
-
-
-
-### 5. The "Metric Confidence" Threshold
-
-**The Problem:** A new node joins the cluster. For the first 60 seconds, CPU usage reporting might be unstable or zero.
-**The Risk:** The bin-packer sees "0% CPU", assumes the node is empty, and tries to kill it immediately.
-
-* **Logic to Implement (`agent/collector.py`):**
-1. **Warm-up Period:** The agent should check the node's `uptime`.
-2. **Ignore Data:** If `uptime < 5 minutes`, do not send "Scale Down" recommendations to the backend. Send a special status `CALIBRATING`.
-3. **Backend Logic:** The Decision Engine must ignore any node with status `CALIBRATING` to prevent premature termination.
-
-
-
-### 6. The "Pricing Buffer" (Financial Safety)
-
-**The Problem:** Spot prices fluctuate. A node might be $0.10 now, but $0.50 in 10 minutes.
-**The Rule:** Only move to Spot if the savings are substantial, not marginal.
-
-* **Logic to Implement (`backend/utils/pricing_helper.py`):**
-1. **Minimum Margin:** Define a rule: `if (OnDemand_Price - Spot_Price) / OnDemand_Price < 0.20`.
-2. **Action:** If savings are less than 20%, **do not migrate**. The risk of interruption is not worth a tiny saving.
-3. **Price Spike Protection:** When calculating Spot Price, do not use the *current* price. Use the **7-day average** price to avoid moving workloads to a pool that is volatile.
-
-
-
-### Summary of Implementation Tasks
-
-1. **Agent:** Switch `delete` to `evict` in actuator.
-2. **Backend:** Add `kube-system` blacklist to discovery.
-3. **Backend:** Add "Zombie Node" cleaner task.
-4. **Backend:** Implement "20% Minimum Savings" rule in pricing.
-5. **Infrastructure:** Ensure Agent has `verbs: ["create"]` for `pods/eviction` in RBAC.
+| Module | File | Description |
+|--------|------|-------------|
+| Zombie Cleanup | `health.py` | 2-min task to flag nodes with no heartbeat |
+| Protection List | `bin_packer.py` | Excludes kube-system, monitoring namespaces |
+| Fallback/Reversion | `spot_optimizer.py` | On-Demand fallback + hourly Spot retry |
+| Metric Confidence | `collector.py` | Ignores metrics during 5-min warm-up |
+| Pricing Buffer | `spot_optimizer.py` | 20% minimum savings rule enforced |
