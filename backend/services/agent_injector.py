@@ -112,8 +112,8 @@ class AgentInjectorService:
             logger.info(f"Starting agent injection for cluster {cluster_name}")
             
             # Step 1: Assume customer's cross-account role
-            logger.info("Step 1: Assuming cross-account role...")
-            assumed_credentials = self._assume_role(role_arn, external_id)
+            logger.info(f"Step 1: Assuming cross-account role (Region: {region})...")
+            assumed_credentials = self._assume_role(role_arn, external_id, region)
             
             # Step 2: Create EKS access entry for our backend
             logger.info("Step 2: Creating EKS access entry...")
@@ -154,7 +154,7 @@ class AgentInjectorService:
                 "message": str(e)
             }
 
-    def _assume_role(self, role_arn: str, external_id: str) -> Dict:
+    def _assume_role(self, role_arn: str, external_id: str, region: str = 'us-east-1') -> Dict:
         """
         Assume customer's cross-account IAM role using platform credentials.
         
@@ -169,21 +169,28 @@ class AgentInjectorService:
         
         access_key = db.query(SystemConfig).filter(SystemConfig.key == "PLATFORM_AWS_ACCESS_KEY").first()
         secret_key = db.query(SystemConfig).filter(SystemConfig.key == "PLATFORM_AWS_SECRET").first()
-        region = db.query(SystemConfig).filter(SystemConfig.key == "PLATFORM_AWS_REGION").first()
+        # Platform region is where the BACKEND runs.
+        # But for assuming the role, we should use the region where we want to act?
+        # Actually STS is global, but regional endpoints reduce latency.
+        # The user specifically requested using 'cluster.region'.
+        platform_region = db.query(SystemConfig).filter(SystemConfig.key == "PLATFORM_AWS_REGION").first()
         
-        region_name = region.value if region and region.value else 'us-east-1'
+        platform_region_name = platform_region.value if platform_region and platform_region.value else 'us-east-1'
         
+        # Use cluster region if provided, else platform region
+        target_region = region if region else platform_region_name
+
         if access_key and secret_key and access_key.value and secret_key.value:
-            logger.info("Using platform credentials from SystemConfig for STS")
+            logger.info(f"Using platform credentials for STS in region {target_region}")
             sts_client = boto3.client(
                 'sts',
                 aws_access_key_id=access_key.value,
                 aws_secret_access_key=secret_key.value,
-                region_name=region_name
+                region_name=target_region
             )
         else:
-            logger.warning("Platform credentials not found, falling back to env/instance profile")
-            sts_client = boto3.client('sts', region_name=region_name)
+            logger.warning(f"Platform credentials not found, using env/instance profile in {target_region}")
+            sts_client = boto3.client('sts', region_name=target_region)
         
         response = sts_client.assume_role(
             RoleArn=role_arn,

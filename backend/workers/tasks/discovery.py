@@ -297,6 +297,10 @@ def scan_eks_clusters(account: Account, eks_client, db: Session, credentials: Di
                 existing.monthly_cost = int(total_cost)
                 existing.estimated_savings = int(potential_savings)
                 existing.updated_at = datetime.utcnow()
+                # Self-healing: Update region if missing
+                if not existing.region and cluster_data.get('arn'):
+                    existing.region = cluster_data.get('arn').split(':')[3]
+                    
                 if should_update_cost:
                     existing.last_cost_update = datetime.utcnow()
             else:

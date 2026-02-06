@@ -19,6 +19,7 @@ import threading
 from typing import Dict, List, Any, Optional
 from datetime import datetime, timedelta
 import requests
+import psutil  # Added for host metrics
 from kubernetes import client, config
 from kubernetes.client.rest import ApiException
 
@@ -67,6 +68,14 @@ class MetricsCollector:
         self.core_v1 = client.CoreV1Api()
         self.apps_v1 = client.AppsV1Api()
         self.custom_objects = client.CustomObjectsApi()
+        
+        # Configure psutil for host metrics if injected
+        self.host_proc = os.getenv('HOST_PROC')
+        if self.host_proc:
+            psutil.PROCFS_PATH = self.host_proc
+            logger.info(f"Configured psutil to read from host /proc at {self.host_proc}")
+        else:
+            logger.info("HOST_PROC not set, psutil using container /proc")
 
         logger.info(f"MetricsCollector initialized for cluster: {cluster_id}")
 
@@ -218,13 +227,25 @@ class MetricsCollector:
     def collect_node_metrics(self) -> List[Dict[str, Any]]:
         """
         Collect metrics for all nodes in the cluster.
-
-        Returns:
-            List of node metric dictionaries
+        If running as DaemonSet with HOST_PROC, prefers local node metrics.
         """
         node_metrics = []
+        
+        # Priority 1: Local Host Metrics (via psutil)
+        # This is the "Day 2" preferred method: direct OS access, no API server load.
+        if self.host_proc:
+            try:
+                local_metric = self._collect_local_node_metrics()
+                if local_metric:
+                    node_metrics.append(local_metric)
+                    logger.info("Collected local node metrics (X-Ray Vision enabled)")
+                    return node_metrics
+            except Exception as e:
+                logger.warning(f"Direct host access denied. Falling back to API Metrics. Data may be delayed. Error: {e}")
+                # Fallback to API method below if local fails
 
         try:
+            # Priority 2: Standard Kubernetes API (metrics-server)
             # Get node metrics from metrics.k8s.io API
             metrics = self.custom_objects.list_cluster_custom_object(
                 group="metrics.k8s.io",

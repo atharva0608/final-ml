@@ -49,8 +49,31 @@ async def get_linux_installer(
     ws_url = backend_url.replace("https://", "wss://").replace("http://", "ws://")
     ws_endpoint = f"{ws_url}/ws/cluster/{cluster_id}"
     
-    # Generate the dynamic script
-    # We inject ALL required values as environment variables at the top of the script
+    # Read the Kubernetes manifest template
+    manifest_path = Path(__file__).parent.parent / "templates" / "k8s" / "agent.yaml"
+    try:
+        manifest_content = manifest_path.read_text()
+    except FileNotFoundError:
+        # Fallback to hardcoded if file is missing (safety net)
+        # But for 'Critical File Restoration' we assume it's there.
+        # Let's raise error to be strict as per user requirement.
+        raise HTTPException(status_code=500, detail="Agent manifest template not found")
+
+    # Substitute variables in the manifest
+    # We use simple string replacement or Template string
+    from string import Template
+    manifest_template = Template(manifest_content)
+    # Note: The template uses ${VAR} syntax which works with string.Template
+    manifest_k8s = manifest_template.safe_substitute(
+        NAMESPACE="spot-optimizer",
+        AGENT_IMAGE=f"atharva0608/spot-optimizer-agent:{'v1.0.0'}", # Static for now
+        # Other env vars are handled by envFrom/ConfigMap in the manifest structure
+        # Wait, the manifest itself relies on ConfigMap values which are set in the script below.
+        # The manifest template I wrote uses ${NAMESPACE} and ${AGENT_IMAGE}.
+        # The ConfigMap/Secret creation is done in the SHELL SCRIPT part.
+        # So I need to keep the SHELL SCRIPT wrapper, but inject the YAML content.
+    )
+
     dynamic_header = f'''#!/bin/bash
 set -e
 
@@ -116,91 +139,17 @@ kubectl create configmap spot-agent-config \\
 
 # --- 3. Deploy Agent ---
 echo "🤖 Deploying Spot Optimizer Agent..."
+# We inject the manifest content here, but we need to substitute SHELL variables first
+# The python template substitution handled ${NAMESPACE} and ${AGENT_IMAGE}
+# But the manifest in Python had $NAMESPACE (shell var) usage.
+# My manifest template used ${NAMESPACE}.
+# If I inject it directly, I should ensure the shell treats it correctly.
+# Ideally, I substituted NAMESPACE="spot-optimizer" in Python.
+# So the manifest_k8s string now has "namespace: spot-optimizer".
+# That's fine.
+
 cat <<EOF | kubectl apply -f -
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: spot-agent-sa
-  namespace: $NAMESPACE
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: spot-agent-role
-rules:
-  - apiGroups: ["", "apps", "batch", "extensions"]
-    resources: ["nodes", "pods", "deployments", "replicasets", "daemonsets", "statefulsets", "jobs"]
-    verbs: ["get", "list", "watch"]
-  - apiGroups: [""]
-    resources: ["pods/eviction"]
-    verbs: ["create"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: spot-agent-binding
-subjects:
-  - kind: ServiceAccount
-    name: spot-agent-sa
-    namespace: $NAMESPACE
-roleRef:
-  kind: ClusterRole
-  name: spot-agent-role
-  apiGroup: rbac.authorization.k8s.io
----
-apiVersion: apps/v1
-kind: DaemonSet
-metadata:
-  name: spot-agent
-  namespace: $NAMESPACE
-  labels:
-    app: spot-agent
-spec:
-  selector:
-    matchLabels:
-      app: spot-agent
-  template:
-    metadata:
-      labels:
-        app: spot-agent
-    spec:
-      serviceAccountName: spot-agent-sa
-      containers:
-        - name: agent
-          image: $AGENT_IMAGE
-          imagePullPolicy: Always
-          env:
-            - name: NODE_NAME
-              valueFrom:
-                fieldRef:
-                  fieldPath: spec.nodeName
-            - name: API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: spot-agent-secret
-                  key: API_KEY
-            - name: BACKEND_URL
-              valueFrom:
-                configMapKeyRef:
-                  name: spot-agent-config
-                  key: BACKEND_URL
-            - name: CLUSTER_ID
-              valueFrom:
-                configMapKeyRef:
-                  name: spot-agent-config
-                  key: CLUSTER_ID
-            - name: BACKEND_WS_URL
-              valueFrom:
-                configMapKeyRef:
-                  name: spot-agent-config
-                  key: BACKEND_WS_URL
-          resources:
-            requests:
-              cpu: "50m"
-              memory: "64Mi"
-            limits:
-              cpu: "200m"
-              memory: "256Mi"
+{manifest_k8s}
 EOF
 
 echo ""
