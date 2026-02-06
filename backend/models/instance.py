@@ -41,6 +41,8 @@ class Instance(Base):
     
     # Instance State
     state = Column(String(20), nullable=False, default="running", index=True)
+    status = Column(String(20), nullable=True, default="READY")  # For health status: READY, CALIBRATING, UNKNOWN, TERMINATED
+    status_message = Column(String(255), nullable=True)
     
     # Architecture (amd64, arm64)
     architecture = Column(String(20), nullable=True, default="amd64")
@@ -48,6 +50,7 @@ class Instance(Base):
     # Timestamps
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    last_heartbeat = Column(DateTime, nullable=True)  # For zombie node detection
 
     # Relationships
     cluster = relationship("Cluster", back_populates="instances")
