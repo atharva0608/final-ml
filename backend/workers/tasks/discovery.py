@@ -341,57 +341,57 @@ def scan_ec2_instances(account: Account, ec2_client, db: Session) -> int:
 
         for page in paginator.paginate():
             for reservation in page.get('Reservations', []):
-            for instance_data in reservation.get('Instances', []):
-                instance_id = instance_data.get('InstanceId')
-                instance_type = instance_data.get('InstanceType')
-                # AWS returns 'spot' or None (for on-demand), normalize to enum
-                raw_lifecycle = instance_data.get('InstanceLifecycle', 'on-demand')
-                lifecycle = InstanceLifecycle.SPOT if raw_lifecycle == 'spot' else InstanceLifecycle.ON_DEMAND
-                az = instance_data.get('Placement', {}).get('AvailabilityZone')
+                for instance_data in reservation.get('Instances', []):
+                    instance_id = instance_data.get('InstanceId')
+                    instance_type = instance_data.get('InstanceType')
+                    # AWS returns 'spot' or None (for on-demand), normalize to enum
+                    raw_lifecycle = instance_data.get('InstanceLifecycle', 'on-demand')
+                    lifecycle = InstanceLifecycle.SPOT if raw_lifecycle == 'spot' else InstanceLifecycle.ON_DEMAND
+                    az = instance_data.get('Placement', {}).get('AvailabilityZone')
 
-                # Find associated cluster (via tags)
-                tags = instance_data.get('Tags', [])
-                cluster_name = None
-                for tag in tags:
-                    if tag.get('Key') == 'eks:cluster-name':
-                        cluster_name = tag.get('Value')
-                        break
+                    # Find associated cluster (via tags)
+                    tags = instance_data.get('Tags', [])
+                    cluster_name = None
+                    for tag in tags:
+                        if tag.get('Key') == 'eks:cluster-name':
+                            cluster_name = tag.get('Value')
+                            break
 
-                cluster_id = None
-                if cluster_name:
-                    cluster = db.query(Cluster).filter(
-                        Cluster.account_id == account.id,
-                        Cluster.name == cluster_name
+                    cluster_id = None
+                    if cluster_name:
+                        cluster = db.query(Cluster).filter(
+                            Cluster.account_id == account.id,
+                            Cluster.name == cluster_name
+                        ).first()
+                        if cluster:
+                            cluster_id = cluster.id
+
+                    # Check if instance already exists
+                    existing = db.query(Instance).filter(
+                        Instance.instance_id == instance_id
                     ).first()
-                    if cluster:
-                        cluster_id = cluster.id
 
-                # Check if instance already exists
-                existing = db.query(Instance).filter(
-                    Instance.instance_id == instance_id
-                ).first()
+                    if existing:
+                        # Update existing instance
+                        existing.instance_type = instance_type
+                        existing.lifecycle = lifecycle
+                        existing.az = az
+                        existing.updated_at = datetime.utcnow()
+                    else:
+                        # Create new instance
+                        new_instance = Instance(
+                            cluster_id=cluster_id,
+                            instance_id=instance_id,
+                            instance_type=instance_type,
+                            lifecycle=lifecycle,
+                            az=az,
+                            price=None,  # Will be updated by pricing collector
+                            cpu_util=None,  # Will be updated by metrics collection
+                            memory_util=None
+                        )
+                        db.add(new_instance)
 
-                if existing:
-                    # Update existing instance
-                    existing.instance_type = instance_type
-                    existing.lifecycle = lifecycle
-                    existing.az = az
-                    existing.updated_at = datetime.utcnow()
-                else:
-                    # Create new instance
-                    new_instance = Instance(
-                        cluster_id=cluster_id,
-                        instance_id=instance_id,
-                        instance_type=instance_type,
-                        lifecycle=lifecycle,
-                        az=az,
-                        price=None,  # Will be updated by pricing collector
-                        cpu_util=None,  # Will be updated by metrics collection
-                        memory_util=None
-                    )
-                    db.add(new_instance)
-
-                instance_count += 1
+                    instance_count += 1
 
             db.commit()
 
