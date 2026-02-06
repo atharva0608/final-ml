@@ -419,17 +419,17 @@ class MetricsService:
         for instance in active_instances:
             # Calculate hourly cost for instance
             # This is simplified - in production, you'd use actual AWS pricing
-            hourly_cost = instance.price_per_hour or Decimal('0.0')
+            hourly_cost = instance.price or Decimal('0.0')
 
             # Calculate hours in time range
-            instance_start = max(instance.launch_time, start_date) if instance.launch_time else start_date
+            instance_start = max(instance.created_at, start_date) if instance.created_at else start_date
             instance_end = min(datetime.utcnow(), end_date)
             hours = (instance_end - instance_start).total_seconds() / 3600
 
             instance_cost = hourly_cost * Decimal(str(hours))
             total_cost += instance_cost
 
-            if instance.lifecycle == 'spot':
+            if instance.lifecycle == InstanceLifecycle.SPOT:
                 spot_cost += instance_cost
             else:
                 on_demand_cost += instance_cost

@@ -94,7 +94,7 @@ class AgentInjectorService:
     ) -> Dict:
         """
         Main method to inject agent into an EKS cluster.
-        
+
         Args:
             cluster_id: Internal cluster UUID
             cluster_name: EKS cluster name
@@ -104,17 +104,17 @@ class AgentInjectorService:
             role_arn: Customer's cross-account role ARN
             external_id: External ID for role assumption
             api_key: API key for agent authentication
-            
+
         Returns:
             Dict with status and message
         """
         try:
             logger.info(f"Starting agent injection for cluster {cluster_name}")
-            
+
             # Step 1: Assume customer's cross-account role
             logger.info(f"Step 1: Assuming cross-account role (Region: {region})...")
             assumed_credentials = self._assume_role(role_arn, external_id, region)
-            
+
             # Step 2: Create EKS access entry for our backend
             logger.info("Step 2: Creating EKS access entry...")
             self._create_access_entry(
@@ -122,15 +122,19 @@ class AgentInjectorService:
                 credentials=assumed_credentials,
                 region=region
             )
-            
-            # Step 3: Generate Kubernetes token
-            logger.info("Step 3: Generating Kubernetes token...")
+
+            # Step 3: Get backend credentials and generate Kubernetes token
+            # IMPORTANT: Token must be generated using backend's own IAM credentials,
+            # not the assumed role credentials, because the access entry was created
+            # for the backend IAM principal
+            logger.info("Step 3: Generating Kubernetes token using backend credentials...")
+            backend_credentials = self._get_backend_credentials(region)
             k8s_token = self._get_eks_token(
                 cluster_name=cluster_name,
-                credentials=assumed_credentials,
+                credentials=backend_credentials,
                 region=region
             )
-            
+
             # Step 4: Deploy agent manifests
             logger.info("Step 4: Deploying agent manifests...")
             self._deploy_agent(
@@ -140,13 +144,13 @@ class AgentInjectorService:
                 k8s_token=k8s_token,
                 api_key=api_key
             )
-            
+
             logger.info(f"Agent successfully injected into cluster {cluster_name}")
             return {
                 "status": "success",
                 "message": f"Agent installed in cluster {cluster_name}"
             }
-            
+
         except Exception as e:
             logger.error(f"Failed to inject agent: {e}", exc_info=True)
             return {
@@ -205,6 +209,34 @@ class AgentInjectorService:
             'session_token': response['Credentials']['SessionToken']
         }
 
+    def _get_backend_credentials(self, region: str) -> Dict:
+        """
+        Get the backend platform's own IAM credentials.
+
+        Returns:
+            Dict with backend credentials (access_key, secret_key, no session_token for static creds)
+        """
+        from backend.models.base import get_db
+        from backend.models.system_config import SystemConfig
+
+        db = next(get_db())
+
+        access_key = db.query(SystemConfig).filter(SystemConfig.key == "PLATFORM_AWS_ACCESS_KEY").first()
+        secret_key = db.query(SystemConfig).filter(SystemConfig.key == "PLATFORM_AWS_SECRET").first()
+
+        if access_key and secret_key and access_key.value and secret_key.value:
+            logger.info(f"Using backend platform credentials for K8s token generation")
+            return {
+                'access_key': access_key.value,
+                'secret_key': secret_key.value,
+                'session_token': None  # Static credentials don't have session token
+            }
+        else:
+            # Fallback to environment/instance profile credentials
+            logger.warning(f"Platform credentials not found in SystemConfig, using default credentials")
+            # Return empty dict to signal use of default credentials
+            return {}
+
     def _create_access_entry(
         self,
         cluster_name: str,
@@ -262,17 +294,23 @@ class AgentInjectorService:
     def _get_eks_token(self, cluster_name: str, credentials: Dict, region: str) -> str:
         """
         Generate a Kubernetes authentication token for EKS.
-        
+
         This replicates the behavior of `aws eks get-token`.
         """
-        # Create STS client with assumed credentials
-        session = boto3.Session(
-            aws_access_key_id=credentials['access_key'],
-            aws_secret_access_key=credentials['secret_key'],
-            aws_session_token=credentials['session_token'],
-            region_name=region
-        )
-        
+        # Create STS client with provided credentials or use default
+        if credentials and 'access_key' in credentials and 'secret_key' in credentials:
+            # Use explicit credentials
+            session = boto3.Session(
+                aws_access_key_id=credentials['access_key'],
+                aws_secret_access_key=credentials['secret_key'],
+                aws_session_token=credentials.get('session_token'),  # May be None for static creds
+                region_name=region
+            )
+        else:
+            # Use default credentials (environment variables, instance profile, etc.)
+            logger.info("Using default AWS credentials for token generation")
+            session = boto3.Session(region_name=region)
+
         sts_client = session.client('sts', region_name=region, config=Config(signature_version='v4'))
         
         # Get the presigned URL for GetCallerIdentity
