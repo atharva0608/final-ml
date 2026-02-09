@@ -438,7 +438,7 @@ class MetricsCollector:
         if not metrics:
             return True
 
-        url = f"{self.backend_url}/api/v1/metrics/batch"
+        url = f"{self.backend_url}/api/v1/agent-metrics/batch"
         headers = {
             'Authorization': f'Bearer {self.api_key}',
             'Content-Type': 'application/json'

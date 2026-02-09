@@ -16,7 +16,7 @@ from ..models.cluster import Cluster
 from ..models.cluster_metric import ClusterMetric
 from ..core.redis_client import get_redis_client
 
-router = APIRouter(prefix="/api/v1/metrics", tags=["metrics"])
+router = APIRouter(prefix="/api/v1/agent-metrics", tags=["agent-metrics"])
 logger = logging.getLogger(__name__)
 
 

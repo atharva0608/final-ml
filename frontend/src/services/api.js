@@ -135,7 +135,7 @@ export const healthAPI = {
 
 export const policyAPI = {
     listPolicies: (params) => api.get('/api/v1/policies', { params }),
-    getPolicy: (id) => api.get(`/api/v1/policies/${id}`),
+    getPolicy: (id) => api.get(`/api/v1/policies/cluster/${id}`), // Fixed: use cluster endpoint
     createPolicy: (data) => api.post('/api/v1/policies', data),
     updatePolicy: (id, data) => api.put(`/api/v1/policies/${id}`, data),
     togglePolicy: (id) => api.post(`/api/v1/policies/${id}/toggle`),
@@ -143,8 +143,8 @@ export const policyAPI = {
 export const policiesAPI = policyAPI;
 
 export const hibernationAPI = {
-    getSchedule: (clusterId) => api.get(`/api/v1/hibernation/schedule/${clusterId}`),
-    updateSchedule: (clusterId, data) => api.put(`/api/v1/hibernation/schedule/${clusterId}`, data),
+    getSchedule: (clusterId) => api.get(`/api/v1/hibernation/schedules`, { params: { cluster_id: clusterId } }), // Fixed: use schedules endpoint with query
+    updateSchedule: (clusterId, data) => api.put(`/api/v1/hibernation/schedules/${data.id || clusterId}`, data),
 };
 
 export const auditAPI = {
