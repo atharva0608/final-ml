@@ -413,14 +413,15 @@ class AgentInjectorService:
             # Create configmap
             ws_url = self.backend_url.replace('https://', 'wss://').replace('http://', 'ws://')
             backend_ws_url = f"{ws_url}/ws/cluster/{cluster_id}"
-            
+
             try:
                 core_v1.create_namespaced_config_map(
                     namespace=self.NAMESPACE,
                     body=k8s_client.V1ConfigMap(
                         metadata=k8s_client.V1ObjectMeta(name="spot-agent-config"),
                         data={
-                            "BACKEND_URL": backend_ws_url,
+                            "BACKEND_URL": self.backend_url,  # HTTP URL for heartbeats
+                            "BACKEND_WS_URL": backend_ws_url,  # WebSocket URL for real-time comms
                             "CLUSTER_ID": cluster_id
                         }
                     )
