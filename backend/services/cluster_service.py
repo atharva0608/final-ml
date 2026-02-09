@@ -551,7 +551,9 @@ class ClusterService:
         if not cluster:
             raise ResourceNotFoundError("Cluster", cluster_id)
 
-        # Check for active instances
+
+        # Remove active instances check - allow forced deletion
+        # Check for active instances just for logging
         active_instances = self.db.query(Instance).filter(
             and_(
                 Instance.cluster_id == cluster_id,
@@ -560,9 +562,10 @@ class ClusterService:
         ).count()
 
         if active_instances > 0:
-            raise ValidationError(
-                f"Cannot delete cluster with {active_instances} active instances"
-            )
+            logger.warning(f"Deleting cluster {cluster_id} with {active_instances} active instances. They will be orphaned or deleted.")
+            
+        # Explicitly delete instances to ensure cleanup (even if DB cascade exists)
+        self.db.query(Instance).filter(Instance.cluster_id == cluster_id).delete(synchronize_session=False)
 
 
         # Uninstall Agent if installed

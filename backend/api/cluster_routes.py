@@ -1,3 +1,7 @@
+from datetime import datetime
+import logging
+
+logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
@@ -64,6 +68,26 @@ def register_cluster(
         return service.register_cluster(current_user.id, cluster_data)
     except (ResourceAlreadyExistsError, ResourceNotFoundError, ValidationError) as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except (ResourceAlreadyExistsError, ResourceNotFoundError, ValidationError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.post("/discover", status_code=202)
+def trigger_discovery(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Trigger an immediate discovery scan for all accounts.
+    Authentication required.
+    """
+    try:
+        from backend.workers.tasks.discovery import discovery_worker_loop # Trigger the discovery task asynchronously
+        task = discovery_worker_loop.delay()
+        return {"status": "accepted", "message": "Discovery scan started", "task_id": str(task.id)}
+    except Exception as e:
+        logger.error(f"Failed to trigger discovery: {e}")
+        # Fallback if Celery is not available/configured? No, just error.
+        raise HTTPException(status_code=500, detail=f"Failed to start discovery: {str(e)}")
 
 @router.post("/connect", response_model=ClusterResponse)
 def connect_aws_cluster(

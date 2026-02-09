@@ -250,12 +250,20 @@ const ClusterList = () => {
   // Trigger discovery refresh
   const handleRefreshDiscovery = async () => {
     setRefreshing(true);
-    toast.loading('Refreshing cluster discovery...', { id: 'discovery' });
+    toast.loading('Starting discovery scan...', { id: 'discovery' });
     try {
-      await fetchClusters();
-      toast.success('Discovery refreshed!', { id: 'discovery' });
+      // Trigger backend scan
+      await clusterAPI.discover();
+      toast.success('Discovery scan started! Refreshing list...', { id: 'discovery' });
+
+      // Force UI into discovering mode immediately
+      setIsDiscovering(true);
+
+      // Wait a moment for backend to update status
+      setTimeout(() => fetchClusters(), 1000);
     } catch (error) {
-      toast.error('Failed to refresh', { id: 'discovery' });
+      toast.error('Failed to start discovery', { id: 'discovery' });
+      console.error(error);
     } finally {
       setRefreshing(false);
     }

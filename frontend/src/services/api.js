@@ -83,6 +83,7 @@ export const clusterAPI = {
     verifyConnection: (clusterId) => api.post(`/api/v1/clusters/verify/${clusterId}`),
     updateResourceCosts: (clusterId, costs) => api.post(`/api/v1/clusters/${clusterId}/costs`, costs),
     autoInstallAgent: (clusterId) => api.post(`/api/v1/clusters/${clusterId}/auto-install`),
+    discover: () => api.post('/api/v1/clusters/discover'),
 };
 export const clustersAPI = clusterAPI;
 

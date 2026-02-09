@@ -12,7 +12,8 @@ from backend.models.audit_log import AuditLog
 from backend.models.ml_model import MLModel
 from backend.models.optimization_job import OptimizationJob
 from backend.models.lab_experiment import LabExperiment
-from backend.models.agent_action import AgentAction
+from backend.models.agent_action import AgentAction, AgentActionStatus, AgentActionType
+from backend.models.cluster_metric import ClusterMetric
 from backend.models.api_key import APIKey
 from backend.models.team import Team
 from backend.models.authorized_resource import AuthorizedResource
@@ -46,6 +47,9 @@ __all__ = [
     "OptimizationJob",
     "LabExperiment",
     "AgentAction",
+    "AgentActionStatus",
+    "AgentActionType",
+    "ClusterMetric",
     "APIKey",
     "Team",
     "AuthorizedResource",

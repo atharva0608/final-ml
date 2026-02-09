@@ -45,6 +45,10 @@ from backend.api.tag_policy_routes import router as tag_policy_router
 from backend.api.tag_management_routes import router as tag_management_router
 from backend.api.tag_template_routes import router as tag_template_router
 
+# Agent Communication Routes
+from backend.routers.actions import router as actions_router
+from backend.routers.metrics import router as agent_metrics_router
+
 __all__ = [
     "auth_router",
     "template_router",
@@ -424,6 +428,10 @@ app.include_router(transfer_router, prefix="/api/v1")
 app.include_router(tag_policy_router, prefix="/api/v1")
 app.include_router(tag_management_router, prefix="/api/v1")
 app.include_router(tag_template_router, prefix="/api/v1")
+
+# Agent Communication routes (used by Kubernetes agents)
+app.include_router(actions_router)  # Prefix already defined in router
+app.include_router(agent_metrics_router)  # Prefix already defined in router
 
 # Installer routes (public - no auth required)
 from backend.api.installer_routes import router as installer_router
