@@ -448,10 +448,10 @@ class AgentInjectorService:
             cluster_role = k8s_client.V1ClusterRole(
                 metadata=k8s_client.V1ObjectMeta(name="spot-agent-role"),
                 rules=[
-                    # Core Resources (Nodes, Pods)
+                    # Core Resources (Nodes, Pods, Events)
                     k8s_client.V1PolicyRule(
                         api_groups=[""],
-                        resources=["nodes", "pods", "pods/eviction"],
+                        resources=["nodes", "pods", "pods/eviction", "events", "namespaces"],
                         verbs=["get", "list", "watch", "patch", "create", "delete", "update"]
                     ),
                     # Workload Controllers (DaemonSets, Deployments)
@@ -465,6 +465,12 @@ class AgentInjectorService:
                         api_groups=["policy"],
                         resources=["poddisruptionbudgets"],
                         verbs=["get", "list", "watch"]
+                    ),
+                    # Metrics API (Pod and Node metrics)
+                    k8s_client.V1PolicyRule(
+                        api_groups=["metrics.k8s.io"],
+                        resources=["pods", "nodes"],
+                        verbs=["get", "list"]
                     )
                 ]
             )
@@ -538,6 +544,25 @@ class AgentInjectorService:
                                         ),
                                         k8s_client.V1EnvVar(
                                             name="BACKEND_URL",
+                                            value_from=k8s_client.V1EnvVarSource(
+                                                config_map_key_ref=k8s_client.V1ConfigMapKeySelector(
+                                                    name="spot-agent-config",
+                                                    key="BACKEND_URL"
+                                                )
+                                            )
+                                        ),
+                                        # BACKWARD COMPATIBILITY: Provide API_TOKEN and API_URL for config.py validation
+                                        k8s_client.V1EnvVar(
+                                            name="API_TOKEN",
+                                            value_from=k8s_client.V1EnvVarSource(
+                                                secret_key_ref=k8s_client.V1SecretKeySelector(
+                                                    name="spot-agent-secret",
+                                                    key="API_KEY"
+                                                )
+                                            )
+                                        ),
+                                        k8s_client.V1EnvVar(
+                                            name="API_URL",
                                             value_from=k8s_client.V1EnvVarSource(
                                                 config_map_key_ref=k8s_client.V1ConfigMapKeySelector(
                                                     name="spot-agent-config",

@@ -224,12 +224,6 @@ class Agent:
             cluster_id=self.cluster_id,
             agent_id=self.agent_id
         )
-        self.websocket_client = WebSocketClient(
-            backend_ws_url=self.backend_ws_url,
-            api_key=self.api_key,
-            cluster_id=self.cluster_id,
-            agent_id=self.agent_id
-        )
         logger.info("WebSocket client initialized")
 
         # Initialize Spot Poller (Runtime Safety)
@@ -288,7 +282,6 @@ class Agent:
             name="WebSocketClient",
             daemon=True
         )
-        self.websocket_thread.start()
         self.websocket_thread.start()
         logger.info("WebSocket client started")
 
