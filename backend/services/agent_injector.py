@@ -618,3 +618,117 @@ class AgentInjectorService:
                     pass
 
 
+    def uninstall_agent(
+        self,
+        cluster_name: str,
+        cluster_endpoint: str,
+        cluster_ca_data: str,
+        role_arn: str,
+        external_id: str,
+        region: str
+    ) -> Dict:
+        """
+        Uninstall the agent from the cluster.
+        """
+        try:
+            logger.info(f"Starting agent uninstallation for cluster {cluster_name}")
+
+            # Step 1: Assume customer's cross-account role
+            logger.info(f"Assuming cross-account role for uninstall (Region: {region})...")
+            assumed_credentials = self._assume_role(role_arn, external_id, region)
+
+            # Step 2: Get backend credentials and generate Kubernetes token
+            logger.info("Generating Kubernetes token...")
+            backend_credentials = self._get_backend_credentials(region)
+            k8s_token = self._get_eks_token(
+                cluster_name=cluster_name,
+                credentials=backend_credentials,
+                region=region
+            )
+
+            # Step 3: Remove agent resources
+            logger.info("Removing agent resources...")
+            self._remove_agent_resources(
+                cluster_endpoint=cluster_endpoint,
+                cluster_ca_data=cluster_ca_data,
+                k8s_token=k8s_token
+            )
+
+            return {
+                "status": "success",
+                "message": f"Agent uninstalled from cluster {cluster_name}"
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to uninstall agent: {e}", exc_info=True)
+            return {
+                "status": "error",
+                "message": str(e)
+            }
+
+    def _remove_agent_resources(
+        self,
+        cluster_endpoint: str,
+        cluster_ca_data: str,
+        k8s_token: str
+    ) -> None:
+        """
+        Remove agent resources from the cluster using Kubernetes API.
+        """
+        try:
+            from kubernetes import client as k8s_client
+            from kubernetes.client import Configuration, ApiClient
+        except ImportError:
+            raise ImportError("kubernetes package is required")
+
+        # Create temp file for CA cert
+        import tempfile
+        ca_cert_path = None
+        
+        try:
+            with tempfile.NamedTemporaryFile(delete=False) as ca_cert_file:
+                ca_cert_file.write(base64.b64decode(cluster_ca_data))
+                ca_cert_file.flush()
+                ca_cert_path = ca_cert_file.name
+
+            # Configure Kubernetes client
+            config = Configuration()
+            config.host = cluster_endpoint
+            config.api_key = {"authorization": f"Bearer {k8s_token}"}
+            config.ssl_ca_cert = ca_cert_path
+            config.verify_ssl = True
+            
+            api_client = ApiClient(configuration=config)
+            core_v1 = k8s_client.CoreV1Api(api_client)
+            rbac_v1 = k8s_client.RbacAuthorizationV1Api(api_client)
+
+            # 1. Delete Namespace (cascades to Deployment/DaemonSet/Secret/ConfigMap/ServiceAccount)
+            try:
+                logger.info(f"Deleting namespace {self.NAMESPACE}...")
+                core_v1.delete_namespace(name=self.NAMESPACE)
+            except k8s_client.exceptions.ApiException as e:
+                if e.status != 404:
+                    logger.warning(f"Error deleting namespace: {e}")
+
+            # 2. Delete ClusterRoleBinding
+            try:
+                logger.info("Deleting ClusterRoleBinding spot-agent-binding...")
+                rbac_v1.delete_cluster_role_binding(name="spot-agent-binding")
+            except k8s_client.exceptions.ApiException as e:
+                 if e.status != 404:
+                    logger.warning(f"Error deleting ClusterRoleBinding: {e}")
+
+            # 3. Delete ClusterRole
+            try:
+                logger.info("Deleting ClusterRole spot-agent-role...")
+                rbac_v1.delete_cluster_role(name="spot-agent-role")
+            except k8s_client.exceptions.ApiException as e:
+                 if e.status != 404:
+                    logger.warning(f"Error deleting ClusterRole: {e}")
+
+        finally:
+            if ca_cert_path and os.path.exists(ca_cert_path):
+                try:
+                    os.remove(ca_cert_path)
+                except OSError:
+                    pass

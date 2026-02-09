@@ -12,6 +12,7 @@ class ClusterStatus(enum.Enum):
     INACTIVE = "INACTIVE"
     ERROR = "ERROR"
     TERMINATED = "TERMINATED"
+    DISCONNECTED = "DISCONNECTED"
 
 class ClusterType(enum.Enum):
     EKS = "EKS"

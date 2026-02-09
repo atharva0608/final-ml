@@ -564,6 +564,26 @@ class ClusterService:
                 f"Cannot delete cluster with {active_instances} active instances"
             )
 
+
+        # Uninstall Agent if installed
+        if cluster.agent_installed == 'Y' and cluster.account.role_arn:
+            try:
+                from backend.services.agent_injector import AgentInjectorService
+                injector = AgentInjectorService(self.db)
+                
+                logger.info(f"Uninstalling agent from cluster {cluster.name} before deletion...")
+                injector.uninstall_agent(
+                    cluster_name=cluster.name,
+                    cluster_endpoint=cluster.endpoint,
+                    cluster_ca_data=cluster.ca_data,
+                    role_arn=cluster.account.role_arn,
+                    external_id=cluster.aws_external_id or cluster.account.external_id,
+                    region=cluster.region
+                )
+            except Exception as e:
+                logger.warning(f"Failed to uninstall agent during cluster deletion: {e}")
+                # Proceed with deletion anyway
+
         self.db.delete(cluster)
         self.db.commit()
 
