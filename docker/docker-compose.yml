@@ -69,6 +69,12 @@ services:
       - ../backend:/app/backend
       - ../scripts:/app/scripts
       - ../config:/app/config
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
     restart: unless-stopped
 
   # Celery Worker
@@ -100,6 +106,12 @@ services:
       - ../backend:/app/backend
       - ../scripts:/app/scripts
       - ../config:/app/config
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A backend.workers inspect ping --timeout=10 || exit 1"]
+      interval: 30s
+      timeout: 15s
+      retries: 3
+      start_period: 40s
     restart: unless-stopped
 
   # Celery Beat Scheduler
@@ -131,6 +143,12 @@ services:
       - ../backend:/app/backend
       - ../scripts:/app/scripts
       - ../config:/app/config
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import redis; r=redis.Redis(host=\"redis\", port=6379, db=1); r.ping()' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
     restart: unless-stopped
 
   # React Frontend (Nginx)
@@ -155,6 +173,12 @@ services:
     #   - /app/frontend/node_modules
     networks:
       - app-network
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /usr/share/nginx/html/index.html && ps aux | grep '[n]ginx' > /dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
     restart: unless-stopped
 
 networks:
