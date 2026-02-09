@@ -279,9 +279,9 @@ const ClusterList = () => {
 
   const handleDisconnectCluster = async (clusterId, deleteNodes) => {
     try {
-      // Update cluster status to DISCONNECTED instead of deleting
+      // Update cluster status to INACTIVE instead of deleting
       await clusterAPI.updateCluster(clusterId, {
-        status: 'DISCONNECTED',
+        status: 'INACTIVE',
         deleteNodes: deleteNodes
       });
       toast.success('Cluster disconnected successfully');
@@ -583,7 +583,7 @@ const ClusterList = () => {
                       }
 
                       const statusText = connected ? 'Connected' :
-                        cluster.status === 'DISCONNECTED' ? 'Disconnected' :
+                        cluster.status === 'INACTIVE' ? 'Disconnected' :
                           cluster.status === 'PENDING' ? 'Pending' : 'Offline';
                       const bgColor = connected ? 'bg-green-50 text-green-700' :
                         cluster.status === 'PENDING' ? 'bg-yellow-50 text-yellow-700' :
@@ -631,7 +631,7 @@ const ClusterList = () => {
                             Inject Agent
                           </button>
                         )}
-                        {cluster.status === 'DISCONNECTED' && (
+                        {cluster.status === 'INACTIVE' && (
                           <button
                             className="w-full px-4 py-2 text-left text-sm text-blue-600 hover:bg-blue-50 flex items-center gap-2"
                             onClick={(e) => handleReconnectCluster(cluster.id, e)}
