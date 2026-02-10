@@ -1,36 +1,80 @@
 /**
  * Hibernation Schedule Grid Editor
- * 168-hour schedule matrix (7 days × 24 hours)
+ * 168-hour schedule matrix (7 days x 24 hours)
+ * With triple-strategy selection (Namespace Sleep, Nuclear, Snapshot & Restore)
  */
 import React, { useState, useEffect, useRef } from 'react';
 import { hibernationAPI, metricAPI } from '../../services/api';
 import { useClusterStore } from '../../store/useStore';
 import { Card, Button, Input, Badge } from '../shared';
-import { FiSave, FiRotateCcw, FiClock, FiSun, FiMoon, FiDollarSign, FiPlay, FiPower } from 'react-icons/fi';
+import { FiSave, FiRotateCcw, FiClock, FiSun, FiMoon, FiDollarSign, FiPlay, FiPower, FiZap, FiShield, FiChevronDown, FiChevronUp } from 'react-icons/fi';
 import toast from 'react-hot-toast';
 
 const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 const HOURS = Array.from({ length: 24 }, (_, i) => i);
 
-// Common timezones
 const TIMEZONES = [
   'UTC', 'America/New_York', 'America/Chicago', 'America/Denver', 'America/Los_Angeles',
   'Europe/London', 'Europe/Paris', 'Asia/Tokyo', 'Asia/Shanghai', 'Australia/Sydney',
+];
+
+const STRATEGIES = [
+  {
+    value: 'NAMESPACE_SLEEP',
+    label: 'Namespace Sleep',
+    icon: FiMoon,
+    color: 'blue',
+    bgColor: 'bg-blue-50',
+    borderColor: 'border-blue-500',
+    textColor: 'text-blue-700',
+    tagline: '~2 min wake | ~80% savings',
+    description: 'Scales workloads to 0 replicas. Cluster Autoscaler drains idle nodes.',
+    bestFor: 'Best for stateless dev/test',
+    savingsMultiplier: 0.80,
+  },
+  {
+    value: 'NUCLEAR',
+    label: 'Nuclear',
+    icon: FiZap,
+    color: 'red',
+    bgColor: 'bg-red-50',
+    borderColor: 'border-red-500',
+    textColor: 'text-red-700',
+    tagline: '~8 min wake | ~99% savings',
+    description: 'Scales all ASGs to 0. Maximum cost reduction.',
+    bestFor: 'Best for non-critical environments',
+    savingsMultiplier: 0.99,
+  },
+  {
+    value: 'SNAPSHOT_RESTORE',
+    label: 'Snapshot & Restore',
+    icon: FiShield,
+    color: 'green',
+    bgColor: 'bg-green-50',
+    borderColor: 'border-green-500',
+    textColor: 'text-green-700',
+    tagline: '~12 min wake | ~90% savings',
+    description: 'Snapshots EBS volumes before shutdown. Preserves data with AZ affinity.',
+    bestFor: 'Best for databases',
+    savingsMultiplier: 0.90,
+  },
 ];
 
 const HibernationSchedule = ({ clusterId }) => {
   const { clusters } = useClusterStore();
   const [loading, setLoading] = useState(false);
   const [isPainting, setIsPainting] = useState(false);
-  const [paintMode, setPaintMode] = useState(null); // 'awake' or 'sleep'
-  const [hourlyCost, setHourlyCost] = useState(0); // Dynamic cost per hour
+  const [paintMode, setPaintMode] = useState(null);
+  const [hourlyCost, setHourlyCost] = useState(0);
+  const [showComparison, setShowComparison] = useState(false);
 
   const [formData, setFormData] = useState({
     cluster_id: clusterId || '',
-    schedule_matrix: Array(168).fill(1), // Default: always awake
+    schedule_matrix: Array(168).fill(1),
     timezone: 'UTC',
     pre_warm_minutes: 15,
     is_active: true,
+    strategy: 'NAMESPACE_SLEEP',
   });
 
   const [existingSchedule, setExistingSchedule] = useState(null);
@@ -40,26 +84,24 @@ const HibernationSchedule = ({ clusterId }) => {
   useEffect(() => {
     if (clusterId) {
       fetchScheduleForCluster(clusterId);
-      fetchClusterCost(clusterId); // Fetch dynamic cost
+      fetchClusterCost(clusterId);
     }
   }, [clusterId]);
 
   useEffect(() => {
     calculateSavings();
-  }, [formData.schedule_matrix, hourlyCost]);
+  }, [formData.schedule_matrix, formData.strategy, hourlyCost]);
 
-  // NEW: Fetch dynamic hourly cost from metrics API
   const fetchClusterCost = async (clusterIdParam) => {
     try {
       const response = await metricAPI.getClusterMetrics(clusterIdParam);
       if (response.data) {
-        // Calculate estimated hourly cost (instances * avg price)
         const estimatedHourly = (response.data.total_instances || 0) * 0.12;
         setHourlyCost(estimatedHourly);
       }
     } catch (error) {
       console.warn('Failed to fetch hourly cost, using default', error);
-      setHourlyCost(2.45); // Fallback default
+      setHourlyCost(2.45);
     }
   };
 
@@ -67,14 +109,17 @@ const HibernationSchedule = ({ clusterId }) => {
     setLoading(true);
     try {
       const response = await hibernationAPI.getByCluster(clusterIdParam);
-      if (response.data.schedule) {
-        setExistingSchedule(response.data.schedule);
+      const schedules = response.data?.schedules || [];
+      if (schedules.length > 0) {
+        const schedule = schedules[0];
+        setExistingSchedule(schedule);
         setFormData({
-          cluster_id: response.data.schedule.cluster_id,
-          schedule_matrix: response.data.schedule.schedule_matrix || Array(168).fill(1),
-          timezone: response.data.schedule.timezone || 'UTC',
-          pre_warm_minutes: response.data.schedule.pre_warm_minutes || 15,
-          is_active: response.data.schedule.is_active ?? true,
+          cluster_id: schedule.cluster_id,
+          schedule_matrix: schedule.schedule_matrix || Array(168).fill(1),
+          timezone: schedule.timezone || 'UTC',
+          pre_warm_minutes: schedule.pre_warm_minutes || 15,
+          is_active: schedule.is_active ?? true,
+          strategy: schedule.strategy || 'NAMESPACE_SLEEP',
         });
       }
     } catch (error) {
@@ -88,8 +133,8 @@ const HibernationSchedule = ({ clusterId }) => {
 
   const calculateSavings = () => {
     const sleepHours = formData.schedule_matrix.filter(h => h === 0).length;
-    // Use dynamic hourlyCost instead of hardcoded constant
-    const monthlySavings = (sleepHours / 168) * (hourlyCost * 24 * 30);
+    const strategyConfig = STRATEGIES.find(s => s.value === formData.strategy) || STRATEGIES[0];
+    const monthlySavings = (sleepHours / 168) * (hourlyCost * 24 * 30) * strategyConfig.savingsMultiplier;
     setSavings(monthlySavings);
   };
 
@@ -102,9 +147,7 @@ const HibernationSchedule = ({ clusterId }) => {
     }
 
     try {
-      const schedulePayload = {
-        ...formData,
-      };
+      const schedulePayload = { ...formData };
 
       if (existingSchedule) {
         await hibernationAPI.update(existingSchedule.id, schedulePayload);
@@ -136,12 +179,22 @@ const HibernationSchedule = ({ clusterId }) => {
   };
 
   const handleWakeUpNow = async () => {
-    if (!clusterId) return;
+    if (!existingSchedule) return;
     try {
-      await hibernationAPI.override(clusterId, { duration_minutes: 120 });
-      toast.success('Cluster woken up for 2 hours');
+      await hibernationAPI.override(existingSchedule.id, { action: 'WAKE', duration_minutes: 120 });
+      toast.success('Cluster wake-up queued');
     } catch (error) {
       toast.error('Failed to wake cluster');
+    }
+  };
+
+  const handleSleepNow = async () => {
+    if (!existingSchedule) return;
+    try {
+      await hibernationAPI.override(existingSchedule.id, { action: 'SLEEP' });
+      toast.success('Cluster sleep queued');
+    } catch (error) {
+      toast.error('Failed to sleep cluster');
     }
   };
 
@@ -185,7 +238,6 @@ const HibernationSchedule = ({ clusterId }) => {
 
   const setBusinessHours = () => {
     const matrix = Array(168).fill(0);
-    // Monday-Friday, 9am-5pm = awake
     for (let day = 0; day < 5; day++) {
       for (let hour = 9; hour < 17; hour++) {
         matrix[day * 24 + hour] = 1;
@@ -215,6 +267,8 @@ const HibernationSchedule = ({ clusterId }) => {
     );
   }
 
+  const selectedStrategy = STRATEGIES.find(s => s.value === formData.strategy) || STRATEGIES[0];
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -226,6 +280,14 @@ const HibernationSchedule = ({ clusterId }) => {
         <div className="flex gap-2">
           {existingSchedule && (
             <>
+              <Button
+                variant="outline"
+                icon={<FiMoon />}
+                onClick={handleSleepNow}
+                title="Put cluster to sleep immediately"
+              >
+                Sleep Now
+              </Button>
               <Button
                 variant="outline"
                 icon={<FiPlay />}
@@ -312,9 +374,99 @@ const HibernationSchedule = ({ clusterId }) => {
               <p className="text-3xl font-bold text-green-600 mt-2">
                 ${savings.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
               </p>
-              <p className="text-sm text-gray-500 mt-1">Based on current schedule</p>
+              <p className="text-sm text-gray-500 mt-1">
+                {selectedStrategy.label} strategy ({Math.round(selectedStrategy.savingsMultiplier * 100)}% efficiency)
+              </p>
             </div>
           </Card>
+        </div>
+
+        {/* Strategy Selection Cards */}
+        <div className="mb-6">
+          <h3 className="text-lg font-semibold text-gray-900 mb-3">Hibernation Strategy</h3>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {STRATEGIES.map((strategy) => {
+              const Icon = strategy.icon;
+              const isSelected = formData.strategy === strategy.value;
+              return (
+                <div
+                  key={strategy.value}
+                  onClick={() => setFormData({ ...formData, strategy: strategy.value })}
+                  className={`relative cursor-pointer rounded-lg border-2 p-4 transition-all ${
+                    isSelected
+                      ? `${strategy.borderColor} ${strategy.bgColor} shadow-md`
+                      : 'border-gray-200 bg-white hover:border-gray-300 hover:shadow-sm'
+                  }`}
+                >
+                  {isSelected && (
+                    <div className={`absolute top-2 right-2 w-5 h-5 rounded-full ${strategy.borderColor.replace('border', 'bg')} flex items-center justify-center`}>
+                      <svg className="w-3 h-3 text-white" fill="currentColor" viewBox="0 0 20 20">
+                        <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                      </svg>
+                    </div>
+                  )}
+                  <div className="flex items-center gap-3 mb-2">
+                    <div className={`p-2 rounded-lg ${isSelected ? strategy.bgColor : 'bg-gray-100'}`}>
+                      <Icon className={`w-5 h-5 ${isSelected ? strategy.textColor : 'text-gray-500'}`} />
+                    </div>
+                    <div>
+                      <h4 className={`font-semibold ${isSelected ? strategy.textColor : 'text-gray-900'}`}>
+                        {strategy.label}
+                      </h4>
+                      <p className="text-xs text-gray-500">{strategy.tagline}</p>
+                    </div>
+                  </div>
+                  <p className="text-sm text-gray-600">{strategy.description}</p>
+                  <p className={`text-xs mt-2 font-medium ${isSelected ? strategy.textColor : 'text-gray-400'}`}>
+                    {strategy.bestFor}
+                  </p>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Collapsible Comparison Table */}
+          <button
+            type="button"
+            onClick={() => setShowComparison(!showComparison)}
+            className="mt-3 flex items-center gap-1 text-sm text-gray-500 hover:text-gray-700 transition-colors"
+          >
+            {showComparison ? <FiChevronUp /> : <FiChevronDown />}
+            {showComparison ? 'Hide' : 'Show'} strategy comparison
+          </button>
+
+          {showComparison && (
+            <div className="mt-2 overflow-hidden rounded-lg border border-gray-200">
+              <table className="min-w-full divide-y divide-gray-200 text-sm">
+                <thead className="bg-gray-50">
+                  <tr>
+                    <th className="px-4 py-2 text-left font-medium text-gray-500">Strategy</th>
+                    <th className="px-4 py-2 text-center font-medium text-gray-500">Wake Time</th>
+                    <th className="px-4 py-2 text-center font-medium text-gray-500">Savings</th>
+                    <th className="px-4 py-2 text-center font-medium text-gray-500">Safety</th>
+                    <th className="px-4 py-2 text-left font-medium text-gray-500">Best For</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100 bg-white">
+                  {STRATEGIES.map(s => (
+                    <tr key={s.value} className={formData.strategy === s.value ? s.bgColor : ''}>
+                      <td className="px-4 py-2 font-medium text-gray-900">{s.label}</td>
+                      <td className="px-4 py-2 text-center text-gray-600">{s.tagline.split('|')[0].trim()}</td>
+                      <td className="px-4 py-2 text-center text-gray-600">{Math.round(s.savingsMultiplier * 100)}%</td>
+                      <td className="px-4 py-2 text-center">
+                        <span className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${
+                          s.value === 'NUCLEAR' ? 'bg-yellow-100 text-yellow-700' : 'bg-green-100 text-green-700'
+                        }`}>
+                          {s.value === 'NUCLEAR' ? 'Medium' : 'High'}
+                        </span>
+                      </td>
+                      <td className="px-4 py-2 text-gray-600">{s.bestFor}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
 
         {/* Schedule Grid */}
@@ -368,7 +520,6 @@ const HibernationSchedule = ({ clusterId }) => {
             </div>
           </div>
 
-          {/* Simple Legend/Help */}
           <div className="flex justify-end pt-4 border-t mt-6">
             <Button type="submit" variant="primary" icon={<FiSave />}>
               {existingSchedule ? 'Update Schedule' : 'Create Schedule'}

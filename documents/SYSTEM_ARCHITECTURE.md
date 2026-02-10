@@ -203,6 +203,47 @@ graph TD
 | LabService | `lab_service.py` | Experiment CRUD, model registry |
 | HealthService | `health_service.py` | System health checks (DB, Redis, Celery, AWS) |
 
+### 2.12 HibernationWorker (`backend/workers/tasks/hibernation_worker.py`)
+
+The hibernation worker runs every 1 minute via Celery Beat and enforces cluster sleep/wake schedules. It now supports three hibernation strategies dispatched through `trigger_sleep` and `trigger_wake` methods.
+
+**Strategies** (`HibernationStrategy` enum):
+
+| Strategy | Sleep Behavior | Wake Behavior | Use Case |
+|:---------|:---------------|:--------------|:---------|
+| `NAMESPACE_SLEEP` | Scale deployments/StatefulSets to 0 replicas via K8s API; preserve HPA configs in `saved_state` | Restore replica counts and HPA configs from `saved_state` | Soft shutdown — nodes stay warm, workloads paused |
+| `NUCLEAR` | Set all ASG `desiredCapacity` to 0 via EC2 Auto Scaling API | Restore ASG capacities from `saved_state` | Hard shutdown — all nodes terminated, zero compute cost |
+| `SNAPSHOT_RESTORE` | Create EBS snapshots of persistent volumes, record AZ affinity in `az_affinity`, then execute NUCLEAR | Restore EBS volumes from snapshots in correct AZs, then execute NUCLEAR wake | Stateful workloads — preserves data across full teardown |
+
+**Helper Utilities**:
+
+| Helper | Purpose |
+|:-------|:--------|
+| K8s Client Helper | Builds an authenticated Kubernetes API client using SigV4 presigned EKS tokens (same pattern as `AgentInjectorService`). Assumes cross-account role, generates `k8s-aws-v1.` bearer token, connects to cluster endpoint. |
+| ASG Discovery Helper | Discovers Auto Scaling Groups associated with a cluster's node groups. Uses `eks:ListNodegroups` + `eks:DescribeNodegroup` to find ASG names, then queries `autoscaling:DescribeAutoScalingGroups` for current capacities. |
+
+**Strategy Dispatch Pattern**:
+
+```
+check_hibernation_schedules() [every 1 min]
+  → For each active schedule:
+    → Evaluate cron expression against current time (timezone-aware)
+    → If sleep window entered:
+        → trigger_sleep(schedule)
+          → Read schedule.strategy
+          → NAMESPACE_SLEEP: K8s client → scale to 0, save state
+          → NUCLEAR: ASG discovery → set desired=0, save state
+          → SNAPSHOT_RESTORE: snapshot volumes → then NUCLEAR sleep
+          → Update last_action=SLEEP, last_action_at=now()
+    → If wake window entered:
+        → trigger_wake(schedule)
+          → Read schedule.strategy
+          → NAMESPACE_SLEEP: K8s client → restore replicas from saved_state
+          → NUCLEAR: ASG discovery → restore capacities from saved_state
+          → SNAPSHOT_RESTORE: restore volumes from snapshots → then NUCLEAR wake
+          → Update last_action=WAKE, last_action_at=now()
+```
+
 ---
 
 ## 3. ML/Optimization Modules
@@ -292,7 +333,7 @@ Discovery Worker (every 5 min)
 | Table | Key Columns | Relationships |
 |:------|:------------|:-------------|
 | `users` | id, email, role, organization_id, team_id, preferences (JSON) | → Organization, → Team |
-| `organizations` | id, name, required_tags (JSON), automation_enabled, automation_requires_approval | ← Users, ← Accounts |
+| `organizations` | id, name, required_tags (JSON), automation_enabled, automation_requires_approval, automation_config (JSON) | ← Users, ← Accounts |
 | `teams` | id, name, organization_id, governance_config (JSON) | → Organization, ← Users |
 | `accounts` | id, organization_id, role_arn, external_id, status, last_sync_at, sync_status | → Organization |
 | `clusters` | id, account_id, name, arn, region, status, monthly_cost, estimated_savings, cpu_usage_pct, mem_usage_pct, last_heartbeat | → Account, ← Instances |
@@ -301,7 +342,7 @@ Discovery Worker (every 5 min)
 | `audit_logs` | id, actor_id, action, target, outcome, metadata (JSON), timestamp | → User |
 | `hygiene_policies` | id, organization_id, name, resource_type, conditions (JSON), actions (JSON) | → Organization |
 | `cluster_policies` | id, cluster_id, config (JSONB) | → Cluster |
-| `hibernation_schedules` | id, cluster_id, schedule (JSON), timezone, active | → Cluster |
+| `hibernation_schedules` | id, cluster_id, schedule (JSON), timezone, active, strategy, saved_state (JSON), az_affinity (JSON), last_action, last_action_at | → Cluster |
 | `system_config` | key, value | Key-value platform settings |
 
 ---

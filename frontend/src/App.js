@@ -49,6 +49,7 @@ import TransferAnalysis from './components/transfer/TransferAnalysis';
 import AccountAnalytics from './pages/AccountAnalytics';
 import Approvals from './pages/Approvals';
 import TicketRequestModal from './components/approvals/TicketRequestModal';
+import PermissionGate from './components/governance/PermissionGate';
 
 // Protected Route Component
 const ProtectedRoute = ({ children }) => {
@@ -218,22 +219,126 @@ function App() {
           >
             <Route index element={<Navigate to="/dashboard" replace />} />
             <Route path="dashboard" element={<Dashboard />} />
-            <Route path="clusters" element={<ClusterList />} />
-            <Route path="policies" element={<PolicyConfig />} />
-            <Route path="templates" element={<TemplateList />} />
-            <Route path="right-sizing" element={<RightSizing />} />
-            <Route path="hibernation" element={<HibernationSchedule />} />
-            <Route path="audit" element={<AuditLog />} />
-            <Route path="hygiene" element={<CleanupDashboard />} />
+            <Route path="clusters" element={
+              <PermissionGate
+                featureId="compute:view"
+                sectionName="Clusters"
+                sectionDescription="View and manage your AWS clusters and compute resources"
+              >
+                <ClusterList />
+              </PermissionGate>
+            } />
+            <Route path="policies" element={
+              <PermissionGate
+                featureId="policy:manage"
+                sectionName="Policies"
+                sectionDescription="Create and manage optimization policies"
+              >
+                <PolicyConfig />
+              </PermissionGate>
+            } />
+            <Route path="templates" element={
+              <PermissionGate
+                featureId="template:view"
+                sectionName="Templates"
+                sectionDescription="View and use configuration templates"
+              >
+                <TemplateList />
+              </PermissionGate>
+            } />
+            <Route path="right-sizing" element={
+              <PermissionGate
+                featureId="compute:view"
+                sectionName="Right-Sizing"
+                sectionDescription="View and apply instance right-sizing recommendations"
+              >
+                <RightSizing />
+              </PermissionGate>
+            } />
+            <Route path="hibernation" element={
+              <PermissionGate
+                featureId="hibernation:view"
+                sectionName="Hibernation"
+                sectionDescription="View and manage cluster hibernation schedules"
+              >
+                <HibernationSchedule />
+              </PermissionGate>
+            } />
+            <Route path="automation-settings" element={
+              <PermissionGate
+                featureId="policy:manage"
+                sectionName="Automation Settings"
+                sectionDescription="Configure system-wide automation and approval controls"
+              >
+                <GovernanceSettings />
+              </PermissionGate>
+            } />
+            <Route path="audit" element={
+              <PermissionGate
+                featureId="audit:view"
+                sectionName="Audit Logs"
+                sectionDescription="View system audit logs and compliance reports"
+              >
+                <AuditLog />
+              </PermissionGate>
+            } />
+            <Route path="hygiene" element={
+              <PermissionGate
+                featureId="hygiene:view"
+                sectionName="Resource Hygiene"
+                sectionDescription="View and clean up wasted cloud resources"
+              >
+                <CleanupDashboard />
+              </PermissionGate>
+            } />
             <Route path="approvals" element={<Approvals />} />
             <Route path="settings" element={<Settings />} />
-            <Route path="settings/governance" element={<GovernanceSettings />} />
-            <Route path="tagging-policies" element={<TagPoliciesManager />} />
-            <Route path="tag-templates" element={<TagTemplateManager />} />
+            <Route path="tagging-policies" element={
+              <PermissionGate
+                featureId="policy:manage"
+                sectionName="Tagging Policies"
+                sectionDescription="Manage resource tagging policies"
+              >
+                <TagPoliciesManager />
+              </PermissionGate>
+            } />
+            <Route path="tag-templates" element={
+              <PermissionGate
+                featureId="template:view"
+                sectionName="Tag Templates"
+                sectionDescription="Manage tag templates"
+              >
+                <TagTemplateManager />
+              </PermissionGate>
+            } />
 
-            <Route path="teams" element={<Teams />} />
-            <Route path="teams/:teamId" element={<TeamDetails />} />
-            <Route path="roles" element={<Roles />} />
+            <Route path="teams" element={
+              <PermissionGate
+                featureId="team:view"
+                sectionName="Teams"
+                sectionDescription="View and manage teams and team members"
+              >
+                <Teams />
+              </PermissionGate>
+            } />
+            <Route path="teams/:teamId" element={
+              <PermissionGate
+                featureId="team:view"
+                sectionName="Team Details"
+                sectionDescription="View team details and members"
+              >
+                <TeamDetails />
+              </PermissionGate>
+            } />
+            <Route path="roles" element={
+              <PermissionGate
+                featureId="team:manage_roles"
+                sectionName="Roles & Permissions"
+                sectionDescription="Manage roles and assign permissions"
+              >
+                <Roles />
+              </PermissionGate>
+            } />
             <Route path="accounts/:accountId/analytics" element={<AccountAnalytics />} />
             <Route path="ri-analysis" element={<RIAnalysis />} />
             <Route path="s3-analysis" element={<S3Analysis />} />

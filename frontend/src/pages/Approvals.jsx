@@ -116,26 +116,47 @@ const Approvals = () => {
 
     // Get display tickets based on active tab
     const getDisplayTickets = () => {
+        console.log('🔍 Filtering tickets:', {
+            activeTab,
+            totalTickets: tickets.length,
+            userId: user?.id,
+            userRole: user?.role,
+            allTickets: tickets.map(t => ({ id: t.id, user_id: t.user_id, status: t.status }))
+        });
+
+        let filtered;
         switch (activeTab) {
             case 'queue':
                 // Admin: All PENDING tickets (requests awaiting approval)
-                return tickets.filter(t => t.status === 'PENDING');
+                filtered = tickets.filter(t => t.status === 'PENDING');
+                break;
             case 'active_grants':
                 // Admin: All ACTIVE tickets in the org (not just ones they approved)
-                return tickets.filter(t => ['APPROVED_ACTIVE', 'PENDING_CONSENT'].includes(t.status));
+                filtered = tickets.filter(t => ['APPROVED_ACTIVE', 'PENDING_CONSENT'].includes(t.status));
+                break;
             case 'incoming':
                 // Team Lead: PENDING tickets from their team (not their own)
-                return tickets.filter(t => t.status === 'PENDING' && t.user_id !== user?.id);
+                filtered = tickets.filter(t => t.status === 'PENDING' && t.user_id !== user?.id);
+                break;
             case 'active_team_access':
                 // Team Lead: Active tickets in their team
-                return tickets.filter(t => t.status === 'APPROVED_ACTIVE' && t.user_id !== user?.id);
+                filtered = tickets.filter(t => t.status === 'APPROVED_ACTIVE' && t.user_id !== user?.id);
+                break;
             case 'outgoing':
             case 'my_requests':
                 // All tickets created by the current user
-                return tickets.filter(t => t.user_id === user?.id);
+                filtered = tickets.filter(t => t.user_id === user?.id);
+                break;
             default:
-                return [];
+                filtered = [];
         }
+
+        console.log('✅ Filtered tickets:', {
+            count: filtered.length,
+            tickets: filtered.map(t => ({ id: t.id, user_id: t.user_id, status: t.status }))
+        });
+
+        return filtered;
     };
 
     const displayTickets = getDisplayTickets();
@@ -157,43 +178,48 @@ const Approvals = () => {
             <div className="flex justify-between items-center">
                 <div>
                     <div className="flex items-center space-x-3">
-                        <Shield className="h-8 w-8 text-blue-600" />
+                        <div className="bg-indigo-100 rounded-lg p-3">
+                            <Shield className="h-6 w-6 text-indigo-600" />
+                        </div>
                         <div>
                             <h1 className="text-2xl font-bold text-gray-900">
-                                {isOrgAdmin ? 'Access Governance' : 'Ticket Center'}
+                                {isOrgAdmin ? 'Access Governance' : 'Access Requests'}
                             </h1>
                             <p className="text-sm text-gray-500 mt-1">
-                                {isOrgAdmin ? 'Manage JIT access requests and active grants' : 'Manage your access requests'}
+                                {isOrgAdmin ? 'Manage time-bound access requests and active grants' : 'Manage your access requests and approvals'}
                             </p>
                         </div>
                     </div>
                 </div>
                 <Button onClick={() => setShowModal(true)}>
-                    {isOrgAdmin ? '+ Grant Access' : (isTeamLead ? '+ Manage Access' : '+ Request Access')}
+                    {isOrgAdmin ? 'Grant Access' : (isTeamLead ? 'Manage Access' : 'Request Access')}
                 </Button>
             </div>
 
             {/* Pending Grants Alert (For Receiver) */}
             {tickets.filter(t => t.user_id === user?.id && t.status === 'PENDING_CONSENT').length > 0 && (
-                <div className="bg-gradient-to-r from-purple-50 to-indigo-50 border border-purple-200 rounded-xl p-6">
-                    <h3 className="text-lg font-bold text-purple-900 mb-4 flex items-center">
-                        <span className="bg-purple-600 text-white rounded-full w-6 h-6 flex items-center justify-center text-xs mr-2">
+                <div className="bg-purple-50 border border-purple-200 rounded-lg p-6">
+                    <div className="flex items-center mb-4">
+                        <div className="bg-purple-600 text-white rounded-full w-8 h-8 flex items-center justify-center text-sm font-bold mr-3">
                             {tickets.filter(t => t.user_id === user?.id && t.status === 'PENDING_CONSENT').length}
-                        </span>
-                        Action Required: Pending Grants
-                    </h3>
-                    <div className="grid gap-4">
+                        </div>
+                        <div>
+                            <h3 className="text-lg font-bold text-purple-900">Action Required</h3>
+                            <p className="text-sm text-purple-700">You have pending access grants awaiting your consent</p>
+                        </div>
+                    </div>
+                    <div className="grid gap-3">
                         {tickets.filter(t => t.user_id === user?.id && t.status === 'PENDING_CONSENT').map(grant => (
                             <div key={grant.id} className="bg-white p-4 rounded-lg shadow-sm border border-purple-100 flex justify-between items-center">
                                 <div>
                                     <p className="font-medium text-gray-900">
-                                        You have been granted <strong>{grant.type === 'ACTION' ? grant.action_type : 'Access Window'}</strong>
+                                        Access granted for <strong>{grant.type === 'ACTION' ? grant.action_type : 'full access window'}</strong>
                                     </p>
-                                    <p className="text-sm text-gray-500">
+                                    <p className="text-sm text-gray-500 mt-1">
                                         Duration: {grant.duration_hours}h • {grant.reason_category}: {grant.reason_text}
                                     </p>
                                 </div>
-                                <div className="flex space-x-3">
+                                <div className="flex space-x-2">
                                     <Button variant="outline" size="sm" onClick={() => handleReject(grant.id)}>Decline</Button>
                                     <Button size="sm" onClick={() => handleAccept(grant.id)}>Accept & Start</Button>
                                 </div>
@@ -206,23 +232,23 @@ const Approvals = () => {
             {/* Stats Summary */}
             {isOrgAdmin && (
                 <div className="grid grid-cols-3 gap-4">
-                    <div className="bg-yellow-50 rounded-xl p-4 border border-yellow-100">
-                        <div className="text-2xl font-bold text-yellow-700">
+                    <div className="bg-yellow-50 rounded-lg p-5 border border-yellow-200">
+                        <div className="text-3xl font-bold text-yellow-700">
                             {tickets.filter(t => t.status === 'PENDING').length}
                         </div>
-                        <div className="text-sm text-yellow-600">Pending Requests</div>
+                        <div className="text-sm text-yellow-600 font-medium mt-1">Pending Requests</div>
                     </div>
-                    <div className="bg-green-50 rounded-xl p-4 border border-green-100">
-                        <div className="text-2xl font-bold text-green-700">
+                    <div className="bg-green-50 rounded-lg p-5 border border-green-200">
+                        <div className="text-3xl font-bold text-green-700">
                             {tickets.filter(t => t.status === 'APPROVED_ACTIVE').length}
                         </div>
-                        <div className="text-sm text-green-600">Active Grants</div>
+                        <div className="text-sm text-green-600 font-medium mt-1">Active Grants</div>
                     </div>
-                    <div className="bg-purple-50 rounded-xl p-4 border border-purple-100">
-                        <div className="text-2xl font-bold text-purple-700">
+                    <div className="bg-purple-50 rounded-lg p-5 border border-purple-200">
+                        <div className="text-3xl font-bold text-purple-700">
                             {tickets.filter(t => t.status === 'PENDING_CONSENT').length}
                         </div>
-                        <div className="text-sm text-purple-600">Awaiting Consent</div>
+                        <div className="text-sm text-purple-600 font-medium mt-1">Awaiting Consent</div>
                     </div>
                 </div>
             )}

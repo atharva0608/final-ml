@@ -9,6 +9,7 @@ import { FiPlus, FiTrash2, FiCheck, FiAlertCircle, FiExternalLink, FiDownload, F
 import toast from 'react-hot-toast';
 
 import { useAuthStore } from '../../store/useStore';
+import ProtectedButton from '../governance/ProtectedButton';
 
 const CloudIntegrations = () => {
   const { user: currentUser } = useAuthStore();
@@ -204,9 +205,14 @@ const CloudIntegrations = () => {
           <h1 className="text-3xl font-bold text-gray-900">Cloud Integrations</h1>
           <p className="text-gray-600 mt-1">Connect your AWS accounts for optimization</p>
         </div>
-        <Button variant="primary" icon={<FiPlus />} onClick={() => setShowAddModal(true)}>
+        <ProtectedButton
+          featureId="cloud:connect"
+          variant="primary"
+          icon={<FiPlus />}
+          onClick={() => setShowAddModal(true)}
+        >
           Link AWS Account
-        </Button>
+        </ProtectedButton>
       </div>
 
       {/* Accounts List */}
@@ -215,9 +221,14 @@ const CloudIntegrations = () => {
           <div className="text-center py-12">
             <p className="text-gray-500 text-lg">No AWS accounts linked</p>
             <p className="text-gray-400 mt-2">Link your first AWS account to start optimizing</p>
-            <Button variant="primary" className="mt-4" onClick={() => setShowAddModal(true)}>
+            <ProtectedButton
+              featureId="cloud:connect"
+              variant="primary"
+              className="mt-4"
+              onClick={() => setShowAddModal(true)}
+            >
               Link AWS Account
-            </Button>
+            </ProtectedButton>
           </div>
         </Card>
       ) : (
@@ -303,12 +314,15 @@ const CloudIntegrations = () => {
                       Set Default
                     </Button>
                   )}
-                  <button
+                  <ProtectedButton
+                    featureId="cloud:disconnect"
+                    variant="outline"
+                    size="sm"
                     onClick={() => handleDelete(account.id)}
-                    className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                    className="p-2 text-red-600 hover:bg-red-50"
                   >
                     <FiTrash2 className="w-4 h-4" />
-                  </button>
+                  </ProtectedButton>
                 </div>
               </div>
             </Card>

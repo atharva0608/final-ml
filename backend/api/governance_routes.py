@@ -31,7 +31,8 @@ def get_policies(
         "is_strict_mode": current_user.organization.is_strict_approval_mode if current_user.organization else False,
         "require_automation_approval": current_user.organization.require_automation_approval if current_user.organization else True,
         "required_tags": current_user.organization.required_tags if current_user.organization else [],
-        "policies": service.get_organization_policies(current_user.organization_id)
+        "policies": service.get_organization_policies(current_user.organization_id),
+        "automation_config": current_user.organization.automation_config if current_user.organization else {}
     }
 
 
@@ -68,7 +69,13 @@ def update_policies(
         current_config = org.governance_config or {}
         current_config.update(policy_updates["policies"])
         org.governance_config = current_config
-    
+
+    # Update automation config (hibernation defaults)
+    if "automation_config" in policy_updates:
+        current_auto = org.automation_config or {}
+        current_auto.update(policy_updates["automation_config"])
+        org.automation_config = current_auto
+
     db.commit()
     db.refresh(org)
     

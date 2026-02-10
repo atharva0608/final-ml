@@ -37,6 +37,7 @@ class HibernationScheduleCreate(BaseModel):
     timezone: str = Field(default="UTC", description="Timezone for schedule (e.g., 'America/New_York')")
     prewarm_enabled: bool = Field(default=False, description="Enable pre-warming before wake time")
     prewarm_minutes: int = Field(default=30, ge=0, le=120, description="Minutes to pre-warm before wake")
+    strategy: str = Field(default="NAMESPACE_SLEEP", description="Hibernation strategy: NAMESPACE_SLEEP, NUCLEAR, SNAPSHOT_RESTORE")
 
     @field_validator('schedule_matrix')
     @classmethod
@@ -79,6 +80,7 @@ class HibernationScheduleUpdate(BaseModel):
     timezone: Optional[str] = Field(None, description="Timezone for schedule")
     prewarm_enabled: Optional[bool] = Field(None, description="Enable pre-warming")
     prewarm_minutes: Optional[int] = Field(None, ge=0, le=120, description="Pre-warm minutes")
+    strategy: Optional[str] = Field(None, description="Hibernation strategy: NAMESPACE_SLEEP, NUCLEAR, SNAPSHOT_RESTORE")
 
     @field_validator('schedule_matrix')
     @classmethod
@@ -120,8 +122,12 @@ class HibernationScheduleResponse(BaseModel):
     cluster_id: str = Field(..., description="Cluster UUID")
     schedule_matrix: List[int] = Field(..., description="168-hour schedule")
     timezone: str = Field(..., description="Timezone")
-    prewarm_enabled: bool = Field(..., description="Pre-warming enabled")
+    prewarm_enabled: bool = Field(default=False, description="Pre-warming enabled")
     prewarm_minutes: int = Field(..., description="Pre-warm minutes")
+    strategy: str = Field(default="NAMESPACE_SLEEP", description="Hibernation strategy")
+    is_active: bool = Field(default=True, description="Whether schedule is active")
+    last_action: Optional[str] = Field(None, description="Last action taken (SLEEP/WAKE/PREWARM/ERROR)")
+    last_action_at: Optional[datetime] = Field(None, description="When last action was executed")
     created_at: datetime = Field(..., description="Creation timestamp")
     updated_at: datetime = Field(..., description="Last update timestamp")
 
@@ -134,6 +140,10 @@ class HibernationScheduleResponse(BaseModel):
                 "timezone": "America/New_York",
                 "prewarm_enabled": True,
                 "prewarm_minutes": 30,
+                "strategy": "NAMESPACE_SLEEP",
+                "is_active": True,
+                "last_action": None,
+                "last_action_at": None,
                 "created_at": "2025-12-31T10:00:00Z",
                 "updated_at": "2025-12-31T10:00:00Z"
             }
@@ -221,3 +231,32 @@ class SchedulePreviewResponse(BaseModel):
             }
         }
     }
+
+
+class ManualOverrideRequest(BaseModel):
+    """Manual sleep/wake override request"""
+    action: str = Field(..., description="Action to perform: SLEEP or WAKE")
+    duration_minutes: Optional[int] = Field(None, ge=1, le=1440, description="Override duration in minutes (optional)")
+
+    @field_validator('action')
+    @classmethod
+    def validate_action(cls, v: str) -> str:
+        if v.upper() not in ['SLEEP', 'WAKE']:
+            raise ValueError('Action must be SLEEP or WAKE')
+        return v.upper()
+
+
+class StrategyInfo(BaseModel):
+    """Information about a hibernation strategy"""
+    name: str = Field(..., description="Strategy identifier")
+    display_name: str = Field(..., description="Human-readable name")
+    description: str = Field(..., description="Strategy description")
+    wake_time: str = Field(..., description="Estimated wake time")
+    savings_pct: int = Field(..., description="Estimated savings percentage")
+    safety: str = Field(..., description="Safety level: LOW, MEDIUM, HIGH")
+    best_for: str = Field(..., description="Best use case")
+
+
+class StrategyComparisonResponse(BaseModel):
+    """Strategy comparison response"""
+    strategies: List[StrategyInfo] = Field(..., description="Available strategies")

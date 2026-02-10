@@ -407,6 +407,10 @@ app.include_router(settings_routes.router, prefix="/api/v1")
 from backend.api.role_routes import router as role_router
 app.include_router(role_router, prefix="/api/v1")
 
+# Permission routes (JIT Feature Access)
+from backend.api.permission_routes import router as permission_router
+app.include_router(permission_router, prefix="/api/v1")
+
 # Approval routes (JIT)
 from backend.api.approval_routes import router as approval_router
 app.include_router(approval_router, prefix="/api/v1")

@@ -3,7 +3,7 @@ from sqlalchemy import Column, String, DateTime, ForeignKey, Enum, Text, Integer
 from sqlalchemy.orm import relationship
 from datetime import datetime
 import enum
-from backend.models.base import Base
+from backend.models.base import Base, generate_uuid
 
 class ApprovalStatus(enum.Enum):
     PENDING = "PENDING"
@@ -37,7 +37,7 @@ class ReasonCategory(enum.Enum):
 class Approval(Base):
     __tablename__ = "approvals"
 
-    id = Column(String, primary_key=True) # UUID
+    id = Column(String(36), primary_key=True, default=generate_uuid, index=True)
 
     user_id = Column(String, ForeignKey("users.id"), nullable=False)
     organization_id = Column(String, ForeignKey("organizations.id"), nullable=False)

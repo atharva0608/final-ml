@@ -143,8 +143,14 @@ export const policyAPI = {
 export const policiesAPI = policyAPI;
 
 export const hibernationAPI = {
-    getSchedule: (clusterId) => api.get(`/api/v1/hibernation/schedules`, { params: { cluster_id: clusterId } }), // Fixed: use schedules endpoint with query
-    updateSchedule: (clusterId, data) => api.put(`/api/v1/hibernation/schedules/${data.id || clusterId}`, data),
+    list: (params) => api.get('/api/v1/hibernation/schedules', { params }),
+    getByCluster: (clusterId) => api.get('/api/v1/hibernation/schedules', { params: { cluster_id: clusterId } }),
+    create: (data) => api.post('/api/v1/hibernation/schedules', data),
+    update: (id, data) => api.put(`/api/v1/hibernation/schedules/${id}`, data),
+    delete: (id) => api.delete(`/api/v1/hibernation/schedules/${id}`),
+    toggle: (id) => api.post(`/api/v1/hibernation/schedules/${id}/toggle`),
+    override: (id, data) => api.post(`/api/v1/hibernation/schedules/${id}/override`, data),
+    getStrategies: () => api.get('/api/v1/hibernation/strategies'),
 };
 
 export const auditAPI = {

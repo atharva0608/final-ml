@@ -197,6 +197,8 @@ Response: { "allowed": false, "feature": { "name": "Execute Hygiene Actions", "r
 | `POST` | `/hibernation` | JIT | Create schedule |
 | `PUT` | `/hibernation/{id}` | JIT | Update schedule |
 | `DELETE` | `/hibernation/{id}` | JIT | Delete schedule |
+| `POST` | `/hibernation/schedules/{id}/override` | Yes | Manual wake/sleep override |
+| `GET` | `/hibernation/strategies` | No | Strategy comparison data |
 
 ---
 

@@ -24,7 +24,7 @@ Route handlers organized by domain. Each file defines a FastAPI `APIRouter`.
 | `cluster_routes.py` | `/clusters` | clusters | Cluster CRUD, agent install, disconnect | GET list/detail, POST auto-install/verify/disconnect | Yes |
 | `governance_routes.py` | `/governance` | governance | Org governance rules + autopilot | GET/PATCH rules, POST run-autopilot | OA+ |
 | `health_routes.py` | `/health` | health | Basic + detailed health checks | GET /, GET /detailed | No/SA |
-| `hibernation_routes.py` | `/hibernation` | hibernation | Schedule CRUD for cluster sleep/wake | GET list, POST create, PUT update, DELETE | JIT |
+| `hibernation_routes.py` | `/hibernation` | hibernation | Schedule CRUD for cluster sleep/wake + strategy management | GET list, POST create, PUT update, DELETE, POST schedules/{id}/override (manual wake/sleep override), GET strategies (strategy comparison data) | JIT |
 | `hygiene_routes.py` | `/hygiene` | hygiene | Resource scan + action execution | GET scan, POST action/authorize/unauthorize | JIT |
 | `hygiene_policy_routes.py` | `/hygiene-policies` | hygiene-policies | Automated cleanup rule CRUD | GET list, POST create, PUT update, DELETE | OA+ |
 | `installer_routes.py` | `/installer` | installer | Public agent installer endpoint | GET /{cluster_id} | No |
@@ -123,7 +123,7 @@ SQLAlchemy ORM models. All inherit from `Base` (declarative base with audit mixi
 | File | Class | Table | Key Columns |
 |:-----|:------|:------|:------------|
 | `user.py` | `User` | `users` | id, email, password_hash, role (4-tier enum), organization_id, team_id, preferences (JSON) |
-| `organization.py` | `Organization` | `organizations` | id, name, required_tags (JSON), automation_enabled, automation_requires_approval, is_governance_enabled |
+| `organization.py` | `Organization` | `organizations` | id, name, required_tags (JSON), automation_enabled, automation_requires_approval, is_governance_enabled, automation_config (JSON) |
 | `team.py` | `Team` | `teams` | id, name, organization_id, governance_config (JSON) |
 | `role.py` | `Role` | `roles` | id, name, description, permissions (M2M) |
 | `permission.py` | `Permission` | `permissions` | id, name, description, resource_type |
@@ -145,7 +145,7 @@ SQLAlchemy ORM models. All inherit from `Base` (declarative base with audit mixi
 |:-----|:------|:------|:------------|
 | `cluster_policy.py` | `ClusterPolicy` | `cluster_policies` | id, cluster_id, config (JSONB) |
 | `node_template.py` | `NodeTemplate` | `node_templates` | id, organization_id, name, instance_types, constraints |
-| `hibernation_schedule.py` | `HibernationSchedule` | `hibernation_schedules` | id, cluster_id, schedule (JSON), timezone, active |
+| `hibernation_schedule.py` | `HibernationSchedule` | `hibernation_schedules` | id, cluster_id, schedule (JSON), timezone, active, strategy (String(20): NAMESPACE_SLEEP / NUCLEAR / SNAPSHOT_RESTORE), saved_state (JSON: ASG capacities, HPA/replica state before sleep), az_affinity (JSON: volume AZ mappings for snapshot restore), last_action (String(20): SLEEP / WAKE / PREWARM / ERROR), last_action_at (DateTime: when last action executed) |
 | `optimization_job.py` | `OptimizationJob` | `optimization_jobs` | id, cluster_id, type, status, result, savings |
 
 ### 3.4 Governance & Approvals

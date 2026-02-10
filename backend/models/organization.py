@@ -35,7 +35,10 @@ class Organization(Base):
     required_tags = Column(JSON, default=["Owner", "Environment"])  # Feature 2: Required tag keys for compliance
     require_automation_approval = Column(Boolean, default=True) # New: Require approval for automated cleanup actions
 
-    
+    # Hibernation automation defaults
+    automation_config = Column(JSON, default={})
+
+
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     

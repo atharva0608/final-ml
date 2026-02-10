@@ -62,6 +62,21 @@ These are architectural gaps between the current implementation and a production
 
 ## 2. Chronological Changelog
 
+### 2026-02-10 — Enhanced Cluster Hibernation (Three Strategies)
+
+| Component | Change |
+|:----------|:-------|
+| Backend | Added `HibernationStrategy` enum: NAMESPACE_SLEEP, NUCLEAR, SNAPSHOT_RESTORE |
+| Backend | New columns on `hibernation_schedules`: strategy, saved_state, az_affinity, last_action, last_action_at |
+| Backend | New column on `organizations`: automation_config (JSON) |
+| Backend | Fixed bugs: `.enabled` → `.is_active == "Y"`, `ActionLog` → `AuditLog` |
+| Backend | Triple-path worker: Namespace Sleep (soft K8s scaling), Nuclear (ASG→0), Snapshot & Restore (EBS snapshots + Nuclear) |
+| Backend | K8s client helper using SigV4 presigned EKS tokens |
+| Backend | New API endpoints: `POST /hibernation/schedules/{id}/override`, `GET /hibernation/strategies` |
+| Frontend | Strategy selector cards, comparison table, updated savings calculation |
+| Frontend | GovernanceSettings: Hibernation defaults section (strategy, prewarm, zero-nodes, approval toggle) |
+| Migration | Alembic migration: `20260210_hibernation_strategies` |
+
 ### 2026-02-10 — Global Naming Synchronization
 
 | Component | Change |

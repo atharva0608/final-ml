@@ -17,20 +17,26 @@ logger = logging.getLogger(__name__)
 DEFAULT_PERMISSIONS = [
     # Compute & Resource Management
     {"slug": "compute:view", "name": "View Compute Resources", "module": "Compute", "description": "View read-only lists of EC2 instances, clusters, and resource details"},
+    {"slug": "compute:modify", "name": "Modify Compute Resources", "module": "Compute", "description": "Modify cluster settings, install agents, reconnect clusters"},
+    {"slug": "compute:resize", "name": "Resize Instances", "module": "Compute", "description": "Apply right-sizing recommendations to instances"},
     {"slug": "compute:terminate:own", "name": "Terminate Own Instances", "module": "Compute", "description": "Terminate instances or resources created specifically by the user"},
     {"slug": "compute:terminate:any", "name": "Terminate Any Instance", "module": "Compute", "description": "Terminate any instance within the user's assigned Team or Organization"},
-    {"slug": "storage:delete:own", "name": "Delete Own Storage", "module": "Compute", "description": "Delete EBS volumes, Snapshots, or S3 buckets created by the user"},
-    {"slug": "storage:delete:any", "name": "Delete Any Storage", "module": "Compute", "description": "Delete any storage resource within the assigned Team or Organization"},
-    {"slug": "network:modify", "name": "Modify Network Settings", "module": "Compute", "description": "Modify Security Groups, release Elastic IPs, or change Route Tables"},
-    {"slug": "db:delete", "name": "Delete Databases", "module": "Compute", "description": "Delete RDS instances or DynamoDB tables (High Risk)"},
-    {"slug": "lab:create", "name": "Create Lab Environment", "module": "Compute", "description": "Provision new temporary lab environments or experimental clusters"},
+    {"slug": "storage:delete:own", "name": "Delete Own Storage", "module": "Storage", "description": "Delete EBS volumes, Snapshots, or S3 buckets created by the user"},
+    {"slug": "storage:delete:any", "name": "Delete Any Storage", "module": "Storage", "description": "Delete any storage resource within the assigned Team or Organization"},
+    {"slug": "storage:manage", "name": "Manage Storage Lifecycles", "module": "Storage", "description": "Manage S3 lifecycle policies and RDS configurations"},
+    {"slug": "network:modify", "name": "Modify Network Settings", "module": "Network", "description": "Modify Security Groups, release Elastic IPs, or change Route Tables"},
+    {"slug": "db:delete", "name": "Delete Databases", "module": "Database", "description": "Delete RDS instances or DynamoDB tables (High Risk)"},
+    {"slug": "lab:create", "name": "Create Lab Environment", "module": "Lab", "description": "Provision new temporary lab environments or experimental clusters"},
 
     # Cloud Integration & Hygiene
     {"slug": "cloud:connect", "name": "Connect Cloud Account", "module": "Cloud Integration", "description": "Register a new AWS Account (Access Keys/Role ARN)"},
     {"slug": "cloud:disconnect", "name": "Disconnect Cloud Account", "module": "Cloud Integration", "description": "Remove an existing AWS Account connection"},
+    {"slug": "hygiene:view", "name": "View Hygiene Dashboard", "module": "Resource Hygiene", "description": "Access Resource Hygiene dashboard"},
     {"slug": "hygiene:scan", "name": "Run Hygiene Scan", "module": "Resource Hygiene", "description": "Manually trigger a Resource Hygiene scan"},
     {"slug": "hygiene:view_costs", "name": "View Wasted Costs", "module": "Resource Hygiene", "description": "View financial data regarding wasted resources"},
     {"slug": "hygiene:execute", "name": "Execute Cleanup", "module": "Resource Hygiene", "description": "Execute cleanup actions (bulk delete) on identified wasted resources"},
+    {"slug": "hygiene:authorize", "name": "Authorize Resources", "module": "Resource Hygiene", "description": "Mark resources as authorized/unauthorized"},
+    {"slug": "hygiene:tag", "name": "Tag Resources", "module": "Resource Hygiene", "description": "Apply bulk tagging to resources"},
 
     # Governance & Approvals
     {"slug": "approval:approve", "name": "Approve Requests", "module": "Governance", "description": "Authorize a pending request"},
@@ -39,16 +45,29 @@ DEFAULT_PERMISSIONS = [
     {"slug": "policy:manage", "name": "Manage Policies", "module": "Governance", "description": "Create, edit, or disable automated governance rules"},
 
     # Team & User Administration
+    {"slug": "team:view", "name": "View Teams", "module": "Team Management", "description": "View team list and member assignments"},
     {"slug": "team:create", "name": "Create Teams", "module": "Team Management", "description": "Create new Teams within the Organization"},
     {"slug": "team:invite", "name": "Invite Users", "module": "Team Management", "description": "Invite new users to the Organization or specific Team"},
     {"slug": "team:remove_member", "name": "Remove Members", "module": "Team Management", "description": "Remove a user from a Team or revoking their access"},
     {"slug": "team:promote", "name": "Promote Members", "module": "Team Management", "description": "Elevate a user's role (e.g., promoting a Member to Team Lead)"},
-    {"slug": "audit:view", "name": "View Audit Logs", "module": "Team Management", "description": "Access the global Audit Logs"},
+    {"slug": "team:manage_members", "name": "Manage Team Members", "module": "Team Management", "description": "Move members between teams, manage assignments"},
+    {"slug": "team:manage_roles", "name": "Manage Roles", "module": "Team Management", "description": "Create, edit, or delete custom roles"},
+    {"slug": "audit:view", "name": "View Audit Logs", "module": "Audit", "description": "Access the global Audit Logs"},
 
     # Billing & Financials
     {"slug": "billing:view_spend", "name": "View Spending", "module": "Billing", "description": "View aggregate cost graphs and team spending dashboards"},
     {"slug": "billing:view_invoices", "name": "View Invoices", "module": "Billing", "description": "Download official PDF invoices"},
     {"slug": "billing:manage_cc", "name": "Manage Payment Methods", "module": "Billing", "description": "Add, remove, or update credit card details"},
+    {"slug": "billing:manage_plan", "name": "Manage Subscription", "module": "Billing", "description": "Change plans or cancel subscription"},
+
+    # Hibernation Management
+    {"slug": "hibernation:view", "name": "View Hibernation Schedules", "module": "Hibernation", "description": "View hibernation schedules and configurations"},
+    {"slug": "hibernation:manage", "name": "Manage Hibernation Schedules", "module": "Hibernation", "description": "Create, edit, or delete hibernation schedules"},
+    {"slug": "hibernation:execute", "name": "Execute Hibernation Actions", "module": "Hibernation", "description": "Manually trigger sleep/wake actions"},
+
+    # Template Management
+    {"slug": "template:view", "name": "View Templates", "module": "Templates", "description": "View and use configuration templates"},
+    {"slug": "template:manage", "name": "Manage Templates", "module": "Templates", "description": "Create, edit, or delete configuration templates"},
 
     # Security & Identity Governance (SOC 2)
     {"slug": "auth:manage_mfa", "name": "Manage MFA Policies", "module": "Security", "description": "Enforce Multi-Factor Authentication policies"},

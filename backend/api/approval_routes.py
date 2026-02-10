@@ -7,7 +7,7 @@ from backend.services.approval_service import ApprovalService
 from backend.core.dependencies import get_current_user
 from backend.models.base import get_db
 from sqlalchemy.orm import Session
-from backend.schemas.approval_schemas import ApprovalCreate, ApprovalResponse, ApprovalGrantCreate
+from backend.schemas.approval_schemas import ApprovalCreate, ApprovalResponse, ApprovalGrantCreate, JITRequestCreate
 from backend.core.exceptions import ResourceNotFoundError, ForbiddenError
 
 router = APIRouter(prefix="/approvals", tags=["approvals"])
@@ -76,7 +76,7 @@ def get_active_window(
 
 @router.post("/jit-request", response_model=ApprovalResponse)
 def create_jit_request(
-    request_data: "JITRequestCreate",
+    request_data: JITRequestCreate,
     current_user: User = Depends(get_current_user),
     service: ApprovalService = Depends(get_approval_service)
 ):
@@ -97,7 +97,6 @@ def create_jit_request(
         }
     """
     try:
-        from backend.schemas.approval_schemas import JITRequestCreate
         approval = service.create_jit_request(current_user, request_data.model_dump())
         return approval
     except ValueError as e:

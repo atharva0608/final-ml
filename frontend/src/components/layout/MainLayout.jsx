@@ -8,7 +8,7 @@ import { Outlet, Link, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../../hooks/useAuth';
 import { clusterAPI } from '../../services/api';
 import { Button } from '../shared';
-import { FiHome, FiServer, FiFileText, FiSettings, FiTarget, FiClock, FiBarChart2, FiUsers, FiActivity, FiLogOut, FiClipboard, FiBriefcase, FiCheckSquare, FiShield, FiLock, FiTag } from 'react-icons/fi';
+import { FiHome, FiServer, FiFileText, FiSettings, FiTarget, FiClock, FiBarChart2, FiUsers, FiActivity, FiLogOut, FiClipboard, FiBriefcase, FiCheckSquare, FiShield, FiLock, FiTag, FiZap } from 'react-icons/fi';
 
 import ActiveWindowBanner from '../approvals/ActiveWindowBanner';
 
@@ -67,18 +67,19 @@ const MainLayout = () => {
   const location = useLocation();
 
   const navigation = [
-    { name: 'Dashboard', path: '/dashboard', icon: FiHome },
-    { name: 'Approvals', path: '/approvals', icon: FiCheckSquare },
-    { name: 'Teams', path: '/teams', icon: FiUsers },
-    { name: 'Clusters', path: '/clusters', icon: FiServer },
-    { name: 'Policies', path: '/policies', icon: FiTarget },
-    { name: 'Tagging Policies', path: '/tagging-policies', icon: FiTag },
-    { name: 'Templates', path: '/templates', icon: FiFileText },
-    { name: 'Right-Sizing', path: '/right-sizing', icon: FiBarChart2 },
-    { name: 'Resource Hygiene', path: '/hygiene', icon: FiActivity },
-    { name: 'Hibernation', path: '/hibernation', icon: FiClock },
-    { name: 'Audit Logs', path: '/audit', icon: FiClipboard },
-    { name: 'Settings', path: '/settings', icon: FiSettings },
+    { name: 'Dashboard', path: '/dashboard', icon: FiHome, requiresPermission: false },
+    { name: 'Approvals', path: '/approvals', icon: FiCheckSquare, requiresPermission: false },
+    { name: 'Teams', path: '/teams', icon: FiUsers, requiresPermission: true, badge: 'locked' },
+    { name: 'Clusters', path: '/clusters', icon: FiServer, requiresPermission: true, badge: 'locked' },
+    { name: 'Policies', path: '/policies', icon: FiTarget, requiresPermission: true, badge: 'locked' },
+    { name: 'Tagging Policies', path: '/tagging-policies', icon: FiTag, requiresPermission: true, badge: 'locked' },
+    { name: 'Templates', path: '/templates', icon: FiFileText, requiresPermission: true, badge: 'locked' },
+    { name: 'Right-Sizing', path: '/right-sizing', icon: FiBarChart2, requiresPermission: true, badge: 'locked' },
+    { name: 'Resource Hygiene', path: '/hygiene', icon: FiActivity, requiresPermission: true, badge: 'locked' },
+    { name: 'Hibernation', path: '/hibernation', icon: FiClock, requiresPermission: true, badge: 'locked' },
+    { name: 'Automation Settings', path: '/automation-settings', icon: FiZap, requiresPermission: true, badge: 'locked' },
+    { name: 'Audit Logs', path: '/audit', icon: FiClipboard, requiresPermission: true, badge: 'locked' },
+    { name: 'Settings', path: '/settings', icon: FiSettings, requiresPermission: false },
   ];
 
   const adminNavigation = [

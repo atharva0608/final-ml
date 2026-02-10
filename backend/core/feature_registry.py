@@ -50,6 +50,143 @@ class Feature:
 # ============================================================================
 
 FEATURE_REGISTRY: Dict[str, Feature] = {
+    # ========== VIEW/READ-ONLY FEATURES (No Approval Needed) ==========
+    "compute:view": Feature(
+        id="compute:view",
+        name="View Compute Resources",
+        description="View instance lists, clusters, and compute metrics",
+        category=FeatureCategory.COMPUTE,
+        permission_slug="compute:view",
+        requires_approval=False,
+        max_duration_hours=24,
+        default_duration_hours=24,
+        min_approver_role="MEMBER",
+        risk_level="LOW",
+        requires_reason=False,
+        supports_resource_scope=False,
+        ui_icon="server",
+        ui_color="blue"
+    ),
+
+    "hibernation:view": Feature(
+        id="hibernation:view",
+        name="View Hibernation Schedules",
+        description="View cluster wake/sleep schedules",
+        category=FeatureCategory.COMPUTE,
+        permission_slug="hibernation:view",
+        requires_approval=False,
+        max_duration_hours=24,
+        default_duration_hours=24,
+        min_approver_role="MEMBER",
+        risk_level="LOW",
+        requires_reason=False,
+        supports_resource_scope=False,
+        ui_icon="calendar",
+        ui_color="blue"
+    ),
+
+    "hygiene:view": Feature(
+        id="hygiene:view",
+        name="View Hygiene Dashboard",
+        description="View resource hygiene reports and recommendations",
+        category=FeatureCategory.HYGIENE,
+        permission_slug="hygiene:view",
+        requires_approval=False,
+        max_duration_hours=24,
+        default_duration_hours=24,
+        min_approver_role="MEMBER",
+        risk_level="LOW",
+        requires_reason=False,
+        supports_resource_scope=False,
+        ui_icon="search",
+        ui_color="blue"
+    ),
+
+    "audit:view": Feature(
+        id="audit:view",
+        name="View Audit Logs",
+        description="View system audit logs and activity history",
+        category=FeatureCategory.AUDIT,
+        permission_slug="audit:view",
+        requires_approval=False,
+        max_duration_hours=24,
+        default_duration_hours=24,
+        min_approver_role="TEAM_LEAD",
+        risk_level="LOW",
+        requires_reason=False,
+        supports_resource_scope=False,
+        ui_icon="file-text",
+        ui_color="blue"
+    ),
+
+    "team:view": Feature(
+        id="team:view",
+        name="View Teams",
+        description="View teams and team members",
+        category=FeatureCategory.TEAM,
+        permission_slug="team:view",
+        requires_approval=False,
+        max_duration_hours=24,
+        default_duration_hours=24,
+        min_approver_role="MEMBER",
+        risk_level="LOW",
+        requires_reason=False,
+        supports_resource_scope=False,
+        ui_icon="users",
+        ui_color="blue"
+    ),
+
+    "team:manage_roles": Feature(
+        id="team:manage_roles",
+        name="Manage Roles & Permissions",
+        description="Manage custom roles and assign permissions",
+        category=FeatureCategory.TEAM,
+        permission_slug="team:manage_roles",
+        requires_approval=True,
+        max_duration_hours=4,
+        default_duration_hours=2,
+        min_approver_role="ORG_ADMIN",
+        risk_level="HIGH",
+        requires_reason=True,
+        supports_resource_scope=False,
+        ui_icon="shield",
+        ui_color="orange"
+    ),
+
+    "policy:manage": Feature(
+        id="policy:manage",
+        name="Manage Policies",
+        description="Create and manage optimization policies",
+        category=FeatureCategory.GOVERNANCE,
+        permission_slug="policy:manage",
+        requires_approval=True,
+        max_duration_hours=4,
+        default_duration_hours=2,
+        min_approver_role="TEAM_LEAD",
+        risk_level="MEDIUM",
+        requires_reason=True,
+        supports_resource_scope=False,
+        ui_icon="settings",
+        ui_color="orange"
+    ),
+
+    "template:view": Feature(
+        id="template:view",
+        name="View Templates",
+        description="View and use configuration templates",
+        category=FeatureCategory.GOVERNANCE,
+        permission_slug="template:view",
+        requires_approval=False,
+        max_duration_hours=24,
+        default_duration_hours=24,
+        min_approver_role="MEMBER",
+        risk_level="LOW",
+        requires_reason=False,
+        supports_resource_scope=False,
+        ui_icon="file-text",
+        ui_color="blue"
+    ),
+
     # ========== COMPUTE OPERATIONS ==========
     "compute:terminate": Feature(
         id="compute:terminate",

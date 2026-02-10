@@ -11,11 +11,14 @@ from backend.core.dependencies import get_current_user
 def get_hibernation_service(db: Session = Depends(get_db)) -> HibernationService:
     return HibernationService(db)
 from backend.schemas.hibernation_schemas import (
-    HibernationScheduleResponse, 
-    HibernationScheduleList, 
-    HibernationScheduleCreate, 
-    HibernationScheduleUpdate, 
-    HibernationScheduleFilter
+    HibernationScheduleResponse,
+    HibernationScheduleList,
+    HibernationScheduleCreate,
+    HibernationScheduleUpdate,
+    HibernationScheduleFilter,
+    ManualOverrideRequest,
+    StrategyInfo,
+    StrategyComparisonResponse,
 )
 from backend.core.exceptions import ResourceNotFoundError, ResourceAlreadyExistsError, ValidationError
 
@@ -114,3 +117,69 @@ def toggle_schedule(
         return service.toggle_schedule(schedule_id, current_user.id)
     except ResourceNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.post("/schedules/{schedule_id}/override")
+def override_schedule(
+    schedule_id: str,
+    override_data: ManualOverrideRequest,
+    current_user: User = Depends(get_current_user),
+    service: HibernationService = Depends(get_hibernation_service),
+    db: Session = Depends(get_db)
+):
+    """
+    Manual wake/sleep override — dispatches Celery task
+    """
+    from backend.models.hibernation_schedule import HibernationSchedule as HibModel
+
+    schedule = db.query(HibModel).filter(HibModel.id == schedule_id).first()
+    if not schedule:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+
+    from backend.workers.tasks.hibernation_worker import manual_sleep_cluster, manual_wake_cluster
+
+    strategy = getattr(schedule, 'strategy', None)
+
+    if override_data.action == "SLEEP":
+        manual_sleep_cluster.delay(schedule.cluster_id, strategy)
+        return {"status": "queued", "action": "SLEEP", "cluster_id": schedule.cluster_id}
+    else:
+        manual_wake_cluster.delay(schedule.cluster_id, strategy)
+        return {"status": "queued", "action": "WAKE", "cluster_id": schedule.cluster_id}
+
+
+@router.get("/strategies", response_model=StrategyComparisonResponse)
+def get_strategies():
+    """
+    Get available hibernation strategies with comparison data
+    """
+    strategies = [
+        StrategyInfo(
+            name="NAMESPACE_SLEEP",
+            display_name="Namespace Sleep",
+            description="Scales workloads to 0 replicas. Cluster Autoscaler drains idle nodes. Fast recovery.",
+            wake_time="~2 min",
+            savings_pct=80,
+            safety="HIGH",
+            best_for="Stateless dev/test workloads"
+        ),
+        StrategyInfo(
+            name="NUCLEAR",
+            display_name="Nuclear",
+            description="Scales all ASGs to 0. Maximum cost savings but slower recovery.",
+            wake_time="~8 min",
+            savings_pct=99,
+            safety="MEDIUM",
+            best_for="Maximum cost reduction, non-critical environments"
+        ),
+        StrategyInfo(
+            name="SNAPSHOT_RESTORE",
+            display_name="Snapshot & Restore",
+            description="Snapshots EBS volumes before Nuclear shutdown. Preserves data with AZ affinity.",
+            wake_time="~12 min",
+            savings_pct=90,
+            safety="HIGH",
+            best_for="Stateful workloads, databases"
+        ),
+    ]
+    return StrategyComparisonResponse(strategies=strategies)

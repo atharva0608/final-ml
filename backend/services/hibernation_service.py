@@ -6,7 +6,7 @@ Business logic for hibernation schedule management
 from typing import List, Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, desc
-from backend.models.hibernation_schedule import HibernationSchedule
+from backend.models.hibernation_schedule import HibernationSchedule, HibernationStrategy
 from backend.models.cluster import Cluster
 from backend.models.account import Account
 from backend.schemas.hibernation_schemas import (
@@ -96,6 +96,12 @@ class HibernationService:
                 f"pre_warm_minutes cannot exceed 60: {schedule_data.pre_warm_minutes}"
             )
 
+        # Validate strategy
+        strategy = getattr(schedule_data, 'strategy', None) or HibernationStrategy.NAMESPACE_SLEEP.value
+        valid_strategies = [s.value for s in HibernationStrategy]
+        if strategy not in valid_strategies:
+            raise ValidationError(f"Invalid strategy: {strategy}. Must be one of {valid_strategies}")
+
         # Create schedule
         new_schedule = HibernationSchedule(
             id=str(uuid.uuid4()),
@@ -103,7 +109,8 @@ class HibernationService:
             schedule_matrix=schedule_data.schedule_matrix,
             timezone=schedule_data.timezone,
             pre_warm_minutes=schedule_data.pre_warm_minutes,
-            is_active=schedule_data.is_active,
+            is_active=getattr(schedule_data, 'is_active', 'Y') if isinstance(getattr(schedule_data, 'is_active', 'Y'), str) else ("Y" if getattr(schedule_data, 'is_active', True) else "N"),
+            strategy=strategy,
             created_at=datetime.utcnow(),
             updated_at=datetime.utcnow()
         )
@@ -283,6 +290,13 @@ class HibernationService:
                     f"pre_warm_minutes must be between 0 and 60: {update_dict['pre_warm_minutes']}"
                 )
 
+        if "strategy" in update_dict:
+            valid_strategies = [s.value for s in HibernationStrategy]
+            if update_dict["strategy"] not in valid_strategies:
+                raise ValidationError(
+                    f"Invalid strategy: {update_dict['strategy']}. Must be one of {valid_strategies}"
+                )
+
         # Apply updates
         for field, value in update_dict.items():
             setattr(schedule, field, value)
@@ -406,7 +420,11 @@ class HibernationService:
             schedule_matrix=schedule.schedule_matrix,
             timezone=schedule.timezone,
             pre_warm_minutes=schedule.pre_warm_minutes,
+            prewarm_enabled=schedule.pre_warm_minutes > 0,
+            strategy=getattr(schedule, 'strategy', None) or HibernationStrategy.NAMESPACE_SLEEP.value,
             is_active=schedule.is_active == "Y",
+            last_action=getattr(schedule, 'last_action', None),
+            last_action_at=getattr(schedule, 'last_action_at', None),
             created_at=schedule.created_at,
             updated_at=schedule.updated_at
         )
