@@ -6,10 +6,12 @@ app = Celery(
     broker=os.environ.get("REDIS_URL", "redis://localhost:6379/0"),
     backend=os.environ.get("REDIS_URL", "redis://localhost:6379/0"),
     include=[
-        'backend.workers.tasks.discovery', 
-        'backend.workers.tasks.pricing_task', 
+        'backend.workers.tasks.discovery',
+        'backend.workers.tasks.pricing_task',
         'backend.workers.tasks.agent_tasks',
-        'backend.workers.tasks.health'
+        'backend.workers.tasks.health',
+        'backend.workers.tasks.cost_calculator',
+        'backend.workers.tasks.savings_calculator'
     ]
 )
 
@@ -33,5 +35,15 @@ app.conf.beat_schedule = {
     'reversion-check-every-hour': {
         'task': 'backend.workers.tasks.health.check_reversion_opportunities',
         'schedule': 3600.0,
+    },
+    # Cost Calculator (15 mins) - Updates cluster costs from instance prices
+    'cost-calculator-every-15-mins': {
+        'task': 'workers.cost.calculate_cluster_costs',
+        'schedule': 900.0,
+    },
+    # Savings Calculator (12 hours) - Calculates real potential and realized savings
+    'savings-calculator-every-12-hours': {
+        'task': 'workers.savings.calculate_real_savings',
+        'schedule': 43200.0,
     },
 }

@@ -118,9 +118,15 @@ class Agent:
             'Content-Type': 'application/json'
         }
 
+        # Get cluster metadata from environment or defaults
+        cluster_name = os.getenv('CLUSTER_NAME', f'k8s-cluster-{self.cluster_id[:8]}')
+        region = os.getenv('AWS_REGION', os.getenv('CLUSTER_REGION', 'us-east-1'))
+
         payload = {
             'cluster_id': self.cluster_id,
             'agent_id': self.agent_id,
+            'cluster_name': cluster_name,
+            'region': region,
             'timestamp': datetime.utcnow().isoformat(),
             'capabilities': [
                 'metrics_collection',

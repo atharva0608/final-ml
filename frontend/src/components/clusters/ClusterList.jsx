@@ -14,6 +14,7 @@ import { PieChart, Pie, Cell, ResponsiveContainer } from 'recharts'; // For Donu
 import toast from 'react-hot-toast';
 import ClusterDetails from './ClusterDetails';
 import ClusterDisconnectModal from './ClusterDisconnectModal';
+import ClusterDeleteModal from './ClusterDeleteModal';
 import { FaAws, FaGoogle, FaMicrosoft, FaLinux } from 'react-icons/fa'; // Provider icons
 
 const ClusterList = () => {
@@ -24,6 +25,7 @@ const ClusterList = () => {
   const [selectedClusterId, setSelectedClusterId] = useState(null);
   const [openMenuId, setOpenMenuId] = useState(null); // For dropdown menu
   const [disconnectCluster, setDisconnectCluster] = useState(null); // For disconnect modal
+  const [deleteCluster, setDeleteCluster] = useState(null); // For delete modal
   const [refreshing, setRefreshing] = useState(false); // For refresh button loading
   const [injectingClusterId, setInjectingClusterId] = useState(null); // For inject agent loading
 
@@ -109,10 +111,13 @@ const ClusterList = () => {
 
       // Separate realized vs potential savings based on cluster status
       if (c.status === 'DISCOVERED') {
-        potentialSavings += c.potential_savings_monthly || c.estimated_savings || 0;
+        potentialSavings += c.potential_savings_monthly || 0;
         discoveredClusters++;
       } else if (c.status === 'ACTIVE') {
-        realizedSavings += c.estimated_savings || 0;
+        // Use realized_savings_monthly (savings from current SPOT instances)
+        realizedSavings += c.realized_savings_monthly || 0;
+        // Also add potential savings (savings from switching ON_DEMAND to SPOT)
+        potentialSavings += c.potential_savings_monthly || 0;
         activeClusters++;
       }
     });
@@ -313,16 +318,21 @@ const ClusterList = () => {
     }
   };
 
-  const handleRemoveCluster = async (clusterId, e) => {
+  const handleRemoveCluster = async (cluster, e) => {
     e.stopPropagation();
     setOpenMenuId(null);
-    if (!window.confirm('Are you sure you want to permanently remove this cluster? This cannot be undone.')) return;
+    setDeleteCluster(cluster); // Show delete modal
+  };
+
+  const confirmDeleteCluster = async (clusterId) => {
     try {
+      toast.loading('Deleting cluster...', { id: 'delete' });
       await clusterAPI.deleteCluster(clusterId);
-      toast.success('Cluster removed successfully');
+      toast.success('Cluster deleted successfully', { id: 'delete' });
+      setDeleteCluster(null);
       fetchClusters();
     } catch (error) {
-      toast.error('Failed to remove cluster');
+      toast.error('Failed to delete cluster: ' + (error.response?.data?.detail || error.message), { id: 'delete' });
       console.error(error);
     }
   };
@@ -559,11 +569,26 @@ const ClusterList = () => {
                     {(() => {
                       // Real-time status check based on last_heartbeat
                       const isReallyConnected = () => {
-                        if (cluster.status !== 'ACTIVE') return false;
-                        if (!cluster.last_heartbeat) return false;
+                        console.log('Status Check for', cluster.name, {
+                          status: cluster.status,
+                          last_heartbeat: cluster.last_heartbeat,
+                          agent_installed: cluster.agent_installed
+                        });
+                        if (cluster.status !== 'ACTIVE') {
+                          console.log('  ❌ Status not ACTIVE:', cluster.status);
+                          return false;
+                        }
+                        if (!cluster.last_heartbeat) {
+                          console.log('  ❌ No last_heartbeat');
+                          return false;
+                        }
                         const lastHB = new Date(cluster.last_heartbeat);
                         const twoMinAgo = new Date(Date.now() - 2 * 60 * 1000);
-                        return lastHB > twoMinAgo;
+                        const isConnected = lastHB > twoMinAgo;
+                        console.log('  Last HB:', lastHB.toISOString());
+                        console.log('  Two min ago:', twoMinAgo.toISOString());
+                        console.log('  Is Connected:', isConnected);
+                        return isConnected;
                       };
                       const connected = isReallyConnected();
 
@@ -585,7 +610,7 @@ const ClusterList = () => {
                             }}
                           >
                             <FiDownloadCloud className="w-3.5 h-3.5" />
-                            Activate Optimization
+                            Install Agent
                           </button>
                         );
                       }
@@ -626,12 +651,12 @@ const ClusterList = () => {
                               e.stopPropagation();
                               setOpenMenuId(null);
                               try {
-                                toast.loading('Activating cluster...', { id: 'activate' });
+                                toast.loading('Installing agent...', { id: 'activate' });
                                 await clusterAPI.autoInstallAgent(cluster.id);
-                                toast.success('Agent installation started!', { id: 'activate' });
+                                toast.success('Agent installed successfully!', { id: 'activate' });
                                 fetchClusters();
                               } catch (error) {
-                                toast.error('Failed to activate cluster: ' + (error.response?.data?.detail || error.message), { id: 'activate' });
+                                toast.error('Failed to install agent: ' + (error.response?.data?.detail || error.message), { id: 'activate' });
                               }
                             }}
                           >
@@ -663,10 +688,10 @@ const ClusterList = () => {
                         )}
                         <button
                           className="w-full px-4 py-2 text-left text-sm text-red-600 hover:bg-red-50 flex items-center gap-2"
-                          onClick={(e) => handleRemoveCluster(cluster.id, e)}
+                          onClick={(e) => handleRemoveCluster(cluster, e)}
                         >
                           <FiTrash2 className="w-4 h-4" />
-                          Remove cluster
+                          Delete Cluster
                         </button>
                       </div>
                     )}
@@ -708,6 +733,14 @@ const ClusterList = () => {
         onClose={() => setDisconnectCluster(null)}
         cluster={disconnectCluster}
         onConfirm={handleDisconnectCluster}
+      />
+
+      {/* Delete Modal */}
+      <ClusterDeleteModal
+        isOpen={!!deleteCluster}
+        onClose={() => setDeleteCluster(null)}
+        cluster={deleteCluster}
+        onConfirm={confirmDeleteCluster}
       />
     </div>
   );

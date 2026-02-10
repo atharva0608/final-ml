@@ -11,7 +11,9 @@ from datetime import datetime
 import logging
 
 from ..models.base import get_db
-from ..models.cluster import Cluster
+from ..models.cluster import Cluster, ClusterStatus
+from ..models.account import Account
+import uuid
 
 router = APIRouter(prefix="/api/v1/agents", tags=["agents"])
 logger = logging.getLogger(__name__)
@@ -41,17 +43,58 @@ async def register_agent(
                 detail="cluster_id is required"
             )
 
-        # Verify cluster exists
+        # Get or create cluster
         cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
-        if not cluster:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Cluster {cluster_id} not found"
-            )
 
-        # Update cluster heartbeat
-        cluster.last_heartbeat = datetime.utcnow()
-        cluster.agent_installed = "Y"
+        if not cluster:
+            # Auto-create cluster when agent registers
+            cluster_name = payload.get("cluster_name", f"cluster-{cluster_id[:8]}")
+            region = payload.get("region", "unknown")
+
+            # Try to find an existing account to associate with, or create a default one
+            # Get the first account or create a default one
+            account = db.query(Account).first()
+            if not account:
+                # Create a default account if none exists
+                from ..models.organization import Organization
+                org = db.query(Organization).first()
+                if not org:
+                    logger.error("No organization found to create cluster")
+                    raise HTTPException(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        detail="No organization configured. Please set up your organization first."
+                    )
+
+                account = Account(
+                    id=str(uuid.uuid4()),
+                    account_name=f"Auto-discovered account",
+                    organization_id=org.id,
+                    role_arn=f"arn:aws:iam::000000000000:role/spot-optimizer-{cluster_id[:8]}",
+                    external_id=str(uuid.uuid4()),
+                    is_validated="Y",
+                    created_at=datetime.utcnow()
+                )
+                db.add(account)
+                db.flush()
+
+            # Create the cluster
+            cluster = Cluster(
+                id=cluster_id,
+                account_id=account.id,
+                name=cluster_name,
+                region=region,
+                status=ClusterStatus.ACTIVE,
+                agent_installed="Y",
+                last_heartbeat=datetime.utcnow(),
+                created_at=datetime.utcnow()
+            )
+            db.add(cluster)
+            logger.info(f"Auto-created cluster: {cluster_id} ({cluster_name}) in {region}")
+        else:
+            # Update existing cluster heartbeat
+            cluster.last_heartbeat = datetime.utcnow()
+            cluster.agent_installed = "Y"
+            cluster.status = ClusterStatus.ACTIVE
 
         db.commit()
 

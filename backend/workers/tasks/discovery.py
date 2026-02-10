@@ -415,6 +415,31 @@ def scan_eks_clusters(account: Account, eks_client, db: Session, credentials: Di
             potential_savings = teaser_data['potential_savings_monthly']
             logger.info(f"[Teaser] Cluster {cluster_name}: Potential Savings=${potential_savings:.2f}, OD Nodes={teaser_data['on_demand_node_count']}")
 
+            # Fallback: Calculate cluster cost from instance pricing if Cost Explorer failed
+            if total_cost == 0.0:
+                logger.info(f"[WORK-DISC-01] Cost Explorer returned $0 for {cluster_name}, calculating from instance prices...")
+                pricing_helper = get_pricing_helper()
+
+                # Get all instances for this cluster
+                cluster_instances_filter = [
+                    {'Name': f'tag:kubernetes.io/cluster/{cluster_name}', 'Values': ['owned']},
+                    {'Name': 'instance-state-name', 'Values': ['running']}
+                ]
+
+                instance_pages = ec2_client.get_paginator('describe_instances').paginate(Filters=cluster_instances_filter)
+                cluster_monthly_cost = 0.0
+
+                for page in instance_pages:
+                    for reservation in page['Reservations']:
+                        for inst in reservation['Instances']:
+                            inst_type = inst.get('InstanceType')
+                            inst_price = pricing_helper.get_ec2_price(account.region or 'us-east-1', inst_type)
+                            cluster_monthly_cost += inst_price
+                            logger.debug(f"[WORK-DISC-01] Adding {inst_type}: ${inst_price:.2f}")
+
+                total_cost = cluster_monthly_cost
+                logger.info(f"[WORK-DISC-01] Calculated cluster cost from instances: ${total_cost:.2f}/month")
+
             # Check if cluster already exists
             existing = db.query(Cluster).filter(
                 Cluster.account_id == account.id,
@@ -473,6 +498,56 @@ def scan_eks_clusters(account: Account, eks_client, db: Session, credentials: Di
 
             db.commit()
 
+        # --- Cleanup Logic: Remove clusters deleted from AWS ---
+        # Get all clusters in DB for this account
+        db_clusters = db.query(Cluster).filter(
+            Cluster.account_id == account.id
+        ).all()
+
+        # Find clusters that exist in DB but NOT in AWS anymore
+        discovered_cluster_names = set(cluster_names)
+        clusters_to_cleanup = []
+
+        for db_cluster in db_clusters:
+            if db_cluster.name not in discovered_cluster_names:
+                # Cluster not found in AWS
+                # Check if agent is also offline (no heartbeat for 10+ minutes)
+                if db_cluster.last_heartbeat:
+                    minutes_since_heartbeat = (datetime.utcnow() - db_cluster.last_heartbeat).total_seconds() / 60
+                    if minutes_since_heartbeat > 10:
+                        clusters_to_cleanup.append(db_cluster)
+                        logger.info(
+                            f"[WORK-DISC-01] Cluster {db_cluster.name} not found in AWS "
+                            f"and agent offline for {minutes_since_heartbeat:.1f} mins. "
+                            f"Marking for cleanup."
+                        )
+                else:
+                    # No heartbeat ever recorded, safe to cleanup
+                    clusters_to_cleanup.append(db_cluster)
+                    logger.info(
+                        f"[WORK-DISC-01] Cluster {db_cluster.name} not found in AWS "
+                        f"and never had agent connection. Marking for cleanup."
+                    )
+
+        # Remove clusters from database
+        for cluster in clusters_to_cleanup:
+            logger.info(f"[WORK-DISC-01] Removing deleted cluster: {cluster.name} (ID: {cluster.id})")
+
+            # Also remove associated instances
+            from backend.models.instance import Instance
+            instances_deleted = db.query(Instance).filter(
+                Instance.cluster_id == cluster.id
+            ).delete()
+
+            logger.info(f"[WORK-DISC-01] Removed {instances_deleted} instances for cluster {cluster.name}")
+
+            # Remove the cluster
+            db.delete(cluster)
+
+        if clusters_to_cleanup:
+            db.commit()
+            logger.info(f"[WORK-DISC-01] Cleaned up {len(clusters_to_cleanup)} deleted clusters")
+
         return len(cluster_names)
 
     except ClientError as e:
@@ -488,6 +563,9 @@ def scan_ec2_instances(account: Account, ec2_client, db: Session) -> int:
         Number of instances found
     """
     try:
+        # Get pricing helper for instance price calculation
+        pricing_helper = get_pricing_helper()
+
         # Describe all instances using paginator
         paginator = ec2_client.get_paginator('describe_instances')
         instance_count = 0
@@ -501,6 +579,14 @@ def scan_ec2_instances(account: Account, ec2_client, db: Session) -> int:
                     raw_lifecycle = instance_data.get('InstanceLifecycle', 'on-demand')
                     lifecycle = InstanceLifecycle.SPOT if raw_lifecycle == 'spot' else InstanceLifecycle.ON_DEMAND
                     az = instance_data.get('Placement', {}).get('AvailabilityZone')
+
+                    # Calculate instance price (uses fallback if AWS pricing API unavailable)
+                    try:
+                        monthly_price = pricing_helper.get_ec2_price(account.region or 'us-east-1', instance_type)
+                        logger.debug(f"[WORK-DISC-01] Instance {instance_id} ({instance_type}): ${monthly_price:.2f}/month")
+                    except Exception as e:
+                        logger.warning(f"[WORK-DISC-01] Failed to get pricing for {instance_type}: {e}")
+                        monthly_price = 50.00  # Ultimate fallback
 
                     # Find associated cluster (via tags)
                     tags = instance_data.get('Tags', [])
@@ -529,6 +615,7 @@ def scan_ec2_instances(account: Account, ec2_client, db: Session) -> int:
                         existing.instance_type = instance_type
                         existing.lifecycle = lifecycle
                         existing.az = az
+                        existing.price = monthly_price
                         existing.updated_at = datetime.utcnow()
                     else:
                         # Create new instance
@@ -538,7 +625,7 @@ def scan_ec2_instances(account: Account, ec2_client, db: Session) -> int:
                             instance_type=instance_type,
                             lifecycle=lifecycle,
                             az=az,
-                            price=None,  # Will be updated by pricing collector
+                            price=monthly_price,  # Set price using pricing helper
                             cpu_util=None,  # Will be updated by metrics collection
                             memory_util=None
                         )

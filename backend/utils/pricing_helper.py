@@ -340,22 +340,129 @@ class PricingHelper:
             return self._get_fallback_rds_price(instance_class)
 
     def _get_fallback_ec2_price(self, instance_type: str) -> float:
-        """Fallback EC2 pricing"""
+        """
+        Fallback EC2 pricing (approximate us-east-1 on-demand rates)
+
+        Returns monthly cost (price_per_hour * 730 hours)
+        """
         prices = {
+            # T2 family (Previous Generation)
+            't2.nano': 4.20,
             't2.micro': 8.50,
             't2.small': 17.00,
             't2.medium': 34.00,
+            't2.large': 68.00,
+            't2.xlarge': 136.00,
+            't2.2xlarge': 272.00,
+
+            # T3 family (Current Generation Burstable)
+            't3.nano': 3.80,
             't3.micro': 7.50,
             't3.small': 15.00,
             't3.medium': 30.00,
+            't3.large': 60.00,
+            't3.xlarge': 121.00,
+            't3.2xlarge': 242.00,
+
+            # T3a family (AMD)
+            't3a.nano': 3.40,
+            't3a.micro': 6.80,
+            't3a.small': 13.50,
+            't3a.medium': 27.00,
+            't3a.large': 54.00,
+            't3a.xlarge': 109.00,
+            't3a.2xlarge': 218.00,
+
+            # M5 family (General Purpose)
             'm5.large': 70.00,
             'm5.xlarge': 140.00,
+            'm5.2xlarge': 280.00,
+            'm5.4xlarge': 560.00,
+            'm5.8xlarge': 1120.00,
+            'm5.12xlarge': 1680.00,
+            'm5.16xlarge': 2240.00,
+            'm5.24xlarge': 3360.00,
+
+            # M5a family (AMD General Purpose)
+            'm5a.large': 63.00,
+            'm5a.xlarge': 126.00,
+            'm5a.2xlarge': 252.00,
+            'm5a.4xlarge': 504.00,
+            'm5a.8xlarge': 1008.00,
+            'm5a.12xlarge': 1512.00,
+            'm5a.16xlarge': 2016.00,
+            'm5a.24xlarge': 3024.00,
+
+            # C5 family (Compute Optimized)
             'c5.large': 62.00,
             'c5.xlarge': 124.00,
+            'c5.2xlarge': 248.00,
+            'c5.4xlarge': 496.00,
+            'c5.9xlarge': 1116.00,
+            'c5.12xlarge': 1488.00,
+            'c5.18xlarge': 2232.00,
+            'c5.24xlarge': 2976.00,
+
+            # C5a family (AMD Compute Optimized)
+            'c5a.large': 56.00,
+            'c5a.xlarge': 112.00,
+            'c5a.2xlarge': 224.00,
+            'c5a.4xlarge': 448.00,
+            'c5a.8xlarge': 896.00,
+            'c5a.12xlarge': 1344.00,
+            'c5a.16xlarge': 1792.00,
+            'c5a.24xlarge': 2688.00,
+
+            # R5 family (Memory Optimized)
             'r5.large': 91.00,
-            'g4dn.xlarge': 380.00
+            'r5.xlarge': 183.00,
+            'r5.2xlarge': 365.00,
+            'r5.4xlarge': 730.00,
+            'r5.8xlarge': 1460.00,
+            'r5.12xlarge': 2190.00,
+            'r5.16xlarge': 2920.00,
+            'r5.24xlarge': 4380.00,
+
+            # R5a family (AMD Memory Optimized)
+            'r5a.large': 82.00,
+            'r5a.xlarge': 164.00,
+            'r5a.2xlarge': 328.00,
+            'r5a.4xlarge': 657.00,
+            'r5a.8xlarge': 1314.00,
+            'r5a.12xlarge': 1971.00,
+            'r5a.16xlarge': 2628.00,
+            'r5a.24xlarge': 3942.00,
+
+            # GPU instances
+            'g4dn.xlarge': 380.00,
+            'g4dn.2xlarge': 548.00,
+            'g4dn.4xlarge': 876.00,
+            'g4dn.8xlarge': 1576.00,
+            'g4dn.12xlarge': 2835.00,
+            'g4dn.16xlarge': 3152.00,
+            'p3.2xlarge': 2242.00,
+            'p3.8xlarge': 8967.00,
+            'p3.16xlarge': 17934.00,
         }
-        return prices.get(instance_type, 50.00)
+
+        # If exact match not found, try to infer from family
+        if instance_type not in prices:
+            # Try to extract family (e.g., 't3' from 't3.nano')
+            family = instance_type.split('.')[0] if '.' in instance_type else None
+
+            # Return average price for family or generic fallback
+            if family == 't3':
+                return 50.00
+            elif family in ['m5', 'm5a']:
+                return 100.00
+            elif family in ['c5', 'c5a']:
+                return 100.00
+            elif family in ['r5', 'r5a']:
+                return 150.00
+            else:
+                return 75.00  # Generic fallback for unknown instance types
+
+        return prices.get(instance_type, 75.00)
 
     def _get_fallback_rds_price(self, instance_class: str) -> float:
         """Fallback RDS pricing"""
@@ -392,6 +499,70 @@ class PricingHelper:
         }
         return fallback_prices.get(transfer_type, 0.09)
     
+    def get_spot_price(self, region: str, instance_type: str, az: str = None) -> float:
+        """
+        Get current Spot price for an instance type
+
+        Args:
+            region: AWS region
+            instance_type: EC2 instance type (e.g. t3.medium)
+            az: Availability zone (optional, uses region default if not provided)
+
+        Returns:
+            Spot price per month in USD (uses 12-hour cache)
+        """
+        cache_key = f"pricing:spot:{region}:{instance_type}:{az or 'any'}"
+
+        # Check cache first (12-hour TTL as requested)
+        cached = self.redis.get(cache_key) if self.redis else None
+        if cached:
+            return float(cached)
+
+        # Try to fetch real spot price from AWS
+        try:
+            import boto3
+            from datetime import datetime, timedelta
+
+            ec2 = boto3.client('ec2', region_name=region)
+
+            # Get spot price history (last 1 hour)
+            filters = {
+                'InstanceTypes': [instance_type],
+                'ProductDescriptions': ['Linux/UNIX'],
+                'StartTime': datetime.utcnow() - timedelta(hours=1),
+                'MaxResults': 1
+            }
+
+            if az:
+                filters['AvailabilityZone'] = az
+
+            response = ec2.describe_spot_price_history(**filters)
+
+            if response.get('SpotPriceHistory'):
+                spot_price_hourly = float(response['SpotPriceHistory'][0]['SpotPrice'])
+                spot_price_monthly = spot_price_hourly * 730  # Convert to monthly
+
+                # Cache for 12 hours (43200 seconds)
+                if self.redis:
+                    self.redis.setex(cache_key, 43200, str(spot_price_monthly))
+
+                return spot_price_monthly
+            else:
+                # No spot price history, use fallback
+                return self._get_fallback_spot_price(instance_type)
+
+        except Exception as e:
+            print(f"Error fetching spot price for {instance_type}: {e}")
+            return self._get_fallback_spot_price(instance_type)
+
+    def _get_fallback_spot_price(self, instance_type: str) -> float:
+        """
+        Fallback spot pricing (typically 60-70% cheaper than on-demand)
+        """
+        on_demand_price = self._get_fallback_ec2_price(instance_type)
+        # Typical spot discount is 60-70%, we use 65% for estimates
+        return on_demand_price * 0.35
+
     def clear_cache(self, pattern: str = "pricing:*"):
         """Clear pricing cache"""
         keys = self.redis.keys(pattern)

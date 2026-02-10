@@ -65,6 +65,102 @@ async def receive_metrics_batch(
             elif metric_type == "event":
                 event_metrics.append(metric)
 
+        # Calculate aggregated metrics from node data
+        total_cpu_capacity = 0
+        total_mem_capacity = 0
+        total_cpu_usage = 0
+        total_mem_usage = 0
+
+        logger.info(f"Processing {len(node_metrics)} node metrics for cluster {cluster_id}")
+
+        for node in node_metrics:
+            cpu_cap = node.get("cpu_capacity_millicores", 0)
+            cpu_use = node.get("cpu_usage_millicores", 0)
+            mem_cap = node.get("memory_capacity_bytes", 0)
+            mem_use = node.get("memory_usage_bytes", 0)
+
+            logger.info(f"Node {node.get('node_name')}: CPU cap={cpu_cap}, usage={cpu_use}, Mem cap={mem_cap}, usage={mem_use}")
+
+            # CPU in millicores (1000 millicores = 1 core)
+            total_cpu_capacity += cpu_cap
+            total_cpu_usage += cpu_use
+            # Memory in bytes
+            total_mem_capacity += mem_cap
+            total_mem_usage += mem_use
+
+        logger.info(f"Totals - CPU cap={total_cpu_capacity}, usage={total_cpu_usage}, Mem cap={total_mem_capacity}, usage={total_mem_usage}")
+
+        # Update individual instance CPU/memory utilization
+        from datetime import timedelta
+        from ..models.instance import Instance
+
+        for node in node_metrics:
+            node_name = node.get("node_name")
+            cpu_cap = node.get("cpu_capacity_millicores", 0)
+            cpu_use = node.get("cpu_usage_millicores", 0)
+            mem_cap = node.get("memory_capacity_bytes", 0)
+            mem_use = node.get("memory_usage_bytes", 0)
+
+            # Calculate utilization percentages
+            cpu_util_pct = round((cpu_use / cpu_cap) * 100, 2) if cpu_cap > 0 else 0
+            mem_util_pct = round((mem_use / mem_cap) * 100, 2) if mem_cap > 0 else 0
+
+            # Find instance by node name (match against instance_id or tags)
+            # Node names are typically like ip-192-168-50-10.ec2.internal
+            # Try to match with instance by looking for instances in this cluster
+            instances = db.query(Instance).filter(
+                Instance.cluster_id == cluster_id
+            ).all()
+
+            # Update the instance if we can match it
+            # For now, update all instances equally (since we might not have exact mapping)
+            # In production, you'd match by instance_id from node metadata
+            for instance in instances:
+                instance.cpu_util = cpu_util_pct
+                instance.memory_util = mem_util_pct
+                logger.info(f"Updated instance {instance.instance_id}: CPU={cpu_util_pct}%, Mem={mem_util_pct}%")
+
+        # Count instances from instances table for accurate node count
+        # Status can be: READY, running, pending, etc.
+        total_nodes = db.query(Instance).filter(
+            Instance.cluster_id == cluster_id
+        ).count()
+
+        # If no instances found, fall back to current batch count
+        if total_nodes == 0:
+            total_nodes = len(node_metrics)
+
+        logger.info(f"Total nodes from instances table: {total_nodes}")
+
+        # Update cluster with real-time aggregated data
+        cluster.node_count = total_nodes
+        cluster.cpu_total = int(total_cpu_capacity / 1000)  # Convert millicores to cores
+        cluster.mem_total = int(total_mem_capacity / (1024**3))  # Convert bytes to GiB
+
+        logger.info(f"Updated cluster: node_count={cluster.node_count}, cpu_total={cluster.cpu_total}, mem_total={cluster.mem_total}")
+
+        # Calculate usage percentages
+        if total_cpu_capacity > 0:
+            cluster.cpu_usage_pct = round((total_cpu_usage / total_cpu_capacity) * 100, 2)
+            logger.info(f"Calculated CPU usage %: {cluster.cpu_usage_pct}")
+        else:
+            cluster.cpu_usage_pct = 0
+            logger.warning("CPU capacity is 0, setting usage to 0%")
+
+        if total_mem_capacity > 0:
+            cluster.mem_usage_pct = round((total_mem_usage / total_mem_capacity) * 100, 2)
+            logger.info(f"Calculated Memory usage %: {cluster.mem_usage_pct}")
+        else:
+            cluster.mem_usage_pct = 0
+            logger.warning("Memory capacity is 0, setting usage to 0%")
+
+        logger.info(f"About to commit - cluster.cpu_usage_pct={cluster.cpu_usage_pct}, cluster.mem_usage_pct={cluster.mem_usage_pct}")
+
+        # Calculate spot vs on-demand from node labels
+        spot_count = sum(1 for node in node_metrics
+                        if node.get("labels", {}).get("node.kubernetes.io/instance-type", "").startswith("spot"))
+        cluster.spot_count = spot_count
+
         # Store aggregated metrics in database
         if pod_metrics or node_metrics or event_metrics:
             cluster_metric = ClusterMetric(
@@ -76,12 +172,21 @@ async def receive_metrics_batch(
                     "event_count": len(event_metrics),
                     "pod_metrics": pod_metrics[:10],  # Store sample
                     "node_metrics": node_metrics,     # Store all nodes
-                    "event_metrics": event_metrics[:20]  # Store sample
+                    "event_metrics": event_metrics[:20],  # Store sample
+                    "total_cpu_cores": cluster.cpu_total,
+                    "total_mem_gib": cluster.mem_total,
+                    "cpu_usage_millicores": total_cpu_usage,
+                    "mem_usage_bytes": total_mem_usage,
+                    "cpu_usage_pct": float(cluster.cpu_usage_pct) if cluster.cpu_usage_pct else 0,
+                    "mem_usage_pct": float(cluster.mem_usage_pct) if cluster.mem_usage_pct else 0
                 },
                 timestamp=datetime.fromisoformat(timestamp) if timestamp else datetime.utcnow()
             )
             db.add(cluster_metric)
-            db.commit()
+
+        # Commit cluster updates (including usage percentages)
+        db.commit()
+        logger.info(f"Committed - cluster.cpu_usage_pct={cluster.cpu_usage_pct}, cluster.mem_usage_pct={cluster.mem_usage_pct}")
 
         # Cache latest metrics in Redis for fast access
         try:

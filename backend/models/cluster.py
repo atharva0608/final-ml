@@ -51,9 +51,10 @@ class Cluster(Base):
     monthly_cost = Column(Integer, default=0) # Stored in USD (or cents if needed, but float/int for display)
     estimated_savings = Column(Integer, default=0)
     last_cost_update = Column(DateTime, nullable=True)
-    
+
     # "Teaser" / Shallow Scan Data (Phase 2 Enterprise)
-    potential_savings_monthly = Column(Float, default=0.0)
+    potential_savings_monthly = Column(Float, default=0.0)  # Savings IF we switch ON_DEMAND to SPOT
+    realized_savings_monthly = Column(Float, default=0.0)   # Savings we're ALREADY getting from SPOT instances
     on_demand_node_count = Column(Integer, default=0)
     # spot_node_count (reuse spot_count below)
     last_assessed = Column(DateTime, nullable=True)
@@ -64,7 +65,9 @@ class Cluster(Base):
     spot_count = Column(Integer, default=0)
     cpu_total = Column(Integer, default=0)
     mem_total = Column(Integer, default=0)  # In GiB
-    
+    cpu_usage_pct = Column(Float, default=0.0)  # CPU usage percentage
+    mem_usage_pct = Column(Float, default=0.0)  # Memory usage percentage
+
     tags = Column(JSON, default={})
     
     created_at = Column(DateTime, default=datetime.utcnow)

@@ -17,7 +17,7 @@ from sqlalchemy import and_, or_, desc
 from backend.models.account import Account, AccountStatus
 from backend.models.cluster import Cluster, ClusterStatus
 from backend.models.user import User
-from backend.models.instance import Instance
+from backend.models.instance import Instance, InstanceLifecycle
 from backend.schemas.cluster_schemas import (
     ClusterCreate, ClusterUpdate, ClusterResponse, ClusterList, 
     AWSConnectRequest, AgentInstallCommand, ClusterFilter,
@@ -76,7 +76,7 @@ class ClusterService:
             "status": "connected" if is_connected else "pending",
             "cluster_id": cluster.id,
             "cluster_name": cluster.name,
-            "last_heartbeat": cluster.last_heartbeat.isoformat() if cluster.last_heartbeat else None
+            "last_heartbeat": (cluster.last_heartbeat.isoformat() + 'Z') if cluster.last_heartbeat else None
         }
 
     def update_resource_costs(self, cluster_id: str, user_id: str, costs: dict) -> dict:
@@ -392,7 +392,7 @@ class ClusterService:
              # Return empty if no org
              return ClusterList(clusters=[], total=0, page=filters.page, page_size=filters.page_size)
 
-        # Try Redis cache for fast UX (30 second TTL)
+        # Try Redis cache for fast UX (5 second TTL for real-time status)
         cache_key = f"clusters:{user.organization_id}:{filters.page}:{filters.page_size}:{filters.status}:{filters.search or ''}"
         try:
             redis_url = os.getenv("REDIS_URL", "redis://redis:6379/0")
@@ -438,22 +438,36 @@ class ClusterService:
         # Convert to ClusterListItem schemas
         cluster_list_items = []
         for cluster in clusters:
+            # Count instances from instances table for accurate counts
+            total_instances = self.db.query(Instance).filter(Instance.cluster_id == cluster.id).count()
+            spot_instances = self.db.query(Instance).filter(
+                Instance.cluster_id == cluster.id,
+                Instance.lifecycle == InstanceLifecycle.SPOT
+            ).count()
+            on_demand_instances = self.db.query(Instance).filter(
+                Instance.cluster_id == cluster.id,
+                Instance.lifecycle == InstanceLifecycle.ON_DEMAND
+            ).count()
+
             cluster_list_items.append(ClusterListItem(
                 id=cluster.id,
                 name=cluster.name,
                 region=cluster.region,
                 status=cluster.status.value,
-                node_count=cluster.node_count or 0,
-                spot_count=cluster.spot_count or 0,
+                node_count=total_instances or cluster.node_count or 0,
+                spot_count=spot_instances or cluster.spot_count or 0,
                 monthly_cost=float(cluster.monthly_cost or 0),
                 agent_installed=cluster.agent_installed == 'Y',
                 last_heartbeat=cluster.last_heartbeat,
                 # Include savings fields for frontend
                 estimated_savings=float(cluster.estimated_savings or 0),
                 potential_savings_monthly=float(cluster.potential_savings_monthly or 0),
+                realized_savings_monthly=float(getattr(cluster, 'realized_savings_monthly', 0) or 0),
                 cpu_total=cluster.cpu_total or 0,
                 mem_total=cluster.mem_total or 0,
-                on_demand_node_count=cluster.on_demand_node_count or 0
+                cpu_usage_pct=float(cluster.cpu_usage_pct or 0),
+                mem_usage_pct=float(cluster.mem_usage_pct or 0),
+                on_demand_node_count=on_demand_instances or cluster.on_demand_node_count or 0
             ))
 
         result = ClusterList(
@@ -463,10 +477,10 @@ class ClusterService:
             page_size=filters.page_size
         )
         
-        # Cache result in Redis for 30 seconds
+        # Cache result in Redis for 5 seconds (short TTL for real-time status updates)
         try:
             r = redis.from_url(os.getenv("REDIS_URL", "redis://redis:6379/0"))
-            r.setex(cache_key, 30, result.model_dump_json())
+            r.setex(cache_key, 5, result.model_dump_json())
         except Exception as e:
             logger.debug(f"Failed to cache cluster list: {e}")
         
@@ -566,6 +580,10 @@ class ClusterService:
             
         # Explicitly delete instances to ensure cleanup (even if DB cascade exists)
         self.db.query(Instance).filter(Instance.cluster_id == cluster_id).delete(synchronize_session=False)
+    
+        # Also delete cluster_metrics to avoid IntegrityError (NOT NULL on cluster_id)
+        from backend.models.cluster_metric import ClusterMetric
+        self.db.query(ClusterMetric).filter(ClusterMetric.cluster_id == cluster_id).delete(synchronize_session=False)
 
 
         # Uninstall Agent if installed

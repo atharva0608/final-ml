@@ -244,9 +244,14 @@ class CleanupService:
         
         resources = []
         savings = 0.0
-        
+
         # Threshold for "Safe to Delete" (30 days old)
         safe_threshold = datetime.now(timezone.utc) - timedelta(days=30)
+        # Grace period: Skip resources created in last 24 hours (deployment in progress)
+        grace_period = datetime.now(timezone.utc) - timedelta(hours=24)
+
+        # Tag-based exemptions (resources with these keywords are protected)
+        EXEMPT_KEYWORDS = ['backup', 'spare', 'template', 'reserved', 'do-not-delete', 'keep', 'permanent']
         
         try:
             session = self._get_account_session(account, region=region)
@@ -274,13 +279,22 @@ class CleanupService:
                     tag_keys = {t['Key'] for t in tags}
                     created_at = v['CreateTime']
                     vol_type = v['VolumeType']
-                    # Use PricingHelper
-                    unit_price = pricing.get_ebs_price(region, vol_type)
-                    cost = v['Size'] * unit_price
-                    
+
+                    # Grace period check: Skip volumes created < 24 hours ago
+                    if created_at > grace_period:
+                        continue  # ✅ Skip newly created volumes (deployment in progress)
+
+                    # Exempt check: Skip volumes with protected tags
+                    if self._is_exempt_by_tags(tags, EXEMPT_KEYWORDS):
+                        continue  # ✅ Skip protected volumes
+
+                    # Use PricingHelper (returns monthly cost per GB)
+                    monthly_price_per_gb = pricing.get_ebs_price(region, vol_type)
+                    cost = v['Size'] * monthly_price_per_gb
+
                     status = CleanupStatus.ACTIVE
                     reason = "Active"
-                    
+
                     # 1. Attachment Check (Hardcoded safety)
                     if vol_state == 'in-use':
                         status = CleanupStatus.ACTIVE
@@ -366,42 +380,75 @@ class CleanupService:
                         savings += vol_cost
                 
                 # 2. ORPHANED SNAPSHOTS
+                # CRITICAL FIX: Pre-fetch AMI mappings to avoid deleting snapshots backing AMIs
+                ami_snapshot_ids = set()
+                try:
+                    amis = ec2.describe_images(Owners=['self'])['Images']
+                    for ami in amis:
+                        for bdm in ami.get('BlockDeviceMappings', []):
+                            snap_id = bdm.get('Ebs', {}).get('SnapshotId')
+                            if snap_id:
+                                ami_snapshot_ids.add(snap_id)
+                    logger.info(f"Found {len(ami_snapshot_ids)} snapshots used by AMIs in {region}")
+                except Exception as ami_err:
+                    logger.error(f"Failed to fetch AMI mappings: {ami_err}")
+
                 snaps = ec2.describe_snapshots(OwnerIds=['self'])
                 snapshot_price = pricing.get_snapshot_price(region)
-                
+
                 for s in snaps['Snapshots']:
                     vol_id = s.get('VolumeId')
+                    snap_id = s['SnapshotId']
+
+                    # CRITICAL: If snapshot is used by AMI, mark as ACTIVE (DO NOT DELETE)
+                    if snap_id in ami_snapshot_ids:
+                        tags = s.get('Tags', [])
+                        tag_keys = {t['Key'] for t in tags}
+                        missing = [rt for rt in required_tags if rt not in tag_keys]
+
+                        cost = s['VolumeSize'] * snapshot_price
+                        item = ResourceItem(
+                            id=snap_id,
+                            name=self._get_tag_value(tags, 'Name'),
+                            type=ResourceType.SNAPSHOT,
+                            status=CleanupStatus.ACTIVE,  # ✅ PROTECTED
+                            region=region,
+                            cost_per_month=0.0,  # No savings - needed by AMI
+                            reason="Used by AMI (Do Not Delete)",
+                            metadata={'VolumeId': vol_id, 'Size': s['VolumeSize'], 'Progress': s['Progress'], 'AMI_Protected': True},
+                            is_compliant=len(missing) == 0,
+                            missing_tags=missing
+                        )
+                        resources.append(item)
+                        continue  # ✅ Skip adding to savings
+
                     # Safety Logic: If Volume is gone, Snapshot IS orphaned.
                     # But is it SAFE to delete?
                     if vol_id and vol_id not in all_vol_ids:
                         start_time = s.get('StartTime')
-                        
+
                         # Default ORPHANED (Risky)
                         status = CleanupStatus.ORPHANED
                         reason = "Volume deleted (Orphaned Snapshot)"
-                        
+
                         # Safe if > 30 days old
                         if start_time and start_time < safe_threshold:
                             status = CleanupStatus.SAFE_TO_DELETE
                             reason = "Volume deleted > 30 days (Safe)"
-                        
-                        # Check dependencies (AMI) - if mapped to AMI, ACTIVE/RISK
-                        # We can't easily check AMIs efficiently inside this loop without pre-fetching.
-                        # Assuming check_dependencies handles it on individual action, but for scan...
-                        # Let's trust ORPHANED status means "Review". SAFE means "Double Checked".
-                        
+
                         tags = s.get('Tags', [])
                         tag_keys = {t['Key'] for t in tags}
                         missing = [rt for rt in required_tags if rt not in tag_keys]
-                        
+
                         cost = s['VolumeSize'] * snapshot_price
                         item = ResourceItem(
-                            id=s['SnapshotId'],
+                            id=snap_id,
                             name=self._get_tag_value(tags, 'Name'),
                             type=ResourceType.SNAPSHOT,
                             status=status,
                             region=region,
                             cost_per_month=cost,
+                            reason=reason,
                             metadata={'VolumeId': vol_id, 'Size': s['VolumeSize'], 'Progress': s['Progress']},
                             is_compliant=len(missing) == 0,
                             missing_tags=missing
@@ -445,7 +492,7 @@ class CleanupService:
             except Exception as e:
                 logger.error(f"Error scanning EIPs in {region}: {e}")
 
-            # 4. UNAUTHORIZED INSTANCES
+            # 4. AUTHORIZED vs UNAUTHORIZED INSTANCES
             try:
                 aws_instances = {}
                 paginator = ec2.get_paginator('describe_instances')
@@ -464,30 +511,107 @@ class CleanupService:
                         Cluster.region == region
                     ).all()
                 ]
-                
+
                 db_instance_set = set(db_instance_ids)
-                
+
                 for inst_id, inst_data in aws_instances.items():
-                    if inst_id not in db_instance_set:
-                        # Unauthorized / Unmanaged
-                        inst_type = inst_data.get('InstanceType', 'unknown')
-                        cost = pricing.get_ec2_price(region, inst_type)
-                        
-                        tags = inst_data.get('Tags', [])
-                        name = self._get_tag_value(tags, 'Name')
-                        
+                    tags = inst_data.get('Tags', [])
+                    tag_dict = {t['Key']: t['Value'] for t in tags}
+                    name = self._get_tag_value(tags, 'Name')
+                    inst_type = inst_data.get('InstanceType', 'unknown')
+
+                    # AUTHORIZED: Instances managed by Spot Optimizer (cluster nodes)
+                    if inst_id in db_instance_set:
+                        # These are cluster nodes - show as AUTHORIZED (managed)
                         item = ResourceItem(
                             id=inst_id,
                             name=name,
                             type=ResourceType.INSTANCE,
-                            status=CleanupStatus.UNAUTHORIZED,
+                            status=CleanupStatus.ACTIVE,  # Authorized/Managed
                             region=region,
-                            cost_per_month=cost,
-                            reason="Not managed by Spot Optimizer",
-                            metadata={'InstanceType': inst_type, 'State': inst_data['State']['Name']}
+                            cost_per_month=0.0,  # No savings - this is managed workload
+                            reason="Managed by Spot Optimizer (Cluster Node)",
+                            metadata={
+                                'InstanceType': inst_type,
+                                'State': inst_data['State']['Name'],
+                                'Managed': True,
+                                'ManagedBy': 'Spot Optimizer'
+                            },
+                            is_compliant=True
                         )
                         resources.append(item)
-                        savings += cost
+
+                    # UNAUTHORIZED: Instances NOT managed by Spot Optimizer
+                    else:
+                        # Check if explicitly marked for review
+                        if tag_dict.get('spot-optimizer:review') == 'true':
+                            # User explicitly wants this reviewed as potential wastage
+                            cost = pricing.get_ec2_price(region, inst_type)
+
+                            item = ResourceItem(
+                                id=inst_id,
+                                name=name,
+                                type=ResourceType.INSTANCE,
+                                status=CleanupStatus.UNAUTHORIZED,
+                                region=region,
+                                cost_per_month=cost,
+                                reason="Not managed by Spot Optimizer (Marked for review)",
+                                metadata={'InstanceType': inst_type, 'State': inst_data['State']['Name'], 'Managed': False},
+                                is_compliant=False
+                            )
+                            resources.append(item)
+                            savings += cost  # Count as potential wastage
+
+                        # Check tag compliance (non-managed instances should still be compliant)
+                        elif required_tags:
+                            tag_keys = set(tag_dict.keys())
+                            missing = [rt for rt in required_tags if rt not in tag_keys]
+
+                            if missing:
+                                # Not managed AND missing required tags = compliance issue
+                                # Show but DON'T count as wastage
+                                item = ResourceItem(
+                                    id=inst_id,
+                                    name=name,
+                                    type=ResourceType.INSTANCE,
+                                    status=CleanupStatus.NOT_COMPLIANT,
+                                    region=region,
+                                    cost_per_month=0.0,  # NOT wastage, just compliance issue
+                                    reason=f"Not managed (Missing tags: {', '.join(missing)})",
+                                    metadata={'InstanceType': inst_type, 'State': inst_data['State']['Name'], 'Managed': False},
+                                    is_compliant=False,
+                                    missing_tags=missing
+                                )
+                                resources.append(item)
+                            else:
+                                # Properly tagged, not managed = legitimate external workload
+                                # Show as ACTIVE (authorized external workload)
+                                item = ResourceItem(
+                                    id=inst_id,
+                                    name=name,
+                                    type=ResourceType.INSTANCE,
+                                    status=CleanupStatus.ACTIVE,
+                                    region=region,
+                                    cost_per_month=0.0,  # Not wastage
+                                    reason="Not managed (Properly tagged external workload)",
+                                    metadata={'InstanceType': inst_type, 'State': inst_data['State']['Name'], 'Managed': False},
+                                    is_compliant=True
+                                )
+                                resources.append(item)
+                        else:
+                            # No required tags policy - show as external workload
+                            item = ResourceItem(
+                                id=inst_id,
+                                name=name,
+                                type=ResourceType.INSTANCE,
+                                status=CleanupStatus.ACTIVE,
+                                region=region,
+                                cost_per_month=0.0,
+                                reason="Not managed (External workload)",
+                                metadata={'InstanceType': inst_type, 'State': inst_data['State']['Name'], 'Managed': False},
+                                is_compliant=True
+                            )
+                            resources.append(item)
 
             except Exception as e:
                 logger.error(f"Error scanning instances in {region}: {e}")
@@ -545,6 +669,15 @@ class CleanupService:
             if t['Key'] == key:
                 return t['Value']
         return "Unknown"
+
+    def _is_exempt_by_tags(self, tags: List[Dict], exempt_keywords: List[str]) -> bool:
+        """Check if resource is exempt from cleanup based on tag values"""
+        for t in tags:
+            # Check both key and value
+            tag_str = f"{t.get('Key', '')}:{t.get('Value', '')}".lower()
+            if any(keyword in tag_str for keyword in exempt_keywords):
+                return True
+        return False
 
     def check_dependencies(self, account_id: str, resource_type: str, resource_id: str, region: str) -> Dict[str, Any]:
         """
@@ -683,22 +816,34 @@ class CleanupService:
             try:
                 enis = ec2.describe_network_interfaces(Filters=[{'Name': 'status', 'Values': ['available']}])['NetworkInterfaces']
                 for eni in enis:
-                    cost = 0.1 # Minimal cost but clutters VPC (Keep hardcoded or add to PricingHelper)
+                    # Check if AWS-managed (Lambda, RDS, ECS, ELB, etc.)
+                    desc = eni.get('Description', '').lower()
+                    requester_id = eni.get('RequesterId', '').lower()
+
+                    # Skip AWS-managed ENIs
+                    AWS_SERVICES = ['aws', 'lambda', 'rds', 'ecs', 'elb', 'eks', 'elasticache', 'redshift', 'vpc endpoint', 'interface']
+                    if any(svc in desc for svc in AWS_SERVICES) or 'amazon' in requester_id:
+                        continue  # ✅ Skip AWS-managed ENIs
+
+                    # Unattached ENIs have minimal direct cost but clutter VPC
+                    cost = 0.0  # Actually $0/mo for unattached ENIs (no hourly charge)
                     status = CleanupStatus.ORPHANED
+
                     item = ResourceItem(
                         id=eni['NetworkInterfaceId'],
                         name=eni.get('Description', 'Unattached ENI'),
                         type=ResourceType.NETWORK_INTERFACE,
                         status=status,
                         region=region,
-                        cost_per_month=cost,
-                        reason="Unattached network interface",
-                        metadata={'PrivateIp': eni.get('PrivateIpAddress'), 'VpcId': eni.get('VpcId')},
+                        cost_per_month=cost,  # ✅ Fixed: ENIs are free when unattached
+                        reason="Unattached network interface (VPC clutter)",
+                        metadata={'PrivateIp': eni.get('PrivateIpAddress'), 'VpcId': eni.get('VpcId'), 'Description': eni.get('Description')},
                         is_compliant=True
                     )
                     resources.append(item)
                     savings += cost
-            except Exception: pass
+            except Exception as eni_err:
+                logger.error(f"ENI scan error: {eni_err}")
             
         except Exception as e:
             logger.error(f"Network Scan Error: {e}")
@@ -721,16 +866,25 @@ class CleanupService:
             
             for db in dbs:
                 db_id = db['DBInstanceIdentifier']
-                status = db['DBInstanceStatus']
+                status_name = db['DBInstanceStatus']
                 db_class = db['DBInstanceClass']
                 engine = db['Engine']
-                
-                if status != 'available':
+
+                if status_name != 'available':
                     continue
-                
+
+                # Check if this is a read replica
+                if db.get('ReadReplicaSourceDBInstanceIdentifier'):
+                    # This is a read replica - don't flag based on connection count alone
+                    # Read replicas often have 0 direct connections but are critical for HA/DR
+                    continue  # ✅ Skip read replicas from idle detection
+
+                # Check if this is a source DB with replicas (also critical)
+                has_replicas = bool(db.get('ReadReplicaDBInstanceIdentifiers'))
+
                 # Check Legacy Generation
                 is_legacy = db_class.startswith('db.t2') or db_class.startswith('db.m4') or db_class.startswith('db.m3')
-                
+
                 # Check Idle via CloudWatch (DatabaseConnections)
                 is_idle = False
                 max_connections = -1
@@ -756,17 +910,24 @@ class CleanupService:
                 cleanup_status = CleanupStatus.ACTIVE
                 reason = None
                 cost_estimate = 0.0
-                
+
                 # Calculate real cost
                 real_cost = pricing.get_rds_price(region, db_class, engine)
-                
+
                 if is_idle:
-                    cleanup_status = CleanupStatus.ORPHANED
-                    reason = f"Zero connections for 14 days"
-                    cost_estimate = real_cost
+                    # Additional safety: If this DB has read replicas, don't mark as idle
+                    # (might be used indirectly through replicas)
+                    if has_replicas:
+                        cleanup_status = CleanupStatus.ACTIVE
+                        reason = "Has read replicas (source DB)"
+                        cost_estimate = 0.0
+                    else:
+                        cleanup_status = CleanupStatus.ORPHANED
+                        reason = f"Zero connections for 14 days (Idle)"
+                        cost_estimate = real_cost
                 elif is_legacy:
                     cleanup_status = CleanupStatus.LEGACY_UPGRADE
-                    reason = f"Legacy instance class ({db_class}). Upgrade to T3/M5 for savings."
+                    reason = f"Legacy instance class ({db_class}). Upgrade to T3/M5/M6 for savings."
                     # Savings is diff between current and T3 equivalent (approx 20% savings)
                     cost_estimate = real_cost * 0.2
                 
@@ -802,32 +963,82 @@ class CleanupService:
             iam = session.client('iam')
             from datetime import datetime, timezone, timedelta
             threshold = datetime.now(timezone.utc) - timedelta(days=90)
-            
+
             users = iam.list_users()['Users']
             for u in users:
-                last_used = u.get('PasswordLastUsed')
+                username = u['UserName']
+
+                # CRITICAL FIX: Check BOTH console access AND access key usage
+                last_console = u.get('PasswordLastUsed')
+                last_key_used = None
+                has_active_keys = False
+
+                # Check access key usage (for service accounts)
+                try:
+                    access_keys = iam.list_access_keys(UserName=username)['AccessKeyMetadata']
+                    for key in access_keys:
+                        if key['Status'] == 'Active':
+                            has_active_keys = True
+                            try:
+                                key_info = iam.get_access_key_last_used(AccessKeyId=key['AccessKeyId'])
+                                if 'LastUsedDate' in key_info.get('AccessKeyLastUsed', {}):
+                                    key_date = key_info['AccessKeyLastUsed']['LastUsedDate']
+                                    # Ensure timezone-aware comparison
+                                    if key_date.tzinfo is None:
+                                        key_date = key_date.replace(tzinfo=timezone.utc)
+                                    if not last_key_used or key_date > last_key_used:
+                                        last_key_used = key_date
+                            except Exception as key_err:
+                                logger.debug(f"Could not get last used date for key: {key_err}")
+                except Exception as keys_err:
+                    logger.warning(f"Could not list access keys for {username}: {keys_err}")
+
+                # Use the MOST RECENT activity (console OR access key)
+                last_activities = [a for a in [last_console, last_key_used] if a is not None]
+                last_activity = max(last_activities) if last_activities else None
+
                 days_inactive = None
-                
-                # Calculate inactivity
                 is_dormant = False
-                if last_used:
-                    days_inactive = (datetime.now(timezone.utc) - last_used).days
+
+                # Calculate inactivity based on ANY activity type
+                if last_activity:
+                    # Ensure timezone-aware
+                    if last_activity.tzinfo is None:
+                        last_activity = last_activity.replace(tzinfo=timezone.utc)
+                    days_inactive = (datetime.now(timezone.utc) - last_activity).days
                     if days_inactive > 90:
                         is_dormant = True
                 elif u['CreateDate'] < threshold:
+                    # Never used (no console, no key usage) and old
                     days_inactive = (datetime.now(timezone.utc) - u['CreateDate']).days
                     is_dormant = True
-                    
+
+                # Additional safety: Don't flag users with active keys unless truly dormant
+                if is_dormant and has_active_keys:
+                    # Reduce severity - active keys indicate potential service account
+                    status = CleanupStatus.ORPHANED  # Review needed, not auto-delete
+                    reason = f"Inactive for {days_inactive} days (Has active access keys - verify before deletion)"
+                elif is_dormant:
+                    status = CleanupStatus.SAFE_TO_DELETE
+                    reason = f"Inactive for {days_inactive} days (No active keys)"
+                else:
+                    continue  # Active user, skip
+
                 if is_dormant:
                     item = ResourceItem(
-                        id=u['UserName'],
-                        name=u['UserName'],
+                        id=username,
+                        name=username,
                         type=ResourceType.IAM_USER,
-                        status=CleanupStatus.SAFE_TO_DELETE,
+                        status=status,
                         region='global',
                         cost_per_month=0.0,
-                        reason=f"Inactive for {days_inactive} days",
-                        metadata={'LastUsed': str(last_used) if last_used else 'Never', 'DaysInactive': days_inactive},
+                        reason=reason,
+                        metadata={
+                            'LastConsole': str(last_console) if last_console else 'Never',
+                            'LastKeyUsed': str(last_key_used) if last_key_used else 'Never',
+                            'HasActiveKeys': has_active_keys,
+                            'DaysInactive': days_inactive
+                        },
                         is_compliant=False
                     )
                     resources.append(item)

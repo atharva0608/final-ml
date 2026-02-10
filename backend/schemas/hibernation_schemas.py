@@ -145,12 +145,17 @@ class HibernationScheduleList(BaseModel):
     """List of hibernation schedules"""
     schedules: List[HibernationScheduleResponse] = Field(..., description="List of schedules")
     total: int = Field(..., description="Total number of schedules")
+    page: int = Field(default=1, description="Current page")
+    page_size: int = Field(default=20, description="Items per page")
 
 
 class HibernationScheduleFilter(BaseModel):
     """Filter criteria for hibernation schedules"""
     cluster_id: Optional[str] = Field(None, description="Filter by cluster UUID")
     is_active: Optional[bool] = Field(None, description="Filter by active status")
+    timezone: Optional[str] = Field(None, description="Filter by timezone")
+    page: int = Field(default=1, ge=1, description="Page number")
+    page_size: int = Field(default=20, ge=1, le=100, description="Items per page")
 
 
 class ScheduleOverride(BaseModel):

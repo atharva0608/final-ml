@@ -60,10 +60,16 @@ class SavingsBreakdown(BaseModel):
 
 class ClusterMetrics(BaseModel):
     cluster_id: str
-    cpu_utilization: float
-    memory_utilization: float
-    node_count: int
-    spot_ratio: float
+    total_instances: int = 0
+    spot_instances: int = 0
+    on_demand_instances: int = 0
+    cpu_utilization: float = 0.0
+    memory_utilization: float = 0.0
+    node_count: int = 0
+    spot_ratio: float = 0.0
+    monthly_cost: float = 0.0
+    estimated_savings: float = 0.0
+    average_cpu_utilization: float = 0.0
 
 class MetricFilter(BaseModel):
     cluster_id: Optional[str] = None

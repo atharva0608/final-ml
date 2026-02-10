@@ -357,15 +357,38 @@ class MetricsService:
             OptimizationJob.cluster_id == cluster_id
         ).order_by(desc(OptimizationJob.created_at)).first()
 
+        # Calculate spot ratio
+        spot_ratio = (spot_instances / active_instances * 100) if active_instances > 0 else 0.0
+
+        # Count on-demand instances
+        on_demand_instances = self.db.query(Instance).filter(
+            and_(
+                Instance.cluster_id == cluster_id,
+                Instance.lifecycle == InstanceLifecycle.ON_DEMAND
+            )
+        ).count()
+
+        # Get average CPU utilization from instances
+        from sqlalchemy import func
+        avg_cpu = self.db.query(func.avg(Instance.cpu_util)).filter(
+            and_(
+                Instance.cluster_id == cluster_id,
+                Instance.cpu_util.isnot(None)
+            )
+        ).scalar()
+
         return ClusterMetrics(
             cluster_id=cluster_id,
-            cluster_name=cluster.name,
             total_instances=total_instances,
-            active_instances=active_instances,
             spot_instances=spot_instances,
-            on_demand_instances=active_instances - spot_instances,
-            last_optimization=last_optimization.created_at if last_optimization else None,
-            status=cluster.status.value
+            on_demand_instances=on_demand_instances,
+            cpu_utilization=float(cluster.cpu_usage_pct or 0),
+            memory_utilization=float(cluster.mem_usage_pct or 0),
+            node_count=cluster.node_count or 0,
+            spot_ratio=spot_ratio,
+            monthly_cost=float(cluster.monthly_cost or 0),
+            estimated_savings=float(cluster.estimated_savings or 0),
+            average_cpu_utilization=round(float(avg_cpu or 0), 2)
         )
 
     def _calculate_cost_metrics(

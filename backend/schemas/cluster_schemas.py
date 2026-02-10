@@ -1,7 +1,7 @@
 """
 Cluster Schemas - Request/Response models for cluster management
 """
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, field_serializer
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 
@@ -19,11 +19,25 @@ class ClusterListItem(BaseModel):
     last_heartbeat: Optional[datetime] = Field(None, description="Last agent heartbeat timestamp")
     
     # Teaser Fields
-    potential_savings_monthly: float = Field(0.0, ge=0, description="Potential savings from Shallow Scan")
+    potential_savings_monthly: float = Field(0.0, ge=0, description="Potential savings IF we switch ON_DEMAND to SPOT")
+    realized_savings_monthly: float = Field(0.0, ge=0, description="Realized savings we're ALREADY getting from SPOT instances")
     on_demand_node_count: int = Field(0, ge=0, description="Count of On-Demand nodes")
-    estimated_savings: float = Field(0.0, ge=0, description="Realized savings from active optimization")
+    estimated_savings: float = Field(0.0, ge=0, description="Legacy field - use realized_savings_monthly instead")
     cpu_total: int = Field(0, ge=0, description="Total CPU cores across all nodes")
     mem_total: int = Field(0, ge=0, description="Total memory in GiB across all nodes")
+    cpu_usage_pct: float = Field(0.0, ge=0, le=100, description="CPU usage percentage")
+    mem_usage_pct: float = Field(0.0, ge=0, le=100, description="Memory usage percentage")
+
+    @field_serializer('last_heartbeat')
+    def serialize_heartbeat(self, dt: Optional[datetime], _info):
+        """Serialize datetime with UTC timezone indicator"""
+        if dt is None:
+            return None
+        # Ensure ISO format with 'Z' suffix for UTC
+        iso_str = dt.isoformat()
+        if not iso_str.endswith('Z') and '+' not in iso_str:
+            iso_str += 'Z'
+        return iso_str
 
     model_config = {
         "json_schema_extra": {
