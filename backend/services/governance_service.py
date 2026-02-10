@@ -9,8 +9,8 @@ from datetime import datetime, timedelta, timezone
 from backend.models.organization import Organization
 from backend.models.account import Account
 from backend.models.audit_log import AuditLog
-from backend.services.cleanup_service import CleanupService
-from backend.schemas.cleanup_schemas import CleanupAction, CleanupActionType
+from backend.services.hygiene_service import HygieneService
+from backend.schemas.hygiene_schemas import HygieneAction, HygieneActionType
 
 logger = logging.getLogger(__name__)
 
@@ -60,12 +60,12 @@ class GovernanceService:
             return []
         
         policies = self.get_organization_policies(organization_id)
-        cleanup_svc = CleanupService(self.db)
+        hygiene_svc = HygieneService(self.db)
         actions_taken = []
         
         # Scan resources
         try:
-            scan_result = cleanup_svc.scan_resources(account_id, organization=org)
+            scan_result = hygiene_svc.scan_resources(account_id, organization=org)
         except Exception as e:
             logger.error(f"Governance scan failed: {e}")
             return []
@@ -80,7 +80,7 @@ class GovernanceService:
             if (resource.type.value == "ELASTIC_IP" and 
                 policies["auto_release_orphaned_ips"]["enabled"]):
                 action_taken = self._execute_autopilot_action(
-                    cleanup_svc, account_id, resource, CleanupActionType.RELEASE, org.id
+                    hygiene_svc, account_id, resource, HygieneActionType.RELEASE, org.id
                 )
             
             # Policy: Auto-delete Orphaned Volumes (older than threshold)
@@ -91,7 +91,7 @@ class GovernanceService:
                 created_str = resource.metadata.get("Created", "")
                 if self._is_older_than(created_str, threshold_days):
                     action_taken = self._execute_autopilot_action(
-                        cleanup_svc, account_id, resource, CleanupActionType.DELETE, org.id
+                        hygiene_svc, account_id, resource, HygieneActionType.DELETE, org.id
                     )
             
             # Policy: Auto-delete Orphaned Snapshots
@@ -102,7 +102,7 @@ class GovernanceService:
                 # Snapshots use StartTime in metadata or status based check
                 if resource.status.value == "SAFE_TO_DELETE":  # Already verified >30 days
                     action_taken = self._execute_autopilot_action(
-                        cleanup_svc, account_id, resource, CleanupActionType.DELETE, org.id
+                        hygiene_svc, account_id, resource, HygieneActionType.DELETE, org.id
                     )
             
             if action_taken:
@@ -110,18 +110,18 @@ class GovernanceService:
         
         return actions_taken
     
-    def _execute_autopilot_action(self, cleanup_svc: CleanupService, account_id: str, 
-                                   resource, action_type: CleanupActionType, org_id: str) -> Dict[str, Any]:
+    def _execute_autopilot_action(self, hygiene_svc: HygieneService, account_id: str, 
+                                   resource, action_type: HygieneActionType, org_id: str) -> Dict[str, Any]:
         """Execute action as System Autopilot and log to audit"""
         try:
-            action = CleanupAction(
+            action = HygieneAction(
                 resource_ids=[resource.id],
                 action_type=action_type,
                 region=resource.region
             )
             
             # Bypass approval - this is autopilot
-            result = cleanup_svc.execute_action(account_id, action, user=None, bypass_approval=True)
+            result = hygiene_svc.execute_action(account_id, action, user=None, bypass_approval=True)
             
             # Log to Audit with "System Autopilot" actor
             audit_entry = AuditLog(

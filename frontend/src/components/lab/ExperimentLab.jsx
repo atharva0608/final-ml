@@ -3,7 +3,7 @@
  * A/B testing and ML model comparison interface
  */
 import React, { useState, useEffect } from 'react';
-import { labAPI } from '../../services/api';
+import { experimentsAPI } from '../../services/api';
 import { Card, Button, Input, Badge } from '../shared';
 import {
   FiPlus,
@@ -52,7 +52,7 @@ const ExperimentLab = () => {
   const fetchExperiments = async () => {
     setLoading(true);
     try {
-      const response = await labAPI.list();
+      const response = await experimentsAPI.list();
       setExperiments(response.data.experiments || []);
     } catch (error) {
       toast.error('Failed to load experiments');
@@ -71,7 +71,7 @@ const ExperimentLab = () => {
     }
 
     try {
-      await labAPI.create(formData);
+      await experimentsAPI.create(formData);
       toast.success('Experiment created successfully');
       setShowCreateModal(false);
       resetForm();
@@ -83,7 +83,7 @@ const ExperimentLab = () => {
 
   const handleStart = async (experimentId) => {
     try {
-      await labAPI.start(experimentId);
+      await experimentsAPI.start(experimentId);
       toast.success('Experiment started');
       fetchExperiments();
     } catch (error) {
@@ -93,7 +93,7 @@ const ExperimentLab = () => {
 
   const handleStop = async (experimentId) => {
     try {
-      await labAPI.stop(experimentId);
+      await experimentsAPI.stop(experimentId);
       toast.success('Experiment stopped');
       fetchExperiments();
     } catch (error) {
@@ -106,7 +106,7 @@ const ExperimentLab = () => {
     setShowResultsModal(true);
 
     try {
-      const response = await labAPI.getResults(experiment.id);
+      const response = await experimentsAPI.getResults(experiment.id);
       setResults(response.data.results);
     } catch (error) {
       toast.error('Failed to load results');

@@ -127,15 +127,157 @@ def update_member_permissions(
 ):
     """
     Update a team member's granular permissions.
-    
+
     Allows Team Leads and Org Admins to set overrides for specific members.
     Example: { "permissions": { "allow_termination": false, "view_audit_logs": true } }
     """
     service = TeamService(db)
     member = service.update_member_permissions(user, team_id, member_id, body.permissions)
-    
+
     return {
         "id": member.id,
         "email": member.email,
         "team_member_permissions": member.team_member_permissions
+    }
+
+
+@router.get("/{team_id}/approvers")
+def get_team_approvers(
+    team_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Get list of users who can approve JIT access requests for this team.
+
+    Returns Team Leads of this team + Organization Admins.
+    Used for populating approver dropdowns in JIT request modals.
+    """
+    from backend.models.team import Team
+
+    # Verify team exists and user has access
+    team = db.query(Team).filter(Team.id == team_id).first()
+    if not team:
+        raise HTTPException(404, "Team not found")
+
+    # Authorization: Must be in same organization
+    if team.organization_id != current_user.organization_id:
+        raise HTTPException(403, "Not authorized to view this team")
+
+    # Get Team Leads from THIS team
+    team_leads = db.query(User).filter(
+        User.team_id == team_id,
+        User.role == UserRole.TEAM_LEAD,
+        User.status == "ACTIVE"
+    ).all()
+
+    # Get Organization Admins (can approve across all teams)
+    org_admins = db.query(User).filter(
+        User.organization_id == team.organization_id,
+        User.role == UserRole.ORG_ADMIN,
+        User.status == "ACTIVE"
+    ).all()
+
+    # Combine and dedupe
+    approvers_map = {}
+    for user in team_leads + org_admins:
+        if user.id != current_user.id:  # Don't include requester themselves
+            approvers_map[user.id] = {
+                "id": user.id,
+                "email": user.email,
+                "full_name": user.full_name,
+                "role": user.role.value if hasattr(user.role, "value") else str(user.role),
+                "team_id": user.team_id,
+                "can_approve_all": user.role == UserRole.ORG_ADMIN
+            }
+
+    approvers = list(approvers_map.values())
+
+    # Sort: Org Admins first, then Team Leads
+    approvers.sort(key=lambda x: (x["role"] != "ORG_ADMIN", x["full_name"] or x["email"]))
+
+    return {
+        "approvers": approvers,
+        "count": len(approvers)
+    }
+
+
+@router.get("/my-teams/approvers")
+def get_my_approvers(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Get list of users who can approve JIT access requests for current user.
+
+    Convenience endpoint that automatically determines user's team.
+    Returns same format as /{team_id}/approvers.
+    """
+    if not current_user.team_id:
+        # User not assigned to a team - return only org admins
+        org_admins = db.query(User).filter(
+            User.organization_id == current_user.organization_id,
+            User.role == UserRole.ORG_ADMIN,
+            User.status == "ACTIVE",
+            User.id != current_user.id
+        ).all()
+
+        approvers = [
+            {
+                "id": user.id,
+                "email": user.email,
+                "full_name": user.full_name,
+                "role": user.role.value if hasattr(user.role, "value") else str(user.role),
+                "team_id": user.team_id,
+                "can_approve_all": True
+            }
+            for user in org_admins
+        ]
+
+        return {
+            "approvers": approvers,
+            "count": len(approvers),
+            "note": "User not assigned to team - showing org admins only"
+        }
+
+    # Redirect to team-specific endpoint logic
+    from backend.models.team import Team
+
+    team = db.query(Team).filter(Team.id == current_user.team_id).first()
+    if not team:
+        raise HTTPException(404, "User's team not found")
+
+    # Get Team Leads from user's team
+    team_leads = db.query(User).filter(
+        User.team_id == current_user.team_id,
+        User.role == UserRole.TEAM_LEAD,
+        User.status == "ACTIVE"
+    ).all()
+
+    # Get Organization Admins
+    org_admins = db.query(User).filter(
+        User.organization_id == current_user.organization_id,
+        User.role == UserRole.ORG_ADMIN,
+        User.status == "ACTIVE"
+    ).all()
+
+    # Combine and dedupe
+    approvers_map = {}
+    for user in team_leads + org_admins:
+        if user.id != current_user.id:
+            approvers_map[user.id] = {
+                "id": user.id,
+                "email": user.email,
+                "full_name": user.full_name,
+                "role": user.role.value if hasattr(user.role, "value") else str(user.role),
+                "team_id": user.team_id,
+                "can_approve_all": user.role == UserRole.ORG_ADMIN
+            }
+
+    approvers = list(approvers_map.values())
+    approvers.sort(key=lambda x: (x["role"] != "ORG_ADMIN", x["full_name"] or x["email"]))
+
+    return {
+        "approvers": approvers,
+        "count": len(approvers)
     }

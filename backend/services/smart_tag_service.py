@@ -16,11 +16,11 @@ class SmartTagService:
         self.db = db
 
     def _get_account_session(self, account: Account, region: str = 'us-east-1'):
-        # Reusing logic from CleanupService or similar. 
+        # Reusing logic from HygieneService or similar.
         # Ideally this should be a shared utility or mixin.
         # For now, quick duplication or importing from a common place if available.
-        # CleanupService has it as a method. Let's try to import or duplicate for MVP.
-        # Duplication for safety/speed in this task to avoid refactoring CleanupService.
+        # HygieneService has it as a method. Let's try to import or duplicate for MVP.
+        # Duplication for safety/speed in this task to avoid refactoring HygieneService.
         
         access_key = self.db.query(SystemConfig).filter(SystemConfig.key == "PLATFORM_AWS_ACCESS_KEY").first()
         secret_key = self.db.query(SystemConfig).filter(SystemConfig.key == "PLATFORM_AWS_SECRET").first()

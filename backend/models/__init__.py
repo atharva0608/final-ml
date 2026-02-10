@@ -19,7 +19,7 @@ from backend.models.team import Team
 from backend.models.authorized_resource import AuthorizedResource
 from backend.models.permission import Permission
 from backend.models.role import Role, RoleType, role_permissions
-from backend.models.ticket import Ticket, TicketType, TicketStatus, ReasonCategory
+from backend.models.approval import Approval, ApprovalType, ApprovalStatus, ReasonCategory
 from backend.models.platform_settings import PlatformSettings
 from backend.models.organization import Organization
 from backend.models.rds_analysis import RDSInstanceAnalysis
@@ -55,7 +55,7 @@ __all__ = [
     "AuthorizedResource",
     "Permission",
     "Role",
-    "Ticket",
+    "Approval",
     "RIUtilization",
     "S3BucketAnalysis",
     "RDSAnalysis",

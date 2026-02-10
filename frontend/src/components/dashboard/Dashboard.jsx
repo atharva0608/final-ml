@@ -23,7 +23,7 @@ import { useAuthStore } from '../../store/useStore';
 // Widget System
 import { renderWidget } from './widgetRegistry';
 import { getDefaultLayout, WIDGET_METADATA, getWidgetsForRole } from './roleDefaults';
-import AccessRequestModal from '../tickets/AccessRequestModal';
+import AccessRequestModal from '../approvals/AccessRequestModal';
 
 // Invitation Acceptance Modal Component
 const InvitationModal = ({ user, onAccept, onDecline, loading }) => {

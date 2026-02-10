@@ -10,7 +10,7 @@ import { clusterAPI } from '../../services/api';
 import { Button } from '../shared';
 import { FiHome, FiServer, FiFileText, FiSettings, FiTarget, FiClock, FiBarChart2, FiUsers, FiActivity, FiLogOut, FiClipboard, FiBriefcase, FiCheckSquare, FiShield, FiLock, FiTag } from 'react-icons/fi';
 
-import ActiveWindowBanner from '../tickets/ActiveWindowBanner';
+import ActiveWindowBanner from '../approvals/ActiveWindowBanner';
 
 // Cluster Notification Badge Component
 const ClusterBadge = () => {
@@ -72,10 +72,10 @@ const MainLayout = () => {
     { name: 'Teams', path: '/teams', icon: FiUsers },
     { name: 'Clusters', path: '/clusters', icon: FiServer },
     { name: 'Policies', path: '/policies', icon: FiTarget },
-    { name: 'Tag Management', path: '/tag-management', icon: FiTag },
+    { name: 'Tagging Policies', path: '/tagging-policies', icon: FiTag },
     { name: 'Templates', path: '/templates', icon: FiFileText },
     { name: 'Right-Sizing', path: '/right-sizing', icon: FiBarChart2 },
-    { name: 'Resource Hygiene', path: '/cleanup', icon: FiActivity },
+    { name: 'Resource Hygiene', path: '/hygiene', icon: FiActivity },
     { name: 'Hibernation', path: '/hibernation', icon: FiClock },
     { name: 'Audit Logs', path: '/audit', icon: FiClipboard },
     { name: 'Settings', path: '/settings', icon: FiSettings },
@@ -86,7 +86,7 @@ const MainLayout = () => {
     { name: 'Organizations', path: '/admin/organizations', icon: FiBriefcase },
     { name: 'Clients', path: '/admin/clients', icon: FiUsers },
     { name: 'System Health', path: '/admin/health', icon: FiServer },
-    { name: 'The Lab', path: '/admin/lab', icon: FiTarget }, // Using Target icon for Lab/Models
+    { name: 'Experiments', path: '/admin/experiments', icon: FiTarget },
     { name: 'Configuration', path: '/admin/config', icon: FiSettings },
     { name: 'Billing', path: '/admin/billing', icon: FiBarChart2 }, // Using BarChart for Billing
   ];

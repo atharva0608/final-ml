@@ -201,15 +201,15 @@ def authorize_resource(
     - Org Admins: Can force authorize (override policies).
     """
     from backend.services.tag_policy_service import TagPolicyService
-    from backend.services.cleanup_service import CleanupService 
+    from backend.services.hygiene_service import HygieneService 
 
     # 1. Check Compliance if not forcing or not admin
     if not force or current_user.role != "ORG_ADMIN":
         policy_service = TagPolicyService(db, str(current_user.organization_id))
         
         # We need resource tags. 
-        # For now, we fetch the resource details from CleanupService which should have current state.
-        cleanup_service = CleanupService(db)
+        # For now, we fetch the resource details from HygieneService which should have current state.
+        hygiene_service = HygieneService(db)
         # Assuming get_resource_details exists or similar
         try:
             # We use check_dependencies logic to find the resource or implemented a get
@@ -217,7 +217,7 @@ def authorize_resource(
             # Safest is to fetch fresh from Cloud or DB cache.
             # Let's use the TagManagementService to scan it fresh? Expensive.
             # Let's trust the DB state for now.
-            resource = cleanup_service.get_resource_details(account_id, resource_id, resource_type, region)
+            resource = hygiene_service.get_resource_details(account_id, resource_id, resource_type, region)
             current_tags = resource.get('tags', {})
             
             compliant, violations = policy_service.validate_resource_compliance(resource_type, current_tags, region)
@@ -235,7 +235,7 @@ def authorize_resource(
             raise HTTPException(status_code=400, detail="Could not validate resource tags. Please try again.")
 
     # 2. Authorize
-    service = CleanupService(db)
+    service = HygieneService(db)
     try:
         # Pass user info to service for policy enforcement
         result = service.authorize_resource(

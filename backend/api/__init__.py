@@ -14,18 +14,18 @@ from backend.api.admin_routes import router as admin_router
 from backend.api.lab_routes import router as lab_router
 from backend.api.organization_routes import router as organization_router
 from backend.api.billing_routes import router as billing_router
-from backend.api.cleanup_routes import router as cleanup_router
-from backend.api.approval_routes import router as approval_router
+from backend.api.hygiene_routes import router as hygiene_router
 from backend.api.team_routes import router as team_router
 from backend.api.user_routes import router as user_router
 from backend.api.governance_routes import router as governance_router
 from backend.api.role_routes import router as role_router
-from backend.api.ticket_routes import router as ticket_router
+from backend.api.approval_routes import router as approval_router
+from backend.api.permission_routes import router as permission_router
 from backend.api.ri_routes import router as ri_router
 from backend.api.s3_routes import router as s3_router
 from backend.api.rds_routes import router as rds_router
 from backend.api.transfer_routes import router as transfer_router
-from backend.api.cleanup_policy_routes import router as cleanup_policy_router
+from backend.api.hygiene_policy_routes import router as hygiene_policy_router
 from backend.api.agent_routes import router as agent_router
 
 # Tag Management Routes
@@ -52,17 +52,17 @@ api_router.include_router(admin_router)
 api_router.include_router(lab_router)
 api_router.include_router(organization_router)
 api_router.include_router(billing_router)
-api_router.include_router(cleanup_router)
-api_router.include_router(approval_router)
+api_router.include_router(hygiene_router)
 api_router.include_router(governance_router)
 api_router.include_router(role_router)
 api_router.include_router(team_router)
-api_router.include_router(ticket_router)
+api_router.include_router(approval_router)
+api_router.include_router(permission_router)
 api_router.include_router(ri_router)
 api_router.include_router(s3_router)
 api_router.include_router(s3_router)
 api_router.include_router(rds_router)
-api_router.include_router(cleanup_policy_router)
+api_router.include_router(hygiene_policy_router)
 api_router.include_router(transfer_router)
 api_router.include_router(agent_router)
 

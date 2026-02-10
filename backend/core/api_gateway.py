@@ -25,13 +25,11 @@ from backend.api import (
     organization_router,
     health_router,
     optimization_router,
-    cleanup_router,
-    approval_router,
-    approval_router,
+    hygiene_router,
     team_router,
     user_router,
     governance_router,
-    cleanup_policy_router,
+    hygiene_policy_router,
 )
 
 # Additional Analysis Routes
@@ -64,8 +62,7 @@ __all__ = [
     "organization_router",
     "health_router",
     "optimization_router",
-    "cleanup_router",
-    "approval_router",
+    "hygiene_router",
     "team_router",
     "user_router",
 ]
@@ -391,12 +388,10 @@ app.include_router(health_router, prefix="/api/v1")
 # Optimization routes
 app.include_router(optimization_router, prefix="/api/v1")
 
-# Cleanup routes
-app.include_router(cleanup_router, prefix="/api/v1")
-app.include_router(cleanup_policy_router, prefix="/api/v1")
+# Hygiene routes
+app.include_router(hygiene_router, prefix="/api/v1")
+app.include_router(hygiene_policy_router, prefix="/api/v1")
 
-# Approval routes
-app.include_router(approval_router, prefix="/api/v1")
 
 # Team routes
 app.include_router(team_router, prefix="/api/v1")
@@ -412,9 +407,9 @@ app.include_router(settings_routes.router, prefix="/api/v1")
 from backend.api.role_routes import router as role_router
 app.include_router(role_router, prefix="/api/v1")
 
-# Ticket routes (JIT)
-from backend.api.ticket_routes import router as ticket_router
-app.include_router(ticket_router, prefix="/api/v1")
+# Approval routes (JIT)
+from backend.api.approval_routes import router as approval_router
+app.include_router(approval_router, prefix="/api/v1")
 
 # Governance routes
 app.include_router(governance_router, prefix="/api/v1")

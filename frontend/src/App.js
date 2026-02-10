@@ -28,7 +28,7 @@ import ExperimentLab from './components/lab/ExperimentLab';
 import AdminDashboard from './components/admin/AdminDashboard';
 import AdminClients from './components/admin/AdminClients';
 import AdminHealth from './components/admin/AdminHealth';
-import AdminLab from './components/admin/AdminLab';
+import AdminExperiments from './components/admin/AdminExperiments';
 import AdminConfig from './components/admin/AdminConfig';
 import AdminBilling from './components/admin/AdminBilling';
 import AdminOrganizations from './components/admin/AdminOrganizations';
@@ -47,8 +47,8 @@ import S3Analysis from './components/s3/S3Analysis';
 import RDSAnalysis from './components/rds/RDSAnalysis';
 import TransferAnalysis from './components/transfer/TransferAnalysis';
 import AccountAnalytics from './pages/AccountAnalytics';
-import TicketCenter from './pages/TicketCenter';
-import TicketRequestModal from './components/tickets/TicketRequestModal';
+import Approvals from './pages/Approvals';
+import TicketRequestModal from './components/approvals/TicketRequestModal';
 
 // Protected Route Component
 const ProtectedRoute = ({ children }) => {
@@ -224,11 +224,11 @@ function App() {
             <Route path="right-sizing" element={<RightSizing />} />
             <Route path="hibernation" element={<HibernationSchedule />} />
             <Route path="audit" element={<AuditLog />} />
-            <Route path="cleanup" element={<CleanupDashboard />} />
-            <Route path="approvals" element={<TicketCenter />} />
+            <Route path="hygiene" element={<CleanupDashboard />} />
+            <Route path="approvals" element={<Approvals />} />
             <Route path="settings" element={<Settings />} />
             <Route path="settings/governance" element={<GovernanceSettings />} />
-            <Route path="tag-management" element={<TagPoliciesManager />} />
+            <Route path="tagging-policies" element={<TagPoliciesManager />} />
             <Route path="tag-templates" element={<TagTemplateManager />} />
 
             <Route path="teams" element={<Teams />} />
@@ -244,7 +244,7 @@ function App() {
             <Route path="admin" element={<AdminRoute><AdminDashboard /></AdminRoute>} />
             <Route path="admin/clients" element={<AdminRoute><AdminClients /></AdminRoute>} />
             <Route path="admin/health" element={<AdminRoute><AdminHealth /></AdminRoute>} />
-            <Route path="admin/lab" element={<AdminRoute><AdminLab /></AdminRoute>} />
+            <Route path="admin/experiments" element={<AdminRoute><AdminExperiments /></AdminRoute>} />
             <Route path="admin/config" element={<AdminRoute><AdminConfig /></AdminRoute>} />
             <Route path="admin/organizations" element={<AdminRoute><AdminOrganizations /></AdminRoute>} />
             <Route path="admin/billing" element={<AdminRoute><AdminBilling /></AdminRoute>} />

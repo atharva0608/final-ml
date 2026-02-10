@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { cleanupAPI, accountsAPI } from '../../services/api';
+import { hygieneAPI, accountsAPI } from '../../services/api';
 import toast from 'react-hot-toast';
 import {
     FiRefreshCw, FiServer, FiHardDrive, FiCamera, FiGlobe,
@@ -101,7 +101,7 @@ const CleanupDashboard = () => {
         if (!selectedAccount) return;
         setLoading(true);
         try {
-            const res = await cleanupAPI.scan(selectedAccount, {
+            const res = await hygieneAPI.scan(selectedAccount, {
                 regions: selectedRegion === 'ALL' ? ['ALL'] : [selectedRegion],
                 force_refresh: forceRefresh
             });

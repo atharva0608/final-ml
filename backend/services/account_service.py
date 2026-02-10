@@ -109,7 +109,7 @@ class AccountService:
     ) -> dict:
         """Link a new AWS account after verifying credentials"""
         from backend.models.user import UserRole
-        from backend.models.approval import ApprovalRequest
+        from backend.models.legacy_approval import ApprovalRequest
         from backend.models.organization import Organization
         
         # SECURITY: Always enforce the Organization's unique External ID

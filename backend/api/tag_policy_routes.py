@@ -127,8 +127,8 @@ def get_compliance_stats(
     """
     service = TagPolicyService(db, current_user.organization_id)
     
-    # In a real implementation, fetch recent scan data from CleanupService
+    # In a real implementation, fetch recent scan data from HygieneService
     # For now, return empty stats
-    scanned_resources = []  # Would come from recent cleanup scans
+    scanned_resources = []  # Would come from recent hygiene scans
     
     return service.get_compliance_stats(scanned_resources)

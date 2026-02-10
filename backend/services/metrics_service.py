@@ -604,16 +604,16 @@ class MetricsService:
         total_cost = float(total_instances * avg_hourly_cost * hours_in_month)
         
         # 5. Calculate Waste Distribution (for Pie Chart)
-        # Query real cleanup data from cached scans in Redis or calculate from account data
+        # Query real hygiene data from cached scans in Redis or calculate from account data
         waste_categories = []
         
-        # Try to get real data from cleanup_service if possible
+        # Try to get real data from hygiene_service if possible
         try:
-            from backend.services.cleanup_service import CleanupService
+            from backend.services.hygiene_service import HygieneService
             from backend.core.redis_client import get_redis_client
             import json
             
-            cleanup_service = CleanupService(self.db)
+            hygiene_service = HygieneService(self.db)
             
             # Calculate waste from all team accounts
             total_volume_cost = 0.0

@@ -163,7 +163,7 @@ export const templateAPI = {
 };
 export const templatesAPI = templateAPI;
 
-export const labAPI = {
+export const experimentsAPI = {
     list: (params) => api.get('/api/v1/lab/experiments', { params }),
     listExperiments: (params) => api.get('/api/v1/lab/experiments', { params }),
     getExperiment: (id) => api.get(`/api/v1/lab/experiments/${id}`),
@@ -174,7 +174,7 @@ export const labAPI = {
     stopExperiment: (id) => api.post(`/api/v1/lab/experiments/${id}/stop`),
     getResults: (id) => api.get(`/api/v1/lab/experiments/${id}/results`),
 };
-export const labsAPI = labAPI;
+export const labAPI = experimentsAPI;
 
 export const settingsAPI = {
     getProfile: () => api.get('/api/v1/settings/profile'),
@@ -218,28 +218,37 @@ export const userAPI = {
     updatePermissions: (userId, permissions) => api.post(`/api/v1/users/${userId}/permissions`, { permissions }),
 };
 
-export const cleanupAPI = {
-    scan: (accountId, params) => api.get(`/api/v1/cleanup/scan/${accountId}`, {
+export const hygieneAPI = {
+    scan: (accountId, params) => api.get(`/api/v1/hygiene/scan/${accountId}`, {
         params,
         paramsSerializer: {
             indexes: null // Serializes arrays as 'regions=value' instead of 'regions[]=value'
         }
     }),
-    execute: (payload, accountId) => api.post(`/api/v1/cleanup/action?account_id=${accountId}`, payload),
-    checkDependencies: (accountId, resourceType, resourceId, region) => api.get('/api/v1/cleanup/check-dependencies', {
+    execute: (payload, accountId) => api.post(`/api/v1/hygiene/action?account_id=${accountId}`, payload),
+    checkDependencies: (accountId, resourceType, resourceId, region) => api.get('/api/v1/hygiene/check-dependencies', {
         params: { account_id: accountId, resource_type: resourceType, resource_id: resourceId, region }
     }),
-    discover: (accountId, resourceType, region) => api.get('/api/v1/cleanup/discover', {
+    discover: (accountId, resourceType, region) => api.get('/api/v1/hygiene/discover', {
         params: { account_id: accountId, resource_type: resourceType, region }
     }),
 };
+export const cleanupAPI = hygieneAPI;
 
-export const approvalAPI = {
-    listPending: () => api.get('/api/v1/approvals/pending'),
+export const approvalsAPI = {
+    create: (data) => api.post('/api/v1/approvals/', data),
+    delegate: (data) => api.post('/api/v1/approvals/delegate', data),
+    acceptGrant: (id) => api.post(`/api/v1/approvals/${id}/accept`),
+    rejectGrant: (id) => api.post(`/api/v1/approvals/${id}/reject`),
+    list: (status) => api.get('/api/v1/approvals/', { params: { status } }),
+    getActiveWindow: () => api.get('/api/v1/approvals/active-window'),
     approve: (id) => api.post(`/api/v1/approvals/${id}/approve`),
-    reject: (id, reason) => api.post(`/api/v1/approvals/${id}/reject`, { reason }),
+    revoke: (id) => api.post(`/api/v1/approvals/${id}/revoke`),
+    // JIT Feature Access
+    createJITRequest: (data) => api.post('/api/v1/approvals/jit-request', data),
+    getMyJITApprovals: () => api.get('/api/v1/approvals/my-jit-approvals'),
 };
-export const approvalsAPI = approvalAPI;
+export const approvalAPI = approvalsAPI;
 
 export const governanceAPI = {
     getPolicies: () => api.get('/api/v1/governance/policies'),
@@ -259,17 +268,20 @@ export const rolesAPI = {
     seed: () => api.post('/api/v1/roles/seed'),
 };
 
-export const ticketAPI = {
-    create: (data) => api.post('/api/v1/tickets/', data),
-    grantAccess: (data) => api.post('/api/v1/tickets/grant', data), // Admin Grant
-    acceptGrant: (id) => api.post(`/api/v1/tickets/${id}/accept`),
-    rejectGrant: (id) => api.post(`/api/v1/tickets/${id}/reject`),
-    list: (status) => api.get('/api/v1/tickets/', { params: { status } }),
-    getActiveWindow: () => api.get('/api/v1/tickets/active-window'),
-    approve: (id) => api.post(`/api/v1/tickets/${id}/approve`),
-    revoke: (id) => api.post(`/api/v1/tickets/${id}/revoke`),
+// Legacy aliases for backwards compatibility
+export const ticketAPI = approvalsAPI;
+export const ticketsAPI = approvalsAPI;
+
+export const permissionAPI = {
+    check: (featureId, resourceId = null) => api.post('/api/v1/permissions/check', {
+        feature_id: featureId,
+        resource_id: resourceId
+    }),
+    getMyFeatures: () => api.get('/api/v1/permissions/my-features'),
+    revokeFeature: (userId, featureId) => api.post(`/api/v1/permissions/${userId}/revoke-feature/${featureId}`),
+    getFeatureRegistry: () => api.get('/api/v1/permissions/feature-registry'),
 };
-export const ticketsAPI = ticketAPI;
+export const permissionsAPI = permissionAPI;
 
 export default api;
 
