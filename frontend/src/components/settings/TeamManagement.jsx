@@ -38,6 +38,7 @@ const TeamManagement = () => {
 
     // Forms
     const [inviteEmail, setInviteEmail] = useState('');
+    const [inviteFullName, setInviteFullName] = useState('');
     const [inviteRole, setInviteRole] = useState('MEMBER');
     const [inviteTeamId, setInviteTeamId] = useState('');
     const [editMemberRole, setEditMemberRole] = useState('');
@@ -141,11 +142,12 @@ const TeamManagement = () => {
 
             const targetTeamId = inviteTeamId || teams[0]?.id;
             if (targetTeamId) {
-                await teamAPI.invite(targetTeamId, inviteEmail, inviteRole);
+                await teamAPI.invite(targetTeamId, inviteEmail, inviteRole, inviteFullName || null);
             }
 
             setShowInviteModal(false);
             setInviteEmail('');
+            setInviteFullName('');
             setInviteRole('MEMBER');
             setInviteTeamId('');
             setAssignmentType('ROLE');
@@ -390,7 +392,14 @@ const TeamManagement = () => {
                                                 <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-blue-700 font-semibold text-sm">
                                                     {member.full_name?.charAt(0)?.toUpperCase() || member.email?.charAt(0)?.toUpperCase() || <FiUser />}
                                                 </div>
-                                                <span className="text-sm font-medium text-gray-900">{member.full_name || 'No Name'}</span>
+                                                <div className="flex flex-col">
+                                                    <span className="text-sm font-medium text-gray-900">
+                                                        {member.full_name || member.email.split('@')[0]}
+                                                    </span>
+                                                    {member.full_name && (
+                                                        <span className="text-xs text-gray-500">{member.email}</span>
+                                                    )}
+                                                </div>
                                             </div>
                                         </td>
                                         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">{member.email}</td>
@@ -652,10 +661,22 @@ const TeamManagement = () => {
                         {/* Basic Info */}
                         <div className="grid grid-cols-2 gap-6 mb-8">
                             {showInviteModal && (
-                                <div className="col-span-2">
-                                    <label className="block text-sm font-medium text-gray-700 mb-1">Email Address</label>
-                                    <input type="email" placeholder="user@company.com" value={inviteEmail} onChange={(e) => setInviteEmail(e.target.value)} className="w-full px-4 py-2.5 border rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none" />
-                                </div>
+                                <>
+                                    <div className="col-span-2">
+                                        <label className="block text-sm font-medium text-gray-700 mb-1">Full Name</label>
+                                        <input
+                                            type="text"
+                                            placeholder="John Doe"
+                                            value={inviteFullName}
+                                            onChange={(e) => setInviteFullName(e.target.value)}
+                                            className="w-full px-4 py-2.5 border rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none"
+                                        />
+                                    </div>
+                                    <div className="col-span-2">
+                                        <label className="block text-sm font-medium text-gray-700 mb-1">Email Address</label>
+                                        <input type="email" placeholder="user@company.com" value={inviteEmail} onChange={(e) => setInviteEmail(e.target.value)} className="w-full px-4 py-2.5 border rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none" required />
+                                    </div>
+                                </>
                             )}
 
                             {/* Access Type Toggle */}

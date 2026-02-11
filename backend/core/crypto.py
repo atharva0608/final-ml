@@ -123,7 +123,11 @@ def create_access_token(
             minutes=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES
         )
 
-    to_encode.update({"exp": expire, "iat": datetime.utcnow()})
+    # Convert datetime to Unix timestamp (integer) for JWT standard compliance
+    to_encode.update({
+        "exp": int(expire.timestamp()),
+        "iat": int(datetime.utcnow().timestamp())
+    })
 
     # Encode token
     encoded_jwt = jwt.encode(
@@ -158,7 +162,12 @@ def create_refresh_token(
             days=settings.JWT_REFRESH_TOKEN_EXPIRE_DAYS
         )
 
-    to_encode.update({"exp": expire, "iat": datetime.utcnow(), "type": "refresh"})
+    # Convert datetime to Unix timestamp (integer) for JWT standard compliance
+    to_encode.update({
+        "exp": int(expire.timestamp()),
+        "iat": int(datetime.utcnow().timestamp()),
+        "type": "refresh"
+    })
 
     # Encode token
     encoded_jwt = jwt.encode(

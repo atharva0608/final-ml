@@ -40,14 +40,17 @@ class PermissionCheckResponse(BaseModel):
     feature: Optional[Dict[str, Any]] = None
     ticket: Optional[Dict[str, Any]] = None
     expires_at: Optional[str] = None
+    pending: Optional[bool] = False
 
 
 class ApprovalResponse(BaseModel):
     id: str
     parent_id: Optional[str] = None
     user_id: str
+    user_email: Optional[str] = None  # User's email for display
     organization_id: str
     approver_id: Optional[str]
+    approver_email: Optional[str] = None  # Approver's email for display
     type: ApprovalType
     status: ApprovalStatus
     resource_id: Optional[str]

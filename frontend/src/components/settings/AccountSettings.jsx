@@ -10,7 +10,12 @@ import { FiSave, FiLock, FiUser, FiBell, FiGlobe } from 'react-icons/fi';
 import toast from 'react-hot-toast';
 
 const AccountSettings = () => {
-  const { user, setAuth } = useAuthStore();
+  const { user, updateUser } = useAuthStore();
+
+  // Profile edit form
+  const [profileData, setProfileData] = useState({
+    full_name: user?.full_name || '',
+  });
 
   // Password change form
   const [passwordData, setPasswordData] = useState({
@@ -28,8 +33,32 @@ const AccountSettings = () => {
     cost_threshold_alerts: true,
   });
 
+  const [savingProfile, setSavingProfile] = useState(false);
   const [savingPassword, setSavingPassword] = useState(false);
   const [savingPreferences, setSavingPreferences] = useState(false);
+
+  const handleProfileUpdate = async (e) => {
+    e.preventDefault();
+
+    if (!profileData.full_name || profileData.full_name.trim().length < 2) {
+      toast.error('Name must be at least 2 characters');
+      return;
+    }
+
+    setSavingProfile(true);
+    try {
+      await authAPI.updateProfile({ full_name: profileData.full_name.trim() });
+
+      // Update user in store
+      updateUser({ ...user, full_name: profileData.full_name.trim() });
+
+      toast.success('Profile updated successfully');
+    } catch (error) {
+      toast.error(error.response?.data?.message || 'Failed to update profile');
+    } finally {
+      setSavingProfile(false);
+    }
+  };
 
   const handlePasswordChange = async (e) => {
     e.preventDefault();
@@ -93,11 +122,14 @@ const AccountSettings = () => {
       <Card>
         <div className="flex items-center gap-4">
           <div className="w-16 h-16 bg-blue-600 rounded-full flex items-center justify-center text-white text-2xl font-bold">
-            {user?.email?.charAt(0).toUpperCase() || 'U'}
+            {user?.full_name?.charAt(0).toUpperCase() || user?.email?.charAt(0).toUpperCase() || 'U'}
           </div>
           <div>
-            <h3 className="text-lg font-semibold text-gray-900">{user?.email}</h3>
-            <p className="text-sm text-gray-600">
+            <h3 className="text-lg font-semibold text-gray-900">
+              {user?.full_name || user?.email?.split('@')[0]}
+            </h3>
+            <p className="text-sm text-gray-600">{user?.email}</p>
+            <p className="text-sm text-gray-600 mt-1">
               Role: <span className="font-medium">{user?.role || 'CLIENT'}</span>
             </p>
             <p className="text-xs text-gray-500 mt-1">
@@ -105,6 +137,39 @@ const AccountSettings = () => {
             </p>
           </div>
         </div>
+      </Card>
+
+      {/* Edit Profile Card */}
+      <Card>
+        <div className="flex items-center gap-3 mb-4">
+          <FiUser className="w-5 h-5 text-gray-700" />
+          <h3 className="text-lg font-semibold text-gray-900">Edit Profile</h3>
+        </div>
+
+        <form onSubmit={handleProfileUpdate} className="space-y-4">
+          <Input
+            label="Full Name"
+            type="text"
+            value={profileData.full_name}
+            onChange={(e) => setProfileData({ ...profileData, full_name: e.target.value })}
+            placeholder="John Doe"
+            required
+            minLength="2"
+            help="Your full name will be displayed across the platform"
+            autoComplete="name"
+          />
+
+          <div className="flex justify-end">
+            <Button
+              type="submit"
+              loading={savingProfile}
+              disabled={savingProfile || profileData.full_name === user?.full_name}
+            >
+              <FiSave className="w-4 h-4 mr-2" />
+              Save Profile
+            </Button>
+          </div>
+        </form>
       </Card>
 
       {/* Password Change Card */}

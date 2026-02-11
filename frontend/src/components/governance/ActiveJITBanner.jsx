@@ -63,11 +63,29 @@ const ActiveJITBanner = () => {
     return () => clearInterval(interval);
   }, []);
 
+  // Filter expired tickets every second
+  useEffect(() => {
+    const filterExpired = () => {
+      const now = new Date();
+      setTickets(prev => prev.filter(ticket => new Date(ticket.expires_at) > now));
+    };
+
+    const interval = setInterval(filterExpired, 1000);
+    return () => clearInterval(interval);
+  }, []);
+
   const loadActiveTickets = async () => {
     try {
       const response = await approvalsAPI.getMyJITTickets();
-      setTickets(response.data || []);
+      const now = new Date();
+      // Filter out any expired tickets from the response
+      const activeTickets = (response.data || []).filter(
+        ticket => new Date(ticket.expires_at) > now
+      );
+      setTickets(activeTickets);
       setLoading(false);
+      // Reset dismissed state when new tickets arrive
+      setDismissed(false);
     } catch (error) {
       console.error('Failed to load active tickets:', error);
       setLoading(false);

@@ -501,6 +501,23 @@ async def startup_event():
 
         # Seed demo data
         seed_demo_data()
+
+        # Seed roles and permissions
+        try:
+            from backend.services.role_service import RoleService
+            from backend.models.base import SessionLocal
+
+            db = SessionLocal()
+            try:
+                role_service = RoleService(db)
+                perm_count = role_service.seed_permissions()
+                role_count = role_service.seed_system_roles()
+                logger.info(f"✅ Seeded {perm_count} permissions and {role_count} roles")
+            finally:
+                db.close()
+        except Exception as seed_err:
+            logger.warning(f"Role/permission seeding skipped or failed: {seed_err}")
+
     except Exception as e:
         logger.error(f"❌ Failed to initialize database: {e}")
 

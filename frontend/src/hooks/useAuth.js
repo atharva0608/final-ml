@@ -15,13 +15,19 @@ export const useAuth = () => {
       const response = await authAPI.login({ email, password });
       const { user: userData, access_token, refresh_token } = response.data;
 
+      // Transform user object: map user_id to id for frontend consistency
+      const transformedUser = {
+        ...userData,
+        id: userData.user_id || userData.id
+      };
+
       // Store tokens
       localStorage.setItem('access_token', access_token);
       localStorage.setItem('refresh_token', refresh_token);
-      localStorage.setItem('user', JSON.stringify(userData));
+      localStorage.setItem('user', JSON.stringify(transformedUser));
 
       // Update store
-      setAuth(userData, access_token, refresh_token);
+      setAuth(transformedUser, access_token, refresh_token);
 
       toast.success('Login successful!');
 
@@ -40,22 +46,29 @@ export const useAuth = () => {
     }
   };
 
-  const signup = async (email, password, organizationName) => {
+  const signup = async (email, password, organizationName, fullName) => {
     try {
       const response = await authAPI.signup({
         email,
         password,
-        organization_name: organizationName
+        organization_name: organizationName,
+        full_name: fullName
       });
       const { user: userData, access_token, refresh_token } = response.data;
+
+      // Transform user object: map user_id to id for frontend consistency
+      const transformedUser = {
+        ...userData,
+        id: userData.user_id || userData.id
+      };
 
       // Store tokens
       localStorage.setItem('access_token', access_token);
       localStorage.setItem('refresh_token', refresh_token);
-      localStorage.setItem('user', JSON.stringify(userData));
+      localStorage.setItem('user', JSON.stringify(transformedUser));
 
       // Update store
-      setAuth(userData, access_token, refresh_token);
+      setAuth(transformedUser, access_token, refresh_token);
 
       toast.success('Account created successfully!');
 
@@ -112,9 +125,16 @@ export const useAuth = () => {
     try {
       const response = await authAPI.getMe();
       const userData = response.data;
-      localStorage.setItem('user', JSON.stringify(userData));
-      updateUser(userData);
-      return userData;
+
+      // Transform user object: map user_id to id for frontend consistency
+      const transformedUser = {
+        ...userData,
+        id: userData.user_id || userData.id
+      };
+
+      localStorage.setItem('user', JSON.stringify(transformedUser));
+      updateUser(transformedUser);
+      return transformedUser;
     } catch (error) {
       console.error('Failed to refresh user:', error);
       return null;

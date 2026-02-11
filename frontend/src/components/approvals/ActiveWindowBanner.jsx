@@ -30,9 +30,19 @@ const ActiveWindowBanner = () => {
         }
     }, [isAuthenticated, accessToken]);
 
-    if (!ticket) return null;
+    if (!ticket || !ticket.has_active_window) return null;
+
+    // Validate expires_at before trying to parse it
+    if (!ticket.expires_at) return null;
 
     const expiresAt = new Date(ticket.expires_at);
+
+    // Check if date is valid
+    if (isNaN(expiresAt.getTime())) {
+        console.error('Invalid expires_at date:', ticket.expires_at);
+        return null;
+    }
+
     // If expired, don't show (backend filters, but safety check)
     if (expiresAt < new Date()) return null;
 
@@ -54,7 +64,7 @@ const ActiveWindowBanner = () => {
                 </div>
             </div>
             <div className="text-sm text-green-100 font-mono">
-                Ticket #{ticket.id.slice(0, 8)}
+                Ticket #{ticket.approval_id?.slice(0, 8) || 'N/A'}
             </div>
         </div>
     );

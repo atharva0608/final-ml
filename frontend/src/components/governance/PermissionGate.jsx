@@ -4,7 +4,7 @@
  * Wraps sections/pages that require permissions.
  * Shows full-screen blur overlay with permission request modal when access is denied.
  */
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, memo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { usePermission } from '../../hooks/usePermission';
 import { FiLock, FiShield, FiClock, FiX, FiAlertTriangle } from 'react-icons/fi';
@@ -18,14 +18,16 @@ const PermissionGate = ({
   sectionDescription = "Access to this feature requires approval"
 }) => {
   const navigate = useNavigate();
-  const { hasPermission, loading, feature } = usePermission(featureId, resourceId);
+  const { hasPermission, loading, feature, pending, ticket, refresh } = usePermission(featureId, resourceId);
   const [showModal, setShowModal] = useState(false);
   const [hasAttemptedAccess, setHasAttemptedAccess] = useState(false);
 
   const handleModalClose = () => {
     setShowModal(false);
-    // Navigate to approvals page after request is submitted
-    navigate('/approvals');
+    // Refresh permission state after submitting request
+    if (refresh) {
+      refresh();
+    }
   };
 
   // Check permission on mount
@@ -35,53 +37,66 @@ const PermissionGate = ({
     }
   }, [loading, hasPermission]);
 
-  // Show loading state
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center min-h-screen">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600 mx-auto mb-4"></div>
-          <p className="text-gray-600">Checking permissions...</p>
-        </div>
-      </div>
-    );
-  }
-
-  // If user has permission, render children normally
-  if (hasPermission) {
-    return <>{children}</>;
-  }
-
-  // If no permission, show blur overlay with request prompt
+  // Always render children to prevent re-mounting, just show/hide overlay
   return (
     <div className="relative min-h-screen">
-      {/* Blurred content in background */}
-      <div className="filter blur-sm pointer-events-none select-none opacity-50">
+      {/* Main content - always rendered, never re-mounted */}
+      <div
+        className={`transition-all duration-300 ${
+          !hasPermission && !loading ? 'filter blur-sm pointer-events-none select-none opacity-50' : ''
+        }`}
+      >
         {children}
       </div>
 
-      {/* Full-screen overlay with permission request */}
-      <div className="fixed inset-0 bg-black/60 backdrop-blur-md flex items-center justify-center z-50 p-4">
+      {/* Loading overlay - smooth fade in/out */}
+      {loading && (
+        <div className="fixed inset-0 bg-white/80 backdrop-blur-sm flex items-center justify-center z-50 animate-fadeIn">
+          <div className="text-center">
+            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600 mx-auto mb-4"></div>
+            <p className="text-gray-600">Checking permissions...</p>
+          </div>
+        </div>
+      )}
+
+      {/* Permission overlay - smooth fade in/out */}
+      {!loading && !hasPermission && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-md flex items-center justify-center z-50 p-4 animate-fadeIn">
         <div className="bg-white rounded-2xl shadow-2xl max-w-lg w-full p-8 relative animate-fadeIn">
-          {/* Lock Icon */}
+          {/* Icon */}
           <div className="flex justify-center mb-6">
-            <div className="bg-red-100 rounded-full p-6">
-              <FiLock className="w-12 h-12 text-red-600" />
+            <div className={`rounded-full p-6 ${pending ? 'bg-yellow-100' : 'bg-red-100'}`}>
+              {pending ? (
+                <FiClock className="w-12 h-12 text-yellow-600" />
+              ) : (
+                <FiLock className="w-12 h-12 text-red-600" />
+              )}
             </div>
           </div>
 
           {/* Title */}
           <h2 className="text-2xl font-bold text-gray-900 text-center mb-3">
-            Permission Required
+            {pending ? 'Request Pending Approval' : 'Permission Required'}
           </h2>
 
           {/* Description */}
           <p className="text-gray-600 text-center mb-6">
-            You don't have access to <strong>{sectionName}</strong>.
-            {sectionDescription && (
-              <span className="block mt-2 text-sm text-gray-500">
-                {sectionDescription}
-              </span>
+            {pending ? (
+              <>
+                Your request for access to <strong>{sectionName}</strong> is awaiting approval.
+                <span className="block mt-2 text-sm text-gray-500">
+                  You'll be notified once a Team Lead or Admin approves your request.
+                </span>
+              </>
+            ) : (
+              <>
+                You don't have access to <strong>{sectionName}</strong>.
+                {sectionDescription && (
+                  <span className="block mt-2 text-sm text-gray-500">
+                    {sectionDescription}
+                  </span>
+                )}
+              </>
             )}
           </p>
 
@@ -116,21 +131,35 @@ const PermissionGate = ({
             >
               Go Back
             </button>
-            <button
-              onClick={() => setShowModal(true)}
-              className="flex-1 px-6 py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-semibold transition-colors shadow-lg flex items-center justify-center space-x-2"
-            >
-              <FiShield className="w-4 h-4" />
-              <span>Request Access</span>
-            </button>
+            {pending ? (
+              <button
+                onClick={() => navigate('/approvals')}
+                className="flex-1 px-6 py-3 bg-yellow-600 hover:bg-yellow-700 text-white rounded-lg font-semibold transition-colors shadow-lg flex items-center justify-center space-x-2"
+              >
+                <FiClock className="w-4 h-4" />
+                <span>View Status</span>
+              </button>
+            ) : (
+              <button
+                onClick={() => setShowModal(true)}
+                className="flex-1 px-6 py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-semibold transition-colors shadow-lg flex items-center justify-center space-x-2"
+              >
+                <FiShield className="w-4 h-4" />
+                <span>Request Access</span>
+              </button>
+            )}
           </div>
 
           {/* Help Text */}
           <p className="text-xs text-gray-500 text-center mt-4">
-            Your request will be sent to your Team Lead or Organization Admin for approval.
+            {pending
+              ? 'Check the Approvals page to track your request status.'
+              : 'Your request will be sent to your Team Lead or Organization Admin for approval.'
+            }
           </p>
         </div>
       </div>
+      )}
 
       {/* Request Modal */}
       {showModal && (
@@ -147,4 +176,5 @@ const PermissionGate = ({
   );
 };
 
-export default PermissionGate;
+// Memoize to prevent unnecessary re-renders
+export default memo(PermissionGate);

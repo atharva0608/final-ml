@@ -11,7 +11,8 @@ app = Celery(
         'backend.workers.tasks.agent_tasks',
         'backend.workers.tasks.health',
         'backend.workers.tasks.cost_calculator',
-        'backend.workers.tasks.savings_calculator'
+        'backend.workers.tasks.savings_calculator',
+        'backend.workers.tasks.approval_cleanup'
     ]
 )
 
@@ -45,5 +46,10 @@ app.conf.beat_schedule = {
     'savings-calculator-every-12-hours': {
         'task': 'workers.savings.calculate_real_savings',
         'schedule': 43200.0,
+    },
+    # Approval Cleanup (5 mins) - Marks expired approvals as EXPIRED
+    'approval-cleanup-every-5-mins': {
+        'task': 'workers.approval.cleanup_expired',
+        'schedule': 300.0,
     },
 }

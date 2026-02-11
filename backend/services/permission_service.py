@@ -53,7 +53,13 @@ class PermissionService:
             logger.info(f"Admin bypass: {user.email} → {feature_id}")
             return True
 
-        # 2. Check if feature requires approval
+        # 2. PRIORITY: Check for active JIT ticket (works for all features)
+        active_ticket = self._get_active_jit_ticket(user.id, feature_id, resource_id)
+        if active_ticket:
+            logger.info(f"JIT ticket granted: {user.email} → {feature_id} (ticket: {active_ticket.id})")
+            return True
+
+        # 3. If no JIT ticket, check base RBAC permissions
         if not feature.requires_approval:
             # Feature doesn't need approval - check base permission only
             if self._has_permission(user, feature.permission_slug):
@@ -70,14 +76,7 @@ class PermissionService:
                     }
                 )
 
-        # 3. Feature requires approval - Check for active JIT ticket
-        active_ticket = self._get_active_jit_ticket(user.id, feature_id, resource_id)
-
-        if active_ticket:
-            logger.info(f"JIT ticket granted: {user.email} → {feature_id} (ticket: {active_ticket.id})")
-            return True
-
-        # 4. No active ticket - DENY with actionable error
+        # 4. Feature requires approval but no active ticket - DENY with actionable error
         logger.warning(f"Permission denied (no JIT ticket): {user.email} → {feature_id}")
         raise GovernanceError(
             message=f"JIT approval required for: {feature.name}",
@@ -124,19 +123,8 @@ class PermissionService:
                 "feature": feature.__dict__
             }
 
-        # No approval needed
-        if not feature.requires_approval:
-            has_perm = self._has_permission(user, feature.permission_slug)
-            return {
-                "allowed": has_perm,
-                "reason": "Permission granted" if has_perm else "Missing permission",
-                "ticket": None,
-                "feature": feature.__dict__
-            }
-
-        # Check JIT ticket
+        # PRIORITY 1: Check for active JIT ticket first (works for all features)
         active_ticket = self._get_active_jit_ticket(user.id, feature_id, resource_id)
-
         if active_ticket:
             return {
                 "allowed": True,
@@ -146,12 +134,52 @@ class PermissionService:
                 "expires_at": active_ticket.expires_at.isoformat() if active_ticket.expires_at else None
             }
 
+        # PRIORITY 2: Check for pending JIT ticket (show pending state)
+        pending_ticket = self._get_pending_jit_ticket(user.id, feature_id, resource_id)
+        if pending_ticket:
+            return {
+                "allowed": False,
+                "reason": "Request pending approval",
+                "ticket": pending_ticket,
+                "feature": feature.__dict__,
+                "pending": True
+            }
+
+        # PRIORITY 3: If no ticket, check base RBAC permissions
+        if not feature.requires_approval:
+            has_perm = self._has_permission(user, feature.permission_slug)
+            return {
+                "allowed": has_perm,
+                "reason": "Permission granted" if has_perm else "Missing permission",
+                "ticket": None,
+                "feature": feature.__dict__,
+                "pending": False
+            }
+
+        # PRIORITY 4: Feature requires approval but user has no ticket
         return {
             "allowed": False,
             "reason": "JIT ticket required",
             "ticket": None,
-            "feature": feature.__dict__
+            "feature": feature.__dict__,
+            "pending": False
         }
+
+    def _get_pending_jit_ticket(self, user_id: str, feature_id: str, resource_id: Optional[str] = None) -> Optional[Approval]:
+        """
+        Find pending JIT ticket for user + feature combination.
+        Used to check if user already has a pending request.
+        """
+        pending_ticket = self.db.query(Approval).filter(
+            and_(
+                Approval.user_id == user_id,
+                Approval.status == ApprovalStatus.PENDING,
+                Approval.type == ApprovalType.JIT_FEATURE,
+                Approval.feature_id == feature_id
+            )
+        ).first()
+
+        return pending_ticket
 
     def _get_active_jit_ticket(self, user_id: str, feature_id: str, resource_id: Optional[str] = None) -> Optional[Approval]:
         """
@@ -181,12 +209,13 @@ class PermissionService:
 
         if feature_ticket:
             # Check resource scoping
-            if resource_id and feature_ticket.resource_id:
-                # Resource-specific ticket
-                if feature_ticket.resource_id == resource_id:
+            if resource_id:
+                # Caller specified a resource - check if ticket matches
+                if feature_ticket.resource_id == resource_id or not feature_ticket.resource_id:
+                    # Ticket matches specific resource OR is a global ticket
                     return feature_ticket
-            elif not feature_ticket.resource_id:
-                # Global ticket for this feature
+            else:
+                # No resource specified by caller - accept any ticket for this feature
                 return feature_ticket
 
         # Check for general ACCESS_WINDOW (legacy broad access)
@@ -209,7 +238,8 @@ class PermissionService:
 
         role_service = RoleService(self.db)
         user_permissions = role_service.get_user_permissions(user)
-        permission_slugs = {p.slug for p in user_permissions}
+        # user_permissions is already a list of slugs (strings), not objects
+        permission_slugs = set(user_permissions) if user_permissions else set()
 
         return permission_slug in permission_slugs
 

@@ -52,6 +52,11 @@ const Approvals = () => {
             await approvalsAPI.approve(id);
             toast.success("Ticket Approved");
             fetchTickets();
+
+            // Notify all permission hooks to refresh immediately
+            window.dispatchEvent(new CustomEvent('approval:changed', {
+                detail: { action: 'approved', approvalId: id }
+            }));
         } catch (err) {
             console.error('Approve error:', err);
             toast.error(err.response?.data?.detail || "Failed to approve");
@@ -64,8 +69,29 @@ const Approvals = () => {
             await approvalsAPI.revoke(id);
             toast.success("Access Revoked");
             fetchTickets();
+
+            // Notify all permission hooks to refresh immediately
+            window.dispatchEvent(new CustomEvent('approval:changed', {
+                detail: { action: 'revoked', approvalId: id }
+            }));
         } catch (err) {
             toast.error("Failed to revoke");
+        }
+    };
+
+    const handleRejectRequest = async (id) => {
+        if (!window.confirm("Are you sure you want to reject this pending request?")) return;
+        try {
+            await approvalsAPI.reject(id);
+            toast.success("Request Rejected");
+            fetchTickets();
+
+            // Notify permission hooks to refresh immediately
+            window.dispatchEvent(new CustomEvent('approval:changed', {
+                detail: { action: 'rejected', approvalId: id }
+            }));
+        } catch (err) {
+            toast.error("Failed to reject request");
         }
     };
 
@@ -74,6 +100,11 @@ const Approvals = () => {
             await approvalsAPI.acceptGrant(id);
             toast.success("Access Granted & Timer Started");
             fetchTickets();
+
+            // Notify all permission hooks to refresh immediately
+            window.dispatchEvent(new CustomEvent('approval:changed', {
+                detail: { action: 'accepted', approvalId: id }
+            }));
         } catch (err) {
             toast.error("Failed to accept grant");
         }
@@ -85,6 +116,11 @@ const Approvals = () => {
             await approvalsAPI.rejectGrant(id);
             toast.success("Grant Declined");
             fetchTickets();
+
+            // Notify permission hooks to refresh immediately
+            window.dispatchEvent(new CustomEvent('approval:changed', {
+                detail: { action: 'rejected', approvalId: id }
+            }));
         } catch (err) {
             toast.error("Failed to decline");
         }
@@ -391,7 +427,7 @@ const Approvals = () => {
                                         </td>
                                         {isOrgAdmin && (
                                             <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                                                <div className="font-medium text-gray-800">{ticket.user_id?.substring(0, 8)}...</div>
+                                                <div className="font-medium text-gray-800">{ticket.user_email || 'Unknown User'}</div>
                                             </td>
                                         )}
                                         <td className="px-6 py-4">
@@ -432,9 +468,12 @@ const Approvals = () => {
                                             </td>
                                         )}
                                         <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium space-x-2">
-                                            {/* Approve (Lead/Admin) logic */}
+                                            {/* Approve & Reject (Lead/Admin) logic for pending requests */}
                                             {ticket.status === 'PENDING' && (isOrgAdmin || isTeamLead) && (activeTab === 'queue' || activeTab === 'incoming') && (
-                                                <Button size="sm" onClick={() => handleApprove(ticket.id)}>Approve</Button>
+                                                <>
+                                                    <Button size="sm" onClick={() => handleApprove(ticket.id)}>Approve</Button>
+                                                    <Button size="sm" variant="danger" onClick={() => handleRejectRequest(ticket.id)}>Reject</Button>
+                                                </>
                                             )}
 
                                             {/* Revoke (Admin/Lead) logic for Active items */}

@@ -1,54 +1,248 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: 'Spot Optimizer Cross-Account Access Role'
+Description: 'Spot Optimizer Full Access Cross-Account Role - All Regions'
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: "Required Configuration"
+        Parameters:
+          - ExternalId
+      - Label:
+          default: "Platform Configuration"
+        Parameters:
+          - PlatformAccountId
+    ParameterLabels:
+      ExternalId:
+        default: "External ID (auto-filled from dashboard)"
+      PlatformAccountId:
+        default: "Spot Optimizer Platform Account ID"
+
 Parameters:
   ExternalId:
     Type: String
     Description: 'The External ID provided by the Spot Optimizer dashboard'
-  SpotOptimizerAccountArn:
+    MinLength: 1
+  PlatformAccountId:
     Type: String
-    Description: 'The ARN of the Spot Optimizer Backend User/Role'
-    Default: 'arn:aws:iam::123456789012:root' # Replace with your actual backend account ID if known, or pass as param
+    Description: 'The AWS Account ID of the Spot Optimizer Platform'
+    Default: '123456789012'
 
 Resources:
   SpotOptimizerRole:
     Type: 'AWS::IAM::Role'
     Properties:
-      RoleName: !Sub 'SpotOptimizer-Access-${AWS::Region}'
+      RoleName: !Sub 'SpotOptimizer-FullAccess-${AWS::Region}'
+      Description: 'Full access role for SpotOptimizer - manages clusters and resource cleanup across ALL regions'
+      MaxSessionDuration: 3600
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
           - Effect: Allow
             Principal:
-              AWS: !Ref SpotOptimizerAccountArn
+              AWS: !Sub 'arn:aws:iam::${PlatformAccountId}:root'
             Action: 'sts:AssumeRole'
             Condition:
               StringEquals:
                 'sts:ExternalId': !Ref ExternalId
+
+      # Attach AWS Managed Read-Only Policies
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/SecurityAudit'
+        - 'arn:aws:iam::aws:policy/AmazonEC2ReadOnlyAccess'
+        - 'arn:aws:iam::aws:policy/CloudWatchReadOnlyAccess'
+
       Policies:
-        - PolicyName: 'ClusterDiscovery'
+        # =============================================================================
+        # DISCOVERY & ANALYSIS PERMISSIONS (All Regions)
+        # =============================================================================
+        - PolicyName: 'SpotOptimizerDiscovery'
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
-              - Effect: Allow
+              # EKS Cluster Discovery (All Regions)
+              - Sid: 'EKSDiscovery'
+                Effect: Allow
                 Action:
-                  - 'eks:ListClusters'
                   - 'eks:DescribeCluster'
-                  - 'ec2:DescribeInstances'
-                  - 'ec2:DescribeRegions'
-                  - 'ce:GetCostAndUsage'
-                  - 'autoscaling:DescribeAutoScalingGroups'
+                  - 'eks:DescribeNodegroup'
+                  - 'eks:ListClusters'
+                  - 'eks:ListNodegroups'
+                  - 'eks:DescribeAddonVersions'
+                  - 'eks:ListAddons'
                 Resource: '*'
-        - PolicyName: 'AgentInjection'
+
+              # EC2 Instance Discovery (All Regions)
+              - Sid: 'EC2Discovery'
+                Effect: Allow
+                Action:
+                  - 'ec2:DescribeInstances'
+                  - 'ec2:DescribeInstanceTypes'
+                  - 'ec2:DescribeVolumes'
+                  - 'ec2:DescribeSnapshots'
+                  - 'ec2:DescribeImages'
+                  - 'ec2:DescribeAddresses'
+                  - 'ec2:DescribeNetworkInterfaces'
+                  - 'ec2:DescribeNatGateways'
+                  - 'ec2:DescribeRegions'
+                  - 'ec2:DescribeAvailabilityZones'
+                  - 'ec2:DescribeReservedInstances'
+                  - 'ec2:DescribeTags'
+                Resource: '*'
+
+              # Auto Scaling Discovery (All Regions)
+              - Sid: 'AutoScalingDiscovery'
+                Effect: Allow
+                Action:
+                  - 'autoscaling:DescribeAutoScalingGroups'
+                  - 'autoscaling:DescribeAutoScalingInstances'
+                  - 'autoscaling:DescribeLaunchConfigurations'
+                  - 'autoscaling:DescribeScalingActivities'
+                  - 'autoscaling:DescribePolicies'
+                Resource: '*'
+
+              # Load Balancer Discovery (All Regions)
+              - Sid: 'LoadBalancerDiscovery'
+                Effect: Allow
+                Action:
+                  - 'elasticloadbalancing:DescribeLoadBalancers'
+                  - 'elasticloadbalancing:DescribeTargetGroups'
+                  - 'elasticloadbalancing:DescribeTargetHealth'
+                  - 'elasticloadbalancing:DescribeTags'
+                Resource: '*'
+
+              # RDS Discovery (All Regions)
+              - Sid: 'RDSDiscovery'
+                Effect: Allow
+                Action:
+                  - 'rds:DescribeDBInstances'
+                  - 'rds:DescribeDBClusters'
+                  - 'rds:DescribeDBSnapshots'
+                  - 'rds:ListTagsForResource'
+                Resource: '*'
+
+              # Cost Explorer & Pricing (Global)
+              - Sid: 'CostAnalysis'
+                Effect: Allow
+                Action:
+                  - 'ce:GetCostAndUsage'
+                  - 'ce:GetReservationUtilization'
+                  - 'ce:GetSavingsPlansUtilization'
+                  - 'ce:GetCostForecast'
+                  - 'pricing:GetProducts'
+                  - 'pricing:DescribeServices'
+                Resource: '*'
+
+        # =============================================================================
+        # CLUSTER MANAGEMENT PERMISSIONS (All Regions)
+        # =============================================================================
+        - PolicyName: 'SpotOptimizerClusterManagement'
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
-              - Effect: Allow
+              # EKS Cluster Management (All Regions)
+              - Sid: 'EKSManagement'
+                Effect: Allow
                 Action:
                   - 'eks:CreateAccessEntry'
                   - 'eks:DeleteAccessEntry'
                   - 'eks:AssociateAccessPolicy'
+                  - 'eks:DescribeAccessEntry'
+                  - 'eks:UpdateClusterConfig'
+                  - 'eks:UpdateNodegroupConfig'
                 Resource: '*'
+
+              # Auto Scaling Group Management for Hibernation (All Regions)
+              - Sid: 'AutoScalingManagement'
+                Effect: Allow
+                Action:
+                  - 'autoscaling:UpdateAutoScalingGroup'
+                  - 'autoscaling:SetDesiredCapacity'
+                  - 'autoscaling:SuspendProcesses'
+                  - 'autoscaling:ResumeProcesses'
+                  - 'autoscaling:TerminateInstanceInAutoScalingGroup'
+                Resource: '*'
+
+              # EC2 Instance Management for Hibernation (All Regions)
+              - Sid: 'EC2InstanceManagement'
+                Effect: Allow
+                Action:
+                  - 'ec2:StartInstances'
+                  - 'ec2:StopInstances'
+                  - 'ec2:RebootInstances'
+                  - 'ec2:ModifyInstanceAttribute'
+                  - 'ec2:CreateTags'
+                Resource: '*'
+
+              # Snapshot Management for Hibernation (All Regions)
+              - Sid: 'SnapshotManagement'
+                Effect: Allow
+                Action:
+                  - 'ec2:CreateSnapshot'
+                  - 'ec2:CreateSnapshots'
+                  - 'ec2:CopySnapshot'
+                  - 'ec2:DescribeSnapshotAttribute'
+                  - 'ec2:ModifySnapshotAttribute'
+                Resource: '*'
+
+        # =============================================================================
+        # RESOURCE HYGIENE / CLEANUP PERMISSIONS (All Regions)
+        # =============================================================================
+        - PolicyName: 'SpotOptimizerResourceCleanup'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # Resource Cleanup Operations (All Regions)
+              - Sid: 'ResourceCleanup'
+                Effect: Allow
+                Action:
+                  # EC2 Resource Cleanup
+                  - 'ec2:TerminateInstances'
+                  - 'ec2:DeleteVolume'
+                  - 'ec2:DeleteSnapshot'
+                  - 'ec2:ReleaseAddress'
+                  - 'ec2:DeleteNetworkInterface'
+                  - 'ec2:DeregisterImage'
+                  - 'ec2:DeleteNatGateway'
+
+                  # Load Balancer Cleanup
+                  - 'elasticloadbalancing:DeleteLoadBalancer'
+                  - 'elasticloadbalancing:DeleteTargetGroup'
+
+                  # RDS Cleanup
+                  - 'rds:DeleteDBInstance'
+                  - 'rds:DeleteDBSnapshot'
+                  - 'rds:StopDBInstance'
+
+                  # Auto Scaling Cleanup
+                  - 'autoscaling:DeleteAutoScalingGroup'
+                  - 'autoscaling:DeleteLaunchConfiguration'
+                # Resource: '*' grants access to ALL regions globally
+                Resource: '*'
+
+      Tags:
+        - Key: 'ManagedBy'
+          Value: 'SpotOptimizer'
+        - Key: 'Purpose'
+          Value: 'CrossAccountAccess'
+        - Key: 'ExternalId'
+          Value: !Ref ExternalId
+
 Outputs:
   RoleArn:
-    Description: 'The ARN of the role to paste into Spot Optimizer'
+    Description: 'Copy this ARN and paste it into the Spot Optimizer dashboard'
     Value: !GetAtt SpotOptimizerRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-RoleArn'
+
+  ExternalId:
+    Description: 'Your unique External ID (for reference)'
+    Value: !Ref ExternalId
+
+  Regions:
+    Description: 'Regions Covered'
+    Value: 'ALL AWS Regions (Resource: * grants global access)'
+
+  Permissions:
+    Description: 'Permission Scope'
+    Value: 'Full cluster management, hibernation, and resource cleanup across all regions'

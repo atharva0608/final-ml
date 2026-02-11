@@ -10,7 +10,8 @@ import { clusterAPI } from '../../services/api';
 import { Button } from '../shared';
 import { FiHome, FiServer, FiFileText, FiSettings, FiTarget, FiClock, FiBarChart2, FiUsers, FiActivity, FiLogOut, FiClipboard, FiBriefcase, FiCheckSquare, FiShield, FiLock, FiTag, FiZap } from 'react-icons/fi';
 
-import ActiveWindowBanner from '../approvals/ActiveWindowBanner';
+// TEMPORARILY DISABLED - Causing date formatting errors
+// import ActiveWindowBanner from '../approvals/ActiveWindowBanner';
 
 // Cluster Notification Badge Component
 const ClusterBadge = () => {
@@ -71,7 +72,6 @@ const MainLayout = () => {
     { name: 'Approvals', path: '/approvals', icon: FiCheckSquare, requiresPermission: false },
     { name: 'Teams', path: '/teams', icon: FiUsers, requiresPermission: true, badge: 'locked' },
     { name: 'Clusters', path: '/clusters', icon: FiServer, requiresPermission: true, badge: 'locked' },
-    { name: 'Policies', path: '/policies', icon: FiTarget, requiresPermission: true, badge: 'locked' },
     { name: 'Tagging Policies', path: '/tagging-policies', icon: FiTag, requiresPermission: true, badge: 'locked' },
     { name: 'Templates', path: '/templates', icon: FiFileText, requiresPermission: true, badge: 'locked' },
     { name: 'Right-Sizing', path: '/right-sizing', icon: FiBarChart2, requiresPermission: true, badge: 'locked' },
@@ -102,7 +102,8 @@ const MainLayout = () => {
 
   return (
     <div className="min-h-screen bg-gray-50 flex">
-      <ActiveWindowBanner />
+      {/* TEMPORARILY DISABLED - Causing date formatting errors */}
+      {/* <ActiveWindowBanner /> */}
 
       {/* Sidebar */}
       <div

@@ -4,9 +4,11 @@ Permission Routes - JIT Feature Access Control API
 Endpoints for checking permissions and listing user-accessible features.
 """
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from typing import List, Dict, Any
 from sqlalchemy.orm import Session
+import asyncio
 
 from backend.models.user import User
 from backend.services.permission_service import PermissionService
@@ -14,6 +16,7 @@ from backend.core.dependencies import get_current_user
 from backend.models.base import get_db
 from backend.schemas.approval_schemas import PermissionCheckRequest, PermissionCheckResponse
 from backend.core.exceptions import GovernanceError
+from backend.core.sse_manager import sse_manager
 
 router = APIRouter(prefix="/permissions", tags=["permissions"])
 
@@ -77,6 +80,21 @@ def check_permission(
         feature_id=request.feature_id,
         resource_id=request.resource_id
     )
+
+    # Serialize the ticket object to dict if present
+    if result.get('ticket'):
+        ticket = result['ticket']
+        result['ticket'] = {
+            'id': str(ticket.id),
+            'status': ticket.status.value if hasattr(ticket.status, 'value') else str(ticket.status),
+            'type': ticket.type.value if hasattr(ticket.type, 'value') else str(ticket.type),
+            'expires_at': ticket.expires_at.isoformat() if ticket.expires_at else None,
+            'created_at': ticket.created_at.isoformat() if ticket.created_at else None,
+        }
+
+    # Add pending flag if not present
+    if 'pending' not in result:
+        result['pending'] = False
 
     return PermissionCheckResponse(**result)
 
@@ -200,3 +218,73 @@ def get_feature_registry() -> Dict[str, Any]:
         "features": features,
         "count": len(features)
     }
+
+
+@router.get("/stream")
+async def permission_stream(
+    request: Request,
+    token: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Server-Sent Events (SSE) stream for real-time permission updates.
+
+    The backend pushes events when:
+    - Approval is granted
+    - Approval is revoked
+    - Approval expires
+
+    Frontend connects once and receives updates automatically - no polling needed!
+
+    Note: Token is passed as query parameter because EventSource doesn't support custom headers.
+    """
+    # Manually validate token since EventSource can't send Authorization header
+    from backend.core.crypto import decode_token
+    from backend.core.exceptions import InvalidTokenError
+
+    payload = decode_token(token)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    user_id = payload.get("sub")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Token missing user ID")
+
+    # Verify user exists
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+
+    async def event_generator():
+        queue = asyncio.Queue()
+        sse_manager.add_client(user.id, queue)
+
+        try:
+            # Send initial connection message
+            yield f"data: {{\"event\":\"connected\",\"message\":\"Permission stream active\"}}\n\n"
+
+            # Stream events to this client
+            while True:
+                if await request.is_disconnected():
+                    break
+
+                try:
+                    # Wait for event with timeout to check for disconnect
+                    message = await asyncio.wait_for(queue.get(), timeout=30.0)
+                    yield f"data: {message}\n\n"
+                except asyncio.TimeoutError:
+                    # Send keep-alive ping
+                    yield f": ping\n\n"
+
+        finally:
+            sse_manager.remove_client(user.id, queue)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"  # Disable nginx buffering
+        }
+    )

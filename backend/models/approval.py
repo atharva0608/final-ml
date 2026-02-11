@@ -1,7 +1,7 @@
 
 from sqlalchemy import Column, String, DateTime, ForeignKey, Enum, Text, Integer, Boolean, JSON
 from sqlalchemy.orm import relationship
-from datetime import datetime
+from datetime import datetime, timezone
 import enum
 from backend.models.base import Base, generate_uuid
 
@@ -72,12 +72,12 @@ class Approval(Base):
 
     status = Column(Enum(ApprovalStatus), default=ApprovalStatus.PENDING)
 
-    # Timestamps
-    created_at = Column(DateTime, default=datetime.utcnow)
+    # Timestamps (all timezone-aware UTC)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     approved_at = Column(DateTime, nullable=True)
     activated_at = Column(DateTime, nullable=True) # When the window actually starts
     expires_at = Column(DateTime, nullable=True)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
     # Relationships
     user = relationship("User", foreign_keys=[user_id])

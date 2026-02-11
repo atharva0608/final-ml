@@ -75,6 +75,7 @@ const TicketRequestModal = ({ isOpen, onClose, initialData }) => {
     const [selectedRecipients, setSelectedRecipients] = useState([]);
     const [approvers, setApprovers] = useState([]);
     const [approversLoading, setApproversLoading] = useState(false);
+    const [submitted, setSubmitted] = useState(false);
 
     useEffect(() => {
         if (initialData) {
@@ -89,6 +90,13 @@ const TicketRequestModal = ({ isOpen, onClose, initialData }) => {
             }
         }
     }, [initialData, isOpen, isOrgAdmin, isTeamLead]);
+
+    // Reset submitted state when modal opens/closes
+    useEffect(() => {
+        if (!isOpen) {
+            setSubmitted(false);
+        }
+    }, [isOpen]);
 
     const [formData, setFormData] = useState({
         type: 'ACCESS_WINDOW',
@@ -193,6 +201,7 @@ const TicketRequestModal = ({ isOpen, onClose, initialData }) => {
                 };
                 await approvalsAPI.delegate(payload);
                 toast.success(`Access granted to ${selectedRecipients.length} user(s)`);
+                onClose();
             } else {
                 // Check if this is a JIT Feature request
                 if (formData.type === 'JIT_FEATURE' && formData.feature_id) {
@@ -206,13 +215,21 @@ const TicketRequestModal = ({ isOpen, onClose, initialData }) => {
                         jit_metadata: {}
                     };
                     await approvalsAPI.createJITRequest(payload);
-                    toast.success("JIT access request submitted successfully");
+
+                    // Instantly update UI - don't wait for SSE
+                    window.dispatchEvent(new CustomEvent('permission:requested', {
+                        detail: {
+                            feature_id: formData.feature_id,
+                            resource_id: formData.resource_id,
+                            status: 'pending'
+                        }
+                    }));
                 } else {
                     await approvalsAPI.create(formData);
-                    toast.success("Access request submitted successfully");
                 }
+                // For request mode, show success state instead of closing
+                setSubmitted(true);
             }
-            onClose();
         } catch (err) {
             toast.error(err.response?.data?.detail || "Failed to submit request");
             console.error(err);
@@ -283,8 +300,63 @@ const TicketRequestModal = ({ isOpen, onClose, initialData }) => {
                     )}
                 </div>
 
-                {/* Body */}
-                <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-6 space-y-5">
+                {/* Success State */}
+                {submitted && !isGrantMode ? (
+                    <div className="flex-1 flex flex-col items-center justify-center p-8 text-center">
+                        <div className="w-20 h-20 bg-green-100 rounded-full flex items-center justify-center mb-6">
+                            <FiCheck className="w-10 h-10 text-green-600" />
+                        </div>
+                        <h3 className="text-2xl font-bold text-gray-900 mb-3">Request Submitted!</h3>
+                        <p className="text-gray-600 mb-2 max-w-md">
+                            Your approval request has been submitted successfully.
+                        </p>
+                        <p className="text-gray-600 mb-6 max-w-md">
+                            You will get access once your request is approved by a Team Lead or Organization Admin.
+                        </p>
+
+                        {/* Show who will approve */}
+                        {approvers.length > 0 && (
+                            <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6 max-w-md">
+                                <p className="text-sm font-semibold text-blue-900 mb-2">
+                                    <FiUsers className="inline w-4 h-4 mr-1" />
+                                    Your request will be reviewed by:
+                                </p>
+                                <div className="text-sm text-blue-800 space-y-1">
+                                    {approvers.slice(0, 3).map((approver, idx) => (
+                                        <div key={idx} className="flex items-center justify-center">
+                                            <span className="font-medium">{approver.full_name || approver.email.split('@')[0]}</span>
+                                            <span className="mx-2">•</span>
+                                            <span className="text-blue-600 text-xs">{approver.role}</span>
+                                        </div>
+                                    ))}
+                                    {approvers.length > 3 && (
+                                        <p className="text-xs text-blue-700 mt-1">and {approvers.length - 3} more...</p>
+                                    )}
+                                </div>
+                            </div>
+                        )}
+
+                        <div className="flex space-x-3">
+                            <Button
+                                variant="outline"
+                                onClick={onClose}
+                            >
+                                Close
+                            </Button>
+                            <Button
+                                onClick={() => {
+                                    onClose();
+                                    window.location.href = '/approvals';
+                                }}
+                            >
+                                View My Requests
+                            </Button>
+                        </div>
+                    </div>
+                ) : (
+                    /* Form Content */
+                    <>
+                    <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-6 space-y-5">
                     {/* Grant Mode: Recipient Selection */}
                     {isGrantMode && (
                         <div>
@@ -589,6 +661,9 @@ const TicketRequestModal = ({ isOpen, onClose, initialData }) => {
                         )}
                     </button>
                 </div>
+                </>
+                )
+                }
             </div>
         </div>
     );

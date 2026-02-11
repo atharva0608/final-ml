@@ -110,19 +110,33 @@ function App() {
       try {
         // Decode JWT payload
         const payload = JSON.parse(atob(accessToken.split('.')[1]));
-        // Check if token is expired
-        const isExpired = payload.exp * 1000 < Date.now();
+
+        // Debug logging
+        console.log('Token validation:', {
+          exp: payload.exp,
+          expDate: new Date(payload.exp * 1000).toISOString(),
+          now: new Date().toISOString(),
+          isExpired: payload.exp * 1000 < Date.now()
+        });
+
+        // Check if token is expired (with 5 second buffer to prevent edge cases)
+        const isExpired = payload.exp * 1000 < (Date.now() - 5000);
+
         if (isExpired) {
           console.log('Token expired, logging out...');
           logout();
         }
       } catch (error) {
-        // Token is malformed or invalid
-        console.log('Invalid token, logging out...');
-        logout();
+        // Token is malformed or invalid - log but don't auto-logout on parse errors
+        console.error('Token validation error:', error);
+        // Only logout if token is completely invalid (not just a parse error during login)
+        if (!accessToken.includes('.')) {
+          console.log('Invalid token format, logging out...');
+          logout();
+        }
       }
     }
-  }, [accessToken, logout]);
+  }, []); // Only run once on mount, not on every accessToken change
 
   const [governanceModalOpen, setGovernanceModalOpen] = React.useState(false);
   const [governanceData, setGovernanceData] = React.useState(null);

@@ -95,7 +95,7 @@ class TeamService:
         self.db.refresh(member)
         return member
 
-    def invite_member(self, user: User, email: str, team_id: str, role: str = "MEMBER"):
+    def invite_member(self, user: User, email: str, team_id: str, role: str = "MEMBER", full_name: str = None):
         """
         Invites a NEW user to the platform AND assigns them to a team.
         Creates user with PENDING_INVITE status.
@@ -127,6 +127,7 @@ class TeamService:
         new_user = User(
             id=str(uuid.uuid4()),
             email=email,
+            full_name=full_name,
             password_hash=hash_password("demo1234"),  # Default password
             role=UserRole(role) if role in [r.value for r in UserRole] else UserRole.MEMBER,
             organization_id=user.organization_id,

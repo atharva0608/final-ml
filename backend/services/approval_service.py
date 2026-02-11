@@ -2,7 +2,8 @@ from sqlalchemy.orm import Session
 from backend.models.approval import Approval, ApprovalStatus, ApprovalType
 from backend.models.user import User, UserRole
 from backend.core.exceptions import ForbiddenError, ResourceNotFoundError
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+import asyncio
 
 class ApprovalService:
     def __init__(self, db: Session):
@@ -35,7 +36,12 @@ class ApprovalService:
         Team Leads see approvals for their team.
         Org Admins see all approvals in their org.
         """
-        query = self.db.query(Approval).filter(Approval.organization_id == user.organization_id)
+        from sqlalchemy.orm import joinedload
+
+        query = self.db.query(Approval).options(
+            joinedload(Approval.user),  # Eager load user relationship
+            joinedload(Approval.approver)  # Eager load approver relationship
+        ).filter(Approval.organization_id == user.organization_id)
 
         # Role-based filtering
         if user.role == UserRole.MEMBER:
@@ -48,7 +54,16 @@ class ApprovalService:
         if status:
             query = query.filter(Approval.status == status)
 
-        return query.order_by(Approval.created_at.desc()).all()
+        approvals = query.order_by(Approval.created_at.desc()).all()
+
+        # Populate user_email and approver_email for each approval
+        for approval in approvals:
+            if approval.user:
+                approval.user_email = approval.user.email
+            if approval.approver:
+                approval.approver_email = approval.approver.email
+
+        return approvals
 
     def approve(self, approver: User, approval_id: str):
         """
@@ -65,11 +80,14 @@ class ApprovalService:
 
         approval.status = ApprovalStatus.APPROVED_ACTIVE
         approval.approver_id = approver.id
-        approval.approved_at = datetime.utcnow()
-        approval.expires_at = datetime.utcnow() + timedelta(hours=approval.duration_hours)
+        approval.approved_at = datetime.now(timezone.utc)
+        approval.expires_at = datetime.now(timezone.utc) + timedelta(hours=approval.duration_hours)
 
         self.db.commit()
         self.db.refresh(approval)
+
+        # Broadcast SSE event to frontend (backend → frontend push)
+        self._broadcast_permission_change(approval, "approved")
 
         # Execute System Automation if this was a paused cleanup approval
         if approval.type == ApprovalType.SYSTEM_CLEANUP:
@@ -112,6 +130,30 @@ class ApprovalService:
 
         return approval
 
+    def reject(self, user: User, approval_id: str):
+        """
+        Reject a pending approval request.
+        """
+        approval = self.db.query(Approval).filter(Approval.id == approval_id).first()
+        if not approval:
+            raise ResourceNotFoundError("Approval", approval_id)
+
+        self._check_approver_auth(user, approval)
+
+        if approval.status != ApprovalStatus.PENDING:
+            raise ForbiddenError("Can only reject pending requests")
+
+        approval.status = ApprovalStatus.REJECTED
+        approval.approver_id = user.id
+
+        self.db.commit()
+        self.db.refresh(approval)
+
+        # Broadcast SSE event to frontend (backend → frontend push)
+        self._broadcast_permission_change(approval, "rejected")
+
+        return approval
+
     def revoke(self, user: User, approval_id: str):
         """
         Revoke an active approval immediately.
@@ -123,24 +165,27 @@ class ApprovalService:
         self._check_approver_auth(user, approval)
 
         approval.status = ApprovalStatus.REVOKED
-        approval.expires_at = datetime.utcnow()
+        approval.expires_at = datetime.now(timezone.utc)
 
         # Cascade Revoke Children
         if approval.children:
             for child in approval.children:
                 if child.status in [ApprovalStatus.PENDING_CONSENT, ApprovalStatus.APPROVED_ACTIVE]:
                     child.status = ApprovalStatus.REVOKED
-                    child.expires_at = datetime.utcnow()
+                    child.expires_at = datetime.now(timezone.utc)
 
         self.db.commit()
         self.db.refresh(approval)
+
+        # Broadcast SSE event to frontend (backend → frontend push)
+        self._broadcast_permission_change(approval, "revoked")
         return approval
 
     def get_active_window(self, user_id: str):
         """
         Check if user has a global Active Window.
         """
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         approval = self.db.query(Approval).filter(
             Approval.user_id == user_id,
             Approval.status == ApprovalStatus.APPROVED_ACTIVE,
@@ -153,7 +198,7 @@ class ApprovalService:
         """
         Check for specific ACTION approval.
         """
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         query = self.db.query(Approval).filter(
             Approval.user_id == user_id,
             Approval.status == ApprovalStatus.APPROVED_ACTIVE,
@@ -185,8 +230,8 @@ class ApprovalService:
             reason_text=f"Delegated Grant: {data.get('reason_text', '')}",
             duration_hours=data.get("duration_hours", 1),
             status=ApprovalStatus.APPROVED_ACTIVE,
-            approved_at=datetime.utcnow(),
-            activated_at=datetime.utcnow()
+            approved_at=datetime.now(timezone.utc),
+            activated_at=datetime.now(timezone.utc)
         )
         self.db.add(parent_approval)
         self.db.flush()
@@ -198,8 +243,8 @@ class ApprovalService:
 
             child_status = ApprovalStatus.APPROVED_ACTIVE if is_self_grant else ApprovalStatus.PENDING_CONSENT
 
-            expires_at = (datetime.utcnow() + timedelta(hours=data.get("duration_hours", 1))) if is_self_grant else None
-            child_activated_at = datetime.utcnow() if is_self_grant else None
+            expires_at = (datetime.now(timezone.utc) + timedelta(hours=data.get("duration_hours", 1))) if is_self_grant else None
+            child_activated_at = datetime.now(timezone.utc) if is_self_grant else None
 
             child = Approval(
                 user_id=recipient_id,
@@ -213,7 +258,7 @@ class ApprovalService:
                 reason_text=data.get("reason_text"),
                 duration_hours=data.get("duration_hours", 1),
                 status=child_status,
-                approved_at=datetime.utcnow(),
+                approved_at=datetime.now(timezone.utc),
                 activated_at=child_activated_at,
                 expires_at=expires_at
             )
@@ -243,8 +288,8 @@ class ApprovalService:
                 raise ForbiddenError("This offering has expired or been revoked by the admin")
 
         approval.status = ApprovalStatus.APPROVED_ACTIVE
-        approval.activated_at = datetime.utcnow()
-        approval.expires_at = datetime.utcnow() + timedelta(hours=approval.duration_hours)
+        approval.activated_at = datetime.now(timezone.utc)
+        approval.expires_at = datetime.now(timezone.utc) + timedelta(hours=approval.duration_hours)
 
         self.db.commit()
         return approval
@@ -327,7 +372,7 @@ class ApprovalService:
         """
         Get all active JIT approvals for a user.
         """
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         approvals = self.db.query(Approval).filter(
             Approval.user_id == user_id,
             Approval.type == ApprovalType.JIT_FEATURE,
@@ -336,3 +381,48 @@ class ApprovalService:
         ).all()
 
         return approvals
+
+    def _broadcast_permission_change(self, approval: Approval, action: str):
+        """
+        Broadcast permission change via SSE to frontend.
+        Backend pushes updates - no frontend polling needed!
+        """
+        try:
+            from backend.core.sse_manager import sse_manager
+
+            # Run async broadcast in background
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # Already in async context
+                asyncio.create_task(sse_manager.broadcast_to_user(
+                    approval.user_id,
+                    "permission:changed",
+                    {
+                        "action": action,
+                        "feature_id": approval.feature_id,
+                        "resource_id": approval.resource_id,
+                        "approval_id": str(approval.id),
+                        "status": approval.status.value,
+                        "expires_at": approval.expires_at.isoformat() if approval.expires_at else None
+                    }
+                ))
+            else:
+                # Create new event loop for sync context
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                loop.run_until_complete(sse_manager.broadcast_to_user(
+                    approval.user_id,
+                    "permission:changed",
+                    {
+                        "action": action,
+                        "feature_id": approval.feature_id,
+                        "resource_id": approval.resource_id,
+                        "approval_id": str(approval.id),
+                        "status": approval.status.value,
+                        "expires_at": approval.expires_at.isoformat() if approval.expires_at else None
+                    }
+                ))
+                loop.close()
+        except Exception as e:
+            # Don't fail the request if SSE broadcast fails
+            print(f"[SSE] Failed to broadcast: {e}")

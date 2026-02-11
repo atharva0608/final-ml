@@ -102,6 +102,7 @@ class AuthService:
             new_user = User(
                 email=signup_data.email.lower(),
                 password_hash=password_hash,
+                full_name=signup_data.full_name,
                 role=invitation.role,
                 organization_id=invitation.organization_id,
                 access_level=invitation.access_level,
@@ -128,6 +129,7 @@ class AuthService:
             new_user = User(
                 email=signup_data.email.lower(),
                 password_hash=password_hash,
+                full_name=signup_data.full_name,
                 role=UserRole.ORG_ADMIN,
                 organization_id=new_org.id,
                 access_level=AccessLevel.FULL,

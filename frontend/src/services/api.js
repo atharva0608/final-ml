@@ -60,6 +60,7 @@ export const authAPI = {
     me: () => api.get('/api/v1/auth/me'),
     refresh: (token) => api.post('/api/v1/auth/refresh', { refresh_token: token }),
     changePassword: (data) => api.post('/api/v1/auth/change-password', data),
+    updateProfile: (data) => api.put('/api/v1/auth/profile', data),
     respondToInvitation: (data) => api.post('/api/v1/auth/invitation-response', data),
     // Dashboard Preferences
     getPreferences: () => api.get('/api/v1/users/me/preferences'),
@@ -213,7 +214,7 @@ export const teamAPI = {
     rename: (id, name) => api.put(`/api/v1/teams/${id}/rename`, { name }),
     assign: (teamId, memberId) => api.post(`/api/v1/teams/${teamId}/assign`, { member_id: memberId }),
     remove: (teamId, memberId) => api.post(`/api/v1/teams/${teamId}/remove`, { member_id: memberId }),
-    invite: (teamId, email, role = "MEMBER") => api.post(`/api/v1/teams/${teamId}/invite`, { email, role }),
+    invite: (teamId, email, role = "MEMBER", fullName = null) => api.post(`/api/v1/teams/${teamId}/invite`, { email, role, full_name: fullName }),
     getStats: (teamId) => api.get(`/api/v1/teams/${teamId}/stats`),
     updateGovernance: (teamId, config) => api.put(`/api/v1/teams/${teamId}/governance`, { config: config }),
     updateMemberPermissions: (teamId, memberId, permissions) => api.put(`/api/v1/teams/${teamId}/members/${memberId}/permissions`, { permissions }),
@@ -249,10 +250,12 @@ export const approvalsAPI = {
     list: (status) => api.get('/api/v1/approvals/', { params: { status } }),
     getActiveWindow: () => api.get('/api/v1/approvals/active-window'),
     approve: (id) => api.post(`/api/v1/approvals/${id}/approve`),
+    reject: (id) => api.post(`/api/v1/approvals/${id}/reject`),  // Reject pending request
     revoke: (id) => api.post(`/api/v1/approvals/${id}/revoke`),
     // JIT Feature Access
     createJITRequest: (data) => api.post('/api/v1/approvals/jit-request', data),
     getMyJITApprovals: () => api.get('/api/v1/approvals/my-jit-approvals'),
+    getMyJITTickets: () => api.get('/api/v1/approvals/my-jit-approvals'), // Alias
 };
 export const approvalAPI = approvalsAPI;
 

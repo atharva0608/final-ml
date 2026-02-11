@@ -7,6 +7,7 @@ import { useAuth } from '../../hooks/useAuth';
 import { Button, Input, Card } from '../shared';
 
 const Signup = () => {
+  const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
   const [organizationName, setOrganizationName] = useState('');
   const [password, setPassword] = useState('');
@@ -17,6 +18,12 @@ const Signup = () => {
 
   const validateForm = () => {
     const newErrors = {};
+
+    if (!fullName) {
+      newErrors.fullName = 'Full name is required';
+    } else if (fullName.length < 2) {
+      newErrors.fullName = 'Name must be at least 2 characters';
+    }
 
     if (!email) {
       newErrors.email = 'Email is required';
@@ -60,11 +67,10 @@ const Signup = () => {
     }
 
     setLoading(true);
-    setLoading(true);
     // Passing object to match new API or update useAuth hook to handle parameters
     // Assuming useAuth.signup signature needs update or accepts object
     // Checking previous useAuth usage, it takes arguments. updating call.
-    await signup(email, password, organizationName);
+    await signup(email, password, organizationName, fullName);
     setLoading(false);
   };
 
@@ -86,6 +92,17 @@ const Signup = () => {
         {/* Signup Form */}
         <Card className="mt-8">
           <form onSubmit={handleSubmit} className="space-y-6">
+            <Input
+              label="Full Name"
+              type="text"
+              value={fullName}
+              onChange={(e) => setFullName(e.target.value)}
+              placeholder="John Doe"
+              error={errors.fullName}
+              required
+              autoComplete="name"
+            />
+
             <Input
               label="Email address"
               type="email"

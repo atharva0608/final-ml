@@ -7,7 +7,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { hibernationAPI, metricAPI } from '../../services/api';
 import { useClusterStore } from '../../store/useStore';
 import { Card, Button, Input, Badge } from '../shared';
-import { FiSave, FiRotateCcw, FiClock, FiSun, FiMoon, FiDollarSign, FiPlay, FiPower, FiZap, FiShield, FiChevronDown, FiChevronUp } from 'react-icons/fi';
+import { FiSave, FiRotateCcw, FiClock, FiSun, FiMoon, FiDollarSign, FiPlay, FiPower, FiZap, FiShield, FiChevronDown, FiChevronUp, FiServer } from 'react-icons/fi';
 import toast from 'react-hot-toast';
 
 const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
@@ -67,6 +67,10 @@ const HibernationSchedule = ({ clusterId }) => {
   const [paintMode, setPaintMode] = useState(null);
   const [hourlyCost, setHourlyCost] = useState(0);
   const [showComparison, setShowComparison] = useState(false);
+  const [showPresetModal, setShowPresetModal] = useState(false);
+  const [editingPreset, setEditingPreset] = useState(null);
+  const [customPresets, setCustomPresets] = useState([]);
+  const [schedulingMode, setSchedulingMode] = useState('grid'); // 'preset' or 'grid' - default to grid
 
   const [formData, setFormData] = useState({
     cluster_id: clusterId || '',
@@ -85,6 +89,15 @@ const HibernationSchedule = ({ clusterId }) => {
     if (clusterId) {
       fetchScheduleForCluster(clusterId);
       fetchClusterCost(clusterId);
+    }
+    // Load custom presets from localStorage
+    const savedPresets = localStorage.getItem('hibernation_custom_presets');
+    if (savedPresets) {
+      try {
+        setCustomPresets(JSON.parse(savedPresets));
+      } catch (e) {
+        console.error('Failed to load custom presets', e);
+      }
     }
   }, [clusterId]);
 
@@ -252,6 +265,70 @@ const HibernationSchedule = ({ clusterId }) => {
     toast.success('24/7 uptime preset applied');
   };
 
+  // Save custom preset
+  const saveCustomPreset = (preset) => {
+    let updatedPresets;
+    if (editingPreset) {
+      // Update existing preset
+      updatedPresets = customPresets.map(p => p.id === editingPreset.id ? { ...preset, id: editingPreset.id } : p);
+      toast.success('Preset updated successfully');
+    } else {
+      // Create new preset
+      const newPreset = {
+        ...preset,
+        id: Date.now().toString(),
+        created_at: new Date().toISOString(),
+      };
+      updatedPresets = [...customPresets, newPreset];
+      toast.success('Custom preset created');
+    }
+
+    setCustomPresets(updatedPresets);
+    localStorage.setItem('hibernation_custom_presets', JSON.stringify(updatedPresets));
+    setShowPresetModal(false);
+    setEditingPreset(null);
+  };
+
+  // Delete custom preset
+  const deleteCustomPreset = (presetId) => {
+    const updatedPresets = customPresets.filter(p => p.id !== presetId);
+    setCustomPresets(updatedPresets);
+    localStorage.setItem('hibernation_custom_presets', JSON.stringify(updatedPresets));
+    toast.success('Preset deleted');
+  };
+
+  // Apply custom preset
+  const applyCustomPreset = (preset) => {
+    const matrix = Array(168).fill(0);
+    const [startHour] = preset.startTime.split(':').map(Number);
+    const [endHour] = preset.endTime.split(':').map(Number);
+
+    preset.selectedDays.forEach(dayIndex => {
+      for (let hour = startHour; hour < endHour; hour++) {
+        matrix[dayIndex * 24 + hour] = 1;
+      }
+    });
+
+    setFormData({
+      ...formData,
+      schedule_matrix: matrix,
+      strategy: preset.strategy || 'NAMESPACE_SLEEP'
+    });
+    toast.success(`Applied preset: ${preset.name}`);
+  };
+
+  // Toggle preset favorite/star
+  const togglePresetStar = (presetId) => {
+    const updatedPresets = customPresets.map(p =>
+      p.id === presetId ? { ...p, isFavorite: !p.isFavorite } : p
+    );
+    setCustomPresets(updatedPresets);
+    localStorage.setItem('hibernation_custom_presets', JSON.stringify(updatedPresets));
+
+    const preset = updatedPresets.find(p => p.id === presetId);
+    toast.success(preset.isFavorite ? 'Added to Quick Presets' : 'Removed from Quick Presets');
+  };
+
   useEffect(() => {
     document.addEventListener('mouseup', handleMouseUp);
     return () => {
@@ -309,9 +386,10 @@ const HibernationSchedule = ({ clusterId }) => {
       </div>
 
       <form onSubmit={handleSave}>
-        {/* Configuration Section */}
+        {/* Common Configuration - Always Visible */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
           <Card className="lg:col-span-2">
+            <h3 className="text-lg font-semibold text-gray-900 mb-4">Configuration</h3>
             <div className="space-y-4">
               {!clusterId && (
                 <div>
@@ -352,16 +430,6 @@ const HibernationSchedule = ({ clusterId }) => {
                   min="0" max="60" required
                 />
               </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">Presets</label>
-                <div className="flex gap-2 flex-wrap">
-                  <Button type="button" variant="outline" size="sm" onClick={set24x7}>24/7 Uptime</Button>
-                  <Button type="button" variant="outline" size="sm" onClick={setBusinessHours}>Business Hours</Button>
-                  <Button type="button" variant="outline" size="sm" onClick={setAllAwake}>All Awake</Button>
-                  <Button type="button" variant="outline" size="sm" onClick={setAllSleep}>All Sleep</Button>
-                </div>
-              </div>
             </div>
           </Card>
 
@@ -381,7 +449,7 @@ const HibernationSchedule = ({ clusterId }) => {
           </Card>
         </div>
 
-        {/* Strategy Selection Cards */}
+        {/* Hibernation Strategy Selection */}
         <div className="mb-6">
           <h3 className="text-lg font-semibold text-gray-900 mb-3">Hibernation Strategy</h3>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -469,23 +537,202 @@ const HibernationSchedule = ({ clusterId }) => {
           )}
         </div>
 
-        {/* Schedule Grid */}
-        <Card>
-          <div className="mb-4 flex items-center justify-between">
-            <div>
-              <h3 className="text-lg font-semibold text-gray-900">Weekly Schedule Grid</h3>
-              <p className="text-sm text-gray-600 mt-1">
-                Click or drag to paint. <FiSun className="inline w-4 h-4 text-green-600" /> Awake |{' '}
-                <FiMoon className="inline w-4 h-4 text-gray-400" /> Sleep
-              </p>
-            </div>
-            <div className="flex gap-4 text-sm">
-              <div className="flex items-center gap-1"><div className="w-3 h-3 bg-green-500 rounded"></div> Awake</div>
-              <div className="flex items-center gap-1"><div className="w-3 h-3 bg-gray-200 rounded"></div> Sleep</div>
-            </div>
+        {/* Scheduling Mode Tabs */}
+        <div className="mb-6">
+          <div className="border-b border-gray-200">
+            <nav className="-mb-px flex space-x-8">
+              <button
+                type="button"
+                onClick={() => setSchedulingMode('preset')}
+                className={`${
+                  schedulingMode === 'preset'
+                    ? 'border-blue-500 text-blue-600'
+                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                } whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm transition-colors flex items-center gap-2`}
+              >
+                <FiClock className="w-4 h-4" />
+                Preset Schedule
+              </button>
+              <button
+                type="button"
+                onClick={() => setSchedulingMode('grid')}
+                className={`${
+                  schedulingMode === 'grid'
+                    ? 'border-blue-500 text-blue-600'
+                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                } whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm transition-colors flex items-center gap-2`}
+              >
+                <FiServer className="w-4 h-4" />
+                Weekly Grid
+              </button>
+            </nav>
           </div>
+        </div>
 
-          <div className="overflow-x-auto select-none" ref={gridRef}>
+        {/* Preset Scheduling Mode */}
+        {schedulingMode === 'preset' && (
+          <>
+            {/* Quick Presets - Starred/Favorited Presets */}
+            {customPresets.filter(p => p.isFavorite).length > 0 && (
+              <Card className="mb-6">
+                <h3 className="text-lg font-semibold text-gray-900 mb-4">Quick Presets</h3>
+                <div className="flex gap-2 flex-wrap">
+                  {customPresets.filter(p => p.isFavorite).map(preset => (
+                    <button
+                      key={preset.id}
+                      type="button"
+                      onClick={() => applyCustomPreset(preset)}
+                      className="px-4 py-2 bg-blue-50 text-blue-700 border border-blue-200 rounded-lg hover:bg-blue-100 text-sm font-medium transition-colors flex items-center gap-2"
+                    >
+                      <svg className="w-4 h-4 fill-current text-yellow-500" viewBox="0 0 20 20">
+                        <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
+                      </svg>
+                      {preset.name}
+                    </button>
+                  ))}
+                </div>
+              </Card>
+            )}
+
+            {/* All Custom Presets */}
+            <Card className="mb-6">
+              <div className="flex items-center justify-between mb-4">
+                <div>
+                  <h3 className="text-lg font-semibold text-gray-900">Custom Presets</h3>
+                  <p className="text-sm text-gray-500 mt-1">Create and manage your schedule presets</p>
+                </div>
+                <Button
+                  type="button"
+                  variant="primary"
+                  size="sm"
+                  onClick={() => {
+                    setEditingPreset(null);
+                    setShowPresetModal(true);
+                  }}
+                  icon={<FiClock />}
+                >
+                  Create Preset
+                </Button>
+              </div>
+
+              {customPresets.length === 0 ? (
+                <div className="text-center py-8 bg-gray-50 rounded-lg border-2 border-dashed border-gray-300">
+                  <FiClock className="w-12 h-12 text-gray-400 mx-auto mb-3" />
+                  <p className="text-sm text-gray-600 mb-2">No custom presets yet</p>
+                  <p className="text-xs text-gray-500">Create a preset to quickly apply repeating schedules</p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {customPresets.map(preset => {
+                    const presetStrategy = STRATEGIES.find(s => s.value === preset.strategy) || STRATEGIES[0];
+                    return (
+                      <div
+                        key={preset.id}
+                        className="relative group border border-gray-200 rounded-lg p-4 hover:border-blue-300 hover:shadow-md transition-all cursor-pointer bg-white"
+                        onClick={() => applyCustomPreset(preset)}
+                      >
+                        {/* Star Icon */}
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            togglePresetStar(preset.id);
+                          }}
+                          className="absolute top-3 left-3 p-1 hover:bg-gray-100 rounded transition-colors"
+                          title={preset.isFavorite ? "Remove from Quick Presets" : "Add to Quick Presets"}
+                        >
+                          <svg className={`w-5 h-5 ${preset.isFavorite ? 'fill-current text-yellow-500' : 'stroke-current text-gray-400'}`} viewBox="0 0 20 20">
+                            <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
+                          </svg>
+                        </button>
+
+                        <div className="flex items-start justify-between mb-2 ml-8">
+                          <h4 className="font-semibold text-gray-900 text-sm pr-2">{preset.name}</h4>
+                          <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setEditingPreset(preset);
+                                setShowPresetModal(true);
+                              }}
+                              className="p-1 text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded"
+                              title="Edit preset"
+                            >
+                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                              </svg>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (window.confirm(`Delete preset "${preset.name}"?`)) {
+                                  deleteCustomPreset(preset.id);
+                                }
+                              }}
+                              className="p-1 text-red-600 hover:text-red-800 hover:bg-red-50 rounded"
+                              title="Delete preset"
+                            >
+                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                              </svg>
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Strategy Badge */}
+                        <div className="ml-8 mb-2">
+                          <span className={`inline-flex items-center gap-1 px-2 py-0.5 ${presetStrategy.bgColor} ${presetStrategy.textColor} text-xs font-medium rounded`}>
+                            {React.createElement(presetStrategy.icon, { className: 'w-3 h-3' })}
+                            {presetStrategy.label}
+                          </span>
+                        </div>
+
+                        <div className="flex items-center gap-2 mb-2 ml-8">
+                          <FiClock className="w-4 h-4 text-gray-400" />
+                          <span className="text-xs text-gray-600">{preset.startTime} - {preset.endTime}</span>
+                        </div>
+                        <div className="flex flex-wrap gap-1 ml-8">
+                          {preset.selectedDays.map(d => (
+                            <span key={d} className="inline-block px-2 py-0.5 bg-blue-100 text-blue-700 text-xs font-medium rounded">
+                              {DAYS[d].substring(0, 3)}
+                            </span>
+                          ))}
+                        </div>
+                        <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                          <span className="text-xs text-blue-600 font-medium">Click to apply</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </Card>
+          </>
+        )}
+
+        {/* Weekly Grid Mode */}
+        {schedulingMode === 'grid' && (
+          <Card className="mb-6">
+            <div className="mb-4">
+              <h3 className="text-lg font-semibold text-gray-900 mb-2">Manual Schedule Grid</h3>
+              <p className="text-sm text-gray-500 mb-3">Click or drag to paint custom schedules</p>
+              <div className="flex gap-2 flex-wrap mb-4">
+                <Button type="button" variant="outline" size="sm" onClick={set24x7}>24/7 Uptime</Button>
+                <Button type="button" variant="outline" size="sm" onClick={setBusinessHours}>Business Hours</Button>
+                <Button type="button" variant="outline" size="sm" onClick={setAllAwake}>All Awake</Button>
+                <Button type="button" variant="outline" size="sm" onClick={setAllSleep}>All Sleep</Button>
+              </div>
+            </div>
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex gap-4 text-sm">
+                <div className="flex items-center gap-1"><div className="w-3 h-3 bg-green-500 rounded"></div> Awake</div>
+                <div className="flex items-center gap-1"><div className="w-3 h-3 bg-gray-200 rounded"></div> Sleep</div>
+              </div>
+            </div>
+
+            <div className="overflow-x-auto select-none" ref={gridRef}>
             <div className="inline-block min-w-full">
               <div className="flex">
                 <div className="w-24 flex-shrink-0"></div>
@@ -518,16 +765,165 @@ const HibernationSchedule = ({ clusterId }) => {
                 </div>
               ))}
             </div>
-          </div>
+            </div>
+          </Card>
+        )}
 
-          <div className="flex justify-end pt-4 border-t mt-6">
-            <Button type="submit" variant="primary" icon={<FiSave />}>
-              {existingSchedule ? 'Update Schedule' : 'Create Schedule'}
-            </Button>
-          </div>
-        </Card>
+        {/* Save Button */}
+        <div className="flex justify-end pt-4">
+          <Button type="submit" variant="primary" icon={<FiSave />} size="lg">
+            {existingSchedule ? 'Update Schedule' : 'Create Schedule'}
+          </Button>
+        </div>
       </form>
+
+      {/* Custom Preset Modal */}
+      {showPresetModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg shadow-xl max-w-md w-full p-6">
+            <h2 className="text-xl font-bold text-gray-900 mb-4">
+              {editingPreset ? 'Edit Preset' : 'Create Custom Preset'}
+            </h2>
+            <PresetForm
+              initialData={editingPreset}
+              onSave={saveCustomPreset}
+              onCancel={() => {
+                setShowPresetModal(false);
+                setEditingPreset(null);
+              }}
+            />
+          </div>
+        </div>
+      )}
     </div>
+  );
+};
+
+// Preset Form Component
+const PresetForm = ({ initialData, onSave, onCancel }) => {
+  const [presetData, setPresetData] = useState({
+    name: initialData?.name || '',
+    selectedDays: initialData?.selectedDays || [1, 2, 3, 4, 5],
+    startTime: initialData?.startTime || '09:00',
+    endTime: initialData?.endTime || '17:00',
+    strategy: initialData?.strategy || 'NAMESPACE_SLEEP',
+    isFavorite: initialData?.isFavorite || false,
+  });
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    if (!presetData.name.trim()) {
+      toast.error('Please enter a preset name');
+      return;
+    }
+    if (presetData.selectedDays.length === 0) {
+      toast.error('Please select at least one day');
+      return;
+    }
+    onSave(presetData);
+  };
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-4">
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-1">Preset Name</label>
+        <input
+          type="text"
+          value={presetData.name}
+          onChange={(e) => setPresetData({ ...presetData, name: e.target.value })}
+          className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+          placeholder="e.g., Dev Environment Schedule"
+          required
+        />
+      </div>
+
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-2">Hibernation Strategy</label>
+        <div className="grid grid-cols-3 gap-2">
+          {STRATEGIES.map((strategy) => {
+            const Icon = strategy.icon;
+            const isSelected = presetData.strategy === strategy.value;
+            return (
+              <button
+                key={strategy.value}
+                type="button"
+                onClick={() => setPresetData({ ...presetData, strategy: strategy.value })}
+                className={`p-2 border rounded-lg text-center transition-all ${
+                  isSelected
+                    ? `${strategy.borderColor} ${strategy.bgColor}`
+                    : 'border-gray-200 bg-white hover:border-gray-300'
+                }`}
+              >
+                <Icon className={`w-5 h-5 mx-auto mb-1 ${isSelected ? strategy.textColor : 'text-gray-400'}`} />
+                <span className={`block text-xs font-medium ${isSelected ? strategy.textColor : 'text-gray-600'}`}>
+                  {strategy.label}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-2">Active Days</label>
+        <div className="flex gap-2 flex-wrap">
+          {DAYS.map((day, index) => {
+            const isSelected = presetData.selectedDays.includes(index);
+            return (
+              <button
+                key={day}
+                type="button"
+                onClick={() => {
+                  setPresetData(prev => ({
+                    ...prev,
+                    selectedDays: isSelected
+                      ? prev.selectedDays.filter(d => d !== index)
+                      : [...prev.selectedDays, index].sort()
+                  }));
+                }}
+                className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                  isSelected
+                    ? 'bg-blue-500 text-white'
+                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                }`}
+              >
+                {day.substring(0, 3)}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Start Time</label>
+          <input
+            type="time"
+            value={presetData.startTime}
+            onChange={(e) => setPresetData({ ...presetData, startTime: e.target.value })}
+            className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+            required
+          />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">End Time</label>
+          <input
+            type="time"
+            value={presetData.endTime}
+            onChange={(e) => setPresetData({ ...presetData, endTime: e.target.value })}
+            className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+            required
+          />
+        </div>
+      </div>
+
+      <div className="flex justify-end gap-2 pt-4 border-t">
+        <Button type="button" variant="outline" onClick={onCancel}>Cancel</Button>
+        <Button type="submit" variant="primary">
+          {initialData ? 'Update Preset' : 'Create Preset'}
+        </Button>
+      </div>
+    </form>
   );
 };
 

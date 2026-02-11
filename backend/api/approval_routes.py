@@ -137,6 +137,26 @@ def approve_request(
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@router.post("/{approval_id}/reject", response_model=ApprovalResponse)
+def reject_request(
+    approval_id: str,
+    current_user: User = Depends(get_current_user),
+    service: ApprovalService = Depends(get_approval_service)
+):
+    """
+    Reject a pending JIT access request (Team Lead or Org Admin only).
+    """
+    try:
+        approval = service.reject(current_user, approval_id)
+        return approval
+    except ResourceNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ForbiddenError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @router.post("/{approval_id}/revoke", response_model=ApprovalResponse)
 def revoke_request(
     approval_id: str,

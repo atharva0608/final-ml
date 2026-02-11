@@ -5,6 +5,7 @@ Endpoints for user signup, login, token refresh, and password management
 """
 from fastapi import APIRouter, Depends, status
 from sqlalchemy.orm import Session
+from datetime import datetime
 from backend.models.base import get_db
 from backend.schemas.auth_schemas import (
     SignupRequest,
@@ -14,6 +15,7 @@ from backend.schemas.auth_schemas import (
     UserProfile,
     PasswordChangeRequest,
     InvitationResponseRequest,
+    ProfileUpdateRequest,
 )
 from backend.services.auth_service import get_auth_service, AuthService
 from backend.core.dependencies import get_current_user, get_current_user_context
@@ -276,6 +278,47 @@ def change_password(
     )
 
     return {"message": "Password changed successfully"}
+
+
+@router.put(
+    "/profile",
+    status_code=status.HTTP_200_OK,
+    summary="Update user profile",
+    description="Update current user's profile information"
+)
+def update_profile(
+    profile_data: ProfileUpdateRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+) -> dict:
+    """
+    Update user profile
+
+    Args:
+        profile_data: Profile update data (full_name, etc.)
+        current_user: Current authenticated user
+        db: Database session
+
+    Returns:
+        Success message
+
+    Raises:
+        422: Validation error
+    """
+    # Update user profile
+    if profile_data.full_name is not None:
+        current_user.full_name = profile_data.full_name.strip()
+
+    current_user.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(current_user)
+
+    logger.info(
+        "Profile updated",
+        user_id=current_user.id
+    )
+
+    return {"message": "Profile updated successfully"}
 
 
 @router.post(

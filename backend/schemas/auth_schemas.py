@@ -12,6 +12,7 @@ class SignupRequest(BaseModel):
     email: EmailStr = Field(..., description="User email address")
     password: str = Field(..., min_length=8, max_length=128, description="User password (min 8 characters)")
     organization_name: str = Field(..., description="Organization or Company Name", min_length=2)
+    full_name: Optional[str] = Field(None, description="User's full name", min_length=2, max_length=100)
 
     @field_validator('password')
     @classmethod
@@ -144,6 +145,11 @@ class UserProfile(BaseModel):
             }
         }
     }
+
+
+class ProfileUpdateRequest(BaseModel):
+    """Profile update request"""
+    full_name: Optional[str] = Field(None, description="User's full name", min_length=2, max_length=100)
 
 
 class PasswordChangeRequest(BaseModel):

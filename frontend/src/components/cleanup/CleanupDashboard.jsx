@@ -136,15 +136,6 @@ const CleanupDashboard = () => {
         <div className="h-screen bg-gray-50 flex flex-col overflow-hidden font-sans">
             {/* 1. Global Header & Filter Bar */}
             <header className="bg-white border-b border-gray-200 flex-shrink-0 z-20">
-                <div className="flex items-center justify-between px-6 py-3 border-b border-gray-100">
-                    <div className="flex items-center gap-3">
-                        <div className="bg-gray-900 p-1.5 rounded-lg">
-                            <FiServer className="text-white w-5 h-5" />
-                        </div>
-                        <h1 className="text-lg font-bold text-gray-900 tracking-tight">Resource Hygiene</h1>
-                    </div>
-                    {/* User Profile / Global Actions could go here */}
-                </div>
                 <div className="bg-white border-b border-gray-100 px-6 py-2 flex items-center justify-between">
                     {/* Left: Bulk Actions (Static) */}
                     <div className="flex items-center gap-3">

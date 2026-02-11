@@ -36,9 +36,16 @@ def remove_member(team_id: str, member_id: str = Body(..., embed=True), service:
     return service.remove_member(user, member_id, team_id)
 
 @router.post("/{team_id}/invite")
-def invite_member(team_id: str, email: str = Body(...), role: str = Body("MEMBER"), service: TeamService = Depends(get_service), user: User = Depends(get_current_user)):
+def invite_member(
+    team_id: str,
+    email: str = Body(...),
+    role: str = Body("MEMBER"),
+    full_name: str = Body(None),
+    service: TeamService = Depends(get_service),
+    user: User = Depends(get_current_user)
+):
     """Invite a new user to the platform and assign to this team"""
-    return service.invite_member(user, email, team_id, role)
+    return service.invite_member(user, email, team_id, role, full_name)
 
 @router.get("/{team_id}")
 def get_team(team_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
