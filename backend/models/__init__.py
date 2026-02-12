@@ -28,6 +28,9 @@ from backend.models.savings_plan_utilization import SavingsPlanUtilization
 from backend.models.transfer_analysis import DataTransferAnalysis
 from backend.models.onboarding import OnboardingState
 
+# Billing / Cost Explorer Models
+from backend.models.billing import DailyCost, CostExplorerSyncStatus
+
 # Tag Management Models
 from backend.models.tag_policy import TagPolicy, EnforcementLevel, ValueMode
 from backend.models.tag_template import TagTemplate
@@ -62,6 +65,9 @@ __all__ = [
     "DataTransferAnalysis",
     "SavingsPlanUtilization",
     "OnboardingState",
+    # Billing / Cost Explorer
+    "DailyCost",
+    "CostExplorerSyncStatus",
     # Tag Management
     "TagPolicy",
     "TagTemplate",

@@ -19,7 +19,12 @@ from .cost_calculations import (
     calculate_total_cost,
     calculate_daily_cost,
     calculate_monthly_cost,
-    calculate_cost_by_lifecycle
+    calculate_cost_by_lifecycle,
+    calculate_cluster_cost,
+    calculate_account_cost,
+    calculate_cost_with_explorer,
+    calculate_cluster_cost_with_explorer,
+    get_cost_data_source
 )
 
 from .savings_calculations import (
@@ -38,12 +43,19 @@ from .metrics_calculations import (
 )
 
 __all__ = [
-    # Cost calculations
+    # Cost calculations (basic)
     'calculate_instance_cost',
     'calculate_total_cost',
     'calculate_daily_cost',
     'calculate_monthly_cost',
     'calculate_cost_by_lifecycle',
+    'calculate_cluster_cost',
+    'calculate_account_cost',
+
+    # Cost calculations (hybrid AWS Cost Explorer)
+    'calculate_cost_with_explorer',
+    'calculate_cluster_cost_with_explorer',
+    'get_cost_data_source',
 
     # Savings calculations
     'calculate_spot_savings',

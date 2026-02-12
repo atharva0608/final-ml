@@ -66,6 +66,8 @@ class Account(Base):
     organization = relationship("Organization", back_populates="accounts")
     user = relationship("User", back_populates="accounts")
     clusters = relationship("Cluster", back_populates="account", cascade="all, delete-orphan")
+    daily_costs = relationship("DailyCost", back_populates="account", cascade="all, delete-orphan")
+    cost_sync_status = relationship("CostExplorerSyncStatus", back_populates="account", uselist=False, cascade="all, delete-orphan")
 
     def __repr__(self):
         return f"<Account(id={self.id}, aws_account_id={self.aws_account_id}, status={self.status.value})>"

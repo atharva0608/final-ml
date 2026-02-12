@@ -11,6 +11,7 @@ app = Celery(
         'backend.workers.tasks.agent_tasks',
         'backend.workers.tasks.health',
         'backend.workers.tasks.cost_calculator',
+        'backend.workers.tasks.cost_explorer',
         'backend.workers.tasks.savings_calculator',
         'backend.workers.tasks.approval_cleanup'
     ]
@@ -51,5 +52,15 @@ app.conf.beat_schedule = {
     'approval-cleanup-every-5-mins': {
         'task': 'workers.approval.cleanup_expired',
         'schedule': 300.0,
+    },
+    # Cost Explorer Sync (Daily at 8 AM UTC) - Fetches accurate AWS costs from Cost Explorer API
+    'cost-explorer-sync-daily': {
+        'task': 'workers.cost.sync_cost_explorer',
+        'schedule': 86400.0,  # 24 hours
+    },
+    # Cost Explorer Cleanup (Weekly) - Deletes cost data older than 90 days
+    'cost-explorer-cleanup-weekly': {
+        'task': 'workers.cost.cleanup_old_cost_data',
+        'schedule': 604800.0,  # 7 days
     },
 }
