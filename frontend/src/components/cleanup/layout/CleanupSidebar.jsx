@@ -1,11 +1,20 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
     FiServer, FiHardDrive, FiCamera, FiGlobe,
     FiShare2, FiLink, FiDatabase, FiUsers, FiFolder,
-    FiTrendingUp, FiArchive, FiActivity, FiChevronDown, FiChevronRight, FiTag, FiShield
+    FiTrendingUp, FiArchive, FiActivity, FiChevronDown, FiChevronRight, FiTag, FiShield,
+    FiLock, FiSettings, FiDollarSign
 } from 'react-icons/fi';
+import { hygieneAPI } from '../../../services/api';
 
 const CleanupSidebar = ({ activeTab, onTabChange, scanResult }) => {
+    // NEW: Cost services state
+    const [costServices, setCostServices] = useState([]);
+    const [loadingCost, setLoadingCost] = useState(false);
+
+    useEffect(() => {
+        fetchCostServices();
+    }, []);
     // Logical Groups
     const groups = [
         {
@@ -56,14 +65,28 @@ const CleanupSidebar = ({ activeTab, onTabChange, scanResult }) => {
 
     const [isCollapsed, setIsCollapsed] = useState(false);
 
-    // State for collapsible groups (all open by default)
-    const [openGroups, setOpenGroups] = useState(groups.map(g => g.title));
+    // State for collapsible groups (all open by default + cost services)
+    const [openGroups, setOpenGroups] = useState([...groups.map(g => g.title), 'Cost Services']);
 
     const toggleGroup = (title) => {
         setOpenGroups(prev => prev.includes(title)
             ? prev.filter(t => t !== title)
             : [...prev, title]
         );
+    };
+
+    // NEW: Fetch cost services
+    const fetchCostServices = async () => {
+        setLoadingCost(true);
+        try {
+            const res = await hygieneAPI.getCostServices();
+            setCostServices(res.data.categories || []);
+        } catch (err) {
+            console.error('Failed to fetch cost services:', err);
+            setCostServices([]);
+        } finally {
+            setLoadingCost(false);
+        }
     };
 
     return (
@@ -147,9 +170,89 @@ const CleanupSidebar = ({ activeTab, onTabChange, scanResult }) => {
                         </div>
                     );
                 })}
+
+                {/* NEW: Cost Services Section */}
+                {!isCollapsed && costServices.length > 0 && (
+                    <>
+                        {/* Divider */}
+                        <div className="my-4 mx-4 border-t-2 border-dashed border-orange-200"></div>
+
+                        {/* Cost Services Header */}
+                        <button
+                            onClick={() => toggleGroup('Cost Services')}
+                            className="w-full flex items-center justify-between px-4 py-2 text-xs font-semibold text-orange-600 uppercase hover:text-orange-700 transition-colors"
+                        >
+                            <div className="flex items-center gap-2">
+                                <FiDollarSign className="w-4 h-4" />
+                                <span>Cost Services</span>
+                            </div>
+                            {openGroups.includes('Cost Services') ? <FiChevronDown /> : <FiChevronRight />}
+                        </button>
+
+                        {/* Cost Services Categories */}
+                        {openGroups.includes('Cost Services') && (
+                            <div className="mt-1 mb-2 space-y-2 px-2">
+                                {costServices.map(category => {
+                                    const categoryIcon = getCategoryIcon(category.name);
+                                    const totalCost = category.resources.reduce((sum, r) => sum + r.cost, 0);
+
+                                    return (
+                                        <div key={category.name} className="bg-gradient-to-r from-orange-50 to-yellow-50 rounded-lg p-2 border border-orange-200">
+                                            <div className="flex items-center justify-between mb-1.5">
+                                                <div className="flex items-center gap-2 text-xs font-semibold text-gray-700">
+                                                    <span>{categoryIcon}</span>
+                                                    <span>{category.name}</span>
+                                                </div>
+                                                <span className="text-xs font-bold text-orange-600">
+                                                    ${totalCost.toFixed(2)}
+                                                </span>
+                                            </div>
+                                            <div className="space-y-0.5">
+                                                {category.resources.map(resource => (
+                                                    <div
+                                                        key={resource.name}
+                                                        className="flex items-center justify-between py-1 px-2 bg-white rounded text-xs hover:bg-orange-50 transition-colors"
+                                                    >
+                                                        <div className="flex items-center gap-1.5">
+                                                            <span className="text-gray-600">{resource.name}</span>
+                                                            {resource.count > 0 && (
+                                                                <span className="bg-gray-200 text-gray-600 px-1.5 py-0.5 rounded text-xs">
+                                                                    {resource.count}
+                                                                </span>
+                                                            )}
+                                                        </div>
+                                                        {resource.cost > 0 && (
+                                                            <span className="font-semibold text-orange-600">
+                                                                ${resource.cost.toFixed(2)}
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        )}
+                    </>
+                )}
             </div>
         </div>
     );
+};
+
+// Helper to get category icon
+const getCategoryIcon = (categoryName) => {
+    const iconMap = {
+        'COMPUTE': <FiServer className="w-3.5 h-3.5" />,
+        'STORAGE': <FiHardDrive className="w-3.5 h-3.5" />,
+        'NETWORK': <FiGlobe className="w-3.5 h-3.5" />,
+        'SECURITY': <FiLock className="w-3.5 h-3.5" />,
+        'MANAGEMENT': <FiSettings className="w-3.5 h-3.5" />,
+        'DATABASES': <FiDatabase className="w-3.5 h-3.5" />,
+        'OTHERS': <FiFolder className="w-3.5 h-3.5" />
+    };
+    return iconMap[categoryName] || <FiFolder className="w-3.5 h-3.5" />;
 };
 
 export default CleanupSidebar;

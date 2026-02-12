@@ -37,6 +37,10 @@ const CleanupDashboard = () => {
     const [selectedRegion, setSelectedRegion] = useState('ALL');
     const [showAuthorized, setShowAuthorized] = useState(false);
 
+    // NEW: Total Cost State
+    const [totalCost, setTotalCost] = useState(null);
+    const [totalCostLoading, setTotalCostLoading] = useState(false);
+
     // Dependency Modal State
     const [showDependencyModal, setShowDependencyModal] = useState(false);
     const [blockingResources, setBlockingResources] = useState([]);
@@ -78,11 +82,13 @@ const CleanupDashboard = () => {
     // -------------------------------------------------------------------------
     useEffect(() => {
         fetchAccounts();
+        fetchTotalCost(); // Fetch total cost on mount
     }, []);
 
     useEffect(() => {
         if (selectedAccount) {
             handleScan(false);
+            fetchTotalCost(); // Refresh total cost when account changes
         }
     }, [selectedAccount, selectedRegion]);
 
@@ -107,12 +113,29 @@ const CleanupDashboard = () => {
             });
             setScanResult(res.data);
             setSelectedItems([]);
-            if (forceRefresh) toast.success("Scan refreshed successfully");
+            if (forceRefresh) {
+                toast.success("Scan refreshed successfully");
+                fetchTotalCost(); // Refresh total cost after forced scan
+            }
         } catch (err) {
             console.error("Scan failed", err);
             if (!scanResult) setScanResult(null);
         } finally {
             setLoading(false);
+        }
+    };
+
+    // NEW: Fetch Total Cost
+    const fetchTotalCost = async () => {
+        setTotalCostLoading(true);
+        try {
+            const res = await hygieneAPI.getTotalCost(selectedAccount || undefined);
+            setTotalCost(res.data);
+        } catch (err) {
+            console.error("Failed to fetch total cost", err);
+            setTotalCost(null);
+        } finally {
+            setTotalCostLoading(false);
         }
     };
 
@@ -182,8 +205,33 @@ const CleanupDashboard = () => {
                         </button>
                     </div>
 
-                    {/* Right: Live Savings Gauge */}
-                    <div className="animate-fadeIn">
+                    {/* Right: Total Cost + Savings Gauge */}
+                    <div className="flex items-center gap-4 animate-fadeIn">
+                        {/* NEW: Total Discovered Cost */}
+                        <div className="flex items-center gap-3 px-4 py-2 bg-gradient-to-r from-blue-50 to-blue-100 border border-blue-200 rounded-lg shadow-sm">
+                            <div className="flex flex-col items-end">
+                                <div className="text-xs text-blue-600 font-medium tracking-wide">Total Discovered Cost</div>
+                                {totalCostLoading ? (
+                                    <div className="text-lg font-bold text-blue-700 animate-pulse">Loading...</div>
+                                ) : totalCost ? (
+                                    <div className="flex items-center gap-2">
+                                        <div className="text-2xl font-bold text-blue-700">
+                                            ${totalCost.total_cost.toFixed(2)}
+                                            <span className="text-sm text-blue-500 font-normal">/mo</span>
+                                        </div>
+                                        {totalCost.source === 'cost_explorer' && (
+                                            <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full font-semibold">
+                                                ✓ Accurate
+                                            </span>
+                                        )}
+                                    </div>
+                                ) : (
+                                    <div className="text-lg font-bold text-gray-400">$0.00/mo</div>
+                                )}
+                            </div>
+                        </div>
+
+                        {/* Savings Gauge */}
                         <SavingsGauge
                             selectedSavings={selectedResourceObjects.reduce((sum, r) => sum + (r.cost_per_month || 0), 0)}
                             totalPotentialSavings={scanResult?.summary?.total_potential_savings || selectedResourceObjects.reduce((sum, r) => sum + (r.cost_per_month || 0), 0)}

@@ -31,12 +31,25 @@ const ResourceTable = ({
         }
     };
 
-    // Helper safety level
-    const getSafetyLevel = (resource) => {
-        if (resource.is_authorized) return 'HIGH';
-        if (resource.status === 'SAFE_TO_DELETE') return 'HIGH';
-        if (['VOLUME', 'SNAPSHOT', 'ELASTIC_IP'].includes(resource.type) && resource.status === 'ORPHANED') return 'HIGH';
-        return 'LOW';
+    // Helper: Get cleanup readiness status
+    const getCleanupStatus = (resource) => {
+        // ACTIVE/Authorized = In Use (don't delete)
+        if (resource.is_authorized || resource.status === 'ACTIVE') {
+            return { level: 'IN_USE', label: 'In Use', color: 'blue' };
+        }
+
+        // SAFE_TO_DELETE = Ready for cleanup (>30 days, verified safe)
+        if (resource.status === 'SAFE_TO_DELETE') {
+            return { level: 'READY', label: 'Ready for Cleanup', color: 'green' };
+        }
+
+        // ORPHANED = Needs manual review (<30 days or unverified)
+        if (resource.status === 'ORPHANED') {
+            return { level: 'REVIEW', label: 'Needs Review', color: 'yellow' };
+        }
+
+        // Default: Needs review
+        return { level: 'REVIEW', label: 'Needs Review', color: 'yellow' };
     };
 
     // Check tag compliance
@@ -115,7 +128,7 @@ const ResourceTable = ({
                     </thead>
                     <tbody className="bg-white divide-y divide-gray-200">
                         {resources.map(resource => {
-                            const safety = getSafetyLevel(resource);
+                            const cleanupStatus = getCleanupStatus(resource);
                             const compliance = checkCompliance(resource);
 
                             return (
@@ -177,19 +190,19 @@ const ResourceTable = ({
                                         {resource.reason || resource.status}
                                     </td>
                                     <td className="px-6 py-4 whitespace-nowrap">
-                                        {safety === 'HIGH' && (
-                                            <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800">
-                                                <FiCheckCircle className="mr-1.5" /> Safe
+                                        {cleanupStatus.level === 'IN_USE' && (
+                                            <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800" title="Active or authorized resource - do not delete">
+                                                <FiCheckCircle className="mr-1.5" /> {cleanupStatus.label}
                                             </span>
                                         )}
-                                        {safety === 'MEDIUM' && (
-                                            <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-yellow-100 text-yellow-800">
-                                                <FiAlertTriangle className="mr-1.5" /> Review
+                                        {cleanupStatus.level === 'READY' && (
+                                            <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800" title=">30 days old, verified safe to delete">
+                                                <FiCheckCircle className="mr-1.5" /> {cleanupStatus.label}
                                             </span>
                                         )}
-                                        {safety === 'LOW' && (
-                                            <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-800">
-                                                <FiAlertOctagon className="mr-1.5" /> Risky
+                                        {cleanupStatus.level === 'REVIEW' && (
+                                            <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-yellow-100 text-yellow-800" title="Orphaned but needs manual verification before deletion">
+                                                <FiAlertTriangle className="mr-1.5" /> {cleanupStatus.label}
                                             </span>
                                         )}
                                     </td>

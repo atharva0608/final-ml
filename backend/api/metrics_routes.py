@@ -281,3 +281,99 @@ def get_account_summary(
     """
     service = get_metrics_service(db)
     return service.get_account_consolidated_stats(account_id)
+
+
+@router.get(
+    "/cost/breakdown",
+    summary="Get cost breakdown by service category",
+    description="Get AWS cost breakdown by service category (EC2, Storage, Database, Networking, Others)"
+)
+def get_cost_breakdown(
+    start_date: Optional[datetime] = Query(None, description="Start of time range"),
+    end_date: Optional[datetime] = Query(None, description="End of time range"),
+    team_id: Optional[str] = Query(None, description="Filter by team ID"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Get cost breakdown by AWS service category for resource hygiene.
+
+    Groups AWS services into categories:
+    - EC2 (Compute instances and containers)
+    - Storage (S3, EBS, EFS, Backup)
+    - Database (RDS, DynamoDB, ElastiCache)
+    - Networking (VPC, Data Transfer, Load Balancers)
+    - Others (All remaining services like Security Hub, KMS, Config)
+
+    Uses Cost Explorer data when available (100% accurate, includes all AWS services).
+    Falls back to EC2 instance pricing if Cost Explorer data unavailable.
+
+    Args:
+        start_date: Optional start date (default: 30 days ago)
+        end_date: Optional end date (default: now)
+        team_id: Optional team filter
+        current_user: Authenticated user
+        db: Database session
+
+    Returns:
+        {
+            "total_cost": 46.41,
+            "breakdown": [
+                {"category": "EC2", "cost": 22.62, "percentage": 48.7, "services": ["EC2 - Other", "EC2 - Compute"]},
+                {"category": "Networking", "cost": 8.10, "percentage": 17.5, "services": ["VPC"]},
+                {"category": "Others", "cost": 15.69, "percentage": 33.8, "services": ["Security Hub", "KMS"]}
+            ]
+        }
+    """
+    service = get_metrics_service(db)
+    return service.get_cost_breakdown_by_service(
+        user_id=current_user.id,
+        start_date=start_date or (datetime.utcnow() - timedelta(days=30)),
+        end_date=end_date or datetime.utcnow(),
+        team_id=team_id
+    )
+
+
+@router.get("/waste-breakdown")
+def get_waste_breakdown(
+    start_date: Optional[datetime] = Query(None, description="Start date for analysis"),
+    end_date: Optional[datetime] = Query(None, description="End date for analysis"),
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+    """
+    Get A+B waste breakdown for Financial Engineering Dashboard.
+
+    Returns:
+        {
+            "hygiene_waste": {
+                "orphaned_volumes": 8.50,
+                "orphaned_snapshots": 4.20,
+                "unused_eips": 3.65,
+                "idle_load_balancers": 0.95,
+                "idle_rds": 0.00,
+                "total": 17.30
+            },
+            "optimization_waste": {
+                "ri_waste": 7.50,
+                "s3_lifecycle": 3.20,
+                "rds_multiaz": 2.10,
+                "data_transfer": 0.00,
+                "total": 12.80
+            },
+            "total_waste": 30.10,
+            "current_spend": 59.39,
+            "optimized_spend": 29.29,
+            "savings_percentage": 50.7
+        }
+
+    A = Hygiene Waste (orphaned resources)
+    B = Optimization Waste (inefficient configurations)
+    Total Potential Savings = A + B
+    """
+    service = get_metrics_service(db)
+    return service.get_waste_breakdown(
+        user_id=current_user.id,
+        start_date=start_date,
+        end_date=end_date
+    )

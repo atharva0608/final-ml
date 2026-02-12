@@ -239,6 +239,13 @@ export const hygieneAPI = {
     discover: (accountId, resourceType, region) => api.get('/api/v1/hygiene/discover', {
         params: { account_id: accountId, resource_type: resourceType, region }
     }),
+    // NEW: Total cost and cost services endpoints
+    getTotalCost: (accountId) => api.get('/api/v1/hygiene/total-cost', {
+        params: accountId ? { account_id: accountId } : {}
+    }),
+    getCostServices: (accountId) => api.get('/api/v1/hygiene/cost-services', {
+        params: accountId ? { account_id: accountId } : {}
+    }),
 };
 export const cleanupAPI = hygieneAPI;
 

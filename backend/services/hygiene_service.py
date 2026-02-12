@@ -232,9 +232,11 @@ class HygieneService:
         """Helper to scan a single region independently for parallel execution"""
         from datetime import datetime, timedelta, timezone
         from backend.utils.pricing_helper import get_pricing_helper
-        
+        from backend.services.resource_cost_service import ResourceCostService
+
         pricing = get_pricing_helper()
-        
+        cost_service = ResourceCostService(self.db)
+
         # Get required tags from organization settings (Feature 2)
         required_tags = []
         if organization and hasattr(organization, 'required_tags') and organization.required_tags:
@@ -288,9 +290,15 @@ class HygieneService:
                     if self._is_exempt_by_tags(tags, EXEMPT_KEYWORDS):
                         continue  # ✅ Skip protected volumes
 
-                    # Use PricingHelper (returns monthly cost per GB)
-                    monthly_price_per_gb = pricing.get_ebs_price(region, vol_type)
-                    cost = v['Size'] * monthly_price_per_gb
+                    # ENTERPRISE: Use Cost Explorer for invoice-accurate costs
+                    # Falls back to static pricing if Cost Explorer unavailable
+                    cost = float(cost_service.get_resource_monthly_cost(
+                        resource_id=vol_id,
+                        resource_type='VOLUME',
+                        account_id=account_id,
+                        resource_size=v['Size'],
+                        region=region
+                    ))
 
                     status = HygieneStatus.ACTIVE
                     reason = "Active"
@@ -394,7 +402,6 @@ class HygieneService:
                     logger.error(f"Failed to fetch AMI mappings: {ami_err}")
 
                 snaps = ec2.describe_snapshots(OwnerIds=['self'])
-                snapshot_price = pricing.get_snapshot_price(region)
 
                 for s in snaps['Snapshots']:
                     vol_id = s.get('VolumeId')
@@ -406,21 +413,28 @@ class HygieneService:
                         tag_keys = {t['Key'] for t in tags}
                         missing = [rt for rt in required_tags if rt not in tag_keys]
 
-                        cost = s['VolumeSize'] * snapshot_price
+                        # ENTERPRISE: Use Cost Explorer for invoice-accurate costs
+                        cost = float(cost_service.get_resource_monthly_cost(
+                            resource_id=snap_id,
+                            resource_type='SNAPSHOT',
+                            account_id=account_id,
+                            resource_size=s['VolumeSize'],
+                            region=region
+                        ))
                         item = ResourceItem(
                             id=snap_id,
                             name=self._get_tag_value(tags, 'Name'),
                             type=ResourceType.SNAPSHOT,
                             status=HygieneStatus.ACTIVE,  # ✅ PROTECTED
                             region=region,
-                            cost_per_month=0.0,  # No savings - needed by AMI
+                            cost_per_month=cost,  # Show cost for visibility (even though protected)
                             reason="Used by AMI (Do Not Delete)",
                             metadata={'VolumeId': vol_id, 'Size': s['VolumeSize'], 'Progress': s['Progress'], 'AMI_Protected': True},
                             is_compliant=len(missing) == 0,
                             missing_tags=missing
                         )
                         resources.append(item)
-                        continue  # ✅ Skip adding to savings
+                        continue  # ✅ Skip adding to savings (cannot be deleted)
 
                     # Safety Logic: If Volume is gone, Snapshot IS orphaned.
                     # But is it SAFE to delete?
@@ -440,7 +454,14 @@ class HygieneService:
                         tag_keys = {t['Key'] for t in tags}
                         missing = [rt for rt in required_tags if rt not in tag_keys]
 
-                        cost = s['VolumeSize'] * snapshot_price
+                        # ENTERPRISE: Use Cost Explorer for invoice-accurate costs
+                        cost = float(cost_service.get_resource_monthly_cost(
+                            resource_id=snap_id,
+                            resource_type='SNAPSHOT',
+                            account_id=account_id,
+                            resource_size=s['VolumeSize'],
+                            region=region
+                        ))
                         item = ResourceItem(
                             id=snap_id,
                             name=self._get_tag_value(tags, 'Name'),
@@ -461,22 +482,27 @@ class HygieneService:
             # 3. UNUSED ELASTIC IPs
             try:
                 eips = ec2.describe_addresses()
-                eip_price = pricing.get_eip_price(region)
-                
+
                 for ip in eips['Addresses']:
                     if 'AssociationId' not in ip:
                         # Unattached EIP.
                         # Safety: Cannot verify age easily.
                         # Logic: Unattached EIP is waste, but deleting 'Prod-VIP' is fatal.
                         # Usage: Mark ORPHANED (Risky). User must verify.
-                        
+
                         status = HygieneStatus.ORPHANED
                         reason = "Unattached Elastic IP"
-                        
+
                         # Check tags for 'Prod' or 'Critical' to mark RISK (optional)
                         # For now, ORPHANED is sufficient distinction from SAFE_TO_DELETE.
-                        
-                        cost = eip_price
+
+                        # ENTERPRISE: Use Cost Explorer for invoice-accurate costs
+                        cost = float(cost_service.get_resource_monthly_cost(
+                            resource_id=ip['AllocationId'],
+                            resource_type='ELASTIC_IP',
+                            account_id=account_id,
+                            region=region
+                        ))
                         item = ResourceItem(
                             id=ip['AllocationId'],
                             name=ip.get('PublicIp', 'Unknown'),

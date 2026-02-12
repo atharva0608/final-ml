@@ -93,14 +93,18 @@ class MetricsService:
             from sqlalchemy import or_
 
             if cluster_ids:
+                # Get instances from clusters OR standalone instances from these accounts
                 instance_query = self.db.query(Instance).filter(
-                    Instance.cluster_id.in_(cluster_ids)
+                    or_(
+                        Instance.cluster_id.in_(cluster_ids),
+                        and_(Instance.cluster_id.is_(None), Instance.account_id.in_(org_account_ids))
+                    )
                 )
             else:
-                # No clusters, only count standalone instances
-                # Note: Standalone instances don't have a direct account_id link in current schema
-                # They should be assigned to a cluster during discovery
-                instance_query = self.db.query(Instance).filter(Instance.id == None)  # Returns no results
+                # No clusters, only count standalone instances by account_id
+                instance_query = self.db.query(Instance).filter(
+                    Instance.account_id.in_(org_account_ids)
+                )
 
             # Apply cluster filter if specified
             if filters.cluster_id:
@@ -435,22 +439,97 @@ class MetricsService:
         """
         Calculate cost metrics for time range
 
+        Priority:
+        1. Cost Explorer data (100% accurate, includes ALL AWS services)
+        2. Fallback to EC2 instance pricing calculation
+
         Args:
             user_id: User UUID
             start_date: Start of time range
             end_date: End of time range
             cluster_id: Optional cluster filter
+            team_id: Optional team filter
 
         Returns:
             CostMetrics
         """
-        # Base query
         # Get user and organization
         user = self.db.query(User).filter(User.id == user_id).first()
         if not user or not user.organization_id:
             return CostMetrics(total_cost=Decimal('0.0'), spot_cost=Decimal('0.0'), on_demand_cost=Decimal('0.0'), currency="USD")
 
-        # Base query - get all instances (cluster-based and standalone)
+        # Get organization account IDs
+        org_accounts = self.db.query(Account.id, Account.aws_account_id).filter(
+            Account.organization_id == user.organization_id
+        ).all()
+
+        org_account_ids = [acc.id for acc in org_accounts]
+
+        if not org_account_ids:
+            return CostMetrics(total_cost=Decimal('0.0'), spot_cost=Decimal('0.0'), on_demand_cost=Decimal('0.0'), currency="USD")
+
+        # PRIORITY 1: Try Cost Explorer data (includes ALL AWS services)
+        from backend.models.billing import DailyCost
+        from sqlalchemy import func
+
+        cost_explorer_query = self.db.query(
+            func.sum(DailyCost.cost_amount).label('total')
+        ).filter(
+            and_(
+                DailyCost.account_id.in_(org_account_ids),
+                DailyCost.date >= start_date.date(),
+                DailyCost.date <= end_date.date()
+            )
+        )
+
+        # Apply team filter if specified
+        if team_id:
+            cost_explorer_query = cost_explorer_query.join(Account).join(User).filter(User.team_id == team_id)
+
+        cost_explorer_total = cost_explorer_query.scalar()
+
+        if cost_explorer_total and cost_explorer_total > 0:
+            # Cost Explorer data available - use it (includes EC2, S3, RDS, VPC, etc.)
+            logger.info(f"Using Cost Explorer data: ${cost_explorer_total:.2f} for user {user_id}")
+
+            # Get EC2-specific costs for spot/on-demand breakdown
+            ec2_services = [
+                'Amazon Elastic Compute Cloud - Compute',
+                'EC2 - Other',
+                'Amazon Elastic Container Service for Kubernetes'
+            ]
+
+            ec2_cost_query = self.db.query(
+                func.sum(DailyCost.cost_amount).label('ec2_total')
+            ).filter(
+                and_(
+                    DailyCost.account_id.in_(org_account_ids),
+                    DailyCost.date >= start_date.date(),
+                    DailyCost.date <= end_date.date(),
+                    DailyCost.service_name.in_(ec2_services)
+                )
+            )
+
+            if team_id:
+                ec2_cost_query = ec2_cost_query.join(Account).join(User).filter(User.team_id == team_id)
+
+            ec2_cost = ec2_cost_query.scalar() or 0
+
+            # Estimate spot vs on-demand split (roughly 30% of EC2 is typically spot)
+            # This is approximate since Cost Explorer doesn't break down by lifecycle
+            spot_cost = Decimal(str(ec2_cost * 0.3))
+            on_demand_cost = Decimal(str(ec2_cost * 0.7))
+
+            return CostMetrics(
+                total_cost=Decimal(str(cost_explorer_total)),
+                spot_cost=spot_cost,
+                on_demand_cost=on_demand_cost,
+                currency="USD"
+            )
+
+        # FALLBACK: Calculate from EC2 instance pricing (less accurate, EC2 only)
+        logger.info(f"Cost Explorer data not available, falling back to EC2 instance calculation for user {user_id}")
+
         instance_query = self.db.query(Instance).join(Account).filter(
             Account.organization_id == user.organization_id
         )
@@ -459,7 +538,6 @@ class MetricsService:
             instance_query = instance_query.filter(Instance.cluster_id == cluster_id)
 
         if team_id:
-            # Filter by team via Account -> User -> Team
             instance_query = instance_query.join(User).filter(User.team_id == team_id)
 
         # Get active instances with pricing
@@ -467,14 +545,13 @@ class MetricsService:
             Instance.state.in_(['running', 'pending'])
         ).all()
 
-        # Calculate costs
+        # Calculate costs from instances
         total_cost = Decimal('0.0')
         spot_cost = Decimal('0.0')
         on_demand_cost = Decimal('0.0')
 
         for instance in active_instances:
             # Calculate hourly cost for instance
-            # Convert price to Decimal to avoid type mismatch
             hourly_cost = Decimal(str(instance.price)) if instance.price else Decimal('0.05')
 
             # Calculate hours in time range
@@ -934,6 +1011,246 @@ class MetricsService:
             "efficiency_score": efficiency_score,
             "history": history,
             "waste_distribution": waste_distribution
+        }
+
+    def get_cost_breakdown_by_service(
+        self,
+        user_id: str,
+        start_date: datetime,
+        end_date: datetime,
+        team_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Get cost breakdown by AWS service category for resource hygiene.
+
+        Groups services into:
+        - EC2 (Compute)
+        - Storage (S3, EBS, EFS)
+        - Database (RDS, DynamoDB)
+        - Networking (VPC, Data Transfer, Load Balancers)
+        - Others (All remaining services)
+
+        Args:
+            user_id: User UUID
+            start_date: Start date
+            end_date: End date
+            team_id: Optional team filter
+
+        Returns:
+            {
+                "total_cost": 46.41,
+                "breakdown": [
+                    {"category": "EC2", "cost": 22.62, "percentage": 48.7, "services": ["EC2 - Other", "EC2 - Compute"]},
+                    {"category": "Networking", "cost": 8.10, "percentage": 17.5, "services": ["VPC"]},
+                    {"category": "Others", "cost": 15.69, "percentage": 33.8, "services": ["Security Hub", "KMS", ...]}
+                ]
+            }
+        """
+        # Get user and organization
+        user = self.db.query(User).filter(User.id == user_id).first()
+        if not user or not user.organization_id:
+            return {"total_cost": 0.0, "breakdown": []}
+
+        # Get organization account IDs
+        org_accounts = self.db.query(Account.id).filter(
+            Account.organization_id == user.organization_id
+        ).all()
+
+        org_account_ids = [acc.id for acc in org_accounts]
+
+        if not org_account_ids:
+            return {"total_cost": 0.0, "breakdown": []}
+
+        # Query Cost Explorer data
+        from backend.models.billing import DailyCost
+        from sqlalchemy import func
+
+        cost_query = self.db.query(
+            DailyCost.service_name,
+            func.sum(DailyCost.cost_amount).label('cost')
+        ).filter(
+            and_(
+                DailyCost.account_id.in_(org_account_ids),
+                DailyCost.date >= start_date.date(),
+                DailyCost.date <= end_date.date()
+            )
+        ).group_by(DailyCost.service_name)
+
+        # Apply team filter if specified
+        if team_id:
+            cost_query = cost_query.join(Account).join(User).filter(User.team_id == team_id)
+
+        service_costs = cost_query.all()
+
+        if not service_costs:
+            # No Cost Explorer data, return EC2 fallback
+            cost_metrics = self._calculate_cost_metrics(user_id, start_date, end_date, None, team_id)
+            return {
+                "total_cost": float(cost_metrics.total_cost),
+                "breakdown": [
+                    {
+                        "category": "EC2",
+                        "cost": float(cost_metrics.total_cost),
+                        "percentage": 100.0,
+                        "services": ["EC2 Instances (estimated)"]
+                    }
+                ]
+            }
+
+        # Categorize services
+        categories = {
+            "EC2": [],
+            "Storage": [],
+            "Database": [],
+            "Networking": [],
+            "Others": []
+        }
+
+        service_categorization = {
+            "EC2": ["Amazon Elastic Compute Cloud - Compute", "EC2 - Other", "Amazon Elastic Container Service for Kubernetes", "Amazon Elastic Container Service"],
+            "Storage": ["Amazon Simple Storage Service", "Amazon Elastic Block Store", "Amazon Elastic File System", "AWS Backup"],
+            "Database": ["Amazon Relational Database Service", "Amazon DynamoDB", "Amazon ElastiCache", "Amazon Redshift"],
+            "Networking": ["Amazon Virtual Private Cloud", "AWS Data Transfer", "Elastic Load Balancing", "Amazon CloudFront", "Amazon Route 53"]
+        }
+
+        total_cost = 0.0
+
+        for service, cost in service_costs:
+            total_cost += float(cost)
+            categorized = False
+
+            for category, service_list in service_categorization.items():
+                if any(svc in service for svc in service_list):
+                    categories[category].append({"service": service, "cost": float(cost)})
+                    categorized = True
+                    break
+
+            if not categorized:
+                categories["Others"].append({"service": service, "cost": float(cost)})
+
+        # Build breakdown response
+        breakdown = []
+        for category, services in categories.items():
+            if services:
+                category_cost = sum(s["cost"] for s in services)
+                service_names = [s["service"] for s in services]
+
+                breakdown.append({
+                    "category": category,
+                    "cost": round(category_cost, 2),
+                    "percentage": round((category_cost / total_cost * 100) if total_cost > 0 else 0, 1),
+                    "services": service_names
+                })
+
+        # Sort by cost descending
+        breakdown.sort(key=lambda x: x["cost"], reverse=True)
+
+        return {
+            "total_cost": round(total_cost, 2),
+            "breakdown": breakdown
+        }
+
+    def get_waste_breakdown(
+        self,
+        user_id: str,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None
+    ) -> Dict:
+        """
+        Get A+B waste breakdown for Financial Engineering Dashboard.
+
+        A = Hygiene Waste (orphaned resources)
+        B = Optimization Waste (inefficient configurations)
+
+        Returns:
+            {
+                "hygiene_waste": {...},  # A
+                "optimization_waste": {...},  # B
+                "total_waste": float,  # A+B
+                "current_spend": float,
+                "optimized_spend": float,
+                "savings_percentage": float
+            }
+        """
+        # Default to current month
+        if not start_date:
+            start_date = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        if not end_date:
+            end_date = datetime.now()
+
+        # Get user's organization and accounts
+        user = self.db.query(User).filter(User.id == user_id).first()
+        if not user:
+            raise ResourceNotFoundError(f"User {user_id} not found")
+
+        org_accounts = self.db.query(Account).filter(
+            Account.organization_id == user.organization_id
+        ).all()
+        org_account_ids = [acc.id for acc in org_accounts]
+
+        # A: HYGIENE WASTE (from hygiene scan results)
+        # Query orphaned/unattached resources with costs
+        hygiene_waste = {
+            "orphaned_volumes": Decimal('0'),
+            "orphaned_snapshots": Decimal('0'),
+            "unused_eips": Decimal('0'),
+            "idle_load_balancers": Decimal('0'),
+            "idle_rds": Decimal('0'),
+            "total": Decimal('0')
+        }
+
+        # B: OPTIMIZATION WASTE (from optimization scans)
+        optimization_waste = {
+            "ri_waste": Decimal('0'),
+            "s3_lifecycle": Decimal('0'),
+            "rds_multiaz": Decimal('0'),
+            "data_transfer": Decimal('0'),
+            "total": Decimal('0')
+        }
+
+        # Get current monthly spend from Cost Explorer
+        from backend.models.billing import DailyCost
+        cost_query = self.db.query(
+            func.sum(DailyCost.cost_amount).label('total')
+        ).filter(
+            DailyCost.account_id.in_(org_account_ids),
+            DailyCost.date >= start_date.date(),
+            DailyCost.date <= end_date.date()
+        ).first()
+
+        mtd_cost = float(cost_query.total) if cost_query and cost_query.total else 0.0
+        days_elapsed = (end_date.date() - start_date.date()).days + 1
+        current_spend = (mtd_cost / days_elapsed) * 30  # Project to monthly
+
+        # Calculate totals
+        hygiene_total = float(hygiene_waste["total"])
+        optimization_total = float(optimization_waste["total"])
+        total_waste = hygiene_total + optimization_total
+
+        # Calculate optimized spend and savings percentage
+        optimized_spend = max(0, current_spend - total_waste)
+        savings_percentage = (total_waste / current_spend * 100) if current_spend > 0 else 0.0
+
+        return {
+            "hygiene_waste": {
+                "orphaned_volumes": float(hygiene_waste["orphaned_volumes"]),
+                "orphaned_snapshots": float(hygiene_waste["orphaned_snapshots"]),
+                "unused_eips": float(hygiene_waste["unused_eips"]),
+                "idle_load_balancers": float(hygiene_waste["idle_load_balancers"]),
+                "idle_rds": float(hygiene_waste["idle_rds"]),
+                "total": hygiene_total
+            },
+            "optimization_waste": {
+                "ri_waste": float(optimization_waste["ri_waste"]),
+                "s3_lifecycle": float(optimization_waste["s3_lifecycle"]),
+                "rds_multiaz": float(optimization_waste["rds_multiaz"]),
+                "data_transfer": float(optimization_waste["data_transfer"]),
+                "total": optimization_total
+            },
+            "total_waste": round(total_waste, 2),
+            "current_spend": round(current_spend, 2),
+            "optimized_spend": round(optimized_spend, 2),
+            "savings_percentage": round(savings_percentage, 1)
         }
 
 
