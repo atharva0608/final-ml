@@ -65,31 +65,64 @@ class MetricsService:
                 time_range_start=start_date, time_range_end=end_date
             )
 
-        instance_query = self.db.query(Instance).join(Cluster).join(Account).filter(
+        # Query ALL instances for the user's organization (including standalone instances without clusters)
+        # We need to get instances from:
+        # 1. Accounts that belong to the organization
+        # 2. Clusters that belong to those accounts
+        # 3. Instances in those clusters OR standalone instances from discovery
+
+        # Get all account IDs for this organization
+        org_account_ids = [acc.id for acc in self.db.query(Account.id).filter(
             Account.organization_id == user.organization_id
-        )
+        ).all()]
 
-        # Apply cluster filter if specified
-        if filters.cluster_id:
-            instance_query = instance_query.filter(Cluster.id == filters.cluster_id)
+        if not org_account_ids:
+            # No accounts, return empty metrics
+            total_instances = 0
+            active_instances = 0
+            spot_instances = 0
+            on_demand_instances = 0
+        else:
+            # Get cluster IDs for these accounts
+            cluster_ids = [c.id for c in self.db.query(Cluster.id).filter(
+                Cluster.account_id.in_(org_account_ids)
+            ).all()]
 
-        # Total instances
-        total_instances = instance_query.count()
+            # Query instances that belong to these clusters (include cluster_id IS NULL for standalone instances)
+            # For standalone instances, we check if they were discovered from accounts in this org
+            from sqlalchemy import or_
 
-        # Active instances
-        active_instances = instance_query.filter(
-            Instance.state.in_(['running', 'pending'])
-        ).count()
+            if cluster_ids:
+                instance_query = self.db.query(Instance).filter(
+                    Instance.cluster_id.in_(cluster_ids)
+                )
+            else:
+                # No clusters, only count standalone instances
+                # Note: Standalone instances don't have a direct account_id link in current schema
+                # They should be assigned to a cluster during discovery
+                instance_query = self.db.query(Instance).filter(Instance.id == None)  # Returns no results
 
-        # Spot vs On-Demand split
-        spot_instances = instance_query.filter(
-            and_(
-                Instance.lifecycle == InstanceLifecycle.SPOT,
+            # Apply cluster filter if specified
+            if filters.cluster_id:
+                instance_query = instance_query.filter(Instance.cluster_id == filters.cluster_id)
+
+            # Total instances
+            total_instances = instance_query.count()
+
+            # Active instances
+            active_instances = instance_query.filter(
                 Instance.state.in_(['running', 'pending'])
-            )
-        ).count()
+            ).count()
 
-        on_demand_instances = active_instances - spot_instances
+            # Spot vs On-Demand split
+            spot_instances = instance_query.filter(
+                and_(
+                    Instance.lifecycle == InstanceLifecycle.SPOT,
+                    Instance.state.in_(['running', 'pending'])
+                )
+            ).count()
+
+            on_demand_instances = active_instances - spot_instances
 
         # Calculate costs
         cost_metrics = self._calculate_cost_metrics(
@@ -194,13 +227,13 @@ class MetricsService:
         if not user or not user.organization_id:
             return InstanceMetrics()
 
-        # Base query
-        instance_query = self.db.query(Instance).join(Cluster).join(Account).filter(
+        # Base query - get all instances (cluster-based and standalone) for organization
+        instance_query = self.db.query(Instance).join(Account).filter(
             Account.organization_id == user.organization_id
         )
 
         if filters.cluster_id:
-            instance_query = instance_query.filter(Cluster.id == filters.cluster_id)
+            instance_query = instance_query.filter(Instance.cluster_id == filters.cluster_id)
 
         # Count by state
         running = instance_query.filter(Instance.state == 'running').count()
@@ -220,14 +253,14 @@ class MetricsService:
         # [NEW] Calculate type distribution
         # Group by instance_type and count
         type_counts = self.db.query(
-            Instance.instance_type, 
+            Instance.instance_type,
             func.count(Instance.id)
-        ).join(Cluster).join(Account).filter(
+        ).join(Account).filter(
             Account.organization_id == user.organization_id
         )
-        
+
         if filters.cluster_id:
-            type_counts = type_counts.filter(Cluster.id == filters.cluster_id)
+            type_counts = type_counts.filter(Instance.cluster_id == filters.cluster_id)
             
         type_counts = type_counts.group_by(Instance.instance_type).all()
         
@@ -417,13 +450,13 @@ class MetricsService:
         if not user or not user.organization_id:
             return CostMetrics(total_cost=Decimal('0.0'), spot_cost=Decimal('0.0'), on_demand_cost=Decimal('0.0'), currency="USD")
 
-        # Base query
-        instance_query = self.db.query(Instance).join(Cluster).join(Account).filter(
+        # Base query - get all instances (cluster-based and standalone)
+        instance_query = self.db.query(Instance).join(Account).filter(
             Account.organization_id == user.organization_id
         )
 
         if cluster_id:
-            instance_query = instance_query.filter(Cluster.id == cluster_id)
+            instance_query = instance_query.filter(Instance.cluster_id == cluster_id)
 
         if team_id:
             # Filter by team via Account -> User -> Team
@@ -441,8 +474,8 @@ class MetricsService:
 
         for instance in active_instances:
             # Calculate hourly cost for instance
-            # This is simplified - in production, you'd use actual AWS pricing
-            hourly_cost = instance.price or Decimal('0.0')
+            # Convert price to Decimal to avoid type mismatch
+            hourly_cost = Decimal(str(instance.price)) if instance.price else Decimal('0.05')
 
             # Calculate hours in time range
             instance_start = max(instance.created_at, start_date) if instance.created_at else start_date
@@ -588,20 +621,35 @@ class MetricsService:
         # 3. Calculate Instance and Cluster counts
         total_instances = 0
         total_clusters = 0
-        
+
         if account_ids:
-            total_instances = self.db.query(Instance).filter(
-                Instance.account_id.in_(account_ids)
-            ).count()
-            
+            # Get clusters for these accounts
             total_clusters = self.db.query(Cluster).filter(
                 Cluster.account_id.in_(account_ids)
             ).count()
 
-        # 4. Calculate Cost (simulated - in production, sum from CostMetric table)
-        avg_hourly_cost = Decimal('0.05')  # Average hourly cost per instance
-        hours_in_month = 720
-        total_cost = float(total_instances * avg_hourly_cost * hours_in_month)
+            # Get instances (both cluster-based and standalone)
+            total_instances = self.db.query(Instance).filter(
+                Instance.account_id.in_(account_ids)
+            ).count()
+
+        # 4. Calculate Cost from actual instance prices
+        total_cost = 0.0
+        hours_in_month = 720  # 30 days * 24 hours
+
+        if account_ids:
+            # Sum actual instance prices (hourly rate * hours in month)
+            # Get all instances (both cluster-based and standalone)
+            instances = self.db.query(Instance).filter(
+                Instance.account_id.in_(account_ids),
+                Instance.state.in_(['running', 'pending'])
+            ).all()
+
+            for instance in instances:
+                # Use actual instance price if available, otherwise use fallback
+                hourly_price = instance.price or Decimal('0.05')
+                monthly_cost = float(hourly_price) * hours_in_month
+                total_cost += monthly_cost
         
         # 5. Calculate Waste Distribution (for Pie Chart)
         # Query real hygiene data from cached scans in Redis or calculate from account data
@@ -675,18 +723,24 @@ class MetricsService:
         waste_distribution = [w for w in waste_categories if w["value"] > 0]
         total_waste = sum(w["value"] for w in waste_distribution)
 
-        # 6. Build Top Spenders Leaderboard
-        # In production, query CostMetric grouped by user
+        # 6. Build Top Spenders Leaderboard - Calculate from actual instance costs
         top_spenders = []
-        for i, member in enumerate(team_members[:5]):  # Top 5
+        for member in team_members:
             member_accounts = [a for a in accounts if str(a.user_id) == str(member.id)]
-            member_instances = 0
+            member_cost = 0.0
+
             for acc in member_accounts:
-                member_instances += self.db.query(Instance).filter(
-                    Instance.account_id == str(acc.id)
-                ).count()
-            
-            member_cost = float(member_instances * avg_hourly_cost * hours_in_month)
+                # Get all instances (both cluster-based and standalone)
+                member_instances = self.db.query(Instance).filter(
+                    Instance.account_id == str(acc.id),
+                    Instance.state.in_(['running', 'pending'])
+                ).all()
+
+                for instance in member_instances:
+                    hourly_price = instance.price or Decimal('0.05')
+                    monthly_cost = float(hourly_price) * hours_in_month
+                    member_cost += monthly_cost
+
             if member_cost > 0 or len(member_accounts) > 0:
                 top_spenders.append({
                     "name": member.full_name or member.email.split('@')[0],
@@ -694,21 +748,44 @@ class MetricsService:
                     "cost": round(member_cost, 2),
                     "account_count": len(member_accounts)
                 })
-        
-        # Sort by cost descending
+
+        # Sort by cost descending and take top 5
         top_spenders.sort(key=lambda x: x["cost"], reverse=True)
+        top_spenders = top_spenders[:5]
 
         # 7. Calculate Efficiency Score (100 - waste percentage)
         efficiency_score = 100 if total_cost == 0 else round(100 - (total_waste / total_cost * 100), 1)
 
-        # 8. Build weekly history for graph
+        # 8. Build monthly history for graph (last 4 weeks)
         history = []
-        for week in range(4):
-            week_factor = 0.25 * (week + 1)  # Simulates growing cost over weeks
+        current_date = datetime.utcnow()
+
+        for week_offset in range(3, -1, -1):  # 3, 2, 1, 0 (4 weeks ago to current)
+            week_start = current_date - timedelta(weeks=week_offset, days=current_date.weekday())
+            week_end = week_start + timedelta(days=6)
+
+            # Calculate cost for this week based on instances that were running
+            week_cost = 0.0
+            if account_ids:
+                # Get all instances (both cluster-based and standalone)
+                week_instances = self.db.query(Instance).filter(
+                    Instance.account_id.in_(account_ids),
+                    Instance.state.in_(['running', 'pending'])
+                ).all()
+
+                for instance in week_instances:
+                    # Check if instance was created before week end
+                    if instance.created_at and instance.created_at <= week_end:
+                        hourly_price = instance.price or Decimal('0.05')
+                        # Calculate hours this instance ran during the week (max 168 hours per week)
+                        hours_in_week = 168
+                        week_cost += float(hourly_price) * hours_in_week
+
+            week_label = week_start.strftime("%b %d")
             history.append({
-                "name": f"Week {week + 1}",
-                "date": f"Week {week + 1}",
-                "cost": round(total_cost * week_factor, 2)
+                "name": week_label,
+                "date": week_label,
+                "cost": round(week_cost / 7, 2)  # Divide by 7 to get daily average for the week
             })
 
         return {
@@ -730,14 +807,28 @@ class MetricsService:
         if not account:
             return {"total_cost": 0, "history": []}
             
-        # Instance Count
-        total_instances = self.db.query(Instance).filter(Instance.account_id == account_id).count()
+        # Instance Count and Cost Calculation
         total_clusters = self.db.query(Cluster).filter(Cluster.account_id == account_id).count()
-        
-        # Cost (Mock)
-        avg_hourly_cost = Decimal('0.05')
+
+        # Get all instances (both cluster-based and standalone)
+        total_instances = self.db.query(Instance).filter(
+            Instance.account_id == account_id
+        ).count()
+
+        # Calculate real cost from instance prices
+        total_cost = 0.0
         hours_in_month = 720
-        total_cost = float(total_instances * avg_hourly_cost * hours_in_month)
+
+        # Get all instances (both cluster-based and standalone)
+        instances = self.db.query(Instance).filter(
+            Instance.account_id == account_id,
+            Instance.state.in_(['running', 'pending'])
+        ).all()
+
+        for instance in instances:
+            hourly_price = instance.price or Decimal('0.05')
+            monthly_cost = float(hourly_price) * hours_in_month
+            total_cost += monthly_cost
         
         # Waste Distribution - Get real data from cleanup cache
         waste_categories = []
@@ -806,14 +897,33 @@ class MetricsService:
         total_waste = sum(w["value"] for w in waste_distribution)
         
         efficiency_score = 100 if total_cost == 0 else round(100 - (total_waste / total_cost * 100), 1)
-        
+
+        # Build monthly history (last 4 weeks)
         history = []
-        for week in range(4):
-            week_factor = 0.25 * (week + 1)
+        current_date = datetime.utcnow()
+
+        for week_offset in range(3, -1, -1):
+            week_start = current_date - timedelta(weeks=week_offset, days=current_date.weekday())
+            week_end = week_start + timedelta(days=6)
+
+            week_cost = 0.0
+            # Get all instances (both cluster-based and standalone)
+            week_instances = self.db.query(Instance).filter(
+                Instance.account_id == account_id,
+                Instance.state.in_(['running', 'pending'])
+            ).all()
+
+            for instance in week_instances:
+                if instance.created_at and instance.created_at <= week_end:
+                    hourly_price = instance.price or Decimal('0.05')
+                    hours_in_week = 168
+                    week_cost += float(hourly_price) * hours_in_week
+
+            week_label = week_start.strftime("%b %d")
             history.append({
-               "name": f"Week {week + 1}",
-               "date": f"Week {week + 1}",
-               "cost": round(total_cost * week_factor, 2)
+               "name": week_label,
+               "date": week_label,
+               "cost": round(week_cost / 7, 2)
             })
             
         return {

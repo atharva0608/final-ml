@@ -45,14 +45,13 @@ const FleetComposition = ({ widgetKey }) => {
                     finalData = [...top5, { name: 'Other', value: others }];
                 }
 
-                setChartData(finalData.length > 0 ? finalData : [{ name: 'No Data', value: 1 }]);
+                setChartData(finalData);
                 setLoading(false);
             } catch (err) {
                 console.error("Error fetching fleet composition:", err);
                 setError(err.message);
                 setLoading(false);
-                // Fallback to empty state
-                setChartData([{ name: 'No Data', value: 1 }]);
+                setChartData([]);
             }
         };
 
@@ -83,27 +82,35 @@ const FleetComposition = ({ widgetKey }) => {
             </div>
 
             <div className="h-64">
-                <ResponsiveContainer width="100%" height="100%">
-                    <PieChart>
-                        <Pie
-                            data={chartData}
-                            cx="50%"
-                            cy="50%"
-                            innerRadius={50}
-                            outerRadius={80}
-                            paddingAngle={2}
-                            dataKey="value"
-                            label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
-                            labelLine={false}
-                        >
-                            {chartData.map((entry, index) => (
-                                <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                            ))}
-                        </Pie>
-                        <Tooltip formatter={(value) => [value, 'Instances']} />
-                        <Legend />
-                    </PieChart>
-                </ResponsiveContainer>
+                {chartData && chartData.length > 0 ? (
+                    <ResponsiveContainer width="100%" height="100%">
+                        <PieChart>
+                            <Pie
+                                data={chartData}
+                                cx="50%"
+                                cy="50%"
+                                innerRadius={50}
+                                outerRadius={80}
+                                paddingAngle={2}
+                                dataKey="value"
+                                label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
+                                labelLine={false}
+                            >
+                                {chartData.map((entry, index) => (
+                                    <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                                ))}
+                            </Pie>
+                            <Tooltip formatter={(value) => [value, 'Instances']} />
+                            <Legend />
+                        </PieChart>
+                    </ResponsiveContainer>
+                ) : (
+                    <div className="flex flex-col items-center justify-center h-full text-gray-400">
+                        <FiPieChart className="w-12 h-12 mb-3" />
+                        <p className="text-sm font-medium">No instances found</p>
+                        <p className="text-xs mt-1">Connect AWS accounts to see instance distribution</p>
+                    </div>
+                )}
             </div>
         </div>
     );

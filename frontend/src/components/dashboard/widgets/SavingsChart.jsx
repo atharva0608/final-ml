@@ -7,14 +7,9 @@ import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContaine
 import { FiBarChart2 } from 'react-icons/fi';
 
 const SavingsChart = ({ data = {}, widgetKey }) => {
-    const chartData = data.chartData || [
-        { month: 'Jan', unoptimized: 12000, optimized: 8400 },
-        { month: 'Feb', unoptimized: 14000, optimized: 9800 },
-        { month: 'Mar', unoptimized: 11000, optimized: 7700 },
-        { month: 'Apr', unoptimized: 15000, optimized: 10500 },
-        { month: 'May', unoptimized: 13500, optimized: 9450 },
-        { month: 'Jun', unoptimized: 16000, optimized: 11200 }
-    ];
+    // Use real data from API, no fallback to fake data
+    const chartData = data.chartData || [];
+    const hasData = chartData && chartData.length > 0;
 
     return (
         <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 hover:shadow-md transition-shadow">
@@ -29,20 +24,28 @@ const SavingsChart = ({ data = {}, widgetKey }) => {
             </div>
 
             <div className="h-64">
-                <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={chartData} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                        <XAxis dataKey="month" tick={{ fontSize: 12 }} />
-                        <YAxis tick={{ fontSize: 12 }} tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`} />
-                        <Tooltip
-                            formatter={(value) => [`$${value.toLocaleString()}`, '']}
-                            contentStyle={{ borderRadius: '8px', border: '1px solid #e5e7eb' }}
-                        />
-                        <Legend />
-                        <Bar dataKey="unoptimized" name="Without Optimization" fill="#ef4444" radius={[4, 4, 0, 0]} />
-                        <Bar dataKey="optimized" name="With Optimization" fill="#10b981" radius={[4, 4, 0, 0]} />
-                    </BarChart>
-                </ResponsiveContainer>
+                {hasData ? (
+                    <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={chartData} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                            <XAxis dataKey="month" tick={{ fontSize: 12 }} />
+                            <YAxis tick={{ fontSize: 12 }} tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`} />
+                            <Tooltip
+                                formatter={(value) => [`$${value.toLocaleString()}`, '']}
+                                contentStyle={{ borderRadius: '8px', border: '1px solid #e5e7eb' }}
+                            />
+                            <Legend />
+                            <Bar dataKey="unoptimized" name="Without Optimization" fill="#ef4444" radius={[4, 4, 0, 0]} />
+                            <Bar dataKey="optimized" name="With Optimization" fill="#10b981" radius={[4, 4, 0, 0]} />
+                        </BarChart>
+                    </ResponsiveContainer>
+                ) : (
+                    <div className="flex flex-col items-center justify-center h-full text-gray-400">
+                        <FiBarChart2 className="w-12 h-12 mb-3" />
+                        <p className="text-sm font-medium">No cost data available yet</p>
+                        <p className="text-xs mt-1">Connect AWS accounts to see savings projections</p>
+                    </div>
+                )}
             </div>
         </div>
     );

@@ -28,6 +28,9 @@ class Instance(Base):
     # Foreign key to clusters (nullable for standalone EC2 instances)
     cluster_id = Column(String(36), ForeignKey("clusters.id", ondelete="CASCADE"), nullable=True, index=True)
 
+    # Foreign key to accounts (direct link for standalone instances)
+    account_id = Column(String(36), ForeignKey("accounts.id", ondelete="CASCADE"), nullable=True, index=True)
+
     # Instance details
     instance_id = Column(String(20), nullable=False, unique=True, index=True)
     instance_type = Column(String(50), nullable=False, index=True)
@@ -54,11 +57,13 @@ class Instance(Base):
 
     # Relationships
     cluster = relationship("Cluster", back_populates="instances")
+    account = relationship("Account", foreign_keys=[account_id])
 
     # Composite indexes for performance
     __table_args__ = (
         Index("idx_cluster_lifecycle", "cluster_id", "lifecycle"),
         Index("idx_cluster_instance_type", "cluster_id", "instance_type"),
+        Index("idx_account_state", "account_id", "state"),
     )
 
     def __repr__(self):

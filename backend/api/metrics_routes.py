@@ -254,3 +254,30 @@ def get_team_summary(
     
     service = get_metrics_service(db)
     return service.get_team_consolidated_stats(team_id)
+
+
+@router.get(
+    "/accounts/{account_id}/summary",
+    summary="Get account consolidated stats",
+    description="Get aggregated metrics for a specific AWS account"
+)
+def get_account_summary(
+    account_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Get consolidated account statistics.
+
+    Aggregates cost, waste, instance counts for an AWS account.
+
+    Args:
+        account_id: Account UUID
+        current_user: Authenticated user
+        db: Database session
+
+    Returns:
+        Consolidated account stats
+    """
+    service = get_metrics_service(db)
+    return service.get_account_consolidated_stats(account_id)

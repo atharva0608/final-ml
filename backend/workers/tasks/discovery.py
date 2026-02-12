@@ -612,6 +612,8 @@ def scan_ec2_instances(account: Account, ec2_client, db: Session) -> int:
 
                     if existing:
                         # Update existing instance
+                        existing.account_id = account.id  # Ensure account_id is set
+                        existing.cluster_id = cluster_id  # Update cluster_id (may be None for standalone)
                         existing.instance_type = instance_type
                         existing.lifecycle = lifecycle
                         existing.az = az
@@ -620,7 +622,8 @@ def scan_ec2_instances(account: Account, ec2_client, db: Session) -> int:
                     else:
                         # Create new instance
                         new_instance = Instance(
-                            cluster_id=cluster_id,
+                            account_id=account.id,  # Direct account link for standalone instances
+                            cluster_id=cluster_id,  # May be None for standalone instances
                             instance_id=instance_id,
                             instance_type=instance_type,
                             lifecycle=lifecycle,

@@ -7,18 +7,17 @@ import { FiClock, FiCheck, FiX, FiAlertCircle } from 'react-icons/fi';
 import { formatRelativeTime } from '../../../utils/formatters';
 
 const ActivityFeed = ({ data = {}, widgetKey }) => {
-    const activities = data.activities || [
-        { id: 1, action: 'Instance terminated', resource: 'i-1234567890', status: 'success', time: new Date(Date.now() - 300000) },
-        { id: 2, action: 'Cluster scaled down', resource: 'prod-cluster', status: 'success', time: new Date(Date.now() - 900000) },
-        { id: 3, action: 'Cleanup scheduled', resource: 'staging-vpc', status: 'pending', time: new Date(Date.now() - 1800000) },
-        { id: 4, action: 'Action rejected', resource: 'dev-instance', status: 'failed', time: new Date(Date.now() - 3600000) }
-    ];
+    // Use real activity data from API, no fake fallback
+    const activities = data.activities || [];
+    const hasData = activities && activities.length > 0;
 
     const getStatusIcon = (status) => {
         switch (status) {
             case 'success': return <FiCheck className="w-4 h-4 text-green-500" />;
             case 'failed': return <FiX className="w-4 h-4 text-red-500" />;
+            case 'error': return <FiX className="w-4 h-4 text-red-500" />;
             case 'pending': return <FiAlertCircle className="w-4 h-4 text-amber-500" />;
+            case 'info': return <FiAlertCircle className="w-4 h-4 text-blue-500" />;
             default: return <FiClock className="w-4 h-4 text-gray-400" />;
         }
     };
@@ -36,18 +35,26 @@ const ActivityFeed = ({ data = {}, widgetKey }) => {
             </div>
 
             <div className="space-y-3 max-h-64 overflow-y-auto">
-                {activities.map((activity) => (
-                    <div key={activity.id} className="flex items-start gap-3 p-3 bg-gray-50 rounded-lg">
-                        <div className="mt-0.5">{getStatusIcon(activity.status)}</div>
-                        <div className="flex-1 min-w-0">
-                            <p className="text-sm font-medium text-gray-900 truncate">{activity.action}</p>
-                            <p className="text-xs text-gray-500 truncate">{activity.resource}</p>
+                {hasData ? (
+                    activities.map((activity) => (
+                        <div key={activity.id} className="flex items-start gap-3 p-3 bg-gray-50 rounded-lg">
+                            <div className="mt-0.5">{getStatusIcon(activity.status)}</div>
+                            <div className="flex-1 min-w-0">
+                                <p className="text-sm font-medium text-gray-900 truncate">{activity.action}</p>
+                                <p className="text-xs text-gray-500 truncate">{activity.resource}</p>
+                            </div>
+                            <span className="text-xs text-gray-400 whitespace-nowrap">
+                                {formatRelativeTime(activity.time)}
+                            </span>
                         </div>
-                        <span className="text-xs text-gray-400 whitespace-nowrap">
-                            {formatRelativeTime(activity.time)}
-                        </span>
+                    ))
+                ) : (
+                    <div className="flex flex-col items-center justify-center py-8 text-gray-400">
+                        <FiClock className="w-10 h-10 mb-2" />
+                        <p className="text-sm font-medium">No recent activity</p>
+                        <p className="text-xs mt-1">Actions will appear here once you start managing resources</p>
                     </div>
-                ))}
+                )}
             </div>
         </div>
     );

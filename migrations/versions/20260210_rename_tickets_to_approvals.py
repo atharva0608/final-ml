@@ -1,14 +1,14 @@
 """Rename tickets table to approvals
 
 Revision ID: 20260210_rename
-Revises: 20260130_1200_fix_tag_templates
+Revises: fix_tag_templates_01
 Create Date: 2026-02-10
 """
 from alembic import op
 
 # revision identifiers
 revision = '20260210_rename'
-down_revision = '20260130_1200_fix_tag_templates'
+down_revision = 'fix_tag_templates_01'
 branch_labels = None
 depends_on = None
 
