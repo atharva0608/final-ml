@@ -1,0 +1,20 @@
+# AI EXCLUSION FILE
+# Files matching these patterns will usually be HIDDEN from the AI agent.
+# Use this to prevent accidental leakage of secrets.
+
+# Secrets
+.env
+.env.*
+*.pem
+*.key
+id_rsa
+secrets.yaml
+config/secrets.yaml
+
+# AWS Credentials (if located inside project)
+.aws/
+credentials
+aws_config
+
+# System
+.DS_Store

@@ -1,0 +1,55 @@
+{
+  "timestamp": "2025-12-26T15:11:38.417142",
+  "training_settings": {
+    "horizons": [
+      36
+    ],
+    "sample_families": [
+      "c6i",
+      "m6i",
+      "r6i"
+    ],
+    "lag_intervals": [
+      6,
+      24,
+      144
+    ],
+    "rolling_windows": [
+      24,
+      144
+    ],
+    "use_family_stress": true,
+    "filter_critical_pools": true,
+    "add_pool_risk_feature": true
+  },
+  "model_params": {
+    "num_leaves": 31,
+    "max_depth": 8,
+    "lambda_l2": 0.1,
+    "learning_rate": 0.05,
+    "early_stopping_rounds": 100
+  },
+  "data_info": {
+    "total_rows": 13755918,
+    "train_rows": 9629142,
+    "val_rows": 2063388,
+    "test_rows": 2063388,
+    "n_features": 37,
+    "n_pools": 90
+  },
+  "results": {
+    "6h": {
+      "regressor": {
+        "mape": 0.004589681866096862,
+        "rmse": 2.0103579053983935,
+        "r2": 0.97157824479832
+      },
+      "classifier": {
+        "f1": 0.5790146427241275,
+        "precision": 0.42289589904992103,
+        "recall": 0.9178556445473638,
+        "auc": 0.6474619163999235
+      }
+    }
+  }
+}

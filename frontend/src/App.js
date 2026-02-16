@@ -22,6 +22,8 @@ import ClusterList from './components/clusters/ClusterList';
 import TemplateList from './components/templates/TemplateList';
 import PolicyConfig from './components/policies/PolicyConfig';
 import HibernationSchedule from './components/hibernation/HibernationSchedule';
+import HibernationPage from './pages/HibernationPage';
+import AtharvaAiPage from './pages/AtharvaAiPage';
 import AuditLog from './components/audit/AuditLog';
 import Settings from './components/settings/Settings';
 import ExperimentLab from './components/lab/ExperimentLab';
@@ -278,6 +280,15 @@ function App() {
                 <HibernationSchedule />
               </PermissionGate>
             } />
+            <Route path="hibernation/:clusterId" element={
+              <PermissionGate
+                featureId="hibernation:view"
+                sectionName="Cluster Hibernation"
+                sectionDescription="Configure hibernation schedule for this cluster"
+              >
+                <HibernationPage />
+              </PermissionGate>
+            } />
             <Route path="automation-settings" element={
               <PermissionGate
                 featureId="policy:manage"
@@ -358,6 +369,7 @@ function App() {
             <Route path="s3-analysis" element={<S3Analysis />} />
             <Route path="rds-analysis" element={<RDSAnalysis />} />
             <Route path="transfer-analysis" element={<TransferAnalysis />} />
+            <Route path="atharva-ai" element={<AtharvaAiPage />} />
 
             {/* Admin Routes (SUPER_ADMIN only) */}
             <Route path="admin" element={<AdminRoute><AdminDashboard /></AdminRoute>} />

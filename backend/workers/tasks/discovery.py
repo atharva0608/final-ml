@@ -581,12 +581,15 @@ def scan_ec2_instances(account: Account, ec2_client, db: Session) -> int:
                     az = instance_data.get('Placement', {}).get('AvailabilityZone')
 
                     # Calculate instance price (uses fallback if AWS pricing API unavailable)
+                    # Note: pricing_helper returns MONTHLY price, but we store HOURLY price in database
                     try:
                         monthly_price = pricing_helper.get_ec2_price(account.region or 'us-east-1', instance_type)
-                        logger.debug(f"[WORK-DISC-01] Instance {instance_id} ({instance_type}): ${monthly_price:.2f}/month")
+                        hourly_price = monthly_price / 730.0  # Convert monthly to hourly
+                        logger.debug(f"[WORK-DISC-01] Instance {instance_id} ({instance_type}): ${monthly_price:.2f}/month (${hourly_price:.4f}/hour)")
                     except Exception as e:
                         logger.warning(f"[WORK-DISC-01] Failed to get pricing for {instance_type}: {e}")
                         monthly_price = 50.00  # Ultimate fallback
+                        hourly_price = monthly_price / 730.0
 
                     # Find associated cluster (via tags)
                     tags = instance_data.get('Tags', [])
@@ -617,7 +620,7 @@ def scan_ec2_instances(account: Account, ec2_client, db: Session) -> int:
                         existing.instance_type = instance_type
                         existing.lifecycle = lifecycle
                         existing.az = az
-                        existing.price = monthly_price
+                        existing.price = hourly_price  # Store HOURLY price (converted from monthly)
                         existing.updated_at = datetime.utcnow()
                     else:
                         # Create new instance
@@ -628,7 +631,7 @@ def scan_ec2_instances(account: Account, ec2_client, db: Session) -> int:
                             instance_type=instance_type,
                             lifecycle=lifecycle,
                             az=az,
-                            price=monthly_price,  # Set price using pricing helper
+                            price=hourly_price,  # Store HOURLY price (converted from monthly)
                             cpu_util=None,  # Will be updated by metrics collection
                             memory_util=None
                         )

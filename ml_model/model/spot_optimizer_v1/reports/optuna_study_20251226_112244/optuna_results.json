@@ -1,0 +1,19 @@
+{
+  "regressor": {
+    "best_params": {
+      "num_leaves": 20,
+      "max_depth": 10,
+      "min_child_samples": 44,
+      "min_child_weight": 0.0004335281794951569,
+      "lambda_l2": 0.07599674150654905,
+      "lambda_l1": 0.01834045098534338,
+      "learning_rate": 0.03049313509367066,
+      "feature_fraction": 0.8049512863264475,
+      "bagging_fraction": 0.7863890037284231,
+      "bagging_freq": 4
+    },
+    "best_value": 0.003376042262430177,
+    "n_trials": 10,
+    "n_pruned": 0
+  }
+}

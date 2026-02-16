@@ -1,0 +1,23 @@
+# SageMaker-compatible requirements
+# IMPORTANT: Do NOT upgrade pandas, numpy, or scikit-learn
+# The container has specific versions that must be preserved:
+# - numpy==1.24.1
+# - pandas==1.1.3
+# - scikit-learn==1.2.1
+
+# Only install packages NOT in the base sklearn 1.2-1 container
+lightgbm>=4.0.0
+polars>=0.20.0
+optuna>=3.0.0
+pyyaml>=6.0
+tqdm>=4.65.0
+pyarrow>=11.0.0
+# IMPORTANT: Use older versions compatible with pandas 1.1.3
+matplotlib>=3.5.0,<3.6.0
+seaborn>=0.11.0,<0.12.0
+# ONNX export (all pinned for mutual compatibility + protobuf==3.20.3)
+protobuf==3.20.3
+onnx==1.15.0
+onnxconverter-common==1.13.0
+skl2onnx==1.16.0
+onnxmltools==1.12.0

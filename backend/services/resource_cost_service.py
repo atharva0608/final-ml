@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from backend.models.account import Account
 from backend.models.billing import DailyCost
-from backend.core.cache import cache_client
+from backend.core.redis_client import get_redis_client
 import json
 
 logger = logging.getLogger(__name__)
@@ -55,6 +55,9 @@ class ResourceCostService:
             4. Cache result
             5. Return actual cost
         """
+        # Initialize Redis client
+        cache_client = get_redis_client()
+
         # Check cache first
         cache_key = f"resource_cost:{resource_id}:{start_date.date()}:{end_date.date()}"
         cached_cost = cache_client.get(cache_key)

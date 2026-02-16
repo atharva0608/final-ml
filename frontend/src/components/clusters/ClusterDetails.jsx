@@ -10,6 +10,7 @@ import toast from 'react-hot-toast';
 import { formatCurrency, formatNumber, formatDate, formatDateTime } from '../../utils/formatters';
 
 import NodeList from './NodeList';
+import HibernationScheduleV2 from '../hibernation/HibernationScheduleV2';
 
 const ClusterDetails = ({ clusterId, onClose }) => {
   const [cluster, setCluster] = useState(null);
@@ -19,6 +20,7 @@ const ClusterDetails = ({ clusterId, onClose }) => {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [optimizing, setOptimizing] = useState(false);
+  const [showHibernationModal, setShowHibernationModal] = useState(false);
 
   useEffect(() => {
     if (clusterId) {
@@ -314,11 +316,27 @@ const ClusterDetails = ({ clusterId, onClose }) => {
                   <FiClock className="w-5 h-5" />
                   Hibernation Schedule
                 </h3>
-                <Badge color={schedule.is_active ? 'green' : 'gray'}>
-                  {schedule.is_active ? 'Active' : 'Inactive'}
-                </Badge>
+                <div className="flex items-center gap-3">
+                  <Badge color={schedule.is_active ? 'green' : 'gray'}>
+                    {schedule.is_active ? 'Active' : 'Inactive'}
+                  </Badge>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setShowHibernationModal(true)}
+                  >
+                    <FiSettings className="w-4 h-4 mr-1" />
+                    Edit Schedule
+                  </Button>
+                </div>
               </div>
               <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+                <div>
+                  <div className="text-sm text-gray-600 mb-1">Strategy</div>
+                  <div className="text-lg font-semibold text-gray-900">
+                    {schedule.strategy?.replace('_', ' ') || 'Namespace Sleep'}
+                  </div>
+                </div>
                 <div>
                   <div className="text-sm text-gray-600 mb-1">Timezone</div>
                   <div className="text-lg font-semibold text-gray-900">{schedule.timezone}</div>
@@ -335,6 +353,18 @@ const ClusterDetails = ({ clusterId, onClose }) => {
                     {schedule.schedule_matrix?.filter((h) => h === 1).length || 0} / 168 hours
                   </div>
                 </div>
+                <div>
+                  <div className="text-sm text-gray-600 mb-1">Last Action</div>
+                  <div className="text-lg font-semibold text-gray-900">
+                    {schedule.last_action || 'None'}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-sm text-gray-600 mb-1">Last Action At</div>
+                  <div className="text-lg font-semibold text-gray-900">
+                    {schedule.last_action_at ? formatDateTime(schedule.last_action_at) : 'N/A'}
+                  </div>
+                </div>
               </div>
             </Card>
           ) : (
@@ -342,7 +372,12 @@ const ClusterDetails = ({ clusterId, onClose }) => {
               <div className="text-center py-6">
                 <FiClock className="w-12 h-12 text-gray-300 mx-auto mb-3" />
                 <p className="text-gray-500">No hibernation schedule configured</p>
-                <Button variant="primary" size="sm" className="mt-3">
+                <Button
+                  variant="primary"
+                  size="sm"
+                  className="mt-3"
+                  onClick={() => setShowHibernationModal(true)}
+                >
                   Configure Schedule
                 </Button>
               </div>
@@ -388,6 +423,17 @@ const ClusterDetails = ({ clusterId, onClose }) => {
           </Button>
         </div>
       </div>
+
+      {/* Hibernation Schedule Modal */}
+      {showHibernationModal && (
+        <HibernationScheduleV2
+          clusterId={clusterId}
+          onClose={() => {
+            setShowHibernationModal(false);
+            fetchClusterDetails(); // Refresh to show updated schedule
+          }}
+        />
+      )}
     </div>
   );
 };

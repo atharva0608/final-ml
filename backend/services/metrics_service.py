@@ -490,7 +490,22 @@ class MetricsService:
 
         if cost_explorer_total and cost_explorer_total > 0:
             # Cost Explorer data available - use it (includes EC2, S3, RDS, VPC, etc.)
-            logger.info(f"Using Cost Explorer data: ${cost_explorer_total:.2f} for user {user_id}")
+            # Project to monthly if we're looking at current month partial data
+            mtd_cost = float(cost_explorer_total)
+
+            # Check if we're querying current month (need to project)
+            today = datetime.utcnow().date()
+            month_start = today.replace(day=1)
+
+            if start_date.date() >= month_start and end_date.date() >= today:
+                # Current month query - project MTD to full month
+                days_elapsed = (today - month_start).days + 1
+                projected_monthly_cost = (mtd_cost / days_elapsed) * 30
+                logger.info(f"Using Cost Explorer data: ${mtd_cost:.2f} MTD, projecting to ${projected_monthly_cost:.2f} monthly for user {user_id}")
+            else:
+                # Historical query - use actual cost
+                projected_monthly_cost = mtd_cost
+                logger.info(f"Using Cost Explorer data: ${mtd_cost:.2f} for user {user_id}")
 
             # Get EC2-specific costs for spot/on-demand breakdown
             ec2_services = [
@@ -515,13 +530,18 @@ class MetricsService:
 
             ec2_cost = ec2_cost_query.scalar() or 0
 
+            # Apply same projection to EC2 costs if current month
+            if start_date.date() >= month_start and end_date.date() >= today:
+                days_elapsed = (today - month_start).days + 1
+                ec2_cost = (float(ec2_cost) / days_elapsed) * 30
+
             # Estimate spot vs on-demand split (roughly 30% of EC2 is typically spot)
             # This is approximate since Cost Explorer doesn't break down by lifecycle
             spot_cost = Decimal(str(ec2_cost * 0.3))
             on_demand_cost = Decimal(str(ec2_cost * 0.7))
 
             return CostMetrics(
-                total_cost=Decimal(str(cost_explorer_total)),
+                total_cost=Decimal(str(projected_monthly_cost)),
                 spot_cost=spot_cost,
                 on_demand_cost=on_demand_cost,
                 currency="USD"
@@ -710,23 +730,46 @@ class MetricsService:
                 Instance.account_id.in_(account_ids)
             ).count()
 
-        # 4. Calculate Cost from actual instance prices
+        # 4. Calculate Cost from Cost Explorer (projected monthly)
         total_cost = 0.0
-        hours_in_month = 720  # 30 days * 24 hours
 
         if account_ids:
-            # Sum actual instance prices (hourly rate * hours in month)
-            # Get all instances (both cluster-based and standalone)
-            instances = self.db.query(Instance).filter(
-                Instance.account_id.in_(account_ids),
-                Instance.state.in_(['running', 'pending'])
-            ).all()
+            # PRIORITY 1: Use Cost Explorer data for accurate costs
+            from backend.models.billing import DailyCost
+            from datetime import datetime
 
-            for instance in instances:
-                # Use actual instance price if available, otherwise use fallback
-                hourly_price = instance.price or Decimal('0.05')
-                monthly_cost = float(hourly_price) * hours_in_month
-                total_cost += monthly_cost
+            # Current month
+            start_date = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            end_date = datetime.now()
+
+            cost_query = self.db.query(
+                func.sum(DailyCost.cost_amount).label('total')
+            ).filter(
+                and_(
+                    DailyCost.account_id.in_(account_ids),
+                    DailyCost.date >= start_date.date(),
+                    DailyCost.date <= end_date.date()
+                )
+            ).scalar()
+
+            if cost_query and cost_query > 0:
+                # Project MTD to full month
+                days_elapsed = (end_date.date() - start_date.date()).days + 1
+                total_cost = (float(cost_query) / days_elapsed) * 30
+                logger.info(f"Team cost from Cost Explorer: ${total_cost:.2f} (projected monthly)")
+            else:
+                # FALLBACK: Calculate from EC2 instance prices
+                hours_in_month = 720  # 30 days * 24 hours
+                instances = self.db.query(Instance).filter(
+                    Instance.account_id.in_(account_ids),
+                    Instance.state.in_(['running', 'pending'])
+                ).all()
+
+                for instance in instances:
+                    hourly_price = instance.price or Decimal('0.05')
+                    monthly_cost = float(hourly_price) * hours_in_month
+                    total_cost += monthly_cost
+                logger.info(f"Team cost from EC2 instances: ${total_cost:.2f} (fallback)")
         
         # 5. Calculate Waste Distribution (for Pie Chart)
         # Query real hygiene data from cached scans in Redis or calculate from account data
@@ -800,23 +843,40 @@ class MetricsService:
         waste_distribution = [w for w in waste_categories if w["value"] > 0]
         total_waste = sum(w["value"] for w in waste_distribution)
 
-        # 6. Build Top Spenders Leaderboard - Calculate from actual instance costs
+        # 6. Build Top Spenders Leaderboard - Use Cost Explorer per member
         top_spenders = []
         for member in team_members:
             member_accounts = [a for a in accounts if str(a.user_id) == str(member.id)]
+            member_account_ids = [str(a.id) for a in member_accounts]
             member_cost = 0.0
 
-            for acc in member_accounts:
-                # Get all instances (both cluster-based and standalone)
-                member_instances = self.db.query(Instance).filter(
-                    Instance.account_id == str(acc.id),
-                    Instance.state.in_(['running', 'pending'])
-                ).all()
+            if member_account_ids:
+                # Try Cost Explorer first
+                member_cost_query = self.db.query(
+                    func.sum(DailyCost.cost_amount).label('total')
+                ).filter(
+                    and_(
+                        DailyCost.account_id.in_(member_account_ids),
+                        DailyCost.date >= start_date.date(),
+                        DailyCost.date <= end_date.date()
+                    )
+                ).scalar()
 
-                for instance in member_instances:
-                    hourly_price = instance.price or Decimal('0.05')
-                    monthly_cost = float(hourly_price) * hours_in_month
-                    member_cost += monthly_cost
+                if member_cost_query and member_cost_query > 0:
+                    # Project to monthly
+                    days_elapsed = (end_date.date() - start_date.date()).days + 1
+                    member_cost = (float(member_cost_query) / days_elapsed) * 30
+                else:
+                    # Fallback to EC2 instances
+                    member_instances = self.db.query(Instance).filter(
+                        Instance.account_id.in_(member_account_ids),
+                        Instance.state.in_(['running', 'pending'])
+                    ).all()
+
+                    for instance in member_instances:
+                        hourly_price = instance.price or Decimal('0.05')
+                        monthly_cost = float(hourly_price) * 720  # 720 hours
+                        member_cost += monthly_cost
 
             if member_cost > 0 or len(member_accounts) > 0:
                 top_spenders.append({
@@ -833,7 +893,7 @@ class MetricsService:
         # 7. Calculate Efficiency Score (100 - waste percentage)
         efficiency_score = 100 if total_cost == 0 else round(100 - (total_waste / total_cost * 100), 1)
 
-        # 8. Build monthly history for graph (last 4 weeks)
+        # 8. Build monthly history for graph (last 4 weeks) using Cost Explorer
         history = []
         current_date = datetime.utcnow()
 
@@ -841,28 +901,39 @@ class MetricsService:
             week_start = current_date - timedelta(weeks=week_offset, days=current_date.weekday())
             week_end = week_start + timedelta(days=6)
 
-            # Calculate cost for this week based on instances that were running
+            # Calculate cost for this week from Cost Explorer
             week_cost = 0.0
             if account_ids:
-                # Get all instances (both cluster-based and standalone)
-                week_instances = self.db.query(Instance).filter(
-                    Instance.account_id.in_(account_ids),
-                    Instance.state.in_(['running', 'pending'])
-                ).all()
+                week_cost_query = self.db.query(
+                    func.sum(DailyCost.cost_amount).label('total')
+                ).filter(
+                    and_(
+                        DailyCost.account_id.in_(account_ids),
+                        DailyCost.date >= week_start.date(),
+                        DailyCost.date <= week_end.date()
+                    )
+                ).scalar()
 
-                for instance in week_instances:
-                    # Check if instance was created before week end
-                    if instance.created_at and instance.created_at <= week_end:
-                        hourly_price = instance.price or Decimal('0.05')
-                        # Calculate hours this instance ran during the week (max 168 hours per week)
-                        hours_in_week = 168
-                        week_cost += float(hourly_price) * hours_in_week
+                if week_cost_query and week_cost_query > 0:
+                    week_cost = float(week_cost_query)
+                else:
+                    # Fallback to EC2 instances
+                    week_instances = self.db.query(Instance).filter(
+                        Instance.account_id.in_(account_ids),
+                        Instance.state.in_(['running', 'pending'])
+                    ).all()
+
+                    for instance in week_instances:
+                        if instance.created_at and instance.created_at <= week_end:
+                            hourly_price = instance.price or Decimal('0.05')
+                            hours_in_week = 168
+                            week_cost += float(hourly_price) * hours_in_week
 
             week_label = week_start.strftime("%b %d")
             history.append({
                 "name": week_label,
                 "date": week_label,
-                "cost": round(week_cost / 7, 2)  # Divide by 7 to get daily average for the week
+                "cost": round(week_cost / 7, 2)  # Daily average for the week
             })
 
         return {
@@ -883,7 +954,7 @@ class MetricsService:
         account = self.db.query(Account).filter(Account.id == account_id).first()
         if not account:
             return {"total_cost": 0, "history": []}
-            
+
         # Instance Count and Cost Calculation
         total_clusters = self.db.query(Cluster).filter(Cluster.account_id == account_id).count()
 
@@ -892,20 +963,43 @@ class MetricsService:
             Instance.account_id == account_id
         ).count()
 
-        # Calculate real cost from instance prices
+        # Calculate cost from Cost Explorer (projected monthly)
         total_cost = 0.0
-        hours_in_month = 720
+        from backend.models.billing import DailyCost
+        from datetime import datetime
 
-        # Get all instances (both cluster-based and standalone)
-        instances = self.db.query(Instance).filter(
-            Instance.account_id == account_id,
-            Instance.state.in_(['running', 'pending'])
-        ).all()
+        # Current month
+        start_date = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        end_date = datetime.now()
 
-        for instance in instances:
-            hourly_price = instance.price or Decimal('0.05')
-            monthly_cost = float(hourly_price) * hours_in_month
-            total_cost += monthly_cost
+        cost_query = self.db.query(
+            func.sum(DailyCost.cost_amount).label('total')
+        ).filter(
+            and_(
+                DailyCost.account_id == account_id,
+                DailyCost.date >= start_date.date(),
+                DailyCost.date <= end_date.date()
+            )
+        ).scalar()
+
+        if cost_query and cost_query > 0:
+            # Project MTD to full month
+            days_elapsed = (end_date.date() - start_date.date()).days + 1
+            total_cost = (float(cost_query) / days_elapsed) * 30
+            logger.info(f"Account cost from Cost Explorer: ${total_cost:.2f} (projected monthly)")
+        else:
+            # Fallback: Calculate from EC2 instance prices
+            hours_in_month = 720
+            instances = self.db.query(Instance).filter(
+                Instance.account_id == account_id,
+                Instance.state.in_(['running', 'pending'])
+            ).all()
+
+            for instance in instances:
+                hourly_price = instance.price or Decimal('0.05')
+                monthly_cost = float(hourly_price) * hours_in_month
+                total_cost += monthly_cost
+            logger.info(f"Account cost from EC2 instances: ${total_cost:.2f} (fallback)")
         
         # Waste Distribution - Get real data from cleanup cache
         waste_categories = []
@@ -975,7 +1069,7 @@ class MetricsService:
         
         efficiency_score = 100 if total_cost == 0 else round(100 - (total_waste / total_cost * 100), 1)
 
-        # Build monthly history (last 4 weeks)
+        # Build monthly history (last 4 weeks) using Cost Explorer
         history = []
         current_date = datetime.utcnow()
 
@@ -984,23 +1078,37 @@ class MetricsService:
             week_end = week_start + timedelta(days=6)
 
             week_cost = 0.0
-            # Get all instances (both cluster-based and standalone)
-            week_instances = self.db.query(Instance).filter(
-                Instance.account_id == account_id,
-                Instance.state.in_(['running', 'pending'])
-            ).all()
+            # Try Cost Explorer first
+            week_cost_query = self.db.query(
+                func.sum(DailyCost.cost_amount).label('total')
+            ).filter(
+                and_(
+                    DailyCost.account_id == account_id,
+                    DailyCost.date >= week_start.date(),
+                    DailyCost.date <= week_end.date()
+                )
+            ).scalar()
 
-            for instance in week_instances:
-                if instance.created_at and instance.created_at <= week_end:
-                    hourly_price = instance.price or Decimal('0.05')
-                    hours_in_week = 168
-                    week_cost += float(hourly_price) * hours_in_week
+            if week_cost_query and week_cost_query > 0:
+                week_cost = float(week_cost_query)
+            else:
+                # Fallback to EC2 instances
+                week_instances = self.db.query(Instance).filter(
+                    Instance.account_id == account_id,
+                    Instance.state.in_(['running', 'pending'])
+                ).all()
+
+                for instance in week_instances:
+                    if instance.created_at and instance.created_at <= week_end:
+                        hourly_price = instance.price or Decimal('0.05')
+                        hours_in_week = 168
+                        week_cost += float(hourly_price) * hours_in_week
 
             week_label = week_start.strftime("%b %d")
             history.append({
                "name": week_label,
                "date": week_label,
-               "cost": round(week_cost / 7, 2)
+               "cost": round(week_cost / 7, 2)  # Daily average for the week
             })
             
         return {

@@ -8,7 +8,7 @@ import { Outlet, Link, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../../hooks/useAuth';
 import { clusterAPI } from '../../services/api';
 import { Button } from '../shared';
-import { FiHome, FiServer, FiFileText, FiSettings, FiTarget, FiClock, FiBarChart2, FiUsers, FiActivity, FiLogOut, FiClipboard, FiBriefcase, FiCheckSquare, FiShield, FiLock, FiTag, FiZap } from 'react-icons/fi';
+import { FiHome, FiServer, FiFileText, FiSettings, FiTarget, FiClock, FiBarChart2, FiUsers, FiActivity, FiLogOut, FiClipboard, FiBriefcase, FiCheckSquare, FiShield, FiLock, FiTag, FiZap, FiCpu } from 'react-icons/fi';
 
 // TEMPORARILY DISABLED - Causing date formatting errors
 // import ActiveWindowBanner from '../approvals/ActiveWindowBanner';
@@ -66,20 +66,23 @@ const MainLayout = () => {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
+  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
 
   const navigation = [
     { name: 'Dashboard', path: '/dashboard', icon: FiHome, requiresPermission: false },
     { name: 'Approvals', path: '/approvals', icon: FiCheckSquare, requiresPermission: false },
     { name: 'Teams', path: '/teams', icon: FiUsers, requiresPermission: true, badge: 'locked' },
     { name: 'Clusters', path: '/clusters', icon: FiServer, requiresPermission: true, badge: 'locked' },
+  ];
+
+  const optimizationNavigation = [
+    { name: 'AtharvaAi', path: '/atharva-ai', icon: FiCpu, requiresPermission: true, badge: 'beta' },
     { name: 'Tagging Policies', path: '/tagging-policies', icon: FiTag, requiresPermission: true, badge: 'locked' },
     { name: 'Templates', path: '/templates', icon: FiFileText, requiresPermission: true, badge: 'locked' },
     { name: 'Right-Sizing', path: '/right-sizing', icon: FiBarChart2, requiresPermission: true, badge: 'locked' },
     { name: 'Resource Hygiene', path: '/hygiene', icon: FiActivity, requiresPermission: true, badge: 'locked' },
     { name: 'Hibernation', path: '/hibernation', icon: FiClock, requiresPermission: true, badge: 'locked' },
     { name: 'Automation Settings', path: '/automation-settings', icon: FiZap, requiresPermission: true, badge: 'locked' },
-    { name: 'Audit Logs', path: '/audit', icon: FiClipboard, requiresPermission: true, badge: 'locked' },
-    { name: 'Settings', path: '/settings', icon: FiSettings, requiresPermission: false },
   ];
 
   const adminNavigation = [
@@ -92,14 +95,107 @@ const MainLayout = () => {
     { name: 'Billing', path: '/admin/billing', icon: FiBarChart2 }, // Using BarChart for Billing
   ];
 
+  const systemNavigation = [
+    { name: 'Audit Logs', path: '/audit', icon: FiClipboard, requiresPermission: true, badge: 'locked' },
+    { name: 'Settings', path: '/settings', icon: FiSettings, requiresPermission: false },
+  ];
+
   const isActive = (path) => location.pathname === path;
 
   // Determine which navigation to show
   const isSuperAdmin = user?.role === 'SUPER_ADMIN' || user?.role === 'super_admin';
-  const navItems = isSuperAdmin ? adminNavigation : navigation;
 
-  const [isSidebarOpen, setIsSidebarOpen] = React.useState(true);
+  if (isSuperAdmin) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex">
+        {/* TEMPORARILY DISABLED - Causing date formatting errors */}
+        {/* <ActiveWindowBanner /> */}
 
+        <div
+          className={`fixed inset-y-0 left-0 bg-white border-r border-gray-200 transition-all duration-300 z-30 ${isSidebarOpen ? 'w-64' : 'w-0 -translate-x-full'}`}
+        >
+          <div className="h-16 flex items-center px-6 border-b border-gray-200 justify-between">
+            <h1 className="text-xl font-bold text-gray-900 truncate">Admin Console</h1>
+          </div>
+          <nav className="flex-1 px-4 py-4 space-y-1 overflow-y-auto h-[calc(100vh-8rem)]">
+            {adminNavigation.map((item) => {
+              const Icon = item.icon;
+              return (
+                <Link
+                  key={item.path}
+                  to={item.path}
+                  className={`flex items-center px-4 py-3 text-sm font-medium rounded-lg transition-colors relative ${isActive(item.path)
+                    ? 'bg-blue-50 text-blue-700'
+                    : 'text-gray-700 hover:bg-gray-50'
+                    }`}
+                >
+                  <Icon className="w-5 h-5 mr-3 flex-shrink-0" />
+                  <span className="truncate">{item.name}</span>
+                </Link>
+              );
+            })}
+            {/* Admin Impersonation Notice */}
+            <div className="mt-8 px-4">
+              <div className="p-3 bg-yellow-50 rounded-lg border border-yellow-200">
+                <p className="text-xs text-yellow-800 font-medium truncate">Client View Hidden</p>
+                <p className="text-xs text-yellow-700 mt-1">Use "Clients" page to impersonate users.</p>
+              </div>
+            </div>
+          </nav>
+          {/* User Profile */}
+          <div className="absolute bottom-0 w-full p-4 border-t border-gray-200 bg-white">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center overflow-hidden">
+                <div className="w-8 h-8 bg-blue-600 rounded-full flex items-center justify-center flex-shrink-0">
+                  <span className="text-white text-sm font-medium">
+                    {user?.email?.[0].toUpperCase()}
+                  </span>
+                </div>
+                <div className="ml-3 truncate">
+                  <p className="text-sm font-medium text-gray-900 truncate">{user?.email}</p>
+                  <p className="text-xs text-gray-500 truncate">{user?.role}</p>
+                </div>
+              </div>
+              <button
+                onClick={logout}
+                className="p-2 text-gray-400 hover:text-gray-600 transition-colors flex-shrink-0"
+              >
+                <FiLogOut className="w-5 h-5" />
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Main Content Wrapper */}
+        <div className={`flex-1 flex flex-col min-w-0 transition-all duration-300 ${isSidebarOpen ? 'pl-64' : 'pl-0'}`}>
+          {/* Header */}
+          <header className="h-16 bg-white border-b border-gray-200 flex items-center justify-between px-4 sm:px-6 lg:px-8 z-20">
+            <div className="flex items-center gap-4">
+              <button
+                onClick={() => setIsSidebarOpen(!isSidebarOpen)}
+                className="p-2 -ml-2 text-gray-500 hover:text-gray-700 rounded-md hover:bg-gray-100 focus:outline-none"
+                aria-label="Toggle sidebar"
+              >
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+                </svg>
+              </button>
+              <h2 className="text-lg font-semibold text-gray-900">
+                {adminNavigation.find(item => isActive(item.path))?.name || 'Dashboard'}
+              </h2>
+            </div>
+          </header>
+          <main className="flex-1 overflow-y-auto">
+            <div className="p-8 h-full">
+              <Outlet />
+            </div>
+          </main>
+        </div>
+      </div>
+    );
+  }
+
+  // STANDARD USER VIEW (With Optimization Section)
   return (
     <div className="min-h-screen bg-gray-50 flex">
       {/* TEMPORARILY DISABLED - Causing date formatting errors */}
@@ -109,46 +205,76 @@ const MainLayout = () => {
       <div
         className={`fixed inset-y-0 left-0 bg-white border-r border-gray-200 transition-all duration-300 z-30 ${isSidebarOpen ? 'w-64' : 'w-0 -translate-x-full'}`}
       >
-        {/* Logo */}
         <div className="h-16 flex items-center px-6 border-b border-gray-200 justify-between">
-          <h1 className="text-xl font-bold text-gray-900 truncate">
-            {isSuperAdmin ? 'Admin Console' : 'Spot Optimizer'}
-          </h1>
+          <h1 className="text-xl font-bold text-gray-900 truncate">Spot Optimizer</h1>
         </div>
 
-        {/* Navigation */}
-        <nav className="flex-1 px-4 py-4 space-y-1 overflow-y-auto h-[calc(100vh-8rem)]">
-          {navItems.map((item) => {
-            const Icon = item.icon;
-            // Add notification badge for Clusters
-            const showBadge = item.name === 'Clusters';
-            return (
-              <Link
-                key={item.path}
-                to={item.path}
-                className={`flex items-center px-4 py-3 text-sm font-medium rounded-lg transition-colors relative ${isActive(item.path)
-                  ? 'bg-blue-50 text-blue-700'
-                  : 'text-gray-700 hover:bg-gray-50'
-                  }`}
-              >
-                <Icon className="w-5 h-5 mr-3 flex-shrink-0" />
-                <span className="truncate">{item.name}</span>
-                {showBadge && (
-                  <ClusterBadge />
-                )}
-              </Link>
-            );
-          })}
+        <nav className="flex-1 px-4 py-4 space-y-6 overflow-y-auto h-[calc(100vh-8rem)]">
+          {/* Main Group */}
+          <div className="space-y-1">
+            <p className="px-4 text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Platform</p>
+            {navigation.map((item) => {
+              const Icon = item.icon;
+              const showBadge = item.name === 'Clusters';
+              return (
+                <Link
+                  key={item.path}
+                  to={item.path}
+                  className={`flex items-center px-4 py-2 text-sm font-medium rounded-lg transition-colors relative ${isActive(item.path)
+                    ? 'bg-blue-50 text-blue-700'
+                    : 'text-gray-700 hover:bg-gray-50'
+                    }`}
+                >
+                  <Icon className="w-5 h-5 mr-3 flex-shrink-0" />
+                  <span className="truncate">{item.name}</span>
+                  {showBadge && <ClusterBadge />}
+                </Link>
+              );
+            })}
+          </div>
 
-          {/* Admin Impersonation Notice */}
-          {isSuperAdmin && (
-            <div className="mt-8 px-4">
-              <div className="p-3 bg-yellow-50 rounded-lg border border-yellow-200">
-                <p className="text-xs text-yellow-800 font-medium truncate">Client View Hidden</p>
-                <p className="text-xs text-yellow-700 mt-1">Use "Clients" page to impersonate users.</p>
-              </div>
-            </div>
-          )}
+          {/* Optimization Group */}
+          <div className="space-y-1">
+            <p className="px-4 text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Optimizations</p>
+            {optimizationNavigation.map((item) => {
+              const Icon = item.icon;
+              return (
+                <Link
+                  key={item.path}
+                  to={item.path}
+                  className={`flex items-center px-4 py-2 text-sm font-medium rounded-lg transition-colors relative ${isActive(item.path)
+                    ? 'bg-blue-50 text-blue-700'
+                    : 'text-gray-700 hover:bg-gray-50'
+                    }`}
+                >
+                  <Icon className="w-5 h-5 mr-3 flex-shrink-0" />
+                  <span className="truncate">{item.name}</span>
+                </Link>
+              );
+            })}
+          </div>
+
+          {/* System Group */}
+          <div className="space-y-1">
+            <p className="px-4 text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">System</p>
+            {systemNavigation.map((item) => {
+              const Icon = item.icon;
+              return (
+                <Link
+                  key={item.path}
+                  to={item.path}
+                  className={`flex items-center px-4 py-2 text-sm font-medium rounded-lg transition-colors relative ${isActive(item.path)
+                    ? 'bg-blue-50 text-blue-700'
+                    : 'text-gray-700 hover:bg-gray-50'
+                    }`}
+                >
+                  <Icon className="w-5 h-5 mr-3 flex-shrink-0" />
+                  <span className="truncate">{item.name}</span>
+                </Link>
+              );
+            })}
+          </div>
+
         </nav>
 
         {/* User Profile */}
@@ -190,7 +316,7 @@ const MainLayout = () => {
               </svg>
             </button>
             <h2 className="text-lg font-semibold text-gray-900">
-              {navigation.find(item => isActive(item.path))?.name || 'Dashboard'}
+              {[...navigation, ...optimizationNavigation, ...systemNavigation].find(item => isActive(item.path))?.name || 'Dashboard'}
             </h2>
           </div>
           <div className="flex items-center gap-4">

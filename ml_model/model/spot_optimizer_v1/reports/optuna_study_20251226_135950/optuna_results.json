@@ -1,0 +1,20 @@
+{
+  "classifier": {
+    "best_params": {
+      "num_leaves": 47,
+      "max_depth": 7,
+      "min_child_samples": 29,
+      "min_child_weight": 0.09514745498470636,
+      "lambda_l2": 0.0556011903752368,
+      "lambda_l1": 0.07907305316370807,
+      "learning_rate": 0.043658475327445705,
+      "feature_fraction": 0.8459662009540071,
+      "bagging_fraction": 0.7530101916862512,
+      "bagging_freq": 6,
+      "scale_pos_weight": 3.0855847725030188
+    },
+    "best_value": 0.6650919523023555,
+    "n_trials": 50,
+    "n_pruned": 0
+  }
+}

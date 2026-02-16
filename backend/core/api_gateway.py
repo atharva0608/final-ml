@@ -32,11 +32,15 @@ from backend.api import (
     hygiene_policy_router,
 )
 
+# Dashboard Routes (Three Pricing Models)
+from backend.api.dashboard_routes import router as dashboard_router
+
 # Additional Analysis Routes
 from backend.api.ri_routes import router as ri_router
 from backend.api.s3_routes import router as s3_router
 from backend.api.rds_routes import router as rds_router
 from backend.api.transfer_routes import router as transfer_router
+from backend.api.atharva_routes import router as atharva_router
 
 # Tag Management Routes
 from backend.api.tag_policy_routes import router as tag_policy_router
@@ -392,6 +396,9 @@ app.include_router(optimization_router, prefix="/api/v1")
 app.include_router(hygiene_router, prefix="/api/v1")
 app.include_router(hygiene_policy_router, prefix="/api/v1")
 
+# Dashboard routes (Three Pricing Models)
+app.include_router(dashboard_router, prefix="/api/v1")
+
 
 # Team routes
 app.include_router(team_router, prefix="/api/v1")
@@ -423,6 +430,7 @@ app.include_router(ri_router, prefix="/api/v1")
 app.include_router(s3_router, prefix="/api/v1")
 app.include_router(rds_router, prefix="/api/v1")
 app.include_router(transfer_router, prefix="/api/v1")
+app.include_router(atharva_router, prefix="/api/v1")
 
 # Tag Management routes
 app.include_router(tag_policy_router, prefix="/api/v1")

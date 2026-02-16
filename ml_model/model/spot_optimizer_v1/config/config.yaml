@@ -1,0 +1,64 @@
+data:
+  parquet_files:
+    - "../../Data/aws_mumbai_2023_lgbm.parquet"
+    - "../../Data/aws_mumbai_2024_lgbm.parquet"
+    - "../../Data/aws_mumbai_2025_lgbm.parquet"
+  stress_events: "../../Data/mumbai_stress_events_validated.csv"
+  #sample_families: ['c6i', 'm6i']  # Uncomment for LOCAL testing (subset)
+  #sample_families: ['c6i', 'm6i', 'r6i']  # Uncomment for LOCAL testing (subset)
+  sample_families: []  # Empty = Load ALL families (use for CLOUD/Full Run)
+  chunk_size: 1000000
+
+
+split:
+  train: 0.70
+  val: 0.15
+  test: 0.15
+
+features:
+  horizons: [6]  # 1-hour horizon (6 x 10-min intervals) - optimized for memory
+  lag_intervals: [6, 24, 144]  # 1h, 4h, 24h
+  rolling_windows: [24, 144]  # 4h, 24h (Restored to match HPO)
+  use_family_stress: true
+  filter_critical_pools: true
+  add_pool_risk_feature: true
+
+# ============================================================================
+# OPTIMAL HYPERPARAMETERS (HPO 100-Trial Run: Jan 22, 2026)
+# Updated production model: Job sagemaker-scikit-learn-2026-02-13-05-39-07-409 | MAPE: 0.26% | F1: 0.74 | ONNX: SUCCESS
+# ============================================================================
+model:
+  device: "cpu"
+  n_jobs: 8
+  early_stopping_rounds: 100
+
+  # Regressor hyperparameters (Price Prediction)
+  regressor:
+    learning_rate: 0.09696897462943847
+    num_leaves: 78
+    max_depth: 7
+    min_child_samples: 25
+    lambda_l1: 0.0008726032755201592
+    lambda_l2: 2.1811543831298962e-07
+    # Performance: MAPE=0.23%, R²=0.9995 (test set)
+
+  # Classifier hyperparameters (Risk Prediction)
+  classifier:
+    learning_rate: 0.03482301132025348
+    num_leaves: 45
+    min_child_samples: 315
+    optimal_threshold: 0.35
+    # Performance: F1=0.7547, Recall=97.5% (test set)
+
+optuna:
+  n_trials: 10
+  timeout_seconds: 3600
+  sample_fraction: 0.2  # Use 20% of data for HPO (systematic sampling)
+  n_cv_splits: 3  # TimeSeriesSplit: Number of CV folds (3-5 recommended)
+  enable_pruning: true  # Early stop bad trials
+
+risk:
+  z_score_thresholds:
+    safe: -1.0
+    moderate: -2.0
+    warning: -3.0

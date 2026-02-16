@@ -22,6 +22,9 @@ const CleanupSidebar = ({ activeTab, onTabChange, scanResult }) => {
             items: [
                 { type: 'INSTANCE', label: 'Instances', icon: FiServer },
                 { type: 'RI_WASTE', label: 'Reserved Instances', icon: FiTrendingUp, isNew: true },
+                { type: 'EKS_CLUSTER', label: 'EKS Clusters', icon: FiServer, isNew: true },
+                { type: 'ECS_CLUSTER', label: 'ECS Clusters', icon: FiServer, isNew: true },
+                { type: 'AUTO_SCALING_GROUP', label: 'Auto Scaling Groups', icon: FiServer, isNew: true },
             ]
         },
         {
@@ -31,6 +34,7 @@ const CleanupSidebar = ({ activeTab, onTabChange, scanResult }) => {
                 { type: 'SNAPSHOT', label: 'Snapshots', icon: FiCamera },
                 { type: 'S3_BUCKET', label: 'S3 Buckets', icon: FiFolder },
                 { type: 'S3_LIFECYCLE', label: 'S3 Lifecycle', icon: FiArchive, isNew: true },
+                { type: 'EFS_FILE_SYSTEM', label: 'EFS File Systems', icon: FiHardDrive, isNew: true },
             ]
         },
         {
@@ -38,15 +42,42 @@ const CleanupSidebar = ({ activeTab, onTabChange, scanResult }) => {
             items: [
                 { type: 'RDS_DB', label: 'RDS Instances', icon: FiDatabase },
                 { type: 'RDS_MULTIAZ', label: 'Multi-AZ', icon: FiDatabase, isNew: true },
+                { type: 'DYNAMODB_TABLE', label: 'DynamoDB Tables', icon: FiDatabase, isNew: true },
+                { type: 'ELASTICACHE_CLUSTER', label: 'ElastiCache', icon: FiDatabase, isNew: true },
             ]
         },
         {
             title: 'Network',
             items: [
+                { type: 'VPC', label: 'VPC', icon: FiGlobe, isNew: true },
+                { type: 'NAT_GATEWAY', label: 'NAT Gateways', icon: FiShare2, isNew: true },
+                { type: 'VPC_ENDPOINT', label: 'VPC Endpoints', icon: FiLink, isNew: true },
+                { type: 'TRANSIT_GATEWAY', label: 'Transit Gateways', icon: FiShare2, isNew: true },
                 { type: 'ELASTIC_IP', label: 'Elastic IPs', icon: FiGlobe },
                 { type: 'LOAD_BALANCER', label: 'Load Balancers', icon: FiShare2 },
                 { type: 'NETWORK_INTERFACE', label: 'Interfaces', icon: FiLink },
                 { type: 'DATA_TRANSFER', label: 'Data Transfer', icon: FiActivity, isNew: true },
+            ]
+        },
+        {
+            title: 'Security',
+            items: [
+                { type: 'SECURITY_HUB', label: 'Security Hub', icon: FiShield, isNew: true },
+                { type: 'KMS_KEY', label: 'KMS Keys', icon: FiLock, isNew: true },
+                { type: 'SECRETS_MANAGER', label: 'Secrets Manager', icon: FiLock, isNew: true },
+                { type: 'CLOUDTRAIL', label: 'CloudTrail', icon: FiActivity, isNew: true },
+                { type: 'GUARDDUTY', label: 'GuardDuty', icon: FiShield, isNew: true },
+            ]
+        },
+        {
+            title: 'Management',
+            items: [
+                { type: 'CONFIG_RECORDER', label: 'AWS Config', icon: FiSettings, isNew: true },
+                { type: 'SSM_MANAGED_INSTANCE', label: 'Systems Manager', icon: FiSettings, isNew: true },
+                { type: 'CLOUDWATCH_LOG_GROUP', label: 'CloudWatch Logs', icon: FiActivity, isNew: true },
+                { type: 'CLOUDWATCH_ALARM', label: 'CloudWatch Alarms', icon: FiActivity, isNew: true },
+                { type: 'LAMBDA_FUNCTION', label: 'Lambda Functions', icon: FiServer, isNew: true },
+                { type: 'EVENTBRIDGE_RULE', label: 'EventBridge Rules', icon: FiSettings, isNew: true },
             ]
         },
         {

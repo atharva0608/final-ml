@@ -33,18 +33,34 @@ class ScheduleMatrix(BaseModel):
 class HibernationScheduleCreate(BaseModel):
     """Create hibernation schedule request"""
     cluster_id: str = Field(..., description="Cluster UUID")
-    schedule_matrix: List[int] = Field(..., min_length=168, max_length=168, description="168-hour schedule")
+    schedule_type: str = Field(default="WEEKLY", description="Schedule type: WEEKLY, DAILY, MONTHLY, HYBRID")
+    schedule_matrix: List[int] = Field(..., description="Schedule matrix (length varies by type: WEEKLY=168, DAILY=31, MONTHLY=744)")
+    date_overrides: Optional[dict] = Field(default={}, description="Date-specific overrides for HYBRID mode: {'2026-12-25': 0}")
     timezone: str = Field(default="UTC", description="Timezone for schedule (e.g., 'America/New_York')")
-    prewarm_enabled: bool = Field(default=False, description="Enable pre-warming before wake time")
-    prewarm_minutes: int = Field(default=30, ge=0, le=120, description="Minutes to pre-warm before wake")
+    pre_warm_minutes: int = Field(default=15, ge=0, le=120, description="Minutes to pre-warm before wake")
+    is_active: bool = Field(default=True, description="Whether schedule is active")
     strategy: str = Field(default="NAMESPACE_SLEEP", description="Hibernation strategy: NAMESPACE_SLEEP, NUCLEAR, SNAPSHOT_RESTORE")
 
     @field_validator('schedule_matrix')
     @classmethod
-    def validate_schedule_matrix(cls, v: List[int]) -> List[int]:
-        """Validate schedule matrix"""
-        if len(v) != 168:
-            raise ValueError('Schedule matrix must have exactly 168 elements')
+    def validate_schedule_matrix(cls, v: List[int], info) -> List[int]:
+        """Validate schedule matrix based on schedule_type"""
+        # Get schedule_type from the data being validated
+        schedule_type = info.data.get('schedule_type', 'WEEKLY')
+
+        # Expected lengths for each type
+        expected_lengths = {
+            'WEEKLY': 168,   # 7 days × 24 hours
+            'DAILY': 31,     # 31 days
+            'MONTHLY': 744,  # 31 days × 24 hours
+            'HYBRID': 168    # Base weekly pattern
+        }
+
+        expected_len = expected_lengths.get(schedule_type, 168)
+
+        if len(v) != expected_len:
+            raise ValueError(f'Schedule matrix for {schedule_type} must have exactly {expected_len} elements, got {len(v)}')
+
         for i, val in enumerate(v):
             if val not in [0, 1]:
                 raise ValueError(f'Matrix element at index {i} must be 0 or 1')
@@ -67,8 +83,9 @@ class HibernationScheduleCreate(BaseModel):
                 "cluster_id": "550e8400-e29b-41d4-a716-446655440000",
                 "schedule_matrix": [0] * 48 + [1] * 72 + [0] * 48,
                 "timezone": "America/New_York",
-                "prewarm_enabled": True,
-                "prewarm_minutes": 30
+                "pre_warm_minutes": 15,
+                "is_active": True,
+                "strategy": "NAMESPACE_SLEEP"
             }
         }
     }
@@ -76,19 +93,34 @@ class HibernationScheduleCreate(BaseModel):
 
 class HibernationScheduleUpdate(BaseModel):
     """Update hibernation schedule request"""
-    schedule_matrix: Optional[List[int]] = Field(None, min_length=168, max_length=168, description="168-hour schedule")
+    schedule_type: Optional[str] = Field(None, description="Schedule type: WEEKLY, DAILY, MONTHLY, HYBRID")
+    schedule_matrix: Optional[List[int]] = Field(None, description="Schedule matrix (length varies by type)")
+    date_overrides: Optional[dict] = Field(None, description="Date-specific overrides for HYBRID mode")
     timezone: Optional[str] = Field(None, description="Timezone for schedule")
-    prewarm_enabled: Optional[bool] = Field(None, description="Enable pre-warming")
-    prewarm_minutes: Optional[int] = Field(None, ge=0, le=120, description="Pre-warm minutes")
+    pre_warm_minutes: Optional[int] = Field(None, ge=0, le=120, description="Pre-warm minutes")
+    is_active: Optional[bool] = Field(None, description="Whether schedule is active")
     strategy: Optional[str] = Field(None, description="Hibernation strategy: NAMESPACE_SLEEP, NUCLEAR, SNAPSHOT_RESTORE")
 
     @field_validator('schedule_matrix')
     @classmethod
-    def validate_schedule_matrix(cls, v: Optional[List[int]]) -> Optional[List[int]]:
-        """Validate schedule matrix"""
+    def validate_schedule_matrix(cls, v: Optional[List[int]], info) -> Optional[List[int]]:
+        """Validate schedule matrix based on schedule_type"""
         if v is not None:
-            if len(v) != 168:
-                raise ValueError('Schedule matrix must have exactly 168 elements')
+            # Get schedule_type if being updated, otherwise allow any valid length
+            schedule_type = info.data.get('schedule_type')
+
+            if schedule_type:
+                expected_lengths = {
+                    'WEEKLY': 168,
+                    'DAILY': 31,
+                    'MONTHLY': 744,
+                    'HYBRID': 168
+                }
+                expected_len = expected_lengths.get(schedule_type, 168)
+                if len(v) != expected_len:
+                    raise ValueError(f'Schedule matrix for {schedule_type} must have exactly {expected_len} elements')
+
+            # Validate values
             for i, val in enumerate(v):
                 if val not in [0, 1]:
                     raise ValueError(f'Matrix element at index {i} must be 0 or 1')
@@ -109,8 +141,8 @@ class HibernationScheduleUpdate(BaseModel):
     model_config = {
         "json_schema_extra": {
             "example": {
-                "prewarm_enabled": True,
-                "prewarm_minutes": 45
+                "pre_warm_minutes": 30,
+                "is_active": False
             }
         }
     }
@@ -120,10 +152,11 @@ class HibernationScheduleResponse(BaseModel):
     """Hibernation schedule response"""
     id: str = Field(..., description="Schedule UUID")
     cluster_id: str = Field(..., description="Cluster UUID")
-    schedule_matrix: List[int] = Field(..., description="168-hour schedule")
+    schedule_type: str = Field(default="WEEKLY", description="Schedule type: WEEKLY, DAILY, MONTHLY, HYBRID")
+    schedule_matrix: List[int] = Field(..., description="Schedule matrix (length varies by type)")
+    date_overrides: Optional[dict] = Field(default={}, description="Date-specific overrides for HYBRID mode")
     timezone: str = Field(..., description="Timezone")
-    prewarm_enabled: bool = Field(default=False, description="Pre-warming enabled")
-    prewarm_minutes: int = Field(..., description="Pre-warm minutes")
+    pre_warm_minutes: int = Field(..., description="Pre-warm minutes")
     strategy: str = Field(default="NAMESPACE_SLEEP", description="Hibernation strategy")
     is_active: bool = Field(default=True, description="Whether schedule is active")
     last_action: Optional[str] = Field(None, description="Last action taken (SLEEP/WAKE/PREWARM/ERROR)")
@@ -138,8 +171,7 @@ class HibernationScheduleResponse(BaseModel):
                 "cluster_id": "550e8400-e29b-41d4-a716-446655440000",
                 "schedule_matrix": [0] * 48 + [1] * 72 + [0] * 48,
                 "timezone": "America/New_York",
-                "prewarm_enabled": True,
-                "prewarm_minutes": 30,
+                "pre_warm_minutes": 15,
                 "strategy": "NAMESPACE_SLEEP",
                 "is_active": True,
                 "last_action": None,

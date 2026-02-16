@@ -293,9 +293,9 @@ class HygieneService:
                     # ENTERPRISE: Use Cost Explorer for invoice-accurate costs
                     # Falls back to static pricing if Cost Explorer unavailable
                     cost = float(cost_service.get_resource_monthly_cost(
-                        resource_id=vol_id,
+                        resource_id=v['VolumeId'],
                         resource_type='VOLUME',
-                        account_id=account_id,
+                        account_id=account.id,
                         resource_size=v['Size'],
                         region=region
                     ))
@@ -417,7 +417,7 @@ class HygieneService:
                         cost = float(cost_service.get_resource_monthly_cost(
                             resource_id=snap_id,
                             resource_type='SNAPSHOT',
-                            account_id=account_id,
+                            account_id=account.id,
                             resource_size=s['VolumeSize'],
                             region=region
                         ))
@@ -458,7 +458,7 @@ class HygieneService:
                         cost = float(cost_service.get_resource_monthly_cost(
                             resource_id=snap_id,
                             resource_type='SNAPSHOT',
-                            account_id=account_id,
+                            account_id=account.id,
                             resource_size=s['VolumeSize'],
                             region=region
                         ))
@@ -500,7 +500,7 @@ class HygieneService:
                         cost = float(cost_service.get_resource_monthly_cost(
                             resource_id=ip['AllocationId'],
                             resource_type='ELASTIC_IP',
-                            account_id=account_id,
+                            account_id=account.id,
                             region=region
                         ))
                         item = ResourceItem(
@@ -683,6 +683,26 @@ class HygieneService:
             dt_res, dt_sav = self._scan_data_transfer(session, region)
             resources.extend(dt_res)
             savings += dt_sav
+
+            # 11. NEW: VPC Resources (VPC, VPC Endpoints, Transit Gateways)
+            vpc_res, vpc_sav = self._scan_vpc_resources(session, region, required_tags, account.id)
+            resources.extend(vpc_res)
+            savings += vpc_sav
+
+            # 12. NEW: Security Resources (Security Hub, KMS, Secrets Manager, CloudTrail, GuardDuty)
+            sec_res, sec_sav = self._scan_security_resources(session, region, required_tags, account.id)
+            resources.extend(sec_res)
+            savings += sec_sav
+
+            # 13. NEW: Management Resources (Config, SSM, CloudWatch, Lambda, EventBridge)
+            mgmt_res, mgmt_sav = self._scan_management_resources(session, region, required_tags, account.id)
+            resources.extend(mgmt_res)
+            savings += mgmt_sav
+
+            # 14. NEW: Compute Resources (EKS, ECS, Auto Scaling Groups)
+            compute_res, compute_sav = self._scan_compute_resources(session, region, required_tags, account.id)
+            resources.extend(compute_res)
+            savings += compute_sav
 
         except Exception as e:
             logger.error(f"Failed to scan region {region}: {e}")
@@ -1694,6 +1714,580 @@ class HygieneService:
         self.db.add(new_auth)
         self.db.commit()
         return {"status": "success", "message": f"Authorized {resource_id}"}
+
+    def _scan_vpc_resources(self, session, region, required_tags, account_id):
+        """Scan VPC, VPC Endpoints, and Transit Gateways"""
+        from backend.services.resource_cost_service import ResourceCostService
+        cost_service = ResourceCostService(self.db)
+
+        resources = []
+        savings = 0.0
+
+        try:
+            ec2 = session.client('ec2')
+
+            # 1. VPCs (non-default only)
+            vpcs = ec2.describe_vpcs()
+            for vpc in vpcs.get('Vpcs', []):
+                if not vpc.get('IsDefault', False) and vpc['State'] == 'available':
+                    tags = vpc.get('Tags', [])
+                    tag_keys = {t['Key'] for t in tags}
+                    missing = [rt for rt in required_tags if rt not in tag_keys]
+
+                    # VPCs are free but show for visibility
+                    item = ResourceItem(
+                        id=vpc['VpcId'],
+                        name=self._get_tag_value(tags, 'Name'),
+                        type=ResourceType.VPC,
+                        status=HygieneStatus.ACTIVE,
+                        region=region,
+                        cost_per_month=0.0,
+                        reason='Active VPC',
+                        metadata={
+                            'CidrBlock': vpc.get('CidrBlock'),
+                            'State': vpc['State']
+                        },
+                        is_compliant=len(missing) == 0,
+                        missing_tags=missing
+                    )
+                    resources.append(item)
+
+            # 2. VPC Endpoints (Interface endpoints have cost)
+            try:
+                endpoints = ec2.describe_vpc_endpoints()
+                for ep in endpoints.get('VpcEndpoints', []):
+                    if ep['State'] == 'available':
+                        tags = ep.get('Tags', [])
+                        tag_keys = {t['Key'] for t in tags}
+                        missing = [rt for rt in required_tags if rt not in tag_keys]
+
+                        # Interface endpoints cost money ($0.01/hr/AZ)
+                        ep_type = ep.get('VpcEndpointType', 'Interface')
+                        cost = 7.20 if ep_type == 'Interface' else 0.0  # ~$7.20/month
+
+                        item = ResourceItem(
+                            id=ep['VpcEndpointId'],
+                            name=self._get_tag_value(tags, 'Name'),
+                            type=ResourceType.VPC_ENDPOINT,
+                            status=HygieneStatus.ACTIVE,
+                            region=region,
+                            cost_per_month=cost,
+                            reason=f'{ep_type} VPC Endpoint',
+                            metadata={
+                                'ServiceName': ep.get('ServiceName'),
+                                'Type': ep_type,
+                                'VpcId': ep.get('VpcId')
+                            },
+                            is_compliant=len(missing) == 0,
+                            missing_tags=missing
+                        )
+                        resources.append(item)
+            except Exception as ep_err:
+                logger.error(f"VPC Endpoint scan error: {ep_err}")
+
+            # 3. Transit Gateways
+            try:
+                tgws = ec2.describe_transit_gateways()
+                for tgw in tgws.get('TransitGateways', []):
+                    if tgw['State'] == 'available':
+                        tags = tgw.get('Tags', [])
+                        tag_keys = {t['Key'] for t in tags}
+                        missing = [rt for rt in required_tags if rt not in tag_keys]
+
+                        # Transit Gateway: $0.05/hr = $36/month
+                        cost = 36.0
+
+                        item = ResourceItem(
+                            id=tgw['TransitGatewayId'],
+                            name=self._get_tag_value(tags, 'Name'),
+                            type=ResourceType.TRANSIT_GATEWAY,
+                            status=HygieneStatus.ACTIVE,
+                            region=region,
+                            cost_per_month=cost,
+                            reason='Active Transit Gateway',
+                            metadata={
+                                'State': tgw['State'],
+                                'OwnerId': tgw.get('OwnerId')
+                            },
+                            is_compliant=len(missing) == 0,
+                            missing_tags=missing
+                        )
+                        resources.append(item)
+            except Exception as tgw_err:
+                logger.error(f"Transit Gateway scan error: {tgw_err}")
+
+        except Exception as e:
+            logger.error(f"VPC resources scan error: {e}")
+
+        return resources, savings
+
+    def _scan_security_resources(self, session, region, required_tags, account_id):
+        """Scan Security Hub, KMS Keys, Secrets Manager, CloudTrail, GuardDuty"""
+        from backend.services.resource_cost_service import ResourceCostService
+        cost_service = ResourceCostService(self.db)
+
+        resources = []
+        savings = 0.0
+
+        try:
+            # 1. Security Hub (check if enabled)
+            try:
+                security_hub = session.client('securityhub')
+                hub = security_hub.describe_hub()
+
+                if hub:
+                    # Security Hub is enabled
+                    item = ResourceItem(
+                        id=hub['HubArn'],
+                        name='Security Hub',
+                        type=ResourceType.SECURITY_HUB,
+                        status=HygieneStatus.ACTIVE,
+                        region=region,
+                        cost_per_month=10.0,  # Approximate
+                        reason='Security Hub enabled',
+                        metadata={
+                            'SubscribedAt': str(hub.get('SubscribedAt')),
+                            'AutoEnableControls': hub.get('AutoEnableControls')
+                        },
+                        is_compliant=True
+                    )
+                    resources.append(item)
+            except Exception as sh_err:
+                # Security Hub not enabled or no access
+                pass
+
+            # 2. KMS Keys (customer-managed only)
+            try:
+                kms = session.client('kms')
+                keys = kms.list_keys()
+
+                for key in keys.get('Keys', []):
+                    try:
+                        key_id = key['KeyId']
+                        key_metadata = kms.describe_key(KeyId=key_id)
+                        key_info = key_metadata['KeyMetadata']
+
+                        # Only customer-managed keys (not AWS-managed)
+                        if key_info.get('KeyManager') == 'CUSTOMER' and key_info['KeyState'] == 'Enabled':
+                            # KMS keys: $1/key/month
+                            item = ResourceItem(
+                                id=key_id,
+                                name=key_info.get('Description', 'No description'),
+                                type=ResourceType.KMS_KEY,
+                                status=HygieneStatus.ACTIVE,
+                                region=region,
+                                cost_per_month=1.0,
+                                reason='Customer-managed KMS key',
+                                metadata={
+                                    'Description': key_info.get('Description'),
+                                    'CreationDate': str(key_info.get('CreationDate')),
+                                    'KeyState': key_info['KeyState']
+                                },
+                                is_compliant=True
+                            )
+                            resources.append(item)
+                    except Exception:
+                        continue
+            except Exception as kms_err:
+                logger.error(f"KMS scan error: {kms_err}")
+
+            # 3. Secrets Manager
+            try:
+                secrets = session.client('secretsmanager')
+                secret_list = secrets.list_secrets()
+
+                for secret in secret_list.get('SecretList', []):
+                    tags = secret.get('Tags', [])
+                    tag_keys = {t['Key'] for t in tags}
+                    missing = [rt for rt in required_tags if rt not in tag_keys]
+
+                    # Secrets Manager: $0.40/secret/month
+                    item = ResourceItem(
+                        id=secret['ARN'],
+                        name=secret.get('Name'),
+                        type=ResourceType.SECRETS_MANAGER,
+                        status=HygieneStatus.ACTIVE,
+                        region=region,
+                        cost_per_month=0.40,
+                        reason='Active secret',
+                        metadata={
+                            'LastChangedDate': str(secret.get('LastChangedDate')),
+                            'LastAccessedDate': str(secret.get('LastAccessedDate'))
+                        },
+                        is_compliant=len(missing) == 0,
+                        missing_tags=missing
+                    )
+                    resources.append(item)
+            except Exception as sm_err:
+                logger.error(f"Secrets Manager scan error: {sm_err}")
+
+            # 4. CloudTrail (only in us-east-1 to avoid duplicates)
+            if region == 'us-east-1':
+                try:
+                    cloudtrail = session.client('cloudtrail')
+                    trails = cloudtrail.describe_trails()
+
+                    for trail in trails.get('trailList', []):
+                        # Check if trail is logging
+                        status = cloudtrail.get_trail_status(Name=trail['TrailARN'])
+                        if status.get('IsLogging'):
+                            tags = trail.get('Tags', [])
+                            tag_keys = {t['Key'] for t in tags}
+                            missing = [rt for rt in required_tags if rt not in tag_keys]
+
+                            # First trail free, additional $2/month
+                            cost = 0.0  # Assume first trail
+
+                            item = ResourceItem(
+                                id=trail['TrailARN'],
+                                name=trail.get('Name'),
+                                type=ResourceType.CLOUDTRAIL,
+                                status=HygieneStatus.ACTIVE,
+                                region='global',
+                                cost_per_month=cost,
+                                reason='Active CloudTrail',
+                                metadata={
+                                    'IsLogging': status.get('IsLogging'),
+                                    'S3BucketName': trail.get('S3BucketName')
+                                },
+                                is_compliant=len(missing) == 0,
+                                missing_tags=missing
+                            )
+                            resources.append(item)
+                except Exception as ct_err:
+                    logger.error(f"CloudTrail scan error: {ct_err}")
+
+            # 5. GuardDuty (only in us-east-1 to avoid duplicates)
+            if region == 'us-east-1':
+                try:
+                    guardduty = session.client('guardduty')
+                    detectors = guardduty.list_detectors()
+
+                    for detector_id in detectors.get('DetectorIds', []):
+                        detector = guardduty.get_detector(DetectorId=detector_id)
+                        if detector.get('Status') == 'ENABLED':
+                            # GuardDuty: Usage-based, approximate $5-10/month
+                            item = ResourceItem(
+                                id=detector_id,
+                                name='GuardDuty Detector',
+                                type=ResourceType.GUARDDUTY,
+                                status=HygieneStatus.ACTIVE,
+                                region='global',
+                                cost_per_month=5.0,
+                                reason='GuardDuty enabled',
+                                metadata={
+                                    'Status': detector.get('Status'),
+                                    'CreatedAt': str(detector.get('CreatedAt'))
+                                },
+                                is_compliant=True
+                            )
+                            resources.append(item)
+                except Exception as gd_err:
+                    logger.error(f"GuardDuty scan error: {gd_err}")
+
+        except Exception as e:
+            logger.error(f"Security resources scan error: {e}")
+
+        return resources, savings
+
+    def _scan_management_resources(self, session, region, required_tags, account_id):
+        """Scan Config, SSM, CloudWatch, Lambda, EventBridge"""
+        from backend.services.resource_cost_service import ResourceCostService
+        cost_service = ResourceCostService(self.db)
+
+        resources = []
+        savings = 0.0
+
+        try:
+            # 1. AWS Config Recorders
+            try:
+                config = session.client('config')
+                recorders = config.describe_configuration_recorders()
+
+                for recorder in recorders.get('ConfigurationRecorders', []):
+                    # Check if recording
+                    status = config.describe_configuration_recorder_status(
+                        ConfigurationRecorderNames=[recorder['name']]
+                    )
+                    is_recording = status['ConfigurationRecordersStatus'][0].get('recording', False)
+
+                    if is_recording:
+                        # Config: Usage-based, approximate $10/month
+                        item = ResourceItem(
+                            id=recorder['name'],
+                            name=recorder['name'],
+                            type=ResourceType.CONFIG_RECORDER,
+                            status=HygieneStatus.ACTIVE,
+                            region=region,
+                            cost_per_month=10.0,
+                            reason='Config recorder active',
+                            metadata={
+                                'RoleARN': recorder.get('roleARN'),
+                                'Recording': is_recording
+                            },
+                            is_compliant=True
+                        )
+                        resources.append(item)
+            except Exception as config_err:
+                logger.error(f"Config scan error: {config_err}")
+
+            # 2. Systems Manager Managed Instances
+            try:
+                ssm = session.client('ssm')
+                instances = ssm.describe_instance_information()
+
+                for instance in instances.get('InstanceInformationList', []):
+                    if instance['PingStatus'] == 'Online':
+                        # SSM itself is free
+                        item = ResourceItem(
+                            id=instance['InstanceId'],
+                            name=instance.get('ComputerName', 'Unknown'),
+                            type=ResourceType.SSM_MANAGED_INSTANCE,
+                            status=HygieneStatus.ACTIVE,
+                            region=region,
+                            cost_per_month=0.0,
+                            reason='SSM managed instance',
+                            metadata={
+                                'PlatformType': instance.get('PlatformType'),
+                                'PlatformName': instance.get('PlatformName'),
+                                'PingStatus': instance['PingStatus']
+                            },
+                            is_compliant=True
+                        )
+                        resources.append(item)
+            except Exception as ssm_err:
+                logger.error(f"SSM scan error: {ssm_err}")
+
+            # 3. CloudWatch Log Groups (only show large ones)
+            try:
+                logs = session.client('logs')
+                log_groups = logs.describe_log_groups()
+
+                for log_group in log_groups.get('logGroups', []):
+                    # Only show log groups with significant storage
+                    stored_bytes = log_group.get('storedBytes', 0)
+                    if stored_bytes > 1_000_000_000:  # > 1GB
+                        stored_gb = stored_bytes / (1024**3)
+                        # CloudWatch Logs: $0.03/GB/month stored
+                        cost = stored_gb * 0.03
+
+                        item = ResourceItem(
+                            id=log_group['logGroupName'],
+                            name=log_group['logGroupName'],
+                            type=ResourceType.CLOUDWATCH_LOG_GROUP,
+                            status=HygieneStatus.ACTIVE,
+                            region=region,
+                            cost_per_month=cost,
+                            reason=f'Log group storing {stored_gb:.2f} GB',
+                            metadata={
+                                'StoredBytes': stored_bytes,
+                                'RetentionInDays': log_group.get('retentionInDays', 'Never expire')
+                            },
+                            is_compliant=True
+                        )
+                        resources.append(item)
+            except Exception as logs_err:
+                logger.error(f"CloudWatch Logs scan error: {logs_err}")
+
+            # 4. CloudWatch Alarms
+            try:
+                cloudwatch = session.client('cloudwatch')
+                alarms = cloudwatch.describe_alarms()
+
+                # Only count alarms as a summary (not individual items to avoid clutter)
+                alarm_count = len(alarms.get('MetricAlarms', []))
+                if alarm_count > 10:  # Only show if significant
+                    # Alarms: $0.10 each/month
+                    cost = alarm_count * 0.10
+
+                    item = ResourceItem(
+                        id=f'cloudwatch-alarms-{region}',
+                        name=f'{alarm_count} CloudWatch Alarms',
+                        type=ResourceType.CLOUDWATCH_ALARM,
+                        status=HygieneStatus.ACTIVE,
+                        region=region,
+                        cost_per_month=cost,
+                        reason=f'{alarm_count} active alarms',
+                        metadata={'AlarmCount': alarm_count},
+                        is_compliant=True
+                    )
+                    resources.append(item)
+            except Exception as cw_err:
+                logger.error(f"CloudWatch Alarms scan error: {cw_err}")
+
+            # 5. Lambda Functions
+            try:
+                lambda_client = session.client('lambda')
+                functions = lambda_client.list_functions()
+
+                for func in functions.get('Functions', []):
+                    tags = func.get('Tags', {})
+                    tag_keys = set(tags.keys())
+                    missing = [rt for rt in required_tags if rt not in tag_keys]
+
+                    # Lambda: Hard to estimate without CloudWatch metrics
+                    # Show function but with $0 cost (actual cost from Cost Explorer)
+                    item = ResourceItem(
+                        id=func['FunctionArn'],
+                        name=func['FunctionName'],
+                        type=ResourceType.LAMBDA_FUNCTION,
+                        status=HygieneStatus.ACTIVE,
+                        region=region,
+                        cost_per_month=0.0,  # Actual cost from Cost Explorer
+                        reason='Active Lambda function',
+                        metadata={
+                            'Runtime': func.get('Runtime'),
+                            'MemorySize': func.get('MemorySize'),
+                            'LastModified': func.get('LastModified')
+                        },
+                        is_compliant=len(missing) == 0,
+                        missing_tags=missing
+                    )
+                    resources.append(item)
+            except Exception as lambda_err:
+                logger.error(f"Lambda scan error: {lambda_err}")
+
+            # 6. EventBridge Rules
+            try:
+                events = session.client('events')
+                rules = events.list_rules()
+
+                active_rules = [r for r in rules.get('Rules', []) if r.get('State') == 'ENABLED']
+                if len(active_rules) > 10:  # Only show if significant
+                    # EventBridge: $1/million events (hard to estimate)
+                    item = ResourceItem(
+                        id=f'eventbridge-rules-{region}',
+                        name=f'{len(active_rules)} EventBridge Rules',
+                        type=ResourceType.EVENTBRIDGE_RULE,
+                        status=HygieneStatus.ACTIVE,
+                        region=region,
+                        cost_per_month=0.0,  # Usage-based
+                        reason=f'{len(active_rules)} active rules',
+                        metadata={'RuleCount': len(active_rules)},
+                        is_compliant=True
+                    )
+                    resources.append(item)
+            except Exception as eb_err:
+                logger.error(f"EventBridge scan error: {eb_err}")
+
+        except Exception as e:
+            logger.error(f"Management resources scan error: {e}")
+
+        return resources, savings
+
+    def _scan_compute_resources(self, session, region, required_tags, account_id):
+        """Scan EKS Clusters, ECS Clusters, Auto Scaling Groups"""
+        from backend.services.resource_cost_service import ResourceCostService
+        cost_service = ResourceCostService(self.db)
+
+        resources = []
+        savings = 0.0
+
+        try:
+            # 1. EKS Clusters
+            try:
+                eks = session.client('eks')
+                clusters = eks.list_clusters()
+
+                for cluster_name in clusters.get('clusters', []):
+                    cluster = eks.describe_cluster(name=cluster_name)['cluster']
+
+                    if cluster['status'] == 'ACTIVE':
+                        tags = cluster.get('tags', {})
+                        tag_keys = set(tags.keys())
+                        missing = [rt for rt in required_tags if rt not in tag_keys]
+
+                        # EKS: $0.10/hr = $72/month per cluster
+                        item = ResourceItem(
+                            id=cluster['arn'],
+                            name=cluster_name,
+                            type=ResourceType.EKS_CLUSTER,
+                            status=HygieneStatus.ACTIVE,
+                            region=region,
+                            cost_per_month=72.0,
+                            reason='Active EKS cluster',
+                            metadata={
+                                'Version': cluster.get('version'),
+                                'CreatedAt': str(cluster.get('createdAt')),
+                                'Status': cluster['status']
+                            },
+                            is_compliant=len(missing) == 0,
+                            missing_tags=missing
+                        )
+                        resources.append(item)
+            except Exception as eks_err:
+                logger.error(f"EKS scan error: {eks_err}")
+
+            # 2. ECS Clusters
+            try:
+                ecs = session.client('ecs')
+                clusters = ecs.list_clusters()
+
+                for cluster_arn in clusters.get('clusterArns', []):
+                    cluster_detail = ecs.describe_clusters(clusters=[cluster_arn])['clusters'][0]
+
+                    if cluster_detail['status'] == 'ACTIVE':
+                        tags = cluster_detail.get('tags', [])
+                        tag_keys = {t['key'] for t in tags}
+                        missing = [rt for rt in required_tags if rt not in tag_keys]
+
+                        # ECS: Control plane is free, but show for visibility
+                        item = ResourceItem(
+                            id=cluster_arn,
+                            name=cluster_detail.get('clusterName'),
+                            type=ResourceType.ECS_CLUSTER,
+                            status=HygieneStatus.ACTIVE,
+                            region=region,
+                            cost_per_month=0.0,  # Free control plane
+                            reason='Active ECS cluster (control plane free)',
+                            metadata={
+                                'ActiveServicesCount': cluster_detail.get('activeServicesCount', 0),
+                                'RunningTasksCount': cluster_detail.get('runningTasksCount', 0),
+                                'Status': cluster_detail['status']
+                            },
+                            is_compliant=len(missing) == 0,
+                            missing_tags=missing
+                        )
+                        resources.append(item)
+            except Exception as ecs_err:
+                logger.error(f"ECS scan error: {ecs_err}")
+
+            # 3. Auto Scaling Groups
+            try:
+                asg = session.client('autoscaling')
+                groups = asg.describe_auto_scaling_groups()
+
+                for group in groups.get('AutoScalingGroups', []):
+                    tags = group.get('Tags', [])
+                    tag_keys = {t['Key'] for t in tags}
+                    missing = [rt for rt in required_tags if rt not in tag_keys]
+
+                    # ASG: Free service (pay for instances)
+                    item = ResourceItem(
+                        id=group['AutoScalingGroupARN'],
+                        name=group['AutoScalingGroupName'],
+                        type=ResourceType.AUTO_SCALING_GROUP,
+                        status=HygieneStatus.ACTIVE,
+                        region=region,
+                        cost_per_month=0.0,  # Free service
+                        reason=f'ASG with {group.get("DesiredCapacity", 0)} instances',
+                        metadata={
+                            'MinSize': group.get('MinSize'),
+                            'MaxSize': group.get('MaxSize'),
+                            'DesiredCapacity': group.get('DesiredCapacity'),
+                            'Instances': len(group.get('Instances', []))
+                        },
+                        is_compliant=len(missing) == 0,
+                        missing_tags=missing
+                    )
+                    resources.append(item)
+            except Exception as asg_err:
+                logger.error(f"Auto Scaling Groups scan error: {asg_err}")
+
+        except Exception as e:
+            logger.error(f"Compute resources scan error: {e}")
+
+        return resources, savings
 
     def get_resource_details(self, account_id: str, resource_id: str, resource_type: str, region: str) -> Dict[str, Any]:
         """

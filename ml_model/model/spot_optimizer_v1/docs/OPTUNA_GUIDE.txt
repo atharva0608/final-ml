@@ -1,0 +1,291 @@
+================================================================================
+OPTUNA HYPERPARAMETER TUNING GUIDE (Updated 2026-01-05)
+================================================================================
+
+Applies to: LightGBM Spot Optimizer V1 (Risk Score Prediction)
+Script: scripts/optimize_hyperparameters.py
+
+================================================================================
+WHAT'S NEW (2026-01-05 Update)
+================================================================================
+
+ UNIFIED SCRIPT: Single script for all HPO (replaced tune_optuna.py and train_hpo.py)
+ TSCV: TimeSeriesSplit Cross-Validation (3-5 folds) for robust parameter selection
+ PRUNING: LightGBMPruningCallback + MedianPruner for ~40% faster optimization
+ RISK SCORE: Now optimizes for calibrated probabilities (binary_logloss)
+ CONFIGURABLE: All settings in config.yaml (sample_fraction, n_cv_splits, etc.)
+
+================================================================================
+QUICK START
+================================================================================
+
+# Standard optimization (20% data, 3 CV folds, 100 trials, ~1.5 hours)
+python scripts/optimize_hyperparameters.py
+
+# Quick test
+python scripts/optimize_hyperparameters.py --dry-run
+
+# Optimize only one model
+python scripts/optimize_hyperparameters.py --regressor-only
+python scripts/optimize_hyperparameters.py --classifier-only
+
+# Use full dataset (slow, not recommended for HPO)
+python scripts/optimize_hyperparameters.py --no-sampling
+
+================================================================================
+CONFIGURATION (config.yaml)
+================================================================================
+
+optuna:
+  n_trials: 100                # Number of trials per model
+  timeout_seconds: 3600        # Max time (rarely hits this)
+  sample_fraction: 0.2         # Use 20% of data (systematic sampling)
+  n_cv_splits: 3               # TimeSeriesSplit folds (3-5 recommended)
+  enable_pruning: true         # Early stop bad trials
+
+sample_families: ['c6i', 'm6i', 'r6i']  # Further reduce data for HPO
+
+RECOMMENDED SETTINGS:
+  - HPO: sample_fraction=0.2, n_cv_splits=3, sample_families=['c6i','m6i','r6i']
+  - Final Training: sample_fraction=1.0, sample_families=[]
+
+================================================================================
+TIME -SERIES CROSS-VALIDATION (TSCV)
+================================================================================
+
+WHY TSCV?
+  Traditional CV shuffles data → Data leakage in time-series
+  TSCV respects temporal order → Parameters work across market regimes
+
+HOW IT WORKS (n_cv_splits=3):
+  ┌─────────────────────────────────────────────────────────────────┐
+  │                                                                  │
+  │  Fold 1: Train [Jan─Mar] → Validate [Apr]                       │
+  │  Fold 2: Train [Jan─Jun] → Validate [Jul]                       │
+  │  Fold 3: Train [Jan─Sep] → Validate [Oct]                       │
+  │                                                                  │
+  │  Final Score: Average of 3 folds                                │
+  │                                                                  │
+  └─────────────────────────────────────────────────────────────────┘
+
+BENEFITS:
+   Tests params across different periods (quiet vs volatile markets)
+   Prevents overfitting to one specific time window
+   More robust production performance
+
+COST: ~3x slower than single split (still worth it!)
+
+================================================================================
+PRUNING (NEW FEATURE)
+================================================================================
+
+WHAT IS PRUNING?
+  Optuna stops "obviously bad" trials early to save time.
+
+  Example:
+    Trial 10: MAPE at epoch 50 = 5.2% (terrible)
+    Best so far: MAPE = 0.4%
+    → Stop Trial 10 immediately (don't waste 200 more epochs)
+
+TWO PRUNERS:
+  1. MedianPruner: Compares trial to median of previous trials
+  2. LightGBMPruningCallback: Monitors LightGBM validation score
+
+IMPACT: ~40% time savings (e.g., 3 hours → 1.8 hours)
+
+DISABLE IF:
+  - Using very few trials (<20)
+  - Early trials get pruned too aggressively (rare)
+
+================================================================================
+RISK SCORE OPTIMIZATION (CLASSIFIER)
+================================================================================
+
+TARGET CHANGED: is_stable → is_unstable
+  - Old: 1 = Safe, 0 = Unsafe
+  - New: 1 = Risk, 0 = Safe
+  - HIGH SCORE = HIGH RISK (intuitive!)
+
+METRIC CHANGED: F1 → binary_logloss
+  - F1: Optimizes binary threshold accuracy
+  - Log Loss: Optimizes probability calibration
+  - Result: 20% score truly means 20% risk
+
+NO scale_pos_weight:
+  - Removed to ensure true probability calibration
+  - Model learns natural class balance
+
+BUSINESS IMPACT:
+  - Decision engine can trust probabilities
+  - Can combine with external interruption rates
+  - Dynamic risk thresholds (e.g., "conservative during peak hours")
+
+================================================================================
+WORKFLOW DIAGRAM (UPDATED)
+================================================================================
+
+                ┌───────────────────────────────────────────┐
+                │  STEP 1: Configure (config.yaml)         │
+                │  - sample_families: ['c6i', 'm6i', 'r6i'] │
+                │  - sample_fraction: 0.2                   │
+                │  - n_cv_splits: 3                         │
+                └───────────────────────────────────────────┘
+                                  │
+                                  ▼
+                ┌───────────────────────────────────────────┐
+                │  STEP 2: Run HPO (~1.5 hours)            │
+                │  $ python scripts/optimize_hyperparameters.py │
+                │  Output: optuna_results_*.json           │
+                └───────────────────────────────────────────┘
+                                  │
+                                  ▼
+                ┌───────────────────────────────────────────┐
+                │  STEP 3: Review Results                  │
+                │  $ cat models/hpo_results/optuna_results_*.json │
+                └───────────────────────────────────────────┘
+                                  │
+                                  ▼
+                ┌───────────────────────────────────────────┐
+                │  STEP 4: Copy Params to src/model.py     │
+                │  (Manual, 2 minutes)                      │
+                └───────────────────────────────────────────┘
+                                  │
+                                  ▼
+                ┌───────────────────────────────────────────┐
+                │  STEP 5: Train on Full Data              │
+                │  $ python scripts/train_v1.py             │
+                └───────────────────────────────────────────┘
+
+================================================================================
+TIME & COST ESTIMATES (2026-01-05)
+================================================================================
+
+HARDWARE: M4 Chip (local, free)
+
+WITH 20% DATA (RECOMMENDED FOR HPO):
+┌──────────────┬────────────┬─────────────┬──────────────┐
+│ Model        │ Trials     │ CV Folds    │ Total Time   │
+├──────────────┼────────────┼─────────────┼──────────────┤
+│ Regressor    │ 100        │ 3           │ ~45 min      │
+│ Classifier   │ 100        │ 3           │ ~45 min      │
+│ BOTH         │ 200        │ 3           │ ~1.5 hours   │
+└──────────────┴────────────┴─────────────┴──────────────┘
+
+WITH FULL DATA (NOT RECOMMENDED FOR HPO):
+┌──────────────┬────────────┬─────────────┬──────────────┐
+│ Model        │ Trials     │ CV Folds    │ Total Time   │
+├──────────────┼────────────┼─────────────┼──────────────┤
+│ Regressor    │ 100        │ 3           │ ~4 hours     │
+│ Classifier   │ 100        │ 3           │ ~4 hours     │
+│ BOTH         │ 200        │ 3           │ ~8 hours     │
+└──────────────┴────────────┴─────────────┴──────────────┘
+
+PRUNING SAVES ~40%:
+  Without Pruning: 1.5 hours → With Pruning: ~0.9 hours
+
+RECOMMENDATION: Use 20% data for HPO, full data for final training.
+
+================================================================================
+SEARCH SPACE
+================================================================================
+
+REGRESSOR (MAPE Optimization):
+┌────────────────────┬────────────────┬──────────┐
+│ Parameter          │ Range          │ Scale    │
+├────────────────────┼────────────────┼──────────┤
+│ num_leaves         │ 15 - 63        │ linear   │
+│ max_depth          │ 3 - 12         │ linear   │
+│ min_child_samples  │ 5 - 50         │ linear   │
+│ learning_rate      │ 0.01 - 0.2     │ log      │
+│ lambda_l1/l2       │ 1e-4 - 1.0     │ log      │
+│ feature_fraction   │ 0.6 - 0.95     │ linear   │
+│ bagging_fraction   │ 0.6 - 0.95     │ linear   │
+└────────────────────┴────────────────┴──────────┘
+
+CLASSIFIER (Log Loss Optimization):
+  Same as above, but NO scale_pos_weight
+  (for calibrated probabilities)
+
+================================================================================
+TROUBLESHOOTING
+================================================================================
+
+PROBLEM: "Out of memory"
+FIX: Reduce sample_fraction from 0.2 to 0.1 in config.yaml
+
+PROBLEM: All trials pruned
+FIX: Set enable_pruning: false in config.yaml (or use --dry-run to test)
+
+PROBLEM: Best params at edge of range
+EXAMPLE: Best num_leaves = 63 (the maximum)
+FIX: Manually extend range in script and re-run
+
+================================================================================
+INTERPRETING RESULTS
+================================================================================
+
+REGRESSOR OUTPUT:
+  {
+    "best_value": 0.0033,  # MAPE = 0.33% (lower is better)
+    "best_params": {...}
+  }
+
+  GOOD: < 0.005 (0.5%)
+  EXCELLENT: < 0.003 (0.3%)
+
+CLASSIFIER OUTPUT:
+  {
+    "best_value": 0.42,  # Log Loss (lower is better)
+    "best_params": {...}
+  }
+
+  GOOD: < 0.5
+  EXCELLENT: < 0.4
+
+NEXT STEPS:
+  1. If improvement > 5% vs current params → Use new params
+  2. Copy best_params to src/model.py default parameters
+  3. Train final model on full data
+
+================================================================================
+FAQ
+================================================================================
+
+Q: Why not use GridSearch?
+A: GridSearch tests ALL combinations (slow). Optuna is smart (TPE sampler).
+
+Q: Can I run HPO on full data?
+A: Technically yes (--no-sampling), but 5x slower with minimal gain.
+
+Q: Do I need to re-run HPO often?
+A: No. Only when:
+   - Adding major new features
+   - Model architecture changes
+   - Performance degrades significantly
+
+Q: How many CV folds should I use?
+A: 3 is good balance. 5 if you have time. More folds = more robust, but slower.
+
+Q: Why systematic sampling instead of random?
+A: Random breaks time-series continuity. Systematic preserves temporal patterns.
+
+================================================================================
+KEY CHANGES FROM OLD GUIDE
+================================================================================
+
+REMOVED:
+   tune_optuna.py (replaced by optimize_hyperparameters.py)
+   train_hpo.py (redundant)
+   Manual single-split CV
+   F1 optimization for classifier
+   scale_pos_weight parameter
+   SQLite persistence (removed per user request)
+
+ADDED:
+   TimeSeriesSplit CV (robust params)
+   LightGBMPruningCallback (faster)
+   Configurable sampling (config.yaml)
+   Binary log loss (calibrated probabilities)
+   Risk score target (is_unstable)
+
+================================================================================

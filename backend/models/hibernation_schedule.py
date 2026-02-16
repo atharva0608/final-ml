@@ -12,14 +12,28 @@ class HibernationStrategy(str, enum.Enum):
     SNAPSHOT_RESTORE = "SNAPSHOT_RESTORE"
 
 
+class ScheduleType(str, enum.Enum):
+    WEEKLY = "WEEKLY"          # 168 hours (7 days × 24 hours)
+    DAILY = "DAILY"            # 31 days (on/off per day)
+    MONTHLY = "MONTHLY"        # 744 hours (31 days × 24 hours)
+    HYBRID = "HYBRID"          # Weekly pattern + date overrides
+
+
 class HibernationSchedule(Base):
     __tablename__ = "hibernation_schedules"
 
     id = Column(String, primary_key=True)
     cluster_id = Column(String, ForeignKey("clusters.id"), unique=True, nullable=False)
 
-    # 168 chars string (7 days * 24 hours), '1'=On, '0'=Off
-    schedule_matrix = Column(String(168), nullable=False)
+    # Schedule type: WEEKLY (168h), DAILY (31d), MONTHLY (744h), HYBRID (weekly + overrides)
+    schedule_type = Column(String(20), default=ScheduleType.WEEKLY.value)
+
+    # Schedule matrix - variable length based on type:
+    # WEEKLY: 168 chars, DAILY: 31 chars, MONTHLY: 744 chars
+    schedule_matrix = Column(Text, nullable=False)
+
+    # Date-specific overrides for HYBRID mode: {"2026-12-25": 0, "2026-12-31": 0}
+    date_overrides = Column(JSON, default={})
 
     timezone = Column(String, default="UTC")
 

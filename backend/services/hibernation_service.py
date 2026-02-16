@@ -9,6 +9,8 @@ from sqlalchemy import and_, desc
 from backend.models.hibernation_schedule import HibernationSchedule, HibernationStrategy
 from backend.models.cluster import Cluster
 from backend.models.account import Account
+from backend.models.user import User
+from backend.models.audit_log import ResourceType, AuditOutcome
 from backend.schemas.hibernation_schemas import (
     HibernationScheduleCreate,
     HibernationScheduleUpdate,
@@ -23,6 +25,7 @@ from backend.core.exceptions import (
 )
 from backend.core.validators import validate_schedule_matrix, validate_timezone
 from backend.core.logger import StructuredLogger
+from backend.services.audit_service import AuditService
 from datetime import datetime
 import uuid
 
@@ -34,6 +37,12 @@ class HibernationService:
 
     def __init__(self, db: Session):
         self.db = db
+        self.audit_service = AuditService(db)
+
+    def _get_actor_name(self, user_id: str) -> str:
+        """Helper to get user email for audit logs"""
+        user = self.db.query(User).filter(User.id == user_id).first()
+        return user.email if user else "Unknown User"
 
     def create_schedule(
         self,
@@ -102,11 +111,16 @@ class HibernationService:
         if strategy not in valid_strategies:
             raise ValidationError(f"Invalid strategy: {strategy}. Must be one of {valid_strategies}")
 
+        # Convert schedule_matrix from list to string for database storage
+        schedule_matrix_str = ''.join(str(x) for x in schedule_data.schedule_matrix)
+
         # Create schedule
         new_schedule = HibernationSchedule(
             id=str(uuid.uuid4()),
             cluster_id=schedule_data.cluster_id,
-            schedule_matrix=schedule_data.schedule_matrix,
+            schedule_type=getattr(schedule_data, 'schedule_type', 'WEEKLY'),
+            schedule_matrix=schedule_matrix_str,
+            date_overrides=getattr(schedule_data, 'date_overrides', {}),
             timezone=schedule_data.timezone,
             pre_warm_minutes=schedule_data.pre_warm_minutes,
             is_active=getattr(schedule_data, 'is_active', 'Y') if isinstance(getattr(schedule_data, 'is_active', 'Y'), str) else ("Y" if getattr(schedule_data, 'is_active', True) else "N"),
@@ -118,6 +132,17 @@ class HibernationService:
         self.db.add(new_schedule)
         self.db.commit()
         self.db.refresh(new_schedule)
+
+        # Audit Log
+        self.audit_service.create_audit_log(
+            actor_id=user_id,
+            actor_name=self._get_actor_name(user_id),
+            event="HIBERNATION_SCHEDULE_CREATED",
+            resource=cluster.name,
+            resource_type=ResourceType.HIBERNATION,
+            outcome=AuditOutcome.SUCCESS,
+            diff_after={"schedule_id": new_schedule.id, "strategy": strategy}
+        )
 
         logger.info(
             "Hibernation schedule created",
@@ -299,12 +324,29 @@ class HibernationService:
 
         # Apply updates
         for field, value in update_dict.items():
+            # Convert schedule_matrix from list to string if needed
+            if field == "schedule_matrix" and isinstance(value, list):
+                value = ''.join(str(x) for x in value)
+            # Convert is_active from bool to Y/N if needed
+            if field == "is_active" and isinstance(value, bool):
+                value = "Y" if value else "N"
             setattr(schedule, field, value)
 
         schedule.updated_at = datetime.utcnow()
 
         self.db.commit()
         self.db.refresh(schedule)
+
+        # Audit Log
+        self.audit_service.create_audit_log(
+            actor_id=user_id,
+            actor_name=self._get_actor_name(user_id),
+            event="HIBERNATION_SCHEDULE_UPDATED",
+            resource=schedule.cluster.name,
+            resource_type=ResourceType.HIBERNATION,
+            outcome=AuditOutcome.SUCCESS,
+            diff_after=update_dict
+        )
 
         logger.info(
             "Hibernation schedule updated",
@@ -343,6 +385,16 @@ class HibernationService:
 
         self.db.delete(schedule)
         self.db.commit()
+
+        # Audit Log
+        self.audit_service.create_audit_log(
+            actor_id=user_id,
+            actor_name=self._get_actor_name(user_id),
+            event="HIBERNATION_SCHEDULE_DELETED",
+            resource=cluster_name,
+            resource_type=ResourceType.HIBERNATION,
+            outcome=AuditOutcome.SUCCESS
+        )
 
         logger.info(
             "Hibernation schedule deleted",
@@ -384,6 +436,17 @@ class HibernationService:
         self.db.commit()
         self.db.refresh(schedule)
 
+        # Audit Log
+        self.audit_service.create_audit_log(
+            actor_id=user_id,
+            actor_name=self._get_actor_name(user_id),
+            event="HIBERNATION_SCHEDULE_TOGGLED",
+            resource=schedule.cluster.name,
+            resource_type=ResourceType.HIBERNATION,
+            outcome=AuditOutcome.SUCCESS,
+            diff_after={"is_active": schedule.is_active == "Y"}
+        )
+
         logger.info(
             "Hibernation schedule toggled",
             schedule_id=schedule_id,
@@ -414,13 +477,17 @@ class HibernationService:
         Returns:
             HibernationScheduleResponse schema
         """
+        # Convert schedule_matrix from string to list of ints
+        schedule_matrix_list = [int(c) for c in schedule.schedule_matrix] if isinstance(schedule.schedule_matrix, str) else schedule.schedule_matrix
+
         return HibernationScheduleResponse(
             id=schedule.id,
             cluster_id=schedule.cluster_id,
-            schedule_matrix=schedule.schedule_matrix,
+            schedule_type=getattr(schedule, 'schedule_type', 'WEEKLY'),
+            schedule_matrix=schedule_matrix_list,
+            date_overrides=getattr(schedule, 'date_overrides', {}),
             timezone=schedule.timezone,
             pre_warm_minutes=schedule.pre_warm_minutes,
-            prewarm_enabled=schedule.pre_warm_minutes > 0,
             strategy=getattr(schedule, 'strategy', None) or HibernationStrategy.NAMESPACE_SLEEP.value,
             is_active=schedule.is_active == "Y",
             last_action=getattr(schedule, 'last_action', None),

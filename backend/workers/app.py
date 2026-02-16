@@ -13,7 +13,9 @@ app = Celery(
         'backend.workers.tasks.cost_calculator',
         'backend.workers.tasks.cost_explorer',
         'backend.workers.tasks.savings_calculator',
-        'backend.workers.tasks.approval_cleanup'
+        'backend.workers.tasks.approval_cleanup',
+        'backend.workers.tasks.resource_pricing_worker',
+        'backend.workers.tasks.hibernation_worker'
     ]
 )
 
@@ -62,5 +64,15 @@ app.conf.beat_schedule = {
     'cost-explorer-cleanup-weekly': {
         'task': 'workers.cost.cleanup_old_cost_data',
         'schedule': 604800.0,  # 7 days
+    },
+    # Resource Pricing Refresh (Daily) - Updates individual resource costs in Redis cache
+    'resource-pricing-refresh-daily': {
+        'task': 'workers.pricing.refresh_all_resource_prices',
+        'schedule': 86400.0,  # 24 hours
+    },
+    # Hibernation Scheduler (Every 1 minute) - Checks schedules and triggers sleep/wake actions
+    'hibernation-scheduler-every-1-min': {
+        'task': 'workers.hibernation.check_schedules',
+        'schedule': 60.0,  # 1 minute
     },
 }

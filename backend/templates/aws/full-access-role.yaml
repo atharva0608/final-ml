@@ -245,4 +245,4 @@ Outputs:
 
   Permissions:
     Description: 'Permission Scope'
-    Value: 'Full cluster management, hibernation, and resource cleanup across all regions'
+    Value: 'Full cluster management, hibernation, resource cleanup, and Cost Explorer access across all regions'

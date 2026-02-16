@@ -1,0 +1,37 @@
+{
+  "regressor": {
+    "best_params": {
+      "num_leaves": 31,
+      "max_depth": 10,
+      "min_child_samples": 41,
+      "min_child_weight": 0.006251373574521752,
+      "lambda_l2": 0.07161246859115125,
+      "lambda_l1": 0.015599452033620266,
+      "learning_rate": 0.021677031799390116,
+      "feature_fraction": 0.8732352291549871,
+      "bagging_fraction": 0.8202230023486418,
+      "bagging_freq": 6
+    },
+    "best_value": Infinity,
+    "n_trials": 1,
+    "n_pruned": 0
+  },
+  "classifier": {
+    "best_params": {
+      "num_leaves": 31,
+      "max_depth": 10,
+      "min_child_samples": 41,
+      "min_child_weight": 0.006251373574521752,
+      "lambda_l2": 0.07161246859115125,
+      "lambda_l1": 0.015599452033620266,
+      "learning_rate": 0.021677031799390116,
+      "feature_fraction": 0.8732352291549871,
+      "bagging_fraction": 0.8202230023486418,
+      "bagging_freq": 6,
+      "scale_pos_weight": 1.0823379771832098
+    },
+    "best_value": 0.0,
+    "n_trials": 1,
+    "n_pruned": 0
+  }
+}

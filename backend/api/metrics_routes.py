@@ -42,24 +42,28 @@ def get_dashboard_kpis(
     Returns key metrics including:
     - Total and active instances
     - Spot vs on-demand split
-    - Total cost and estimated savings
+    - Total cost and estimated savings (projected monthly for current month)
     - Optimization job statistics
 
-    Default time range: Last 30 days
+    Default time range: Current month (beginning of month to today)
 
     Args:
-        start_date: Optional start date (default: 30 days ago)
-        end_date: Optional end date (default: now)
+        start_date: Optional start date (default: first day of current month)
+        end_date: Optional end date (default: today)
         cluster_id: Optional cluster filter
         current_user: Authenticated user
         db: Database session
 
     Returns:
-        Dashboard KPIs
+        Dashboard KPIs with projected monthly costs
     """
+    # Default to current month for accurate monthly spend display
+    now = datetime.utcnow()
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
     filters = MetricFilter(
-        start_date=start_date or (datetime.utcnow() - timedelta(days=30)),
-        end_date=end_date or datetime.utcnow(),
+        start_date=start_date or month_start,
+        end_date=end_date or now,
         cluster_id=cluster_id
     )
     service = get_metrics_service(db)
@@ -84,15 +88,15 @@ def get_cost_metrics(
     Get cost metrics
 
     Returns detailed cost breakdown:
-    - Total cost
+    - Total cost (projected monthly for current month)
     - Spot instance cost
     - On-demand instance cost
 
-    Default time range: Last 30 days
+    Default time range: Current month (beginning of month to today)
 
     Args:
-        start_date: Optional start date (default: 30 days ago)
-        end_date: Optional end date (default: now)
+        start_date: Optional start date (default: first day of current month)
+        end_date: Optional end date (default: today)
         cluster_id: Optional cluster filter
         team_id: Optional team filter
         current_user: Authenticated user
@@ -101,9 +105,13 @@ def get_cost_metrics(
     Returns:
         Cost metrics with breakdown
     """
+    # Default to current month for accurate monthly spend display
+    now = datetime.utcnow()
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
     filters = MetricFilter(
-        start_date=start_date or (datetime.utcnow() - timedelta(days=30)),
-        end_date=end_date or datetime.utcnow(),
+        start_date=start_date or month_start,
+        end_date=end_date or now,
         cluster_id=cluster_id,
         team_id=team_id
     )

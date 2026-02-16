@@ -1,0 +1,26 @@
+# SageMaker-specific requirements
+# Base Container (SKLearn 1.2-1) Confirmed Environment:
+# - Python: 3.9.21
+# - Pandas: 1.1.3 (DO NOT UPDATE - ABI Conflict Risk)
+# - NumPy:  1.24.1
+# - Scikit-Learn: 1.2.1
+
+# Core ML Libraries (Missing in base)
+lightgbm>=4.0.0
+polars>=0.20.0
+optuna>=3.0.0
+pyarrow>=11.0.0
+protobuf==3.20.3
+onnx==1.15.0
+onnxconverter-common==1.13.0
+skl2onnx==1.16.0
+onnxmltools==1.12.0
+
+# Utilities
+pyyaml>=6.0
+tqdm>=4.65.0
+
+# Visualization (Must be compatible with Pandas 1.1.3)
+# Matplotlib 3.6+ requires newer Pandas/NumPy
+matplotlib>=3.5.0,<3.6.0
+seaborn>=0.11.0,<0.12.0

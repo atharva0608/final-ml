@@ -14,6 +14,7 @@ from backend.workers import app
 from backend.models.base import get_db
 from backend.models.account import Account, AccountStatus
 from backend.models.billing import DailyCost, CostExplorerSyncStatus
+from backend.models.system_config import SystemConfig
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +24,29 @@ class CostExplorerError(Exception):
     pass
 
 
-def get_aws_client(account: Account, service: str, region: str = "us-east-1"):
+def _get_platform_sts_client(db: Session, region: str = "us-east-1"):
+    """
+    Get an STS client using platform credentials stored in SystemConfig.
+    This allows the Cost Explorer worker to assume roles in customer accounts.
+    """
+    access_key = db.query(SystemConfig).filter(SystemConfig.key == "PLATFORM_AWS_ACCESS_KEY").first()
+    secret_key = db.query(SystemConfig).filter(SystemConfig.key == "PLATFORM_AWS_SECRET").first()
+
+    if access_key and secret_key and access_key.value and secret_key.value:
+        logger.info("[COST-EXPLORER] Using platform credentials from SystemConfig")
+        return boto3.client(
+            'sts',
+            aws_access_key_id=access_key.value,
+            aws_secret_access_key=secret_key.value,
+            region_name=region
+        )
+    else:
+        # Fallback to environment variables / instance profile
+        logger.warning("[COST-EXPLORER] Platform credentials not found in SystemConfig, falling back to env/instance profile")
+        return boto3.client('sts', region_name=region)
+
+
+def get_aws_client(account: Account, service: str, region: str = "us-east-1", db: Session = None):
     """
     Get AWS client for a specific service using assumed role credentials.
 
@@ -31,6 +54,7 @@ def get_aws_client(account: Account, service: str, region: str = "us-east-1"):
         account: Account model with role_arn
         service: AWS service name (e.g., 'ce', 'ec2')
         region: AWS region
+        db: Database session (required for platform credentials)
 
     Returns:
         boto3 client for the specified service
@@ -38,12 +62,18 @@ def get_aws_client(account: Account, service: str, region: str = "us-east-1"):
     if not account.role_arn:
         raise CostExplorerError(f"Account {account.aws_account_id} has no role_arn configured")
 
+    if not db:
+        raise CostExplorerError("Database session required to fetch platform credentials")
+
     try:
+        # Get STS client with platform credentials
+        sts_client = _get_platform_sts_client(db, region)
+
         # Assume the IAM role
-        sts_client = boto3.client('sts', region_name=region)
         assumed_role = sts_client.assume_role(
             RoleArn=account.role_arn,
             RoleSessionName=f"CostExplorerSession-{account.aws_account_id}",
+            ExternalId=account.external_id,  # Add External ID for security
             DurationSeconds=3600  # 1 hour
         )
 
@@ -69,6 +99,7 @@ def fetch_cost_data(
     account: Account,
     start_date: date,
     end_date: date,
+    db: Session,
     granularity: str = "DAILY"
 ) -> List[Dict[str, Any]]:
     """
@@ -78,6 +109,7 @@ def fetch_cost_data(
         account: Account model
         start_date: Start date for cost data
         end_date: End date for cost data (exclusive)
+        db: Database session (for platform credentials)
         granularity: 'DAILY' or 'MONTHLY'
 
     Returns:
@@ -95,8 +127,8 @@ def fetch_cost_data(
         ]
     """
     try:
-        # Get Cost Explorer client
-        ce_client = get_aws_client(account, 'ce', region='us-east-1')
+        # Get Cost Explorer client with platform credentials
+        ce_client = get_aws_client(account, 'ce', region='us-east-1', db=db)
 
         logger.info(
             f"[COST-EXPLORER] Fetching costs for account {account.aws_account_id} "
@@ -184,8 +216,8 @@ def sync_costs_for_account(account: Account, db: Session, days_back: int = 30) -
     )
 
     try:
-        # Fetch cost data from AWS
-        cost_records = fetch_cost_data(account, start_date, end_date)
+        # Fetch cost data from AWS (using platform credentials)
+        cost_records = fetch_cost_data(account, start_date, end_date, db)
 
         records_created = 0
         records_updated = 0
