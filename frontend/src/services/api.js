@@ -109,7 +109,10 @@ export const adminAPI = {
     getHealth: () => api.get('/api/v1/admin/health'),
     getStats: () => api.get('/api/v1/admin/stats'),
     getDashboardStats: () => api.get('/api/v1/admin/dashboard'),
+    impersonate: (orgId) => api.post(`/api/v1/admin/impersonate`, { organization_id: orgId }),
     getBilling: () => api.get('/api/v1/admin/billing'),
+    getOrganization: (id) => api.get(`/api/v1/admin/organizations/${id}`),
+    getAgentFleet: () => api.get('/api/v1/admin/agent-fleet'),
 };
 
 export const metricAPI = {
@@ -223,6 +226,13 @@ export const teamAPI = {
 export const userAPI = {
     updateProfile: (data) => api.patch('/api/v1/users/me', data),
     updatePermissions: (userId, permissions) => api.post(`/api/v1/users/${userId}/permissions`, { permissions }),
+    updatePreferences: (preferences) => api.patch('/api/v1/users/me/preferences', preferences),
+};
+
+export const billingAPI = {
+    getStatus: () => api.get('/api/v1/billing/status'),
+    getCostSummary: (params) => api.get('/api/v1/billing/costs/summary', { params }),
+    createPortalSession: () => api.post('/api/v1/billing/create-portal-session'),
 };
 
 export const hygieneAPI = {

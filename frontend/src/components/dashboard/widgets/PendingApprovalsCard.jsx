@@ -39,7 +39,8 @@ const PendingApprovalsCard = ({ data = {}, widgetKey }) => {
 
     const fetchTickets = async () => {
         try {
-            const res = await approvalsAPI.list();
+            // Fetch only pending approvals with limit for better performance
+            const res = await approvalsAPI.list({ status: 'PENDING', page_size: 5 });
             const allTickets = Array.isArray(res.data) ? res.data : [];
             setInternalTickets(allTickets);
         } catch (err) {

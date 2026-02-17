@@ -1,10 +1,11 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from typing import List
 from pydantic import BaseModel
 from datetime import datetime, timedelta
 from backend.models.base import get_db
 from backend.models.user import User
+from backend.models.account import Account
 from backend.core.dependencies import get_current_user
 from backend.modules.rightsizer import get_rightsizer
 

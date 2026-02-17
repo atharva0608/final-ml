@@ -5,9 +5,9 @@
 
 export const ROLE_DEFAULTS = {
     SUPER_ADMIN: ['platform_health', 'tenant_list', 'global_audit', 'revenue_chart'],
-    ORG_ADMIN: ['cost_kpi', 'savings_kpi', 'ri_health', 's3_health', 'rds_health', 'transfer_health', 'savings_chart', 'fleet_composition', 'activity_feed'],
-    CLIENT: ['cost_kpi', 'savings_kpi', 'ri_health', 's3_health', 'rds_health', 'transfer_health', 'savings_chart', 'fleet_composition', 'activity_feed'],
-    TEAM_LEAD: ['team_budget', 'pending_approvals', 'cost_kpi', 'ri_health', 'rds_health', 'savings_kpi', 'activity_feed'],
+    ORG_ADMIN: ['cost_kpi', 'savings_kpi', 'spend_forecast', 'agent_status', 'ri_health', 's3_health', 'rds_health', 'transfer_health', 'savings_chart', 'fleet_composition', 'activity_feed'],
+    CLIENT: ['cost_kpi', 'savings_kpi', 'spend_forecast', 'agent_status', 'ri_health', 's3_health', 'rds_health', 'transfer_health', 'savings_chart', 'fleet_composition', 'activity_feed'],
+    TEAM_LEAD: ['team_budget', 'pending_approvals', 'spend_forecast', 'cost_kpi', 'ri_health', 'rds_health', 'savings_kpi', 'activity_feed'],
     MEMBER: ['cost_kpi', 'savings_kpi', 'my_tickets', 'activity_feed']
 };
 
@@ -65,6 +65,18 @@ export const WIDGET_METADATA = {
         description: 'Instance type distribution',
         roles: ['SUPER_ADMIN', 'ORG_ADMIN', 'CLIENT', 'TEAM_LEAD'],
         icon: 'FiPieChart'
+    },
+    spend_forecast: {
+        name: 'Spend Forecast',
+        description: 'End-of-month spend projection with burn rate',
+        roles: ['ORG_ADMIN', 'CLIENT', 'TEAM_LEAD'],
+        icon: 'FiTrendingUp'
+    },
+    agent_status: {
+        name: 'Agent Status',
+        description: 'Live agent heartbeat monitoring',
+        roles: ['ORG_ADMIN', 'CLIENT', 'TEAM_LEAD'],
+        icon: 'FiActivity'
     },
     cluster_health: {
         name: 'Cluster Health',

@@ -21,8 +21,7 @@ import Onboarding from './pages/Onboarding';
 import ClusterList from './components/clusters/ClusterList';
 import TemplateList from './components/templates/TemplateList';
 import PolicyConfig from './components/policies/PolicyConfig';
-import HibernationSchedule from './components/hibernation/HibernationSchedule';
-import HibernationPage from './pages/HibernationPage';
+import HibernationScheduler from './components/hibernation/HibernationScheduler';
 import AtharvaAiPage from './pages/AtharvaAiPage';
 import AuditLog from './components/audit/AuditLog';
 import Settings from './components/settings/Settings';
@@ -271,22 +270,13 @@ function App() {
                 <RightSizing />
               </PermissionGate>
             } />
-            <Route path="hibernation" element={
+            <Route path="hibernation/:clusterId?" element={
               <PermissionGate
                 featureId="hibernation:view"
-                sectionName="Hibernation"
-                sectionDescription="View and manage cluster hibernation schedules"
+                sectionName="Hibernation Schedule"
+                sectionDescription="Manage cluster hibernation schedules"
               >
-                <HibernationSchedule />
-              </PermissionGate>
-            } />
-            <Route path="hibernation/:clusterId" element={
-              <PermissionGate
-                featureId="hibernation:view"
-                sectionName="Cluster Hibernation"
-                sectionDescription="Configure hibernation schedule for this cluster"
-              >
-                <HibernationPage />
+                <HibernationScheduler />
               </PermissionGate>
             } />
             <Route path="automation-settings" element={

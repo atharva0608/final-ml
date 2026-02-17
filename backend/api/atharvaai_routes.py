@@ -18,7 +18,10 @@ from backend.models.base import get_db
 from backend.core.redis_client import get_redis_client
 from backend.services.pool_ranking_service import PoolRankingService, NodeTemplate
 from backend.models.rebalancing_action import RebalancingAction
+from backend.models.termination_event import TerminationEvent
 from backend.core.logger import logger
+from sqlalchemy import func, extract
+from datetime import timedelta
 
 router = APIRouter(prefix="/atharvaai", tags=["AtharvaAi"])
 

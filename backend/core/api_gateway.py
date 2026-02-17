@@ -40,7 +40,6 @@ from backend.api.ri_routes import router as ri_router
 from backend.api.s3_routes import router as s3_router
 from backend.api.rds_routes import router as rds_router
 from backend.api.transfer_routes import router as transfer_router
-from backend.api.atharva_routes import router as atharva_router
 
 # AtharvaAi Pool Selection & Termination Monitoring
 from backend.api.atharvaai_routes import router as atharvaai_router
@@ -433,7 +432,6 @@ app.include_router(ri_router, prefix="/api/v1")
 app.include_router(s3_router, prefix="/api/v1")
 app.include_router(rds_router, prefix="/api/v1")
 app.include_router(transfer_router, prefix="/api/v1")
-app.include_router(atharva_router, prefix="/api/v1")
 
 # AtharvaAi Pool Selection & Termination Monitoring routes
 app.include_router(atharvaai_router, prefix="/api/v1")

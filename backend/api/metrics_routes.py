@@ -3,7 +3,7 @@ Metrics API Routes
 
 FastAPI endpoints for dashboard metrics and KPIs
 """
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy.orm import Session
 from typing import Optional, List
 from pydantic import BaseModel

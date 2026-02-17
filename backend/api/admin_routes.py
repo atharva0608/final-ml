@@ -3,9 +3,11 @@ Admin API Routes
 
 FastAPI endpoints for super admin operations and user management
 """
-from fastapi import APIRouter, Depends, status, Query, Body
+from fastapi import APIRouter, Depends, status, Query, Body, HTTPException
 from sqlalchemy.orm import Session
+from sqlalchemy import and_
 from typing import Optional
+from datetime import datetime, timedelta
 from backend.models.base import get_db
 from backend.models.user import User
 from backend.core.dependencies import get_current_user, require_super_admin
@@ -21,6 +23,7 @@ from backend.schemas.admin_schemas import (
     OrganizationSummary,
     BillingResponse,
     DashboardResponse,
+    SystemHealth,
 )
 from datetime import datetime
 
@@ -120,6 +123,16 @@ def get_platform_stats(
     return service.get_platform_stats(current_user)
 
 
+@router.get("/health", response_model=SystemHealth, summary="Get platform health status")
+def get_platform_health(
+    current_user: User = Depends(require_super_admin),
+    db: Session = Depends(get_db)
+) -> SystemHealth:
+    """Get platform-wide system health metrics including API latency, DB connections, Redis, and worker status"""
+    service = get_admin_service(db)
+    return service.get_platform_health(current_user)
+
+
 @router.get("/billing", response_model=BillingResponse)
 def get_billing_info(
     current_user: User = Depends(require_super_admin),
@@ -136,6 +149,50 @@ def get_dashboard_stats(
 ) -> DashboardResponse:
     service = get_admin_service(db)
     return service.get_dashboard_stats(current_user)
+
+
+@router.get("/agent-fleet", summary="Get platform-wide agent fleet status")
+def get_agent_fleet(
+    current_user: User = Depends(require_super_admin),
+    db: Session = Depends(get_db)
+):
+    """
+    Get all agents across all organizations with their health status.
+    Returns platform-wide view of agent deployment and connectivity.
+    """
+    from backend.models.cluster import Cluster
+    from backend.models.organization import Organization
+    from backend.models.account import Account
+
+    # Query all clusters with agents installed, joined to organizations
+    agents = db.query(
+        Cluster.id.label('cluster_id'),
+        Cluster.name.label('cluster_name'),
+        Cluster.region,
+        Cluster.last_heartbeat,
+        Cluster.agent_version,
+        Organization.name.label('organization_name'),
+        Organization.id.label('organization_id')
+    ).join(Account, Cluster.account_id == Account.id)\
+     .join(Organization, Account.organization_id == Organization.id)\
+     .filter(Cluster.agent_installed == True)\
+     .order_by(Organization.name, Cluster.name)\
+     .all()
+
+    # Convert to list of dicts
+    result = []
+    for agent in agents:
+        result.append({
+            "cluster_id": agent.cluster_id,
+            "cluster_name": agent.cluster_name,
+            "region": agent.region,
+            "last_heartbeat": agent.last_heartbeat.isoformat() if agent.last_heartbeat else None,
+            "agent_version": agent.agent_version,
+            "organization_name": agent.organization_name,
+            "organization_id": agent.organization_id
+        })
+
+    return result
 
 
 # ============================================
@@ -190,6 +247,71 @@ def get_platform_connection(
 ):
     service = get_admin_service(db)
     return service.get_platform_connection(current_user)
+
+
+@router.post("/impersonate", summary="Impersonate an organization")
+def impersonate_organization(
+    organization_id: str = Body(..., embed=True),
+    current_user: User = Depends(require_super_admin),
+    db: Session = Depends(get_db)
+):
+    """
+    Generate a scoped JWT token to impersonate an organization for debugging/support.
+    Returns a temporary token that provides access as that organization's admin.
+    """
+    from backend.models.organization import Organization
+    from backend.core.security import create_access_token
+    from backend.models.audit_log import AuditLog
+    import uuid
+
+    # Verify organization exists
+    org = db.query(Organization).filter(Organization.id == organization_id).first()
+    if not org:
+        raise HTTPException(404, "Organization not found")
+
+    if not org.is_active:
+        raise HTTPException(400, "Cannot impersonate inactive organization")
+
+    # Find an ORG_ADMIN user from this organization to impersonate as
+    from backend.models.user import UserRole
+    org_admin = db.query(User).filter(
+        and_(User.organization_id == organization_id, User.role == UserRole.ORG_ADMIN)
+    ).first()
+
+    if not org_admin:
+        raise HTTPException(400, "No ORG_ADMIN found for this organization")
+
+    # Create scoped token with impersonation flag
+    token_data = {
+        "user_id": org_admin.id,
+        "organization_id": organization_id,
+        "impersonated_by": current_user.id,
+        "impersonation": True
+    }
+    token = create_access_token(token_data, expires_delta=timedelta(hours=4))
+
+    # Log the impersonation action
+    audit_entry = AuditLog(
+        id=str(uuid.uuid4()),
+        timestamp=datetime.utcnow(),
+        actor_id=str(current_user.id),
+        actor_name=current_user.email,
+        event="ADMIN_IMPERSONATION",
+        resource=organization_id,
+        resource_type="ORGANIZATION",
+        outcome="SUCCESS",
+        ip_address="system",
+        details={"impersonated_org": org.name, "impersonated_user": org_admin.email}
+    )
+    db.add(audit_entry)
+    db.commit()
+
+    return {
+        "token": token,
+        "organization": {"id": org.id, "name": org.name, "slug": org.slug},
+        "user": {"id": org_admin.id, "email": org_admin.email},
+        "expires_at": (datetime.utcnow() + timedelta(hours=4)).isoformat()
+    }
 
 
 @router.post("/platform/connect", summary="Connect platform AWS identity")

@@ -1,101 +1,68 @@
-import React, { useState, useEffect } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
-import { useAuthStore } from '../store/useStore';
-import TeamManagement from '../components/settings/TeamManagement';
-import Roles from './Roles';
+import React, { useState } from 'react';
+import { FiUsers, FiShield, FiLayout } from 'react-icons/fi';
+import MembersTab from '../components/teams/MembersTab';
+import TeamsTab from '../components/teams/TeamsTab';
+import RolesPoliciesTopTab from '../components/teams/RolesPoliciesTopTab';
 
-const Teams = () => {
-    const location = useLocation();
-    const navigate = useNavigate();
-    const { user } = useAuthStore();
+const Tabs = ({ active, onChange }) => (
+    <div className="flex bg-gray-100 p-1.5 rounded-xl w-fit mb-8">
+        <button
+            onClick={() => onChange('structure')}
+            className={`px-5 py-2.5 rounded-lg text-sm font-bold flex items-center gap-2 transition-all ${active === 'structure' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+                }`}>
+            <FiLayout /> Team Structure
+        </button>
+        <button
+            onClick={() => onChange('roles')}
+            className={`px-5 py-2.5 rounded-lg text-sm font-bold flex items-center gap-2 transition-all ${active === 'roles' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+                }`}>
+            <FiShield /> Roles & Policies
+        </button>
+    </div>
+);
 
-    // Role checks
-    const isOrgAdmin = user?.role === 'ORG_ADMIN' || user?.role === 'SUPER_ADMIN' || user?.role === 'CLIENT';
-    const isTeamLead = user?.role === 'TEAM_LEAD';
-    const isMember = user?.role === 'MEMBER';
+const InnerTabs = ({ active, onChange }) => (
+    <div className="flex border-b border-gray-200 mb-8 overflow-x-auto">
+        <button
+            onClick={() => onChange('members')}
+            className={`px-6 py-3 text-base font-medium border-b-2 transition-colors whitespace-nowrap ${active === 'members' ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'
+                }`}>
+            Members
+        </button>
+        <button
+            onClick={() => onChange('teams')}
+            className={`px-6 py-3 text-base font-medium border-b-2 transition-colors whitespace-nowrap ${active === 'teams' ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'
+                }`}>
+            Teams
+        </button>
+    </div>
+);
 
+export default function Teams() {
     const [activeTab, setActiveTab] = useState('structure');
-
-    // Sync tab state with URL query param for deep linking
-    useEffect(() => {
-        const params = new URLSearchParams(location.search);
-        const tab = params.get('tab');
-        if (tab && ['structure', 'roles'].includes(tab)) {
-            // Only allow 'roles' tab for admins
-            if (tab === 'roles' && !isOrgAdmin) {
-                setActiveTab('structure');
-            } else {
-                setActiveTab(tab);
-            }
-        }
-    }, [location, isOrgAdmin]);
-
-    const handleTabChange = (tab) => {
-        // Prevent non-admins from accessing roles tab
-        if (tab === 'roles' && !isOrgAdmin) {
-            return;
-        }
-        setActiveTab(tab);
-        navigate(`/teams?tab=${tab}`, { replace: true });
-    };
+    const [structureTab, setStructureTab] = useState('members');
 
     return (
-        <div className="space-y-6">
-            <div className="flex justify-between items-center">
-                <div>
-                    <h1 className="text-2xl font-bold text-gray-900">
-                        {isOrgAdmin ? 'Organization & Governance' : 'My Team'}
-                    </h1>
-                    <p className="text-sm text-gray-500 mt-1">
-                        {isOrgAdmin
-                            ? 'Manage team structure, roles, and governance policies'
-                            : 'View team members and structure'
-                        }
-                    </p>
+        <div className="p-6 max-w-7xl mx-auto">
+            <div className="mb-6">
+                <h1 className="text-2xl font-bold text-gray-900 tracking-tight">Teams & Permissions</h1>
+                <p className="text-sm text-gray-500 mt-1">Manage your organization's members, teams, and access controls.</p>
+            </div>
+
+            <Tabs active={activeTab} onChange={setActiveTab} />
+
+            {activeTab === 'structure' ? (
+                <div className="animate-in fade-in slide-in-from-bottom-2 duration-300">
+                    <InnerTabs active={structureTab} onChange={setStructureTab} />
+
+                    {structureTab === 'members' && <MembersTab />}
+                    {structureTab === 'teams' && <TeamsTab />}
                 </div>
-            </div>
-
-            {/* Tabs - Only show Roles & Policies tab to Org Admins */}
-            <div className="border-b border-gray-200">
-                <nav className="-mb-px flex space-x-8">
-                    <button
-                        onClick={() => handleTabChange('structure')}
-                        className={`${activeTab === 'structure'
-                            ? 'border-blue-500 text-blue-600'
-                            : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-                            } whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm transition-colors`}
-                    >
-                        {isOrgAdmin ? 'Team Structure' : 'My Team'}
-                    </button>
-
-                    {/* Only show Roles & Policies tab for Org Admins */}
-                    {isOrgAdmin && (
-                        <button
-                            onClick={() => handleTabChange('roles')}
-                            className={`${activeTab === 'roles'
-                                ? 'border-blue-500 text-blue-600'
-                                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-                                } whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm transition-colors`}
-                        >
-                            Roles & Policies
-                        </button>
-                    )}
-                </nav>
-            </div>
-
-            {/* Tab Content */}
-            <div className="mt-6">
-                {activeTab === 'structure' ? (
-                    <TeamManagement />
-                ) : isOrgAdmin ? (
-                    <Roles />
-                ) : (
-                    // Fallback - shouldn't happen due to guards above
-                    <TeamManagement />
-                )}
-            </div>
+            ) : (
+                <div className="animate-in fade-in slide-in-from-bottom-2 duration-300">
+                    <RolesPoliciesTopTab />
+                </div>
+            )}
         </div>
     );
-};
-
-export default Teams;
+}

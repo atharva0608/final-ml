@@ -18,6 +18,8 @@ import RIHealthCard from '../ri/RIHealthCard';
 import S3HealthCard from '../s3/S3HealthCard';
 import RDSHealthCard from '../rds/RDSHealthCard';
 import TransferHealthCard from '../transfer/TransferHealthCard';
+import SpendForecastWidget from './widgets/SpendForecastWidget';
+import AgentStatusWidget from './widgets/AgentStatusWidget';
 
 /**
  * Widget Registry
@@ -29,6 +31,8 @@ export const WIDGET_REGISTRY = {
     savings_kpi: SavingsKPICard,
     savings_chart: SavingsChart,
     fleet_composition: FleetComposition,
+    spend_forecast: SpendForecastWidget,
+    agent_status: AgentStatusWidget,
 
     // Optimization
     ri_health: RIHealthCard,

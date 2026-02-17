@@ -3,6 +3,7 @@
  * Detailed view of cluster with metrics, nodes, and configuration
  */
 import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { clusterAPI, metricsAPI, policyAPI, hibernationAPI } from '../../services/api';
 import { Card, Button, Badge } from '../shared';
 import { FiX, FiRefreshCw, FiSettings, FiClock, FiCpu, FiHardDrive, FiDollarSign, FiActivity } from 'react-icons/fi';
@@ -10,7 +11,6 @@ import toast from 'react-hot-toast';
 import { formatCurrency, formatNumber, formatDate, formatDateTime } from '../../utils/formatters';
 
 import NodeList from './NodeList';
-import HibernationScheduleV2 from '../hibernation/HibernationScheduleV2';
 import NodeGroupBreakdown from './NodeGroupBreakdown';
 import ClusterHealthTimeline from './ClusterHealthTimeline';
 
@@ -22,7 +22,7 @@ const ClusterDetails = ({ clusterId, onClose }) => {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [optimizing, setOptimizing] = useState(false);
-  const [showHibernationModal, setShowHibernationModal] = useState(false);
+  const navigate = useNavigate();
 
   useEffect(() => {
     if (clusterId) {
@@ -335,7 +335,7 @@ const ClusterDetails = ({ clusterId, onClose }) => {
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={() => setShowHibernationModal(true)}
+                    onClick={() => navigate(`/hibernation/${clusterId}`)}
                   >
                     <FiSettings className="w-4 h-4 mr-1" />
                     Edit Schedule
@@ -388,7 +388,7 @@ const ClusterDetails = ({ clusterId, onClose }) => {
                   variant="primary"
                   size="sm"
                   className="mt-3"
-                  onClick={() => setShowHibernationModal(true)}
+                  onClick={() => navigate(`/hibernation/${clusterId}`)}
                 >
                   Configure Schedule
                 </Button>
@@ -436,16 +436,7 @@ const ClusterDetails = ({ clusterId, onClose }) => {
         </div>
       </div>
 
-      {/* Hibernation Schedule Modal */}
-      {showHibernationModal && (
-        <HibernationScheduleV2
-          clusterId={clusterId}
-          onClose={() => {
-            setShowHibernationModal(false);
-            fetchClusterDetails(); // Refresh to show updated schedule
-          }}
-        />
-      )}
+      {/* Hibernation Schedule Modal Removed - navigating to page instead */}
     </div>
   );
 };

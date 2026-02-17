@@ -61,7 +61,7 @@ class PodMetric(Base):
     timestamp = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
 
     # Additional metadata (labels, annotations, etc.)
-    metadata = Column(JSONB, nullable=True, default={})
+    pod_metadata = Column(JSONB, nullable=True, default={})
 
     # Relationships
     cluster = relationship("Cluster", back_populates="pod_metrics")

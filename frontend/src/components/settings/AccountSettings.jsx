@@ -3,7 +3,7 @@
  * User profile, password change, and preferences
  */
 import React, { useState } from 'react';
-import { authAPI } from '../../services/api';
+import { authAPI, userAPI } from '../../services/api';
 import { useAuthStore } from '../../store/useStore';
 import { Card, Button, Input } from '../shared';
 import { FiSave, FiLock, FiUser, FiBell, FiGlobe } from 'react-icons/fi';
@@ -99,11 +99,13 @@ const AccountSettings = () => {
 
     setSavingPreferences(true);
     try {
-      // In a real implementation, this would call a preferences API endpoint
-      // For now, we'll just store it locally
+      // Save to backend API
+      await userAPI.updatePreferences(preferences);
+      // Also cache in localStorage for offline fallback
       localStorage.setItem('user_preferences', JSON.stringify(preferences));
       toast.success('Preferences saved successfully');
     } catch (error) {
+      console.error('Failed to save preferences:', error);
       toast.error('Failed to save preferences');
     } finally {
       setSavingPreferences(false);
