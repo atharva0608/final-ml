@@ -1,1171 +1,966 @@
-═══════════════════════════════════════════════════════════════════════════
-ATHARVA AI - INTELLIGENT COST OPTIMIZATION INTERFACE
-═══════════════════════════════════════════════════════════════════════════
+# Right-Sizing & Karpenter Integration: Complete Non-Code Logic
 
-PROJECT OVERVIEW:
-Design a cutting-edge, AI-powered Kubernetes cost optimization interface that 
-combines real-time risk monitoring, automated rebalancing, and intelligent 
-resource management. The interface should feel like a mission control center 
-for cluster cost optimization.
+## **Big Picture: Three Systems Working Together**
 
-PRODUCT NAME: AtharvaAi
-TAGLINE: "AI-Driven Cluster Optimization"
-POSITION: Main Menu Sidebar → Optimization → AtharvaAi
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    THREE SYSTEMS                                │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  SYSTEM 1: RIGHT-SIZING                                        │
+│  "Are pods requesting the right amount of resources?"          │
+│  Scope: Pod level (CPU/Memory requests)                        │
+│                                                                 │
+│  SYSTEM 2: KARPENTER                                           │
+│  "Are nodes the right size for the pods running on them?"      │
+│  Scope: Node level (instance type selection)                   │
+│                                                                 │
+│  SYSTEM 3: ML SPOT SWITCHER (Your existing models)            │
+│  "Are we using the safest and cheapest spot pools?"            │
+│  Scope: Pool level (which spot instances to use)              │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
 
-DESIGN PRINCIPLES:
-1. Real-Time First - All data updates live via WebSocket
-2. Risk Awareness - Always visible, color-coded risk indicators
-3. Intelligent Automation - AI makes decisions, humans supervise
-4. Safety Guardrails - Clear warnings before manual overrides
-5. Data Transparency - Show WHY decisions are made
-6. Performance Optimized - Handle 1000+ nodes smoothly
+All three feed into each other creating a
+continuous optimization loop
+```
 
-COLOR PALETTE:
-- Primary (AI/Success): #10B981 (Green)
-- Risk High: #EF4444 (Red)
-- Risk Medium: #F59E0B (Orange)
-- Risk Low: #3B82F6 (Blue)
-- Neutral: #6B7280 (Gray)
-- Background: #F9FAFB (Light gray)
-- Surface: #FFFFFF (Cards)
-- Accent: #8B5CF6 (Purple - for AI highlights)
+---
 
-═══════════════════════════════════════════════════════════════════════════
+## **How They Relate (Simple Mental Model)**
 
-NAVIGATION INTEGRATION
-═══════════════════════════════════════════════════════════════════════════
+```
+Think of it like a restaurant kitchen:
 
-Main Sidebar Menu Structure:
+RIGHT-SIZING = Ordering the right amount of ingredients
+  "Don't order 10kg of pasta if you only need 2kg"
+  → Reduces waste in what pods ask for
 
-📊 Dashboard
-🔧 Clusters
-💰 Optimization  ← SECTION HEADER
-  ├─ 🤖 AtharvaAi  ← NEW PAGE (highlighted with AI badge)
-  ├─ 🌙 Hibernation
-  └─ 📊 Cost Analytics
-🔒 Security
-⚙️ Settings
+KARPENTER = Using the right size kitchen equipment
+  "Don't use an industrial oven to bake 2 cookies"
+  → Provisions nodes that perfectly fit the pods
 
-AtharvaAi Menu Item Design:
-┌────────────────────────────────────┐
-│ 🤖 AtharvaAi          [AI ACTIVE] │  ← Pulsing green badge when AI running
-│    ↳ Auto-rebalancing: ON          │
-│    ↳ Savings: $1,234/mo            │
-└────────────────────────────────────┘
+ML SPOT SWITCHER = Finding the cheapest reliable supplier
+  "Same pasta, same quality, but 70% cheaper from this supplier"
+  → Ensures nodes run on cheapest safe spot pools
 
-Hover State: Shows quick stats tooltip
-Click: Navigate to AtharvaAi main page
+Combined Result:
+  Right ingredients + Right equipment + Cheapest supplier
+  = Maximum efficiency, minimum cost
+```
 
-═══════════════════════════════════════════════════════════════════════════
+---
 
-SECTION 1: PAGE HEADER & GLOBAL CONTROLS
-═══════════════════════════════════════════════════════════════════════════
+## **PART 1: RIGHT-SIZING LOGIC**
 
-Layout: Fixed header with gradient background (from purple to blue)
+### **The Core Problem**
 
-┌─────────────────────────────────────────────────────────────────────────┐
-│ [LEFT]                    [CENTER]                           [RIGHT]    │
-│ 🤖 AtharvaAi         Cluster: dev-cluster-01 ▼         💰 Saved Today  │
-│ Intelligent Cost      [Search clusters...]                 $45.67      │
-│ Optimization                                           🔔 ⚙️ 👤         │
-│                                                                          │
-│ [Status Pills Row]                                                      │
-│ • AI Status: 🟢 Active  • Risk Level: 🟡 Medium  • Rebalancing: ON     │
-│ • Monitored Nodes: 47   • Pending Actions: 3    • Last Update: 2s ago  │
-└─────────────────────────────────────────────────────────────────────────┘
+```
+COMMON SCENARIO TODAY:
 
-Components:
+Developer writes:
+  Deployment: api-service
+  CPU Request: 2 cores    ← Developer guessed high (safety margin)
+  Memory Request: 4GB     ← Developer guessed high (safety margin)
 
-[LEFT - Branding]
-- AtharvaAi logo with AI circuit pattern animation
-- Tagline with gradient text effect
-- AI model version indicator: "v1.2.0 • Risk Classifier • Savings Predictor"
+Reality after 7 days of monitoring:
+  CPU Actual Usage: 0.3 cores  (15% of what was requested!)
+  Memory Actual Usage: 1.2GB   (30% of what was requested!)
 
-[CENTER - Cluster Selection]
-- Dropdown with cluster search
-- Shows: Cluster name, environment tag, node count
-- Quick filter: Production | Staging | Development | All
-- Multi-cluster view toggle
+Result:
+  - Node is reserved for 2 CPU + 4GB
+  - Only using 0.3 CPU + 1.2GB
+  - 1.7 CPU + 2.8GB WASTED per pod
+  - If 10 replicas: 17 CPU + 28GB wasted
+  - This waste forces Karpenter to provision larger nodes
+  - Larger nodes = more expensive
+```
 
-[RIGHT - Quick Stats]
-- Real-time savings counter (animated increment)
-- Notification bell (shows: risk alerts, rebalance events, failures)
-- Settings gear icon (opens global settings modal)
-- User profile menu
+---
 
-[STATUS PILLS]
-Live status indicators that update every 2 seconds:
-- AI Status: Active (green) | Paused (yellow) | Error (red)
-  Click to expand: Shows model health, last inference time
+### **Step 1: Data Collection Logic**
+
+```
+WHAT WE COLLECT:
+Every 60 seconds from every pod on every node:
+
+For each pod:
+  - namespace (where does this pod live?)
+  - workload_name (which deployment/statefulset owns it?)
+  - CPU actually being used RIGHT NOW
+  - Memory actually being used RIGHT NOW
+  - CPU that was requested (from pod spec)
+  - Memory that was requested (from pod spec)
+  - Timestamp
+
+HOW WE COLLECT IT:
+  DaemonSet agent runs on EVERY node
+  It queries the metrics-server (already in your cluster)
+  Metrics-server reads from kubelet on each node
+  Kubelet reads from cgroups (Linux resource accounting)
   
-- Risk Level: Low (blue) | Medium (yellow) | High (red) | Critical (red+pulse)
-  Click to expand: Shows risk breakdown by instance type
+WHAT GETS STORED:
+  Time-series database (like InfluxDB or TimescaleDB)
+  Think of it as: "spreadsheet with timestamps"
   
-- Rebalancing: ON | OFF | MANUAL OVERRIDE (12h)
-  Toggle to enable/disable auto-rebalancing
+  Keeps data for:
+  - Last 7 days: Full granularity (every minute)
+  - Last 30 days: Hourly averages
+  - Last 90 days: Daily averages
   
-- Monitored Nodes: Real-time count with sparkline trend
-  
-- Pending Actions: Count of queued rebalancing actions
-  Click to view action queue
-  
-- Last Update: Time since last data refresh
-  Shows connection status to event bus
+  After 90 days: Delete (not needed)
+```
 
-Animation:
-- Status pills fade in on page load (staggered 50ms delay)
-- Pills pulse gently when state changes
-- Savings counter increments smoothly with number ticker effect
+---
 
-═══════════════════════════════════════════════════════════════════════════
+### **Step 2: Analysis Logic**
 
-SECTION 2: MAIN DASHBOARD - 3 COLUMN LAYOUT
-═══════════════════════════════════════════════════════════════════════════
+```
+ANALYSIS RUNS: Once per day (or triggered manually)
 
-Layout: Responsive grid (changes to stacked on mobile)
+FOR EACH WORKLOAD (Deployment/StatefulSet/DaemonSet):
 
-┌────────────────────┬────────────────────────┬────────────────────┐
-│                    │                        │                    │
-│   LEFT COLUMN      │    CENTER COLUMN       │   RIGHT COLUMN     │
-│   (30% width)      │    (45% width)         │   (25% width)      │
-│                    │                        │                    │
-│ • Instance Pool    │ • Node Template        │ • Live Metrics     │
-│   Rankings (Top    │   Configuration        │   & Insights       │
-│   10 Safe & Cheap) │                        │                    │
-│                    │ • Distribution         │ • Risk Monitor     │
-│ • Manual Switch    │   Settings             │                    │
-│   Controls         │                        │ • Recommendations  │
-│                    │ • Advanced Controls    │                    │
-│ • Quick Actions    │                        │ • Activity Feed    │
-│                    │                        │                    │
-└────────────────────┴────────────────────────┴────────────────────┘
-
-═══════════════════════════════════════════════════════════════════════════
-
-LEFT COLUMN: INSTANCE POOL RANKINGS (LIVE)
-═══════════════════════════════════════════════════════════════════════════
-
-[CARD: Top 10 Safe & Cheap Pools]
-
-Visual: Animated ranking list with live updates
-
-┌─────────────────────────────────────────────────────────────────────┐
-│ 🏆 Instance Pool Rankings                              [LIVE 🔴]    │
-│ Updated 3s ago                                                      │
-│                                                                     │
-│ Rank | Instance Type | Risk | $/hr  | Score | Trend              │
-│ ─────┼───────────────┼──────┼───────┼───────┼─────────────────   │
-│  1 ▲ │ m5.large      │ 🟢 8%│ $0.04 │ 9.2/10│ ↗️ Improving        │
-│      │ us-west-2a    │      │       │       │ [Select]            │
-│ ─────┼───────────────┼──────┼───────┼───────┼─────────────────   │
-│  2 → │ m5a.xlarge    │ 🟢12%│ $0.05 │ 9.0/10│ → Stable            │
-│      │ us-west-2b    │      │       │       │ [Select]            │
-│ ─────┼───────────────┼──────┼───────┼───────┼─────────────────   │
-│  3 ▼ │ m5.xlarge     │ 🟡22%│ $0.06 │ 8.5/10│ ↘️ Degrading        │
-│      │ us-west-2a    │      │       │       │ [Select]            │
-│ ─────┼───────────────┼──────┼───────┼───────┼─────────────────   │
-│  4 ▲ │ m5.2xlarge    │ 🟢15%│ $0.08 │ 8.3/10│ ↗️ Improving        │
-│      │ us-west-2c    │      │       │       │ [Select]            │
-│ ─────┼───────────────┼──────┼───────┼───────┼─────────────────   │
-│  5 → │ m5a.large     │ 🟢10%│ $0.03 │ 8.1/10│ → Stable            │
-│      │ us-west-2a    │      │       │       │ [Select] ⭐ Current │
-│ ─────┼───────────────┼──────┼───────┼───────┼─────────────────   │
-│  6   │ t3.xlarge     │ 🟡28%│ $0.04 │ 7.8/10│ ↘️ Degrading        │
-│  7   │ m5.large      │ 🟡25%│ $0.04 │ 7.6/10│ → Stable            │
-│  8   │ m5a.2xlarge   │ 🟢18%│ $0.09 │ 7.5/10│ ↗️ Improving        │
-│  9   │ r5.large      │ 🟡30%│ $0.05 │ 7.2/10│ ↘️ Degrading        │
-│ 10   │ c5.xlarge     │ 🟡32%│ $0.06 │ 7.0/10│ ↘️ Degrading        │
-│                                                                     │
-│ [View All Pools] [Export Rankings]                                │
-└─────────────────────────────────────────────────────────────────────┘
-
-Features:
-
-1. LIVE UPDATES via WebSocket:
-   - Rankings recalculate every 30 seconds
-   - Position changes animate (rows slide up/down)
-   - New entries fade in with highlight effect
-   - Risk percentages update with color transition
-
-2. SCORING ALGORITHM (displayed on hover):
-   Score = (1 - risk_score) * 0.6 + 
-           (1 - price_normalized) * 0.3 + 
-           savings_potential * 0.1
+1. GATHER DATA:
+   Pull last 7 days of CPU and memory readings
+   Need minimum 100 data points (otherwise not enough data)
    
-   Tooltip shows breakdown:
-   ┌─────────────────────────────────┐
-   │ m5.large (us-west-2a)          │
-   │                                 │
-   │ Score Breakdown:                │
-   │ • Safety:   9.2/10 (92% weight)│
-   │ • Cost:     9.5/10 (30% weight)│
-   │ • Savings: 15% (10% weight)    │
-   │                                 │
-   │ Final Score: 9.2/10            │
-   │                                 │
-   │ Risk Factors:                   │
-   │ ✓ Low interruption rate (8%)   │
-   │ ✓ Stable last 24h              │
-   │ ✓ No recent global spikes      │
-   │ ⚠️ Medium utilization in region│
-   └─────────────────────────────────┘
-
-3. TREND INDICATORS:
-   ↗️ Improving: Risk decreasing or price dropping
-   → Stable: No significant change
-   ↘️ Degrading: Risk increasing or price rising
-
-4. RANK CHANGE INDICATORS:
-   ▲ Moved up in rankings
-   ▼ Moved down
-   → No change
-
-5. COLOR CODING:
-   - Green row border: Low risk (<20%)
-   - Yellow row border: Medium risk (20-40%)
-   - Red row border: High risk (>40%)
-   - Current selection: Gold star + highlight
-
-6. INTERACTIVE ELEMENTS:
-   - Hover row: Expands to show detailed metrics
-   - Click row: Shows full pool details in modal
-   - [Select] button: Opens manual switch confirmation dialog
-   - Row drag: Can reorder by priority (custom weighting)
-
-7. FILTERS & SORTING (top of card):
-   ┌─────────────────────────────────────────────┐
-   │ Filter: [All Regions ▼] [All Types ▼]      │
-   │ Sort by: [Score ▼] [Risk ▼] [Cost ▼]       │
-   │ Show: [Top 10 ▼] [Top 20] [All]            │
-   └─────────────────────────────────────────────┘
-
-Animation:
-- Rankings re-sort with smooth transitions
-- Rows slide to new positions (300ms ease-out)
-- Score changes with number ticker animation
-- Risk percentage changes with color fade
-
-─────────────────────────────────────────────────────────────────────
-
-[CARD: Manual Pool Switch Controls]
-
-┌─────────────────────────────────────────────────────────────────────┐
-│ 🎯 Manual Instance Pool Override                                   │
-│                                                                     │
-│ Current Pool: m5a.large (us-west-2a)                               │
-│ Status: ✅ Auto-managed by AtharvaAi                               │
-│                                                                     │
-│ [Switch to Manual Mode]                                            │
-│                                                                     │
-│ ⚠️ Warning: Switching to manual mode will:                         │
-│ • Pause auto-rebalancing for 12 hours                              │
-│ • Disable AI-driven pool selection                                 │
-│ • Require manual monitoring of risk levels                         │
-│                                                                     │
-│ Manual mode expires: Never (until re-enabled)                      │
-│ You can re-enable auto mode anytime                                │
-└─────────────────────────────────────────────────────────────────────┘
-
-Click [Switch to Manual Mode] opens confirmation modal:
-
-┌─────────────────────────────────────────────────────────────────────┐
-│ ⚠️ Confirm Manual Override                                  [✕]    │
-│                                                                     │
-│ You are about to take manual control of instance pool selection.   │
-│                                                                     │
-│ What happens next:                                                 │
-│ ✓ You select target pool from rankings list                        │
-│ ✓ AtharvaAi initiates graceful rebalancing                        │
-│ ✓ Auto-rebalancing pauses for 12 hours                            │
-│ ✓ You receive alerts if risk exceeds thresholds                    │
-│                                                                     │
-│ Auto-rebalancing will resume in:                                   │
-│ [12 hours ▼] [6 hours] [24 hours] [Never - Manual only]          │
-│                                                                     │
-│ Optional: Reason for manual override                               │
-│ [Text area: e.g., "Testing new instance type"]                    │
-│                                                                     │
-│ [Cancel]                    [Confirm Manual Override]              │
-└─────────────────────────────────────────────────────────────────────┘
-
-After clicking [Confirm Manual Override]:
-
-┌─────────────────────────────────────────────────────────────────────┐
-│ 🎯 Manual Pool Selection                                           │
-│                                                                     │
-│ ⏱️ Manual mode active - Auto resumes in: 11h 59m 47s               │
-│                                                                     │
-│ Select target pool from rankings above, then:                      │
-│ [Initiate Switch]  [Resume Auto Mode]                             │
-│                                                                     │
-│ Selected: m5.large (us-west-2a) - Score: 9.2/10                   │
-│                                                                     │
-│ Switch Preview:                                                     │
-│ • Nodes to rebalance: 8                                            │
-│ • Pods to reschedule: 127                                          │
-│ • Estimated duration: 12 minutes                                   │
-│ • Estimated cost impact: -$0.08/hr (savings)                       │
-│ • Risk change: 12% → 8% (improving ✓)                             │
-│                                                                     │
-│ [Cancel]  [Initiate Rebalancing]                                  │
-└─────────────────────────────────────────────────────────────────────┘
-
-Click [Initiate Rebalancing] starts the process:
-
-┌─────────────────────────────────────────────────────────────────────┐
-│ ⚙️ Rebalancing in Progress                                         │
-│                                                                     │
-│ From: m5a.large (us-west-2a)                                       │
-│ To:   m5.large (us-west-2a)                                        │
-│                                                                     │
-│ Progress: ████████████░░░░ 65% (Step 3 of 5)                      │
-│                                                                     │
-│ ✅ Pre-flight checks passed                                        │
-│ ✅ Nodes cordoned (8 nodes)                                        │
-│ 🔄 Draining pods (82/127 rescheduled)                             │
-│ ⏳ Pending: Provision new nodes                                    │
-│ ⏳ Pending: Cleanup old nodes                                      │
-│                                                                     │
-│ Elapsed: 7m 32s | Remaining: ~4m 30s                              │
-│                                                                     │
-│ [View Detailed Logs]  [⏸️ Pause]  [🛑 Emergency Stop]              │
-└─────────────────────────────────────────────────────────────────────┘
-
-─────────────────────────────────────────────────────────────────────
-
-[CARD: Quick Actions]
-
-┌─────────────────────────────────────────────────────────────────────┐
-│ ⚡ Quick Actions                                                    │
-│                                                                     │
-│ [🔄 Force Rebalance Now]                                           │
-│ Immediately analyze and rebalance all nodes                        │
-│                                                                     │
-│ [⏸️ Pause Auto-Rebalancing]                                        │
-│ Temporarily stop all automated actions                             │
-│                                                                     │
-│ [📊 Export Cost Report]                                            │
-│ Generate detailed savings report (PDF/CSV)                         │
-│                                                                     │
-│ [🧪 Run Risk Assessment]                                           │
-│ Manually trigger ML model inference                                │
-│                                                                     │
-│ [🔧 Update Node Templates]                                         │
-│ Modify Karpenter NodePool configurations                           │
-└─────────────────────────────────────────────────────────────────────┘
-
-═══════════════════════════════════════════════════════════════════════════
-
-CENTER COLUMN: NODE TEMPLATE & DISTRIBUTION SETTINGS
-═══════════════════════════════════════════════════════════════════════════
-
-[CARD: Default Node Template Configuration]
-
-┌─────────────────────────────────────────────────────────────────────┐
-│ 📝 Node Template Configuration                          [Edit]     │
-│                                                                     │
-│ Template: spot-general-purpose                                     │
-│ Status: ✅ Active | Managed by Karpenter                           │
-│ Last Updated: 2 hours ago                                          │
-│                                                                     │
-│ [TAB: Overview] [TAB: Requirements] [TAB: Limits] [TAB: Advanced]  │
-│                                                                     │
-│ ─── Overview Tab (default) ───                                     │
-│                                                                     │
-│ Capacity Type:                                                      │
-│ • Spot:      85% (primary) [████████░]                            │
-│ • On-Demand: 15% (fallback) [██░░░░░░]                            │
-│                                                                     │
-│ Current Distribution (Live):                                        │
-│ ┌─────────────────────────────────────────────────────┐            │
-│ │ [Spot: 40 nodes (85%)] [On-Demand: 7 nodes (15%)]  │            │
-│ │ █████████████████░░░                                │            │
-│ └─────────────────────────────────────────────────────┘            │
-│                                                                     │
-│ Instance Types (Diversification):                                  │
-│ ✓ m5.large       (12 nodes) - Primary                             │
-│ ✓ m5a.large      (10 nodes) - Alternative                         │
-│ ✓ m5.xlarge      (8 nodes)  - Scale-up                            │
-│ ✓ m5a.xlarge     (7 nodes)  - Alternative                         │
-│ ✓ m5.2xlarge     (5 nodes)  - High CPU workloads                  │
-│ + 3 more types...                                                  │
-│                                                                     │
-│ Availability Zones:                                                 │
-│ ✓ us-west-2a  (18 nodes)                                          │
-│ ✓ us-west-2b  (15 nodes)                                          │
-│ ✓ us-west-2c  (14 nodes)                                          │
-│                                                                     │
-│ [Edit Distribution] [View Karpenter YAML]                         │
-└─────────────────────────────────────────────────────────────────────┘
-
-Click [Edit Distribution] expands interactive settings:
-
-┌─────────────────────────────────────────────────────────────────────┐
-│ 🎛️ Customize Capacity Distribution                                 │
-│                                                                     │
-│ Spot / On-Demand Mix:                                              │
-│                                                                     │
-│ Spot Percentage:     [██████████░░░] 85%                          │
-│ On-Demand Baseline:  [███░░░░░░░░░] 15%                           │
-│                                                                     │
-│ Strategy:                                                           │
-│ [●] Diversified (Recommended)                                      │
-│     Uses multiple instance types & AZs for resilience             │
-│                                                                     │
-│ [ ] Cost-Optimized                                                 │
-│     Prioritizes cheapest instances, higher risk                   │
-│                                                                     │
-│ [ ] Reliability-First                                              │
-│     Higher on-demand %, lower interruption risk                   │
-│                                                                     │
-│ Advanced Settings:                                                  │
-│                                                                     │
-│ [▼] Instance Type Selection                                        │
-│     ✓ Auto-managed by AtharvaAi (AI selects safe pools)           │
-│     [ ] Manual selection (choose from list)                        │
-│                                                                     │
-│     Allowed Instance Families:                                     │
-│     [✓] m5  [✓] m5a  [✓] m5n  [✓] t3  [✓] t3a                    │
-│     [✓] c5  [✓] c5a  [ ] r5   [ ] r5a  [ ] i3                    │
-│                                                                     │
-│     Instance Size Range:                                           │
-│     Min: [large ▼]  Max: [4xlarge ▼]                             │
-│                                                                     │
-│ [▼] Availability Zone Strategy                                     │
-│     [●] Balanced (distribute evenly)                               │
-│     [ ] Cost-optimized (cheapest AZ first)                        │
-│     [ ] Capacity-optimized (most available first)                 │
-│                                                                     │
-│ [▼] Scaling Behavior                                               │
-│     Scale-up preference: [Spot first ▼]                           │
-│     Scale-down preference: [Underutilized first ▼]                │
-│     Consolidation: [✓] Enabled (repack when possible)             │
-│                                                                     │
-│ [▼] Spot Interruption Handling                                     │
-│     Grace period: [120 seconds]                                    │
-│     Rebalance strategy: [Gradual drain ▼]                         │
-│     Fallback to on-demand: [✓] Enabled                            │
-│                                                                     │
-│ Cost Impact Preview:                                                │
-│ Current: $4.32/hr | With changes: $3.87/hr                        │
-│ Monthly savings: $324.00                                           │
-│                                                                     │
-│ [Reset to Defaults]  [Preview Changes]  [Save Configuration]      │
-└─────────────────────────────────────────────────────────────────────┘
-
-─────────────────────────────────────────────────────────────────────
-
-[CARD: Live Right-Sizing Insights]
-
-┌─────────────────────────────────────────────────────────────────────┐
-│ 📊 Right-Sizing Opportunities                          [View All]  │
-│                                                                     │
-│ Showing: Top 5 oversized workloads                                 │
-│                                                                     │
-│ 1. Deployment: api-service (namespace: production)                 │
-│    ┌─────────────────────────────────────────────────────┐         │
-│    │ Current Request: 2 CPU, 4Gi RAM                     │         │
-│    │ Actual Usage:    0.3 CPU (15%), 1.2Gi RAM (30%)    │         │
-│    │                                                      │         │
-│    │ CPU:    [███░░░░░░░░░░░░░] 15% avg                │         │
-│    │ Memory: [██████░░░░░░░░░░] 30% avg                │         │
-│    │                                                      │         │
-│    │ Recommendation: Reduce to 0.5 CPU, 1.5Gi RAM       │         │
-│    │ Potential Savings: $23.40/month per replica (3x)   │         │
-│    │ Total Savings: $70.20/month                        │         │
-│    │                                                      │         │
-│    │ [Apply Recommendation] [Dismiss]                    │         │
-│    └─────────────────────────────────────────────────────┘         │
-│                                                                     │
-│ 2. StatefulSet: postgres-cluster (namespace: databases)            │
-│    [Collapsed - click to expand]                                   │
-│    Savings: $45.30/month                                           │
-│                                                                     │
-│ 3. Deployment: worker-service (namespace: production)              │
-│    [Collapsed]  Savings: $38.90/month                             │
-│                                                                     │
-│ 4. Deployment: frontend (namespace: production)                    │
-│    [Collapsed]  Savings: $28.50/month                             │
-│                                                                     │
-│ 5. DaemonSet: log-collector (namespace: monitoring)                │
-│    [Collapsed]  Savings: $15.80/month                             │
-│                                                                     │
-│ Total Potential Savings: $198.70/month                            │
-│                                                                     │
-│ [Apply All Recommendations] [View Detailed Report]                 │
-└─────────────────────────────────────────────────────────────────────┘
-
-Click [Apply Recommendation] shows confirmation:
-
-┌─────────────────────────────────────────────────────────────────────┐
-│ ✏️ Apply Right-Sizing Recommendation                       [✕]     │
-│                                                                     │
-│ Deployment: api-service                                            │
-│ Namespace: production                                              │
-│ Replicas: 3                                                        │
-│                                                                     │
-│ Proposed Changes:                                                   │
-│                                                                     │
-│ Resource Requests:                                                  │
-│   CPU:    2.0  →  0.5  (-75%)                                     │
-│   Memory: 4Gi  →  1.5Gi (-62.5%)                                  │
-│                                                                     │
-│ Resource Limits:                                                    │
-│   CPU:    4.0  →  1.0  (-75%)                                     │
-│   Memory: 8Gi  →  3Gi  (-62.5%)                                   │
-│                                                                     │
-│ Safety Checks:                                                      │
-│ ✅ New limits > 2x peak usage (safe buffer)                        │
-│ ✅ No OOM kills in last 30 days                                    │
-│ ✅ P95 usage well below new limits                                 │
-│ ⚠️ Monitor for 7 days after change                                │
-│                                                                     │
-│ Rollout Strategy:                                                   │
-│ [●] Gradual (1 replica at a time)                                 │
-│ [ ] Immediate (all replicas)                                       │
-│                                                                     │
-│ Rollback if:                                                        │
-│ [✓] OOM kill occurs                                                │
-│ [✓] CPU throttling > 10%                                           │
-│ [✓] Latency increases > 20%                                        │
-│                                                                     │
-│ [Cancel]  [Apply & Monitor]                                        │
-└─────────────────────────────────────────────────────────────────────┘
-
-─────────────────────────────────────────────────────────────────────
-
-[VISUALIZATION: Node & Pod Distribution]
-
-┌─────────────────────────────────────────────────────────────────────┐
-│ 🗺️ Cluster Topology View                              [Full Screen]│
-│                                                                     │
-│ View: [●] Node Map  [ ] Heatmap  [ ] List                         │
-│                                                                     │
-│ ┌─────────────────────────────────────────────────────────────┐    │
-│ │                    NODE VISUALIZATION                       │    │
-│ │                                                             │    │
-│ │  Legend: 🟢 Healthy  🟡 Warning  🔴 Critical  ⚫ Draining   │    │
-│ │                                                             │    │
-│ │  us-west-2a (18 nodes):                                    │    │
-│ │  ┌───┐┌───┐┌───┐┌───┐┌───┐┌───┐                          │    │
-│ │  │🟢 ││🟢 ││🟡 ││🟢 ││🟢 ││🟢 │...                        │    │
-│ │  │85%││72%││88%││45%││91%││67%│                           │    │
-│ │  │12p││8p ││15p││6p ││18p││10p│ ← Pod count              │    │
-│ │  └───┘└───┘└───┘└───┘└───┘└───┘                          │    │
-│ │                                                             │    │
-│ │  us-west-2b (15 nodes):                                    │    │
-│ │  ┌───┐┌───┐┌───┐┌───┐┌───┐                               │    │
-│ │  │🟢 ││🔴 ││🟢 ││⚫ ││🟢 │...                            │    │
-│ │  │78%││95%││61%││--% ││83%│                               │    │
-│ │  │14p││22p││9p ││0p  ││16p│                               │    │
-│ │  └───┘└───┘└───┘└───┘└───┘                               │    │
-│ │                                                             │    │
-│ │  us-west-2c (14 nodes):                                    │    │
-│ │  [Similar visualization]                                    │    │
-│ │                                                             │    │
-│ │  Hover any node for details →                              │    │
-│ └─────────────────────────────────────────────────────────────┘    │
-│                                                                     │
-│ Filters:                                                            │
-│ Instance Type: [All ▼]  AZ: [All ▼]  Capacity: [All ▼]           │
-│ Show: [✓] Spot  [✓] On-Demand  [ ] Draining  [ ] Cordoned        │
-│                                                                     │
-│ Selected Node: node-i-abc123 (m5.large, us-west-2a)               │
-│ ┌──────────────────────────────────────────────────────────┐       │
-│ │ Status: Healthy | Uptime: 14h 32m | Risk Score: 0.12     │       │
-│ │                                                           │       │
-│ │ Resources: CPU 85%, Memory 72%                           │       │
-│ │ Pods: 12/110 capacity                                    │       │
-│ │                                                           │       │
-│ │ Top Pods by Resource Usage:                              │       │
-│ │ 1. nginx-ingress-7x8k9    CPU: 0.4, Mem: 512Mi          │       │
-│ │ 2. api-service-5m2n7      CPU: 0.3, Mem: 450Mi          │       │
-│ │ 3. worker-abc123          CPU: 0.2, Mem: 380Mi          │       │
-│ │                                                           │       │
-│ │ [Drain Node]  [Cordon]  [View Logs]  [SSH]              │       │
-│ └──────────────────────────────────────────────────────────┘       │
-└─────────────────────────────────────────────────────────────────────┘
-
-Interactions:
-- Click node: Shows detailed pod list
-- Hover node: Quick stats tooltip
-- Double-click: SSH/kubectl exec into node
-- Right-click: Context menu (cordon, drain, delete)
-- Drag select: Multi-node operations
-
-Node Color Coding:
-🟢 Green: Healthy (CPU <80%, Memory <80%, no issues)
-🟡 Yellow: Warning (CPU >80% OR Memory >80% OR high risk score >0.5)
-🔴 Red: Critical (CPU >90% OR Memory >90% OR pod evictions OR high risk >0.8)
-⚫ Gray: Draining/Terminating
-
-Node Size:
-- Proportional to instance size (larger = bigger square)
-- Small: nano/micro/small/medium
-- Medium: large/xlarge
-- Large: 2xlarge+
-
-Animation:
-- Nodes pulse gently (heartbeat effect)
-- Color changes fade smoothly (300ms)
-- New nodes fade in from center
-- Deleted nodes shrink and fade out
-
-═══════════════════════════════════════════════════════════════════════════
-
-RIGHT COLUMN: LIVE METRICS & INSIGHTS
-═══════════════════════════════════════════════════════════════════════════
-
-[CARD: Real-Time Risk Monitor]
-
-┌─────────────────────────────────────────────────────────────────────┐
-│ 🛡️ Risk Monitor                                        [LIVE 🔴]    │
-│                                                                     │
-│ Overall Risk Level: 🟡 MEDIUM                                      │
-│ Risk Score: 0.42/1.0 (Lower is better)                            │
-│                                                                     │
-│ [Risk Trend Chart - Last 24 Hours]                                │
-│ ┌──────────────────────────────────────────┐                       │
-│ │ 1.0 │                                     │                       │
-│ │     │      🔴 High Risk Zone              │                       │
-│ │ 0.7 ├──────────────────────────────────── │                       │
-│ │     │                    ╱──╲             │                       │
-│ │     │          🟡 Medium  ╱    ╲          │                       │
-│ │ 0.4 ├────────────╱───────╱      ╲──●─────│ ← Current            │
-│ │     │    ╱──────╱                         │                       │
-│ │ 0.2 ├───╱                                 │                       │
-│ │     │🟢 Low Risk Zone                     │                       │
-│ │ 0.0 └─────────────────────────────────────│                       │
-│ │     0h  6h   12h  18h  24h               │                       │
-│ └──────────────────────────────────────────┘                       │
-│                                                                     │
-│ Risk Factors:                                                       │
-│                                                                     │
-│ 🟡 Spot Interruption Rate (Regional):         0.35                 │
-│    ████████░░ 35% - Elevated in us-west-2b                        │
-│    AWS reports: Medium capacity strain                             │
-│                                                                     │
-│ 🟢 Instance Pool Health:                      0.12                 │
-│    ██░░░░░░░░ 12% - Current pools stable                          │
-│    m5a.large showing low interruption risk                         │
-│                                                                     │
-│ 🟡 Node Age Distribution:                     0.45                 │
-│    █████░░░░░ 45% - 18 nodes > 6 hours old                        │
-│    Consider proactive rotation soon                                │
-│                                                                     │
-│ 🟢 Workload Criticality:                      0.08                 │
-│    █░░░░░░░░░ 8% - Most workloads fault-tolerant                  │
-│    3 critical pods well-distributed                                │
-│                                                                     │
-│ 🟡 Global Interruption Pattern:               0.52                 │
-│    █████░░░░░ 52% - Elevated across clients                       │
-│    23 interruptions reported globally (1hr)                        │
-│                                                                     │
-│ [View Detailed Risk Analysis]                                      │
-└─────────────────────────────────────────────────────────────────────┘
-
-─────────────────────────────────────────────────────────────────────
-
-[CARD: AI Recommendations]
-
-┌─────────────────────────────────────────────────────────────────────┐
-│ 🤖 AI-Powered Recommendations                          [Refresh]   │
-│                                                                     │
-│ Last analyzed: 23 seconds ago                                      │
-│ Model: Risk Classifier v1.2.0 + Savings Predictor v1.1.0          │
-│                                                                     │
-│ 1. 🔄 REBALANCE RECOMMENDED (High Confidence: 89%)                 │
-│    ┌──────────────────────────────────────────────────────┐        │
-│    │ Switch 8 nodes from m5a.large to m5.large           │        │
-│    │                                                      │        │
-│    │ Reasoning:                                          │        │
-│    │ • Risk reduction: 22% → 8% (63% improvement)       │        │
-│    │ • Cost impact: +$0.01/hr per node (+$2/mo total)   │        │
-│    │ • Savings potential: 15% over next hour             │        │
-│    │ • Regional interruption spike detected              │        │
-│    │                                                      │        │
-│    │ Expected Outcome:                                   │        │
-│    │ ✓ Lower interruption probability                   │        │
-│    │ ✓ Better spot pool diversity                       │        │
-│    │ ⚠️ Slight cost increase (worth it for stability)   │        │
-│    │                                                      │        │
-│    │ [Accept Recommendation] [Dismiss] [Details]        │        │
-│    └──────────────────────────────────────────────────────┘        │
-│                                                                     │
-│ 2. 💰 COST OPTIMIZATION (Medium Confidence: 72%)                   │
-│    [Collapsed]                                                      │
-│    Consolidate 3 underutilized nodes → Save $18/month              │
-│                                                                     │
-│ 3. 📊 RIGHT-SIZING (High Confidence: 91%)                          │
-│    [Collapsed]                                                      │
-│    5 workloads oversized → Save $198/month                         │
-│                                                                     │
-│ [View All Recommendations (12)]                                    │
-└─────────────────────────────────────────────────────────────────────┘
-
-Click [Accept Recommendation] queues the action and shows progress
-
-─────────────────────────────────────────────────────────────────────
-
-[CARD: Activity Feed]
-
-┌─────────────────────────────────────────────────────────────────────┐
-│ 📋 Recent Activity                                   [View All]     │
-│                                                                     │
-│ 🔴 23 seconds ago                                                  │
-│ High risk detected: m5a.large (us-west-2b)                        │
-│ Action: Recommendation generated                                   │
-│                                                                     │
-│ 🟢 2 minutes ago                                                   │
-│ Rebalancing completed successfully                                 │
-│ 8 nodes migrated to safer pool                                     │
-│ Duration: 11m 34s                                                  │
-│                                                                     │
-│ 🟡 8 minutes ago                                                   │
-│ Right-sizing applied: api-service                                  │
-│ CPU: 2.0 → 0.5 | Memory: 4Gi → 1.5Gi                             │
-│                                                                     │
-│ 🟢 15 minutes ago                                                  │
-│ Node terminated: node-i-xyz789                                     │
-│ Reason: Consolidation                                              │
-│                                                                     │
-│ 🟡 32 minutes ago                                                  │
-│ Spot interruption notice received                                  │
-│ Node: node-i-abc123 (emergency drain successful)                  │
-│                                                                     │
-│ 🟢 1 hour ago                                                      │
-│ Cost savings milestone reached!                                    │
-│ Total saved this month: $1,234.56                                  │
-│                                                                     │
-│ [Load More Events]                                                 │
-└─────────────────────────────────────────────────────────────────────┘
-
-Activity Event Types:
-🔴 Critical: Interruptions, failures, high risk
-🟡 Warning: Risk increases, manual overrides
-🟢 Success: Completions, optimizations, milestones
-🔵 Info: Configuration changes, updates
-
-═══════════════════════════════════════════════════════════════════════════
-
-SECTION 3: ADVANCED SETTINGS & CONFIGURATION
-═══════════════════════════════════════════════════════════════════════════
-
-Access via ⚙️ icon in header or [Advanced] tab
-
-┌─────────────────────────────────────────────────────────────────────┐
-│ ⚙️ AtharvaAi Advanced Settings                            [✕]      │
-│                                                                     │
-│ [TAB: AI Models] [TAB: Thresholds] [TAB: Automation] [TAB: Alerts] │
-│                                                                     │
-│ ─── AI Models Tab ───                                              │
-│                                                                     │
-│ 🤖 Machine Learning Models                                         │
-│                                                                     │
-│ Risk Classification Model:                                          │
-│ ┌────────────────────────────────────────────────────────┐          │
-│ │ Model: risk_classifier_v1                              │          │
-│ │ Version: 1.2.0 (Latest)                               │          │
-│ │ Format: ONNX                                          │          │
-│ │ Status: ✅ Active & Healthy                           │          │
-│ │                                                        │          │
-│ │ Performance Metrics:                                   │          │
-│ │ • Accuracy: 89%                                       │          │
-│ │ • Precision: 87%                                      │          │
-│ │ • Recall: 91%                                         │          │
-│ │ • F1 Score: 0.89                                      │          │
-│ │                                                        │          │
-│ │ Last Inference: 5 seconds ago (2.3ms latency)        │          │
-│ │ Inferences today: 1,247                               │          │
-│ │                                                        │          │
-│ │ [View Model Details] [Upload New Version]            │          │
-│ │ [Rollback to v1.1.0] [Export Predictions]            │          │
-│ └────────────────────────────────────────────────────────┘          │
-│                                                                     │
-│ Savings Prediction Model:                                          │
-│ ┌────────────────────────────────────────────────────────┐          │
-│ │ Model: savings_regressor_v1                            │          │
-│ │ Version: 1.1.0 (Latest)                               │          │
-│ │ Format: ONNX                                          │          │
-│ │ Status: ✅ Active & Healthy                           │          │
-│ │                                                        │          │
-│ │ Performance Metrics:                                   │          │
-│ │ • MAE: 2.3%                                           │          │
-│ │ • RMSE: 3.8%                                          │          │
-│ │ • R² Score: 0.91                                      │          │
-│ │                                                        │          │
-│ │ Last Inference: 5 seconds ago (1.8ms latency)        │          │
-│ │                                                        │          │
-│ │ [View Model Details] [Upload New Version]            │          │
-│ └────────────────────────────────────────────────────────┘          │
-│                                                                     │
-│ Model Upload:                                                       │
-│ ┌────────────────────────────────────────────────────────┐          │
-│ │ Upload New Model (ONNX Format)                        │          │
-│ │                                                        │          │
-│ │ Model Type: [Risk Classifier ▼]                      │          │
-│ │                                                        │          │
-│ │ [📎 Choose File] risk_classifier_v1.3.0.onnx         │          │
-│ │                                                        │          │
-│ │ Model Configuration (JSON):                           │          │
-│ │ [📎 Choose File] config.json                          │          │
-│ │                                                        │          │
-│ │ Testing:                                              │          │
-│ │ [✓] Run validation on test dataset                   │          │
-│ │ [✓] A/B test (50/50 split) for 24 hours             │          │
-│ │ [ ] Deploy immediately (replace current)              │          │
-│ │                                                        │          │
-│ │ [Cancel] [Upload & Validate]                         │          │
-│ └────────────────────────────────────────────────────────┘          │
-│                                                                     │
-│ ─── Thresholds Tab ───                                             │
-│                                                                     │
-│ 🎯 Risk & Action Thresholds                                        │
-│                                                                     │
-│ Risk Score Thresholds:                                              │
-│ • Low Risk:      < 0.3   🟢                                        │
-│ • Medium Risk:   0.3-0.6 🟡                                        │
-│ • High Risk:     0.6-0.8 🟠                                        │
-│ • Critical Risk: > 0.8   🔴                                        │
-│                                                                     │
-│ Auto-Rebalance Trigger:                                             │
-│ Risk score must exceed: [0.70] to trigger rebalancing             │
-│                                                                     │
-│ Confidence Threshold:                                               │
-│ Minimum ML confidence: [75%] to accept recommendations             │
-│                                                                     │
-│ Spot Interruption Rate Alert:                                      │
-│ Alert when rate exceeds: [25%]                                     │
-│                                                                     │
-│ Node Age Rotation:                                                  │
-│ Proactively rotate nodes older than: [8 hours]                    │
-│                                                                     │
-│ [Reset to Defaults] [Save Thresholds]                             │
-│                                                                     │
-│ ─── Automation Tab ───                                             │
-│                                                                     │
-│ 🤖 Automation Controls                                             │
-│                                                                     │
-│ Auto-Rebalancing:                                                   │
-│ [✓] Enable automatic rebalancing                                   │
-│     Minimum interval between rebalances: [30 minutes]              │
-│     Maximum concurrent rebalances: [3]                             │
-│                                                                     │
-│ Auto-Consolidation:                                                 │
-│ [✓] Consolidate underutilized nodes                                │
-│     CPU threshold: [20%] for [2 hours]                            │
-│     Memory threshold: [30%] for [2 hours]                         │
-│                                                                     │
-│ Auto-Right-Sizing:                                                  │
-│ [ ] Automatically apply right-sizing recommendations               │
-│     ⚠️ Not recommended - requires manual approval                  │
-│                                                                     │
-│ Emergency Response:                                                 │
-│ [✓] Auto-drain on spot interruption notice                         │
-│ [✓] Fallback to on-demand if spot unavailable                     │
-│                                                                     │
-│ [Save Automation Settings]                                         │
-│                                                                     │
-│ ─── Alerts Tab ───                                                 │
-│                                                                     │
-│ 🔔 Notification Preferences                                        │
-│                                                                     │
-│ Alert Channels:                                                     │
-│ [✓] Email: devops@company.com                                      │
-│ [✓] Slack: #atharvaai-alerts                                       │
-│ [ ] PagerDuty                                                       │
-│ [ ] Microsoft Teams                                                 │
-│ [✓] In-App Notifications                                           │
-│                                                                     │
-│ Alert on:                                                           │
-│ [✓] High risk detected (score > 0.7)                               │
-│ [✓] Spot interruption notice received                              │
-│ [✓] Rebalancing completed                                          │
-│ [✓] Rebalancing failed                                             │
-│ [✓] Manual override activated                                       │
-│ [✓] Cost savings milestone ($100 increments)                       │
-│ [ ] Daily summary report                                            │
-│                                                                     │
-│ Quiet Hours:                                                        │
-│ [✓] Suppress non-critical alerts                                   │
-│     From: [22:00] To: [08:00] (Local time)                        │
-│     Except: Critical alerts (always notify)                        │
-│                                                                     │
-│ [Test Notifications] [Save Alert Settings]                        │
-└─────────────────────────────────────────────────────────────────────┘
-
-═══════════════════════════════════════════════════════════════════════════
-
-SECTION 4: DETAILED ANALYTICS & REPORTING
-═══════════════════════════════════════════════════════════════════════════
-
-Access via separate tab or [Analytics] button
-
-┌─────────────────────────────────────────────────────────────────────┐
-│ 📈 Analytics & Cost Insights                                       │
-│                                                                     │
-│ Time Range: [Last 30 Days ▼] | Compare to: [Previous Period ▼]   │
-│                                                                     │
-│ [TAB: Cost] [TAB: Risk] [TAB: Performance] [TAB: Events]          │
-│                                                                     │
-│ ─── Cost Tab ───                                                   │
-│                                                                     │
-│ Total Savings This Month:                                          │
-│ ┌──────────────────────────────────────────────────────┐           │
-│ │  $1,234.56                         ↑ 23% vs last mo │           │
-│ │  ████████████████████░░░░░░ 78% of goal ($1,580)    │           │
-│ └──────────────────────────────────────────────────────┘           │
-│                                                                     │
-│ [Cost Trend Chart - 30 Days]                                       │
-│ ┌────────────────────────────────────────────────────────┐         │
-│ │ $200│                                                  │         │
-│ │     │ ┌──── Baseline (no AtharvaAi)                   │         │
-│ │ $150│ │    ╱──────────────────────────────            │         │
-│ │     │ │   ╱                                            │         │
-│ │ $100│ │  ╱   ╱─────── Actual Cost                     │         │
-│ │     │ │ ╱   ╱        (with optimization)              │         │
-│ │ $50 │ │╱   ╱                                           │         │
-│ │     │╱────╱                                            │         │
-│ │ $0  └──────────────────────────────────────────────────│         │
-│ │     Day 1    7    14    21    28                      │         │
-│ │                                                        │         │
-│ │     💚 Savings Area: $1,234.56 this month             │         │
-│ └────────────────────────────────────────────────────────┘         │
-│                                                                     │
-│ Savings Breakdown:                                                  │
-│ • Spot vs On-Demand:     $842.30  (68%)                           │
-│ • Instance Right-Sizing: $245.80  (20%)                           │
-│ • Node Consolidation:    $98.40   (8%)                            │
-│ • Pool Optimization:     $48.06   (4%)                            │
-│                                                                     │
-│ Cost by Category:                                                   │
-│ [Pie Chart]                                                         │
-│ • Compute (Spot):    $456  (52%)                                   │
-│ • Compute (On-Demand): $234  (27%)                                 │
-│ • Storage:           $123  (14%)                                   │
-│ • Network:           $67   (7%)                                    │
-│                                                                     │
-│ ─── Risk Tab ───                                                   │
-│                                                                     │
-│ [Risk History Chart - 30 Days]                                     │
-│ Shows: Risk score trend, interruption events, rebalancing actions  │
-│                                                                     │
-│ Interruption Statistics:                                           │
-│ • Total interruptions: 12                                          │
-│ • Prevented by proactive rebalancing: 8 (67%)                     │
-│ • Average time to recovery: 4m 23s                                │
-│ • Zero-downtime migrations: 92%                                    │
-│                                                                     │
-│ ─── Performance Tab ───                                            │
-│                                                                     │
-│ ML Model Performance:                                               │
-│ • Prediction accuracy: 89%                                         │
-│ • False positives: 3%                                              │
-│ • Average inference time: 2.1ms                                    │
-│                                                                     │
-│ Rebalancing Efficiency:                                             │
-│ • Average duration: 8m 34s                                         │
-│ • Success rate: 97%                                                │
-│ • Pods rescheduled: 1,247                                          │
-│                                                                     │
-│ ─── Events Tab ───                                                 │
-│                                                                     │
-│ [Detailed Event Log Table]                                         │
-│ Timestamp | Event Type | Details | Impact | Actions               │
-│ Filterable, searchable, exportable                                 │
-│                                                                     │
-│ [Export Report (PDF)] [Export Data (CSV)] [Schedule Report]       │
-└─────────────────────────────────────────────────────────────────────┘
-
-═══════════════════════════════════════════════════════════════════════════
-
-MOBILE RESPONSIVE DESIGN
-═══════════════════════════════════════════════════════════════════════════
-
-Mobile Layout (< 768px):
-
-┌─────────────────────────────┐
-│ 🤖 AtharvaAi        ☰ Menu │
-│ Savings: $1,234             │
-│ Risk: 🟡 Medium             │
-├─────────────────────────────┤
-│                             │
-│ [Swipeable Cards]           │
-│                             │
-│ Card 1: Status Overview     │
-│ ┌─────────────────────────┐ │
-│ │ AI Status: Active       │ │
-│ │ Nodes: 47               │ │
-│ │ Actions: 3 pending      │ │
-│ └─────────────────────────┘ │
-│        ●●●○○ (swipe →)     │
-│                             │
-│ Card 2: Top Pool            │
-│ ┌─────────────────────────┐ │
-│ │ m5.large (us-west-2a)  │ │
-│ │ Risk: 8% | $0.04/hr    │ │
-│ │ [Select]                │ │
-│ └─────────────────────────┘ │
-│        ●●●●○                │
-│                             │
-│ Card 3: Risk Monitor        │
-│ [Mini chart]                │
-│                             │
-│ Card 4: Quick Actions       │
-│ [Action buttons]            │
-│                             │
-├─────────────────────────────┤
-│ [Bottom Nav]                │
-│ Home | Analytics | Settings │
-└─────────────────────────────┘
-
-Touch Gestures:
-- Swipe left/right: Navigate cards
-- Pull down: Refresh data
-- Long press: Quick actions menu
-- Pinch: Zoom charts
-
-═══════════════════════════════════════════════════════════════════════════
-
-REAL-TIME UPDATES & WEBSOCKET INTEGRATION
-═══════════════════════════════════════════════════════════════════════════
-
-WebSocket Events:
-
-Connection: ws://api/v1/atharvaai/stream
-
-Subscribed Events:
-- risk_score_updated
-- pool_ranking_changed
-- node_status_changed
-- rebalancing_progress
-- interruption_detected
-- cost_savings_updated
-- recommendation_generated
-
-Example WebSocket Message:
-{
-  "event": "risk_score_updated",
-  "timestamp": "2026-02-16T14:35:22Z",
-  "data": {
-    "overall_risk": 0.42,
-    "change": +0.08,
-    "trend": "increasing",
-    "affected_nodes": ["node-abc", "node-xyz"],
-    "recommendation": "rebalance_suggested"
-  }
-}
-
-UI Updates:
-- Risk score: Animate from old to new value
-- Rankings: Re-sort with slide animation
-- Status pills: Color fade transition
-- Charts: Add new data point with line animation
-- Notifications: Toast message in top-right
-
-Update Frequency:
-- Risk scores: Every 30 seconds
-- Pool rankings: Every 30 seconds
-- Node status: Every 10 seconds
-- Cost metrics: Every 60 seconds
-- Rebalancing progress: Real-time (every 2 seconds)
-
-═══════════════════════════════════════════════════════════════════════════
-
-ANIMATIONS & MICRO-INTERACTIONS
-═══════════════════════════════════════════════════════════════════════════
-
-Key Animations:
-
-1. Page Load:
-   - Header slides down (200ms, ease-out)
-   - Cards fade in with stagger (50ms delay)
-   - Charts draw in with line animation (500ms)
-   - Numbers count up to current value
-
-2. Data Updates:
-   - Risk score: Number ticker effect
-   - Rankings: Smooth re-sorting with slide transitions
-   - Charts: New data points connect with animated line
-   - Status pills: Color morph (300ms)
-
-3. User Actions:
-   - Button click: Ripple effect
-   - Card hover: Lift with shadow (translateY(-4px))
-   - Node selection: Highlight with glow
-   - Manual switch: Warning shake animation
-
-4. Success/Error States:
-   - Success: Green checkmark with bounce
-   - Error: Red X with shake
-   - Loading: Pulsing skeleton screens
-   - Processing: Progress bar with shimmer
-
-5. Real-Time Indicators:
-   - Live badge: Gentle pulse (red dot)
-   - Updating data: Subtle fade flash
-   - Critical alerts: Attention pulse
-   - AI thinking: Circuit pattern animation
-
-Performance:
-- Use CSS transforms (not position)
-- RequestAnimationFrame for smooth 60fps
-- Debounce rapid updates (300ms)
-- Virtualized scrolling for large lists
-- Lazy load charts when visible
-
-═══════════════════════════════════════════════════════════════════════════
-
-ACCESSIBILITY (WCAG 2.1 AA)
-═══════════════════════════════════════════════════════════════════════════
-
-- All interactive elements keyboard accessible (Tab navigation)
-- ARIA labels for screen readers
-- Focus indicators clearly visible (2px outline)
-- Color contrast ratio ≥4.5:1 for text
-- Alternative text for all icons/charts
-- Live region announcements for real-time updates
-- Reduced motion support (prefers-reduced-motion)
-- High contrast mode support
-- Keyboard shortcuts:
-  - Ctrl/Cmd + K: Search
-  - Ctrl/Cmd + R: Force refresh
-  - Ctrl/Cmd + M: Toggle manual mode
-  - Esc: Close modals
-
-═══════════════════════════════════════════════════════════════════════════
-
-TECHNICAL IMPLEMENTATION
-═══════════════════════════════════════════════════════════════════════════
-
-Frontend Stack:
-- Framework: React 18+ with TypeScript
-- State: Zustand + React Query
-- UI Library: Tailwind CSS + shadcn/ui
-- Charts: Recharts / Apache ECharts
-- Real-time: Socket.IO client
-- Animations: Framer Motion
-- Icons: Lucide React
-- Tables: TanStack Table (virtualized)
-
-Backend Integration:
-- REST API: /api/v1/atharvaai/*
-- WebSocket: /ws/atharvaai
-- Authentication: JWT tokens
-- Rate limiting: 100 req/min per user
-
-Build:
-- Vite for fast dev/build
-- Code splitting by route
-- Progressive Web App (PWA)
-- Service worker for offline support
-
-Testing:
-- Jest + React Testing Library (unit)
-- Playwright (E2E)
-- Storybook (component library)
-- Performance: Lighthouse CI
-
-═══════════════════════════════════════════════════════════════════════════
-END OF ATHARVAAI UI/UX SPECIFICATION
-═══════════════════════════════════════════════════════════════════════════
+2. CALCULATE STATISTICS:
+   
+   For each metric (CPU and Memory separately):
+   
+   P50  = value where 50% of readings are below this  (median)
+   P90  = value where 90% of readings are below this
+   P95  = value where 95% of readings are below this  ← KEY METRIC
+   P99  = value where 99% of readings are below this
+   MAX  = highest ever recorded
+   
+   Example for api-service CPU:
+     All readings over 7 days: [0.1, 0.2, 0.3, 0.4, 0.5, 0.3, 0.2 ...]
+     P50 = 0.25 cores
+     P90 = 0.40 cores
+     P95 = 0.45 cores  ← Use this as baseline
+     P99 = 0.55 cores
+     MAX = 0.80 cores (traffic spike one afternoon)
+     
+3. GENERATE RECOMMENDATION:
+   
+   NEW CPU REQUEST = P95 + 20% buffer
+   = 0.45 + (0.45 × 0.20)
+   = 0.45 + 0.09
+   = 0.54 cores
+   → Round to: 0.5 cores (readable value)
+   
+   NEW CPU LIMIT = P99 + 30% buffer
+   = 0.55 + (0.55 × 0.30)
+   = 0.55 + 0.165
+   = 0.715 cores
+   → Round to: 0.75 cores
+   
+   NEW MEMORY REQUEST = P95 + 25% buffer
+   (Memory is more critical - OOM kills are bad)
+   = 1.1GB + (1.1 × 0.25)
+   = 1.375GB
+   → Round to: 1.5GB
+   
+   NEW MEMORY LIMIT = P99 + 40% buffer
+   = 1.3GB + (1.3 × 0.40)
+   = 1.82GB
+   → Round to: 2GB
+
+4. WHY THESE BUFFERS?
+   
+   CPU Buffer (20%):
+   - CPU is compressible (throttled, not killed)
+   - Pod can survive brief CPU throttling
+   - Smaller buffer = more aggressive savings
+   
+   Memory Buffer (25%):
+   - Memory is NOT compressible (OOM kill if exceeded)
+   - More conservative to prevent pod crashes
+   
+   Limit Buffer (30-40%):
+   - Limits prevent noisy neighbours
+   - Higher than requests (allows bursting)
+
+5. DECISION: RECOMMEND OR NOT?
+   
+   Only recommend if ONE OF THESE IS TRUE:
+   ✓ Savings > 10% of current cost
+   ✓ CPU waste > 50% (requesting 2x more than using)
+   ✓ Memory waste > 50%
+   
+   Don't recommend for:
+   ✗ Low confidence data (< 100 samples)
+   ✗ Already well-optimized (waste < 20%)
+   ✗ Too small workload (not worth the effort)
+   ✗ Stateful databases (too risky)
+```
+
+---
+
+### **Step 3: Safety Checks Before Applying**
+
+```
+BEFORE APPLYING ANY RECOMMENDATION:
+
+CHECK 1: Has there been an OOM Kill recently?
+  Query: Any container OOM killed in last 7 days?
+  If YES: Do not reduce memory → Too risky
+  If NO: Safe to proceed with memory reduction
+
+CHECK 2: Is CPU throttling already high?
+  Query: CPU throttling > 20% in last 7 days?
+  If YES: Do not reduce CPU further
+  If NO: Safe to proceed
+
+CHECK 3: Is this a production workload?
+  Check: namespace = 'production' or tag = 'production'
+  If YES: Require manual approval
+  If NO: Can auto-apply
+
+CHECK 4: Does the workload have stable traffic patterns?
+  Check: Standard deviation of usage (is it consistent?)
+  If HIGH variance: Add extra buffer, require review
+  If LOW variance: Safe to right-size aggressively
+
+CHECK 5: Are there enough replicas?
+  Check: replica count >= 2
+  If 1 replica: Rolling update means brief unavailability
+  → Warn user, require approval
+
+RESULT OF CHECKS:
+  All pass → Auto-apply (if enabled)
+  Some fail → Flag for manual review with reasons
+  Critical fail → Block recommendation, explain why
+```
+
+---
+
+### **Step 4: Application Strategy**
+
+```
+HOW WE APPLY RIGHT-SIZING:
+
+STRATEGY: Rolling Update (Zero Downtime)
+
+Process:
+1. Update Deployment/StatefulSet with new resource requests
+   
+2. Kubernetes starts rolling update:
+   - Takes Pod 1 down
+   - Starts Pod 1 with new resource requests
+   - Waits for Pod 1 to be Ready (health check passes)
+   - Takes Pod 2 down
+   - Starts Pod 2 with new resources
+   - Continue until all pods updated
+   
+3. At each step:
+   - Monitor health checks
+   - Monitor error rates
+   - If anything looks wrong → ROLLBACK immediately
+
+ROLLBACK TRIGGERS:
+  - Pod fails readiness probe after 2 minutes
+  - Error rate increases > 20% compared to before
+  - OOM Kill occurs
+  - Manual abort by user
+
+TIMING:
+  - Stagger updates (not all at once)
+  - Wait 5 minutes between each pod update
+  - Full rollout: 30-60 minutes for large deployments
+  - This gives time to detect problems early
+```
+
+---
+
+## **PART 2: KARPENTER LOGIC**
+
+### **What Karpenter Does**
+
+```
+KARPENTER'S JOB:
+  Watch for pods that can't be scheduled (Pending state)
+  Pick the BEST instance type to run those pods
+  Provision that instance
+  Schedule pods on it
+  Later: Remove nodes when pods leave
+
+WHY BETTER THAN CLUSTER AUTOSCALER:
+  
+  Cluster Autoscaler:
+  - Pre-defined node groups (e.g., "group of m5.large")
+  - Can only scale existing groups up/down
+  - If you need m5.2xlarge, need to create new group
+  - Rigid, requires manual configuration
+  
+  Karpenter:
+  - Looks at EXACTLY what pods need
+  - Picks the cheapest instance that fits
+  - Can choose from any instance type dynamically
+  - Flexible, self-managing
+```
+
+---
+
+### **Karpenter's Bin Packing Logic**
+
+```
+BIN PACKING CONCEPT:
+  Think of instances as boxes
+  Think of pods as items to pack
+  Goal: Fit all items using fewest/cheapest boxes
+
+EXAMPLE:
+  Pods waiting to be scheduled:
+  Pod A: needs 0.5 CPU, 1Gi RAM
+  Pod B: needs 0.5 CPU, 2Gi RAM
+  Pod C: needs 1.0 CPU, 1Gi RAM
+  Pod D: needs 0.5 CPU, 0.5Gi RAM
+  
+  Total needed: 2.5 CPU, 4.5Gi RAM
+  
+  Karpenter evaluates options:
+  
+  Option 1: 1x m5.xlarge (4 CPU, 16Gi) = $0.192/hr
+    → Fits all 4 pods but 38% CPU wasted, 72% memory wasted
+    → Total cost: $0.192/hr
+  
+  Option 2: 1x m5.large (2 CPU, 8Gi) = $0.096/hr
+    → Doesn't fit Pod C (only 1.5 CPU remaining after A,B,D)
+    → Need 2x m5.large = $0.192/hr
+  
+  Option 3: 1x m5.large + 1x t3.medium (1 CPU, 4Gi)
+    → m5.large: Pods A, B, D
+    → t3.medium: Pod C
+    → Total: $0.096 + $0.052 = $0.148/hr ← CHEAPEST!
+    
+  Karpenter picks: Option 3 = $0.148/hr (23% cheaper)
+
+HOW KARPENTER DECIDES:
+  1. Calculate sum of all pending pod requests
+  2. Add overhead (kube-reserved CPU/memory)
+  3. Evaluate ALL allowed instance types
+  4. Score each by: price / (utilization efficiency)
+  5. Pick the best scoring combination
+  6. Provision in parallel if multiple nodes needed
+```
+
+---
+
+### **Karpenter Consolidation Logic**
+
+```
+CONSOLIDATION: Removes underutilized nodes
+
+WHEN IT RUNS:
+  Continuously (not on schedule)
+  Triggers when Karpenter detects underutilized nodes
+  
+WHAT IT CHECKS:
+  For each node:
+    Can ALL pods on this node fit on OTHER existing nodes?
+    
+    If YES:
+      Cordon node (no new pods)
+      Drain pods (move to other nodes)
+      Delete node
+      
+    If NO:
+      Leave node running
+      Check again later
+
+EXAMPLE:
+  Before: 3 nodes, all 30% utilized
+  
+  Node 1: 30% CPU, 25% Memory (6 pods)
+  Node 2: 35% CPU, 30% Memory (8 pods)
+  Node 3: 25% CPU, 20% Memory (4 pods)
+  
+  Karpenter analysis:
+  "Can Node 3's 4 pods fit on Node 1 or Node 2?"
+  
+  Node 2 has space: 65% CPU free, 70% Memory free
+  Node 3 pods combined: need 25% CPU, 20% Memory
+  → YES, they fit on Node 2!
+  
+  Action:
+  1. Cordon Node 3
+  2. Drain 4 pods → reschedule on Node 2
+  3. Delete Node 3
+  4. Node 2 now at 60% CPU, 50% Memory (healthy)
+  
+  After: 2 nodes instead of 3 = 33% cost reduction!
+
+SAFETY RULES DURING CONSOLIDATION:
+  - Never violate PodDisruptionBudgets
+  - Respect pod anti-affinity rules
+  - Don't consolidate if < 2 replicas (availability risk)
+  - Don't consolidate during business hours (configurable)
+  - Consolidation rate: Max 10% of nodes at once
+```
+
+---
+
+### **Karpenter + Right-Sizing Interaction**
+
+```
+HOW THEY WORK TOGETHER:
+
+PHASE 1: Right-Sizing happens first
+  
+  api-service pods:
+  BEFORE: Each pod requests 2 CPU, 4GB
+  AFTER:  Each pod requests 0.5 CPU, 1.5GB
+  
+  10 replicas:
+  BEFORE: Total requests 20 CPU, 40GB
+  AFTER:  Total requests 5 CPU, 15GB
+
+PHASE 2: Pods Reschedule (Rolling Update)
+  
+  Kubernetes rolling update:
+  - Old pods (2 CPU, 4GB) terminate one by one
+  - New pods (0.5 CPU, 1.5GB) start
+  - New pods need less space
+  - Some old nodes now have lots of free space
+
+PHASE 3: Karpenter Detects Opportunity
+  
+  Karpenter checks every 30 seconds:
+  "Are any nodes underutilized after that rolling update?"
+  
+  Finds:
+    Node 1: Was 90% full, now 30% full (pods got smaller!)
+    Node 2: Was 85% full, now 25% full
+    Node 3: Was 80% full, now 20% full
+    Node 4: Was 75% full, now 18% full
+  
+  Analysis:
+  "Can I fit Node 3 + Node 4 pods onto Node 1 + Node 2?"
+  
+  Combined pod needs of Nodes 3+4: 2.5 CPU, 8GB
+  Available space on Nodes 1+2: 5.5 CPU, 15GB
+  
+  YES! They fit.
+
+PHASE 4: Karpenter Consolidates
+  
+  1. Drain Node 3 → pods move to Node 1
+  2. Delete Node 3
+  3. Drain Node 4 → pods move to Node 2
+  4. Delete Node 4
+  
+  RESULT:
+  BEFORE right-sizing: 4 nodes needed
+  AFTER right-sizing + consolidation: 2 nodes needed
+  Savings: 50% node cost reduction!
+
+PHASE 5: Karpenter Also Right-Sizes Nodes
+  
+  Nodes 1 and 2 are now at 60% utilization
+  Karpenter checks: "Are these nodes too big?"
+  
+  Nodes 1+2: m5.2xlarge (8 CPU, 32GB)
+  
+  Pod total needs: 5 CPU, 15GB
+  Better fit: 2x m5.xlarge (4 CPU, 16GB) per node
+  
+  Karpenter action:
+  1. Provision 2x m5.xlarge
+  2. Drain m5.2xlarge → pods move to m5.xlarge
+  3. Delete m5.2xlarge
+  
+  Additional savings: 50% per node!
+
+TOTAL SAVINGS CHAIN:
+  Right-Sizing pods:        -75% pod resource waste
+  Karpenter consolidation:  -50% node count
+  Karpenter node downsizing:-50% per-node cost
+  Combined:                 ~75-85% total compute savings
+```
+
+---
+
+## **PART 3: ML SPOT MODEL INTEGRATION**
+
+### **Where ML Models Fit In**
+
+```
+CURRENT STATE (Without ML Integration):
+  
+  Right-Sizing → decides pod sizes
+  Karpenter → decides which instance TYPE to use
+  
+  BUT Karpenter's instance selection is based ONLY on:
+  - Fit (does the instance size match pod requests?)
+  - Price (what's the cheapest that fits?)
+  - Availability (is it available in this AZ?)
+  
+  PROBLEM: Karpenter doesn't know about SPOT RISK!
+  
+  Karpenter might choose:
+  "m5.large is cheapest and fits → provision m5.large"
+  
+  But your ML model knows:
+  "m5.large in us-west-2a has 80% interruption risk right now!"
+  
+  WITHOUT ML: Karpenter picks cheapest regardless of risk
+  WITH ML: Karpenter picks cheapest SAFE instance
+
+YOUR ML MODELS:
+  Classifier → Predicts spot interruption RISK (0-1)
+  Regressor → Predicts SAVINGS potential (0-1)
+  
+  These two together tell Karpenter:
+  "Here are the safe AND cheap instances to use right now"
+```
+
+---
+
+### **Integration Mechanism**
+
+```
+HOW ML CONNECTS TO KARPENTER:
+
+Karpenter reads from: NodePool spec (YAML)
+  Specifically: instance types allowed list
+
+Our system DYNAMICALLY UPDATES this list
+  based on ML model outputs
+
+FLOW:
+
+STEP 1: ML Pipeline Runs (Every 30 seconds)
+  
+  For each candidate instance type:
+    Run risk classifier → get risk_score
+    Run savings regressor → get savings_pct
+    Filter by: risk_score < 0.3 (only safe pools)
+    Rank by: risk ASC, then price ASC
+    Output: Top 10 safe, cheap instance types
+
+STEP 2: Update Karpenter NodePool
+  
+  Take ML output top 10 safe pools:
+    1. m5a.large-us-west-2a (risk: 0.08)
+    2. m5.large-us-west-2b (risk: 0.12)
+    3. c5.large-us-west-2a (risk: 0.15)
+    4. m5.xlarge-us-west-2c (risk: 0.18)
+    ... etc
+  
+  Update Karpenter NodePool YAML:
+    spec.requirements instance-types:
+      WAS: [m5.large, m5.xlarge, c5.large, r5.large, ...]
+      NOW: [m5a.large, m5.large, c5.large, m5.xlarge, ...] (ML-ranked order)
+  
+  Karpenter ONLY provisions from this ML-filtered list!
+
+STEP 3: Karpenter Uses ML-Approved List
+  
+  Pod needs scheduling:
+  Karpenter evaluates ONLY from ML-approved list
+  Picks cheapest that fits from safe list
+  
+  Result: Every new node is on a ML-verified safe pool!
+
+STEP 4: Blacklist Feeds Back to ML
+  
+  Client gets termination notice:
+    → Pool blacklisted (System B from earlier)
+    → ML re-runs excluding that pool
+    → NodePool updated immediately
+    → Karpenter stops provisioning on risky pool
+    → Existing nodes on that pool get drained
+```
+
+---
+
+### **Detailed ML → Karpenter Signal Flow**
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ SIGNAL FLOW DIAGRAM                                             │
+└─────────────────────────────────────────────────────────────────┘
+
+AWS Spot Advisor     Termination Notices    Cluster Metrics
+       ↓                     ↓                      ↓
+       └─────────────────────┴──────────────────────┘
+                             ↓
+                    FEATURE PREPARATION
+                    
+                    Per instance type:
+                    • interruption_rate (scraper)
+                    • hour_of_day (current time)
+                    • day_of_week (current day)
+                    • historical_interruptions (DB)
+                    • regional_capacity (AWS API)
+                    • current_spot_price (AWS API)
+                    • cpu_utilization (DaemonSet)
+                    • memory_utilization (DaemonSet)
+                             ↓
+                    ┌─────────────────────┐
+                    │ CLASSIFIER MODEL    │
+                    │ (Risk Prediction)   │
+                    │                     │
+                    │ Input: 108 features │
+                    │ Output: risk 0-1    │
+                    └─────────────────────┘
+                             ↓
+                    ┌─────────────────────┐
+                    │ REGRESSOR MODEL     │
+                    │ (Savings Prediction)│
+                    │                     │
+                    │ Input: 108 features │
+                    │ Output: savings 0-1 │
+                    └─────────────────────┘
+                             ↓
+                    FILTERING & RANKING
+                    
+                    Filter: risk < 0.3 (safe only)
+                    Sort: risk ASC, then price ASC
+                    Output: Top 10 safe pools
+                             ↓
+                    NODEPOOL UPDATE
+                    
+                    Update Karpenter NodePool
+                    instance-types list with
+                    ML-approved pools only
+                             ↓
+                    ┌─────────────────────┐
+                    │ KARPENTER           │
+                    │                     │
+                    │ "I can only use     │
+                    │ these ML-approved   │
+                    │ instance types"     │
+                    │                     │
+                    │ Picks cheapest fit  │
+                    │ from approved list  │
+                    └─────────────────────┘
+                             ↓
+                    New nodes provisioned
+                    on safe, cheap pools!
+```
+
+---
+
+### **ML Model Features from Right-Sizing Data**
+
+```
+NEW FEATURES FOR ML MODELS (from right-sizing system):
+
+RIGHT-SIZING DATA IMPROVES ML PREDICTIONS:
+
+Feature 1: Actual CPU Utilization
+  Source: Right-sizing DaemonSet metrics
+  Use in model: "How loaded will this pool be?"
+  Impact: Higher utilization = Higher risk (stressed instance)
+
+Feature 2: Actual Memory Utilization
+  Source: Right-sizing DaemonSet
+  Use in model: "Memory pressure on this node"
+  Impact: High memory = More likely to face issues
+
+Feature 3: Pod Count per Node
+  Source: Right-sizing metrics
+  Use in model: "Density of workloads"
+  Impact: More pods = More complex = Slightly higher risk
+
+Feature 4: Workload Stability
+  Source: Right-sizing variance analysis
+  Use in model: "Are workloads stable or spiky?"
+  Impact: Stable workloads = More predictable = Lower risk
+
+HOW THIS IMPROVES ML:
+  
+  WITHOUT right-sizing data:
+    Risk prediction based on: AWS data + time + history
+    Accuracy: 89%
+  
+  WITH right-sizing data:
+    Risk prediction also uses: Actual workload characteristics
+    Improved accuracy: ~92-94% (estimated)
+    
+  Because:
+    "A heavily loaded m5.large is riskier than a lightly loaded one"
+    Right-sizing data tells ML how loaded the instances actually are
+```
+
+---
+
+### **Three-Way Optimization Loop**
+
+```
+THE CONTINUOUS OPTIMIZATION CYCLE:
+
+CYCLE OVERVIEW:
+Right-Sizing → Better pod fit → Karpenter consolidates →
+Smaller nodes needed → ML finds cheaper safe options for
+those smaller nodes → Karpenter provisions them →
+New metrics collected → Right-Sizing improves →
+Karpenter consolidates more → Better pools selected...
+
+DETAILED CYCLE:
+
+┌─────────────────────────────────────────────────────────────────┐
+│                                                                 │
+│  1. RIGHT-SIZING ANALYSIS (Daily)                              │
+│     ↓                                                           │
+│     "api-service needs 0.5 CPU not 2 CPU"                      │
+│     ↓                                                           │
+│  2. RIGHT-SIZING APPLIED (Rolling update)                      │
+│     ↓                                                           │
+│     Pods now smaller → nodes have free space                   │
+│     ↓                                                           │
+│  3. KARPENTER CONSOLIDATION (30 seconds after)                 │
+│     ↓                                                           │
+│     "3 nodes can become 2 nodes"                               │
+│     "m5.2xlarge can become m5.large"                           │
+│     ↓                                                           │
+│  4. ML MODEL RE-EVALUATION (Every 30 seconds)                  │
+│     ↓                                                           │
+│     "With smaller instance type (m5.large):"                   │
+│     "Interruption rate is actually lower (smaller pool)"       │
+│     "Multiple AZ options available"                            │
+│     ↓                                                           │
+│  5. KARPENTER NODEPOOL UPDATED (By ML system)                  │
+│     ↓                                                           │
+│     "Use m5a.large instead of m5.large - same size, safer"    │
+│     ↓                                                           │
+│  6. KARPENTER PROVISIONS ML-APPROVED NODES                     │
+│     ↓                                                           │
+│  7. NEW METRICS COLLECTED (DaemonSet)                          │
+│     ↓                                                           │
+│  8. BETTER DATA FOR NEXT RIGHT-SIZING CYCLE                    │
+│     ↓                                                           │
+│  GOTO STEP 1 (Next day)                                        │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### **Real-World Example: All Three Systems**
+
+```
+STARTING STATE:
+  Cluster: dev-cluster-01
+  Workload: 5 microservices
+  Nodes: 10x m5.2xlarge ($0.38/hr each = $3.80/hr total)
+  Monthly cost: $2,736
+
+DAY 1: Right-Sizing Analysis Runs
+  
+  Finds for all 5 services:
+  ┌─────────────────────────────────────────────────────┐
+  │ Service     Requested    Actual    Waste            │
+  │ api         2CPU/4GB     0.3/1.2   85%/70%          │
+  │ worker      4CPU/8GB     0.8/2.1   80%/74%          │
+  │ frontend    1CPU/2GB     0.2/0.6   80%/70%          │
+  │ scheduler   2CPU/4GB     0.4/1.0   80%/75%          │
+  │ notifier    1CPU/2GB     0.15/0.4  85%/80%          │
+  └─────────────────────────────────────────────────────┘
+  
+  All workloads massively over-provisioned!
+
+DAY 2: Right-Sizing Applied (Rolling Updates)
+  
+  New resource requests applied:
+  ┌─────────────────────────────────────────────────────┐
+  │ Service     Old          New       Reduction        │
+  │ api         2CPU/4GB     0.5/1.5   75%/63%          │
+  │ worker      4CPU/8GB     1.0/2.5   75%/69%          │
+  │ frontend    1CPU/2GB     0.25/0.8  75%/60%          │
+  │ scheduler   2CPU/4GB     0.5/1.2   75%/70%          │
+  │ notifier    1CPU/2GB     0.2/0.5   80%/75%          │
+  └─────────────────────────────────────────────────────┘
+  
+  Total cluster needs:
+  BEFORE: 10 CPU + 20GB (for these workloads)
+  AFTER:  2.45 CPU + 6.5GB (same workloads, right-sized!)
+
+DAY 2 (30 seconds after rolling updates):
+  Karpenter Consolidation Triggers
+  
+  Analysis:
+  "10 nodes have tons of free space now"
+  "All workloads fit on 3 nodes comfortably"
+  
+  Actions:
+  1. Drain Node 4-10 (7 nodes)
+  2. All pods fit on Node 1-3
+  3. Nodes 4-10 deleted
+  
+  AND THEN:
+  "Nodes 1-3 are m5.2xlarge but only using 35% capacity"
+  "m5.large would be enough!"
+  
+  Actions:
+  1. Provision 3x m5.large
+  2. Drain m5.2xlarge nodes
+  3. Delete m5.2xlarge nodes
+  
+  New state: 3x m5.large ($0.096/hr each = $0.288/hr)
+
+DAY 2 (Parallel): ML Spot System
+  
+  ML model evaluates m5.large options:
+  
+  m5.large-us-west-2a: risk=0.15 (global notice 2hrs ago!)
+  m5.large-us-west-2b: risk=0.08 (safe)
+  m5a.large-us-west-2a: risk=0.06 (safest AND cheaper!)
+  
+  ML recommendation:
+  "Use m5a.large in us-west-2a - safer and 10% cheaper"
+  
+  Updates Karpenter NodePool:
+  BEFORE: [m5.large, m5.xlarge, c5.large, ...]
+  AFTER:  [m5a.large, m5.large(az-b), c5a.large, ...]
+  
+  Karpenter action:
+  "My approved list changed - m5a.large is now preferred"
+  
+  Consolidation triggered:
+  1. New nodes provisioned: 3x m5a.large
+  2. Old m5.large nodes drained
+  3. Old nodes deleted
+
+FINAL STATE (After all three systems):
+  
+  ┌─────────────────────────────────────────────────────┐
+  │ BEFORE         │ AFTER          │ REDUCTION         │
+  │────────────────│────────────────│───────────────────│
+  │ 10x m5.2xlarge │ 3x m5a.large  │ 70% fewer nodes   │
+  │ $3.80/hr       │ $0.255/hr      │ 93% cost down     │
+  │ $2,736/month   │ $184/month     │ Save $2,552/month │
+  └─────────────────────────────────────────────────────┘
+
+HOW EACH SYSTEM CONTRIBUTED:
+  Right-Sizing:   Reduced pod requests (pods use 75% less)
+  Karpenter:      Consolidated nodes (10 → 3 nodes)
+  ML Spot:        Selected safer cheaper pool ($0.096 → $0.085/hr)
+  
+  COMBINED: 93% cost reduction! 🎉
+```
+
+---
+
+## **Decision Logic Summary**
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ WHICH SYSTEM MAKES WHICH DECISION?                              │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│ QUESTION: How much CPU/Memory should this pod request?         │
+│ ANSWER: Right-Sizing System                                     │
+│ BASIS: Historical usage data (P95 + buffer)                    │
+│                                                                 │
+│ QUESTION: What type/size of node to provision?                 │
+│ ANSWER: Karpenter                                               │
+│ BASIS: Pod requests + bin-packing algorithm                    │
+│                                                                 │
+│ QUESTION: Which spot pool is safe AND cheap right now?         │
+│ ANSWER: ML Models (Classifier + Regressor)                     │
+│ BASIS: Interruption rates + historical data + time patterns    │
+│                                                                 │
+│ QUESTION: Should we rebalance due to a termination notice?     │
+│ ANSWER: Termination Monitor (System B)                         │
+│ BASIS: AWS events + cross-client intelligence                  │
+│                                                                 │
+│ QUESTION: Is this instance family/size allowed in my cluster?  │
+│ ANSWER: Node Templates                                          │
+│ BASIS: User-defined rules                                       │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+
+PRIORITY WHEN SYSTEMS CONFLICT:
+
+1. Safety (Termination notices override everything)
+2. Node Templates (User rules must be respected)
+3. ML Risk Score (Safety of pool)
+4. Karpenter bin-packing (Node selection)
+5. Right-Sizing (Pod optimization)
+6. Cost (Cheapest option from safe list)
+
+Example conflict:
+  Karpenter wants m5.large (cheapest fit)
+  BUT ML says m5.large risk = 0.85 (very risky!)
+  
+  ML WINS: Karpenter forced to use
+  next cheapest from ML-safe list
+```
+
+---
+
+## **Summary: Simple One-Liner Per System**
+
+```
+RIGHT-SIZING:
+"Analyze how much each pod actually uses,
+ then tell Kubernetes to only request that much"
+
+KARPENTER:
+"Look at what pods need,
+ provision the smallest/cheapest node that fits them,
+ delete nodes when they become empty"
+
+ML MODELS:
+"Predict which spot pools are safe right now,
+ update Karpenter's allowed list so it
+ only provisions on safe pools"
+
+THREE SYSTEMS TOGETHER:
+"Pods request only what they need (right-sizing),
+ nodes are only as big as pods require (Karpenter),
+ nodes run on safest cheapest spot pools (ML)"
+ 
+= Maximum efficiency, minimum cost, maximum safety
+```
+400+ AWS Instance Types
+          │
+          ▼
+┌─────────────────────────┐
+│   NODE TEMPLATE         │  ← YOU define this
+│                         │
+│  "Only these are        │
+│   allowed in my         │
+│   cluster"              │
+│                         │
+│  Architecture: x64      │
+│  Families: m5,m5a,c5    │
+│  Size: large to 4xl     │
+│  Max interruption: 25%  │
+└─────────────────────────┘
+          │
+          │ ~20-30 instance types remain
+          ▼
+┌─────────────────────────┐
+│   ML MODEL FILTER       │  ← SYSTEM defines this (auto)
+│                         │
+│  "From allowed list,    │
+│   which are safe        │
+│   RIGHT NOW?"           │
+│                         │
+│  m5.large: risk 0.8 ❌  │
+│  m5a.large: risk 0.08 ✅│
+│  c5.large: risk 0.15 ✅ │
+│  m5.xlarge: risk 0.6 ❌ │
+└─────────────────────────┘
+          │
+          │ ~10 safe instance types remain
+          ▼
+┌─────────────────────────┐
+│   KARPENTER             │  ← FULLY AUTOMATIC
+│                         │
+│  "From safe allowed     │
+│   list, which SIZE      │
+│   fits my pods?"        │
+│                         │
+│  Pod needs: 0.5 CPU     │
+│  m5a.large: 2 CPU ✅    │
+│  Cheapest fit → USE IT  │
+└─────────────────────────┘
+          │
+          ▼
+    Perfect Node Provisioned! 🎉

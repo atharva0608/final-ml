@@ -1,1811 +1,1073 @@
-# Event-Driven Spot Instance Risk Management & Rebalancing System
+# AtharvaAi: Complete System Plan (No On-Demand Nodes)
 
-## **System Architecture Overview**
+## **Core Philosophy**
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                         EVENT BUS (NATS/Kafka)                      │
-│  Events: spot_risk_increase | interruption_notice | node_unhealthy │
-│          cost_threshold_exceeded | pod_evicted | capacity_shortage  │
-└─────────────────────────────────────────────────────────────────────┘
-         ▲                    ▲                    ▲
-         │                    │                    │
-    ┌────┴────┐         ┌─────┴─────┐        ┌────┴─────┐
-    │ Scrapers│         │ DaemonSet │        │ K8s      │
-    │         │         │ Agents    │        │ Watchers │
-    └─────────┘         └───────────┘        └──────────┘
-         │                    │                    │
-         ▼                    ▼                    ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                    DECISION ENGINE (Brain)                          │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐             │
-│  │ Risk Scorer  │  │ Savings      │  │ Rebalance    │             │
-│  │ (ONNX Model) │  │ Predictor    │  │ Orchestrator │             │
-│  │              │  │ (ONNX Model) │  │              │             │
-│  └──────────────┘  └──────────────┘  └──────────────┘             │
-└─────────────────────────────────────────────────────────────────────┘
-         │                    │                    │
-         ▼                    ▼                    ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                    ACTION EXECUTORS                                 │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐             │
-│  │ Karpenter    │  │ Node Pool    │  │ Pod          │             │
-│  │ Controller   │  │ Manager      │  │ Drainer      │             │
-│  └──────────────┘  └──────────────┘  └──────────────┘             │
-└─────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│ EVERYTHING RUNS ON SPOT                                         │
+│                                                                 │
+│ Safety comes from:                                              │
+│  • Smart pool selection (ML)                                    │
+│  • Diversity across pools (never one basket)                   │
+│  • Always-warm substitute (cheapest spot)                       │
+│  • Proactive migration (before AWS kills)                      │
+│                                                                 │
+│ NOT from: expensive on-demand nodes                            │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## **1. Event-Driven Workflow Architecture**
-
-### **Core Principle: React to Events, Not Time**
+## **The Five Layers**
 
 ```
-EVENT-DRIVEN FLOW:
-
-1. Event Detection → 2. Event Enrichment → 3. Risk Assessment → 
-4. Decision Making → 5. Action Execution → 6. Validation → 7. Feedback Loop
-
-No cron jobs. All triggers are event-based.
-```
-
-### **Event Types & Sources**
-
-```yaml
-Event Catalog:
-
-# RISK EVENTS (High Priority)
-1. spot.interruption.warning
-   Source: AWS Spot Advisor Scraper / AWS EC2 Rebalance Recommendation
-   Payload:
-     instanceId: i-abc123
-     instanceType: m5.large
-     availabilityZone: us-west-2a
-     interruptionProbability: "15-20%"  # Current rate
-     timeToInterruption: "2 minutes"     # If AWS sends notice
-     spotPrice: 0.045
-     nodeName: node-xyz
-   
-2. spot.risk.increased
-   Source: Risk Scoring Model (Decision Engine)
-   Payload:
-     nodePoolId: pool-spot-general
-     instanceTypes: ["m5.large", "m5.xlarge"]
-     previousRiskScore: 0.35
-     currentRiskScore: 0.72
-     riskTrend: "increasing"
-     affectedNodes: 8
-     
-3. spot.global.interruption
-   Source: Multi-Client Aggregator (learns from all clients)
-   Payload:
-     region: us-west-2
-     instanceType: m5.large
-     interruptionCount: 45  # Across all clients in last hour
-     affectedClients: 12
-     confidenceLevel: 0.89
-     pattern: "regional_capacity_shortage"
-
-# CAPACITY EVENTS
-4. node.capacity.insufficient
-   Source: Kubernetes Scheduler / Karpenter
-   Payload:
-     pendingPods: 5
-     requiredResources: {cpu: "8 cores", memory: "16Gi"}
-     reason: "no_nodes_available"
-     
-5. node.underutilized
-   Source: DaemonSet Metrics Collector
-   Payload:
-     nodeName: node-abc
-     cpuUtilization: 15%
-     memoryUtilization: 22%
-     duration: "2 hours"
-     
-# POD EVENTS
-6. pod.evicted
-   Source: Kubernetes API Watcher
-   Payload:
-     podName: api-service-xyz
-     reason: "spot_interruption"
-     nodeName: node-abc
-     restartCount: 3
-     
-7. pod.oom_killed
-   Source: Kubernetes Events Watcher
-   Payload:
-     podName: worker-123
-     namespace: production
-     memoryLimit: "512Mi"
-     memoryUsed: "520Mi"
-     
-# COST EVENTS
-8. cost.threshold.exceeded
-   Source: Cost Monitor
-   Payload:
-     currentHourlyCost: 8.50
-     threshold: 7.00
-     exceedBy: 21%
-     
-# HEALTH EVENTS
-9. node.unhealthy
-   Source: DaemonSet Health Checker
-   Payload:
-     nodeName: node-xyz
-     issues: ["disk_pressure", "high_cpu"]
-     severity: "warning"
+LAYER 1: NODE TEMPLATES (User Rules)
+  What you define once, rarely change
+  
+LAYER 2: ML POOL SELECTION (Auto, every 30s)
+  What the system picks dynamically
+  
+LAYER 3: KARPENTER (Auto, real-time)
+  How nodes are provisioned and consolidated
+  
+LAYER 4: RIGHT-SIZING (Auto, daily)
+  How pods are optimized to use less
+  
+LAYER 5: SUBSTITUTE NODE (Always running spot)
+  Safety net when anything goes wrong
 ```
 
 ---
 
-## **2. Component-by-Component Logic**
+## **LAYER 1: Node Templates**
 
-### **Component 1: Event Collectors (Data Ingestion)**
-
-#### **A. AWS Spot Advisor Scraper**
-
-```python
-"""
-Spot Interruption Data Scraper
-Purpose: Continuously scrape AWS Spot Advisor and emit events
-"""
-
-Logic Flow:
-
-1. INITIALIZATION:
-   - Load scraping config (regions, instance types to monitor)
-   - Connect to Event Bus
-   - Initialize last known interruption rates cache
-   
-2. SCRAPING LOOP (Event-Driven, not polling):
-   
-   Trigger: AWS CloudWatch Event for Rebalance Recommendation
-   OR
-   Trigger: Scheduled Lambda (every 5 minutes as fallback)
-   
-   Process:
-   a. Scrape AWS Spot Advisor:
-      url = "https://spot-bid-advisor.s3.amazonaws.com/spot-advisor-data.json"
-      data = fetch(url)
-      
-   b. Parse interruption rates:
-      FOR each (region, instanceType) in data:
-        currentRate = data[region][instanceType]["interruptionRate"]
-        previousRate = cache.get(region, instanceType)
-        
-        IF currentRate != previousRate:
-          # Rate changed - emit event
-          delta = currentRate - previousRate
-          
-          IF delta > 0.05:  # 5% increase threshold
-            EMIT EVENT:
-              type: "spot.risk.increased"
-              payload: {
-                region: region,
-                instanceType: instanceType,
-                previousRate: previousRate,
-                currentRate: currentRate,
-                delta: delta,
-                timestamp: now()
-              }
-          
-          # Update cache
-          cache.set(region, instanceType, currentRate)
-   
-   c. Check for regional patterns:
-      IF multiple instance types in same AZ showing increases:
-        EMIT EVENT:
-          type: "spot.regional.risk"
-          payload: {
-            region: region,
-            availabilityZone: az,
-            affectedTypes: [...],
-            pattern: "capacity_crunch",
-            severity: "high"
-          }
-
-3. AWS EC2 REBALANCE RECOMMENDATION HANDLER:
-   
-   Trigger: AWS EventBridge Rule for EC2 Rebalance Recommendations
-   
-   EventBridge Rule:
-   {
-     "source": ["aws.ec2"],
-     "detail-type": ["EC2 Spot Instance Interruption Warning"],
-     "detail": {
-       "instance-id": [...]
-     }
-   }
-   
-   Handler Logic:
-   a. Receive interruption warning from AWS
-   b. Enrich with cluster context:
-      - Query K8s API: Which node is this instance?
-      - What pods are running on this node?
-      - What's the pod priority distribution?
-   
-   c. EMIT EVENT:
-      type: "spot.interruption.imminent"
-      payload: {
-        instanceId: event.detail.instanceId,
-        nodeName: k8s.getNodeForInstance(instanceId),
-        timeToInterruption: "2 minutes",
-        podsAffected: [...],
-        priority: "CRITICAL"
-      }
-
-4. GLOBAL INTERRUPTION AGGREGATOR:
-   
-   Purpose: Learn from interruptions across ALL client clusters
-   
-   Logic:
-   a. Receive interruption events from all client clusters
-   b. Store in time-series database:
-      schema:
-        timestamp, clientId, region, az, instanceType, 
-        interruptionType (spot_reclaimed, rebalance_recommendation)
-   
-   c. Analyze patterns (every 1 minute):
-      - Group by (region, instanceType, 1-hour window)
-      - Count interruptions
-      - Calculate statistical anomalies
-      
-      IF interruptions > (mean + 2*stddev):
-        EMIT EVENT:
-          type: "spot.global.interruption.spike"
-          payload: {
-            region: region,
-            instanceType: instanceType,
-            interruptionCount: count,
-            confidenceLevel: 0.95,
-            affectedClients: clientIds,
-            recommendation: "avoid_this_pool_for_next_hour"
-          }
-   
-   d. Flag risky pools:
-      riskRegistry.markPool(
-        region=region,
-        instanceType=instanceType,
-        riskLevel="high",
-        expiresAt=now() + 1hour
-      )
 ```
+PURPOSE:
+  Define guardrails for what instances are allowed
+  Runs first in pipeline before ML even looks at pools
 
-#### **B. Kubernetes Watchers**
+USER SETS ONCE:
+  Architecture:      x64 only (matches container builds)
+  Allowed families:  m5, m5a, c5, c5a (trusted families)
+  Min size:          large (no tiny nodes)
+  Max size:          4xlarge (cost cap)
+  Blocked families:  g4 (GPU), m5d (local storage)
+  Max interrupt rate: 25% (hard ceiling)
 
-```python
-"""
-Kubernetes Event Watchers
-Purpose: Watch K8s API for relevant events and emit to Event Bus
-"""
+HOW IT FILTERS:
+  AWS has 400+ instance types
+  After template: ~35 approved types remain
+  ML model only evaluates these 35
+  Karpenter can only provision these 35
 
-Watcher 1: Pod Event Watcher
-
-Logic:
-1. Watch Pod events with filters:
-   kubectl get events --watch --field-selector involvedObject.kind=Pod
-   
-2. Filter for specific events:
-   - Evicted (reason: spot interruption)
-   - OOMKilled
-   - Failed scheduling
-   - CrashLoopBackOff
-   
-3. Enrich and emit:
-   FOR each event:
-     IF event.reason == "Evicted" AND event.message.contains("spot"):
-       pod = k8s.get_pod(event.podName)
-       node = k8s.get_node(pod.spec.nodeName)
-       
-       EMIT EVENT:
-         type: "pod.evicted.spot"
-         payload: {
-           podName: event.podName,
-           namespace: pod.namespace,
-           nodeName: node.name,
-           nodeInstanceType: node.labels["node.kubernetes.io/instance-type"],
-           spotPool: node.labels["karpenter.sh/nodepool"],
-           priorityClass: pod.spec.priorityClassName,
-           restartCount: pod.status.containerStatuses[0].restartCount
-         }
-
-Watcher 2: Node Event Watcher
-
-Logic:
-1. Watch Node status changes:
-   k8s.watch(kind="Node")
-   
-2. Detect state transitions:
-   FOR each node event:
-     IF node.status.conditions["Ready"] == False:
-       EMIT EVENT:
-         type: "node.not.ready"
-         payload: {
-           nodeName: node.name,
-           instanceType: node.labels["node.kubernetes.io/instance-type"],
-           reason: node.status.conditions.reason,
-           spotPool: node.labels["karpenter.sh/nodepool"]
-         }
-     
-     IF node.status.conditions["DiskPressure"] == True:
-       EMIT EVENT:
-         type: "node.disk.pressure"
-         payload: {...}
-
-Watcher 3: Pending Pods Watcher
-
-Logic:
-1. Watch for pods stuck in Pending state:
-   
-   Trigger: Pod creation event
-   
-   Process:
-   a. Start timer when pod becomes Pending
-   b. Check after 30 seconds:
-      IF pod still Pending:
-        reason = pod.status.conditions.reason
-        
-        IF reason contains "Insufficient cpu|memory":
-          EMIT EVENT:
-            type: "capacity.insufficient"
-            payload: {
-              requiredCpu: pod.spec.containers[].resources.requests.cpu,
-              requiredMemory: pod.spec.containers[].resources.requests.memory,
-              nodeSelector: pod.spec.nodeSelector,
-              tolerations: pod.spec.tolerations
-            }
-```
-
-#### **C. DaemonSet Metrics Collector**
-
-```python
-"""
-DaemonSet running on every node
-Purpose: Collect node-level metrics and emit events for anomalies
-"""
-
-DaemonSet Logic (runs on each node):
-
-1. INITIALIZATION:
-   - Get node information (name, instance type, spot pool, labels)
-   - Connect to Event Bus
-   - Initialize metrics buffers (rolling windows)
-
-2. METRICS COLLECTION LOOP:
-   
-   Interval: Every 10 seconds (local collection, not event emission)
-   
-   Collect:
-   a. CPU utilization (from cgroups)
-   b. Memory utilization (from /proc/meminfo)
-   c. Disk I/O (from /proc/diskstats)
-   d. Network throughput (from /proc/net/dev)
-   e. Pod count on node
-   f. Container restart counts
-   
-   Store in sliding window: last 6 data points (1 minute of data)
-
-3. ANOMALY DETECTION (Event Emission):
-   
-   Run analysis every 30 seconds on collected metrics
-   
-   Detection Rules:
-   
-   Rule 1: Sustained Underutilization
-   IF avg(cpu_utilization, last_1min) < 20% AND
-      avg(memory_utilization, last_1min) < 30% AND
-      duration > 5 minutes:
-     
-     EMIT EVENT (with deduplication):
-       type: "node.underutilized"
-       payload: {
-         nodeName: nodeName,
-         cpuUtilization: avg_cpu,
-         memoryUtilization: avg_mem,
-         duration: duration,
-         instanceType: instanceType,
-         spotPool: spotPool,
-         recommendation: "consider_consolidation"
-       }
-     
-     # Debounce: Don't emit again for same node within 5 minutes
-   
-   Rule 2: Resource Pressure
-   IF cpu_utilization > 85% for 2 consecutive readings OR
-      memory_utilization > 90% for 2 consecutive readings:
-     
-     EMIT EVENT:
-       type: "node.resource.pressure"
-       payload: {
-         nodeName: nodeName,
-         pressureType: "cpu" | "memory",
-         utilization: current_utilization,
-         recommendation: "add_capacity_or_right_size_pods"
-       }
-   
-   Rule 3: Frequent Pod Restarts
-   IF sum(container_restarts, last_5min) > 3:
-     
-     EMIT EVENT:
-       type: "node.unstable"
-       payload: {
-         nodeName: nodeName,
-         restartCount: count,
-         affectedPods: [...],
-         possibleCause: "oom" | "spot_instability" | "node_issue"
-       }
-
-4. SPOT INTERRUPTION SIGNAL DETECTION:
-   
-   Monitor EC2 instance metadata endpoint (for spot instances):
-   
-   Poll: http://169.254.169.254/latest/meta-data/spot/instance-action
-   Interval: Every 2 seconds
-   
-   IF response != 404:
-     # Interruption notice received!
-     action = json.parse(response)
-     
-     EMIT EVENT (CRITICAL PRIORITY):
-       type: "spot.interruption.imminent"
-       payload: {
-         nodeName: nodeName,
-         instanceId: instanceId,
-         instanceType: instanceType,
-         action: action.action,  # "terminate" | "stop" | "hibernate"
-         time: action.time,
-         spotPool: spotPool,
-         podsOnNode: getPodCount(),
-         priority: "CRITICAL",
-         timeToAct: "120 seconds"
-       }
-     
-     # Immediately start graceful pod eviction (handled by separate component)
-
-5. HEALTH CHECKS:
-   
-   Monitor node health signals:
-   - kubelet heartbeat failures
-   - Docker/containerd daemon status
-   - Disk space < 10%
-   - Network connectivity issues
-   
-   IF any health check fails:
-     EMIT EVENT:
-       type: "node.health.degraded"
-       payload: {...}
+CHANGES WHEN:
+  New compliance requirement
+  New architecture support (adding ARM)
+  Budget changes (adjust max size)
+  Otherwise: set and forget
 ```
 
 ---
 
-### **Component 2: Decision Engine (The Brain)**
+## **LAYER 2: ML Pool Selection**
 
-This is the central intelligence that processes events and makes decisions.
-
-```python
-"""
-DECISION ENGINE ARCHITECTURE
-Stateless, event-driven, horizontally scalable
-"""
-
-┌─────────────────────────────────────────────────────────────┐
-│                    DECISION ENGINE                          │
-│                                                             │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐      │
-│  │   Event      │  │   Model      │  │   Decision   │      │
-│  │   Router     │→ │   Inference  │→ │   Maker      │      │
-│  │              │  │   Engine     │  │              │      │
-│  └──────────────┘  └──────────────┘  └──────────────┘      │
-│         ▲                  ▲                  │             │
-│         │                  │                  │             │
-│  ┌──────┴──────┐  ┌────────┴────────┐  ┌─────▼──────┐      │
-│  │ Event Bus   │  │ Model Registry  │  │ Action     │      │
-│  │ Subscriber  │  │ (ONNX Models)   │  │ Queue      │      │
-│  └─────────────┘  └─────────────────┘  └────────────┘      │
-└─────────────────────────────────────────────────────────────┘
 ```
+PURPOSE:
+  From 35 template-approved types
+  Find top 10 that are safest AND cheapest RIGHT NOW
 
-#### **Decision Engine Core Logic**
+RUNS: Every 30 seconds
 
-```python
-class DecisionEngine:
-    """
-    Main Decision Engine
-    Event-driven, pluggable ML models
-    """
+TWO MODELS:
+  Classifier → risk score (0-1) per instance type
+  Regressor  → savings score (0-1) per instance type
+
+FEATURES FED TO MODELS:
+  From web scraper (every 5 min):
+    interruption rate per instance type per AZ
     
-    def __init__(self):
-        self.event_bus = EventBus()
-        self.model_registry = ModelRegistry()
-        self.action_executor = ActionExecutor()
-        self.state_store = StateStore()  # Redis for fast state access
-        
-        # Load models (pluggable)
-        self.risk_model = self.model_registry.load("risk_classifier_v1")
-        self.savings_model = self.model_registry.load("savings_regressor_v1")
-        
-        # Subscribe to events
-        self.event_bus.subscribe([
-            "spot.risk.increased",
-            "spot.interruption.imminent",
-            "spot.global.interruption.spike",
-            "node.underutilized",
-            "node.resource.pressure",
-            "pod.evicted.spot",
-            "capacity.insufficient"
-        ], self.handle_event)
+  From time context:
+    hour of day, day of week
+    (Tuesday 2pm is safer than Friday 5pm)
     
-    def handle_event(self, event):
-        """
-        Main event handler - routes events to appropriate processors
-        """
-        # Log event
-        logger.info(f"Received event: {event.type}")
-        
-        # Route to appropriate handler
-        handler_map = {
-            "spot.risk.increased": self.handle_risk_increase,
-            "spot.interruption.imminent": self.handle_imminent_interruption,
-            "spot.global.interruption.spike": self.handle_global_spike,
-            "node.underutilized": self.handle_underutilization,
-            "node.resource.pressure": self.handle_resource_pressure,
-            "pod.evicted.spot": self.handle_pod_eviction,
-            "capacity.insufficient": self.handle_capacity_shortage
-        }
-        
-        handler = handler_map.get(event.type)
-        if handler:
-            handler(event)
-        else:
-            logger.warning(f"No handler for event type: {event.type}")
+  From history database:
+    how many interruptions in last 24h for this pool
     
-    # ─────────────────────────────────────────────────────────
-    # HANDLER: Spot Risk Increase
-    # ─────────────────────────────────────────────────────────
-    def handle_risk_increase(self, event):
-        """
-        Triggered when spot interruption rate increases
-        Decision: Should we rebalance proactively?
-        """
-        region = event.payload.region
-        instance_type = event.payload.instanceType
-        current_rate = event.payload.currentRate
-        
-        # 1. Get affected nodes
-        affected_nodes = self.get_nodes_by_instance_type(
-            region, instance_type
-        )
-        
-        if not affected_nodes:
-            logger.info("No nodes affected by this risk increase")
-            return
-        
-        # 2. Prepare model input features
-        features = self.prepare_risk_features(
-            nodes=affected_nodes,
-            interruption_rate=current_rate,
-            region=region,
-            instance_type=instance_type
-        )
-        
-        # 3. Run risk classification model
-        risk_scores = self.risk_model.predict(features)
-        
-        # 4. Aggregate risk assessment
-        for node, risk_score in zip(affected_nodes, risk_scores):
-            logger.info(f"Node {node.name}: Risk score = {risk_score}")
-            
-            # Store risk score for trending
-            self.state_store.set(
-                key=f"risk:{node.name}",
-                value=risk_score,
-                ttl=3600  # 1 hour
-            )
-            
-            # Decision threshold
-            if risk_score > 0.7:  # High risk
-                self.make_rebalance_decision(node, risk_score)
-            elif risk_score > 0.5:  # Medium risk
-                self.make_monitoring_decision(node, risk_score)
-        
-    def make_rebalance_decision(self, node, risk_score):
-        """
-        Decide whether to rebalance this node
-        """
-        node_name = node.name
-        spot_pool = node.labels.get("karpenter.sh/nodepool")
-        
-        # 1. Get pods on this node
-        pods = self.get_pods_on_node(node_name)
-        
-        # 2. Calculate rebalance cost/benefit
-        rebalance_analysis = self.analyze_rebalance_impact(
-            node=node,
-            pods=pods,
-            risk_score=risk_score
-        )
-        
-        # 3. Decision logic
-        if rebalance_analysis["benefit_score"] > rebalance_analysis["cost_score"]:
-            # Rebalance is worth it
-            logger.info(f"Decision: REBALANCE node {node_name}")
-            
-            # Execute rebalance action
-            self.action_executor.queue_action({
-                "action": "rebalance_node",
-                "target": node_name,
-                "priority": "high" if risk_score > 0.85 else "medium",
-                "reason": f"High spot risk (score: {risk_score:.2f})",
-                "strategy": "gradual_drain",  # vs "immediate_drain"
-                "deadline": "10 minutes",
-                "metadata": rebalance_analysis
-            })
-            
-            # Emit decision event (for observability)
-            self.event_bus.publish({
-                "type": "decision.rebalance.approved",
-                "payload": {
-                    "nodeName": node_name,
-                    "riskScore": risk_score,
-                    "analysis": rebalance_analysis
-                }
-            })
-        else:
-            logger.info(f"Decision: MONITOR node {node_name} (not worth rebalancing yet)")
-            self.make_monitoring_decision(node, risk_score)
+  From right-sizing DaemonSet:
+    current CPU utilization on these pools
+    current memory utilization
+    (loaded nodes = riskier)
     
-    def analyze_rebalance_impact(self, node, pods, risk_score):
-        """
-        Cost/benefit analysis of rebalancing a node
-        """
-        # Cost factors
-        pod_restart_cost = len(pods) * 0.1  # Each pod restart has a cost
-        disruption_cost = sum([
-            self.get_pod_criticality_score(pod) for pod in pods
-        ])
-        
-        # Benefit factors
-        interruption_probability = risk_score
-        potential_data_loss_cost = self.calculate_data_loss_risk(pods)
-        recovery_time_saved = 120  # seconds (avoid spot termination recovery)
-        
-        # Calculate savings projection
-        if self.savings_model:
-            savings_features = self.prepare_savings_features(node, pods)
-            projected_savings = self.savings_model.predict(savings_features)
-        else:
-            projected_savings = 0.15  # Default 15% savings assumption
-        
-        # Scoring
-        cost_score = pod_restart_cost + disruption_cost
-        benefit_score = (
-            interruption_probability * 10 +  # High weight on interruption risk
-            potential_data_loss_cost * 0.5 +
-            (recovery_time_saved / 60) +  # Minutes saved
-            projected_savings * 5  # Savings benefit
-        )
-        
-        return {
-            "cost_score": cost_score,
-            "benefit_score": benefit_score,
-            "net_benefit": benefit_score - cost_score,
-            "projected_savings_pct": projected_savings,
-            "interruption_probability": interruption_probability,
-            "affected_pods": len(pods),
-            "critical_pods": sum([1 for p in pods if self.is_critical_pod(p)]),
-            "recommendation": "rebalance" if benefit_score > cost_score else "monitor"
-        }
+  From AWS pricing API:
+    current spot price
+    spot vs on-demand ratio
     
-    def prepare_risk_features(self, nodes, interruption_rate, region, instance_type):
-        """
-        Prepare features for risk classification model
-        Model expects: [interruption_rate, hour_of_day, day_of_week, 
-                        historical_interruptions, regional_capacity_score]
-        """
-        from datetime import datetime
-        
-        features_list = []
-        
-        for node in nodes:
-            # Get historical interruption count for this node
-            historical_interruptions = self.state_store.get_count(
-                key_pattern=f"interruption:{node.name}:*",
-                time_window="24h"
-            )
-            
-            # Get regional capacity score (from AWS Spot Advisor)
-            regional_capacity = self.get_regional_capacity_score(region)
-            
-            # Time-based features
-            now = datetime.utcnow()
-            hour_of_day = now.hour
-            day_of_week = now.weekday()
-            
-            # Instance characteristics
-            instance_size_score = self.get_instance_size_score(instance_type)
-            
-            # Node characteristics
-            pod_count = len(self.get_pods_on_node(node.name))
-            node_age_hours = (now - node.created_at).total_seconds() / 3600
-            
-            features = [
-                interruption_rate,           # 0: Current interruption rate
-                hour_of_day,                 # 1: Hour (0-23)
-                day_of_week,                 # 2: Day (0-6)
-                historical_interruptions,     # 3: Past interruptions
-                regional_capacity,           # 4: Regional capacity score
-                instance_size_score,         # 5: Instance size factor
-                pod_count,                   # 6: Number of pods
-                node_age_hours,              # 7: Node age in hours
-            ]
-            
-            features_list.append(features)
-        
-        return np.array(features_list)
-    
-    def prepare_savings_features(self, node, pods):
-        """
-        Prepare features for savings regression model
-        Model predicts: % savings in next 1 hour if rebalanced
-        """
-        # Current cost metrics
-        current_hourly_cost = self.calculate_node_hourly_cost(node)
-        
-        # Utilization metrics
-        cpu_utilization = self.get_node_metric(node.name, "cpu_utilization")
-        memory_utilization = self.get_node_metric(node.name, "memory_utilization")
-        
-        # Workload characteristics
-        pod_count = len(pods)
-        total_cpu_requests = sum([self.get_pod_cpu_request(p) for p in pods])
-        total_memory_requests = sum([self.get_pod_memory_request(p) for p in pods])
-        
-        # Alternative instance types available
-        alternative_types_count = len(self.get_alternative_instance_types(
-            cpu_required=total_cpu_requests,
-            memory_required=total_memory_requests,
-            region=node.region
-        ))
-        
-        # Spot vs on-demand price difference
-        spot_price = self.get_current_spot_price(node.instance_type, node.region)
-        ondemand_price = self.get_ondemand_price(node.instance_type)
-        price_ratio = spot_price / ondemand_price if ondemand_price > 0 else 1.0
-        
-        features = [
-            current_hourly_cost,         # 0: Current cost
-            cpu_utilization,             # 1: CPU %
-            memory_utilization,          # 2: Memory %
-            pod_count,                   # 3: Pod count
-            total_cpu_requests,          # 4: Total CPU requested
-            total_memory_requests,       # 5: Total memory requested
-            alternative_types_count,     # 6: Alternatives available
-            price_ratio,                 # 7: Spot/on-demand ratio
-        ]
-        
-        return np.array([features])
-    
-    # ─────────────────────────────────────────────────────────
-    # HANDLER: Imminent Interruption
-    # ─────────────────────────────────────────────────────────
-    def handle_imminent_interruption(self, event):
-        """
-        CRITICAL: AWS sent interruption notice (2-minute warning)
-        Must act immediately
-        """
-        node_name = event.payload.nodeName
-        time_to_interruption = event.payload.timeToInterruption
-        
-        logger.critical(f"IMMINENT INTERRUPTION: Node {node_name} in {time_to_interruption}")
-        
-        # Immediate action - no ML inference needed, time-critical
-        self.action_executor.queue_action({
-            "action": "emergency_drain",
-            "target": node_name,
-            "priority": "critical",
-            "deadline": "90 seconds",  # Must complete before interruption
-            "reason": "AWS spot interruption notice",
-            "strategy": "fast_eviction",  # Bypass graceful drain
-            "ignore_pdb": False,  # Still respect PDBs if possible
-            "force_after": 90  # Force eviction after 90 seconds
-        })
-        
-        # Record interruption for learning
-        self.state_store.increment(
-            key=f"interruption:{node_name}:{datetime.now().isoformat()}",
-            ttl=86400  # Keep for 24 hours
-        )
-        
-        # Feed to global learning system
-        self.event_bus.publish({
-            "type": "interruption.confirmed",
-            "payload": {
-                "nodeName": node_name,
-                "instanceType": event.payload.instanceType,
-                "region": event.payload.region,
-                "az": event.payload.availabilityZone,
-                "timestamp": datetime.now().isoformat()
-            }
-        })
-    
-    # ─────────────────────────────────────────────────────────
-    # HANDLER: Global Interruption Spike
-    # ─────────────────────────────────────────────────────────
-    def handle_global_spike(self, event):
-        """
-        Multiple clients reporting interruptions for specific instance type/region
-        Proactively mark pool as risky
-        """
-        region = event.payload.region
-        instance_type = event.payload.instanceType
-        confidence = event.payload.confidenceLevel
-        
-        logger.warning(f"Global interruption spike detected: {region}/{instance_type} (confidence: {confidence})")
-        
-        # 1. Flag pool as risky in state store
-        self.state_store.set(
-            key=f"risky_pool:{region}:{instance_type}",
-            value={"confidence": confidence, "reason": "global_spike"},
-            ttl=3600  # Flag as risky for 1 hour
-        )
-        
-        # 2. Find all nodes using this pool
-        affected_nodes = self.get_nodes_by_instance_type(region, instance_type)
-        
-        if not affected_nodes:
-            return
-        
-        # 3. Proactive rebalancing decision
-        for node in affected_nodes:
-            pods = self.get_pods_on_node(node.name)
-            
-            # Only rebalance if node has critical workloads
-            has_critical_pods = any([self.is_critical_pod(p) for p in pods])
-            
-            if has_critical_pods or confidence > 0.9:
-                logger.info(f"Proactive rebalance: {node.name} due to global spike")
-                
-                self.action_executor.queue_action({
-                    "action": "rebalance_node",
-                    "target": node.name,
-                    "priority": "high",
-                    "reason": f"Global interruption spike (confidence: {confidence:.2f})",
-                    "strategy": "gradual_drain",
-                    "deadline": "15 minutes"
-                })
-    
-    # ─────────────────────────────────────────────────────────
-    # HANDLER: Node Underutilization
-    # ─────────────────────────────────────────────────────────
-    def handle_underutilization(self, event):
-        """
-        Node is underutilized - consider consolidation
-        """
-        node_name = event.payload.nodeName
-        cpu_util = event.payload.cpuUtilization
-        memory_util = event.payload.memoryUtilization
-        
-        logger.info(f"Underutilized node: {node_name} (CPU: {cpu_util}%, Mem: {memory_util}%)")
-        
-        # Get pods on this node
-        pods = self.get_pods_on_node(node_name)
-        
-        # Check if pods can be consolidated elsewhere
-        consolidation_possible = self.check_consolidation_feasibility(pods)
-        
-        if consolidation_possible:
-            # Calculate savings from consolidation
-            current_cost = self.calculate_node_hourly_cost(
-                self.get_node(node_name)
-            )
-            
-            logger.info(f"Consolidation possible. Potential savings: ${current_cost:.2f}/hr")
-            
-            self.action_executor.queue_action({
-                "action": "consolidate_node",
-                "target": node_name,
-                "priority": "low",  # Not urgent
-                "reason": f"Underutilized (CPU: {cpu_util}%, Mem: {memory_util}%)",
-                "strategy": "gradual_drain",
-                "deadline": "30 minutes",
-                "potential_savings": current_cost
-            })
-    
-    # ─────────────────────────────────────────────────────────
-    # HANDLER: Resource Pressure
-    # ─────────────────────────────────────────────────────────
-    def handle_resource_pressure(self, event):
-        """
-        Node under resource pressure - might need right-sizing or capacity addition
-        """
-        node_name = event.payload.nodeName
-        pressure_type = event.payload.pressureType
-        
-        logger.warning(f"Resource pressure on {node_name}: {pressure_type}")
-        
-        # Get pods on node
-        pods = self.get_pods_on_node(node_name)
-        
-        # Analyze: Is this a right-sizing issue or capacity issue?
-        analysis = self.analyze_resource_pressure(node_name, pods, pressure_type)
-        
-        if analysis["cause"] == "oversized_pods":
-            # Pods are requesting too much, need right-sizing
-            self.event_bus.publish({
-                "type": "rightsizing.required",
-                "payload": {
-                    "nodeName": node_name,
-                    "affectedPods": analysis["culprit_pods"],
-                    "recommendation": analysis["recommendation"]
-                }
-            })
-        
-        elif analysis["cause"] == "insufficient_capacity":
-            # Need more capacity
-            self.action_executor.queue_action({
-                "action": "add_capacity",
-                "target": analysis["spot_pool"],
-                "priority": "high",
-                "reason": f"Resource pressure: {pressure_type}",
-                "required_resources": analysis["required_resources"]
-            })
+  Categorical (one-hot encoded):
+    instance family (75 types → 75 features)
+    instance size (22 sizes → 22 features)
+    availability zone (3 AZs → 3 features)
+    Total: 108 features
+
+FILTERING PIPELINE:
+  35 template-approved pools
+       ↓
+  Run classifier → get risk score each
+  Filter: remove risk > 0.3 (too risky)
+  ~20 pools remain
+       ↓
+  Check global blacklist (termination events)
+  Remove blacklisted pools (12hr TTL)
+  ~15 pools remain
+       ↓
+  Uniqueness filter
+  Remove duplicate family+size+AZ combos
+  ~12 pools remain
+       ↓
+  Run regressor → get savings score each
+       ↓
+  Sort: risk ASC first, then price ASC
+  Take top 10
+       ↓
+  Update Karpenter NodePool with these 10
+
+OUTPUT: Top 10 safe + cheap spot pools
+  Updated in Karpenter NodePool every 30 seconds
+  Karpenter can ONLY provision from this list
 ```
 
 ---
 
-### **Component 3: Model Registry (Pluggable Models)**
+## **LAYER 3: Karpenter**
 
-```python
-"""
-MODEL REGISTRY
-Manages ONNX models - supports hot-swapping without restarting
-"""
+```
+PURPOSE:
+  Provision perfectly-sized nodes from ML-approved list
+  Consolidate underutilized nodes automatically
 
-class ModelRegistry:
-    """
-    Registry for ML models (ONNX format)
-    Supports versioning, A/B testing, and hot-swapping
-    """
-    
-    def __init__(self, model_store_path="/models"):
-        self.model_store_path = model_store_path
-        self.loaded_models = {}
-        self.model_metadata = {}
-        
-        # Load model configs
-        self.load_model_configs()
-        
-        # Start file watcher for hot-reloading
-        self.start_model_watcher()
-    
-    def load_model_configs(self):
-        """
-        Load model configurations from JSON files
-        """
-        config_files = glob.glob(f"{self.model_store_path}/**/config.json", recursive=True)
-        
-        for config_file in config_files:
-            with open(config_file, 'r') as f:
-                config = json.load(f)
-                model_id = config["model_id"]
-                self.model_metadata[model_id] = config
-                
-                logger.info(f"Registered model: {model_id} (version: {config['version']})")
-    
-    def load(self, model_id, version="latest"):
-        """
-        Load a model from the registry
-        Returns an inference-ready model wrapper
-        """
-        # Check if already loaded
-        cache_key = f"{model_id}:{version}"
-        if cache_key in self.loaded_models:
-            logger.debug(f"Using cached model: {cache_key}")
-            return self.loaded_models[cache_key]
-        
-        # Get model metadata
-        if model_id not in self.model_metadata:
-            raise ValueError(f"Model {model_id} not found in registry")
-        
-        metadata = self.model_metadata[model_id]
-        
-        # Determine model file path
-        if version == "latest":
-            model_file = metadata["latest_version_path"]
-        else:
-            model_file = f"{self.model_store_path}/{model_id}/versions/{version}.onnx"
-        
-        # Load ONNX model
-        logger.info(f"Loading model: {model_id} (version: {version})")
-        model_wrapper = ONNXModelWrapper(
-            model_path=model_file,
-            metadata=metadata
-        )
-        
-        # Cache loaded model
-        self.loaded_models[cache_key] = model_wrapper
-        
-        return model_wrapper
-    
-    def start_model_watcher(self):
-        """
-        Watch model directory for changes and hot-reload
-        """
-        from watchdog.observers import Observer
-        from watchdog.events import FileSystemEventHandler
-        
-        class ModelFileHandler(FileSystemEventHandler):
-            def __init__(self, registry):
-                self.registry = registry
-            
-            def on_modified(self, event):
-                if event.src_path.endswith(".onnx") or event.src_path.endswith("config.json"):
-                    logger.info(f"Model file changed: {event.src_path}")
-                    # Reload model configs
-                    self.registry.load_model_configs()
-                    # Clear cache to force reload on next use
-                    self.registry.loaded_models.clear()
-                    logger.info("Model cache cleared - will reload on next use")
-        
-        observer = Observer()
-        observer.schedule(
-            ModelFileHandler(self),
-            self.model_store_path,
-            recursive=True
-        )
-        observer.start()
-        logger.info("Model watcher started")
+PROVISIONING LOGIC:
+  Pod goes Pending
+       ↓
+  Karpenter reads current NodePool (ML top 10)
+       ↓
+  Evaluates only those 10 instance types
+       ↓
+  Bin-packing:
+    Sum all pending pod requests together
+    Find cheapest instance that fits the sum
+    One node for many pods (not one per pod)
+       ↓
+  Provision that node on that spot pool
 
+CONSOLIDATION LOGIC:
+  Runs every 30 seconds
+       ↓
+  Find nodes with CPU < 30% AND Memory < 30%
+       ↓
+  Check: can all pods fit on other existing nodes?
+       ↓
+  If yes:
+    Cordon underutilized node
+    Drain pods to other nodes
+    Delete empty node
+       ↓
+  Result: fewer nodes, same pods, lower cost
 
-class ONNXModelWrapper:
-    """
-    Wrapper for ONNX models with preprocessing and postprocessing
-    """
-    
-    def __init__(self, model_path, metadata):
-        import onnxruntime as ort
-        
-        self.model_path = model_path
-        self.metadata = metadata
-        
-        # Load ONNX session
-        self.session = ort.InferenceSession(
-            model_path,
-            providers=['CPUExecutionProvider']  # Can use GPU if available
-        )
-        
-        # Get input/output names
-        self.input_name = self.session.get_inputs()[0].name
-        self.output_name = self.session.get_outputs()[0].name
-        
-        logger.info(f"Model loaded: {metadata['model_id']} (input: {self.input_name}, output: {self.output_name})")
-    
-    def predict(self, features):
-        """
-        Run inference
-        features: numpy array of shape (n_samples, n_features)
-        """
-        # Preprocessing (from metadata config)
-        if "preprocessing" in self.metadata:
-            features = self.preprocess(features, self.metadata["preprocessing"])
-        
-        # Run inference
-        predictions = self.session.run(
-            [self.output_name],
-            {self.input_name: features.astype(np.float32)}
-        )[0]
-        
-        # Postprocessing
-        if "postprocessing" in self.metadata:
-            predictions = self.postprocess(predictions, self.metadata["postprocessing"])
-        
-        return predictions
-    
-    def preprocess(self, features, config):
-        """
-        Apply preprocessing transformations
-        """
-        if config.get("normalization") == "standard":
-            # Standardize: (x - mean) / std
-            mean = np.array(config["mean"])
-            std = np.array(config["std"])
-            features = (features - mean) / std
-        
-        elif config.get("normalization") == "minmax":
-            # Min-max scaling: (x - min) / (max - min)
-            min_val = np.array(config["min"])
-            max_val = np.array(config["max"])
-            features = (features - min_val) / (max_val - min_val)
-        
-        return features
-    
-    def postprocess(self, predictions, config):
-        """
-        Apply postprocessing transformations
-        """
-        if config.get("type") == "classification":
-            # Apply softmax if needed
-            if config.get("apply_softmax"):
-                predictions = self.softmax(predictions)
-            
-            # Return class probabilities or argmax
-            if config.get("return_probabilities"):
-                return predictions
-            else:
-                return np.argmax(predictions, axis=1)
-        
-        elif config.get("type") == "regression":
-            # Clip to valid range
-            if "min_value" in config:
-                predictions = np.maximum(predictions, config["min_value"])
-            if "max_value" in config:
-                predictions = np.minimum(predictions, config["max_value"])
-        
-        return predictions
-    
-    @staticmethod
-    def softmax(x):
-        exp_x = np.exp(x - np.max(x, axis=-1, keepdims=True))
-        return exp_x / np.sum(exp_x, axis=-1, keepdims=True)
+NODE EXPIRY:
+  Every node expires after 24 hours
+       ↓
+  Karpenter provisions fresh replacement
+  (from current ML top 10)
+       ↓
+  Drains old node, deletes it
+       ↓
+  Why: old spot nodes have higher interruption risk
+       Fresh nodes = fresh allocation = safer
 
-
-"""
-MODEL DIRECTORY STRUCTURE:
-
-/models/
-  ├── risk_classifier_v1/
-  │   ├── config.json
-  │   ├── versions/
-  │   │   ├── 1.0.0.onnx
-  │   │   ├── 1.1.0.onnx
-  │   │   └── 1.2.0.onnx  ← latest
-  │   └── metadata/
-  │       ├── feature_names.json
-  │       └── training_metrics.json
-  │
-  ├── savings_regressor_v1/
-  │   ├── config.json
-  │   ├── versions/
-  │   │   ├── 1.0.0.onnx
-  │   │   └── 1.1.0.onnx  ← latest
-  │   └── metadata/
-  │       └── feature_names.json
-  │
-  └── config.json  ← Global config
-
-config.json example:
-{
-  "model_id": "risk_classifier_v1",
-  "version": "1.2.0",
-  "type": "classification",
-  "framework": "onnx",
-  "latest_version_path": "/models/risk_classifier_v1/versions/1.2.0.onnx",
-  "input_features": [
-    "interruption_rate",
-    "hour_of_day",
-    "day_of_week",
-    "historical_interruptions",
-    "regional_capacity",
-    "instance_size_score",
-    "pod_count",
-    "node_age_hours"
-  ],
-  "output": "risk_score",
-  "preprocessing": {
-    "normalization": "standard",
-    "mean": [0.15, 12.5, 3.5, 2.3, 0.75, 5.0, 8.5, 24.0],
-    "std": [0.08, 6.9, 2.0, 3.1, 0.2, 2.5, 4.2, 48.0]
-  },
-  "postprocessing": {
-    "type": "classification",
-    "apply_softmax": true,
-    "return_probabilities": true
-  },
-  "performance_metrics": {
-    "accuracy": 0.89,
-    "precision": 0.87,
-    "recall": 0.91,
-    "f1_score": 0.89
-  },
-  "training_info": {
-    "trained_on": "2026-02-10",
-    "dataset_size": 50000,
-    "validation_split": 0.2
-  }
-}
-"""
+DISRUPTION SAFETY:
+  Respects PodDisruptionBudgets always
+  Max 10% nodes disrupted at once
+  No consolidation during peak hours (configurable)
 ```
 
 ---
 
-### **Component 4: Action Executor**
+## **LAYER 4: Right-Sizing**
 
-```python
-"""
-ACTION EXECUTOR
-Executes decisions made by Decision Engine
-"""
+```
+PURPOSE:
+  Reduce what pods ask for (requests/limits)
+  Based on what they actually use
+  Smaller pods → fewer/smaller nodes → less cost
 
-class ActionExecutor:
-    """
-    Executes rebalancing, draining, scaling actions
-    Priority queue-based execution
-    """
-    
-    def __init__(self):
-        self.action_queue = PriorityQueue()
-        self.k8s_client = KubernetesClient()
-        self.karpenter_client = KarpenterClient()
-        self.state_store = StateStore()
-        
-        # Start action processor
-        self.start_action_processor()
-    
-    def queue_action(self, action_spec):
-        """
-        Queue an action for execution
-        action_spec: {
-            "action": "rebalance_node" | "emergency_drain" | "add_capacity" | "consolidate_node",
-            "target": "node-name" | "pool-name",
-            "priority": "critical" | "high" | "medium" | "low",
-            "deadline": "90 seconds" | "10 minutes",
-            "reason": "explanation",
-            "strategy": "gradual_drain" | "fast_eviction",
-            "metadata": {}
-        }
-        """
-        # Priority mapping
-        priority_map = {
-            "critical": 0,
-            "high": 1,
-            "medium": 2,
-            "low": 3
-        }
-        
-        action_id = str(uuid.uuid4())
-        action_spec["action_id"] = action_id
-        action_spec["queued_at"] = datetime.now().isoformat()
-        
-        # Add to priority queue
-        priority = priority_map.get(action_spec["priority"], 2)
-        self.action_queue.put((priority, action_id, action_spec))
-        
-        logger.info(f"Action queued: {action_spec['action']} on {action_spec['target']} (priority: {action_spec['priority']})")
-        
-        return action_id
-    
-    def start_action_processor(self):
-        """
-        Background thread that processes actions from queue
-        """
-        def process_actions():
-            while True:
-                try:
-                    # Get next action (blocks if queue empty)
-                    priority, action_id, action_spec = self.action_queue.get(timeout=1)
-                    
-                    logger.info(f"Processing action {action_id}: {action_spec['action']}")
-                    
-                    # Execute action
-                    self.execute_action(action_spec)
-                    
-                except queue.Empty:
-                    continue
-                except Exception as e:
-                    logger.error(f"Error processing action: {e}")
-        
-        # Start processor thread
-        processor_thread = threading.Thread(target=process_actions, daemon=True)
-        processor_thread.start()
-        logger.info("Action processor started")
-    
-    def execute_action(self, action_spec):
-        """
-        Execute a specific action
-        """
-        action_type = action_spec["action"]
-        
-        # Route to specific executor
-        executors = {
-            "rebalance_node": self.execute_rebalance_node,
-            "emergency_drain": self.execute_emergency_drain,
-            "add_capacity": self.execute_add_capacity,
-            "consolidate_node": self.execute_consolidate_node
-        }
-        
-        executor = executors.get(action_type)
-        if executor:
-            try:
-                result = executor(action_spec)
-                logger.info(f"Action {action_spec['action_id']} completed: {result}")
-            except Exception as e:
-                logger.error(f"Action {action_spec['action_id']} failed: {e}")
-                # Could implement retry logic here
-        else:
-            logger.error(f"Unknown action type: {action_type}")
-    
-    def execute_rebalance_node(self, action_spec):
-        """
-        Rebalance a node: drain pods and move to alternative instances
-        """
-        node_name = action_spec["target"]
-        strategy = action_spec.get("strategy", "gradual_drain")
-        
-        # 1. Cordon node (prevent new pods)
-        self.k8s_client.cordon_node(node_name)
-        logger.info(f"Node {node_name} cordoned")
-        
-        # 2. Get pods on node
-        pods = self.k8s_client.get_pods_on_node(node_name)
-        
-        # 3. Drain pods based on strategy
-        if strategy == "gradual_drain":
-            # Respect PDBs, graceful termination
-            self.drain_pods_gradually(pods, respect_pdb=True)
-        elif strategy == "fast_eviction":
-            # Faster, but still respect PDBs if time allows
-            self.drain_pods_quickly(pods, respect_pdb=True)
-        
-        # 4. Wait for pods to reschedule
-        self.wait_for_pods_running(pods, timeout=600)  # 10 minutes
-        
-        # 5. Terminate node
-        self.k8s_client.delete_node(node_name)
-        logger.info(f"Node {node_name} deleted")
-        
-        # 6. Karpenter will automatically provision replacement if needed
-        # (based on pending pods)
-        
-        return {"status": "success", "node": node_name}
-    
-    def execute_emergency_drain(self, action_spec):
-        """
-        Emergency drain (spot interruption imminent)
-        Must complete within 90 seconds
-        """
-        node_name = action_spec["target"]
-        force_after = action_spec.get("force_after", 90)
-        
-        logger.critical(f"EMERGENCY DRAIN: {node_name} (force after {force_after}s)")
-        
-        # 1. Immediately cordon
-        self.k8s_client.cordon_node(node_name)
-        
-        # 2. Get pods
-        pods = self.k8s_client.get_pods_on_node(node_name)
-        
-        # 3. Start aggressive eviction
-        start_time = time.time()
-        
-        for pod in pods:
-            elapsed = time.time() - start_time
-            if elapsed > force_after:
-                # Out of time - force delete remaining pods
-                logger.warning(f"Force deleting remaining pods on {node_name}")
-                self.k8s_client.force_delete_pods(pods, grace_period=0)
-                break
-            
-            # Try graceful eviction with short timeout
-            try:
-                self.k8s_client.evict_pod(
-                    pod.name,
-                    pod.namespace,
-                    grace_period=10,  # 10 seconds
-                    timeout=15
-                )
-            except Exception as e:
-                logger.warning(f"Graceful eviction failed for {pod.name}: {e}")
-                # Continue to next pod
-        
-        # 4. Node will be terminated by AWS shortly
-        # Mark node as "terminating" in our state
-        self.state_store.set(
-            key=f"node:terminating:{node_name}",
-            value={"reason": "spot_interruption"},
-            ttl=300
-        )
-        
-        return {"status": "emergency_drain_completed", "node": node_name}
-    
-    def execute_add_capacity(self, action_spec):
-        """
-        Add capacity to a node pool
-        Typically handled by Karpenter automatically, but can be nudged
-        """
-        pool_name = action_spec["target"]
-        required_resources = action_spec.get("required_resources", {})
-        
-        logger.info(f"Adding capacity to pool: {pool_name}")
-        
-        # Check if Karpenter is already provisioning
-        pending_provisioners = self.karpenter_client.get_pending_provisioners(pool_name)
-        
-        if pending_provisioners:
-            logger.info(f"Karpenter already provisioning for {pool_name}")
-            return {"status": "already_provisioning"}
-        
-        # Trigger Karpenter provisioning by creating demand signal
-        # (In practice, Karpenter reacts to pending pods automatically)
-        # But we can create a low-priority "placeholder" pod to trigger it
-        
-        self.k8s_client.create_capacity_placeholder(
-            pool=pool_name,
-            resources=required_resources
-        )
-        
-        return {"status": "capacity_requested", "pool": pool_name}
-    
-    def execute_consolidate_node(self, action_spec):
-        """
-        Consolidate underutilized node
-        """
-        node_name = action_spec["target"]
-        
-        # Check if consolidation is still feasible
-        pods = self.k8s_client.get_pods_on_node(node_name)
-        can_consolidate = self.check_consolidation_feasibility(pods)
-        
-        if not can_consolidate:
-            logger.info(f"Consolidation no longer feasible for {node_name}")
-            return {"status": "aborted", "reason": "not_feasible"}
-        
-        # Execute drain (similar to rebalance but lower priority)
-        return self.execute_rebalance_node(action_spec)
+DATA COLLECTION:
+  DaemonSet on every node
+  Collects every 60 seconds:
+    actual CPU used per pod
+    actual memory used per pod
+    vs what was requested
+  Stores in time-series database
+
+ANALYSIS (Daily at 2 AM):
+  Per workload (Deployment/StatefulSet):
+  
+  Pull last 7 days of metrics
+  Need 100+ data points minimum
+  
+  Calculate:
+    P95 CPU  = 95th percentile of all readings
+    P95 Mem  = 95th percentile of all readings
+    P99 CPU  = 99th percentile (for limits)
+    P99 Mem  = 99th percentile (for limits)
+  
+  Recommend:
+    new CPU request  = P95 × 1.20 (20% buffer)
+    new Mem request  = P95 × 1.25 (25% buffer, OOM risk)
+    new CPU limit    = P99 × 1.30
+    new Mem limit    = P99 × 1.40
+  
+  Only recommend if:
+    savings > 10% OR waste > 50%
+    No OOM kills in last 7 days
+    CPU throttling < 20%
+    Replica count >= 2
+
+APPLICATION:
+  Rolling update (one pod at a time)
+  Monitor health at each step
+  Auto-rollback if errors detected
+  Full rollout: 30-60 minutes
+
+KARPENTER REACTION (Automatic):
+  Pods restart smaller after right-sizing
+  Nodes now underutilized
+  Karpenter detects → consolidates
+  Fewer nodes needed → cost drops further
+
+IMPROVEMENT TO ML:
+  Right-sizing metrics feed into ML features
+  ML knows actual utilization of pools
+  Loaded nodes get higher risk score
+  Better predictions overall
 ```
 
 ---
 
-## **3. Integration with Karpenter**
+## **LAYER 5: Substitute Node (All-Spot Fallback)**
 
-```yaml
-Karpenter Node Template Configuration:
+```
+PURPOSE:
+  Zero-downtime fallback when:
+  • ML model fails
+  • Termination notice received
+  • Risk score spikes suddenly
+  All without any on-demand nodes
 
-apiVersion: karpenter.sh/v1alpha5
-kind: NodePool
-metadata:
-  name: spot-general-purpose
-spec:
-  template:
-    metadata:
-      labels:
-        node-type: spot
-        pool: general-purpose
-    spec:
-      nodeClassRef:
-        name: default
-      requirements:
-        - key: karpenter.sh/capacity-type
-          operator: In
-          values: ["spot"]
-        - key: kubernetes.io/arch
-          operator: In
-          values: ["amd64"]
-        - key: node.kubernetes.io/instance-type
-          operator: In
-          values:
-            - m5.large
-            - m5.xlarge
-            - m5.2xlarge
-            - m5a.large
-            - m5a.xlarge
-      taints:
-        - key: spot
-          value: "true"
-          effect: NoSchedule
-  limits:
-    cpu: "1000"
-    memory: 1000Gi
-  disruption:
-    consolidationPolicy: WhenUnderutilized
-    expireAfter: 720h  # 30 days
-  weight: 10  # Lower weight = higher priority
+HOW IT'S SELECTED:
+  
+  Scan all workloads → find largest pod requirements
+  Example: worker needs 1.0 CPU, 2.5GB
+  
+  Substitute must fit 2 replicas of largest:
+  Min: 2.0 CPU, 5.0GB (+ 20% overhead = 2.4 CPU, 6GB)
+  
+  Apply template rules (architecture, families, sizes)
+  Apply basic stability filter:
+    Historical interruption rate < 15%
+    Not blacklisted in last 7 days
+    Available in at least 2 AZs
+  
+  Pick cheapest that passes all filters
+  Result: t3a.large or m5a.large (cheapest stable spot)
+  
+  NOT selected by ML (independent system)
+  NOT managed by Karpenter (static, always running)
+  Re-evaluated weekly (not real-time)
 
----
-# Separate pool for high-risk avoidance
-apiVersion: karpenter.sh/v1alpha5
-kind: NodePool
-metadata:
-  name: spot-safe-fallback
-spec:
-  template:
-    spec:
-      requirements:
-        - key: karpenter.sh/capacity-type
-          operator: In
-          values: ["spot"]
-        - key: node.kubernetes.io/instance-type
-          operator: NotIn  # Exclude risky instance types
-          values: []  # Dynamically updated by our system
-      taints:
-        - key: fallback
-          value: "true"
-          effect: NoSchedule
-  weight: 20  # Higher weight = lower priority (fallback)
+NORMAL STATE (ML working fine):
+  Substitute holds placeholder pods
+  Placeholder: lowest priority class, 10m CPU, 32Mi RAM
+  Fills ~30% of node capacity
+  All production images pre-pulled and cached
+  Networking pre-configured
+  Readiness: instant (0 seconds)
 
----
-# On-demand fallback for critical workloads
-apiVersion: karpenter.sh/v1alpha5
-kind: NodePool
-metadata:
-  name: ondemand-critical
-spec:
-  template:
-    spec:
-      requirements:
-        - key: karpenter.sh/capacity-type
-          operator: In
-          values: ["on-demand"]
-  limits:
-    cpu: "200"
-    memory: 200Gi
-  weight: 100  # Lowest priority, highest cost
+SUBSTITUTE IS SPOT BUT SAFE BECAUSE:
+  Uses historically stable pool (< 15% interruption)
+  Different pool from ML-chosen nodes (diversity!)
+  If substitute gets terminated too:
+    Its pods (low priority placeholders) are already gone
+    Or: real pods moved to ML nodes (reverse fallback)
+  Different AZ from primary nodes (geo-diversity)
 ```
 
-**Dynamic Pool Management Logic:**
+---
 
-```python
-class KarpenterIntegration:
-    """
-    Integrate with Karpenter to dynamically adjust node pools
-    based on risk assessment
-    """
+## **Termination Notice Flow (No On-Demand)**
+
+```
+T+0s:   AWS sends termination notice
+        Node affected: ML-chosen spot node
+        Time remaining: 120 seconds
+
+T+2s:   DaemonSet detects notice
+        Event sent to decision engine
+
+T+3s:   Decision engine checks substitute
+        Substitute: available and healthy ✅
+
+T+5s:   TWO PARALLEL ACTIONS:
+
+        ACTION A (Immediate):          ACTION B (Parallel):
+        Cordon affected node           Provision new spot node
+        Evict placeholder pods         from current ML top 10
+        from substitute                (starts booting now)
+        Move real pods →
+        substitute node
+
+T+15s:  Real pods running on          New spot node: booting
+        substitute ✅                  (3-5 min to ready)
+        Zero downtime!
+
+T+90s:  Affected node fully drained
+T+120s: AWS terminates affected node
+
+T+300s: New ML-chosen spot node ready
+        Begin gradual migration:
+        substitute → new node
+        25% pods at a time
+        5 min between batches
+
+T+420s: All pods on new ML spot node ✅
+        Substitute returns to standby
+        Placeholder pods refill substitute
+        
+        Terminated pool flagged globally:
+        All other clients warned
+        Pool removed from everyone's top 10
+        12-hour blacklist in Redis
+
+TOTAL DOWNTIME: 0 seconds ✅
+FULL RECOVERY: ~7 minutes
+```
+
+---
+
+## **ML Failure Flow (No On-Demand)**
+
+```
+ML FAILURE DETECTION:
+  Health check every 30 seconds:
+  
+  Check 1: Can model run inference? (test data)
+    No response in 5s → FAIL
+  
+  Check 2: Are predictions reasonable?
+    All same value → model stuck → FAIL
+  
+  Check 3: NodePool updating?
+    Last update > 5 minutes ago → FAIL
+  
+  Check 4: Scraper working?
+    Data > 15 minutes old → PARTIAL FAIL
+
+PARTIAL FAIL:
+  Use last known good ML output (cached)
+  Valid for up to 30 minutes
+  Alert team, do not activate substitute yet
+
+FULL FAIL:
+  Activate substitute immediately
+  
+  What changes:
+    Karpenter NodePool: add substitute type to list
+    New pods: prefer substitute node
+    Existing pods: stay on current nodes (don't move yet)
     
-    def update_risky_pool_exclusions(self, risky_instance_types):
-        """
-        Update Karpenter NodePool to exclude risky instance types
-        """
-        node_pool_name = "spot-safe-fallback"
-        
-        # Get current NodePool
-        node_pool = self.k8s_client.get_custom_resource(
-            group="karpenter.sh",
-            version="v1alpha5",
-            plural="nodepools",
-            name=node_pool_name
-        )
-        
-        # Update requirements to exclude risky types
-        for req in node_pool["spec"]["template"]["spec"]["requirements"]:
-            if req["key"] == "node.kubernetes.io/instance-type" and req["operator"] == "NotIn":
-                req["values"] = risky_instance_types
-                break
-        
-        # Apply updated NodePool
-        self.k8s_client.update_custom_resource(
-            group="karpenter.sh",
-            version="v1alpha5",
-            plural="nodepools",
-            name=node_pool_name,
-            body=node_pool
-        )
-        
-        logger.info(f"Updated {node_pool_name} to exclude: {risky_instance_types}")
+  What stays same:
+    Existing ML-chosen nodes keep running
+    Pods already running: zero disruption
+    Substitute: absorbs new pods only
+  
+  Why not move everything immediately:
+    Existing pods are fine (ML failure doesn't affect them)
+    Only new pods or evicted pods need somewhere to go
+    No need to cause disruption
+
+ML RECOVERY:
+  Team fixes pipeline
+  5 consecutive successful health checks pass
+  Enter cooldown (20 minutes)
+  Validate ML output is reasonable
+  Gradually restore ML control
+  Substitute returns to standby
 ```
 
 ---
 
-## **4. Comprehensive Workflow Diagram**
+## **Cooldown & Recovery Logic**
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│                     EVENT SOURCES                                │
-├──────────────────────────────────────────────────────────────────┤
-│  AWS Spot Advisor │  EC2 Metadata  │  K8s API  │  DaemonSet     │
-│     Scraper       │   (Instance)   │  Watcher  │  Metrics       │
-└────────┬──────────────────┬──────────────┬──────────────┬────────┘
-         │                  │              │              │
-         ▼                  ▼              ▼              ▼
-    ┌─────────────────────────────────────────────────────────┐
-    │              EVENT BUS (NATS/Kafka)                     │
-    │  Topics: spot.*, node.*, pod.*, capacity.*             │
-    └─────────────────────────────────────────────────────────┘
-         │
-         │ Events flow to Decision Engine
-         ▼
-    ┌─────────────────────────────────────────────────────────┐
-    │              DECISION ENGINE                            │
-    │                                                          │
-    │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  │
-    │  │ Event Router │→ │ Risk Scorer  │→ │ Decision     │  │
-    │  │              │  │ (ONNX Model) │  │ Maker        │  │
-    │  └──────────────┘  └──────────────┘  └──────┬───────┘  │
-    │                                              │           │
-    │  ┌──────────────┐  ┌──────────────┐         │           │
-    │  │ Savings      │  │ State Store  │←────────┘           │
-    │  │ Predictor    │  │ (Redis)      │                     │
-    │  │ (ONNX Model) │  └──────────────┘                     │
-    │  └──────────────┘                                        │
-    └─────────────────────────────────────────────────────────┘
-         │
-         │ Actions queued
-         ▼
-    ┌─────────────────────────────────────────────────────────┐
-    │           ACTION EXECUTOR (Priority Queue)              │
-    │                                                          │
-    │  Actions: rebalance_node, emergency_drain,              │
-    │           add_capacity, consolidate_node                │
-    └────────────────────────┬────────────────────────────────┘
-         │                   │                   │
-         ▼                   ▼                   ▼
-    ┌─────────┐      ┌─────────────┐     ┌─────────────┐
-    │   K8s   │      │  Karpenter  │     │  Pod Drainer│
-    │   API   │      │  Controller │     │             │
-    └─────────┘      └─────────────┘     └─────────────┘
-         │                   │                   │
-         ▼                   ▼                   ▼
-    ┌────────────────────────────────────────────────────────┐
-    │           KUBERNETES CLUSTER                           │
-    │  Nodes get rebalanced, pods rescheduled, capacity     │
-    │  adjusted based on ML-driven decisions                 │
-    └────────────────────────────────────────────────────────┘
+TRIGGER: Incident resolved (termination handled OR ML recovered)
+
+PHASE 1: STABILIZATION (0-10 minutes)
+  Do nothing
+  Let system settle
+  Monitor for secondary issues
+  Reason: Rapid changes after incident cause instability
+
+PHASE 2: VALIDATION (10-20 minutes)
+  ALL must pass before migration begins:
+  
+  ✓ ML running 5 consecutive successful inferences
+  ✓ New node Ready for 5+ consecutive minutes
+  ✓ Terminated pool absent from ML top 10
+  ✓ Substitute stable (no pod restarts)
+  ✓ Global blacklist active for terminated pool
+  
+  Any fail: reset to Phase 1, wait another 10 min
+
+PHASE 3: GRADUAL MIGRATION (20-40 minutes)
+  Move 25% of pods from substitute → new ML node
+  Wait 5 minutes, monitor:
+    Error rate unchanged?
+    Latency unchanged?
+    No pod restarts?
+    
+  If healthy: move next 25%
+  If issues: pause, investigate, revert if needed
+  
+  4 batches × 5 minutes = 20 minutes total
+
+PHASE 4: RETURN TO NORMAL (40+ minutes)
+  All pods on ML-chosen spot nodes
+  Substitute: placeholder pods refilled
+  Substitute: back to standby state
+  
+  Post-incident actions:
+    Log full incident timeline
+    Record which pool was terminated
+    Feed termination data to ML training pipeline
+    Update global pool history database
+    Improve next model version
 ```
 
 ---
 
-## **5. Deployment Architecture**
+## **Global Termination Intelligence (Cross-Client)**
 
-```yaml
-Kubernetes Deployment:
+```
+HOW ONE CLIENT PROTECTS EVERYONE:
 
-# Decision Engine Deployment
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: decision-engine
-  namespace: cost-optimization
-spec:
-  replicas: 2  # High availability
-  selector:
-    matchLabels:
-      app: decision-engine
-  template:
-    metadata:
-      labels:
-        app: decision-engine
-    spec:
-      serviceAccountName: decision-engine-sa
-      containers:
-      - name: decision-engine
-        image: your-registry/decision-engine:latest
-        env:
-        - name: EVENT_BUS_URL
-          value: "nats://nats-service:4222"
-        - name: MODEL_STORE_PATH
-          value: "/models"
-        - name: REDIS_URL
-          value: "redis://redis-service:6379"
-        volumeMounts:
-        - name: models
-          mountPath: /models
-          readOnly: true
-        resources:
-          requests:
-            cpu: "1"
-            memory: "2Gi"
-          limits:
-            cpu: "2"
-            memory: "4Gi"
-      volumes:
-      - name: models
-        persistentVolumeClaim:
-          claimName: models-pvc  # Shared PVC with models
-
----
-# DaemonSet for node monitoring
-apiVersion: apps/v1
-kind: DaemonSet
-metadata:
-  name: node-monitor
-  namespace: cost-optimization
-spec:
-  selector:
-    matchLabels:
-      app: node-monitor
-  template:
-    metadata:
-      labels:
-        app: node-monitor
-    spec:
-      hostNetwork: true
-      hostPID: true
-      tolerations:
-      - operator: Exists  # Run on all nodes including spot
-      containers:
-      - name: monitor
-        image: your-registry/node-monitor:latest
-        env:
-        - name: EVENT_BUS_URL
-          value: "nats://nats-service:4222"
-        - name: NODE_NAME
-          valueFrom:
-            fieldRef:
-              fieldPath: spec.nodeName
-        securityContext:
-          privileged: true
-        volumeMounts:
-        - name: proc
-          mountPath: /host/proc
-          readOnly: true
-        - name: sys
-          mountPath: /host/sys
-          readOnly: true
-      volumes:
-      - name: proc
-        hostPath:
-          path: /proc
-      - name: sys
-        hostPath:
-          path: /sys
-
----
-# AWS Spot Advisor Scraper (CronJob as fallback)
-apiVersion: batch/v1
-kind: CronJob
-metadata:
-  name: spot-advisor-scraper
-  namespace: cost-optimization
-spec:
-  schedule: "*/5 * * * *"  # Every 5 minutes
-  jobTemplate:
-    spec:
-      template:
-        spec:
-          serviceAccountName: scraper-sa
-          containers:
-          - name: scraper
-            image: your-registry/spot-scraper:latest
-            env:
-            - name: EVENT_BUS_URL
-              value: "nats://nats-service:4222"
-          restartPolicy: OnFailure
-
----
-# Event Bus (NATS)
-apiVersion: v1
-kind: Service
-metadata:
-  name: nats-service
-  namespace: cost-optimization
-spec:
-  ports:
-  - port: 4222
-    name: client
-  - port: 8222
-    name: monitoring
-  selector:
-    app: nats
----
-apiVersion: apps/v1
-kind: StatefulSet
-metadata:
-  name: nats
-  namespace: cost-optimization
-spec:
-  serviceName: nats-service
-  replicas: 3  # Clustered NATS
-  selector:
-    matchLabels:
-      app: nats
-  template:
-    metadata:
-      labels:
-        app: nats
-    spec:
-      containers:
-      - name: nats
-        image: nats:latest
-        ports:
-        - containerPort: 4222
-        - containerPort: 8222
-        - containerPort: 6222  # Cluster port
+Client A on pool m5a.large-us-west-2a:
+  Gets termination notice
+       ↓
+  Event sent to global event bus
+  Pool flagged in shared Redis:
+    Key: pool:risky:m5a.large:us-west-2a
+    TTL: 12 hours
+    Reason: termination_notice
+       ↓
+  All other clients (B through Z):
+    ML pipeline reads blacklist before ranking
+    m5a.large-us-west-2a excluded from everyone's top 10
+    No other client provisions on this pool
+    Existing nodes on this pool: proactively migrated
+    
+INTELLIGENCE ACCUMULATION:
+  Each termination event stored in history DB
+  ML model retraining uses this data
+  Pattern: m5a.large-us-west-2a terminates every Friday 5pm
+  ML learns this pattern
+  Next Friday: risk score spikes before event
+  Proactive migration happens before notice arrives
+  
+THE MORE CLIENTS, THE SMARTER THE SYSTEM:
+  10 clients: decent pattern recognition
+  100 clients: strong regional patterns detected
+  1000 clients: near-predictive interruption avoidance
 ```
 
-This architecture ensures that the system is:
-1. **Event-driven** (no cron dependencies except as fallback)
-2. **Pluggable** (models can be hot-swapped)
-3. **Scalable** (components can scale independently)
-4. **Resilient** (high availability, fault tolerance)
-5. **Observable** (all events logged and traceable)
+---
 
-Would you like me to continue with more details on any specific component, or provide implementation code for specific parts?
+## **Cost Picture (All Spot)**
+
+```
+EXAMPLE CLUSTER: 10 pods, production workload
+
+WITHOUT SYSTEM:
+  Manual instance selection
+  Oversized pods (guessed resources)
+  No spot intelligence
+  
+  10x m5.2xlarge (guessed big) = $0.384 × 10 = $3.84/hr
+  Monthly: $2,765
+
+WITH FULL SYSTEM (all spot):
+
+  Right-sizing reduces pod size by ~75%
+  Karpenter consolidates: 10 nodes → 3 nodes
+  ML picks cheapest safe spot pools
+  
+  3x m5a.large spot = $0.085 × 3 = $0.255/hr
+  Substitute: 1x t3a.large = $0.075/hr
+  Total: $0.330/hr
+  Monthly: $238
+  
+  SAVINGS: $2,527/month (91%)
+  
+  Substitute cost: $54/month
+  This buys: zero downtime during all spot events
+  Worth it: absolutely
+
+RISK PROFILE (all spot, no on-demand):
+  Primary nodes: ML top 10 (< 8% interruption rate)
+  Substitute: stable pool (< 15% interruption rate)
+  Different pools, different AZs, different families
+  
+  Probability all terminate simultaneously:
+  0.08 × 0.15 = 0.012 = 1.2% chance
+  And even then: Karpenter provisions new spot immediately
+  With pre-warmed substitute: 15 second pod movement
+  
+  Risk is managed through DIVERSITY not on-demand
+```
+
+---
+
+## **Complete System Summary**
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ LAYER          │ WHO CONTROLS    │ FREQUENCY    │ PURPOSE       │
+├────────────────┼─────────────────┼──────────────┼───────────────┤
+│ Node Template  │ You (set once)  │ Rarely       │ Guardrails    │
+├────────────────┼─────────────────┼──────────────┼───────────────┤
+│ ML Selection   │ Automatic       │ Every 30s    │ Safe pools    │
+├────────────────┼─────────────────┼──────────────┼───────────────┤
+│ Karpenter      │ Automatic       │ Real-time    │ Right nodes   │
+├────────────────┼─────────────────┼──────────────┼───────────────┤
+│ Right-Sizing   │ Automatic       │ Daily        │ Right pods    │
+├────────────────┼─────────────────┼──────────────┼───────────────┤
+│ Substitute     │ Automatic       │ Always on    │ Zero downtime │
+│ Node           │                 │              │ fallback      │
+└────────────────┴─────────────────┴──────────────┴───────────────┘
+
+KEY PRINCIPLES:
+  1. Never one pool (always diversified across families+AZs)
+  2. Always pre-warmed (substitute ready instantly)
+  3. Predict before react (ML sees risk rising, moves early)
+  4. Share intelligence (one termination protects all clients)
+  5. Gradual everything (migrate 25% at a time, never all-at-once)
+  6. Smaller pods = smaller nodes = cheaper spot = lower risk
+
+RESULT:
+  All spot infrastructure
+  Near-zero downtime (15 seconds pod movement)
+  91% cost reduction vs naive approach
+  Self-healing, self-optimizing, self-protecting
+```
+# Direct Migration: Risk/Price Threshold Breach Logic
+
+## **The Distinction: Two Different Scenarios**
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ SCENARIO A: TERMINATION NOTICE (2-min window)                  │
+│   → Use substitute node (instant landing, no time to provision)│
+│                                                                 │
+│ SCENARIO B: RISK/PRICE THRESHOLD BREACH (no time pressure)     │
+│   → Spin up new ML-chosen node directly                        │
+│   → No substitute needed (we have TIME to provision properly)  │
+│   → Substitute stays in standby                                │
+└─────────────────────────────────────────────────────────────────┘
+
+KEY INSIGHT:
+  Substitute exists for EMERGENCY (2-min window)
+  Threshold breach is PROACTIVE (we chose to act)
+  When we choose to act, we have time to do it right
+  No need to use substitute as middle step
+```
+
+---
+
+## **What Triggers Direct Migration**
+
+```
+TWO THRESHOLDS THAT TRIGGER DIRECT MIGRATION:
+
+THRESHOLD 1: RISK SCORE BREACH
+  Configured by user (default: 0.6)
+  
+  ML classifier output per pool:
+  risk_score < 0.3  → safe zone, do nothing
+  risk_score 0.3-0.6 → watch zone, monitor closely
+  risk_score > 0.6  → BREACH → trigger direct migration
+  risk_score > 0.8  → CRITICAL → urgent direct migration
+
+THRESHOLD 2: PRICE THRESHOLD BREACH
+  Configured by user (default: 20% above baseline)
+  
+  price_baseline = average price over last 7 days
+  current_price > baseline × 1.20 → BREACH
+  current_price > baseline × 1.50 → CRITICAL BREACH
+  
+  Example:
+  Baseline: $0.085/hr for m5a.large
+  Threshold: $0.085 × 1.20 = $0.102/hr
+  Current:   $0.115/hr → BREACHED → trigger migration
+
+COMBINED SCORE:
+  System can also trigger on combined condition:
+  risk_score > 0.4 AND price > baseline × 1.15
+  (medium risk + medium price spike = still migrate)
+  
+  Logic: neither alone is critical
+  but together they signal pool degradation
+```
+
+---
+
+## **The Direct Migration Flow**
+
+```
+BREACH DETECTED
+      │
+      ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ STEP 1: CONFIRM BREACH (not a spike)                           │
+│                                                                 │
+│   Single reading can be noisy                                  │
+│   Require: 3 consecutive readings above threshold              │
+│   Each reading: 30 seconds apart                               │
+│   Total confirmation time: 90 seconds                          │
+│                                                                 │
+│   Why: Avoid migrating for a 30-second price/risk blip         │
+│   Spot prices and risk scores fluctuate naturally              │
+└─────────────────────────────────────────────────────────────────┘
+      │
+      │ Confirmed breach
+      ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ STEP 2: GET NEW TARGET FROM ML (Already computed)              │
+│                                                                 │
+│   ML top 10 is ALREADY calculated (runs every 30s)            │
+│   Breached pool is now ranked lower or excluded                │
+│   Pick #1 from current ML top 10                              │
+│   (that is NOT the breached pool)                              │
+│                                                                 │
+│   Target node: best risk + best price right now               │
+│   Decision time: near instant (list pre-computed)             │
+└─────────────────────────────────────────────────────────────────┘
+      │
+      │ Target pool identified
+      ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ STEP 3: SPIN UP NEW NODE DIRECTLY                              │
+│                                                                 │
+│   Tell Karpenter: provision new node on target pool           │
+│   Karpenter uses ML-approved NodePool                         │
+│   Instance type: ML top 1 recommendation                      │
+│   AZ: best available (ML already factored this in)            │
+│                                                                 │
+│   DO NOT touch existing nodes yet                             │
+│   DO NOT activate substitute                                   │
+│   Just: spin up new node, wait for it to be ready             │
+│                                                                 │
+│   Time to ready: 3-5 minutes                                  │
+│   During this time: current pods keep running normally        │
+│   No disruption yet                                           │
+└─────────────────────────────────────────────────────────────────┘
+      │
+      │ New node ready
+      ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ STEP 4: VALIDATE NEW NODE                                      │
+│                                                                 │
+│   Before moving any pods:                                      │
+│   ✓ Node status: Ready                                        │
+│   ✓ System pods running (CNI, kubelet healthy)                │
+│   ✓ Images pre-pulled (or start pulling now)                  │
+│   ✓ Network connectivity verified                             │
+│   ✓ ML risk score of new pool still < threshold               │
+│     (could have changed while node was booting)               │
+│                                                                 │
+│   All pass → begin migration                                   │
+│   Any fail → pick next from ML top 10, try again             │
+└─────────────────────────────────────────────────────────────────┘
+      │
+      │ New node validated
+      ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ STEP 5: MIGRATE PODS DIRECTLY                                  │
+│                                                                 │
+│   Old node (breached pool) → New node (ML chosen)             │
+│                                                                 │
+│   Strategy: Rolling migration                                  │
+│   Move 25% of pods at a time                                  │
+│   Wait 3-5 minutes between batches                            │
+│   Monitor health at each step                                 │
+│                                                                 │
+│   Substitute node: NOT INVOLVED                               │
+│   Stays in standby throughout                                 │
+│                                                                 │
+│   Each pod movement:                                           │
+│   1. New pod starts on new node (new pool)                    │
+│   2. Wait for readiness probe to pass                         │
+│   3. Old pod terminated on breached node                      │
+│   4. Traffic shifts seamlessly                                │
+│   Zero downtime per pod                                       │
+└─────────────────────────────────────────────────────────────────┘
+      │
+      │ All pods migrated
+      ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ STEP 6: DECOMMISSION BREACHED NODE                             │
+│                                                                 │
+│   All pods moved to new node                                   │
+│   Old node: completely empty                                   │
+│   Karpenter: drain and delete old node                        │
+│   Pool: flagged as degraded in system                         │
+│   Risk score: noted in history database                       │
+│                                                                 │
+│   NOT blacklisted globally (not terminated by AWS)            │
+│   Just: stopped using it                                       │
+│   ML will naturally rank it lower going forward               │
+└─────────────────────────────────────────────────────────────────┘
+      │
+      ▼
+   DONE ✅
+   Substitute never touched
+   Zero downtime
+   Now on better pool
+```
+
+---
+
+## **Timeline: What Actually Happens**
+
+```
+RISK BREACH EXAMPLE:
+m5a.large-us-west-2a risk score rises from 0.12 → 0.71
+
+T+0s:     ML detects risk_score = 0.71 (above 0.6 threshold)
+T+30s:    Second reading: risk_score = 0.74 (still breached)
+T+60s:    Third reading: risk_score = 0.78 (confirmed breach!)
+T+90s:    Breach confirmed (3 consecutive readings)
+
+T+91s:    ML top 10 already computed
+          New target: m5.large-us-west-2b (risk: 0.09)
+          Karpenter: provision m5.large-us-west-2b NOW
+
+T+91s:    Current pods: still running normally on old node
+          Users: zero impact so far
+          Substitute: still in standby, untouched
+
+T+91s     New node provisioning starts
+→ T+290s: AWS provisions, boots, joins cluster
+          (3 min 20 seconds)
+
+T+290s:   New node validation:
+          ✓ Ready
+          ✓ CNI healthy
+          ✓ Risk still 0.09 (unchanged)
+          ✓ Network verified
+          All pass → begin migration
+
+T+295s:   Batch 1: Move 25% pods
+          old: m5a.large-us-west-2a (risk 0.78)
+          new: m5.large-us-west-2b  (risk 0.09)
+          Each pod: new starts → ready → old stops
+          Duration: ~2 minutes per batch
+
+T+415s:   Batch 2: Move next 25%
+T+535s:   Batch 3: Move next 25%
+T+655s:   Batch 4: Move final 25%
+
+T+660s:   All pods on m5.large-us-west-2b ✅
+          Old node: empty
+          Karpenter: deletes old node
+
+T+680s:   System fully migrated
+          Total time: ~11 minutes
+          Downtime: 0 seconds
+          Substitute: never activated
+
+PRICE BREACH EXAMPLE:
+m5a.large price spikes from $0.085 → $0.127 (49% above baseline)
+
+Same flow, but:
+  Confirmation: 3 readings over 90 seconds
+  New target: cheapest in ML top 10 (m5a.large-us-west-2b: $0.082)
+  Same migration process
+  Result: lower cost AND same/better risk score
+```
+
+---
+
+## **Threshold Configuration Logic**
+
+```
+USER CONFIGURES PER CLUSTER:
+
+RISK THRESHOLDS:
+  watch_threshold:   0.3  (start monitoring closely)
+  breach_threshold:  0.6  (trigger direct migration)
+  critical_threshold: 0.8  (urgent migration, less delay)
+
+  At critical: confirmation reduced to 1 reading (not 3)
+  Too risky to wait 90 seconds
+
+PRICE THRESHOLDS:
+  watch_threshold:   15% above baseline
+  breach_threshold:  20% above baseline
+  critical_threshold: 50% above baseline
+
+CONFIRMATION READINGS:
+  Normal breach (risk 0.6-0.8 OR price 20-50%):
+    3 consecutive readings (90 seconds)
+  
+  Critical breach (risk > 0.8 OR price > 50%):
+    1 reading (immediate action)
+    Too risky to wait for confirmation
+
+BASELINE CALCULATION FOR PRICE:
+  Rolling 7-day average of spot price for this pool
+  Recalculated daily
+  Accounts for normal price fluctuation
+  Only flags genuine spikes not normal variance
+
+SMART THRESHOLD ADJUSTMENT:
+  System learns your cluster patterns
+  If your cluster always runs at night:
+    Thresholds slightly relaxed during business hours
+    (less traffic = can tolerate brief disruption)
+  If peak business hours:
+    Thresholds tightened
+    (migrate earlier to avoid any risk during peak)
+```
+
+---
+
+## **What Makes This Different from Substitute Flow**
+
+```
+COMPARISON:
+
+SUBSTITUTE FLOW (Termination Notice):
+  Trigger:    AWS forces it (2-min window)
+  Time:       120 seconds to act
+  Strategy:   Move first, provision later
+  Substitute: ACTIVATED (instant landing needed)
+  Downtime:   0 seconds (substitute absorbs immediately)
+  
+  Order: Move pods → substitute → provision new → migrate back
+
+DIRECT MIGRATION FLOW (Threshold Breach):
+  Trigger:    System chooses to act (proactive)
+  Time:       Minutes available (no AWS forcing)
+  Strategy:   Provision first, move after
+  Substitute: NOT ACTIVATED (stays in standby)
+  Downtime:   0 seconds (new pod starts before old stops)
+  
+  Order: Provision new → validate → migrate direct → decommission old
+
+WHY NO SUBSTITUTE NEEDED IN BREACH:
+  
+  Substitute solves: "I have 120 seconds, no time to provision"
+  Threshold breach: "I have 3-15 minutes, time to provision properly"
+  
+  Using substitute in breach scenario:
+    Move to substitute → then move again to ML node
+    = Double migration (unnecessary disruption)
+    = Two rolling updates instead of one
+    = Waste of pod restarts
+    
+  Direct migration:
+    One clean move: old pool → new ML pool
+    Single rolling update
+    No intermediate hop
+    Cleaner, faster, less disruption
+```
+
+---
+
+## **Edge Cases**
+
+```
+EDGE CASE 1: New node not available during provisioning
+  
+  Scenario: Karpenter tries to provision m5.large-us-west-2b
+  AWS responds: no capacity in this AZ
+  
+  Fallback logic:
+    Pick #2 from ML top 10 (different pool)
+    Try provisioning that
+    If that fails: try #3
+    Continue down top 10 list
+    
+    If ALL top 10 fail to provision:
+      THEN activate substitute (last resort)
+      This is the only time substitute activates for breach
+      Alert team: spot capacity issue in region
+
+EDGE CASE 2: Risk score recovers during confirmation wait
+  
+  Scenario:
+  T+0s:  risk = 0.72 (breach)
+  T+30s: risk = 0.68 (still breach)
+  T+60s: risk = 0.28 (recovered!)
+  
+  Action: Cancel migration process
+  Do not provision new node (waste of resources)
+  Reset confirmation counter
+  Continue monitoring
+  
+  Why this matters:
+  Spot prices/risks can spike and recover quickly
+  90-second confirmation prevents chasing false signals
+  Saves unnecessary migration and provisioning cost
+
+EDGE CASE 3: New pool breaches WHILE migrating
+  
+  Scenario:
+  Started migrating to m5.large-us-west-2b (looked safe)
+  50% pods moved
+  m5.large-us-west-2b risk score jumps to 0.75 (breach!)
+  
+  Action:
+    Pause migration immediately
+    Stop moving more pods
+    Re-run ML selection (pick new top 1)
+    Provision third node (new ML choice)
+    Validate third node
+    Move remaining 50% from old node → third node
+    Also move already-migrated 50% → third node
+    
+  Result: Three nodes temporarily, then one clean node
+  Slightly more disruption but still zero downtime
+
+EDGE CASE 4: Both risk AND price breach simultaneously
+  
+  Action: Use critical threshold rules
+  Single confirmation reading (not 3)
+  Immediate provisioning
+  Faster batch migration (10% at a time, less wait)
+  Priority escalated in Karpenter
+
+EDGE CASE 5: All pools in top 10 breach simultaneously
+  
+  Scenario: Regional AWS issue, all spot pools risky
+  
+  Action:
+    Substitute node activated (only time for breach scenario)
+    Move all pods to substitute immediately
+    Alert team: regional spot issue
+    Wait for ML to find safe pools in different AZ
+    Once found: direct migrate from substitute → new pool
+    
+  This is genuine emergency, substitute justified here
+```
+
+---
+
+## **Complete Decision Tree**
+
+```
+RISK OR PRICE READING ABOVE THRESHOLD
+              │
+              ▼
+    Is this a CRITICAL breach?
+    (risk > 0.8 OR price > 50%)
+              │
+        ┌─────┴─────┐
+       YES           NO
+        │             │
+        ▼             ▼
+   Confirm with   Wait for 3
+   1 reading      consecutive
+   (immediate)    readings (90s)
+        │             │
+        │         Breach confirmed?
+        │             │
+        │         ┌───┴───┐
+        │        YES       NO
+        │         │         │
+        └────┬────┘         │
+             ▼          Cancel, keep
+    Get ML top 10        monitoring
+    (already computed)
+             │
+             ▼
+    Pick #1 safe pool
+    (not the breached one)
+             │
+             ▼
+    Provision new node
+    on ML-chosen pool
+    DO NOT touch substitute
+             │
+             ▼
+    New node ready?
+    (3-5 minutes)
+             │
+        ┌────┴────┐
+       YES         NO
+        │           │
+        ▼           ▼
+    Validate     Try next pool
+    new node     from ML top 10
+        │
+    All checks pass?
+        │
+    ┌───┴───┐
+   YES       NO
+    │         │
+    ▼         ▼
+   Begin    Pick next
+   direct   from top 10
+   rolling
+   migration
+   (25% × 4)
+        │
+        ▼
+    All pods on
+    new ML node ✅
+        │
+        ▼
+    Decommission
+    old node
+        │
+        ▼
+    Substitute:
+    never touched
+    still in standby ✅
+```
+
+---
+
+## **Summary: The Clean Logic**
+
+```
+THRESHOLD BREACH = PROACTIVE DECISION = TIME AVAILABLE
+
+Because we have time:
+  1. Confirm it's real (90 seconds, 3 readings)
+  2. Provision new node FIRST (ML-chosen, best pool)
+  3. Validate new node is healthy
+  4. Migrate pods directly (old → new, no middle hop)
+  5. Delete old node
+  6. Done. Substitute never needed.
+
+SUBSTITUTE ONLY ACTIVATES FOR:
+  ✓ AWS termination notice (120-second emergency)
+  ✓ ALL top 10 pools unavailable (regional outage)
+  ✓ ML complete failure + breach happening simultaneously
+  
+  Everything else: direct migration, cleaner and faster
+
+RESULT:
+  Risk breach:  0 downtime, single migration, ~11 minutes
+  Price breach: 0 downtime, single migration, ~11 minutes  
+  Substitute:   stays warm and ready for real emergencies
+  System:       always on optimal pool, always cost-efficient
+```

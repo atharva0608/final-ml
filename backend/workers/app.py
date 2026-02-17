@@ -15,7 +15,10 @@ app = Celery(
         'backend.workers.tasks.savings_calculator',
         'backend.workers.tasks.approval_cleanup',
         'backend.workers.tasks.resource_pricing_worker',
-        'backend.workers.tasks.hibernation_worker'
+        'backend.workers.tasks.hibernation_worker',
+        'backend.workers.tasks.atharvaai_worker',
+        'backend.workers.tasks.termination_monitor',
+        'backend.workers.tasks.auto_rebalancer'
     ]
 )
 
@@ -74,5 +77,30 @@ app.conf.beat_schedule = {
     'hibernation-scheduler-every-1-min': {
         'task': 'workers.hibernation.check_schedules',
         'schedule': 60.0,  # 1 minute
+    },
+    # AtharvaAi Pool Ranking (Every 30 seconds) - ML-driven pool selection pipeline
+    'atharvaai-pool-ranking-every-30-secs': {
+        'task': 'workers.atharvaai.execute_pool_ranking_pipeline',
+        'schedule': 30.0,  # 30 seconds
+    },
+    # Spot Price Collection (Every 10 minutes) - Collects historical spot prices for ML features
+    'spot-price-collection-every-10-mins': {
+        'task': 'workers.atharvaai.collect_spot_prices',
+        'schedule': 600.0,  # 10 minutes
+    },
+    # Termination Monitor (Every 30 seconds) - Monitors spot termination notices and updates blacklist
+    'termination-monitor-every-30-secs': {
+        'task': 'workers.termination_monitor',
+        'schedule': 30.0,  # 30 seconds
+    },
+    # Auto-Rebalancer (Every 15 seconds) - Executes auto-rebalancing actions for flagged pools
+    'auto-rebalancer-every-15-secs': {
+        'task': 'workers.auto_rebalancer',
+        'schedule': 15.0,  # 15 seconds
+    },
+    # Karpenter NodePool Sync (Every 30 seconds) - Syncs ML rankings to Karpenter NodePools
+    'karpenter-nodepool-sync-every-30-secs': {
+        'task': 'workers.atharvaai.sync_karpenter_nodepools',
+        'schedule': 30.0,  # 30 seconds
     },
 }

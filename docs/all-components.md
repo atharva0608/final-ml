@@ -1,11 +1,12 @@
 # All UI Components — Section-by-Section Breakdown
 
 > Every visible element on every page, grouped by sidebar section.
-> **"Backend Logic"** column is left blank for manual fill.
 >
 > **Legend for Data Source:** `Real API` = connected to live backend endpoint • `Mock API` = backend returns mock/dummy data • `Hardcoded` = static value in frontend code • `Demo Data` = seeded/demo data from backend • `Computed` = derived from other data on the client side
 >
 > **🔴 Red API Endpoint** = Endpoint exists in backend but is **NOT called** from the frontend (unused)
+>
+> **Last Updated:** 2026-02-17 — Reflects zombie detection rules, KPI fixes, authorization logic, and system-managed resource auto-authorization.
 
 ---
 
@@ -222,6 +223,19 @@
 | **Node List** | Table | Nodes in the cluster | Real API | `GET /api/v1/clusters/{id}/nodes` | ClusterService → queries Instance table by cluster_id | instances | instances.instance_id, instances.instance_type, instances.lifecycle, instances.az, instances.cpu_util, instances.memory_util, instances.state | clusters/ClusterList.jsx, api/cluster_routes.py, services/cluster_service.py | App.js |
 | **Close Button** | Button | Closes modal | N/A | — | — | — | — | clusters/ClusterList.jsx | App.js |
 
+### Cluster Confirmation Modals
+
+| Modal | Type | What It Does | Data Source | API Endpoint | Backend Logic | DB Table | Columns Used | Dependencies | File Name |
+|---|---|---|---|---|---|---|---|---|---|
+| **ClusterDeleteModal** | Modal | Type-to-confirm cluster deletion — shows destructive consequences, requires typing cluster name | Real API | `DELETE /api/v1/clusters/{id}` | ClusterService.delete_cluster → validates no active instances, cascade deletes | clusters, instances | clusters.id, clusters.name | clusters/ClusterList.jsx | clusters/ClusterDeleteModal.jsx |
+| **ClusterDisconnectModal** | Modal | Type-to-confirm disconnect — option to delete optimizer-created nodes, warning about downtime | Real API | `POST /api/v1/clusters/{id}/disconnect` | ClusterService → removes agent, optionally deletes nodes | clusters | clusters.id, clusters.name, clusters.agent_installed | clusters/ClusterList.jsx | clusters/ClusterDisconnectModal.jsx |
+
+### NodeList Standalone Component
+
+| Component | Type | What It Does | Data Source | API Endpoint | Backend Logic | DB Table | Columns Used | Dependencies | File Name |
+|---|---|---|---|---|---|---|---|---|---|
+| **NodeList** | Table | Standalone node list with Instance ID, Type, Lifecycle badge, CPU bar, Zone — falls back to mock data on API failure | Real API | `GET /api/v1/clusters/{id}/nodes` | ClusterService → queries Instance table by cluster_id | instances | instances.instance_id, instances.instance_type, instances.lifecycle, instances.cpu_util, instances.az | clusters/ClusterDetails.jsx, shared/Card.jsx, shared/Badge.jsx | clusters/NodeList.jsx |
+
 #### Node List Sub-Component (inside Cluster Detail)
 
 | Column | Type | What It Shows | Data Source | API Endpoint | Backend Logic | DB Table | Columns Used | Dependencies | File Name |
@@ -295,6 +309,20 @@
 |---|---|---|---|---|---|---|---|---|---|
 | **PoolDetailsModal** | Modal | 6 tabs: Overview, Specs, Risk, Cost, Usage, Switch Preview | Mock API | `GET /api/v1/atharva/pools/{id}/details` | AtharvaService.get_pool_details → random mock detail | — (in-memory) | — | atharva/PoolDetailsModal.jsx, api/atharva_routes.py, services/atharva_service.py | pages/AtharvaAiPage.jsx |
 | **SwitchConfirmationModal** | Modal | Safety checks, reason, auto-resume, confirm | Mock API | `POST /api/v1/atharva/pools/switch` | AtharvaService.switch_pool → mock safety checks | — (in-memory) | — | atharva/SwitchConfirmationModal.jsx, api/atharva_routes.py, services/atharva_service.py | pages/AtharvaAiPage.jsx |
+
+### AtharvaAi Sub-Components
+
+| Component | Type | What It Does | Data Source | API Endpoint | Backend Logic | DB Table | Columns Used | Dependencies | File Name |
+|---|---|---|---|---|---|---|---|---|---|
+| **Header** | Header | Page header with BETA badge, quick stats cards (Risk Score, Savings Rate, Active Opts) | Mock API | `GET /api/v1/atharva/status` | AtharvaService.get_system_status → in-memory mock | — (in-memory) | — | pages/AtharvaAiPage.jsx | atharva/Header.jsx |
+| **InstanceRankings** | Card | Instance pool rankings — two sections: Safest Pools (low risk) and Cheapest Pools (best value) with animated list items | Mock API | `GET /api/v1/atharva/pools/rankings` | AtharvaService.get_pool_rankings → random mock data | — (in-memory) | — | pages/AtharvaAiPage.jsx | atharva/InstanceRankings.jsx |
+| **NodeConfiguration** | Card | Node config panel — Templates/Allocation tabs, optimization strategy selector (Safety First/Balanced/Lowest Cost), resource constraint sliders, active template preview | Hardcoded | — | — | — | — | pages/AtharvaAiPage.jsx | atharva/NodeConfiguration.jsx |
+
+### AtharvaAi V2 (atharvaai/ directory)
+
+| Component | Type | What It Does | Data Source | API Endpoint | Backend Logic | DB Table | Columns Used | Dependencies | File Name |
+|---|---|---|---|---|---|---|---|---|---|
+| **PoolRankings** | Table | Full-featured pool rankings table — fetches rankings + blacklist, savings color coding, interruption risk labels, refresh capability | Mock API | `GET /api/v1/atharva/pools/rankings` + `GET /api/v1/atharva/blacklist` | AtharvaService.get_pool_rankings + get_blacklist → mock data | — (in-memory) | — | pages/AtharvaAiPage.jsx | atharvaai/PoolRankings.jsx |
 
 ### Other AtharvaAi Data
 
@@ -386,25 +414,88 @@
 
 ## 10. Resource Hygiene (Cleanup)
 
+> **Zombie Detection Logic**: The scan engine implements 11 classification rules per `changelogic.txt`. Each resource type has specific "zombie" detection heuristics that assign a `HygieneStatus` of `SAFE_TO_DELETE`, `ORPHANED`, `STOPPED`, `RISK`, `UNAUTHORIZED`, or `NOT_COMPLIANT`. See the **Zombie Detection Rules** table below for per-resource logic.
+>
+> **KPI Calculations**: `total_potential_savings` only counts `SAFE_TO_DELETE` resources (excludes ORPHANED/UNAUTHORIZED). `total_discovered_cost` sums cost of ALL resources found. Both exclude authorized resources.
+>
+> **Authorization Logic**: System-managed instances (Spot Optimizer cluster nodes) are auto-authorized (`is_authorized=True`). Users can manually authorize/unauthorize any resource via `POST /api/v1/hygiene/action` with `AUTHORIZE`/`UNAUTHORIZE` action types. Authorized resources are stored in `authorized_resources` DB table.
+
 | UI Element | Type | What It Does | Data Source | API Endpoint | Backend Logic | DB Table | Columns Used | Dependencies | File Name |
 |---|---|---|---|---|---|---|---|---|---|
 | **Page Header** | Text | Title + region/account info | Hardcoded | — | — | — | — | — | — |
-| **Scan Button** | Button | Triggers resource scan | Real API | `GET /api/v1/hygiene/scan/{accountId}` | HygieneService.scan_resources → STS AssumeRole, parallel region scan (EC2/EBS/S3/RDS/VPC/IAM) | accounts (STS creds only) | accounts.role_arn, accounts.external_id — resources in AWS not DB | api/hygiene_routes.py, services/hygiene_service.py | — |
+| **Scan Button** | Button | Triggers resource scan | Real API | `GET /api/v1/hygiene/scan/{accountId}` | HygieneService.scan_resources → STS AssumeRole, parallel region scan across 7 categories (Compute, Storage, Network,  Database, Security, Management, Identity) with ThreadPoolExecutor(max_workers=10). Caches results in Redis (1h TTL). Post-processes with authorization map from `authorized_resources` table | accounts, authorized_resources, hygiene_policies | accounts.role_arn, accounts.external_id, authorized_resources.resource_id, authorized_resources.account_id | api/hygiene_routes.py, services/hygiene_service.py | — |
 | **Region Dropdown** | Dropdown | Select region or "All Regions (Global)" | Hardcoded | — | — | — | — | — | — |
 | **Account Selector** | Dropdown | Picks AWS account | Real API | `GET /api/v1/accounts` | AccountService.list_accounts → RBAC filtered | accounts | accounts.id, accounts.aws_account_id, accounts.role_arn, accounts.status, accounts.is_default | — | — |
-| **Total Cost Display** | Card | Estimated cost | Real API | `GET /api/v1/hygiene/total-cost` | MetricsService.get_cost_breakdown_by_service | daily_costs | daily_costs.amount, daily_costs.service_category | api/hygiene_routes.py, services/hygiene_service.py | — |
+| **Total Potential Savings** | Card | Actionable savings from SAFE_TO_DELETE resources only | Real API | `GET /api/v1/hygiene/scan/{accountId}` | HygieneSummary.total_potential_savings → `sum(cost_per_month where status=SAFE_TO_DELETE AND not is_authorized)` | accounts, authorized_resources | — computed from scan response | api/hygiene_routes.py, services/hygiene_service.py | — |
+| **Total Discovered Cost** | Card | Total cost of ALL discovered resources | Real API | `GET /api/v1/hygiene/scan/{accountId}` | HygieneSummary.total_discovered_cost → `sum(cost_per_month for ALL resources)` | accounts | — computed from scan response | api/hygiene_routes.py, services/hygiene_service.py | — |
+| **Savings Trend** | Display | % change vs previous scan | Real API | `GET /api/v1/hygiene/scan/{accountId}` | HygieneSummary.savings_trend_percent → compares current savings vs Redis-cached previous scan (7d TTL) | accounts | — computed from Redis history cache | api/hygiene_routes.py, services/hygiene_service.py | — |
 | **Cost by Service** | Graph | Service-level cost breakdown | Real API | `GET /api/v1/hygiene/cost-services` | MetricsService.get_cost_breakdown_by_service | daily_costs | daily_costs.amount, daily_costs.service_category | api/hygiene_routes.py, services/hygiene_service.py | — |
 
 ### Scan Results
 
 | UI Element | Type | What It Does | Data Source | API Endpoint | Backend Logic | DB Table | Columns Used | Dependencies | File Name |
 |---|---|---|---|---|---|---|---|---|---|
-| **Resource Type Tabs** | Tab | Tabs for EC2, EBS, Snapshots, etc. | Real API | (from scan response) ↑ | ↑ same endpoint | ↑ | ↑ | ↑ | ↑ |
-| **Results Table** | Table | Resource ID, type, region, tags, status, cost, checkbox | Real API | `GET /api/v1/hygiene/scan/{accountId}` | HygieneService.scan_resources → STS AssumeRole, parallel region scan (EC2/EBS/S3/RDS/VPC/IAM) | accounts (STS creds only) | accounts.role_arn, accounts.external_id — resources in AWS not DB | api/hygiene_routes.py, services/hygiene_service.py | — |
+| **Resource Type Tabs** | Tab | Tabs for EC2, EBS, Snapshots, S3, RDS, VPC, IAM, Security, Management, Compute resources | Real API | (from scan response) ↑ | ↑ same endpoint | ↑ | ↑ | ↑ | ↑ |
+| **Results Table** | Table | Resource ID, name, type, region, status badge (SAFE_TO_DELETE/ORPHANED/STOPPED/RISK/etc.), cost/mo, is_authorized flag, tag compliance, reason, checkbox | Real API | `GET /api/v1/hygiene/scan/{accountId}` | HygieneService.scan_resources → parallel region scan across 7 categories. Each ResourceItem includes: id, name, type (ResourceType enum), status (HygieneStatus enum), region, cost_per_month, is_authorized, reason, metadata, is_compliant, missing_tags, blocking_resources, pending_approval | accounts, authorized_resources, hygiene_policies | accounts.role_arn, accounts.external_id, authorized_resources.resource_id | api/hygiene_routes.py, services/hygiene_service.py | — |
 | **Select All Checkbox** | Button | Selects all resources | N/A | — | — | — | — | — | — |
-| **Delete Selected Button** | Button | Deletes selected resources | Real API | `POST /api/v1/hygiene/action` | HygieneService.execute_action → RBAC + optional approval; boto3 DELETE/RELEASE/STOP | accounts, audit_logs | accounts.role_arn, audit_logs.event, audit_logs.resource | api/hygiene_routes.py, services/hygiene_service.py | — |
+| **Delete Selected Button** | Button | Deletes selected resources | Real API | `POST /api/v1/hygiene/action` | HygieneService.execute_action → RBAC + optional approval; boto3 DELETE/RELEASE/STOP/DISABLE per action type | accounts, audit_logs | accounts.role_arn, audit_logs.event, audit_logs.resource | api/hygiene_routes.py, services/hygiene_service.py | — |
+| **Authorize Button** | Button | Marks resource as authorized (excluded from cleanup) | Real API | `POST /api/v1/hygiene/action` (action_type=AUTHORIZE) | HygieneService.execute_action → creates AuthorizedResource record in DB; resource shows as authorized in next scan | authorized_resources, audit_logs | authorized_resources.resource_id, authorized_resources.resource_type, authorized_resources.account_id, authorized_resources.authorized_by | api/hygiene_routes.py, services/hygiene_service.py | — |
+| **Unauthorize Button** | Button | Removes authorization from resource | Real API | `POST /api/v1/hygiene/action` (action_type=UNAUTHORIZE) | HygieneService.execute_action → deletes AuthorizedResource record from DB; resource shows as issue in next scan (unless system-managed) | authorized_resources, audit_logs | authorized_resources.resource_id | api/hygiene_routes.py, services/hygiene_service.py | — |
 | **Tag Selected Button** | Button | Opens BulkTagWizard | N/A | — | — | — | — | cleanup/BulkTagWizard.jsx | cleanup/CleanupDashboard.jsx |
 | **Check Dependencies** | Button | Checks resource dependencies | Real API | `GET /api/v1/hygiene/check-dependencies` | HygieneService.check_dependencies → checks AMI refs, attachments, associations | — (AWS API only) | — | api/hygiene_routes.py, services/hygiene_service.py | — |
+
+### Zombie Detection Rules (Backend Logic per Resource Type)
+
+| Resource Type | Enum | Zombie Rule | Status Assigned | Reason String | Scan Method |
+|---|---|---|---|---|---|
+| **EC2 Instances** | INSTANCE | Stopped > 30 days | SAFE_TO_DELETE | "Stopped for N days" | _scan_region_worker |
+| **EC2 Instances** | INSTANCE | Stopped < 30 days | STOPPED | "Instance stopped" | _scan_region_worker |
+| **EC2 Instances** | INSTANCE | Running + managed by Spot Optimizer | ACTIVE (is_authorized=True, is_compliant=True) | "Managed by Spot Optimizer" | _scan_region_worker |
+| **Elastic IPs** | ELASTIC_IP | No association | SAFE_TO_DELETE | "Unassociated Elastic IP" | _scan_network |
+| **KMS Keys** | KMS_KEY | KeyState=Disabled | ORPHANED | "Key is disabled" | _scan_security_resources |
+| **KMS Keys** | KMS_KEY | KeyState=PendingDeletion | SAFE_TO_DELETE | "Key is pending deletion" | _scan_security_resources |
+| **Secrets Manager** | SECRETS_MANAGER | Not accessed 90+ days | ORPHANED | "Not accessed in 90+ days" | _scan_security_resources |
+| **CW Log Groups** | CLOUDWATCH_LOG_GROUP | 0 stored bytes | SAFE_TO_DELETE | "Empty log group" | _scan_management_resources |
+| **CW Log Groups** | CLOUDWATCH_LOG_GROUP | No events 90+ days | ORPHANED | "No events in 90+ days" | _scan_management_resources |
+| **CW Alarms** | CLOUDWATCH_ALARM | StateValue=INSUFFICIENT_DATA | SAFE_TO_DELETE | "Alarm in INSUFFICIENT_DATA" | _scan_management_resources |
+| **CW Alarms** | CLOUDWATCH_ALARM | 0 actions configured | ORPHANED | "No actions configured" | _scan_management_resources |
+| **Lambda Functions** | LAMBDA_FUNCTION | 0 invocations in 30 days (via CloudWatch metrics) | ORPHANED | "0 invocations in 30 days" | _scan_management_resources |
+| **EventBridge Rules** | EVENTBRIDGE_RULE | State=DISABLED | ORPHANED | "Rule is disabled" | _scan_management_resources |
+| **EventBridge Rules** | EVENTBRIDGE_RULE | 0 targets | SAFE_TO_DELETE | "Rule has 0 targets" | _scan_management_resources |
+| **EKS Clusters** | EKS_CLUSTER | 0 nodegroups | ORPHANED | "Cluster has 0 nodegroups" | _scan_compute_resources |
+| **ECS Clusters** | ECS_CLUSTER | 0 services + 0 tasks + 0 container instances | SAFE_TO_DELETE | "Empty ECS cluster" | _scan_compute_resources |
+| **Auto Scaling Groups** | AUTO_SCALING_GROUP | min=0, max=0, desired=0 | SAFE_TO_DELETE | "ASG scaled to zero" | _scan_compute_resources |
+
+### Scan Categories (7 Parallel Scanners)
+
+| Scanner Method | Resource Types Scanned | AWS APIs Used |
+|---|---|---|
+| **_scan_region_worker** (EC2/EBS) | INSTANCE, VOLUME, SNAPSHOT | ec2.describe_instances, ec2.describe_volumes, ec2.describe_snapshots |
+| **_scan_network** | ELASTIC_IP, LOAD_BALANCER, NAT_GATEWAY, NETWORK_INTERFACE | ec2.describe_addresses, elbv2.describe_load_balancers, ec2.describe_nat_gateways |
+| **_scan_databases** | RDS_DB, DYNAMODB_TABLE, ELASTICACHE_CLUSTER | rds.describe_db_instances, dynamodb.list_tables, elasticache.describe_cache_clusters |
+| **_scan_storage** | S3_BUCKET, EFS_FILE_SYSTEM | s3.list_buckets, efs.describe_file_systems |
+| **_scan_identity** | IAM_USER, IAM_KEY | iam.list_users, iam.list_access_keys, iam.get_access_key_last_used |
+| **_scan_security_resources** | SECURITY_HUB, KMS_KEY, SECRETS_MANAGER, CLOUDTRAIL, GUARDDUTY | kms.list_keys, secretsmanager.list_secrets, cloudtrail.describe_trails, guardduty.list_detectors |
+| **_scan_management_resources** | CONFIG_RECORDER, SSM_MANAGED_INSTANCE, CLOUDWATCH_LOG_GROUP, CLOUDWATCH_ALARM, LAMBDA_FUNCTION, EVENTBRIDGE_RULE | logs.describe_log_groups, cloudwatch.describe_alarms, lambda.list_functions, events.list_rules |
+| **_scan_vpc_resources** | VPC, VPC_ENDPOINT, TRANSIT_GATEWAY | ec2.describe_vpcs, ec2.describe_vpc_endpoints, ec2.describe_transit_gateways |
+| **_scan_compute_resources** | EKS_CLUSTER, ECS_CLUSTER, AUTO_SCALING_GROUP | eks.list_clusters, ecs.list_clusters, autoscaling.describe_auto_scaling_groups |
+
+### Cleanup Layout Sub-Components
+
+| Component | Type | What It Does | Data Source | API Endpoint | Backend Logic | DB Table | Columns Used | Dependencies | File Name |
+|---|---|---|---|---|---|---|---|---|---|
+| **FilterPanel** | Toolbar | Account selector, region selector, safety level filters, refresh button, last scan timestamp | Real API | `GET /api/v1/accounts` | AccountService.list_accounts → RBAC filtered | accounts | accounts.id, accounts.aws_account_id, accounts.role_arn | cleanup/CleanupDashboard.jsx | cleanup/layout/FilterPanel.jsx |
+| **HeroMetricsPanel** | Card | Summary stats — total resources, total_potential_savings (SAFE_TO_DELETE only), total_discovered_cost (ALL resources), savings_trend_percent, waste score gauge, risk breakdown | Computed | — | — | — | — | cleanup/CleanupDashboard.jsx, shared/GaugeChart.jsx | cleanup/summary/HeroMetricsPanel.jsx |
+| **SavingsGauge** | Graph | Animated semi-circle gauge — selected savings vs total potential savings with dollar display | Computed | — | — | — | — | cleanup/CleanupDashboard.jsx | cleanup/summary/SavingsGauge.jsx |
+| **ResourceTable** | Table | Scan results table — resource ID, name, type, region, status badge (color-coded per HygieneStatus), cost/mo, tag compliance, authorize/unauthorize toggle, cleanup actions | Real API | `GET /api/v1/hygiene/scan/{accountId}` | HygieneService.scan_resources → parallel region scan with zombie detection | accounts, authorized_resources, hygiene_policies | accounts.role_arn, authorized_resources.resource_id | cleanup/CleanupDashboard.jsx | cleanup/tables/ResourceTable.jsx |
+
+### Cleanup Optimization Wizards
+
+| Component | Type | What It Does | Data Source | API Endpoint | Backend Logic | DB Table | Columns Used | Dependencies | File Name |
+|---|---|---|---|---|---|---|---|---|---|
+| **RDSWizard** | Modal | Multi-step wizard for RDS optimization — Multi-AZ analysis, read replica suggestions, instance downsizing | Mock API | `GET /api/v1/rds/analysis` | RDS analysis via describe APIs | — | — | cleanup/CleanupDashboard.jsx, shared/Button.jsx | cleanup/wizards/RDSWizard.jsx |
+| **RIWizard** | Modal | Multi-step wizard for RI optimization — utilization analysis, exchange recommendations, savings projection | Mock API | `GET /api/v1/ri/analysis` | RI utilization analysis via Cost Explorer | daily_costs | daily_costs.amount, daily_costs.service | cleanup/CleanupDashboard.jsx, shared/Button.jsx | cleanup/wizards/RIWizard.jsx |
+| **S3Wizard** | Modal | Multi-step wizard for S3 optimization — intelligent tiering, lifecycle rules, access pattern analysis | Mock API | `GET /api/v1/s3/analysis` | S3 bucket analysis via S3/CloudWatch APIs | — | — | cleanup/CleanupDashboard.jsx, shared/Button.jsx | cleanup/wizards/S3Wizard.jsx |
 
 ### Sub-Components
 
@@ -549,6 +640,13 @@
 | **MultiTimezone** | Form | Multi-timezone awareness — schedule in different timezones | Computed | — | — | — | — | hibernation/HibernationSchedule.jsx | hibernation/MultiTimezone.jsx |
 | **AdvancedConfiguration** | Form | Advanced hibernation settings — grace periods, scaling rules, alerts | Computed | — | — | — | — | hibernation/HibernationSchedule.jsx | hibernation/AdvancedConfiguration.jsx |
 | **HistoryLog** | Table | Hibernation execution history — past activations/deactivations with timestamps | Real API | `GET /api/v1/hibernation/history` | HibernationService.get_history → execution logs | audit_logs | audit_logs.event, audit_logs.timestamp, audit_logs.resource | hibernation/HibernationSchedule.jsx | hibernation/HistoryLog.jsx |
+
+### HibernationScheduleV2 (Modal)
+
+| Component | Type | What It Does | Data Source | API Endpoint | Backend Logic | DB Table | Columns Used | Dependencies | File Name |
+|---|---|---|---|---|---|---|---|---|---|
+| **HibernationScheduleV2** | Modal | Restructured hibernation management — 3 strategies (Namespace Sleep, Nuclear, Snapshot & Restore), weekly 7×24 grid, quick presets (Business Hours, Nights, Dev/Test, Weekend), timezone selector, estimated savings calculator | Real API | `GET /api/v1/hibernation/schedules` + `POST /api/v1/hibernation/schedules` + `PUT /api/v1/hibernation/schedules/{id}` | HibernationService.create/update_schedule → creates with strategy-specific config | hibernation_schedules | hibernation_schedules.cluster_id, hibernation_schedules.schedule_matrix, hibernation_schedules.strategy, hibernation_schedules.timezone, hibernation_schedules.schedule_type | clusters/ClusterDetails.jsx | hibernation/HibernationScheduleV2.jsx |
+| **UnifiedScheduleGrid** | Grid | Multi-mode schedule grid — supports WEEKLY (7×24), DAILY (31 days), MONTHLY (31×24), and HYBRID modes with mouse-painting interaction | Computed | — | — | — | — | hibernation/HibernationScheduleV2.jsx, pages/HibernationPage.jsx | hibernation/UnifiedScheduleGrid.jsx |
 
 ### Unused Hibernation Endpoints
 
@@ -819,6 +917,7 @@
 | **ActiveJITBanner** | Banner | Shows active JIT access session with countdown timer | Real API | `GET /api/v1/approvals/active-jit` | ApprovalService.get_active_jit → checks active JIT sessions | approvals | approvals.status, approvals.expires_at, approvals.jit_scope | pages/Approvals.jsx | governance/ActiveJITBanner.jsx |
 | **JITRequestModal** | Modal | Just-in-Time access request form — scope, reason, duration | N/A | `POST /api/v1/approvals/jit-request` | ApprovalService.create_jit_request → creates JIT_ACCESS approval | approvals | approvals.user_id, approvals.type, approvals.jit_scope, approvals.reason_category, approvals.duration_hours | governance/ProtectedButton.jsx | governance/JITRequestModal.jsx |
 | **ProtectedButton** | Wrapper | Wraps buttons with permission check — shows lock/JIT request if unauthorized | Computed | — | — | — | — | settings/CloudIntegrations.jsx | governance/ProtectedButton.jsx |
+| **PermissionGate** | Wrapper | Wraps entire sections/pages — shows blur overlay + permission request modal when access denied, pending approval status, feature details with risk level and max duration | Real API | `GET /api/v1/approvals/check-permission` | PermissionService.check_feature_access → checks user feature permissions | feature_permissions | feature_permissions.feature_id, feature_permissions.role, feature_permissions.allowed | hooks/usePermission.js | governance/PermissionGate.jsx |
 
 ---
 
@@ -880,3 +979,63 @@
 | **GaugeChart** | Graph | Animated circular gauge chart — percentage display with color thresholds | N/A | — | — | — | — | cleanup/summary/HeroMetricsPanel.jsx | shared/GaugeChart.jsx |
 | **RiskBadge** | Badge | Risk level indicator badge — LOW/MEDIUM/HIGH/CRITICAL with color coding | N/A | — | — | — | — | governance/JITRequestModal.jsx, pages/Approvals.jsx | shared/RiskBadge.jsx |
 | **StatsCard** | Card | Reusable stat card — title, value, trend indicator, sparkline | N/A | — | — | — | — | — | shared/StatsCard.jsx |
+| **Badge** | Display | Generic badge component — configurable color, size, variant (solid/outline) | N/A | — | — | — | — | clusters/NodeList.jsx, clusters/ClusterList.jsx, pages/Approvals.jsx | shared/Badge.jsx |
+| **Button** | Action | Reusable button — primary/secondary/danger/ghost variants, loading state, disabled state, icon support | N/A | — | — | — | — | cleanup/wizards/*.jsx, clusters/NodeList.jsx | shared/Button.jsx |
+| **Card** | Container | Reusable card wrapper — white background, rounded borders, shadow, padding | N/A | — | — | — | — | clusters/NodeList.jsx, clusters/ClusterDetails.jsx | shared/Card.jsx |
+| **Dropdown** | Input | Reusable dropdown selector — label, options, onChange | N/A | — | — | — | — | — | shared/Dropdown.jsx |
+| **Input** | Input | Reusable text input — label, placeholder, validation, error display | N/A | — | — | — | — | — | shared/Input.jsx |
+| **Switch** | Toggle | Boolean toggle switch — on/off state with label | N/A | — | — | — | — | — | shared/Switch.jsx |
+
+---
+
+## 24. Page Containers
+
+| Page | Type | What It Does | Data Source | API Endpoint | Backend Logic | DB Table | Columns Used | Dependencies | File Name |
+|---|---|---|---|---|---|---|---|---|---|
+| **Onboarding** | Page | Multi-step onboarding flow — fetches state from backend, 4 steps (Welcome, Connect AWS, Verify, Success), animated progress bar, skip option | Real API | `GET /api/v1/onboarding/state` + `POST /api/v1/onboarding/skip` | OnboardingService.get_state → returns current_step, is_completed | accounts | accounts.id, accounts.status | App.js | pages/Onboarding.jsx |
+| **HibernationPage** | Page | Consolidated hibernation management — header with back-to-clusters link, StrategySelector, HibernationScheduler (2/3 width), ValidationPanel + CostAnalytics sidebar (1/3 width), reads clusterId from URL params | Real API | (delegates to child components) | (delegates to child components) | — | — | App.js, store/useHibernationStore.js | pages/HibernationPage.jsx |
+| **AtharvaAiPage** | Page | AtharvaAi engine dashboard page | Mock API | (delegates to child components) | (delegates to child components) | — | — | App.js, store/useAtharvaStore.js | pages/AtharvaAiPage.jsx |
+| **TeamDetails** | Page | Team member list + management for a specific team | Real API | `GET /api/v1/organization/teams/{id}/members` | TeamService.get_team_members | users, teams | users.name, users.role, teams.id | App.js, pages/Teams.jsx | pages/TeamDetails.jsx |
+| **Teams** | Page | Team list page — all teams in organization | Real API | `GET /api/v1/organization/teams` | TeamService.list_teams | teams | teams.id, teams.name, teams.member_count | App.js | pages/Teams.jsx |
+| **Roles** | Page | Role management — view/edit roles and permissions | Real API | `GET /api/v1/organization/roles` | RoleService.list_roles | roles | roles.id, roles.name, roles.permissions | App.js | pages/Roles.jsx |
+| **Approvals** | Page | Approval request list — pending/approved/rejected tickets | Real API | `GET /api/v1/approvals` | ApprovalService.list_approvals | approvals | approvals.id, approvals.type, approvals.status, approvals.requester | App.js | pages/Approvals.jsx |
+| **AccountAnalytics** | Page | Per-account cost analytics | Real API | (described in Section 22) | (described in Section 22) | — | — | App.js | pages/AccountAnalytics.jsx |
+
+---
+
+## 25. Hooks, Stores & Services
+
+### Custom Hooks
+
+| Hook | What It Does | Dependencies | File Name |
+|---|---|---|---|
+| **useAuth** | Authentication state management — login, logout, token refresh, user context | services/api.js, store/useStore.js | hooks/useAuth.js |
+| **useDashboard** | Dashboard widget state — layout, preferences, widget data fetching | services/api.js, store/useStore.js | hooks/useDashboard.js |
+| **usePermission** | Permission checking hook — checks feature access, returns hasPermission/loading/feature/pending/ticket | services/api.js | hooks/usePermission.js |
+
+### Zustand Stores
+
+| Store | What It Does | Dependencies | File Name |
+|---|---|---|---|
+| **useStore** | Global app store — user, organization, auth tokens, clusters, sidebar state | — | store/useStore.js |
+| **useAtharvaStore** | AtharvaAi engine state — status, pools, rankings, recommendations, risk history | services/api.js | store/useAtharvaStore.js |
+| **useHibernationStore** | Hibernation state — strategy, schedule matrix, timezone, templates, cost analytics, validation | services/api.js | store/useHibernationStore.js |
+
+### API Service Layer
+
+| Module | What It Does | Key Methods | File Name |
+|---|---|---|---|
+| **api.js** | Centralized Axios instance + all API namespace objects (clusterAPI, hibernationAPI, atharvaAPI, atharvaaiAPI, onboardingAPI, etc.) | axios.create with JWT interceptor, per-module CRUD methods | services/api.js |
+
+### Dashboard Configuration
+
+| Module | What It Does | Dependencies | File Name |
+|---|---|---|---|
+| **widgetRegistry** | Maps widget type strings to React components — used by Dashboard to dynamically render widgets | dashboard/widgets/*.jsx | dashboard/widgetRegistry.js |
+| **roleDefaults** | Default widget layouts per role (admin, team_lead, member) — defines grid positions and default widgets | — | dashboard/roleDefaults.js |
+
+### Utility Modules
+
+| Module | What It Does | Dependencies | File Name |
+|---|---|---|---|
+| **formatters** | Currency formatting, date formatting, byte formatting, percentage formatting | — | utils/formatters.js |

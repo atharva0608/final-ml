@@ -307,3 +307,7 @@ def log_audit_event(
 
 # Initialize logging on module import
 setup_logging()
+
+# Module-level logger instance for convenience
+# Services can do: from backend.core.logger import logger
+logger = get_logger("backend")

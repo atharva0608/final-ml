@@ -11,12 +11,40 @@
  */
 import { useState, useEffect, useCallback } from 'react';
 import { permissionAPI } from '../services/api';
+import { useAuthStore } from '../store/useStore';
+
+const ADMIN_ROLES = ['org_admin', 'super_admin', 'ORG_ADMIN', 'SUPER_ADMIN'];
 
 // Cache key generator
 const getCacheKey = (featureId, resourceId) =>
   `permission_${featureId}_${resourceId || 'global'}`;
 
 export const usePermission = (featureId, resourceId = null) => {
+  // Admin bypass — org_admin and super_admin always have full access
+  const user = useAuthStore(state => state.user);
+  const isAdmin = user && ADMIN_ROLES.includes(user.role);
+
+  if (isAdmin) {
+    return {
+      hasPermission: true,
+      loading: false,
+      feature: null,
+      ticket: null,
+      expiresAt: null,
+      reason: 'Admin privileges',
+      pending: false,
+      refresh: () => { },
+    };
+  }
+
+  return usePermissionCheck(featureId, resourceId);
+};
+
+/**
+ * Internal hook that runs the actual permission check.
+ * Only called for non-admin users.
+ */
+const usePermissionCheck = (featureId, resourceId = null) => {
   // Try to load from cache synchronously to prevent flicker
   const getInitialState = () => {
     if (!featureId) {
@@ -88,7 +116,7 @@ export const usePermission = (featureId, resourceId = null) => {
           }
 
           if (cacheAge < cacheTTL) {
-            console.log(`[usePermission] Using cached permission for ${featureId} (age: ${Math.round(cacheAge/1000)}s):`, cachedData.state);
+            console.log(`[usePermission] Using cached permission for ${featureId} (age: ${Math.round(cacheAge / 1000)}s):`, cachedData.state);
             setState({
               ...cachedData.state,
               loading: false,

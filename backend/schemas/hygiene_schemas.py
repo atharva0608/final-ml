@@ -80,6 +80,7 @@ class ResourceItem(BaseModel):
 
 class HygieneSummary(BaseModel):
     total_potential_savings: float = 0.0
+    total_discovered_cost: float = 0.0
     previous_savings: Optional[float] = None
     savings_trend_percent: Optional[float] = None
     unauthorized_instance_count: int = 0

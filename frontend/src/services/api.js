@@ -247,6 +247,27 @@ export const hygieneAPI = {
         params: accountId ? { account_id: accountId } : {}
     }),
 };
+
+// AtharvaAi Pool Selection & Termination Monitoring API
+export const atharvaaiAPI = {
+    // Pool Rankings - Get ML-scored pool recommendations
+    getRankings: (template, region = 'ap-south-1', limit = 10) =>
+        api.post('/api/v1/atharvaai/pools/rankings', template, {
+            params: { region, limit }
+        }),
+
+    // Get globally flagged risky pools (System B)
+    getBlacklist: () => api.get('/api/v1/atharvaai/blacklist'),
+
+    // Get auto-rebalancing status (System B)
+    getRebalancingStatus: (clusterId = null, limit = 10) =>
+        api.get('/api/v1/atharvaai/rebalancing/status', {
+            params: clusterId ? { cluster_id: clusterId, limit } : { limit }
+        }),
+
+    // Health check
+    getHealth: () => api.get('/api/v1/atharvaai/health'),
+};
 export const cleanupAPI = hygieneAPI;
 
 export const approvalsAPI = {

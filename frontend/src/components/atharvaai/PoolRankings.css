@@ -1,0 +1,31 @@
+.pool-rankings-container {
+    max-width: 1400px;
+    margin: 0 auto;
+}
+
+.pool-rankings-container table {
+    font-size: 0.875rem;
+}
+
+.pool-rankings-container th {
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.pool-rankings-container tbody tr {
+    transition: background-color 0.15s ease-in-out;
+}
+
+@keyframes pulse {
+    0%, 100% {
+        opacity: 1;
+    }
+    50% {
+        opacity: 0.5;
+    }
+}
+
+.loading-indicator {
+    animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}

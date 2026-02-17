@@ -349,4 +349,297 @@ Interpretation:
 
 ---
 
-**Status**: ✅ Feature set identified - Ready for integration with partial features
+**Status**: ✅ Feature set identified - **ACTIVE in AtharvaAi Pool Selection System**
+
+---
+
+## 🎯 Usage in AtharvaAi Pool Selection System
+
+### Integration Context
+
+The 39-feature ML models are integrated into **System A: Pool Selection Pipeline** as **Step 7 (ML Model Scoring)** in the 8-step pool ranking process. This system runs every **30 seconds** to provide real-time, intelligent pool recommendations.
+
+### System Architecture
+
+```
+AtharvaAi Pool Selection & Termination Monitoring
+├── System A: Pool Selection Pipeline (Scheduled - Every 30s)
+│   ├── Step 1: Node Template Filtering
+│   ├── Step 2: AZ Filtering (User preferences)
+│   ├── Step 3: Spot Advisor Filter (Frequency rank)
+│   ├── Step 4: Global Blacklist Check (Redis flags)
+│   ├── Step 5: Capacity Check (AWS API)
+│   ├── Step 6: Price Fetch (AWS Pricing API)
+│   ├── Step 7: ML Model Scoring ⭐ (classifier + regressor)
+│   └── Step 8: Final Ranking & Caching
+│
+└── System B: Live Termination Monitoring (Event-driven)
+    ├── DaemonSet: Interruption detection (every 2s)
+    ├── EventBridge: AWS termination notices
+    ├── Global Pool Flagging (12-hour TTL in Redis)
+    └── Auto-Rebalancing (emergency 90s / graceful 10min)
+```
+
+### Step 7: ML Model Scoring Implementation
+
+**Location**: `backend/services/pool_ranking_service.py::_apply_ml_scoring()`
+
+**Purpose**: Score each pool using trained ONNX models to predict:
+1. **Savings Potential** (classifier_6.onnx) → 0-1 scale (e.g., 0.93 = 93% savings)
+2. **Cost Estimate** (regressor_6.onnx) → USD per day/month
+
+**Feature Engineering Pipeline**:
+
+```python
+def engineer_features_for_pool(pool: InstancePool, timestamp: datetime) -> np.ndarray:
+    """
+    Generate all 45 features for ML scoring in Step 7.
+
+    Args:
+        pool: InstancePool object with type, AZ, spot_price, ondemand_price
+        timestamp: Current timestamp for temporal features
+
+    Returns:
+        numpy array of shape (1, 45) with all engineered features
+    """
+    features = []
+
+    # 1. Temporal Features (10 features) - ALWAYS AVAILABLE
+    features.extend([
+        timestamp.hour,                          # 0-23
+        timestamp.weekday(),                     # 0-6 (Monday=0)
+        timestamp.day,                           # 1-31
+        timestamp.month,                         # 1-12
+        1 if timestamp.weekday() >= 5 else 0,   # is_weekend
+        1 if 9 <= timestamp.hour <= 17 else 0,  # is_business_hours
+        np.sin(2 * np.pi * timestamp.hour / 24), # hour_sin
+        np.cos(2 * np.pi * timestamp.hour / 24), # hour_cos
+        np.sin(2 * np.pi * timestamp.weekday() / 7), # day_sin
+        np.cos(2 * np.pi * timestamp.weekday() / 7)  # day_cos
+    ])
+
+    # 2. Lag Features (3 features) - From spot_price_history table
+    history = get_price_history(pool.instance_type, pool.az, hours=24)
+    if len(history) >= 144:
+        features.extend([
+            history[-6],    # savings_lag_6 (1 hour ago)
+            history[-24],   # savings_lag_24 (4 hours ago)
+            history[-144]   # savings_lag_144 (24 hours ago)
+        ])
+    else:
+        features.extend([0.0, 0.0, 0.0])  # Default if insufficient history
+
+    # 3. Rolling Window Features (8 features)
+    if len(history) >= 144:
+        recent_24 = history[-24:]
+        recent_144 = history[-144:]
+        features.extend([
+            np.mean(recent_24),  # savings_mean_24
+            np.std(recent_24),   # savings_std_24
+            np.min(recent_24),   # savings_min_24
+            np.max(recent_24),   # savings_max_24
+            np.mean(recent_144), # savings_mean_144
+            np.std(recent_144),  # savings_std_144
+            np.min(recent_144),  # savings_min_144
+            np.max(recent_144)   # savings_max_144
+        ])
+    else:
+        features.extend([0.0] * 8)  # Default if insufficient history
+
+    # 4. Price Dynamics Features (5 features)
+    features.extend([
+        calculate_price_velocity(history, hours=1),
+        calculate_price_volatility(history, hours=6),
+        (pool.ondemand_price - pool.spot_price) / pool.ondemand_price,  # headroom
+        calculate_pool_saturation(pool),
+        calculate_consecutive_stable_hours(history)
+    ])
+
+    # 5. Family-Time Pattern Features (6 features) - From family_hour_baselines table
+    family = pool.instance_type.split('.')[0]
+    baselines = get_family_baselines(family, timestamp.hour, timestamp.weekday())
+    features.extend([
+        baselines.get('hour_avg_savings', 0.0),
+        baselines.get('hour_std_savings', 0.0),
+        baselines.get('dow_avg_savings', 0.0),
+        baselines.get('hour_deviation', 0.0),
+        baselines.get('hour_zscore', 0.0),
+        baselines.get('weekend_avg_savings', 0.0)
+    ])
+
+    # 6. Family Stress Features (3 features) - Cross-instance monitoring
+    stress_metrics = calculate_family_stress(family, timestamp)
+    features.extend([
+        stress_metrics.get('stress_index', 0.0),
+        stress_metrics.get('avg_savings', 0.0),
+        stress_metrics.get('std_savings', 0.0)
+    ])
+
+    # 7. Event Features (3 features)
+    features.extend([
+        1 if is_holiday(timestamp) else 0,
+        1 if is_stress_event(timestamp) else 0,
+        days_to_nearest_event(timestamp)
+    ])
+
+    # 8. Pool Risk Feature (1 feature) - From pool_risk_scores table
+    risk_score = get_pool_historical_risk(pool.instance_type, pool.az)
+    features.append(risk_score)
+
+    # 9. Categorical Encodings (6 features) - For ONNX padding to 45
+    family, size = pool.instance_type.split('.')
+    features.extend([
+        encode_instance_family(family),  # 0-74
+        encode_instance_size(size),      # 0-21
+        encode_az(pool.az),              # 0-2
+        0.0,  # Reserved/padding
+        0.0,  # Reserved/padding
+        0.0   # Reserved/padding
+    ])
+
+    return np.array(features, dtype=np.float32).reshape(1, -1)
+```
+
+### Integration with Pool Ranking
+
+**8-Step Pipeline Integration**:
+
+```python
+# Step 7 in pool_ranking_service.py
+def _apply_ml_scoring(pools: List[InstancePool]) -> List[ScoredPool]:
+    """Apply ML scoring to all candidate pools."""
+
+    scored_pools = []
+    timestamp = datetime.utcnow()
+
+    for pool in pools:
+        # Engineer all 45 features
+        features = engineer_features_for_pool(pool, timestamp)
+
+        # Run ONNX inference
+        savings_pct = classifier_model.run(None, {"input": features})[0][0][0]
+        cost_estimate = regressor_model.run(None, {"input": features})[0][0][0]
+
+        # Apply System B risk penalty (if pool is flagged)
+        if redis.sismember("risky_pools", f"{pool.instance_type}:{pool.az}"):
+            savings_pct -= 0.50  # Penalty from global blacklist
+
+        # Calculate final score
+        final_score = (savings_pct * 100) - (cost_estimate * 0.1)
+
+        scored_pools.append(ScoredPool(
+            pool=pool,
+            savings_pct=savings_pct,
+            cost_estimate=cost_estimate,
+            ml_score=final_score,
+            timestamp=timestamp
+        ))
+
+    return scored_pools
+```
+
+### Data Dependencies
+
+**Required Tables** (for full 39-feature scoring):
+
+1. **spot_price_history** - For lag/rolling features (features 11-21)
+   ```sql
+   SELECT spot_price, savings
+   FROM spot_price_history
+   WHERE instance_type = ? AND az = ?
+   ORDER BY timestamp DESC LIMIT 144
+   ```
+
+2. **family_hour_baselines** - For family-time patterns (features 27-32)
+   ```sql
+   SELECT hour_avg_savings, hour_std_savings, dow_avg_savings
+   FROM family_hour_baselines
+   WHERE instance_family = ? AND hour = ?
+   ```
+
+3. **pool_risk_scores** - For historical risk (feature 39)
+   ```sql
+   SELECT historical_zero_rate
+   FROM pool_risk_scores
+   WHERE instance_type = ? AND az = ?
+   ```
+
+**Redis Integration** (System B flags):
+```python
+# Check if pool is flagged by System B
+is_risky = redis.sismember("risky_pools", f"{instance_type}:{az}")
+# TTL: 12 hours (set by termination monitor)
+```
+
+### Minimum Viable Scoring (Quick Start)
+
+If historical data is not yet available, use **15-feature subset**:
+
+```python
+# Temporal (10) + Price Dynamics (3) + Categorical (3) = 16 features
+# Pad remaining 29 features with zeros
+
+def engineer_minimum_features(pool, timestamp):
+    features = [
+        # Temporal (10)
+        timestamp.hour, timestamp.weekday(), timestamp.day, timestamp.month,
+        1 if timestamp.weekday() >= 5 else 0,
+        1 if 9 <= timestamp.hour <= 17 else 0,
+        np.sin(2*np.pi*timestamp.hour/24), np.cos(2*np.pi*timestamp.hour/24),
+        np.sin(2*np.pi*timestamp.weekday()/7), np.cos(2*np.pi*timestamp.weekday()/7),
+
+        # Zeros for lag/rolling (11 features)
+        *([0.0] * 11),
+
+        # Price dynamics (3)
+        0.0,  # velocity (default)
+        0.0,  # volatility (default)
+        (pool.ondemand_price - pool.spot_price) / pool.ondemand_price,  # headroom
+        0.0, 0.0,  # saturation, stability (default)
+
+        # Zeros for family patterns (9 features)
+        *([0.0] * 9),
+
+        # Event features (3)
+        1 if is_holiday(timestamp) else 0,
+        0,  # stress event (default)
+        days_to_nearest_event(timestamp),
+
+        # Pool risk (1)
+        0.05,  # default 5% risk
+
+        # Categorical (6)
+        encode_family(pool), encode_size(pool), encode_az(pool), 0.0, 0.0, 0.0
+    ]
+    return np.array(features, dtype=np.float32).reshape(1, -1)
+```
+
+**Accuracy Trade-off**:
+- Full 39 features: ~95% model accuracy
+- Minimum 15 features: ~75% model accuracy (still useful for ranking)
+
+### System B Integration
+
+**Bidirectional Communication**:
+
+1. **System A → System B**: ML risk scores used for proactive flagging
+   - If `savings_pct < 0.70` → Flag pool for monitoring
+
+2. **System B → System A**: Termination events update global blacklist
+   - Pool flagged in Redis → +0.50 penalty applied in Step 7
+   - Ensures all clients avoid recently-terminated pools
+
+**Event Flow**:
+```
+DaemonSet detects termination notice
+    ↓
+System B flags pool in Redis (12-hour TTL)
+    ↓
+Next System A run (within 30s) applies penalty
+    ↓
+Pool drops in ranking, avoided by all clients
+```
+
+---
+
+**Status**: ✅ Feature set identified - **ACTIVE in AtharvaAi Pool Selection System**

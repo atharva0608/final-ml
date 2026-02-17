@@ -172,8 +172,13 @@ class HygieneService:
         # Calculate untagged waste cost (Feature 2) - Exclude authorized
         untagged_waste = sum(r.cost_per_month for r in resources if not r.is_compliant and not r.is_authorized)
         
-        # Aggregate counts - Exclude authorized
-        current_savings = max(0.0, total_savings)
+        # CRITICAL FIX: Total Potential Savings = ONLY safe-for-cleanup resources
+        # Only count SAFE_TO_DELETE resources (not ORPHANED, UNAUTHORIZED, etc.)
+        # This gives users an accurate, actionable savings figure
+        current_savings = max(0.0, sum(
+            r.cost_per_month for r in resources 
+            if r.status == HygieneStatus.SAFE_TO_DELETE and not r.is_authorized
+        ))
         
         # Retrieve previous savings from history cache for trend calculation
         previous_savings = None
@@ -197,8 +202,12 @@ class HygieneService:
             except Exception as e:
                 logger.error(f"Failed to retrieve savings history: {e}")
         
+        # Calculate Total Discovered Cost (Feature 3) - Cost of ALL resources found
+        total_discovered_cost = sum(r.cost_per_month for r in resources)
+
         summary = HygieneSummary(
             total_potential_savings=current_savings,
+            total_discovered_cost=total_discovered_cost,
             previous_savings=previous_savings,
             savings_trend_percent=savings_trend_percent,
             unauthorized_instance_count=len([r for r in resources if r.type == ResourceType.INSTANCE and not r.is_authorized]),
@@ -307,7 +316,7 @@ class HygieneService:
                     if vol_state == 'in-use':
                         status = HygieneStatus.ACTIVE
                         reason = "Attached to instance"
-                        vol_cost = 0.0
+                        vol_cost = cost  # Show actual cost for visibility
                     else:
                         vol_cost = cost
                         # Default is ORPHANED (Risky to delete immediately unless old)
@@ -490,8 +499,8 @@ class HygieneService:
                         # Logic: Unattached EIP is waste, but deleting 'Prod-VIP' is fatal.
                         # Usage: Mark ORPHANED (Risky). User must verify.
 
-                        status = HygieneStatus.ORPHANED
-                        reason = "Unattached Elastic IP"
+                        status = HygieneStatus.SAFE_TO_DELETE  # 95% certainty per zombie guide
+                        reason = "Unattached Elastic IP (Safe to release)"
 
                         # Check tags for 'Prod' or 'Critical' to mark RISK (optional)
                         # For now, ORPHANED is sufficient distinction from SAFE_TO_DELETE.
@@ -546,16 +555,60 @@ class HygieneService:
                     name = self._get_tag_value(tags, 'Name')
                     inst_type = inst_data.get('InstanceType', 'unknown')
 
+                    # ZOMBIE DETECTION: Stopped instances (per zombie guide - 70% certainty)
+                    if inst_data['State']['Name'] == 'stopped':
+                        inst_cost = pricing.get_ec2_price(region, inst_type)
+                        # Parse stop duration from StateTransitionReason
+                        stopped_days = 0
+                        state_reason = inst_data.get('StateTransitionReason', '')
+                        try:
+                            import re
+                            date_match = re.search(r'\((\d{4}-\d{2}-\d{2})', state_reason)
+                            if date_match:
+                                stopped_date = datetime.strptime(date_match.group(1), '%Y-%m-%d').replace(tzinfo=timezone.utc)
+                                stopped_days = (datetime.now(timezone.utc) - stopped_date).days
+                        except Exception:
+                            pass
+
+                        if stopped_days > 30:
+                            inst_status = HygieneStatus.SAFE_TO_DELETE
+                            reason = f"Stopped for {stopped_days} days (Safe to terminate)"
+                            savings += inst_cost
+                        else:
+                            inst_status = HygieneStatus.STOPPED
+                            reason = f"Instance stopped" + (f" ({stopped_days} days)" if stopped_days > 0 else "")
+
+                        item = ResourceItem(
+                            id=inst_id,
+                            name=name,
+                            type=ResourceType.INSTANCE,
+                            status=inst_status,
+                            region=region,
+                            cost_per_month=inst_cost,
+                            reason=reason,
+                            metadata={
+                                'InstanceType': inst_type,
+                                'State': 'stopped',
+                                'Managed': inst_id in db_instance_set,
+                                'StoppedDays': stopped_days
+                            },
+                            is_compliant=True
+                        )
+                        resources.append(item)
+                        continue  # Skip further managed/unmanaged classification
+
                     # AUTHORIZED: Instances managed by Spot Optimizer (cluster nodes)
                     if inst_id in db_instance_set:
                         # These are cluster nodes - show as AUTHORIZED (managed)
+                        # Show actual cost for visibility (not counted in savings)
+                        inst_cost = pricing.get_ec2_price(region, inst_type)
                         item = ResourceItem(
                             id=inst_id,
                             name=name,
                             type=ResourceType.INSTANCE,
                             status=HygieneStatus.ACTIVE,  # Authorized/Managed
                             region=region,
-                            cost_per_month=0.0,  # No savings - this is managed workload
+                            cost_per_month=inst_cost,  # Actual cost for visibility
                             reason="Managed by Spot Optimizer (Cluster Node)",
                             metadata={
                                 'InstanceType': inst_type,
@@ -563,7 +616,8 @@ class HygieneService:
                                 'Managed': True,
                                 'ManagedBy': 'Spot Optimizer'
                             },
-                            is_compliant=True
+                            is_compliant=True,
+                            is_authorized=True # By default authorized if managed by system
                         )
                         resources.append(item)
 
@@ -596,13 +650,15 @@ class HygieneService:
                             if missing:
                                 # Not managed AND missing required tags = compliance issue
                                 # Show but DON'T count as wastage
+                                # Show actual cost for visibility (not counted in savings)
+                                inst_cost = pricing.get_ec2_price(region, inst_type)
                                 item = ResourceItem(
                                     id=inst_id,
                                     name=name,
                                     type=ResourceType.INSTANCE,
                                     status=HygieneStatus.NOT_COMPLIANT,
                                     region=region,
-                                    cost_per_month=0.0,  # NOT wastage, just compliance issue
+                                    cost_per_month=inst_cost,  # Actual cost for visibility
                                     reason=f"Not managed (Missing tags: {', '.join(missing)})",
                                     metadata={'InstanceType': inst_type, 'State': inst_data['State']['Name'], 'Managed': False},
                                     is_compliant=False,
@@ -612,13 +668,15 @@ class HygieneService:
                             else:
                                 # Properly tagged, not managed = legitimate external workload
                                 # Show as ACTIVE (authorized external workload)
+                                # Show actual cost for visibility (not counted in savings)
+                                inst_cost = pricing.get_ec2_price(region, inst_type)
                                 item = ResourceItem(
                                     id=inst_id,
                                     name=name,
                                     type=ResourceType.INSTANCE,
                                     status=HygieneStatus.ACTIVE,
                                     region=region,
-                                    cost_per_month=0.0,  # Not wastage
+                                    cost_per_month=inst_cost,  # Actual cost for visibility
                                     reason="Not managed (Properly tagged external workload)",
                                     metadata={'InstanceType': inst_type, 'State': inst_data['State']['Name'], 'Managed': False},
                                     is_compliant=True
@@ -626,13 +684,15 @@ class HygieneService:
                                 resources.append(item)
                         else:
                             # No required tags policy - show as external workload
+                            # Show actual cost for visibility (not counted in savings)
+                            inst_cost = pricing.get_ec2_price(region, inst_type)
                             item = ResourceItem(
                                 id=inst_id,
                                 name=name,
                                 type=ResourceType.INSTANCE,
                                 status=HygieneStatus.ACTIVE,
                                 region=region,
-                                cost_per_month=0.0,
+                                cost_per_month=inst_cost,  # Actual cost for visibility
                                 reason="Not managed (External workload)",
                                 metadata={'InstanceType': inst_type, 'State': inst_data['State']['Name'], 'Managed': False},
                                 is_compliant=True
@@ -1098,6 +1158,7 @@ class HygieneService:
         savings = 0.0
         try:
             s3 = session.client('s3')
+            cw = session.client('cloudwatch')
             buckets = s3.list_buckets().get('Buckets', [])
             
             from datetime import timezone
@@ -1126,18 +1187,42 @@ class HygieneService:
                 except Exception:
                     pass
                 
+                # Get actual storage size from CloudWatch for cost calculation
+                size_gb = 0.0
+                try:
+                    metrics = cw.get_metric_statistics(
+                        Namespace='AWS/S3',
+                        MetricName='BucketSizeBytes',
+                        Dimensions=[
+                            {'Name': 'BucketName', 'Value': bucket_name},
+                            {'Name': 'StorageType', 'Value': 'StandardStorage'}
+                        ],
+                        StartTime=datetime.now() - timedelta(days=2),
+                        EndTime=datetime.now(),
+                        Period=86400,
+                        Statistics=['Average']
+                    )
+                    if metrics.get('Datapoints'):
+                        size_gb = metrics['Datapoints'][-1]['Average'] / (1024**3)
+                except Exception:
+                    pass  # CloudWatch metrics may not be available
+                
+                # S3 Standard: $0.023/GB/month
+                storage_cost = round(size_gb * 0.023, 2)
+                
                 # Determine status
                 status = HygieneStatus.ACTIVE
                 reason = None
-                cost = 0.0
+                cost = storage_cost if storage_cost > 0 else 0.0
                 
                 if is_empty:
                     status = HygieneStatus.SAFE_TO_DELETE
                     reason = "Empty bucket"
-                    cost = 0.5  # Minimal storage cost for bucket itself
+                    cost = max(0.50, storage_cost)  # Minimum $0.50 for empty bucket overhead
                 elif missing:
                     status = HygieneStatus.NOT_COMPLIANT
                     reason = f"Missing tags: {', '.join(missing)}"
+                    # cost already set from CloudWatch storage_cost
                 
                 if status != HygieneStatus.ACTIVE:
                     item = ResourceItem(
@@ -1148,7 +1233,7 @@ class HygieneService:
                         region='global',
                         cost_per_month=cost,
                         reason=reason,
-                        metadata={'Created': str(created)},
+                        metadata={'Created': str(created), 'SizeGB': round(size_gb, 2)},
                         is_compliant=len(missing) == 0,
                         missing_tags=missing
                     )
@@ -1867,21 +1952,37 @@ class HygieneService:
                         key_metadata = kms.describe_key(KeyId=key_id)
                         key_info = key_metadata['KeyMetadata']
 
-                        # Only customer-managed keys (not AWS-managed)
-                        if key_info.get('KeyManager') == 'CUSTOMER' and key_info['KeyState'] == 'Enabled':
-                            # KMS keys: $1/key/month
+                        # Customer-managed keys: detect disabled/zombie keys (60% certainty)
+                        if key_info.get('KeyManager') == 'CUSTOMER':
+                            key_state = key_info['KeyState']
+                            if key_state == 'Disabled':
+                                kms_status = HygieneStatus.ORPHANED
+                                kms_reason = 'Disabled KMS key (candidate for scheduled deletion)'
+                                kms_cost = 1.0
+                                savings += kms_cost
+                            elif key_state == 'PendingDeletion':
+                                kms_status = HygieneStatus.SAFE_TO_DELETE
+                                kms_reason = 'KMS key pending deletion'
+                                kms_cost = 0.0
+                            elif key_state == 'Enabled':
+                                kms_status = HygieneStatus.ACTIVE
+                                kms_reason = 'Customer-managed KMS key'
+                                kms_cost = 1.0
+                            else:
+                                continue  # Skip other states
+
                             item = ResourceItem(
                                 id=key_id,
                                 name=key_info.get('Description', 'No description'),
                                 type=ResourceType.KMS_KEY,
-                                status=HygieneStatus.ACTIVE,
+                                status=kms_status,
                                 region=region,
-                                cost_per_month=1.0,
-                                reason='Customer-managed KMS key',
+                                cost_per_month=kms_cost,
+                                reason=kms_reason,
                                 metadata={
                                     'Description': key_info.get('Description'),
                                     'CreationDate': str(key_info.get('CreationDate')),
-                                    'KeyState': key_info['KeyState']
+                                    'KeyState': key_state
                                 },
                                 is_compliant=True
                             )
@@ -1902,14 +2003,30 @@ class HygieneService:
                     missing = [rt for rt in required_tags if rt not in tag_keys]
 
                     # Secrets Manager: $0.40/secret/month
+                    # Zombie detection: not accessed in 90+ days (55% certainty per zombie guide)
+                    secret_status = HygieneStatus.ACTIVE
+                    secret_reason = 'Active secret'
+                    last_accessed = secret.get('LastAccessedDate')
+                    if last_accessed:
+                        try:
+                            if isinstance(last_accessed, datetime):
+                                la = last_accessed if last_accessed.tzinfo else last_accessed.replace(tzinfo=timezone.utc)
+                                days_since_access = (datetime.now(timezone.utc) - la).days
+                                if days_since_access > 90:
+                                    secret_status = HygieneStatus.ORPHANED
+                                    secret_reason = f'Secret not accessed for {days_since_access} days'
+                                    savings += 0.40
+                        except Exception:
+                            pass
+
                     item = ResourceItem(
                         id=secret['ARN'],
                         name=secret.get('Name'),
                         type=ResourceType.SECRETS_MANAGER,
-                        status=HygieneStatus.ACTIVE,
+                        status=secret_status,
                         region=region,
                         cost_per_month=0.40,
-                        reason='Active secret',
+                        reason=secret_reason,
                         metadata={
                             'LastChangedDate': str(secret.get('LastChangedDate')),
                             'LastAccessedDate': str(secret.get('LastAccessedDate'))
@@ -2058,30 +2175,48 @@ class HygieneService:
             except Exception as ssm_err:
                 logger.error(f"SSM scan error: {ssm_err}")
 
-            # 3. CloudWatch Log Groups (only show large ones)
+            # 3. CloudWatch Log Groups - zombie detection (80% certainty per zombie guide)
             try:
                 logs = session.client('logs')
                 log_groups = logs.describe_log_groups()
 
                 for log_group in log_groups.get('logGroups', []):
-                    # Only show log groups with significant storage
                     stored_bytes = log_group.get('storedBytes', 0)
-                    if stored_bytes > 1_000_000_000:  # > 1GB
-                        stored_gb = stored_bytes / (1024**3)
-                        # CloudWatch Logs: $0.03/GB/month stored
-                        cost = stored_gb * 0.03
+                    stored_gb = stored_bytes / (1024**3) if stored_bytes > 0 else 0
+                    cost = round(stored_gb * 0.03, 2)  # $0.03/GB/month
 
+                    # Zombie detection: empty or stale log groups
+                    log_status = HygieneStatus.ACTIVE
+                    log_reason = f'Log group storing {stored_gb:.2f} GB'
+                    days_since_event = None
+                    last_event = log_group.get('lastIngestionTime')  # epoch ms
+
+                    if stored_bytes == 0:
+                        log_status = HygieneStatus.SAFE_TO_DELETE
+                        log_reason = 'Empty log group (0 bytes stored)'
+                        cost = 0.0
+                    elif last_event:
+                        last_event_date = datetime.fromtimestamp(last_event / 1000, tz=timezone.utc)
+                        days_since_event = (datetime.now(timezone.utc) - last_event_date).days
+                        if days_since_event > 90:
+                            log_status = HygieneStatus.ORPHANED
+                            log_reason = f'No log events for {days_since_event} days ({stored_gb:.2f} GB stored)'
+                            savings += cost
+
+                    # Show flagged log groups + large ones for visibility
+                    if log_status != HygieneStatus.ACTIVE or stored_bytes > 1_000_000_000:
                         item = ResourceItem(
                             id=log_group['logGroupName'],
                             name=log_group['logGroupName'],
                             type=ResourceType.CLOUDWATCH_LOG_GROUP,
-                            status=HygieneStatus.ACTIVE,
+                            status=log_status,
                             region=region,
                             cost_per_month=cost,
-                            reason=f'Log group storing {stored_gb:.2f} GB',
+                            reason=log_reason,
                             metadata={
                                 'StoredBytes': stored_bytes,
-                                'RetentionInDays': log_group.get('retentionInDays', 'Never expire')
+                                'RetentionInDays': log_group.get('retentionInDays', 'Never expire'),
+                                'DaysSinceLastEvent': days_since_event if days_since_event is not None else 'Unknown'
                             },
                             is_compliant=True
                         )
@@ -2089,35 +2224,69 @@ class HygieneService:
             except Exception as logs_err:
                 logger.error(f"CloudWatch Logs scan error: {logs_err}")
 
-            # 4. CloudWatch Alarms
+            # 4. CloudWatch Alarms - per-alarm zombie detection (85% certainty per zombie guide)
             try:
                 cloudwatch = session.client('cloudwatch')
                 alarms = cloudwatch.describe_alarms()
 
-                # Only count alarms as a summary (not individual items to avoid clutter)
-                alarm_count = len(alarms.get('MetricAlarms', []))
-                if alarm_count > 10:  # Only show if significant
-                    # Alarms: $0.10 each/month
-                    cost = alarm_count * 0.10
+                all_alarms = alarms.get('MetricAlarms', [])
+                zombie_alarms = []
+                active_count = 0
+
+                for alarm in all_alarms:
+                    if alarm.get('StateValue') == 'INSUFFICIENT_DATA':
+                        zombie_alarms.append(alarm)
+                    elif not alarm.get('AlarmActions'):
+                        zombie_alarms.append(alarm)
+                    else:
+                        active_count += 1
+
+                # Report zombie alarms individually
+                for alarm in zombie_alarms:
+                    alarm_status = HygieneStatus.SAFE_TO_DELETE if alarm.get('StateValue') == 'INSUFFICIENT_DATA' else HygieneStatus.ORPHANED
+                    alarm_reason = 'INSUFFICIENT_DATA - resource likely deleted' if alarm.get('StateValue') == 'INSUFFICIENT_DATA' else 'No actions configured'
+                    alarm_cost = 0.10
 
                     item = ResourceItem(
-                        id=f'cloudwatch-alarms-{region}',
-                        name=f'{alarm_count} CloudWatch Alarms',
+                        id=alarm['AlarmArn'],
+                        name=alarm['AlarmName'],
+                        type=ResourceType.CLOUDWATCH_ALARM,
+                        status=alarm_status,
+                        region=region,
+                        cost_per_month=alarm_cost,
+                        reason=alarm_reason,
+                        metadata={
+                            'StateValue': alarm.get('StateValue'),
+                            'MetricName': alarm.get('MetricName'),
+                            'Namespace': alarm.get('Namespace'),
+                            'HasActions': bool(alarm.get('AlarmActions'))
+                        },
+                        is_compliant=True
+                    )
+                    resources.append(item)
+                    savings += alarm_cost
+
+                # Summary for active alarms (visibility)
+                if active_count > 10:
+                    item = ResourceItem(
+                        id=f'cloudwatch-alarms-active-{region}',
+                        name=f'{active_count} Active CloudWatch Alarms',
                         type=ResourceType.CLOUDWATCH_ALARM,
                         status=HygieneStatus.ACTIVE,
                         region=region,
-                        cost_per_month=cost,
-                        reason=f'{alarm_count} active alarms',
-                        metadata={'AlarmCount': alarm_count},
+                        cost_per_month=active_count * 0.10,
+                        reason=f'{active_count} healthy alarms',
+                        metadata={'AlarmCount': active_count, 'ZombieCount': len(zombie_alarms)},
                         is_compliant=True
                     )
                     resources.append(item)
             except Exception as cw_err:
                 logger.error(f"CloudWatch Alarms scan error: {cw_err}")
 
-            # 5. Lambda Functions
+            # 5. Lambda Functions - zombie detection (65% certainty per zombie guide)
             try:
                 lambda_client = session.client('lambda')
+                cw_lambda = session.client('cloudwatch')
                 functions = lambda_client.list_functions()
 
                 for func in functions.get('Functions', []):
@@ -2125,20 +2294,42 @@ class HygieneService:
                     tag_keys = set(tags.keys())
                     missing = [rt for rt in required_tags if rt not in tag_keys]
 
-                    # Lambda: Hard to estimate without CloudWatch metrics
-                    # Show function but with $0 cost (actual cost from Cost Explorer)
+                    # Check invocations in last 30 days via CloudWatch
+                    lambda_status = HygieneStatus.ACTIVE
+                    lambda_reason = 'Active Lambda function'
+                    invocations = -1
+                    try:
+                        metrics = cw_lambda.get_metric_statistics(
+                            Namespace='AWS/Lambda',
+                            MetricName='Invocations',
+                            Dimensions=[{'Name': 'FunctionName', 'Value': func['FunctionName']}],
+                            StartTime=datetime.now(timezone.utc) - timedelta(days=30),
+                            EndTime=datetime.now(timezone.utc),
+                            Period=2592000,  # 30 days in one datapoint
+                            Statistics=['Sum']
+                        )
+                        datapoints = metrics.get('Datapoints', [])
+                        invocations = int(datapoints[0]['Sum']) if datapoints else 0
+                    except Exception:
+                        invocations = -1  # Unknown
+
+                    if invocations == 0:
+                        lambda_status = HygieneStatus.ORPHANED
+                        lambda_reason = 'Zero invocations in last 30 days'
+
                     item = ResourceItem(
                         id=func['FunctionArn'],
                         name=func['FunctionName'],
                         type=ResourceType.LAMBDA_FUNCTION,
-                        status=HygieneStatus.ACTIVE,
+                        status=lambda_status,
                         region=region,
-                        cost_per_month=0.0,  # Actual cost from Cost Explorer
-                        reason='Active Lambda function',
+                        cost_per_month=0.0,  # Usage-based, $0 if not invoked
+                        reason=lambda_reason,
                         metadata={
                             'Runtime': func.get('Runtime'),
                             'MemorySize': func.get('MemorySize'),
-                            'LastModified': func.get('LastModified')
+                            'LastModified': func.get('LastModified'),
+                            'Invocations30d': invocations
                         },
                         is_compliant=len(missing) == 0,
                         missing_tags=missing
@@ -2147,23 +2338,65 @@ class HygieneService:
             except Exception as lambda_err:
                 logger.error(f"Lambda scan error: {lambda_err}")
 
-            # 6. EventBridge Rules
+            # 6. EventBridge Rules - per-rule zombie detection (70% certainty per zombie guide)
             try:
-                events = session.client('events')
-                rules = events.list_rules()
+                events_client = session.client('events')
+                rules = events_client.list_rules()
 
-                active_rules = [r for r in rules.get('Rules', []) if r.get('State') == 'ENABLED']
-                if len(active_rules) > 10:  # Only show if significant
-                    # EventBridge: $1/million events (hard to estimate)
+                active_count = 0
+                for rule in rules.get('Rules', []):
+                    rule_name = rule.get('Name', 'Unknown')
+                    rule_state = rule.get('State', 'UNKNOWN')
+
+                    # Check targets for this rule
+                    try:
+                        targets = events_client.list_targets_by_rule(Rule=rule_name)
+                        target_count = len(targets.get('Targets', []))
+                    except Exception:
+                        target_count = -1
+
+                    # Zombie detection
+                    if rule_state == 'DISABLED':
+                        eb_status = HygieneStatus.ORPHANED
+                        eb_reason = 'Disabled EventBridge rule'
+                    elif target_count == 0:
+                        eb_status = HygieneStatus.SAFE_TO_DELETE
+                        eb_reason = 'EventBridge rule with no targets'
+                    else:
+                        eb_status = HygieneStatus.ACTIVE
+                        eb_reason = f'Active rule ({target_count} targets)'
+                        active_count += 1
+
+                    # Only report zombie rules individually
+                    if eb_status != HygieneStatus.ACTIVE:
+                        item = ResourceItem(
+                            id=rule.get('Arn', rule_name),
+                            name=rule_name,
+                            type=ResourceType.EVENTBRIDGE_RULE,
+                            status=eb_status,
+                            region=region,
+                            cost_per_month=0.0,  # Usage-based
+                            reason=eb_reason,
+                            metadata={
+                                'State': rule_state,
+                                'TargetCount': target_count,
+                                'ScheduleExpression': rule.get('ScheduleExpression', '')
+                            },
+                            is_compliant=True
+                        )
+                        resources.append(item)
+
+                # Summary for active rules (visibility)
+                if active_count > 10:
                     item = ResourceItem(
                         id=f'eventbridge-rules-{region}',
-                        name=f'{len(active_rules)} EventBridge Rules',
+                        name=f'{active_count} Active EventBridge Rules',
                         type=ResourceType.EVENTBRIDGE_RULE,
                         status=HygieneStatus.ACTIVE,
                         region=region,
-                        cost_per_month=0.0,  # Usage-based
-                        reason=f'{len(active_rules)} active rules',
-                        metadata={'RuleCount': len(active_rules)},
+                        cost_per_month=0.0,
+                        reason=f'{active_count} active rules',
+                        metadata={'RuleCount': active_count},
                         is_compliant=True
                     )
                     resources.append(item)
@@ -2197,19 +2430,34 @@ class HygieneService:
                         tag_keys = set(tags.keys())
                         missing = [rt for rt in required_tags if rt not in tag_keys]
 
+                        # Zombie detection: clusters with 0 nodegroups (65% certainty per zombie guide)
+                        eks_status = HygieneStatus.ACTIVE
+                        eks_reason = 'Active EKS cluster'
+                        ng_count = -1
+                        try:
+                            nodegroups = eks.list_nodegroups(clusterName=cluster_name)
+                            ng_count = len(nodegroups.get('nodegroups', []))
+                            if ng_count == 0:
+                                eks_status = HygieneStatus.ORPHANED
+                                eks_reason = 'EKS cluster with 0 nodegroups (possible zombie)'
+                                savings += 72.0
+                        except Exception:
+                            pass
+
                         # EKS: $0.10/hr = $72/month per cluster
                         item = ResourceItem(
                             id=cluster['arn'],
                             name=cluster_name,
                             type=ResourceType.EKS_CLUSTER,
-                            status=HygieneStatus.ACTIVE,
+                            status=eks_status,
                             region=region,
                             cost_per_month=72.0,
-                            reason='Active EKS cluster',
+                            reason=eks_reason,
                             metadata={
                                 'Version': cluster.get('version'),
                                 'CreatedAt': str(cluster.get('createdAt')),
-                                'Status': cluster['status']
+                                'Status': cluster['status'],
+                                'NodegroupCount': ng_count
                             },
                             is_compliant=len(missing) == 0,
                             missing_tags=missing
@@ -2231,18 +2479,34 @@ class HygieneService:
                         tag_keys = {t['key'] for t in tags}
                         missing = [rt for rt in required_tags if rt not in tag_keys]
 
-                        # ECS: Control plane is free, but show for visibility
+                        # Zombie detection: empty clusters (85% certainty per zombie guide)
+                        active_services = cluster_detail.get('activeServicesCount', 0)
+                        running_tasks = cluster_detail.get('runningTasksCount', 0)
+                        container_instances = cluster_detail.get('registeredContainerInstancesCount', 0)
+
+                        if active_services == 0 and running_tasks == 0 and container_instances == 0:
+                            ecs_status = HygieneStatus.SAFE_TO_DELETE
+                            ecs_reason = 'Empty ECS cluster (0 services, 0 tasks, 0 instances)'
+                        elif running_tasks == 0:
+                            ecs_status = HygieneStatus.ORPHANED
+                            ecs_reason = f'ECS cluster with 0 running tasks ({active_services} services defined)'
+                        else:
+                            ecs_status = HygieneStatus.ACTIVE
+                            ecs_reason = f'Active ECS cluster ({running_tasks} tasks, {active_services} services)'
+
+                        # ECS: Control plane free, but zombie clusters add clutter
                         item = ResourceItem(
                             id=cluster_arn,
                             name=cluster_detail.get('clusterName'),
                             type=ResourceType.ECS_CLUSTER,
-                            status=HygieneStatus.ACTIVE,
+                            status=ecs_status,
                             region=region,
                             cost_per_month=0.0,  # Free control plane
-                            reason='Active ECS cluster (control plane free)',
+                            reason=ecs_reason,
                             metadata={
-                                'ActiveServicesCount': cluster_detail.get('activeServicesCount', 0),
-                                'RunningTasksCount': cluster_detail.get('runningTasksCount', 0),
+                                'ActiveServicesCount': active_services,
+                                'RunningTasksCount': running_tasks,
+                                'RegisteredContainerInstancesCount': container_instances,
                                 'Status': cluster_detail['status']
                             },
                             is_compliant=len(missing) == 0,
@@ -2262,20 +2526,36 @@ class HygieneService:
                     tag_keys = {t['Key'] for t in tags}
                     missing = [rt for rt in required_tags if rt not in tag_keys]
 
+                    # Zombie detection: zero-capacity ASGs (60% certainty per zombie guide)
+                    desired = group.get('DesiredCapacity', 0)
+                    min_size = group.get('MinSize', 0)
+                    max_size = group.get('MaxSize', 0)
+                    instance_count = len(group.get('Instances', []))
+
+                    if desired == 0 and min_size == 0 and max_size == 0:
+                        asg_status = HygieneStatus.SAFE_TO_DELETE
+                        asg_reason = 'ASG with min=0, max=0, desired=0 (fully disabled)'
+                    elif desired == 0 and instance_count == 0:
+                        asg_status = HygieneStatus.ORPHANED
+                        asg_reason = 'ASG scaled to zero (no running instances)'
+                    else:
+                        asg_status = HygieneStatus.ACTIVE
+                        asg_reason = f'ASG with {instance_count} instances (desired: {desired})'
+
                     # ASG: Free service (pay for instances)
                     item = ResourceItem(
                         id=group['AutoScalingGroupARN'],
                         name=group['AutoScalingGroupName'],
                         type=ResourceType.AUTO_SCALING_GROUP,
-                        status=HygieneStatus.ACTIVE,
+                        status=asg_status,
                         region=region,
                         cost_per_month=0.0,  # Free service
-                        reason=f'ASG with {group.get("DesiredCapacity", 0)} instances',
+                        reason=asg_reason,
                         metadata={
-                            'MinSize': group.get('MinSize'),
-                            'MaxSize': group.get('MaxSize'),
-                            'DesiredCapacity': group.get('DesiredCapacity'),
-                            'Instances': len(group.get('Instances', []))
+                            'MinSize': min_size,
+                            'MaxSize': max_size,
+                            'DesiredCapacity': desired,
+                            'Instances': instance_count
                         },
                         is_compliant=len(missing) == 0,
                         missing_tags=missing
