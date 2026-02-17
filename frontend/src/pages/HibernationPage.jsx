@@ -14,6 +14,7 @@ import StrategySelector from '../components/hibernation/StrategySelector';
 import HibernationScheduler from '../components/hibernation/HibernationScheduler';
 import ValidationPanel from '../components/hibernation/ValidationPanel';
 import CostAnalytics from '../components/hibernation/CostAnalytics';
+import HistoryLog from '../components/hibernation/HistoryLog';
 import { FiArrowLeft, FiActivity } from 'react-icons/fi';
 import { Link } from 'react-router-dom';
 
@@ -41,45 +42,36 @@ const HibernationPage = () => {
     }
 
     return (
-        <div className="min-h-screen bg-gray-50 p-6">
+        <div className="min-h-screen bg-gray-50 p-8">
             <div className="max-w-7xl mx-auto">
-                {/* Header */}
-                <div className="mb-6">
+                {/* Header - Larger and more prominent */}
+                <div className="mb-8">
                     <Link
                         to="/clusters"
-                        className="inline-flex items-center gap-2 text-sm text-gray-600 hover:text-gray-900 mb-4"
+                        className="inline-flex items-center gap-2 text-sm text-gray-600 hover:text-gray-900 mb-6 font-medium"
                     >
-                        <FiArrowLeft className="w-4 h-4" />
+                        <FiArrowLeft className="w-5 h-5" />
                         Back to Clusters
                     </Link>
-                    <div className="flex items-center gap-3">
-                        <div className="p-3 bg-blue-100 rounded-lg">
-                            <FiActivity className="w-6 h-6 text-blue-600" />
+                    <div className="flex items-center gap-4 bg-white p-6 rounded-xl shadow-sm border border-gray-200">
+                        <div className="p-4 bg-blue-100 rounded-xl">
+                            <FiActivity className="w-8 h-8 text-blue-600" />
                         </div>
                         <div>
-                            <h1 className="text-2xl font-bold text-gray-900">Cluster Hibernation</h1>
-                            <p className="text-sm text-gray-500">{clusterName}</p>
+                            <h1 className="text-3xl font-bold text-gray-900">Cluster Hibernation</h1>
+                            <p className="text-base text-gray-600 mt-1">{clusterName} • Configure automatic sleep schedules</p>
                         </div>
                     </div>
                 </div>
 
-                {/* Strategy Selector */}
-                <div className="mb-6">
-                    <StrategySelector />
+                {/* Main Content Grid - Full-page scheduler */}
+                <div className="mb-8">
+                    <HibernationScheduler />
                 </div>
 
-                {/* Main Content Grid */}
-                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
-                    {/* Scheduler - Takes up 2 columns */}
-                    <div className="lg:col-span-2">
-                        <HibernationScheduler />
-                    </div>
-
-                    {/* Right sidebar: Validation + Cost */}
-                    <div className="space-y-6">
-                        <ValidationPanel />
-                        <CostAnalytics />
-                    </div>
+                {/* Hibernation History */}
+                <div className="mb-8">
+                    <HistoryLog />
                 </div>
             </div>
         </div>
