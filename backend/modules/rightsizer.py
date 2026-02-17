@@ -106,7 +106,12 @@ class RightSizingModule:
                             "memory": round(memory_util, 1)
                         },
                         "recommendation": recommendation,
-                        "potential_savings_monthly": round(monthly_savings, 2)
+                        "confidence": "HIGH" if cpu_util < 30 else "MEDIUM",
+                        "potential_savings_monthly": round(monthly_savings, 2),
+                        "utilization_history": {
+                            "cpu": [round(max(5, cpu_util + ((i%5)-2)), 1) for i in range(14)], # Mock 14-day history
+                            "memory": [round(max(10, memory_util + ((i%3)-1)), 1) for i in range(14)]
+                        }
                     })
 
                     total_savings += monthly_savings

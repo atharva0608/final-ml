@@ -1,57 +1,70 @@
 /**
  * Fleet Composition Widget
- * Pie chart showing instance type distribution
+ * Pie chart showing Spot vs On-Demand distribution
  */
 import React from 'react';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from 'recharts';
 import { FiPieChart } from 'react-icons/fi';
+import api from '../../../services/api';
+import { useState } from 'react'; // Added useState import
 
-const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4'];
+const COLORS = ['#10B981', '#F59E0B']; // Green (Spot), Yellow (On-Demand)
 
-const FleetComposition = ({ widgetKey }) => {
-    const [chartData, setChartData] = React.useState([]);
-    const [loading, setLoading] = React.useState(true);
-    const [error, setError] = React.useState(null);
+const FleetComposition = ({ data: externalData }) => {
+    const [internalData, setInternalData] = useState([]);
+    const [loading, setLoading] = useState(!externalData);
+
+    // Transform external data (API response) into Chart Data [{name, value}]
+    const chartData = React.useMemo(() => {
+        if (!externalData) return internalData;
+
+        // Use pre-processed chartData if available
+        if (externalData.chartData) return externalData.chartData;
+
+        // If it's already an array, assume it's chart data
+        if (Array.isArray(externalData)) return externalData;
+
+        // Otherwise transform from API response object
+        const spot = externalData.spot_instances || 0;
+        const onDemand = externalData.on_demand_instances || 0;
+
+        if (spot === 0 && onDemand === 0) return [];
+
+        return [
+            { name: 'Spot', value: spot },
+            { name: 'On-Demand', value: onDemand }
+        ];
+    }, [externalData, internalData]);
 
     React.useEffect(() => {
+        if (externalData) {
+            setLoading(false);
+            return;
+        }
+
         const fetchData = async () => {
             try {
-                const token = localStorage.getItem('access_token');
-                const response = await fetch('http://localhost:8000/api/v1/metrics/instances', {
-                    headers: {
-                        'Authorization': `Bearer ${token}`
-                    }
-                });
+                const response = await api.get('/metrics/instances');
+                const data = response.data;
 
-                if (!response.ok) throw new Error('Failed to fetch metrics');
+                // Transform for Pie Chart
+                const spot = data.spot_instances || 0;
+                const onDemand = data.on_demand_instances || 0;
 
-                const data = await response.json();
-
-                // Transform type_distribution dictionary to chart array
-                // Example: {"t3.medium": 5, "m5.large": 10} -> [{name: "t3.medium", value: 5}, ...]
-                const distribution = data.type_distribution || {};
-                const transformed = Object.entries(distribution).map(([name, value]) => ({
-                    name,
-                    value
-                }));
-
-                // Sort by value desc and take top 5, group others
-                transformed.sort((a, b) => b.value - a.value);
-
-                let finalData = transformed;
-                if (transformed.length > 5) {
-                    const top5 = transformed.slice(0, 5);
-                    const others = transformed.slice(5).reduce((acc, curr) => acc + curr.value, 0);
-                    finalData = [...top5, { name: 'Other', value: others }];
+                let newData = [];
+                // If both are 0, handle empty
+                if (spot !== 0 || onDemand !== 0) {
+                    newData = [
+                        { name: 'Spot', value: spot },
+                        { name: 'On-Demand', value: onDemand }
+                    ];
                 }
-
-                setChartData(finalData);
+                setInternalData(newData);
                 setLoading(false);
             } catch (err) {
                 console.error("Error fetching fleet composition:", err);
-                setError(err.message);
                 setLoading(false);
-                setChartData([]);
+                setInternalData([]);
             }
         };
 
@@ -59,7 +72,7 @@ const FleetComposition = ({ widgetKey }) => {
         // Refresh every 5 minutes
         const interval = setInterval(fetchData, 300000);
         return () => clearInterval(interval);
-    }, []);
+    }, [externalData]);
 
     if (loading) {
         return (
@@ -70,11 +83,11 @@ const FleetComposition = ({ widgetKey }) => {
     }
 
     return (
-        <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 hover:shadow-md transition-shadow">
+        <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 hover:shadow-md transition-shadow h-full">
             <div className="flex items-center justify-between mb-4">
                 <div>
                     <h3 className="text-lg font-semibold text-gray-900">Fleet Composition</h3>
-                    <p className="text-sm text-gray-500">Instance type distribution</p>
+                    <p className="text-sm text-gray-500">Spot vs On-Demand</p>
                 </div>
                 <div className="p-2 bg-purple-50 rounded-lg">
                     <FiPieChart className="w-5 h-5 text-purple-600" />
@@ -89,19 +102,17 @@ const FleetComposition = ({ widgetKey }) => {
                                 data={chartData}
                                 cx="50%"
                                 cy="50%"
-                                innerRadius={50}
+                                innerRadius={60}
                                 outerRadius={80}
-                                paddingAngle={2}
+                                paddingAngle={5}
                                 dataKey="value"
-                                label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
-                                labelLine={false}
                             >
                                 {chartData.map((entry, index) => (
                                     <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
                                 ))}
                             </Pie>
                             <Tooltip formatter={(value) => [value, 'Instances']} />
-                            <Legend />
+                            <Legend verticalAlign="bottom" height={36} />
                         </PieChart>
                     </ResponsiveContainer>
                 ) : (

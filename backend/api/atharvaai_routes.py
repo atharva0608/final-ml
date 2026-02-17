@@ -75,6 +75,8 @@ class RebalancingStatusResponse(BaseModel):
     started_at: str
     completed_at: Optional[str]
     duration_seconds: Optional[int]
+    nodes_affected: Optional[int]
+    error_message: Optional[str]
 
 
 # Endpoints
@@ -242,7 +244,9 @@ async def get_rebalancing_status(
                 target_pool=action.target_pool,
                 started_at=action.started_at.isoformat() if action.started_at else None,
                 completed_at=action.completed_at.isoformat() if action.completed_at else None,
-                duration_seconds=action.duration_seconds
+                duration_seconds=action.duration_seconds,
+                nodes_affected=action.nodes_affected,
+                error_message=action.error_message
             ))
 
         return response
@@ -250,6 +254,109 @@ async def get_rebalancing_status(
     except Exception as e:
         logger.error(f"Failed to get rebalancing status: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to get rebalancing status: {str(e)}")
+
+
+class HeatmapCell(BaseModel):
+    day: int  # 0-6 (Sun-Sat) or 1-7 depending on frontend pref. Let's use 0=Monday to match JS often, or just 0-6.
+    hour: int  # 0-23
+    interruption_count: int
+    risk_level: str  # "LOW", "MEDIUM", "HIGH"
+
+class InterruptionHeatmapResponse(BaseModel):
+    family: str  # e.g., "m5", "c5"
+    heatmap: List[HeatmapCell]
+
+@router.get("/interruption-heatmap", response_model=List[InterruptionHeatmapResponse])
+async def get_interruption_heatmap(
+    region: str = Query("ap-south-1", description="AWS region"),
+    days: int = Query(30, description="Analysis window in days"),
+    db: Session = Depends(get_db)
+):
+    """
+    Get 7x24 interruption heatmap by instance family.
+    Aggregates TerminationEvent data.
+    """
+    from backend.models.termination_event import TerminationEvent
+    from sqlalchemy import func, text
+    
+    try:
+        # Calculate cutoff date
+        cutoff = datetime.utcnow() - timedelta(days=days)
+        
+        # Aggregate interruptions by family, day_of_week, hour
+        # extracting day of week (0-6) and hour (0-23) from detected_at
+        
+        # SQLite vs Postgres syntax differences handled by SQLAlchemy extract usually
+        # But for complex grouping, text() might be safer if flexible
+        
+        # Extract family from instance_type (e.g., "m5.xlarge" -> "m5")
+        # SQL substring logic varies. 
+        # For MVP/Demo, let's fetch events and aggregate in Python to be DB-agnostic & safer
+        
+        events = db.query(
+            TerminationEvent.instance_type,
+            TerminationEvent.detected_at
+        ).filter(
+            TerminationEvent.detected_at >= cutoff,
+            TerminationEvent.region == region
+        ).all()
+        
+        # Aggregation structure: family -> day -> hour -> count
+        agg = {}
+        
+        for e in events:
+            # Extract family
+            family = e.instance_type.split('.')[0] # "m5"
+            
+            # Extract time slots
+            # 0=Monday, 6=Sunday
+            day = e.detected_at.weekday() 
+            hour = e.detected_at.hour
+            
+            if family not in agg:
+                agg[family] = {}
+            if day not in agg[family]:
+                agg[family][day] = {}
+            
+            agg[family][day][hour] = agg[family][day].get(hour, 0) + 1
+            
+        response = []
+        
+        # If no events, return empty or mock data? 
+        # Let's return empty structure if truly empty, but UI might want *something*.
+        # For now, real data only.
+        
+        for family, days_data in agg.items():
+            cells = []
+            # Fill 7x24 grid ? or just sparse? 
+            # UI usually prefers sparse or full. Let's do sparse to save bandwidth, frontend fills 0s.
+            for d in range(7):
+                for h in range(24):
+                    count = days_data.get(d, {}).get(h, 0)
+                    if count > 0:
+                         # Determine risk
+                        if count >= 5: risk = "HIGH"
+                        elif count >= 2: risk = "MEDIUM"
+                        else: risk = "LOW"
+                        
+                        cells.append(HeatmapCell(
+                            day=d,
+                            hour=h,
+                            interruption_count=count,
+                            risk_level=risk
+                        ))
+            
+            if cells:
+                response.append(InterruptionHeatmapResponse(
+                    family=family,
+                    heatmap=cells
+                ))
+                
+        return response
+
+    except Exception as e:
+        logger.error(f"Failed to get heatmap: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get heatmap: {str(e)}")
 
 
 @router.get("/health")

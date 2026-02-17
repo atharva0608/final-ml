@@ -12,33 +12,36 @@ import { formatDistanceToNow } from 'date-fns';
 const PendingApprovalsCard = ({ data = {}, widgetKey }) => {
     const navigate = useNavigate();
     const { user } = useAuthStore();
-    const [tickets, setTickets] = useState([]);
-    const [loading, setLoading] = useState(true);
+    const [internalTickets, setInternalTickets] = useState([]);
+    const [loading, setLoading] = useState(!data?.tickets && !data?.length);
+
+    const externalTickets = Array.isArray(data) ? data : data?.tickets;
+    const rawTickets = externalTickets || internalTickets;
+
+    const tickets = React.useMemo(() => {
+        const source = Array.isArray(rawTickets) ? rawTickets : [];
+        if (user?.role === 'ORG_ADMIN' || user?.role === 'SUPER_ADMIN' || user?.role === 'CLIENT') {
+            return source.filter(t => t.status === 'PENDING');
+        } else if (user?.role === 'TEAM_LEAD') {
+            return source.filter(t => t.status === 'PENDING' && t.user_id !== user?.id);
+        } else {
+            return source.filter(t => t.user_id === user?.id);
+        }
+    }, [rawTickets, user]);
 
     useEffect(() => {
+        if (externalTickets) {
+            setLoading(false);
+            return;
+        }
         fetchTickets();
-    }, []);
+    }, [externalTickets]);
 
     const fetchTickets = async () => {
         try {
             const res = await approvalsAPI.list();
             const allTickets = Array.isArray(res.data) ? res.data : [];
-
-            // Filter based on user role
-            let filteredTickets = allTickets;
-
-            // Show PENDING tickets for admins and team leads
-            if (user?.role === 'ORG_ADMIN' || user?.role === 'SUPER_ADMIN' || user?.role === 'CLIENT') {
-                filteredTickets = allTickets.filter(t => t.status === 'PENDING');
-            } else if (user?.role === 'TEAM_LEAD') {
-                // Show pending tickets from team members (not their own)
-                filteredTickets = allTickets.filter(t => t.status === 'PENDING' && t.user_id !== user?.id);
-            } else {
-                // Members see their own requests
-                filteredTickets = allTickets.filter(t => t.user_id === user?.id);
-            }
-
-            setTickets(filteredTickets);
+            setInternalTickets(allTickets);
         } catch (err) {
             console.error('Failed to fetch tickets:', err);
         } finally {

@@ -16,6 +16,9 @@ import ClusterDetails from './ClusterDetails';
 import ClusterDisconnectModal from './ClusterDisconnectModal';
 import ClusterDeleteModal from './ClusterDeleteModal';
 import { FaAws, FaGoogle, FaMicrosoft, FaLinux } from 'react-icons/fa'; // Provider icons
+import ClusterUtilizationSparkline from './ClusterUtilizationSparkline';
+import SpotRatioGauge from './SpotRatioGauge';
+import PolicyGapAlert from './PolicyGapAlert';
 
 const ClusterList = () => {
   const navigate = useNavigate();
@@ -473,9 +476,9 @@ const ClusterList = () => {
                 <th className="py-4 px-6 text-xs font-bold text-gray-500 uppercase tracking-wider w-10"></th> {/* Checkbox/Icon col */}
                 <th className="py-4 px-6 text-xs font-bold text-gray-500 uppercase tracking-wider">Name</th>
                 <th className="py-4 px-6 text-xs font-bold text-gray-500 uppercase tracking-wider">Region</th>
-                <th className="py-4 px-6 text-xs font-bold text-gray-500 uppercase tracking-wider w-48">Nodes</th>
-                <th className="py-4 px-6 text-xs font-bold text-gray-500 uppercase tracking-wider w-32">CPU</th>
-                <th className="py-4 px-6 text-xs font-bold text-gray-500 uppercase tracking-wider w-32">Memo..</th>
+                <th className="py-4 px-6 text-xs font-bold text-gray-500 uppercase tracking-wider w-32">Spot Ratio</th>
+                <th className="py-4 px-6 text-xs font-bold text-gray-500 uppercase tracking-wider w-40">Utilization (7d)</th>
+                <th className="py-4 px-6 text-xs font-bold text-gray-500 uppercase tracking-wider">Policies</th>
                 <th className="py-4 px-6 text-xs font-bold text-gray-500 uppercase tracking-wider">Potential Savings</th>
                 <th className="py-4 px-6 text-xs font-bold text-gray-500 uppercase tracking-wider">Compute Cost</th>
                 <th className="py-4 px-6 text-xs font-bold text-gray-500 uppercase tracking-wider">Status</th>
@@ -511,45 +514,36 @@ const ClusterList = () => {
                     </div>
                   </td>
                   <td className="py-4 px-6">
-                    {/* Node Count & Bar */}
-                    <div className="flex flex-col gap-1 w-full max-w-[120px]">
-                      <span className="text-sm font-medium text-gray-900">{cluster.node_count}</span>
-                      <div className="flex h-1.5 w-full bg-gray-200 rounded-full overflow-hidden">
-                        <div
-                          className="bg-blue-500 h-full"
-                          style={{ width: `${(cluster.spot_count / cluster.node_count) * 100}%` }}
+                    {/* Spot Ratio Gauge */}
+                    <div className="flex items-center gap-2">
+                      <div className="h-10 w-10">
+                        <SpotRatioGauge
+                          spotPct={(cluster.spot_count / (cluster.node_count || 1)) * 100}
+                          onDemandPct={((cluster.node_count - cluster.spot_count) / (cluster.node_count || 1)) * 100}
                         />
+                      </div>
+                      <div className="flex flex-col">
+                        <span className="text-xs font-bold text-gray-900">{cluster.node_count} Nodes</span>
+                        <span className="text-[10px] text-gray-400">{cluster.spot_count} Spot</span>
                       </div>
                     </div>
                   </td>
                   <td className="py-4 px-6">
-                    {/* CPU Usage Bar */}
+                    {/* Utilization Sparkline */}
                     {cluster.status === 'DISCOVERED' ? (
-                      <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-800">
-                        Agent Required
-                      </span>
+                      <span className="text-xs text-gray-400 italic">No data</span>
                     ) : (
-                      <div className="flex flex-col gap-1">
-                        <span className="text-sm font-medium text-gray-900">{cluster.cpu_total || '-'} CPU</span>
-                        <div className="h-1.5 w-24 bg-gray-200 rounded-full overflow-hidden">
-                          <div className="bg-blue-500 h-full w-1/3"></div> {/* Mock 33% */}
-                        </div>
+                      <div className="w-32 h-10">
+                        <ClusterUtilizationSparkline clusterId={cluster.id} />
                       </div>
                     )}
                   </td>
                   <td className="py-4 px-6">
-                    {/* MEM Usage Bar */}
-                    {cluster.status === 'DISCOVERED' ? (
-                      <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-800">
-                        Agent Required
-                      </span>
+                    {/* Policy Gap Alert */}
+                    {cluster.status === 'ACTIVE' ? (
+                      <PolicyGapAlert gapCount={Math.floor(Math.random() * 3)} /> // Mock gaps for now
                     ) : (
-                      <div className="flex flex-col gap-1">
-                        <span className="text-sm font-medium text-gray-900">{cluster.mem_total || '-'} GiB</span>
-                        <div className="h-1.5 w-24 bg-gray-200 rounded-full overflow-hidden">
-                          <div className="bg-indigo-500 h-full w-1/2"></div> {/* Mock 50% */}
-                        </div>
-                      </div>
+                      <span className="text-xs text-gray-400">-</span>
                     )}
                   </td>
                   <td className="py-4 px-6">

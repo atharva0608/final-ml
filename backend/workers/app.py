@@ -18,7 +18,8 @@ app = Celery(
         'backend.workers.tasks.hibernation_worker',
         'backend.workers.tasks.atharvaai_worker',
         'backend.workers.tasks.termination_monitor',
-        'backend.workers.tasks.auto_rebalancer'
+        'backend.workers.tasks.auto_rebalancer',
+        'backend.workers.tasks.pod_metrics_cleanup'
     ]
 )
 
@@ -102,5 +103,10 @@ app.conf.beat_schedule = {
     'karpenter-nodepool-sync-every-30-secs': {
         'task': 'workers.atharvaai.sync_karpenter_nodepools',
         'schedule': 30.0,  # 30 seconds
+    },
+    # Pod Metrics Cleanup (Daily at 2 AM UTC) - Deletes metrics older than 7 days
+    'pod-metrics-cleanup-daily': {
+        'task': 'workers.pod_metrics.cleanup_old_metrics',
+        'schedule': 86400.0,  # 24 hours
     },
 }

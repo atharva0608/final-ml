@@ -25,10 +25,9 @@ import requests
 from collector import MetricsCollector
 from actuator import ActionActuator
 from heartbeat import HeartbeatSender
-from actuator import ActionActuator
-from heartbeat import HeartbeatSender
 from websocket_client import WebSocketClient
 from poller import SpotPoller
+from pod_metrics_collector import PodMetricsCollector
 
 logging.basicConfig(
     level=logging.INFO,
@@ -70,19 +69,17 @@ class Agent:
         self.collector = None
         self.actuator = None
         self.heartbeat = None
-        self.actuator = None
-        self.heartbeat = None
         self.websocket_client = None
         self.spot_poller = None
+        self.pod_metrics_collector = None
 
         # Threads
         self.collector_thread = None
         self.actuator_thread = None
         self.heartbeat_thread = None
-        self.actuator_thread = None
-        self.heartbeat_thread = None
         self.websocket_thread = None
         self.spot_poller_thread = None
+        self.pod_metrics_thread = None
 
         # State
         self.running = False
@@ -239,6 +236,14 @@ class Agent:
         )
         logger.info("Spot Termination Poller initialized")
 
+        # Initialize Pod Metrics Collector (Right-Sizing)
+        self.pod_metrics_collector = PodMetricsCollector(
+            backend_url=self.backend_url,
+            api_key=self.api_key,
+            cluster_id=self.cluster_id
+        )
+        logger.info("Pod Metrics Collector initialized")
+
         logger.info("All components initialized successfully")
 
     def start_components(self):
@@ -300,9 +305,19 @@ class Agent:
         self.spot_poller_thread.start()
         logger.info("Spot Termination Poller started")
 
+        # Start Pod Metrics Collector
+        self.pod_metrics_thread = threading.Thread(
+            target=self.pod_metrics_collector.run,
+            name="PodMetricsCollector",
+            daemon=True
+        )
+        self.pod_metrics_thread.start()
+        logger.info("Pod Metrics Collector started")
+
         # Update health status
         if self.heartbeat:
             self.heartbeat.set_component_health('websocket', True)
+            self.heartbeat.set_component_health('pod_metrics', True)
 
         logger.info("All components started successfully")
 
@@ -359,6 +374,11 @@ class Agent:
             self.spot_poller.stop()
             logger.info("Spot Termination Poller stopped")
 
+        # Stop Pod Metrics Collector
+        if self.pod_metrics_collector:
+            self.pod_metrics_collector.stop()
+            logger.info("Pod Metrics Collector stopped")
+
         # Stop heartbeat sender (last, so we can report shutdown)
         if self.heartbeat:
             self.heartbeat.stop()
@@ -368,7 +388,7 @@ class Agent:
         timeout = 10
         for thread in [self.collector_thread, self.actuator_thread,
                       self.websocket_thread, self.heartbeat_thread,
-                      self.spot_poller_thread]:
+                      self.spot_poller_thread, self.pod_metrics_thread]:
             if thread and thread.is_alive():
                 thread.join(timeout=timeout)
 
@@ -442,6 +462,16 @@ class Agent:
                     daemon=True
                 )
                 self.spot_poller_thread.start()
+
+            # Check Pod Metrics Collector thread
+            if self.pod_metrics_thread and not self.pod_metrics_thread.is_alive():
+                logger.error("Pod Metrics Collector thread died, restarting...")
+                self.pod_metrics_thread = threading.Thread(
+                    target=self.pod_metrics_collector.run,
+                    name="PodMetricsCollector",
+                    daemon=True
+                )
+                self.pod_metrics_thread.start()
 
             # Sleep before next check
             time.sleep(30)

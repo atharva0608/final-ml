@@ -165,21 +165,19 @@ const LivePoolRankings = () => {
                             return (
                                 <tr
                                     key={`${pool.instance_type}-${pool.az}`}
-                                    className={`group transition-colors ${
-                                        isFlagged
+                                    className={`group transition-colors ${isFlagged
                                             ? 'bg-red-50/50 opacity-60'
                                             : pool.rank <= 3
-                                            ? 'bg-green-50/20'
-                                            : 'hover:bg-gray-50'
-                                    }`}
+                                                ? 'bg-green-50/20'
+                                                : 'hover:bg-gray-50'
+                                        }`}
                                 >
                                     {/* Rank */}
                                     <td className="py-3 pr-3">
-                                        <span className={`inline-flex items-center justify-center w-7 h-7 rounded-full font-bold text-sm ${
-                                            pool.rank === 1 ? 'bg-yellow-100 text-yellow-800' :
-                                            pool.rank <= 3 ? 'bg-green-100 text-green-800' :
-                                            'bg-gray-100 text-gray-700'
-                                        }`}>
+                                        <span className={`inline-flex items-center justify-center w-7 h-7 rounded-full font-bold text-sm ${pool.rank === 1 ? 'bg-yellow-100 text-yellow-800' :
+                                                pool.rank <= 3 ? 'bg-green-100 text-green-800' :
+                                                    'bg-gray-100 text-gray-700'
+                                            }`}>
                                             {pool.rank}
                                         </span>
                                     </td>
@@ -229,10 +227,20 @@ const LivePoolRankings = () => {
                                         </span>
                                     </td>
 
-                                    {/* ML Score */}
+                                    {/* ML Score & Confidence */}
                                     <td className="py-3 text-right">
-                                        <div className="text-sm font-bold text-blue-600">{pool.ml_score.toFixed(2)}</div>
-                                        <div className="text-[10px] text-gray-400">ML Score</div>
+                                        <div className="flex flex-col items-end">
+                                            <div className="text-sm font-bold text-blue-600">{pool.ml_score.toFixed(2)}</div>
+                                            <div className="flex items-center gap-1 mt-0.5" title={`Confidence: ${(pool.ml_score * 10).toFixed(0)}%`}>
+                                                <div className="w-12 h-1.5 bg-gray-200 rounded-full overflow-hidden">
+                                                    <div
+                                                        className="h-full bg-blue-500 rounded-full"
+                                                        style={{ width: `${Math.min(pool.ml_score * 10, 100)}%` }} // Assuming score 0-10 roughly maps to confidence
+                                                    ></div>
+                                                </div>
+                                                <span className="text-[9px] text-gray-400">{(pool.ml_score * 10).toFixed(0)}%</span>
+                                            </div>
+                                        </div>
                                     </td>
                                 </tr>
                             );

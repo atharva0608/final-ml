@@ -17,7 +17,7 @@ import {
   FiLayout, FiSave, FiPlus, FiMinusCircle
 } from 'react-icons/fi';
 import toast from 'react-hot-toast';
-import { auditAPI, clusterAPI, authAPI, accountsAPI } from '../../services/api';
+import { auditAPI, clusterAPI, authAPI, accountsAPI, approvalsAPI, metricsAPI } from '../../services/api';
 import { useAuthStore } from '../../store/useStore';
 
 // Widget System
@@ -94,6 +94,8 @@ const Dashboard = () => {
   const [inviteLoading, setInviteLoading] = useState(false);
   const [tenants, setTenants] = useState([]); // For Super Admin
   const [dataLoading, setDataLoading] = useState(true);
+  const [pendingApprovals, setPendingApprovals] = useState([]);
+  const [fleetInstanceData, setFleetInstanceData] = useState(null);
 
   // Layout State
   const [activeLayout, setActiveLayout] = useState([]);
@@ -146,6 +148,17 @@ const Dashboard = () => {
           setClusters(clustersRes.data.clusters || []);
           const accountsRes = await accountsAPI.list();
           setAccounts(accountsRes.data || []);
+
+          // Fetch widget data
+          try {
+            const approvalsRes = await approvalsAPI.list();
+            setPendingApprovals(Array.isArray(approvalsRes.data) ? approvalsRes.data : []);
+          } catch (e) { console.warn("Failed to fetch approvals", e); }
+
+          try {
+            const instancesRes = await metricsAPI.getInstances();
+            setFleetInstanceData(instancesRes.data);
+          } catch (e) { console.warn("Failed to fetch fleet data", e); }
         }
 
       } catch (error) {
@@ -246,7 +259,7 @@ const Dashboard = () => {
       case 'savings_chart':
         return { chartData: savingsProjectionData };
       case 'fleet_composition':
-        return { chartData: [] };
+        return { data: fleetInstanceData };
       case 'activity_feed':
       case 'global_audit':
         return { activities: activityFeed };
@@ -255,7 +268,7 @@ const Dashboard = () => {
         return { clusters: clusters };
       case 'pending_approvals':
       case 'my_tickets':
-        return { tickets: [] };
+        return { data: pendingApprovals };
       case 'platform_health':
         return { metrics: { metrics: { uptime: '99.99%', active_workers: 4 } } };
       case 'tenant_list':

@@ -5,7 +5,8 @@ FastAPI endpoints for dashboard metrics and KPIs
 """
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
-from typing import Optional
+from typing import Optional, List
+from pydantic import BaseModel
 from backend.models.base import get_db
 from backend.models.user import User
 from backend.core.dependencies import get_current_user
@@ -224,6 +225,205 @@ def get_cluster_metrics(
     """
     service = get_metrics_service(db)
     return service.get_cluster_metrics(cluster_id, current_user.id)
+
+
+class ClusterUtilizationResponse(BaseModel):
+    cpu_history: List[float]
+    memory_history: List[float]
+    cpu_current: float
+    memory_current: float
+
+@router.get("/cluster/{cluster_id}/utilization", response_model=ClusterUtilizationResponse)
+def get_cluster_utilization(
+    cluster_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get cluster utilization history (7 days)"""
+    from backend.models.cluster_metric import ClusterMetric
+    from backend.models.cluster import Cluster
+    from datetime import datetime, timedelta
+    from sqlalchemy import func
+
+    # Get cluster to verify access
+    cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+    if not cluster:
+        raise HTTPException(status_code=404, detail="Cluster not found")
+
+    # Get current utilization from cluster table
+    cpu_current = cluster.cpu_usage_pct or 0.0
+    memory_current = cluster.mem_usage_pct or 0.0
+
+    # Get 7-day history from cluster_metrics table
+    seven_days_ago = datetime.utcnow() - timedelta(days=7)
+
+    # Query daily average metrics
+    daily_metrics = db.query(
+        func.date(ClusterMetric.timestamp).label('day'),
+        func.avg(ClusterMetric.cpu_usage_pct).label('avg_cpu'),
+        func.avg(ClusterMetric.memory_usage_pct).label('avg_mem')
+    ).filter(
+        ClusterMetric.cluster_id == cluster_id,
+        ClusterMetric.timestamp >= seven_days_ago
+    ).group_by(
+        func.date(ClusterMetric.timestamp)
+    ).order_by('day').all()
+
+    # Build 7-day arrays (fill missing days with 0)
+    cpu_history = []
+    memory_history = []
+
+    if daily_metrics:
+        for metric in daily_metrics[-7:]:  # Last 7 days
+            cpu_history.append(round(metric.avg_cpu or 0.0, 2))
+            memory_history.append(round(metric.avg_mem or 0.0, 2))
+
+    # If no historical data, use current values
+    if not cpu_history:
+        cpu_history = [cpu_current] * 7
+        memory_history = [memory_current] * 7
+
+    # Pad if less than 7 days
+    while len(cpu_history) < 7:
+        cpu_history.insert(0, 0.0)
+    while len(memory_history) < 7:
+        memory_history.insert(0, 0.0)
+
+    return {
+        "cpu_history": cpu_history,
+        "memory_history": memory_history,
+        "cpu_current": round(cpu_current, 2),
+        "memory_current": round(memory_current, 2)
+    }
+
+class NodeGroupStats(BaseModel):
+    name: str
+    instance_type: str
+    count: int
+    lifecycle: str  # spot/on-demand
+
+@router.get("/cluster/{cluster_id}/nodegroups", response_model=List[NodeGroupStats])
+def get_cluster_nodegroups(
+    cluster_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get node group breakdown"""
+    from backend.models.instance import Instance
+    from sqlalchemy import func
+
+    # Query instances grouped by node_group_name, instance_type, and lifecycle
+    node_groups = db.query(
+        Instance.node_group_name.label('name'),
+        Instance.instance_type.label('instance_type'),
+        Instance.lifecycle.label('lifecycle'),
+        func.count(Instance.id).label('count')
+    ).filter(
+        Instance.cluster_id == cluster_id,
+        Instance.state == 'running'
+    ).group_by(
+        Instance.node_group_name,
+        Instance.instance_type,
+        Instance.lifecycle
+    ).all()
+
+    result = []
+    for ng in node_groups:
+        result.append({
+            "name": ng.name or f"{ng.lifecycle}-{ng.instance_type}",
+            "instance_type": ng.instance_type,
+            "count": ng.count,
+            "lifecycle": ng.lifecycle.lower() if ng.lifecycle else "on-demand"
+        })
+
+    return result
+
+class HealthEvent(BaseModel):
+    timestamp: datetime
+    status: str  # 'healthy', 'degraded', 'unavailable'
+    message: str
+
+@router.get("/cluster/{cluster_id}/health-timeline", response_model=List[HealthEvent])
+def get_cluster_health_timeline(
+    cluster_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get cluster health event timeline (24h)"""
+    from backend.models.audit_log import AuditLog
+    from backend.models.cluster import Cluster
+
+    # Get cluster current status
+    cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+    if not cluster:
+        raise HTTPException(status_code=404, detail="Cluster not found")
+
+    # Get audit logs for cluster in last 24 hours
+    twenty_four_hours_ago = datetime.utcnow() - timedelta(hours=24)
+
+    # Query relevant events from audit logs
+    events = db.query(AuditLog).filter(
+        AuditLog.resource == cluster_id,
+        AuditLog.timestamp >= twenty_four_hours_ago
+    ).order_by(AuditLog.timestamp.desc()).limit(50).all()
+
+    timeline = []
+
+    # Map cluster status to health status
+    status_map = {
+        'ACTIVE': 'healthy',
+        'ONLINE': 'healthy',
+        'DEGRADED': 'degraded',
+        'OFFLINE': 'unavailable',
+        'ERROR': 'unavailable',
+        'PROVISIONING': 'degraded'
+    }
+
+    # Add current status as most recent event
+    current_status = status_map.get(cluster.status, 'healthy')
+    timeline.append({
+        "timestamp": cluster.last_heartbeat or datetime.utcnow(),
+        "status": current_status,
+        "message": f"Cluster {cluster.status.lower()}"
+    })
+
+    # Process audit log events
+    for event in events:
+        # Determine health status from event
+        if event.outcome == 'SUCCESS':
+            status = 'healthy'
+            message = f"{event.event}: {event.actor_name}"
+        elif event.outcome == 'FAILURE':
+            status = 'degraded'
+            message = f"Failed: {event.event}"
+        else:
+            status = 'degraded'
+            message = event.event
+
+        # Map specific events to health statuses
+        if 'termination' in event.event.lower() or 'interrupt' in event.event.lower():
+            status = 'degraded'
+            message = f"Node interrupted: {event.event}"
+        elif 'error' in event.event.lower():
+            status = 'unavailable'
+        elif 'scale' in event.event.lower() or 'node' in event.event.lower():
+            status = 'healthy'
+
+        timeline.append({
+            "timestamp": event.timestamp,
+            "status": status,
+            "message": message
+        })
+
+    # If no events, create a healthy baseline
+    if len(timeline) == 1:
+        timeline.append({
+            "timestamp": twenty_four_hours_ago,
+            "status": "healthy",
+            "message": "Cluster operational"
+        })
+
+    return timeline[:20]  # Return up to 20 most recent events
 
 
 @router.get(

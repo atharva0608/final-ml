@@ -80,5 +80,6 @@ class Cluster(Base):
     optimization_jobs = relationship("OptimizationJob", back_populates="cluster")
     agent_actions = relationship("AgentAction", back_populates="cluster")
     metrics = relationship("ClusterMetric", back_populates="cluster")
+    pod_metrics = relationship("PodMetric", back_populates="cluster", cascade="all, delete-orphan")
     hibernation_schedule = relationship("HibernationSchedule", uselist=False, back_populates="cluster")
     api_keys = relationship("APIKey", back_populates="cluster")

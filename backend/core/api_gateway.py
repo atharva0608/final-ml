@@ -438,6 +438,10 @@ app.include_router(atharva_router, prefix="/api/v1")
 # AtharvaAi Pool Selection & Termination Monitoring routes
 app.include_router(atharvaai_router, prefix="/api/v1")
 
+# Pod Metrics & Right-Sizing routes
+from backend.api.pod_metrics_routes import router as pod_metrics_router
+app.include_router(pod_metrics_router, prefix="/api/v1")
+
 # Tag Management routes
 app.include_router(tag_policy_router, prefix="/api/v1")
 app.include_router(tag_management_router, prefix="/api/v1")

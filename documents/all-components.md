@@ -6,7 +6,7 @@
 >
 > **🔴 Red API Endpoint** = Endpoint exists in backend but is **NOT called** from the frontend (unused)
 >
-> **Last Updated:** 2026-02-17 — Reflects zombie detection rules, KPI fixes, authorization logic, and system-managed resource auto-authorization.
+> **Last Updated:** 2026-02-17 — Reflects zombie detection rules, KPI fixes, authorization logic, system-managed resource auto-authorization, and newly documented cluster/right-sizing/cleanup sub-components and backend route files.
 
 ---
 
@@ -221,6 +221,8 @@
 | **Configure Policy Button** | Button | Shown when no policy exists | N/A | — | — | — | — | clusters/ClusterList.jsx | App.js |
 | **Cluster Configuration** | Card | K8s Version, VPC ID, Tags, Agent Installed | Real API | (included in cluster data) ↑ | ↑ same endpoint | ↑ | ↑ | ↑ | ↑ |
 | **Node List** | Table | Nodes in the cluster | Real API | `GET /api/v1/clusters/{id}/nodes` | ClusterService → queries Instance table by cluster_id | instances | instances.instance_id, instances.instance_type, instances.lifecycle, instances.az, instances.cpu_util, instances.memory_util, instances.state | clusters/ClusterList.jsx, api/cluster_routes.py, services/cluster_service.py | App.js |
+| **NodeGroupBreakdown** | Graph | Bar chart of node groups/types | Mock API | `GET /api/v1/metrics/cluster/{id}/nodegroups` | Mock aggregation of nodes | instances | instance_type, lifecycle | components/clusters/NodeGroupBreakdown.jsx | clusters/ClusterDetails.jsx |
+| **ClusterHealthTimeline** | Timeline | 24h health event timeline | Mock API | `GET /api/v1/metrics/cluster/{id}/health-timeline` | Mock events | — | — | components/clusters/ClusterHealthTimeline.jsx | clusters/ClusterDetails.jsx |
 | **Close Button** | Button | Closes modal | N/A | — | — | — | — | clusters/ClusterList.jsx | App.js |
 
 ### Cluster Confirmation Modals
@@ -247,6 +249,14 @@
 | **CPU %** | Graph | Utilization bar (green <80%, red ≥80%) + percentage | Real API | (in nodes response) ↑ | ↑ same endpoint | ↑ | ↑ | ↑ | ↑ |
 | **Zone** | Text | Availability zone (e.g. us-east-1a) | Real API | (in nodes response) ↑ | ↑ same endpoint | ↑ | ↑ | ↑ | ↑ |
 | **Mock Fallback** | — | If API fails, 3 hardcoded rows are shown | Hardcoded | — | — | — | — | clusters/ClusterList.jsx | App.js |
+
+### Cluster Sub-Components
+
+| Component | Type | What It Does | Data Source | API Endpoint | Backend Logic | DB Table | Columns Used | Dependencies | File Name |
+|---|---|---|---|---|---|---|---|---|---|
+| **ClusterUtilizationSparkline** | Graph | Mini area chart sparkline showing CPU utilization history for a cluster | Real API | `GET /api/v1/metrics/cluster/{id}/utilization` | MetricsService → per-cluster utilization time-series | instances | instances.cpu_util | clusters/ClusterList.jsx, services/api.js | clusters/ClusterUtilizationSparkline.jsx |
+| **PolicyGapAlert** | Badge | Shows "Aligned" (green) or "N Policy Gaps" (orange) badge with optional Fix button | Computed | — | — | — | — | clusters/ClusterList.jsx | clusters/PolicyGapAlert.jsx |
+| **SpotRatioGauge** | Graph | Semi-circle donut gauge showing Spot vs On-Demand instance ratio | Computed | — | — | — | — | clusters/ClusterList.jsx | clusters/SpotRatioGauge.jsx |
 
 ---
 
@@ -280,6 +290,7 @@
 | **View Details Button** | Button | Opens PoolDetailsModal | N/A | — | — | — | — | atharva/PoolDetailsModal.jsx | pages/AtharvaAiPage.jsx |
 | **Blacklist Button** | Button | Blacklists pool | Mock API | `POST /api/v1/atharva/blacklist` | AtharvaService.add_to_blacklist → in-memory list | — (in-memory) | — | api/atharva_routes.py, services/atharva_service.py | — |
 | **Switch Button** | Button | Opens SwitchConfirmationModal | N/A | — | — | — | — | atharva/SwitchConfirmationModal.jsx | pages/AtharvaAiPage.jsx |
+| **ML Confidence** | Display | Confidence bar and score (0-100%) | Mock API | (included in above) ↑ | ↑ same endpoint | ↑ | ↑ | ↑ | components/atharva/LivePoolRankings.jsx | pages/AtharvaAiPage.jsx |
 
 ### Filtering Pipeline Stats
 
@@ -302,6 +313,14 @@
 | **Clone Button** | Button | Clones template | Mock API | `POST /api/v1/atharva/node-templates` | AtharvaService node templates → in-memory list | — (in-memory) | — | api/atharva_routes.py, services/atharva_service.py | — |
 | **Delete Button** | Button | Deletes template | Mock API | `DELETE /api/v1/atharva/node-templates/{id}` | AtharvaService node templates → in-memory list | — (in-memory) | — | api/atharva_routes.py, services/atharva_service.py | — |
 | **Template Form** | Form | Architecture, vCPU, Memory, Instance Families, etc. | Hardcoded (options) | `PUT /api/v1/atharva/node-templates/{id}` | AtharvaService node templates → in-memory list | — (in-memory) | — | api/atharva_routes.py, services/atharva_service.py | — |
+
+### Visualizations & Audits
+
+| UI Element | Type | What It Does | Data Source | API Endpoint | Backend Logic | DB Table | Columns Used | Dependencies | File Name |
+|---|---|---|---|---|---|---|---|---|---|
+| **InterruptionHeatmap** | Graph | Heatmap of interruption events (Day x Hour) | Mock API | `GET /api/v1/atharva/interruption-heatmap` | Aggregates TerminationEvent data | termination_events | event_time, instance_type | components/atharva/InterruptionHeatmap.jsx | pages/AtharvaAiPage.jsx |
+| **RebalancingHistoryTimeline**| Timeline | Vertical timeline of rebalancing events | Mock API | `GET /api/v1/atharva/rebalancing/status` | AtharvaService.get_rebalancing_status | rebalancing_actions | trigger, source_pool, target_pool, status, timestamp | components/atharva/RebalancingTimeline.jsx | pages/AtharvaAiPage.jsx |
+| **AutoRebalanceAuditCard** | Card | Detailed audit of rebalancing action | Mock API | `GET /api/v1/atharva/rebalancing/audit/{id}` | AtharvaService → returns specific action details | rebalancing_actions | actions, logs, cost_impact | components/atharva/AutoRebalanceAuditCard.jsx | pages/AtharvaAiPage.jsx |
 
 ### AtharvaAi Modals
 
@@ -362,12 +381,12 @@
 
 | UI Element | Type | What It Does | Data Source | API Endpoint | Backend Logic | DB Table | Columns Used | Dependencies | File Name |
 |---|---|---|---|---|---|---|---|---|---|
-| **Page Title** "Node Templates" | Text | Title + subtitle | Hardcoded | — | — | — | — | templates/TemplateCards.jsx | — |
+| **Page Title** "Node Templates" | Text | Title + subtitle | Hardcoded | — | — | — | — | templates/TemplateList.jsx | — |
 | **Create Template Button** | Button | Opens TemplateBuilder modal | N/A | — | — | — | — | templates/TemplateBuilder.jsx | templates/TemplateList.jsx |
-| **Template Grid** | Card Grid | Name, Default badge, Arch, Disk, Instance Families | Real API | `GET /api/v1/templates` | TemplateService.list_templates → by organization | node_templates | node_templates.name, node_templates.families, node_templates.architecture, node_templates.strategy, node_templates.is_default | templates/TemplateCards.jsx | — |
-| **Delete Button** | Button | Deletes template | Real API | `DELETE /api/v1/templates/{id}` | TemplateService.delete_template → blocks last default | node_templates | node_templates.id, node_templates.is_default | templates/TemplateCards.jsx, api/template_routes.py, services/template_service.py | — |
-| **Set as Default Button** | Button | Sets template as default | Real API | `POST /api/v1/templates/{id}/set-default` | TemplateService.set_default → unsets others, sets is_default='Y' | node_templates | node_templates.is_default | templates/TemplateCards.jsx, api/template_routes.py, services/template_service.py | — |
-| **Empty State** | Display | "No templates found" + Create button | Hardcoded | — | — | — | — | templates/TemplateCards.jsx | — |
+| **Template Grid** | Card Grid | Name, Default badge, Arch, Disk, Instance Families | Real API | `GET /api/v1/templates` | TemplateService.list_templates → by organization | node_templates | node_templates.name, node_templates.families, node_templates.architecture, node_templates.strategy, node_templates.is_default | templates/TemplateList.jsx | — |
+| **Delete Button** | Button | Deletes template | Real API | `DELETE /api/v1/templates/{id}` | TemplateService.delete_template → blocks last default | node_templates | node_templates.id, node_templates.is_default | templates/TemplateList.jsx, api/template_routes.py, services/template_service.py | — |
+| **Set as Default Button** | Button | Sets template as default | Real API | `POST /api/v1/templates/{id}/set-default` | TemplateService.set_default → unsets others, sets is_default='Y' | node_templates | node_templates.is_default | templates/TemplateList.jsx, api/template_routes.py, services/template_service.py | — |
+| **Empty State** | Display | "No templates found" + Create button | Hardcoded | — | — | — | — | templates/TemplateList.jsx | — |
 
 ### TemplateBuilder Modal
 
@@ -409,6 +428,11 @@
 | UI Element | Type | What It Does | Data Source | API Endpoint | Backend Logic | DB Table | Columns Used | Dependencies | File Name |
 |---|---|---|---|---|---|---|---|---|---|
 | **Resource Efficiency Card** | Card | "Select an instance to view usage charts" | Hardcoded | — | — | — | — | right-sizing/RightSizing.jsx | App.js |
+| **InstanceUsageDetailPanel**| Slide-over | Detailed metrics, findings, 14-day sparklines | Mock API | `GET /api/v1/optimization/rightsizing/{clusterId}` (subset) | Parsed from recommendation response | — | — | components/right-sizing/InstanceUsageDetailPanel.jsx | right-sizing/RightSizing.jsx |
+| **SavingsTracker** | Graph | Area chart of realized savings over time | Mock API | `GET /api/v1/optimization/savings/realized` | Mock trend data (would query daily_costs) | daily_costs | date, amount, savings_category | components/right-sizing/SavingsTracker.jsx | right-sizing/RightSizing.jsx |
+| **BatchApplyModal** | Modal | Bulk apply recommendations | Mock API | `POST /api/v1/optimization/rightsizing/batch-apply` | Mock success response | — | — | components/right-sizing/BatchApplyModal.jsx | right-sizing/RightSizing.jsx |
+| **ImpactSummary** | Card | 4-stat grid showing potential savings, optimization score, vCPU reduction, and memory reduction | Computed | — | — | — | — | right-sizing/RightSizing.jsx | right-sizing/ImpactSummary.jsx |
+| **RecommendationAgeIndicator** | Badge | Age indicator badge — New (green, <3d), Pending (yellow, 3-7d), Stale (orange, >7d) with day count | Computed | — | — | — | — | right-sizing/RightSizing.jsx | right-sizing/RecommendationAgeIndicator.jsx |
 
 ---
 
@@ -485,6 +509,7 @@
 | Component | Type | What It Does | Data Source | API Endpoint | Backend Logic | DB Table | Columns Used | Dependencies | File Name |
 |---|---|---|---|---|---|---|---|---|---|
 | **FilterPanel** | Toolbar | Account selector, region selector, safety level filters, refresh button, last scan timestamp | Real API | `GET /api/v1/accounts` | AccountService.list_accounts → RBAC filtered | accounts | accounts.id, accounts.aws_account_id, accounts.role_arn | cleanup/CleanupDashboard.jsx | cleanup/layout/FilterPanel.jsx |
+| **CleanupSidebar** | Sidebar | Grouped resource category navigation — 7 collapsible groups (Compute, Storage, Network, Database, Security, Management, Identity) with per-type counts and cost-by-service data | Real API | `GET /api/v1/hygiene/cost-services` | HygieneService → cost breakdown by service | accounts | accounts.id | cleanup/CleanupDashboard.jsx | cleanup/layout/CleanupSidebar.jsx |
 | **HeroMetricsPanel** | Card | Summary stats — total resources, total_potential_savings (SAFE_TO_DELETE only), total_discovered_cost (ALL resources), savings_trend_percent, waste score gauge, risk breakdown | Computed | — | — | — | — | cleanup/CleanupDashboard.jsx, shared/GaugeChart.jsx | cleanup/summary/HeroMetricsPanel.jsx |
 | **SavingsGauge** | Graph | Animated semi-circle gauge — selected savings vs total potential savings with dollar display | Computed | — | — | — | — | cleanup/CleanupDashboard.jsx | cleanup/summary/SavingsGauge.jsx |
 | **ResourceTable** | Table | Scan results table — resource ID, name, type, region, status badge (color-coded per HygieneStatus), cost/mo, tag compliance, authorize/unauthorize toggle, cleanup actions | Real API | `GET /api/v1/hygiene/scan/{accountId}` | HygieneService.scan_resources → parallel region scan with zombie detection | accounts, authorized_resources, hygiene_policies | accounts.role_arn, authorized_resources.resource_id | cleanup/CleanupDashboard.jsx | cleanup/tables/ResourceTable.jsx |
@@ -823,8 +848,15 @@
 | **Set as Default Checkbox** | Checkbox | Set this as default account | N/A | — | — | — | — | settings/CloudIntegrations.jsx | settings/Settings.jsx |
 | **Cancel Button** | Button | Closes modal, resets form | N/A | — | — | — | — | settings/CloudIntegrations.jsx | settings/Settings.jsx |
 | **Link Account Button** | Button | Creates account via API | Real API | `POST /api/v1/accounts` | AccountService.link_aws_account → STS AssumeRole verification | accounts | accounts.aws_account_id, accounts.role_arn, accounts.external_id, accounts.organization_id, accounts.status | settings/CloudIntegrations.jsx | settings/Settings.jsx |
+| **Slack Integration Card** | Card | Connect Slack workspace button + status | N/A | — | — | — | — | settings/CloudIntegrations.jsx | settings/Settings.jsx |
+| **Microsoft Teams Card** | Card | Connect MS Teams button + status | N/A | — | — | — | — | settings/CloudIntegrations.jsx | settings/Settings.jsx |
+
+---
+
+
 
 ### Billing Tab
+
 
 #### Current Plan Card
 
@@ -882,6 +914,10 @@
 | 🔴 `transfer_routes.py` | Data transfer optimization | No frontend integration | Not wired | transfer_analysis | transfer_analysis.* | — | — |
 | 🔴 `installer_routes.py` | Agent installer routes | Used only during onboarding, not via sidebar | Not wired | — | — | — | — |
 | 🔴 `dashboard_routes.py` | Dashboard-specific routes | Frontend uses `metricAPI` instead | Not wired | — | — | — | — |
+| 🔴 `billing_routes.py` | `POST /api/v1/billing/portal-session`, `GET /api/v1/billing/status`, `GET /api/v1/billing/cost-summary`, `GET /api/v1/billing/daily-costs`, `GET /api/v1/billing/costs-by-service`, `GET /api/v1/billing/sync-status`, `POST /api/v1/billing/trigger-sync` | Stripe Billing Portal + AWS Cost Explorer endpoints — frontend Billing tab uses hardcoded data only | Not wired | daily_costs, organizations | daily_costs.amount, daily_costs.service, organizations.stripe_* | — | — |
+| 🔴 `health_routes.py` | `GET /api/v1/health/system` | System health endpoint (super admin only) — AdminHealth component uses `GET /api/v1/admin/health` instead | Not wired | — | — | — | — |
+| 🔴 `pod_metrics_routes.py` | `POST /api/v1/pod-metrics/batch`, `GET /api/v1/pod-metrics/`, `DELETE /api/v1/pod-metrics/cleanup`, `GET /api/v1/pod-metrics/rightsizing` | DaemonSet pod-level metrics collection + right-sizing recommendations — agent-only endpoints, no frontend UI | Not wired | pod_metrics | pod_metrics.* | — | — |
+| 🔴 `agent_routes.py` | `POST /api/v1/agents/register`, `POST /api/v1/agents/deregister`, `POST /api/v1/agents/heartbeat` | K8s agent registration + heartbeat endpoints — called by DaemonSet agent only, no frontend UI | Not wired | clusters | clusters.status, clusters.agent_installed, clusters.last_heartbeat | — | — |
 
 ---
 

@@ -11,6 +11,8 @@ import { formatCurrency, formatNumber, formatDate, formatDateTime } from '../../
 
 import NodeList from './NodeList';
 import HibernationScheduleV2 from '../hibernation/HibernationScheduleV2';
+import NodeGroupBreakdown from './NodeGroupBreakdown';
+import ClusterHealthTimeline from './ClusterHealthTimeline';
 
 const ClusterDetails = ({ clusterId, onClose }) => {
   const [cluster, setCluster] = useState(null);
@@ -244,6 +246,16 @@ const ClusterDetails = ({ clusterId, onClose }) => {
               </div>
             </Card>
           )}
+
+          {/* Detailed Analysis (Node Groups & Health) */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="h-80">
+              <NodeGroupBreakdown clusterId={clusterId} />
+            </div>
+            <div className="h-80">
+              <ClusterHealthTimeline clusterId={clusterId} />
+            </div>
+          </div>
 
           {/* Policy Configuration */}
           {policy ? (
