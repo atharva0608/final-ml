@@ -1,599 +1,620 @@
-import { useState } from "react";
+# Hibernation Schedules - Complete Feature Specification
 
-// ── Demo Data ─────────────────────────────────────────────────────────────────
-const DEMO_MEMBERS = [
-  { id:"1", full_name:"Atharva Pudale",   email:"atharva@cloudnest.io",  role:"ORG_ADMIN",  status:"ACTIVE",         team_id:"t1", last_seen:"2 min ago" },
-  { id:"2", full_name:"Sarah Chen",        email:"sarah@cloudnest.io",    role:"TEAM_LEAD",  status:"ACTIVE",         team_id:"t1", last_seen:"1 hr ago"  },
-  { id:"3", full_name:"Marcus Johnson",    email:"marcus@cloudnest.io",   role:"MEMBER",     status:"ACTIVE",         team_id:"t2", last_seen:"3 hrs ago" },
-  { id:"4", full_name:"Priya Sharma",      email:"priya@cloudnest.io",    role:"MEMBER",     status:"ACTIVE",         team_id:"t2", last_seen:"Yesterday" },
-  { id:"5", full_name:"Diego Herrera",     email:"diego@cloudnest.io",    role:"TEAM_LEAD",  status:"ACTIVE",         team_id:"t3", last_seen:"Just now"  },
-  { id:"6", full_name:"Yuki Tanaka",       email:"yuki@cloudnest.io",     role:"MEMBER",     status:"ACTIVE",         team_id:"t3", last_seen:"5 hrs ago" },
-  { id:"7", full_name:"Invited User",      email:"newdev@example.com",    role:"MEMBER",     status:"PENDING_INVITE", team_id:"t1", last_seen:"—"         },
-  { id:"8", full_name:"",                  email:"contractor@ext.com",    role:"MEMBER",     status:"PENDING_INVITE", team_id:null, last_seen:"—"         },
-];
+## 🎯 Core Concept
 
-const DEMO_TEAMS = [
-  { id:"t1", name:"Platform Engineering", member_count:3, monthly_cost:4820, resources:12, color:"#6366f1" },
-  { id:"t2", name:"Data Science",         member_count:2, monthly_cost:2310, resources:7,  color:"#0ea5e9" },
-  { id:"t3", name:"DevOps",               member_count:2, monthly_cost:6140, resources:19, color:"#10b981" },
-  { id:"t4", name:"Frontend",             member_count:0, monthly_cost:0,    resources:0,  color:"#f59e0b" },
-];
+**Hibernation = Automatically sleep clusters during non-business hours to save costs**
 
-const DEMO_ROLES = [
-  {
-    id:"r1", name:"Organization Admin", type:"SYSTEM", description:"Full access to all organization features. Global dashboard view.",
-    permissions: {
-      "Governance":        ["Approve Requests","Reject Requests","Manage Policies","Bypass Approval"],
-      "Team Management":   ["Create Teams","Invite Users","Manage Roles","Remove Members"],
-      "Billing":           ["View Spending","View Invoices","Manage Billing"],
-      "Cloud Integration": ["Connect Accounts","Manage Integrations"],
-      "Audit":             ["View Audit Logs"],
-    }
-  },
-  {
-    id:"r2", name:"Team Lead", type:"SYSTEM", description:"Manage team, execute cleanups, approve requests. Team dashboard view.",
-    permissions: {
-      "Governance":        ["Approve Requests","Reject Requests"],
-      "Team Management":   ["Invite Users","Manage Team Members"],
-      "Cloud Integration": ["View Integrations"],
-      "Audit":             ["View Audit Logs"],
-    }
-  },
-  {
-    id:"r3", name:"Member", type:"SYSTEM", description:"View personal resources, request actions. Personal dashboard view.",
-    permissions: {
-      "Governance": ["Request Actions"],
-    }
-  },
-  {
-    id:"r4", name:"FinOps Analyst", type:"CUSTOM", description:"Read-only access to billing and cost data across all teams.",
-    permissions: {
-      "Billing":           ["View Spending","View Invoices"],
-      "Audit":             ["View Audit Logs"],
-    }
-  },
-];
+Think of it like an **automated thermostat** for your Kubernetes infrastructure.
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-const ROLE_META = {
-  ORG_ADMIN:  { bg:"#fef3c7", text:"#92400e", label:"Org Admin"  },
-  TEAM_LEAD:  { bg:"#dbeafe", text:"#1e40af", label:"Team Lead"  },
-  MEMBER:     { bg:"#f0fdf4", text:"#166534", label:"Member"     },
-};
-const STATUS_META = {
-  ACTIVE:         { dot:"#10b981", label:"Active",  bg:"#d1fae5", text:"#065f46" },
-  PENDING_INVITE: { dot:"#f59e0b", label:"Invited", bg:"#fef9c3", text:"#854d0e" },
-};
-const MODULE_ICONS = {
-  "Governance":"🛡️","Team Management":"👥","Billing":"💳",
-  "Cloud Integration":"☁️","Audit":"📋","Compute":"⚙️","Hibernation":"💤",
-};
+---
 
-function initials(name="",email="") {
-  if (name.trim()) return name.split(" ").map(w=>w[0]).join("").slice(0,2).toUpperCase();
-  return email.slice(0,2).toUpperCase();
-}
-const AV_COLORS = ["#6366f1","#0ea5e9","#10b981","#f59e0b","#f43f5e","#8b5cf6","#ec4899"];
-function avColor(s="") { return AV_COLORS[(s.charCodeAt(0)||0)%AV_COLORS.length]; }
+## 📋 What Should Be Included
 
-function Avatar({ name="", email="", size=34 }) {
-  const label = initials(name, email);
-  return (
-    <div style={{width:size,height:size,borderRadius:"50%",background:avColor(name||email),
-      display:"flex",alignItems:"center",justifyContent:"center",
-      fontSize:size*0.36,fontWeight:700,color:"#fff",flexShrink:0,letterSpacing:"-0.5px"}}>
-      {label}
-    </div>
-  );
-}
+### **1. Schedule Management**
 
-function Chip({ bg, color, children }) {
-  return <span style={{fontSize:11,fontWeight:600,background:bg,color,padding:"2px 9px",borderRadius:20,whiteSpace:"nowrap",display:"inline-block"}}>{children}</span>;
-}
+#### A. Create/Edit Schedule
+```
+User configures:
+├─ Schedule Name (e.g., "Weekend Shutdown")
+├─ Hibernation Strategy (3 types - see below)
+├─ Target Clusters (multi-select)
+├─ Sleep Days (Mon, Tue, Wed, Thu, Fri, Sat, Sun)
+├─ Sleep Window (Start time → End time)
+├─ Timezone (UTC, PST, EST, etc.)
+├─ Pre-warm Duration (0-60 minutes)
+└─ Activation Status (Active/Paused)
+```
 
-function Tab({ label, active, onClick, count }) {
-  return (
-    <button onClick={onClick} style={{
-      padding:"9px 18px",fontSize:13,fontWeight:600,border:"none",background:"none",cursor:"pointer",
-      color:active?"#0f172a":"#94a3b8",
-      borderBottom:`2.5px solid ${active?"#6366f1":"transparent"}`,
-      marginBottom:-2,transition:"all 0.15s",display:"flex",alignItems:"center",gap:6,
-    }}>
-      {label}
-      {count!=null && <span style={{fontSize:10,background:active?"#6366f1":"#e5e7eb",color:active?"#fff":"#64748b",padding:"1px 6px",borderRadius:10,fontWeight:700}}>{count}</span>}
-    </button>
-  );
-}
+#### B. Hibernation Strategies (3 Types)
 
-// ── Members Tab ───────────────────────────────────────────────────────────────
-function MembersTab() {
-  const [filter, setFilter] = useState("ACTIVE");
-  const [teamFilter, setTeamFilter] = useState("all");
-  const [search, setSearch] = useState("");
-  const [openMenu, setOpenMenu] = useState(null);
-  const [showInvite, setShowInvite] = useState(false);
-  const [inviteEmail, setInviteEmail] = useState("");
-  const [inviteName, setInviteName] = useState("");
-  const [inviteRole, setInviteRole] = useState("MEMBER");
-  const [inviteTeam, setInviteTeam] = useState("t1");
-  const [members, setMembers] = useState(DEMO_MEMBERS);
+```jsx
+┌─────────────────────────────────────────────────────────────────┐
+│  SELECT HIBERNATION STRATEGY                                    │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │ 🌙 NAMESPACE SLEEP (Recommended)                        │   │
+│  │                                                          │   │
+│  │ What it does:                                           │   │
+│  │ • Scales all workload replicas to 0                    │   │
+│  │ • Keeps nodes and control plane running                │   │
+│  │ • Fastest wake time (~2 minutes)                       │   │
+│  │                                                          │   │
+│  │ Best for:                                               │   │
+│  │ ✅ Development/staging environments                     │   │
+│  │ ✅ Stateless applications                               │   │
+│  │ ✅ Frequent wake cycles                                 │   │
+│  │                                                          │   │
+│  │ Savings: ~80%  |  Wake: 2min  |  Risk: Low             │   │
+│  └─────────────────────────────────────────────────────────┘   │
+│                                                                  │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │ 🖥️ NODE SCALE-DOWN (Balanced)                          │   │
+│  │                                                          │   │
+│  │ What it does:                                           │   │
+│  │ • Terminates worker nodes                              │   │
+│  │ • Keeps control plane active                           │   │
+│  │ • Medium wake time (~5 minutes)                        │   │
+│  │                                                          │   │
+│  │ Best for:                                               │   │
+│  │ ✅ Cost-sensitive non-prod clusters                     │   │
+│  │ ✅ Clusters with auto-scaling                           │   │
+│  │ ✅ Overnight/weekend hibernation                        │   │
+│  │                                                          │   │
+│  │ Savings: ~70%  |  Wake: 5min  |  Risk: Medium          │   │
+│  └─────────────────────────────────────────────────────────┘   │
+│                                                                  │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │ 💥 FULL HIBERNATION - NUCLEAR (Maximum Savings)        │   │
+│  │                                                          │   │
+│  │ What it does:                                           │   │
+│  │ • Stops entire cluster (control + worker nodes)        │   │
+│  │ • EBS volumes retained                                 │   │
+│  │ • Longest wake time (~15 minutes)                      │   │
+│  │                                                          │   │
+│  │ Best for:                                               │   │
+│  │ ⚠️ POC/demo environments                                │   │
+│  │ ⚠️ Long-duration hibernation (weekends/holidays)       │   │
+│  │ ⚠️ Non-critical workloads only                          │   │
+│  │                                                          │   │
+│  │ Savings: ~95%  |  Wake: 15min  |  Risk: High           │   │
+│  └─────────────────────────────────────────────────────────┘   │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
 
-  const filtered = members.filter(m => {
-    const statusMatch = filter==="ACTIVE" ? m.status==="ACTIVE" : m.status==="PENDING_INVITE";
-    const teamMatch = teamFilter==="all" || m.team_id===teamFilter;
-    const q = search.toLowerCase();
-    const searchMatch = !q || (m.full_name||"").toLowerCase().includes(q) || m.email.toLowerCase().includes(q);
-    return statusMatch && teamMatch && searchMatch;
-  });
+---
 
-  const teamName = id => DEMO_TEAMS.find(t=>t.id===id)?.name;
-  const teamColor = id => DEMO_TEAMS.find(t=>t.id===id)?.color || "#94a3b8";
+### **2. Dashboard View (Main Page)**
 
-  const handleInvite = () => {
-    const newM = { id:`m${Date.now()}`, full_name:inviteName, email:inviteEmail, role:inviteRole, status:"PENDING_INVITE", team_id:inviteTeam, last_seen:"—" };
-    setMembers(prev=>[...prev, newM]);
-    setShowInvite(false); setInviteEmail(""); setInviteName("");
-  };
+```jsx
+┌─────────────────────────────────────────────────────────────────┐
+│  HIBERNATION SCHEDULES                           [+ New Schedule]│
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  📊 WEEKLY SUMMARY                                              │
+│  ┌────────────┬────────────┬────────────┬────────────┐         │
+│  │ 😴 SLEEP   │ ☀️ AWAKE   │ 💰 EST.    │ 📅 STATUS  │         │
+│  │   HOURS    │   HOURS    │   SAVINGS  │            │         │
+│  ├────────────┼────────────┼────────────┼────────────┤         │
+│  │    84h     │    84h     │    42%     │ 3 Active   │         │
+│  │ /168h total│            │  per week  │ 1 Paused   │         │
+│  └────────────┴────────────┴────────────┴────────────┘         │
+│                                                                  │
+│  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  │
+│                                                                  │
+│  📋 ACTIVE SCHEDULES (3)                                        │
+│                                                                  │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │ ▶️ Weekend Shutdown                         [ACTIVE] 🟢 │  │
+│  ├──────────────────────────────────────────────────────────┤  │
+│  │ Strategy:  🌙 Namespace Sleep                            │  │
+│  │ Clusters:  prod-web (2), staging-api (3)                │  │
+│  │ Schedule:  Sat-Sun | 00:00 → 00:00 (48h sleep)          │  │
+│  │ Timezone:  UTC                                           │  │
+│  │ Savings:   ~$1,200/week (~29% weekly reduction)         │  │
+│  │                                                           │  │
+│  │ Next Action: Sleep in 2d 14h (Sat 12:00 AM UTC)         │  │
+│  │                                                           │  │
+│  │ [⏸️ Pause] [✏️ Edit] [📊 History] [🗑️ Delete]          │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│                                                                  │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │ ▶️ Nightly Dev Shutdown                     [ACTIVE] 🟢 │  │
+│  ├──────────────────────────────────────────────────────────┤  │
+│  │ Strategy:  🖥️ Node Scale-Down                           │  │
+│  │ Clusters:  dev-cluster, test-cluster                    │  │
+│  │ Schedule:  Mon-Fri | 18:00 → 08:00 (14h/day)            │  │
+│  │ Timezone:  America/New_York (EST)                       │  │
+│  │ Pre-warm:  15 minutes before wake                       │  │
+│  │ Savings:   ~$850/week (~20% weekly reduction)           │  │
+│  │                                                           │  │
+│  │ Next Action: Wake in 9h 23m (8:00 AM EST)               │  │
+│  │                                                           │  │
+│  │ [⏸️ Pause] [✏️ Edit] [📊 History] [🗑️ Delete]          │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│                                                                  │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │ ▶️ Holiday Mode - December Break            [ACTIVE] 🟢 │  │
+│  ├──────────────────────────────────────────────────────────┤  │
+│  │ Strategy:  💥 Full Hibernation (Nuclear)                │  │
+│  │ Clusters:  demo-cluster, poc-cluster                    │  │
+│  │ Schedule:  Dec 24-26 | 00:00 → 00:00 (3 days)           │  │
+│  │ Timezone:  UTC                                           │  │
+│  │ Savings:   ~$480 (one-time)                             │  │
+│  │                                                           │  │
+│  │ Next Action: Sleep in 18d (Dec 24 12:00 AM UTC)         │  │
+│  │                                                           │  │
+│  │ [⏸️ Pause] [✏️ Edit] [📊 History] [🗑️ Delete]          │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│                                                                  │
+│  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  │
+│                                                                  │
+│  📋 PAUSED SCHEDULES (1)                                        │
+│                                                                  │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │ ⏸️ Lunch Break Hibernation                  [PAUSED] ⚪ │  │
+│  ├──────────────────────────────────────────────────────────┤  │
+│  │ Strategy:  🌙 Namespace Sleep                            │  │
+│  │ Clusters:  test-cluster                                  │  │
+│  │ Schedule:  Mon-Fri | 12:00 → 13:00 (1h/day)             │  │
+│  │ Timezone:  America/Los_Angeles (PST)                    │  │
+│  │                                                           │  │
+│  │ Status: Manually paused 3 days ago                       │  │
+│  │                                                           │  │
+│  │ [▶️ Resume] [✏️ Edit] [🗑️ Delete]                       │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
 
-  const handleRemove = (id) => setMembers(prev=>prev.filter(m=>m.id!==id));
+---
 
-  return (
-    <div>
-      {/* Stats */}
-      <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:10,marginBottom:18}}>
-        {[
-          ["Active members",   members.filter(m=>m.status==="ACTIVE").length,         "#0f172a"],
-          ["Pending invites",  members.filter(m=>m.status==="PENDING_INVITE").length,  "#d97706"],
-          ["Unassigned",       members.filter(m=>!m.team_id).length,                   "#dc2626"],
-        ].map(([l,v,c])=>(
-          <div key={l} style={{background:"#fff",border:"1px solid #f1f5f9",borderRadius:10,padding:"11px 16px",boxShadow:"0 1px 3px rgba(0,0,0,0.04)"}}>
-            <p style={{fontSize:11,color:"#9ca3af",margin:"0 0 2px",fontWeight:600}}>{l}</p>
-            <p style={{fontSize:22,fontWeight:800,color:c,margin:0}}>{v}</p>
-          </div>
-        ))}
-      </div>
+### **3. Create/Edit Schedule Modal**
 
-      {/* Toolbar */}
-      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14,gap:10,flexWrap:"wrap"}}>
-        <div style={{display:"flex",alignItems:"center",gap:8}}>
-          <button onClick={()=>setShowInvite(true)}
-            style={{background:"#10b981",color:"#fff",border:"none",borderRadius:8,padding:"8px 14px",fontSize:13,fontWeight:700,cursor:"pointer",display:"flex",alignItems:"center",gap:5}}>
-            + Invite Member
-          </button>
-          <div style={{display:"flex",background:"#f1f5f9",borderRadius:8,padding:3}}>
-            {["ACTIVE","INVITED"].map(s=>(
-              <button key={s} onClick={()=>setFilter(s)} style={{
-                padding:"5px 12px",borderRadius:6,fontSize:12,fontWeight:600,border:"none",cursor:"pointer",
-                background:filter===s?"#fff":"transparent",color:filter===s?"#0f172a":"#64748b",
-                boxShadow:filter===s?"0 1px 3px rgba(0,0,0,0.08)":"none",transition:"all 0.15s",
-              }}>{s}</button>
-            ))}
-          </div>
-          <select value={teamFilter} onChange={e=>setTeamFilter(e.target.value)}
-            style={{fontSize:12,border:"1.5px solid #e5e7eb",borderRadius:8,padding:"5px 10px",background:"#fff",cursor:"pointer"}}>
-            <option value="all">All Teams</option>
-            {DEMO_TEAMS.map(t=><option key={t.id} value={t.id}>{t.name}</option>)}
-          </select>
-        </div>
-        <div style={{position:"relative"}}>
-          <span style={{position:"absolute",left:10,top:"50%",transform:"translateY(-50%)",color:"#9ca3af",fontSize:13}}>🔍</span>
-          <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search members…"
-            style={{paddingLeft:30,paddingRight:12,paddingTop:7,paddingBottom:7,fontSize:13,border:"1.5px solid #e5e7eb",borderRadius:8,width:210,outline:"none"}} />
-        </div>
-      </div>
+```jsx
+┌─────────────────────────────────────────────────────────────────┐
+│  📝 NEW HIBERNATION SCHEDULE                        [Save] [✕] │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  STEP 1: BASIC INFO                                             │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │ Schedule Name *                                          │  │
+│  │ [Weekend Shutdown________________________]              │  │
+│  │                                                           │  │
+│  │ Description (optional)                                   │  │
+│  │ [Hibernate prod clusters on weekends_______]            │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│                                                                  │
+│  STEP 2: HIBERNATION STRATEGY *                                │
+│  (See 3 strategy cards above - user selects one)              │
+│                                                                  │
+│  STEP 3: TARGET CLUSTERS *                                      │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │ Select one or more clusters to hibernate                │  │
+│  │                                                           │  │
+│  │ ☑️ prod-web (us-east-1) - 5 nodes                       │  │
+│  │ ☑️ prod-api (us-east-1) - 8 nodes                       │  │
+│  │ ☐ staging-cluster (us-west-2) - 3 nodes                │  │
+│  │ ☐ dev-cluster (eu-west-1) - 2 nodes                    │  │
+│  │                                                           │  │
+│  │ 💡 Tip: Group similar clusters for easier management    │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│                                                                  │
+│  STEP 4: SLEEP SCHEDULE *                                       │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │ 🎯 Quick Templates (click to apply):                    │  │
+│  │                                                           │  │
+│  │ [💼 Business Hours] [🌙 Nights Only] [☕ Weekends Off]  │  │
+│  │                                                           │  │
+│  │ ─────────────────────────────────────────────────────    │  │
+│  │                                                           │  │
+│  │ Sleep on these days:                                     │  │
+│  │ [Mon] [Tue] [Wed] [Thu] [Fri] [Sat✓] [Sun✓]            │  │
+│  │                                                           │  │
+│  │ Sleep Window:                                            │  │
+│  │ Sleep at: [00:00 ▼]    Wake at: [00:00 ▼]              │  │
+│  │                                                           │  │
+│  │ ⚠️ This is an overnight schedule (crosses midnight)     │  │
+│  │                                                           │  │
+│  │ Timezone: [UTC ▼]                                       │  │
+│  │                                                           │  │
+│  │ Pre-warm (wake early to prepare):                       │  │
+│  │ [15] minutes before wake time                           │  │
+│  │ ℹ️ Cluster will start warming up at 11:45 PM           │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│                                                                  │
+│  STEP 5: ADVANCED OPTIONS (Optional)                            │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │ ☐ Send notification before hibernation (15 min warning)│  │
+│  │ ☐ Take snapshot before first hibernation               │  │
+│  │ ☑️ Enable CloudWatch alarms during wake cycle          │  │
+│  │ ☐ Dry run mode (simulate without actual hibernation)   │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│                                                                  │
+│  PREVIEW & SAVINGS ESTIMATE                                     │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │ Sleep Duration:  48 hours/week (Sat-Sun full)          │  │
+│  │ Affected Nodes:  13 nodes (prod-web + prod-api)        │  │
+│  │ Current Cost:   ~$4,200/week                            │  │
+│  │ Est. Savings:   ~$1,200/week (29% reduction)           │  │
+│  │                                                           │  │
+│  │ Annual Impact:  ~$62,400 saved per year                │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│                                                                  │
+│  [Cancel]                    [💾 Save as Draft] [✅ Activate]  │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
 
-      {/* Table */}
-      <div style={{background:"#fff",borderRadius:12,border:"1px solid #f1f5f9",overflow:"hidden",boxShadow:"0 1px 4px rgba(0,0,0,0.05)"}}>
-        <div style={{display:"grid",gridTemplateColumns:"2.2fr 2fr 1.4fr 1.3fr 1fr 80px",padding:"9px 16px",background:"#f8fafc",borderBottom:"1px solid #f1f5f9"}}>
-          {["Member","Email","Team","Role","Last seen",""].map(h=>(
-            <span key={h} style={{fontSize:10,fontWeight:700,color:"#9ca3af",textTransform:"uppercase",letterSpacing:"0.05em"}}>{h}</span>
-          ))}
-        </div>
+---
 
-        {filtered.length===0 ? (
-          <div style={{textAlign:"center",padding:"40px 0",color:"#9ca3af",fontSize:13}}>
-            {search ? "No members match your search." : "No members in this view."}
-          </div>
-        ) : filtered.map((m,i)=>{
-          const sm = STATUS_META[m.status]||STATUS_META.ACTIVE;
-          const rm = ROLE_META[m.role]||{bg:"#f1f5f9",text:"#374151",label:m.role};
-          const tn = teamName(m.team_id);
-          const tc = teamColor(m.team_id);
-          return (
-            <div key={m.id}
-              style={{display:"grid",gridTemplateColumns:"2.2fr 2fr 1.4fr 1.3fr 1fr 80px",padding:"12px 16px",
-                borderBottom:i<filtered.length-1?"1px solid #f8fafc":"none",alignItems:"center",
-                transition:"background 0.1s",cursor:"default"}}
-              onMouseEnter={e=>e.currentTarget.style.background="#fafafa"}
-              onMouseLeave={e=>e.currentTarget.style.background="#fff"}>
-              {/* Member */}
-              <div style={{display:"flex",alignItems:"center",gap:10}}>
-                <div style={{position:"relative",flexShrink:0}}>
-                  <Avatar name={m.full_name} email={m.email} size={36}/>
-                  <span style={{position:"absolute",bottom:-1,right:-1,width:9,height:9,borderRadius:"50%",background:sm.dot,border:"2px solid #fff",display:"block"}}/>
-                </div>
-                <div>
-                  <div style={{fontSize:13,fontWeight:600,color:"#0f172a"}}>{m.full_name||<em style={{color:"#9ca3af"}}>No name</em>}</div>
-                  <Chip bg={sm.bg} color={sm.text}>{sm.label}</Chip>
-                </div>
-              </div>
-              {/* Email */}
-              <div style={{fontSize:12,color:"#64748b",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",paddingRight:8}}>{m.email}</div>
-              {/* Team */}
-              <div>
-                {tn
-                  ? <span style={{fontSize:12,fontWeight:600,background:tc+"18",color:tc,padding:"3px 9px",borderRadius:6}}>{tn}</span>
-                  : <span style={{fontSize:11,color:"#dc2626",background:"#fee2e2",padding:"3px 8px",borderRadius:6,fontWeight:600}}>Unassigned</span>
-                }
-              </div>
-              {/* Role */}
-              <div><Chip bg={rm.bg} color={rm.text}>{rm.label}</Chip></div>
-              {/* Last seen */}
-              <div style={{fontSize:12,color:"#9ca3af"}}>{m.last_seen}</div>
-              {/* Actions */}
-              <div style={{position:"relative"}}>
-                <button onClick={()=>setOpenMenu(openMenu===m.id?null:m.id)}
-                  style={{background:"none",border:"1.5px solid #e5e7eb",borderRadius:6,padding:"3px 9px",cursor:"pointer",fontSize:14,color:"#6b7280"}}>⋯</button>
-                {openMenu===m.id && (
-                  <div style={{position:"absolute",right:0,top:"110%",background:"#fff",border:"1px solid #e5e7eb",borderRadius:10,boxShadow:"0 8px 24px rgba(0,0,0,0.12)",zIndex:50,width:160,overflow:"hidden"}}
-                    onMouseLeave={()=>setOpenMenu(null)}>
-                    {[
-                      {label:"✏️ Edit role",  fn:()=>{ alert("Open role editor"); setOpenMenu(null); }},
-                      {label:"🔀 Move team",  fn:()=>{ alert("Open move modal");  setOpenMenu(null); }},
-                      {label:"🗑️ Remove",    fn:()=>{ handleRemove(m.id); setOpenMenu(null); }, danger:true},
-                    ].map(item=>(
-                      <button key={item.label} onClick={item.fn}
-                        style={{display:"block",width:"100%",textAlign:"left",padding:"9px 14px",fontSize:12,background:"none",border:"none",cursor:"pointer",color:item.danger?"#dc2626":"#374151",fontWeight:item.danger?600:400}}
-                        onMouseEnter={e=>e.target.style.background="#f8fafc"}
-                        onMouseLeave={e=>e.target.style.background="none"}>
-                        {item.label}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-          );
-        })}
-      </div>
+### **4. Visual Schedule Calendar**
 
-      {/* Invite modal */}
-      {showInvite && (
-        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.4)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:999}} onClick={()=>setShowInvite(false)}>
-          <div style={{background:"#fff",borderRadius:16,width:"100%",maxWidth:440,boxShadow:"0 20px 60px rgba(0,0,0,0.2)",padding:0}} onClick={e=>e.stopPropagation()}>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"18px 20px",borderBottom:"1px solid #f1f5f9"}}>
-              <h3 style={{fontSize:16,fontWeight:700,color:"#0f172a",margin:0}}>Invite a team member</h3>
-              <button onClick={()=>setShowInvite(false)} style={{background:"none",border:"none",fontSize:18,cursor:"pointer",color:"#9ca3af"}}>✕</button>
-            </div>
-            <div style={{padding:20,display:"flex",flexDirection:"column",gap:14}}>
-              <div>
-                <label style={{fontSize:12,fontWeight:600,color:"#374151",display:"block",marginBottom:5}}>Full name</label>
-                <input value={inviteName} onChange={e=>setInviteName(e.target.value)} placeholder="Jane Smith"
-                  style={{width:"100%",fontSize:13,border:"1.5px solid #e5e7eb",borderRadius:8,padding:"8px 10px",outline:"none",boxSizing:"border-box"}} />
-              </div>
-              <div>
-                <label style={{fontSize:12,fontWeight:600,color:"#374151",display:"block",marginBottom:5}}>Email address *</label>
-                <input value={inviteEmail} onChange={e=>setInviteEmail(e.target.value)} placeholder="jane@company.com"
-                  style={{width:"100%",fontSize:13,border:"1.5px solid #e5e7eb",borderRadius:8,padding:"8px 10px",outline:"none",boxSizing:"border-box"}} />
-              </div>
-              <div>
-                <label style={{fontSize:12,fontWeight:600,color:"#374151",display:"block",marginBottom:5}}>Assign to team</label>
-                <select value={inviteTeam} onChange={e=>setInviteTeam(e.target.value)}
-                  style={{width:"100%",fontSize:13,border:"1.5px solid #e5e7eb",borderRadius:8,padding:"8px 10px",background:"#fff",cursor:"pointer",boxSizing:"border-box"}}>
-                  {DEMO_TEAMS.map(t=><option key={t.id} value={t.id}>{t.name}</option>)}
-                </select>
-              </div>
-              <div>
-                <label style={{fontSize:12,fontWeight:600,color:"#374151",display:"block",marginBottom:8}}>Role</label>
-                <div style={{display:"flex",gap:8}}>
-                  {["MEMBER","TEAM_LEAD"].map(r=>{
-                    const rc = ROLE_META[r];
-                    return (
-                      <button key={r} onClick={()=>setInviteRole(r)}
-                        style={{flex:1,padding:"10px 12px",borderRadius:8,border:`1.5px solid ${inviteRole===r?rc.text+"77":"#e5e7eb"}`,background:inviteRole===r?rc.bg:"#fff",cursor:"pointer",textAlign:"left"}}>
-                        <div style={{fontSize:13,fontWeight:700,color:inviteRole===r?rc.text:"#374151"}}>{rc.label}</div>
-                        <div style={{fontSize:11,color:"#9ca3af",marginTop:2}}>{r==="MEMBER"?"Standard access":"Manage team"}</div>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-              <div style={{display:"flex",gap:8,marginTop:4}}>
-                <button onClick={()=>setShowInvite(false)}
-                  style={{flex:1,padding:"9px",borderRadius:8,border:"1.5px solid #e5e7eb",background:"#fff",fontSize:13,fontWeight:600,cursor:"pointer",color:"#374151"}}>
-                  Cancel
-                </button>
-                <button onClick={handleInvite} disabled={!inviteEmail}
-                  style={{flex:2,padding:"9px",borderRadius:8,border:"none",background:inviteEmail?"#10b981":"#e5e7eb",color:inviteEmail?"#fff":"#9ca3af",fontSize:13,fontWeight:700,cursor:inviteEmail?"pointer":"not-allowed"}}>
-                  Send Invite
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
+```jsx
+┌─────────────────────────────────────────────────────────────────┐
+│  📅 HIBERNATION CALENDAR VIEW                    [Week] [Month] │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  Week of Feb 17-23, 2026                                        │
+│                                                                  │
+│        Mon   Tue   Wed   Thu   Fri   Sat   Sun                 │
+│  00:00 ░░░   ░░░   ░░░   ░░░   ░░░   ███   ███                 │
+│  02:00 ░░░   ░░░   ░░░   ░░░   ░░░   ███   ███                 │
+│  04:00 ░░░   ░░░   ░░░   ░░░   ░░░   ███   ███                 │
+│  06:00 ░░░   ░░░   ░░░   ░░░   ░░░   ███   ███                 │
+│  08:00 ░░░   ░░░   ░░░   ░░░   ░░░   ███   ███                 │
+│  10:00 ░░░   ░░░   ░░░   ░░░   ░░░   ███   ███                 │
+│  12:00 ░░░   ░░░   ░░░   ░░░   ░░░   ███   ███                 │
+│  14:00 ░░░   ░░░   ░░░   ░░░   ░░░   ███   ███                 │
+│  16:00 ░░░   ░░░   ░░░   ░░░   ░░░   ███   ███                 │
+│  18:00 ███   ███   ███   ███   ███   ███   ███                 │
+│  20:00 ███   ███   ███   ███   ███   ███   ███                 │
+│  22:00 ███   ███   ███   ███   ███   ███   ███                 │
+│                                                                  │
+│  Legend:                                                         │
+│  ░░░ = Awake (Running)                                          │
+│  ███ = Sleeping (Hibernated)                                    │
+│                                                                  │
+│  💡 Hover over any cell to see which schedule is active         │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
 
-// ── Teams Tab ─────────────────────────────────────────────────────────────────
-function TeamsTab() {
-  const [teams, setTeams] = useState(DEMO_TEAMS);
-  const [showCreate, setShowCreate] = useState(false);
-  const [newName, setNewName] = useState("");
-  const [selected, setSelected] = useState(null);
+---
 
-  const handleCreate = () => {
-    if (!newName.trim()) return;
-    const colors = ["#6366f1","#0ea5e9","#10b981","#f59e0b","#f43f5e","#8b5cf6"];
-    setTeams(prev=>[...prev,{id:`t${Date.now()}`,name:newName,member_count:0,monthly_cost:0,resources:0,color:colors[prev.length%colors.length]}]);
-    setShowCreate(false); setNewName("");
-  };
+### **5. Execution History & Logs**
 
-  return (
-    <div>
-      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16}}>
-        <p style={{fontSize:13,color:"#6b7280",margin:0}}>{teams.length} teams in your organization</p>
-        <button onClick={()=>setShowCreate(true)}
-          style={{background:"#10b981",color:"#fff",border:"none",borderRadius:8,padding:"8px 14px",fontSize:13,fontWeight:700,cursor:"pointer"}}>
-          + New Team
-        </button>
-      </div>
+```jsx
+┌─────────────────────────────────────────────────────────────────┐
+│  📜 HIBERNATION HISTORY - Weekend Shutdown         [Filter] [✕] │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  Showing last 30 days                                           │
+│                                                                  │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │ ✅ Feb 17, 2026 12:00 AM UTC - SLEEP                     │  │
+│  │ Clusters: prod-web, prod-api                             │  │
+│  │ Strategy: Namespace Sleep                                │  │
+│  │ Status: Success                                          │  │
+│  │ Duration: 3m 42s                                         │  │
+│  │ • Scaled 23 deployments to 0 replicas                   │  │
+│  │ • Scaled 8 statefulsets to 0 replicas                   │  │
+│  │ • No errors                                              │  │
+│  │ [View Logs]                                              │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│                                                                  │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │ ✅ Feb 17, 2026 11:45 PM UTC - PRE-WARM                  │  │
+│  │ Clusters: prod-web, prod-api                             │  │
+│  │ Status: Success                                          │  │
+│  │ Duration: 4m 12s                                         │  │
+│  │ • Started 13 worker nodes                                │  │
+│  │ • Verified node readiness                                │  │
+│  │ • No errors                                              │  │
+│  │ [View Logs]                                              │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│                                                                  │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │ ✅ Feb 19, 2026 12:00 AM UTC - WAKE                      │  │
+│  │ Clusters: prod-web, prod-api                             │  │
+│  │ Strategy: Namespace Sleep                                │  │
+│  │ Status: Success                                          │  │
+│  │ Duration: 2m 18s                                         │  │
+│  │ • Restored 23 deployments to original replicas          │  │
+│  │ • Restored 8 statefulsets to original replicas          │  │
+│  │ • All pods running healthy                               │  │
+│  │ [View Logs]                                              │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│                                                                  │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │ ⚠️ Feb 10, 2026 12:00 AM UTC - SLEEP                     │  │
+│  │ Clusters: prod-web, prod-api                             │  │
+│  │ Strategy: Namespace Sleep                                │  │
+│  │ Status: Partial Success (Warnings)                      │  │
+│  │ Duration: 5m 02s                                         │  │
+│  │ • Scaled 22/23 deployments (1 PDB blocked)              │  │
+│  │ • nginx-ingress: PodDisruptionBudget prevented scale    │  │
+│  │ • Manual intervention may be needed                      │  │
+│  │ [View Logs] [Retry]                                      │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│                                                                  │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │ ❌ Feb 3, 2026 12:00 AM UTC - SLEEP                      │  │
+│  │ Clusters: prod-web                                       │  │
+│  │ Strategy: Node Scale-Down                                │  │
+│  │ Status: Failed                                           │  │
+│  │ Duration: 1m 32s (timeout)                               │  │
+│  │ • Error: Unable to drain nodes                           │  │
+│  │ • Reason: Pods with local storage detected              │  │
+│  │ • Rollback: Cluster left in original state              │  │
+│  │ [View Logs] [Retry] [Edit Schedule]                      │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│                                                                  │
+│  [Load More] [Export CSV]                                       │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
 
-      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(260px,1fr))",gap:14}}>
-        {teams.map(team=>(
-          <div key={team.id} onClick={()=>setSelected(team)}
-            style={{background:"#fff",borderRadius:14,border:"1px solid #f1f5f9",cursor:"pointer",overflow:"hidden",
-              boxShadow:"0 1px 4px rgba(0,0,0,0.05)",transition:"all 0.15s"}}
-            onMouseEnter={e=>{e.currentTarget.style.boxShadow="0 6px 24px rgba(0,0,0,0.1)";e.currentTarget.style.transform="translateY(-2px)";}}
-            onMouseLeave={e=>{e.currentTarget.style.boxShadow="0 1px 4px rgba(0,0,0,0.05)";e.currentTarget.style.transform="none";}}>
-            <div style={{height:5,background:team.color}}/>
-            <div style={{padding:"16px 18px"}}>
-              <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:14}}>
-                <div style={{width:40,height:40,borderRadius:10,background:team.color+"22",display:"flex",alignItems:"center",justifyContent:"center",fontSize:18}}>
-                  👥
-                </div>
-                <div>
-                  <div style={{fontSize:15,fontWeight:700,color:"#0f172a"}}>{team.name}</div>
-                  <div style={{fontSize:11,color:"#9ca3af"}}>ID: {team.id}</div>
-                </div>
-              </div>
-              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}}>
-                {[
-                  ["Members",      team.member_count, "#0f172a"],
-                  ["Monthly cost", team.monthly_cost>0?`$${team.monthly_cost.toLocaleString()}`:"—", team.monthly_cost>0?"#10b981":"#94a3b8"],
-                  ["Resources",    team.resources,    "#6366f1"],
-                  ["Savings",      team.monthly_cost>0?`~$${Math.round(team.monthly_cost*0.3).toLocaleString()}`:"—", "#f59e0b"],
-                ].map(([l,v,c])=>(
-                  <div key={l} style={{background:"#f8fafc",borderRadius:8,padding:"8px 10px"}}>
-                    <p style={{fontSize:10,color:"#9ca3af",margin:"0 0 1px",fontWeight:600,textTransform:"uppercase"}}>{l}</p>
-                    <p style={{fontSize:16,fontWeight:800,color:c,margin:0}}>{v}</p>
-                  </div>
-                ))}
-              </div>
-              <div style={{fontSize:12,color:team.color,fontWeight:600,display:"flex",alignItems:"center",gap:4}}>View details →</div>
-            </div>
-          </div>
-        ))}
-      </div>
+---
 
-      {/* Team detail slide-over */}
-      {selected && (
-        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.3)",zIndex:999,display:"flex",justifyContent:"flex-end"}} onClick={()=>setSelected(null)}>
-          <div style={{width:380,background:"#fff",height:"100%",boxShadow:"-8px 0 40px rgba(0,0,0,0.15)",overflow:"auto"}} onClick={e=>e.stopPropagation()}>
-            <div style={{height:6,background:selected.color}}/>
-            <div style={{padding:"20px"}}>
-              <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:20}}>
-                <div>
-                  <h2 style={{fontSize:20,fontWeight:800,color:"#0f172a",margin:"0 0 4px"}}>{selected.name}</h2>
-                  <p style={{fontSize:12,color:"#9ca3af",margin:0,fontFamily:"monospace"}}>{selected.id}</p>
-                </div>
-                <button onClick={()=>setSelected(null)} style={{background:"none",border:"none",cursor:"pointer",color:"#9ca3af",fontSize:20}}>✕</button>
-              </div>
-              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:20}}>
-                {[["Members",selected.member_count,"#0f172a"],["Monthly cost",selected.monthly_cost>0?`$${selected.monthly_cost.toLocaleString()}`:"—","#10b981"],["Resources",selected.resources,"#6366f1"],["Est. savings",selected.monthly_cost>0?`$${Math.round(selected.monthly_cost*0.3).toLocaleString()}`:"—","#f59e0b"]].map(([l,v,c])=>(
-                  <div key={l} style={{background:"#f8fafc",borderRadius:10,padding:"12px"}}>
-                    <p style={{fontSize:10,color:"#9ca3af",margin:"0 0 2px",fontWeight:600,textTransform:"uppercase"}}>{l}</p>
-                    <p style={{fontSize:20,fontWeight:800,color:c,margin:0}}>{v}</p>
-                  </div>
-                ))}
-              </div>
-              <h3 style={{fontSize:13,fontWeight:700,color:"#374151",marginBottom:10}}>Members</h3>
-              {DEMO_MEMBERS.filter(m=>m.team_id===selected.id).map(m=>(
-                <div key={m.id} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 0",borderBottom:"1px solid #f1f5f9"}}>
-                  <Avatar name={m.full_name} email={m.email} size={32}/>
-                  <div style={{flex:1}}>
-                    <div style={{fontSize:13,fontWeight:600,color:"#0f172a"}}>{m.full_name||m.email}</div>
-                    <div style={{fontSize:11,color:"#9ca3af"}}>{m.email}</div>
-                  </div>
-                  <Chip bg={ROLE_META[m.role]?.bg||"#f1f5f9"} color={ROLE_META[m.role]?.text||"#374151"}>{ROLE_META[m.role]?.label||m.role}</Chip>
-                </div>
-              ))}
-              {DEMO_MEMBERS.filter(m=>m.team_id===selected.id).length===0 && (
-                <p style={{fontSize:13,color:"#9ca3af",textAlign:"center",padding:"20px 0"}}>No members assigned yet.</p>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
+### **6. Real-Time Status Banner**
 
-      {showCreate && (
-        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.4)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:999}} onClick={()=>setShowCreate(false)}>
-          <div style={{background:"#fff",borderRadius:16,width:400,padding:20,boxShadow:"0 20px 60px rgba(0,0,0,0.2)"}} onClick={e=>e.stopPropagation()}>
-            <h3 style={{fontSize:16,fontWeight:700,margin:"0 0 14px"}}>Create a new team</h3>
-            <input value={newName} onChange={e=>setNewName(e.target.value)} onKeyDown={e=>e.key==="Enter"&&handleCreate()} placeholder="e.g. Platform Engineering"
-              style={{width:"100%",fontSize:13,border:"1.5px solid #e5e7eb",borderRadius:8,padding:"9px 10px",outline:"none",boxSizing:"border-box",marginBottom:12}} />
-            <div style={{display:"flex",gap:8}}>
-              <button onClick={()=>setShowCreate(false)} style={{flex:1,padding:"9px",borderRadius:8,border:"1.5px solid #e5e7eb",background:"#fff",fontSize:13,fontWeight:600,cursor:"pointer"}}>Cancel</button>
-              <button onClick={handleCreate} style={{flex:2,padding:"9px",borderRadius:8,border:"none",background:"#10b981",color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer"}}>Create Team</button>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
+```jsx
+┌─────────────────────────────────────────────────────────────────┐
+│  ⚡ HIBERNATION IN PROGRESS                                     │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  Schedule: Weekend Shutdown                                     │
+│  Action: Putting clusters to sleep...                           │
+│                                                                  │
+│  Progress: ████████████░░░░░░░░ 65%                            │
+│                                                                  │
+│  Current Step: Scaling deployments to 0 replicas (18/23)       │
+│  Elapsed: 2m 14s | Estimated remaining: 1m 26s                  │
+│                                                                  │
+│  [View Live Logs] [Cancel (Emergency Stop)]                    │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
 
-// ── Roles & Permissions Tab ───────────────────────────────────────────────────
-function RolesTab() {
-  const [expanded, setExpanded] = useState(null);
+---
 
-  return (
-    <div>
-      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16}}>
-        <p style={{fontSize:13,color:"#6b7280",margin:0}}>{DEMO_ROLES.length} roles — {DEMO_ROLES.filter(r=>r.type==="SYSTEM").length} system, {DEMO_ROLES.filter(r=>r.type==="CUSTOM").length} custom</p>
-        <button style={{background:"#10b981",color:"#fff",border:"none",borderRadius:8,padding:"8px 14px",fontSize:13,fontWeight:700,cursor:"pointer"}}>+ New Role</button>
-      </div>
-      <div style={{display:"flex",flexDirection:"column",gap:8}}>
-        {DEMO_ROLES.map(role=>{
-          const open = expanded===role.id;
-          const isSystem = role.type==="SYSTEM";
-          const totalPerms = Object.values(role.permissions).flat().length;
-          return (
-            <div key={role.id} style={{background:"#fff",borderRadius:12,border:"1px solid #f1f5f9",overflow:"hidden",boxShadow:"0 1px 3px rgba(0,0,0,0.04)"}}>
-              <div onClick={()=>setExpanded(open?null:role.id)}
-                style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"14px 18px",cursor:"pointer"}}
-                onMouseEnter={e=>e.currentTarget.style.background="#fafafa"}
-                onMouseLeave={e=>e.currentTarget.style.background="#fff"}>
-                <div style={{display:"flex",alignItems:"center",gap:12}}>
-                  <div style={{fontSize:22}}>{role.name.includes("Admin")?"🔑":role.name.includes("Lead")?"⭐":role.name.includes("FinOps")?"💳":"👤"}</div>
-                  <div>
-                    <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:3}}>
-                      <span style={{fontSize:14,fontWeight:700,color:"#0f172a"}}>{role.name}</span>
-                      <Chip bg={isSystem?"#f1f5f9":"#dbeafe"} color={isSystem?"#475569":"#1e40af"}>{isSystem?"System":"Custom"}</Chip>
-                    </div>
-                    <p style={{fontSize:12,color:"#9ca3af",margin:0}}>{role.description}</p>
-                  </div>
-                </div>
-                <div style={{display:"flex",alignItems:"center",gap:10}}>
-                  <span style={{fontSize:12,color:"#9ca3af"}}>{totalPerms} permissions</span>
-                  {!isSystem && (
-                    <button onClick={e=>{e.stopPropagation(); alert("Open role editor");}}
-                      style={{fontSize:12,color:"#6366f1",background:"#ede9fe",border:"none",borderRadius:6,padding:"4px 10px",cursor:"pointer",fontWeight:600}}>
-                      Edit
-                    </button>
-                  )}
-                  <span style={{fontSize:11,color:"#9ca3af",minWidth:12,textAlign:"center"}}>{open?"▲":"▼"}</span>
-                </div>
-              </div>
-              {open && (
-                <div style={{borderTop:"1px solid #f1f5f9",padding:"16px 18px",background:"#fafafa"}}>
-                  <div style={{display:"flex",flexWrap:"wrap",gap:20}}>
-                    {Object.entries(role.permissions).map(([mod,perms])=>(
-                      <div key={mod} style={{minWidth:160}}>
-                        <p style={{fontSize:11,fontWeight:700,color:"#6b7280",margin:"0 0 7px",display:"flex",alignItems:"center",gap:5}}>
-                          <span>{MODULE_ICONS[mod]||"📦"}</span>{mod}
-                        </p>
-                        <div style={{display:"flex",flexWrap:"wrap",gap:4}}>
-                          {perms.map(p=>(
-                            <span key={p} style={{fontSize:11,background:"#e0f2fe",color:"#0369a1",padding:"2px 8px",borderRadius:20,fontWeight:500}}>{p}</span>
-                          ))}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
+### **7. Conflict Detection**
 
-// ── Roles & Policies Top Tab ──────────────────────────────────────────────────
-function RolesPoliciesTopTab() {
-  const ACCENTS = {
-    "Organization Admin":{ icon:"🔑", accent:"#fef3c7", border:"#fde68a", text:"#92400e" },
-    "Team Lead":         { icon:"⭐", accent:"#dbeafe", border:"#bfdbfe", text:"#1e40af" },
-    "Member":            { icon:"👤", accent:"#f0fdf4", border:"#bbf7d0", text:"#166534" },
-    "FinOps Analyst":    { icon:"💳", accent:"#f5f3ff", border:"#ddd6fe", text:"#5b21b6" },
-  };
-  return (
-    <div>
-      <p style={{fontSize:13,color:"#6b7280",margin:"0 0 16px"}}>System roles define baseline permissions. Create custom roles for fine-grained access control.</p>
-      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(270px,1fr))",gap:14}}>
-        {DEMO_ROLES.map(role=>{
-          const a = ACCENTS[role.name]||{icon:"🛡️",accent:"#f8fafc",border:"#e5e7eb",text:"#374151"};
-          const total = Object.values(role.permissions).flat().length;
-          return (
-            <div key={role.id} style={{background:a.accent,borderRadius:14,border:`1.5px solid ${a.border}`,padding:"20px",boxShadow:"0 1px 4px rgba(0,0,0,0.04)"}}>
-              <div style={{display:"flex",justifyContent:"space-between",marginBottom:10}}>
-                <span style={{fontSize:28}}>{a.icon}</span>
-                <Chip bg="rgba(255,255,255,0.7)" color={a.text}>{role.type==="SYSTEM"?"System":"Custom"}</Chip>
-              </div>
-              <h3 style={{fontSize:16,fontWeight:800,color:a.text,margin:"0 0 6px"}}>{role.name}</h3>
-              <p style={{fontSize:13,color:"#6b7280",margin:"0 0 14px",lineHeight:1.5}}>{role.description}</p>
-              <div style={{display:"flex",flexWrap:"wrap",gap:4,marginBottom:12}}>
-                {Object.keys(role.permissions).map(mod=>(
-                  <span key={mod} style={{fontSize:10,background:"rgba(255,255,255,0.6)",color:a.text,padding:"2px 7px",borderRadius:20,fontWeight:600,border:`1px solid ${a.border}`}}>
-                    {MODULE_ICONS[mod]||"📦"} {mod}
-                  </span>
-                ))}
-              </div>
-              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-                <span style={{fontSize:12,color:"#9ca3af"}}>{total} permissions</span>
-                {role.type==="CUSTOM" && (
-                  <button style={{fontSize:12,color:a.text,background:"rgba(255,255,255,0.7)",border:`1px solid ${a.border}`,borderRadius:6,padding:"4px 10px",cursor:"pointer",fontWeight:600}}>
-                    Edit
-                  </button>
-                )}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
+```jsx
+┌─────────────────────────────────────────────────────────────────┐
+│  ⚠️ SCHEDULE CONFLICT DETECTED                                  │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  Your new schedule conflicts with an existing one:              │
+│                                                                  │
+│  New Schedule: "Nightly Dev Shutdown"                           │
+│  • Clusters: dev-cluster                                        │
+│  • Time: Mon-Fri 18:00-08:00                                    │
+│                                                                  │
+│  Conflicts with: "Lunch Break Hibernation"                     │
+│  • Clusters: dev-cluster (overlapping)                          │
+│  • Time: Mon-Fri 12:00-13:00                                    │
+│                                                                  │
+│  Overlap: 1 hour/day (12:00-13:00 covered by both)             │
+│                                                                  │
+│  Resolution options:                                             │
+│  ⚪ Deactivate "Lunch Break Hibernation" (recommended)          │
+│  ⚪ Exclude dev-cluster from new schedule                       │
+│  ⚪ Adjust time window to avoid overlap                          │
+│  ⚪ Continue anyway (last schedule wins)                        │
+│                                                                  │
+│  [Go Back] [Save Anyway]                                        │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
 
-// ── Root ──────────────────────────────────────────────────────────────────────
-export default function TeamsPage() {
-  const [topTab, setTopTab] = useState("structure");
-  const [innerTab, setInnerTab] = useState("members");
+---
 
-  const memberCount = DEMO_MEMBERS.filter(m=>m.status==="ACTIVE").length;
-  const inviteCount = DEMO_MEMBERS.filter(m=>m.status==="PENDING_INVITE").length;
+### **8. Cost Analytics Dashboard**
 
-  return (
-    <div style={{fontFamily:"'system-ui',-apple-system,sans-serif",minHeight:"100vh",background:"#f8fafc",padding:"28px 32px"}}>
-      {/* Header */}
-      <div style={{marginBottom:22}}>
-        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:6}}>
-          <span style={{fontSize:22}}>🏢</span>
-          <h1 style={{fontSize:24,fontWeight:800,color:"#0f172a",margin:0,letterSpacing:"-0.5px"}}>Organization & Governance</h1>
-        </div>
-        <p style={{fontSize:13,color:"#9ca3af",margin:0}}>Manage team structure, roles, and governance policies</p>
-      </div>
+```jsx
+┌─────────────────────────────────────────────────────────────────┐
+│  💰 HIBERNATION SAVINGS REPORT                                  │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  📊 THIS MONTH (Feb 2026)                                       │
+│  ┌────────────┬────────────┬────────────┬────────────┐         │
+│  │ SAVED      │ SLEEP HRS  │ WAKE HRS   │ SCHEDULES  │         │
+│  ├────────────┼────────────┼────────────┼────────────┤         │
+│  │ $4,850     │    336h    │    384h    │ 3 Active   │         │
+│  │ 42% less   │            │            │ 1 Paused   │         │
+│  └────────────┴────────────┴────────────┴────────────┘         │
+│                                                                  │
+│  SAVINGS TREND (Last 6 Months)                                  │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │     $5K ┤                                       ●         │  │
+│  │         │                                 ●               │  │
+│  │     $4K ┤                           ●                     │  │
+│  │         │                     ●                           │  │
+│  │     $3K ┤               ●                                 │  │
+│  │         │         ●                                       │  │
+│  │     $2K ┤   ●                                             │  │
+│  │         │                                                  │  │
+│  │      $0 └──────────────────────────────────────────────  │  │
+│  │          Sep  Oct  Nov  Dec  Jan  Feb                    │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│                                                                  │
+│  BREAKDOWN BY SCHEDULE                                          │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │ Weekend Shutdown:         $1,850/month (38%)            │  │
+│  │ Nightly Dev Shutdown:     $2,100/month (43%)            │  │
+│  │ Holiday Mode:             $900/month (19%)              │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│                                                                  │
+│  PROJECTED ANNUAL SAVINGS: ~$58,200                             │
+│                                                                  │
+│  [📥 Export Report] [📧 Email to Team] [📊 Detailed View]      │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
 
-      {/* Top tabs */}
-      <div style={{display:"flex",gap:0,borderBottom:"2px solid #f1f5f9",marginBottom:24}}>
-        <Tab label="Team Structure"   active={topTab==="structure"} onClick={()=>setTopTab("structure")} />
-        <Tab label="Roles & Policies" active={topTab==="roles"}     onClick={()=>setTopTab("roles")} />
-      </div>
+---
 
-      {topTab==="roles" && <RolesPoliciesTopTab />}
+### **9. Notification Settings**
 
-      {topTab==="structure" && (
-        <>
-          <div style={{marginBottom:18}}>
-            <h2 style={{fontSize:18,fontWeight:700,color:"#0f172a",margin:"0 0 3px"}}>Team Management</h2>
-            <p style={{fontSize:13,color:"#9ca3af",margin:0}}>Manage users, teams, and access policies.</p>
-          </div>
+```jsx
+┌─────────────────────────────────────────────────────────────────┐
+│  🔔 HIBERNATION NOTIFICATIONS                                   │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  ☑️ Email Notifications                                         │
+│     [admin@company.com, ops@company.com]                       │
+│                                                                  │
+│  ☑️ Slack Notifications                                         │
+│     Channel: #infrastructure-alerts                             │
+│                                                                  │
+│  ☑️ Webhook (PagerDuty/OpsGenie)                               │
+│     [https://hooks.pagerduty.com/...]                          │
+│                                                                  │
+│  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  │
+│                                                                  │
+│  NOTIFY ON:                                                      │
+│  ☑️ 15 minutes before hibernation starts                       │
+│  ☑️ Hibernation started successfully                            │
+│  ☑️ Hibernation failed                                          │
+│  ☑️ 5 minutes before wake                                       │
+│  ☑️ Wake completed successfully                                 │
+│  ☑️ Wake failed                                                  │
+│  ☐ Weekly savings summary                                       │
+│                                                                  │
+│  [Save Preferences]                                             │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
 
-          {/* Inner tabs */}
-          <div style={{display:"flex",gap:0,borderBottom:"2px solid #f1f5f9",marginBottom:20}}>
-            <Tab label="Members"           active={innerTab==="members"} onClick={()=>setInnerTab("members")} count={memberCount} />
-            <Tab label="Teams"             active={innerTab==="teams"}   onClick={()=>setInnerTab("teams")}   count={DEMO_TEAMS.length} />
-            <Tab label="Roles & Permissions" active={innerTab==="roles"}  onClick={()=>setInnerTab("roles")}  count={DEMO_ROLES.length} />
-          </div>
+---
 
-          {innerTab==="members" && <MembersTab />}
-          {innerTab==="teams"   && <TeamsTab />}
-          {innerTab==="roles"   && <RolesTab />}
-        </>
-      )}
-    </div>
-  );
-}
+### **10. Emergency Controls**
+
+```jsx
+┌─────────────────────────────────────────────────────────────────┐
+│  🚨 EMERGENCY HIBERNATION CONTROLS                              │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  IMMEDIATE ACTIONS (No Schedule Required)                       │
+│                                                                  │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │ 🛑 EMERGENCY SHUTDOWN                                    │  │
+│  │                                                           │  │
+│  │ Immediately hibernate all clusters                       │  │
+│  │ Use case: Unexpected cost spike, security incident       │  │
+│  │                                                           │  │
+│  │ [Select Clusters ▼]                                      │  │
+│  │ [🚨 SHUTDOWN NOW]                                        │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│                                                                  │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │ ⏰ TEMPORARY HIBERNATION                                 │  │
+│  │                                                           │  │
+│  │ Hibernate for a specific duration                        │  │
+│  │ Use case: Maintenance window, demo preparation           │  │
+│  │                                                           │  │
+│  │ Duration: [4] hours                                      │  │
+│  │ [Select Clusters ▼]                                      │  │
+│  │ [💤 HIBERNATE TEMPORARILY]                               │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│                                                                  │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │ 🔥 EMERGENCY WAKE                                        │  │
+│  │                                                           │  │
+│  │ Override schedule and wake clusters now                  │  │
+│  │ Use case: Urgent production issue                        │  │
+│  │                                                           │  │
+│  │ [Select Clusters ▼]                                      │  │
+│  │ [⚡ WAKE IMMEDIATELY]                                    │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│                                                                  │
+│  ⚠️ These actions override all schedules                        │
+│     Audit logs will record emergency action                     │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 🔧 Technical Implementation Details
+
+### **Backend Jobs (Celery/Cron)**
+
+```python
+# Scheduled task runs every 1 minute
+@celery.task
+def execute_hibernation_scheduler():
+    """
+    Check if any schedules should trigger now
+    """
+    now = datetime.utcnow()
+    
+    # Find schedules that should trigger
+    schedules = db.query(HibernationSchedule).filter(
+        HibernationSchedule.is_active == True,
+        HibernationSchedule.next_execution <= now
+    ).all()
+    
+    for schedule in schedules:
+        # Determine action (sleep or wake)
+        action = determine_action(schedule, now)
+        
+        if action == "sleep":
+            execute_hibernation.delay(schedule.id)
+        elif action == "wake":
+            execute_wake.delay(schedule.id)
+        
+        # Update next_execution
+        schedule.next_execution = calculate_next_execution(schedule)
+        db.commit()
+```
+
+### **State Machine**
+
+```
+Schedule States:
+├─ DRAFT (not activated yet)
+├─ ACTIVE (running on schedule)
+├─ PAUSED (temporarily disabled)
+├─ EXECUTING (currently hibernating/waking)
+├─ ERROR (last execution failed)
+└─ ARCHIVED (deleted but kept for history)
+
+Execution States:
+├─ PENDING (waiting for execution time)
+├─ PRE_WARMING (starting nodes early)
+├─ SLEEPING (scaling down)
+├─ HIBERNATED (fully asleep)
+├─ WAKING (scaling up)
+├─ AWAKE (fully running)
+└─ FAILED (error during execution)
+```
+
+---
+
+## 📊 Key Metrics to Track
+
+```
+Per Schedule:
+├─ Total executions (count)
+├─ Successful executions (count)
+├─ Failed executions (count)
+├─ Average execution time (sleep + wake)
+├─ Total hours hibernated
+├─ Total cost saved
+└─ Reliability score (success rate)
+
+Platform-wide:
+├─ Total active schedules
+├─ Total clusters under hibernation
+├─ Weekly sleep hours
+├─ Weekly savings
+└─ Most used strategy
+```
+
+---
+
+This comprehensive design gives users complete control over hibernation with clear visibility, safety mechanisms, and substantial cost savings!

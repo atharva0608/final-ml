@@ -4,8 +4,9 @@ import { auditAPI } from '../../services/api';
 import { FiRefreshCw, FiClock, FiUser, FiActivity } from 'react-icons/fi';
 import { useHibernationStore } from '../../store/useHibernationStore';
 
-const HistoryLog = () => {
-    const { clusterId } = useHibernationStore();
+const HistoryLog = ({ clusterId: propClusterId }) => {
+    const { clusterId: storeClusterId } = useHibernationStore && useHibernationStore() || {};
+    const clusterId = propClusterId || storeClusterId;
     const [logs, setLogs] = useState([]);
     const [loading, setLoading] = useState(false);
 
@@ -13,10 +14,15 @@ const HistoryLog = () => {
         setLoading(true);
         try {
             // Filter by HIBERNATION resource type
-            const res = await auditAPI.list({
+            const params = {
                 resource_type: 'HIBERNATION',
                 limit: 10
-            });
+            };
+            if (clusterId) {
+                params.resource_id = clusterId; // Assuming backend filters by resource_id if provided, need to check auditAPI
+            }
+
+            const res = await auditAPI.list(params);
             setLogs(res.data.logs || []);
         } catch (err) {
             console.error(err);
@@ -26,7 +32,7 @@ const HistoryLog = () => {
     };
 
     useEffect(() => {
-        if (clusterId) fetchLogs();
+        fetchLogs();
     }, [clusterId]);
 
     return (

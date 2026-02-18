@@ -17,6 +17,35 @@ from backend.schemas.hygiene_schemas import (
 
 logger = logging.getLogger(__name__)
 
+# ── Modular Resource Rules ─────────────────────────────────────────────────────
+from backend.Resource_rules import RuleVerdict
+from backend.Resource_rules.compute_rules import (
+    classify_stopped_instance, classify_running_instance,
+    classify_reserved_instance, classify_eks_cluster,
+    classify_ecs_cluster, classify_asg,
+)
+from backend.Resource_rules.storage_rules import (
+    classify_ebs_volume, classify_snapshot,
+    classify_s3_bucket, classify_s3_lifecycle as classify_s3_lifecycle_rule,
+)
+from backend.Resource_rules.database_rules import (
+    classify_rds_instance, classify_rds_multi_az,
+)
+from backend.Resource_rules.network_rules import (
+    classify_load_balancer, classify_eni,
+    classify_elastic_ip, classify_nat_gateway,
+)
+from backend.Resource_rules.identity_rules import (
+    classify_iam_user,
+)
+from backend.Resource_rules.security_rules import (
+    classify_kms_key, classify_secret,
+)
+from backend.Resource_rules.management_rules import (
+    classify_log_group, classify_cloudwatch_alarm,
+    classify_lambda_function, classify_eventbridge_rule,
+)
+
 class HygieneService:
     def __init__(self, db: Session):
         self.db = db
@@ -309,24 +338,19 @@ class HygieneService:
                         region=region
                     ))
 
-                    status = HygieneStatus.ACTIVE
-                    reason = "Active"
+                    # ── Use modular rule ──
+                    verdict, reason = classify_ebs_volume(
+                        state=vol_state,
+                        created_at=created_at,
+                        tags=tags,
+                        required_tags=required_tags,
+                    )
+                    status = HygieneStatus(verdict.value)
 
-                    # 1. Attachment Check (Hardcoded safety)
                     if vol_state == 'in-use':
-                        status = HygieneStatus.ACTIVE
-                        reason = "Attached to instance"
-                        vol_cost = cost  # Show actual cost for visibility
+                        vol_cost = cost
                     else:
                         vol_cost = cost
-                        # Default is ORPHANED (Risky to delete immediately unless old)
-                        status = HygieneStatus.ORPHANED
-                        reason = "Unattached volume"
-                        
-                        # Apply Safety Logic
-                        if created_at < safe_threshold:
-                            status = HygieneStatus.SAFE_TO_DELETE
-                            reason = "Unattached > 30 days (Safe)"
                         
                         # 2. Apply Dynamic Policies
                         policy_applied = False
@@ -450,14 +474,15 @@ class HygieneService:
                     if vol_id and vol_id not in all_vol_ids:
                         start_time = s.get('StartTime')
 
-                        # Default ORPHANED (Risky)
-                        status = HygieneStatus.ORPHANED
-                        reason = "Volume deleted (Orphaned Snapshot)"
-
-                        # Safe if > 30 days old
-                        if start_time and start_time < safe_threshold:
-                            status = HygieneStatus.SAFE_TO_DELETE
-                            reason = "Volume deleted > 30 days (Safe)"
+                        # ── Use modular rule ──
+                        verdict, reason = classify_snapshot(
+                            snap_id=snap_id,
+                            volume_id=vol_id,
+                            start_time=start_time,
+                            ami_snapshot_ids=ami_snapshot_ids,
+                            all_volume_ids=all_vol_ids,
+                        )
+                        status = HygieneStatus(verdict.value) if verdict else HygieneStatus.ACTIVE
 
                         tags = s.get('Tags', [])
                         tag_keys = {t['Key'] for t in tags}
@@ -499,11 +524,9 @@ class HygieneService:
                         # Logic: Unattached EIP is waste, but deleting 'Prod-VIP' is fatal.
                         # Usage: Mark ORPHANED (Risky). User must verify.
 
-                        status = HygieneStatus.SAFE_TO_DELETE  # 95% certainty per zombie guide
-                        reason = "Unattached Elastic IP (Safe to release)"
-
-                        # Check tags for 'Prod' or 'Critical' to mark RISK (optional)
-                        # For now, ORPHANED is sufficient distinction from SAFE_TO_DELETE.
+                        # ── Use modular rule ──
+                        verdict, reason = classify_elastic_ip(has_association=False)
+                        status = HygieneStatus(verdict.value) if verdict else HygieneStatus.ACTIVE
 
                         # ENTERPRISE: Use Cost Explorer for invoice-accurate costs
                         cost = float(cost_service.get_resource_monthly_cost(
@@ -570,13 +593,11 @@ class HygieneService:
                         except Exception:
                             pass
 
-                        if stopped_days > 30:
-                            inst_status = HygieneStatus.SAFE_TO_DELETE
-                            reason = f"Stopped for {stopped_days} days (Safe to terminate)"
+                        # ── Use modular rule ──
+                        verdict, reason = classify_stopped_instance(stopped_days)
+                        inst_status = HygieneStatus(verdict.value)
+                        if verdict == RuleVerdict.SAFE:
                             savings += inst_cost
-                        else:
-                            inst_status = HygieneStatus.STOPPED
-                            reason = f"Instance stopped" + (f" ({stopped_days} days)" if stopped_days > 0 else "")
 
                         item = ResourceItem(
                             id=inst_id,
@@ -863,33 +884,26 @@ class HygieneService:
                     
                     # Check Target Groups
                     tgs = elbv2.describe_target_groups(LoadBalancerArn=lb_arn)['TargetGroups']
-                    is_idle = False
+                    has_active_targets = False
                     
                     if not tgs:
-                        is_idle = True
+                        has_active_targets = False
                     else:
-                        all_unused = True
                         for tg in tgs:
                             try:
                                 health = elbv2.describe_target_health(TargetGroupArn=tg['TargetGroupArn'])['TargetHealthDescriptions']
-                                # If any target is 'healthy' or 'initial', it's active
                                 active_states = ['healthy', 'initial']
                                 if any(h['TargetHealth']['State'] in active_states for h in health):
-                                    all_unused = False
+                                    has_active_targets = True
                                     break
                             except Exception:
-                                continue # TG might be empty
-                        if not all_unused:
-                            is_idle = False
-                        else:
-                            # Verify if TGs themselves are empty (target_health returns empty list)
-                            # Logic: If all TGs have NO healthy targets equivalent to 'unused'
-                            is_idle = True
+                                continue
                     
-                    if is_idle:
+                    # ── Use modular rule ──
+                    verdict, reason = classify_load_balancer(has_active_targets)
+                    if verdict is not None:
                         cost = pricing.get_load_balancer_price(region, lb_type)
-                        # Safety: Idle ELB is risky to auto-delete.
-                        status = HygieneStatus.ORPHANED
+                        status = HygieneStatus(verdict.value)
                         
                         # Tags
                         tags = []
@@ -922,18 +936,20 @@ class HygieneService:
             try:
                 enis = ec2.describe_network_interfaces(Filters=[{'Name': 'status', 'Values': ['available']}])['NetworkInterfaces']
                 for eni in enis:
-                    # Check if AWS-managed (Lambda, RDS, ECS, ELB, etc.)
-                    desc = eni.get('Description', '').lower()
-                    requester_id = eni.get('RequesterId', '').lower()
+                    desc = eni.get('Description', '')
+                    requester_id = eni.get('RequesterId', '')
 
-                    # Skip AWS-managed ENIs
-                    AWS_SERVICES = ['aws', 'lambda', 'rds', 'ecs', 'elb', 'eks', 'elasticache', 'redshift', 'vpc endpoint', 'interface']
-                    if any(svc in desc for svc in AWS_SERVICES) or 'amazon' in requester_id:
-                        continue  # ✅ Skip AWS-managed ENIs
+                    # ── Use modular rule ──
+                    verdict, reason = classify_eni(
+                        status='available',
+                        description=desc,
+                        requester_id=requester_id,
+                    )
+                    if verdict is None:
+                        continue  # AWS-managed or attached
 
-                    # Unattached ENIs have minimal direct cost but clutter VPC
-                    cost = 0.0  # Actually $0/mo for unattached ENIs (no hourly charge)
-                    status = HygieneStatus.ORPHANED
+                    cost = 0.0
+                    status = HygieneStatus(verdict.value)
 
                     item = ResourceItem(
                         id=eni['NetworkInterfaceId'],
@@ -1020,22 +1036,19 @@ class HygieneService:
                 # Calculate real cost
                 real_cost = pricing.get_rds_price(region, db_class, engine)
 
-                if is_idle:
-                    # Additional safety: If this DB has read replicas, don't mark as idle
-                    # (might be used indirectly through replicas)
-                    if has_replicas:
-                        cleanup_status = HygieneStatus.ACTIVE
-                        reason = "Has read replicas (source DB)"
-                        cost_estimate = 0.0
-                    else:
-                        cleanup_status = HygieneStatus.ORPHANED
-                        reason = f"Zero connections for 14 days (Idle)"
-                        cost_estimate = real_cost
-                elif is_legacy:
-                    cleanup_status = HygieneStatus.LEGACY_UPGRADE
-                    reason = f"Legacy instance class ({db_class}). Upgrade to T3/M5/M6 for savings."
-                    # Savings is diff between current and T3 equivalent (approx 20% savings)
+                # ── Use modular rule ──
+                verdict, reason = classify_rds_instance(
+                    is_idle=is_idle,
+                    has_replicas=has_replicas,
+                    db_class=db_class,
+                )
+                cleanup_status = HygieneStatus(verdict.value)
+                if verdict == RuleVerdict.RISKY:
+                    cost_estimate = real_cost
+                elif verdict == RuleVerdict.REVIEW:
                     cost_estimate = real_cost * 0.2
+                else:
+                    cost_estimate = 0.0
                 
                 # Tag compliance
                 tags = db.get('TagList', [])
@@ -1120,15 +1133,14 @@ class HygieneService:
                     is_dormant = True
 
                 # Additional safety: Don't flag users with active keys unless truly dormant
-                if is_dormant and has_active_keys:
-                    # Reduce severity - active keys indicate potential service account
-                    status = HygieneStatus.ORPHANED  # Review needed, not auto-delete
-                    reason = f"Inactive for {days_inactive} days (Has active access keys - verify before deletion)"
-                elif is_dormant:
-                    status = HygieneStatus.SAFE_TO_DELETE
-                    reason = f"Inactive for {days_inactive} days (No active keys)"
-                else:
-                    continue  # Active user, skip
+                # ── Use modular rule ──
+                verdict, reason = classify_iam_user(
+                    days_inactive=days_inactive,
+                    has_active_keys=has_active_keys,
+                )
+                if verdict == RuleVerdict.ACTIVE:
+                    continue
+                status = HygieneStatus(verdict.value)
 
                 if is_dormant:
                     item = ResourceItem(
@@ -1293,14 +1305,13 @@ class HygieneService:
 
                 utilization = matched / count if count > 0 else 0
                 
-                if utilization < 1.0:
-                    # Partial or Zero Utilization
+                # ── Use modular rule ──
+                verdict, reason = classify_reserved_instance(utilization, matched, count)
+                if verdict != RuleVerdict.ACTIVE:
                     wasted_count = count - matched
-                    cost_per_ri = 20.0 # Placeholder for specific RI hourly rate amortized
-                    waste_cost = wasted_count * cost_per_ri 
-                    
-                    status = HygieneStatus.ORPHANED
-                    reason = f"Utilization: {utilization*100:.1f}% ({matched}/{count} used)"
+                    cost_per_ri = 20.0
+                    waste_cost = wasted_count * cost_per_ri
+                    status = HygieneStatus(verdict.value)
                     
                     item = ResourceItem(
                         id=ri['ReservedInstancesId'],
@@ -1362,9 +1373,11 @@ class HygieneService:
                             size_bytes = metrics['Datapoints'][-1]['Average']
                     except: pass
                     
-                    if size_bytes > 1 * 1024 * 1024 * 1024: # > 1GB
-                        cost = (size_bytes / (1024**3)) * 0.023 # Standard cost
-                        potential_saving = cost * 0.4 # Assuming 40% saving by moving to IA/Glacier
+                    # ── Use modular rule ──
+                    lc_verdict, lc_reason = classify_s3_lifecycle_rule(has_lifecycle=False, size_bytes=size_bytes)
+                    if lc_verdict is not None:
+                        cost = (size_bytes / (1024**3)) * 0.023
+                        potential_saving = cost * 0.4
                         
                         item = ResourceItem(
                             id=b_name,
@@ -1397,9 +1410,10 @@ class HygieneService:
                     tags = db.get('TagList', [])
                     tag_keys = {t['Key']: t['Value'] for t in tags}
                     
-                    env = tag_keys.get('Environment', '').lower()
-                    if env in ['dev', 'test', 'staging', 'development']:
-                        # Multi-AZ in non-prod is waste
+                    env = tag_keys.get('Environment', '')
+                    # ── Use modular rule ──
+                    maz_verdict, maz_reason = classify_rds_multi_az(is_multi_az=True, environment=env)
+                    if maz_verdict is not None:
                         cost = 100.0 # Estimate surcharge for Multi-AZ
                         
                         item = ResourceItem(
@@ -1448,16 +1462,18 @@ class HygieneService:
                     except: pass
                     
                     gb_out = bytes_out / (1024**3)
-                    if gb_out > 100: # Warning threshold > 100GB/week
-                        cost = gb_out * 0.045 # Approx per GB processing
+                    # ── Use modular rule ──
+                    nat_verdict, nat_reason = classify_nat_gateway(weekly_gb_out=gb_out)
+                    if nat_verdict is not None:
+                        cost = gb_out * 0.045
                         item = ResourceItem(
                             id=nat['NatGatewayId'],
                             name="NAT Gateway",
                             type=ResourceType.NAT_GATEWAY,
-                            status=HygieneStatus.RISK,
+                            status=HygieneStatus(nat_verdict.value),
                             region=region,
-                            cost_per_month=cost * 4, # Monthly estimate
-                            reason=f"High Data Transfer: {gb_out:.1f} GB/week",
+                            cost_per_month=cost * 4,
+                            reason=nat_reason,
                             metadata={'WeeklyGB': gb_out},
                             is_compliant=True
                         )
@@ -1955,21 +1971,17 @@ class HygieneService:
                         # Customer-managed keys: detect disabled/zombie keys (60% certainty)
                         if key_info.get('KeyManager') == 'CUSTOMER':
                             key_state = key_info['KeyState']
-                            if key_state == 'Disabled':
-                                kms_status = HygieneStatus.ORPHANED
-                                kms_reason = 'Disabled KMS key (candidate for scheduled deletion)'
-                                kms_cost = 1.0
+                            # ── Use modular rule ──
+                            kms_verdict, kms_reason = classify_kms_key(
+                                key_manager='CUSTOMER',
+                                key_state=key_state,
+                            )
+                            if kms_verdict is None:
+                                continue
+                            kms_status = HygieneStatus(kms_verdict.value)
+                            kms_cost = 1.0 if kms_verdict != RuleVerdict.SAFE else 0.0
+                            if kms_verdict == RuleVerdict.RISKY:
                                 savings += kms_cost
-                            elif key_state == 'PendingDeletion':
-                                kms_status = HygieneStatus.SAFE_TO_DELETE
-                                kms_reason = 'KMS key pending deletion'
-                                kms_cost = 0.0
-                            elif key_state == 'Enabled':
-                                kms_status = HygieneStatus.ACTIVE
-                                kms_reason = 'Customer-managed KMS key'
-                                kms_cost = 1.0
-                            else:
-                                continue  # Skip other states
 
                             item = ResourceItem(
                                 id=key_id,
@@ -2007,17 +2019,21 @@ class HygieneService:
                     secret_status = HygieneStatus.ACTIVE
                     secret_reason = 'Active secret'
                     last_accessed = secret.get('LastAccessedDate')
+                    days_since_access = None
                     if last_accessed:
                         try:
                             if isinstance(last_accessed, datetime):
                                 la = last_accessed if last_accessed.tzinfo else last_accessed.replace(tzinfo=timezone.utc)
                                 days_since_access = (datetime.now(timezone.utc) - la).days
-                                if days_since_access > 90:
-                                    secret_status = HygieneStatus.ORPHANED
-                                    secret_reason = f'Secret not accessed for {days_since_access} days'
-                                    savings += 0.40
                         except Exception:
                             pass
+
+                    # ── Use modular rule ──
+                    sec_verdict, sec_reason = classify_secret(days_since_access=days_since_access)
+                    secret_status = HygieneStatus(sec_verdict.value)
+                    secret_reason = sec_reason
+                    if sec_verdict == RuleVerdict.RISKY:
+                        savings += 0.40
 
                     item = ResourceItem(
                         id=secret['ARN'],
@@ -2191,17 +2207,16 @@ class HygieneService:
                     days_since_event = None
                     last_event = log_group.get('lastIngestionTime')  # epoch ms
 
-                    if stored_bytes == 0:
-                        log_status = HygieneStatus.SAFE_TO_DELETE
-                        log_reason = 'Empty log group (0 bytes stored)'
+                    # ── Use modular rule ──
+                    log_verdict, log_reason = classify_log_group(
+                        stored_bytes=stored_bytes,
+                        days_since_last_event=days_since_event,
+                    )
+                    log_status = HygieneStatus(log_verdict.value)
+                    if log_verdict == RuleVerdict.SAFE:
                         cost = 0.0
-                    elif last_event:
-                        last_event_date = datetime.fromtimestamp(last_event / 1000, tz=timezone.utc)
-                        days_since_event = (datetime.now(timezone.utc) - last_event_date).days
-                        if days_since_event > 90:
-                            log_status = HygieneStatus.ORPHANED
-                            log_reason = f'No log events for {days_since_event} days ({stored_gb:.2f} GB stored)'
-                            savings += cost
+                    elif log_verdict == RuleVerdict.RISKY:
+                        savings += cost
 
                     # Show flagged log groups + large ones for visibility
                     if log_status != HygieneStatus.ACTIVE or stored_bytes > 1_000_000_000:
@@ -2234,17 +2249,19 @@ class HygieneService:
                 active_count = 0
 
                 for alarm in all_alarms:
-                    if alarm.get('StateValue') == 'INSUFFICIENT_DATA':
-                        zombie_alarms.append(alarm)
-                    elif not alarm.get('AlarmActions'):
-                        zombie_alarms.append(alarm)
-                    else:
+                    # ── Use modular rule ──
+                    alarm_verdict, alarm_reason = classify_cloudwatch_alarm(
+                        state_value=alarm.get('StateValue', ''),
+                        has_actions=bool(alarm.get('AlarmActions')),
+                    )
+                    if alarm_verdict == RuleVerdict.ACTIVE:
                         active_count += 1
+                    else:
+                        zombie_alarms.append((alarm, alarm_verdict, alarm_reason))
 
                 # Report zombie alarms individually
-                for alarm in zombie_alarms:
-                    alarm_status = HygieneStatus.SAFE_TO_DELETE if alarm.get('StateValue') == 'INSUFFICIENT_DATA' else HygieneStatus.ORPHANED
-                    alarm_reason = 'INSUFFICIENT_DATA - resource likely deleted' if alarm.get('StateValue') == 'INSUFFICIENT_DATA' else 'No actions configured'
+                for alarm, alarm_verdict, alarm_reason in zombie_alarms:
+                    alarm_status = HygieneStatus(alarm_verdict.value)
                     alarm_cost = 0.10
 
                     item = ResourceItem(
@@ -2314,8 +2331,12 @@ class HygieneService:
                         invocations = -1  # Unknown
 
                     if invocations == 0:
-                        lambda_status = HygieneStatus.ORPHANED
-                        lambda_reason = 'Zero invocations in last 30 days'
+                        # ── Use modular rule ──
+                        lambda_verdict, lambda_reason = classify_lambda_function(invocations_30d=invocations)
+                        lambda_status = HygieneStatus(lambda_verdict.value)
+                    else:
+                        lambda_status = HygieneStatus.ACTIVE
+                        lambda_reason = 'Active Lambda function'
 
                     item = ResourceItem(
                         id=func['FunctionArn'],
@@ -2355,16 +2376,13 @@ class HygieneService:
                     except Exception:
                         target_count = -1
 
-                    # Zombie detection
-                    if rule_state == 'DISABLED':
-                        eb_status = HygieneStatus.ORPHANED
-                        eb_reason = 'Disabled EventBridge rule'
-                    elif target_count == 0:
-                        eb_status = HygieneStatus.SAFE_TO_DELETE
-                        eb_reason = 'EventBridge rule with no targets'
-                    else:
-                        eb_status = HygieneStatus.ACTIVE
-                        eb_reason = f'Active rule ({target_count} targets)'
+                    # ── Use modular rule ──
+                    eb_verdict, eb_reason = classify_eventbridge_rule(
+                        rule_state=rule_state,
+                        target_count=target_count,
+                    )
+                    eb_status = HygieneStatus(eb_verdict.value)
+                    if eb_verdict == RuleVerdict.ACTIVE:
                         active_count += 1
 
                     # Only report zombie rules individually
@@ -2430,19 +2448,18 @@ class HygieneService:
                         tag_keys = set(tags.keys())
                         missing = [rt for rt in required_tags if rt not in tag_keys]
 
-                        # Zombie detection: clusters with 0 nodegroups (65% certainty per zombie guide)
-                        eks_status = HygieneStatus.ACTIVE
-                        eks_reason = 'Active EKS cluster'
                         ng_count = -1
                         try:
                             nodegroups = eks.list_nodegroups(clusterName=cluster_name)
                             ng_count = len(nodegroups.get('nodegroups', []))
-                            if ng_count == 0:
-                                eks_status = HygieneStatus.ORPHANED
-                                eks_reason = 'EKS cluster with 0 nodegroups (possible zombie)'
-                                savings += 72.0
                         except Exception:
                             pass
+
+                        # ── Use modular rule ──
+                        eks_verdict, eks_reason = classify_eks_cluster(ng_count)
+                        eks_status = HygieneStatus(eks_verdict.value)
+                        if eks_verdict == RuleVerdict.RISKY:
+                            savings += 72.0
 
                         # EKS: $0.10/hr = $72/month per cluster
                         item = ResourceItem(
@@ -2484,15 +2501,13 @@ class HygieneService:
                         running_tasks = cluster_detail.get('runningTasksCount', 0)
                         container_instances = cluster_detail.get('registeredContainerInstancesCount', 0)
 
-                        if active_services == 0 and running_tasks == 0 and container_instances == 0:
-                            ecs_status = HygieneStatus.SAFE_TO_DELETE
-                            ecs_reason = 'Empty ECS cluster (0 services, 0 tasks, 0 instances)'
-                        elif running_tasks == 0:
-                            ecs_status = HygieneStatus.ORPHANED
-                            ecs_reason = f'ECS cluster with 0 running tasks ({active_services} services defined)'
-                        else:
-                            ecs_status = HygieneStatus.ACTIVE
-                            ecs_reason = f'Active ECS cluster ({running_tasks} tasks, {active_services} services)'
+                        # ── Use modular rule ──
+                        ecs_verdict, ecs_reason = classify_ecs_cluster(
+                            active_services=active_services,
+                            running_tasks=running_tasks,
+                            container_instances=container_instances,
+                        )
+                        ecs_status = HygieneStatus(ecs_verdict.value)
 
                         # ECS: Control plane free, but zombie clusters add clutter
                         item = ResourceItem(
@@ -2532,15 +2547,14 @@ class HygieneService:
                     max_size = group.get('MaxSize', 0)
                     instance_count = len(group.get('Instances', []))
 
-                    if desired == 0 and min_size == 0 and max_size == 0:
-                        asg_status = HygieneStatus.SAFE_TO_DELETE
-                        asg_reason = 'ASG with min=0, max=0, desired=0 (fully disabled)'
-                    elif desired == 0 and instance_count == 0:
-                        asg_status = HygieneStatus.ORPHANED
-                        asg_reason = 'ASG scaled to zero (no running instances)'
-                    else:
-                        asg_status = HygieneStatus.ACTIVE
-                        asg_reason = f'ASG with {instance_count} instances (desired: {desired})'
+                    # ── Use modular rule ──
+                    asg_verdict, asg_reason = classify_asg(
+                        desired=desired,
+                        min_size=min_size,
+                        max_size=max_size,
+                        instance_count=instance_count,
+                    )
+                    asg_status = HygieneStatus(asg_verdict.value)
 
                     # ASG: Free service (pay for instances)
                     item = ResourceItem(

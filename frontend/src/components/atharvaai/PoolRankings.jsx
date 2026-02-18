@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { atharvaaiAPI } from '../../services/api';
 import './PoolRankings.css';
 
-const PoolRankings = () => {
+const PoolRankings = ({ clusterId }) => {
     const [pools, setPools] = useState([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
@@ -21,24 +21,27 @@ const PoolRankings = () => {
     const [autoRefresh, setAutoRefresh] = useState(true);
 
     useEffect(() => {
-        fetchPoolRankings();
-        fetchBlacklist();
+        if (clusterId) {
+            fetchPoolRankings();
+            fetchBlacklist();
+        }
 
         // Auto-refresh every 30 seconds
         const interval = setInterval(() => {
-            if (autoRefresh) {
+            if (autoRefresh && clusterId) {
                 fetchPoolRankings();
                 fetchBlacklist();
             }
         }, 30000);
 
         return () => clearInterval(interval);
-    }, [autoRefresh, template]);
+    }, [autoRefresh, template, clusterId]);
 
     const fetchPoolRankings = async () => {
+        if (!clusterId) return;
         try {
             setLoading(true);
-            const response = await atharvaaiAPI.getRankings(template, 'ap-south-1', 20);
+            const response = await atharvaaiAPI.getRankings(template, 'ap-south-1', 20, clusterId);
             setPools(response.data);
             setError(null);
         } catch (err) {
@@ -174,11 +177,10 @@ const PoolRankings = () => {
                                     className={`hover:bg-gray-50 ${pool.is_flagged ? 'bg-red-50' : ''}`}
                                 >
                                     <td className="px-6 py-4 whitespace-nowrap">
-                                        <span className={`inline-flex items-center justify-center w-8 h-8 rounded-full ${
-                                            pool.rank === 1 ? 'bg-yellow-100 text-yellow-800' :
-                                            pool.rank <= 3 ? 'bg-green-100 text-green-800' :
-                                            'bg-gray-100 text-gray-800'
-                                        } font-bold`}>
+                                        <span className={`inline-flex items-center justify-center w-8 h-8 rounded-full ${pool.rank === 1 ? 'bg-yellow-100 text-yellow-800' :
+                                                pool.rank <= 3 ? 'bg-green-100 text-green-800' :
+                                                    'bg-gray-100 text-gray-800'
+                                            } font-bold`}>
                                             {pool.rank}
                                         </span>
                                     </td>

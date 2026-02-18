@@ -23,7 +23,10 @@ class HibernationSchedule(Base):
     __tablename__ = "hibernation_schedules"
 
     id = Column(String, primary_key=True)
-    cluster_id = Column(String, ForeignKey("clusters.id"), unique=True, nullable=False)
+    # cluster_id removed in favor of Many-to-Many relationship
+    
+    name = Column(String, nullable=False)
+    description = Column(String, nullable=True)
 
     # Schedule type: WEEKLY (168h), DAILY (31d), MONTHLY (744h), HYBRID (weekly + overrides)
     schedule_type = Column(String(20), default=ScheduleType.WEEKLY.value)
@@ -59,4 +62,4 @@ class HibernationSchedule(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     # Relationships
-    cluster = relationship("Cluster", back_populates="hibernation_schedule")
+    clusters = relationship("Cluster", secondary="hibernation_schedule_clusters", backref="hibernation_schedules")

@@ -32,7 +32,9 @@ class ScheduleMatrix(BaseModel):
 
 class HibernationScheduleCreate(BaseModel):
     """Create hibernation schedule request"""
-    cluster_id: str = Field(..., description="Cluster UUID")
+    name: str = Field(..., min_length=1, max_length=100, description="Schedule name")
+    description: Optional[str] = Field(None, description="Schedule description")
+    cluster_ids: List[str] = Field(..., description="List of Cluster UUIDs")
     schedule_type: str = Field(default="WEEKLY", description="Schedule type: WEEKLY, DAILY, MONTHLY, HYBRID")
     schedule_matrix: List[int] = Field(..., description="Schedule matrix (length varies by type: WEEKLY=168, DAILY=31, MONTHLY=744)")
     date_overrides: Optional[dict] = Field(default={}, description="Date-specific overrides for HYBRID mode: {'2026-12-25': 0}")
@@ -80,7 +82,9 @@ class HibernationScheduleCreate(BaseModel):
     model_config = {
         "json_schema_extra": {
             "example": {
-                "cluster_id": "550e8400-e29b-41d4-a716-446655440000",
+                "name": "Weekend Shutdown",
+                "description": "Shutdown non-prod clusters on weekends",
+                "cluster_ids": ["550e8400-e29b-41d4-a716-446655440000"],
                 "schedule_matrix": [0] * 48 + [1] * 72 + [0] * 48,
                 "timezone": "America/New_York",
                 "pre_warm_minutes": 15,
@@ -93,6 +97,9 @@ class HibernationScheduleCreate(BaseModel):
 
 class HibernationScheduleUpdate(BaseModel):
     """Update hibernation schedule request"""
+    name: Optional[str] = Field(None, min_length=1, max_length=100, description="Schedule name")
+    description: Optional[str] = Field(None, description="Schedule description")
+    cluster_ids: Optional[List[str]] = Field(None, description="List of Cluster UUIDs")
     schedule_type: Optional[str] = Field(None, description="Schedule type: WEEKLY, DAILY, MONTHLY, HYBRID")
     schedule_matrix: Optional[List[int]] = Field(None, description="Schedule matrix (length varies by type)")
     date_overrides: Optional[dict] = Field(None, description="Date-specific overrides for HYBRID mode")
@@ -141,6 +148,7 @@ class HibernationScheduleUpdate(BaseModel):
     model_config = {
         "json_schema_extra": {
             "example": {
+                "name": "Updated Schedule Name",
                 "pre_warm_minutes": 30,
                 "is_active": False
             }
@@ -151,7 +159,11 @@ class HibernationScheduleUpdate(BaseModel):
 class HibernationScheduleResponse(BaseModel):
     """Hibernation schedule response"""
     id: str = Field(..., description="Schedule UUID")
-    cluster_id: str = Field(..., description="Cluster UUID")
+    name: str = Field(..., description="Schedule name")
+    description: Optional[str] = Field(None, description="Schedule description")
+    cluster_ids: List[str] = Field(..., description="List of Cluster UUIDs associated with this schedule")
+    # For backward compatibility or UI convenience, we might want to return cluster details too, 
+    # but keeping it simple for now as requested.
     schedule_type: str = Field(default="WEEKLY", description="Schedule type: WEEKLY, DAILY, MONTHLY, HYBRID")
     schedule_matrix: List[int] = Field(..., description="Schedule matrix (length varies by type)")
     date_overrides: Optional[dict] = Field(default={}, description="Date-specific overrides for HYBRID mode")

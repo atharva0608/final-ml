@@ -47,14 +47,38 @@ const RightSizing = () => {
     const fetchRecommendations = async () => {
         try {
             setLoading(true);
-            const clusterId = selectedCluster?.id || 'ALL';
-            const res = await optimizationAPI.getRightsizing(clusterId);
-            setRecommendations(res.data.overprovisioned_instances || []);
-            setData(res.data);
-            setSelectedForBatch(res.data.overprovisioned_instances || []);
+            const clusterId = selectedCluster?.id;
+
+            // New endpoint: /pod-metrics/right-sizing/recommendations
+            const res = await optimizationAPI.getRightsizing(clusterId, {
+                analysis_window_hours: 336  // 14 days
+            });
+
+            // Backend returns array of recommendations directly
+            const recommendationsData = Array.isArray(res.data) ? res.data : [];
+            setRecommendations(recommendationsData);
+
+            // Calculate aggregated data for summary
+            const totalSavings = recommendationsData.reduce((sum, rec) => sum + (rec.savings_monthly || 0), 0);
+            const avgScore = recommendationsData.length > 0
+                ? recommendationsData.reduce((sum, rec) => {
+                    const waste = 100 - ((rec.cpu_avg_millicores / (rec.current_cpu_request_millicores || 1000)) * 100);
+                    return sum + Math.max(0, Math.min(100, waste));
+                }, 0) / recommendationsData.length
+                : 100;
+
+            setData({
+                total_potential_savings: totalSavings,
+                overprovisioned_count: recommendationsData.length,
+                optimization_score: Math.round(avgScore),
+                recommendations: recommendationsData
+            });
+
+            setSelectedForBatch(recommendationsData);
         } catch (err) {
             console.error("RightSizing fetch error:", err);
             setData(null);
+            setRecommendations([]);
         } finally {
             setLoading(false);
         }
@@ -89,18 +113,25 @@ const RightSizing = () => {
     const calculateStats = () => {
         if (!data) return {};
 
-        // Calculate Score: Realized Savings / (Realized + Potential)
-        const realized = savingsData?.total_savings || 0;
-        const potential = data.total_potential_savings || 0;
-        const total = realized + potential;
-        const score = total > 0 ? Math.round((realized / total) * 100) : 0;
+        // Calculate reductions based on current vs recommended
+        const vcpuReduction = recommendations.reduce((acc, curr) => {
+            const currentCores = (curr.current_cpu_request_millicores || 0) / 1000;
+            const recommendedCores = (curr.recommended_cpu_request_millicores || 0) / 1000;
+            return acc + (currentCores - recommendedCores);
+        }, 0);
+
+        const memoryReduction = recommendations.reduce((acc, curr) => {
+            const currentGB = (curr.current_memory_request_mb || 0) / 1024;
+            const recommendedGB = (curr.recommended_memory_request_mb || 0) / 1024;
+            return acc + (currentGB - recommendedGB);
+        }, 0);
 
         return {
-            potential_savings: potential,
+            potential_savings: data.total_potential_savings || 0,
             instance_count: recommendations.length,
-            vcpu_reduction: recommendations.reduce((acc, curr) => acc + (curr.capacity?.cpu || 0) * 0.5, 0), // Est 50%
-            memory_reduction: recommendations.reduce((acc, curr) => acc + (curr.capacity?.memory || 0) * 0.5, 0), // Est 50%
-            optimization_score: score
+            vcpu_reduction: Math.round(vcpuReduction * 10) / 10,  // Round to 1 decimal
+            memory_reduction: Math.round(memoryReduction * 10) / 10,  // Round to 1 decimal
+            optimization_score: data.optimization_score || 0
         };
     };
 
@@ -138,70 +169,117 @@ const RightSizing = () => {
                                 <table className="w-full text-left">
                                     <thead className="bg-gray-50 border-b border-gray-100">
                                         <tr>
-                                            <th className="py-3 px-4 text-xs font-semibold text-gray-500 uppercase">Instance</th>
-                                            <th className="py-3 px-4 text-xs font-semibold text-gray-500 uppercase">Type</th>
-                                            <th className="py-3 px-4 text-xs font-semibold text-gray-500 uppercase">Utilization</th>
-                                            <th className="py-3 px-4 text-xs font-semibold text-gray-500 uppercase">Savings</th>
-                                            <th className="py-3 px-4 text-xs font-semibold text-gray-500 uppercase">Age</th>
+                                            <th className="py-3 px-4 text-xs font-semibold text-gray-500 uppercase">Workload</th>
+                                            <th className="py-3 px-4 text-xs font-semibold text-gray-500 uppercase">Current / Recommended</th>
+                                            <th className="py-3 px-4 text-xs font-semibold text-gray-500 uppercase">CPU Utilization</th>
+                                            <th className="py-3 px-4 text-xs font-semibold text-gray-500 uppercase">Memory Utilization</th>
+                                            <th className="py-3 px-4 text-xs font-semibold text-gray-500 uppercase">Monthly Savings</th>
+                                            <th className="py-3 px-4 text-xs font-semibold text-gray-500 uppercase">Confidence</th>
                                             <th className="py-3 px-4 text-xs font-semibold text-gray-500 uppercase"></th>
                                         </tr>
                                     </thead>
                                     <tbody className="divide-y divide-gray-50">
-                                        {recommendations.map((item, idx) => (
-                                            <tr
-                                                key={idx}
-                                                className={`hover:bg-blue-50/30 cursor-pointer transition-colors ${selectedInstance?.instance_id === item.instance_id ? 'bg-blue-50 border-l-2 border-blue-500' : ''}`}
-                                                onClick={() => setSelectedInstance(item)}
-                                            >
-                                                <td className="py-3 px-4">
-                                                    <div className="font-medium text-gray-900 text-sm">{item.instance_id}</div>
-                                                    <div className="text-[10px] text-gray-400">{item.confidence} Confidence</div>
-                                                </td>
-                                                <td className="py-3 px-4">
-                                                    <div className="flex flex-col">
-                                                        <span className="text-gray-500 strike-through text-xs">{item.instance_type}</span>
-                                                        <span className="text-green-600 font-bold text-sm flex items-center gap-1">
-                                                            <FiArrowDownRight /> {item.recommendation.replace("Downsize to ", "")}
-                                                        </span>
-                                                    </div>
-                                                </td>
-                                                <td className="py-3 px-4">
-                                                    <div className="w-24 space-y-1">
-                                                        <div className="flex items-center gap-1 text-[10px] text-gray-500">
-                                                            <FiCpu /> {item.utilization_percent.cpu}%
+                                        {recommendations.map((item, idx) => {
+                                            // Calculate utilization percentages
+                                            const cpuUtilPct = item.current_cpu_request_millicores > 0
+                                                ? Math.round((item.cpu_avg_millicores / item.current_cpu_request_millicores) * 100)
+                                                : 0;
+                                            const memUtilPct = item.current_memory_request_mb > 0
+                                                ? Math.round((item.memory_avg_mb / item.current_memory_request_mb) * 100)
+                                                : 0;
+
+                                            return (
+                                                <tr
+                                                    key={`${item.namespace}-${item.controller_name}-${idx}`}
+                                                    className={`hover:bg-blue-50/30 cursor-pointer transition-colors ${selectedInstance?.controller_name === item.controller_name ? 'bg-blue-50 border-l-2 border-blue-500' : ''}`}
+                                                    onClick={() => setSelectedInstance(item)}
+                                                >
+                                                    <td className="py-3 px-4">
+                                                        <div className="font-medium text-gray-900 text-sm">{item.controller_name}</div>
+                                                        <div className="text-[10px] text-gray-400">
+                                                            {item.controller_kind} • {item.namespace}
                                                         </div>
-                                                        <div className="w-full h-1 bg-gray-100 rounded-full overflow-hidden">
-                                                            <div className="h-full bg-blue-500" style={{ width: `${item.utilization_percent.cpu}%` }}></div>
+                                                        <div className="text-[10px] text-gray-400">
+                                                            {item.data_points} data points • {Math.round(item.analysis_window_hours / 24)}d analysis
                                                         </div>
-                                                        <div className="flex items-center gap-1 text-[10px] text-gray-500">
-                                                            <FiLayers /> {item.utilization_percent.memory}%
+                                                    </td>
+                                                    <td className="py-3 px-4">
+                                                        <div className="flex flex-col gap-1 text-xs">
+                                                            <div className="text-gray-500">
+                                                                CPU: {item.current_cpu_request_millicores}m → <span className="text-green-600 font-semibold">{item.recommended_cpu_request_millicores}m</span>
+                                                            </div>
+                                                            <div className="text-gray-500">
+                                                                Mem: {item.current_memory_request_mb}MB → <span className="text-green-600 font-semibold">{item.recommended_memory_request_mb}MB</span>
+                                                            </div>
                                                         </div>
-                                                        <div className="w-full h-1 bg-gray-100 rounded-full overflow-hidden">
-                                                            <div className="h-full bg-indigo-500" style={{ width: `${item.utilization_percent.memory}%` }}></div>
+                                                    </td>
+                                                    <td className="py-3 px-4">
+                                                        <div className="w-28 space-y-1">
+                                                            <div className="flex items-center justify-between text-[10px]">
+                                                                <span className="text-gray-500">Avg</span>
+                                                                <span className="font-medium">{cpuUtilPct}%</span>
+                                                            </div>
+                                                            <div className="w-full h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                                                                <div
+                                                                    className={`h-full ${cpuUtilPct < 40 ? 'bg-green-500' : cpuUtilPct < 70 ? 'bg-yellow-500' : 'bg-red-500'}`}
+                                                                    style={{ width: `${Math.min(100, cpuUtilPct)}%` }}
+                                                                ></div>
+                                                            </div>
+                                                            <div className="text-[10px] text-gray-400">
+                                                                P95: {item.cpu_p95_millicores}m
+                                                            </div>
                                                         </div>
-                                                    </div>
-                                                </td>
-                                                <td className="py-3 px-4 text-green-700 font-bold text-sm">
-                                                    ${item.potential_savings_monthly}
-                                                </td>
-                                                <td className="py-3 px-4">
-                                                    {/* Mock age random 1-10 days */}
-                                                    <RecommendationAgeIndicator days={Math.floor(Math.random() * 10) + 1} />
-                                                </td>
-                                                <td className="py-3 px-4 text-right">
-                                                    <Button
-                                                        size="xs"
-                                                        variant="outline"
-                                                        onClick={(e) => {
-                                                            e.stopPropagation();
-                                                            handleApply(item);
-                                                        }}
-                                                    >
-                                                        Apply
-                                                    </Button>
-                                                </td>
-                                            </tr>
-                                        ))}
+                                                    </td>
+                                                    <td className="py-3 px-4">
+                                                        <div className="w-28 space-y-1">
+                                                            <div className="flex items-center justify-between text-[10px]">
+                                                                <span className="text-gray-500">Avg</span>
+                                                                <span className="font-medium">{memUtilPct}%</span>
+                                                            </div>
+                                                            <div className="w-full h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                                                                <div
+                                                                    className={`h-full ${memUtilPct < 40 ? 'bg-green-500' : memUtilPct < 70 ? 'bg-yellow-500' : 'bg-red-500'}`}
+                                                                    style={{ width: `${Math.min(100, memUtilPct)}%` }}
+                                                                ></div>
+                                                            </div>
+                                                            <div className="text-[10px] text-gray-400">
+                                                                P95: {item.memory_p95_mb}MB
+                                                            </div>
+                                                        </div>
+                                                    </td>
+                                                    <td className="py-3 px-4">
+                                                        <div className="text-green-700 font-bold text-sm">
+                                                            ${item.savings_monthly.toFixed(2)}
+                                                        </div>
+                                                        <div className="text-[10px] text-gray-400">
+                                                            {item.savings_pct.toFixed(1)}% reduction
+                                                        </div>
+                                                    </td>
+                                                    <td className="py-3 px-4">
+                                                        <Badge
+                                                            variant={
+                                                                item.confidence === 'HIGH' ? 'success' :
+                                                                item.confidence === 'MEDIUM' ? 'warning' : 'default'
+                                                            }
+                                                        >
+                                                            {item.confidence}
+                                                        </Badge>
+                                                    </td>
+                                                    <td className="py-3 px-4 text-right">
+                                                        <Button
+                                                            size="xs"
+                                                            variant="outline"
+                                                            onClick={(e) => {
+                                                                e.stopPropagation();
+                                                                handleApply(item);
+                                                            }}
+                                                        >
+                                                            Apply
+                                                        </Button>
+                                                    </td>
+                                                </tr>
+                                            );
+                                        })}
                                     </tbody>
                                 </table>
                             </div>

@@ -129,8 +129,15 @@ export const metricAPI = {
 export const metricsAPI = metricAPI;
 
 export const optimizationAPI = {
-    getRightsizing: (clusterId) => api.get(`/api/v1/optimization/rightsizing/${clusterId}`),
+    getRightsizing: (clusterId, params = {}) => api.get('/api/v1/pod-metrics/right-sizing/recommendations', {
+        params: { cluster_id: clusterId, ...params }
+    }),
     applyRecommendation: (id) => api.post(`/api/v1/optimization/apply/${id}`),
+    getSavingsRealized: () => api.get('/api/v1/optimization/savings/realized'),
+    batchApplyRecommendations: (data) => api.post('/api/v1/optimization/rightsizing/batch-apply', data),
+    getInstanceMetrics: (instanceId, days = 14) => api.get('/api/v1/pod-metrics/', {
+        params: { instance_id: instanceId, days }
+    }),
 };
 
 export const healthAPI = {
@@ -261,9 +268,9 @@ export const hygieneAPI = {
 // AtharvaAi Pool Selection & Termination Monitoring API
 export const atharvaaiAPI = {
     // Pool Rankings - Get ML-scored pool recommendations
-    getRankings: (template, region = 'ap-south-1', limit = 10) =>
+    getRankings: (template, region = 'ap-south-1', limit = 10, clusterId = null) =>
         api.post('/api/v1/atharvaai/pools/rankings', template, {
-            params: { region, limit }
+            params: { region, limit, cluster_id: clusterId }
         }),
 
     // Get globally flagged risky pools (System B)
