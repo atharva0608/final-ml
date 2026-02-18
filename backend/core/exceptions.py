@@ -105,8 +105,16 @@ class ResourceAlreadyExistsError(SpotOptimizerException):
         super().__init__(msg, status.HTTP_409_CONFLICT, {"resource_type": resource_type, "identifier": identifier})
 
 
+
 class ResourceConflictError(SpotOptimizerException):
     """Raised when a resource operation conflicts with current state"""
+
+    def __init__(self, message: str, details: Optional[Dict[str, Any]] = None):
+        super().__init__(message, status.HTTP_409_CONFLICT, details)
+
+
+class ConflictError(SpotOptimizerException):
+    """Raised when a conflict occurs (Generic)"""
 
     def __init__(self, message: str, details: Optional[Dict[str, Any]] = None):
         super().__init__(message, status.HTTP_409_CONFLICT, details)

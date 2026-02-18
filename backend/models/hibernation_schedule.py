@@ -4,6 +4,7 @@ from sqlalchemy import Column, String, DateTime, ForeignKey, Integer, Text, JSON
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from backend.models.base import Base
+from backend.models.hibernation_schedule_clusters import hibernation_schedule_clusters
 
 
 class HibernationStrategy(str, enum.Enum):
@@ -62,4 +63,4 @@ class HibernationSchedule(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     # Relationships
-    clusters = relationship("Cluster", secondary="hibernation_schedule_clusters", backref="hibernation_schedules")
+    clusters = relationship("Cluster", secondary=hibernation_schedule_clusters, backref="hibernation_schedules")

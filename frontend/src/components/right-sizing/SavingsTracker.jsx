@@ -18,7 +18,7 @@ const SavingsTracker = ({ data: externalData }) => {
 
         const fetchSavings = async () => {
             try {
-                const res = await api.get('/optimization/savings/realized');
+                const res = await api.get('/api/v1/optimization/savings/realized');
                 setInternalData(res.data);
             } catch (err) {
                 console.error("Failed to load savings history", err);

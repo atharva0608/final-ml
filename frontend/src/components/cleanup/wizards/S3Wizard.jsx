@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { FiX, FiCheckCircle, FiArchive, FiBarChart2, FiArrowRight, FiDatabase } from 'react-icons/fi';
+import { FiX, FiCheckCircle, FiArchive, FiBarChart2, FiArrowRight, FiDatabase, FiAlertTriangle } from 'react-icons/fi';
 import Button from '../../shared/Button';
 
 const S3Wizard = ({

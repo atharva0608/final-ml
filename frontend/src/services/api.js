@@ -337,5 +337,17 @@ export const permissionAPI = {
 };
 export const permissionsAPI = permissionAPI;
 
+// ── Karpenter Auto-Optimization ──────────────────────────────────────────
+export const karpenterAPI = {
+    getStatus: () => api.get('/api/v1/karpenter/status'),
+    getConfig: (clusterId) => api.get(`/api/v1/karpenter/config?cluster_id=${clusterId}`),
+    saveConfig: (data) => api.post('/api/v1/karpenter/config', data),
+    updateConfig: (clusterId, data) => api.patch(`/api/v1/karpenter/config/${clusterId}`, data),
+    deploy: (data) => api.post('/api/v1/karpenter/deploy', data),
+    toggle: (clusterId, enabled) => api.post(`/api/v1/karpenter/toggle/${clusterId}`, { enabled }),
+    getActivity: (clusterId, limit = 20) => api.get('/api/v1/karpenter/activity', { params: { cluster_id: clusterId, limit } }),
+    getStats: (period = 'week') => api.get('/api/v1/karpenter/stats', { params: { period } }),
+};
+
 export default api;
 

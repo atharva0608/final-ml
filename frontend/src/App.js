@@ -21,7 +21,7 @@ import Onboarding from './pages/Onboarding';
 import ClusterList from './components/clusters/ClusterList';
 import TemplateList from './components/templates/TemplateList';
 import PolicyConfig from './components/policies/PolicyConfig';
-import HibernationScheduler from './components/hibernation/HibernationScheduler';
+import { HibernationDashboard } from './components/hibernation';
 import AtharvaAiPage from './pages/AtharvaAiPage';
 import AuditLog from './components/audit/AuditLog';
 import Settings from './components/settings/Settings';
@@ -276,7 +276,7 @@ function App() {
                 sectionName="Hibernation Schedule"
                 sectionDescription="Manage cluster hibernation schedules"
               >
-                <HibernationScheduler />
+                <HibernationDashboard />
               </PermissionGate>
             } />
             <Route path="automation-settings" element={

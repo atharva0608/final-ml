@@ -14,9 +14,10 @@ Workers:
 from .discovery import discovery_worker_loop, stream_discovery_status
 from .optimization import trigger_manual_optimization, optimize_cluster
 from .hibernation_worker import (
-    hibernation_scheduler_loop,
-    manual_sleep_cluster,
-    manual_wake_cluster
+    execute_hibernation_scheduler,
+    execute_hibernation,
+    execute_wake,
+    execute_prewarm
 )
 from .report_worker import (
     generate_weekly_report,
@@ -39,9 +40,10 @@ __all__ = [
     "optimize_cluster",
 
     # Hibernation worker
-    "hibernation_scheduler_loop",
-    "manual_sleep_cluster",
-    "manual_wake_cluster",
+    "execute_hibernation_scheduler",
+    "execute_hibernation",
+    "execute_wake",
+    "execute_prewarm",
 
     # Report worker
     "generate_weekly_report",

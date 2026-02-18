@@ -51,13 +51,11 @@ from backend.schemas.policy_schemas import (
 
 # Hibernation schemas
 from backend.schemas.hibernation_schemas import (
-    ScheduleMatrix,
+
     HibernationScheduleCreate,
     HibernationScheduleUpdate,
     HibernationScheduleResponse,
-    ScheduleOverride,
-    SchedulePreview,
-    SchedulePreviewResponse,
+
 )
 
 # Metric schemas
@@ -148,13 +146,11 @@ __all__ = [
     "PolicyState",
     "PolicyValidationResult",
     # Hibernation
-    "ScheduleMatrix",
+
     "HibernationScheduleCreate",
     "HibernationScheduleUpdate",
     "HibernationScheduleResponse",
-    "ScheduleOverride",
-    "SchedulePreview",
-    "SchedulePreviewResponse",
+
     # Metrics
     "KPISet",
     "ChartDataPoint",

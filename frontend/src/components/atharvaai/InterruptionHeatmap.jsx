@@ -14,7 +14,7 @@ const InterruptionHeatmap = () => {
 
     const fetchHeatmap = async () => {
         try {
-            const response = await api.get('/atharvaai/interruption-heatmap?days=30');
+            const response = await api.get('/api/v1/atharvaai/interruption-heatmap?days=30');
             // If empty (no history yet), use mock data for demo
             if (!response.data || response.data.length === 0) {
                 setHeatmapData(generateMockData());

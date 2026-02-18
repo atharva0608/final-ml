@@ -1,330 +1,785 @@
-# UI Component Improvement Recommendations
-**Generated:** 2026-02-17 | **Based on:** Codebase audit + `all-components.md` analysis
+# Right-Sizing with Karpenter - Ultra-Detailed UI Design
+
+I'll create a comprehensive, crystal-clear interface with maximum visibility and guidance.
 
 ---
 
-## Overview
+## 🎯 **Complete Page Structure**
 
-This document covers three things:
-1. **Quick wins** — existing endpoints already wired in the backend that just need to be connected to the frontend
-2. **New components** — additions per section that would make the platform easier to navigate and track
-3. **Super Admin panel expansion** — a full breakdown of what's missing and how everything can be managed from one place
-
----
-
-## Part 1: Quick Wins — Wire Up Existing Endpoints (High Priority)
-
-These are the 🔴 red endpoints that have working backend logic but are showing hardcoded/mock data in the UI. These should be fixed first because the infrastructure already exists.
-
-### 1.1 Dashboard — `FleetComposition` Widget
-- **File:** `dashboard/widgets/FleetComposition.jsx`
-- **Problem:** Currently hardcoded. The endpoint `GET /api/v1/metrics/instances` exists and groups by lifecycle (SPOT/ON_DEMAND).
-- **Fix:** Replace hardcoded data with a `useEffect` call to `metricAPI.getInstances()`. The response already contains `instance_type`, `lifecycle`, `cpu_util`, `memory_util`, `state`.
-- **Impact:** Admins will finally see a real picture of their fleet composition instead of static placeholder slices.
-
-### 1.2 Dashboard — `PendingApprovalsCard` Widget
-- **File:** `dashboard/widgets/PendingApprovalsCard.jsx`
-- **Problem:** Hardcoded. The endpoint `GET /api/v1/approvals/` is already wired in the Approvals page — the widget just needs to consume it.
-- **Fix:** Call `approvalsAPI.list({ status: 'PENDING', page_size: 5 })` on mount. Filter for PENDING status and display count + top items.
-- **Impact:** Dashboard becomes actionable — admins see pending requests without navigating away.
-
-### 1.3 Dashboard — `PlatformHealthCard` Widget (Super Admin)
-- **File:** `dashboard/widgets/PlatformHealthCard.jsx`
-- **Problem:** Hardcoded uptime % and worker counts. The `AdminHealth` component already calls `GET /api/v1/admin/health` correctly.
-- **Fix:** Import `adminAPI.getHealth()` and reuse the same response. Display `status`, `api_latency`, `db_connections`, `worker_status`.
-- **Impact:** Super admin dashboard goes from decorative to genuinely useful at a glance.
-
-### 1.4 Settings — Preferences / Save Preferences Button
-- **File:** `settings/Settings.jsx`
-- **Problem:** "Save Preferences" writes to `localStorage` only. `PATCH /api/v1/users/me/preferences` is defined in `user_routes.py` and in `api.js` — just never called.
-- **Fix:** Replace the `localStorage.setItem` call with `userAPI.updatePreferences(prefs)` and keep localStorage as a fallback/cache.
-- **Impact:** Preferences actually persist across devices and sessions.
-
-### 1.5 Templates — Instance Families Dropdown
-- **File:** `templates/TemplateBuilder.jsx`
-- **Problem:** Instance family checkboxes are hardcoded. `GET /api/v1/templates/options` exists but is never called.
-- **Fix:** On modal open, call `templateAPI.getOptions()` and populate the families list dynamically.
-- **Impact:** As AWS adds new instance families, the UI stays accurate without code changes.
-
-### 1.6 Settings Billing Tab
-- **File:** `settings/Settings.jsx` — Billing tab
-- **Problem:** Plan name, billing cycle, amount, next date, payment card — all hardcoded. The backend has `billing_routes.py` with `GET /api/v1/billing/status`, `GET /api/v1/billing/cost-summary`, and a Stripe portal session endpoint.
-- **Fix:** Wire up `billingAPI` (already in `api.js`) to replace the static values. Add a "Manage Billing" button that calls `POST /api/v1/billing/portal-session` to open the Stripe portal in a new tab.
-- **Impact:** Billing tab becomes real instead of a demo placeholder.
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│  RIGHT-SIZING & AUTO-OPTIMIZATION                                        │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │ ℹ️ INFO BAR                                                      │   │
+│  │ You're viewing: Manual Recommendations                          │   │
+│  │ What this means: Review and manually apply instance resize      │   │
+│  │ suggestions based on 14-day usage analysis                      │   │
+│  │                                                                   │   │
+│  │ 💡 Want automated optimization? Enable Karpenter below          │   │
+│  └─────────────────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────────────┘
+```
 
 ---
 
-## Part 2: New UI Components — Section by Section
+## 🎛️ **Top Control Panel - Clear Mode Selector**
 
-### Section 1: Dashboard
-
-**Add: `SpendForecastWidget`**
-Show projected end-of-month spend based on the current burn rate from `daily_costs`. This is computable from data already flowing through `GET /api/v1/metrics/cost/timeseries`. Display it as a mini card with current spend vs. projected spend and a color-coded variance indicator.
-
-**Add: `SavingsLeaderboardWidget`** (ORG_ADMIN + SUPER_ADMIN)
-A ranked list of teams by savings achieved this month. Wire to `GET /api/v1/metrics/teams/{id}/summary` iterated across all teams. Motivates competition and makes cost governance visible.
-
-**Add: `AgentStatusWidget`**
-Shows which clusters have an agent installed, their last heartbeat time, and a quick "Reconnect" button for any that are stale. The data comes from `clusters.agent_installed` and `clusters.last_heartbeat` already returned in `GET /api/v1/clusters`.
-
----
-
-### Section 2: Approvals
-
-**Add: `ApprovalTimelineView`**
-Replace (or tab alongside) the flat table with a timeline view grouped by day. Each entry shows the requester, feature, status change, and approver. The data is already in the approvals response — this is purely a presentation improvement.
-
-**Add: `ExpiryCountdownBadge`** on Active Grants rows
-The `expires_at` column exists. Add a live countdown (`HH:MM` remaining) displayed inline next to the status badge. Auto-refreshes every minute so admins can see which grants are about to expire without manual calculation.
-
-**Add: Bulk Approve/Reject** controls
-When multiple rows are selected (add checkboxes), show a floating action bar with "Approve All" and "Reject All" buttons. Each fires the existing `/approve` or `/reject` endpoint per ID. Saves time when there's a backlog of similar requests.
-
----
-
-### Section 3: Teams
-
-**Add: `TeamCostHeatmap`** in Team Details page
-A 7-day heatmap showing daily spend per team, sourced from `GET /api/v1/metrics/teams/{id}/summary`. This gives team leads an immediate visual of spending patterns — spikes are obvious at a glance.
-
-**Add: `MemberActivityLog`** tab on Team Details page
-A filtered view of `GET /api/v1/audit/logs` scoped to `actor_id` values belonging to the team. Shows what each member has been doing recently — useful for onboarding reviews and audits.
-
-**Add: `TeamBudgetProgressBar`**
-If `teams.governance_config` contains a budget limit (it's already stored via `TeamGovernance`), display a progress bar on the Team card showing current month spend vs. the budget cap. Color it green → yellow → red as utilization climbs.
+```jsx
+┌─────────────────────────────────────────────────────────────────────────┐
+│  HOW DO YOU WANT TO OPTIMIZE?                                            │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                           │
+│  ┌─────────────────────────────────┬─────────────────────────────────┐ │
+│  │  📊 MANUAL OPTIMIZATION         │  🚀 AUTOMATIC WITH KARPENTER   │ │
+│  ├─────────────────────────────────┼─────────────────────────────────┤ │
+│  │  [●] ACTIVE                     │  [○] INACTIVE                   │ │
+│  │                                  │                                  │ │
+│  │  ✅ You review each suggestion  │  ✅ Fully automated right-sizing│ │
+│  │  ✅ You decide when to apply    │  ✅ Real-time optimization      │ │
+│  │  ✅ Full manual control         │  ✅ Continuous cost reduction   │ │
+│  │                                  │                                  │ │
+│  │  ⚠️ Requires manual action      │  ⚠️ Requires Karpenter setup    │ │
+│  │  ⚠️ Recommendations age stale   │  ⚠️ Less direct control         │ │
+│  │                                  │                                  │ │
+│  │  Best for:                       │  Best for:                       │ │
+│  │  • One-time optimization        │  • Ongoing optimization         │ │
+│  │  • Strict change control        │  • Dynamic workloads            │ │
+│  │  • Testing/validation           │  • Dev/staging environments     │ │
+│  │                                  │                                  │ │
+│  │  [Continue with Manual →]       │  [Setup Karpenter →]            │ │
+│  └─────────────────────────────────┴─────────────────────────────────┘ │
+│                                                                           │
+│  💡 TIP: You can use BOTH modes on different clusters                   │
+│     Example: Manual for production, Karpenter for dev/staging           │
+│                                                                           │
+└─────────────────────────────────────────────────────────────────────────┘
+```
 
 ---
 
-### Section 4: Clusters
+## 🚀 **Karpenter Setup - Step-by-Step Inline Guide**
 
-**Add: `ClusterComparisonDrawer`**
-Allow users to select 2–3 cluster cards and open a side-by-side comparison: node counts, spot ratio, monthly cost, CPU/memory utilization, savings. Data already exists across `GET /api/v1/clusters` and `GET /api/v1/metrics/cluster/{id}`.
+### **Initial State: Setup Card**
 
-**Add: `HeartbeatStatusIndicator`** on cluster cards
-A small pulsing dot (green = heartbeat within 10 min, yellow = 10–30 min, red = stale) next to the cluster name. `clusters.last_heartbeat` is already in the response. Currently there's no visual indicator of agent health on the card itself.
-
-**Add: `NodeDrainModal`**
-When selecting a node in the Node List, allow an admin to initiate a cordon+drain via the existing cluster connection. This would call `POST /api/v1/clusters/{id}/optimize` (currently a stub) and would be a natural home for that endpoint once it's implemented.
-
-**Fix: Connect `ClusterHealthTimeline`** to real data
-Currently `Mock API`. The `audit_logs` table has cluster events — a filtered query by `resource_type = 'cluster'` and `resource = cluster_id` would populate this without any new schema work.
-
----
-
-### Section 6: AtharvaAI
-
-**Fix: Replace all `Mock API` with real data**
-The entire AtharvaAI section runs on in-memory mock data. The `termination_events` and `rebalancing_actions` tables are defined in the DB schema. A focused sprint to wire `InterruptionHeatmap`, `RebalancingHistoryTimeline`, and `InstanceRankings` to real queries would make this section production-grade.
-
-**Add: `MLModelVersionCard`**
-Show the currently active ML model version, its training date, accuracy score, and a "Promote to Production" button (already gated by `feat-model-promote` JIT approval). Wire to `GET /api/v1/atharva/status` with an extended response, or a new `/api/v1/atharva/model-info` endpoint.
-
----
-
-### Section 9: Right-Sizing
-
-**Fix: Connect `Optimization Score` card**
-Currently hardcoded. The score is computable from `instances.cpu_util` and `instances.memory_util` already in the rightsizing response — define a formula (e.g., `100 - avg(over-provisioning %)`) and render it dynamically.
-
-**Add: `ApplyAllRecommendations` button**
-Wire the existing `BatchApplyModal` which is currently `Mock API`. The backend endpoint `POST /api/v1/optimization/rightsizing/batch-apply` is defined — it just needs a real service implementation and the modal connected to it.
-
-**Add: `ScheduledApply` toggle per recommendation**
-Let users schedule a recommendation to be applied during a maintenance window (e.g., next Sunday 2am). Store the schedule in `hibernation_schedules` or a new `optimization_schedule` table. Display a clock icon on pending scheduled items.
-
----
-
-### Section 10: Resource Hygiene (Cleanup)
-
-**Add: `ScanScheduler`** component
-Let admins configure automatic scans on a cron schedule (daily, weekly) per account. Store in a new `scan_schedules` table or in `organizations.governance_config`. Display the next scheduled scan time in the `FilterPanel`.
-
-**Add: `ResourceDependencyGraph`**
-The `Check Dependencies` button exists but just returns a list. Visualize the results as a small force-directed graph showing which resources block others. Libraries like `d3` are already available in the stack.
-
-**Add: `SavedFilters`** in FilterPanel
-Let users save combinations of account + region + resource type + status as named filter presets. Store in `localStorage` (or `users.preferences`). A "Saved Views" dropdown on the filter bar would save time for repeated scans.
-
----
-
-### Section 11: Hibernation
-
-**Wire up unused endpoints:**
-- `POST /api/v1/hibernation/schedules/{id}/override` — add a "Wake Now" button to the `HistoryLog` and on the schedule card
-- `DELETE /api/v1/hibernation/schedules/{id}` — add a delete button on each schedule in the `Scheduled Jobs List`
-
-**Add: `HibernationCostProjection`**
-The `CostAnalytics` sidebar is computed but static. Connect it to `clusters.monthly_cost` and the schedule matrix — calculate projected savings based on the percentage of hours hibernated per week.
+```jsx
+┌─────────────────────────────────────────────────────────────────────────┐
+│  🚀 KARPENTER AUTO-OPTIMIZATION                    STATUS: ⚪ NOT SETUP │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                           │
+│  ┌──────────────────────────────────────────────────────────────────┐  │
+│  │  WHAT IS KARPENTER?                                              │  │
+│  │                                                                   │  │
+│  │  Karpenter is a Kubernetes node provisioner that automatically  │  │
+│  │  selects the best instance types and sizes based on your actual │  │
+│  │  pod requirements - in real-time.                               │  │
+│  │                                                                   │  │
+│  │  Instead of you manually reviewing and applying recommendations │  │
+│  │  (which can become stale), Karpenter continuously monitors your │  │
+│  │  workloads and makes adjustments automatically.                 │  │
+│  │                                                                   │  │
+│  │  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  │  │
+│  │                                                                   │  │
+│  │  BENEFITS:                                                        │  │
+│  │  ✅ 30-50% cost reduction (vs manual sizing)                    │  │
+│  │  ✅ 75%+ average utilization (vs typical 40-50%)                │  │
+│  │  ✅ Automatic spot instance management                           │  │
+│  │  ✅ Right-sized nodes every time                                 │  │
+│  │  ✅ Zero manual intervention needed                              │  │
+│  │                                                                   │  │
+│  │  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  │  │
+│  │                                                                   │  │
+│  │  HOW IT WORKS:                                                    │  │
+│  │  1. Karpenter watches pod scheduling requests                   │  │
+│  │  2. Selects optimal instance type from allowed families         │  │
+│  │  3. Provisions nodes within seconds                             │  │
+│  │  4. Continuously consolidates under-utilized nodes              │  │
+│  │  5. Replaces expensive instances with cheaper alternatives      │  │
+│  │                                                                   │  │
+│  │  [📖 Read Full Documentation] [▶️ Watch 2-min Demo Video]       │  │
+│  └──────────────────────────────────────────────────────────────────┘  │
+│                                                                           │
+│  ┌──────────────────────────────────────────────────────────────────┐  │
+│  │  SETUP ESTIMATE                                                   │  │
+│  │                                                                   │  │
+│  │  ⏱️ Time: 3-5 minutes                                            │  │
+│  │  🔧 Complexity: Easy (we guide you through everything)          │  │
+│  │  💰 Estimated savings for your clusters: $2,400/month (37%)     │  │
+│  │  ⚡ Can be enabled/disabled anytime                              │  │
+│  └──────────────────────────────────────────────────────────────────┘  │
+│                                                                           │
+│  [Maybe Later]                               [🚀 Start Karpenter Setup] │
+│                                                                           │
+└─────────────────────────────────────────────────────────────────────────┘
+```
 
 ---
 
-### Section 13: Audit Logs
+### **Setup Wizard (Only for Initial Setup - One Time)**
 
-**Add: `AuditLogSearchBar`**
-A free-text search across `actor_name`, `event`, and `resource` fields. The backend `AuditService.get_audit_logs` already accepts filter params — just add a text input that passes a `search` query param.
+This is acceptable because it's a **one-time setup**, not a repetitive action.
 
-**Add: `LiveAuditFeed`** mode
-A toggle that enables SSE-based live streaming of new audit events as they happen (similar to the AtharvaAI activity feed). The backend already has SSE infrastructure for approvals — extend it to audit logs.
+#### **Step 1: Choose Clusters**
 
-**Add: `AuditHeatmap`** view
-A calendar heatmap (like GitHub's contribution graph) showing event volume per day. Helps identify unusual activity patterns immediately. Computable from the existing `audit_logs.timestamp` data.
-
----
-
-## Part 3: Super Admin Panel — Full Expansion
-
-The current Admin Panel has the right bones (`AdminDashboard`, `AdminOverview`, `AdminClients`, `AdminHealth`, `AdminBilling`, `AdminExperiments`, `AdminOrganizations`, `AdminConfig`), but several critical tracking and management capabilities are missing or incomplete. Here's a complete picture.
-
----
-
-### 3.1 What's Missing Today
-
-| Gap | Current State | Impact |
-|---|---|---|
-| Impersonation ("Login as Tenant") | Endpoint mentioned in `INFO.md` (`POST /admin/impersonate`) but no UI | Cannot debug tenant-specific issues without separate credentials |
-| Feature Flag Management | `AdminConfig` exists but feature flags from `feature_registry.py` aren't surfaced | Cannot enable/disable features per org without a code deploy |
-| Per-Org Usage Quotas | No UI to set or display node limits, cluster limits, API rate limits | No way to enforce plan limits from the UI |
-| Global Audit Log | `roleDefaults.js` has a `global_audit` widget that reuses `ActivityFeed` — but scoped to org-level, not platform-level | Can't see what's happening across all tenants |
-| Tenant Health Drilldown | `AdminOrganizations` shows a table but clicking a row doesn't show a detail view | No per-tenant diagnostic capability |
-| Revenue Analytics | `AdminBilling` shows MRR but returns hardcoded values — the `billing_routes.py` has real Stripe endpoints | MRR/ARR figures aren't reliable |
-| Agent Fleet Overview | No view of all DaemonSet agents across all orgs | Impossible to know how many agents are healthy vs. stale at the platform level |
-
----
-
-### 3.2 New Components to Add to Admin Panel
-
-#### `AdminImpersonation` — New tab
-A searchable org list. Clicking "Impersonate" calls `POST /admin/impersonate` (defined in `INFO.md`), exchanges for a scoped JWT, and opens the app as that org's admin. A persistent banner shows "You are viewing as [Org Name] — Exit Impersonation." This is the single highest-impact feature for support/debugging.
-
-**Files to create:** `admin/AdminImpersonation.jsx`
-**API:** `POST /api/v1/admin/impersonate` (implement in `admin_routes.py` + `admin_service.py`)
-
----
-
-#### `AdminFeatureFlags` — New tab
-A grid of all features from `feature_registry.py` with toggles per organization. Columns: Feature Name | Category | Risk Level | Global Default | Per-Org Overrides. Each org row shows a toggle to enable/disable the feature for that specific tenant without affecting others.
-
-**Files to create:** `admin/AdminFeatureFlags.jsx`
-**API:** New endpoints `GET /api/v1/admin/feature-flags` and `PATCH /api/v1/admin/feature-flags/{org_id}/{feature_id}`
-
----
-
-#### `AdminTenantDrilldown` — Modal/Slide-over from `AdminOrganizations`
-When clicking any org row, open a full detail view with tabs:
-- **Overview** — clusters, accounts, users, monthly cost, savings generated (from `admin_service._get_org_stats`)
-- **Members** — all users in that org with roles, last login, MFA status
-- **Clusters** — all clusters linked to that org's accounts
-- **Audit** — filtered audit log for that org's actors
-- **Billing** — their plan, usage vs. limits, Stripe subscription ID
-- **Agent Health** — all DaemonSet agents for that org with heartbeat status
-
-**Files to create:** `admin/AdminTenantDrilldown.jsx`
-**API:** Extend `GET /api/v1/admin/organizations/{id}` to return the full detail payload
-
----
-
-#### `AdminAgentFleet` — New tab
-A platform-wide table of every registered agent (from the `clusters` table filtered to `agent_installed = True`). Columns: Org Name | Cluster Name | Region | Agent Version | Last Heartbeat | Status. Color-code rows by heartbeat freshness. Add a "Force Reconnect" action.
-
-**Files to create:** `admin/AdminAgentFleet.jsx`
-**API:** New endpoint `GET /api/v1/admin/agent-fleet` — queries `clusters` joined to `accounts` and `organizations`
-
----
-
-#### `AdminUsageQuotas` — Additions to `AdminOrganizations` or new tab
-Display and edit per-org quota limits. Each org row shows progress bars for:
-- Clusters used / cluster limit
-- Nodes managed / node limit
-- API calls this month / monthly limit
-
-An "Edit Quotas" button opens a modal to adjust limits. Store limits in `organizations.governance_config` or a new `org_quotas` table.
-
-**Files to create:** `admin/AdminUsageQuotas.jsx`
-**API:** `GET /api/v1/admin/organizations/{id}/quotas` + `PATCH /api/v1/admin/organizations/{id}/quotas`
-
----
-
-#### `AdminRevenueAnalytics` — Expand `AdminBilling`
-Connect to real Stripe data via `billing_routes.py`. Add:
-- **MRR/ARR trend chart** — 12-month line chart from `GET /api/v1/billing/daily-costs`
-- **Churn indicators** — orgs whose status changed to inactive this month
-- **Plan distribution** — pie chart of Free/Pro/Enterprise counts
-- **Upsell pipeline** — table of orgs near their plan limits (already partially in `AdminBilling.jsx` as `upsell_opportunities`)
-- **Failed charges** — list from Stripe webhook events
-
-**Files to modify:** `admin/AdminBilling.jsx`
-**API:** Wire `billingAPI` endpoints already defined in `api.js` but never called
+```jsx
+┌─────────────────────────────────────────────────────────────────────────┐
+│  KARPENTER SETUP - STEP 1 OF 4                         [Save & Exit] [✕]│
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                           │
+│  SELECT CLUSTERS TO ENABLE KARPENTER                                     │
+│                                                                           │
+│  ┌──────────────────────────────────────────────────────────────────┐  │
+│  │  ℹ️ Which clusters should use automatic optimization?            │  │
+│  │                                                                   │  │
+│  │  💡 RECOMMENDATION: Start with dev/staging clusters first       │  │
+│  │  Validate behavior before enabling on production                │  │
+│  └──────────────────────────────────────────────────────────────────┘  │
+│                                                                           │
+│  ┌──────────────────────────────────────────────────────────────────┐  │
+│  │                                                                   │  │
+│  │  ☑️  prod-web (us-east-1)                          💰 SAVINGS   │  │
+│  │      12 nodes  •  Current: $3,200/mo             +$960/mo (30%)│  │
+│  │      ├─ Status: Healthy  •  k8s v1.28                          │  │
+│  │      ├─ Current types: m5.xlarge (8), c5.large (4)             │  │
+│  │      └─ Current utilization: 42% CPU, 38% Memory               │  │
+│  │                                                                   │  │
+│  │      ⚠️ RECOMMENDATION: Medium priority                         │  │
+│  │      • This is a production cluster - consider testing first   │  │
+│  │      • Current utilization is low (good candidate)             │  │
+│  │                                                                   │  │
+│  ├──────────────────────────────────────────────────────────────────┤  │
+│  │                                                                   │  │
+│  │  ☑️  prod-api (us-east-1)                          💰 SAVINGS   │  │
+│  │      18 nodes  •  Current: $4,800/mo           +$1,440/mo (30%)│  │
+│  │      ├─ Status: Healthy  •  k8s v1.28                          │  │
+│  │      ├─ Current types: r5.xlarge (12), m5.large (6)            │  │
+│  │      └─ Current utilization: 38% CPU, 45% Memory               │  │
+│  │                                                                   │  │
+│  │      ⚠️ RECOMMENDATION: Medium priority                         │  │
+│  │      • Production cluster - test on staging first              │  │
+│  │      • Mix of instance types suggests manual tuning struggles  │  │
+│  │                                                                   │  │
+│  ├──────────────────────────────────────────────────────────────────┤  │
+│  │                                                                   │  │
+│  │  ☑️  staging-cluster (us-west-2)                   💰 SAVINGS   │  │
+│  │      5 nodes  •  Current: $1,200/mo               +$360/mo (30%)│  │
+│  │      ├─ Status: Healthy  •  k8s v1.28                          │  │
+│  │      ├─ Current types: m5.large (5)                            │  │
+│  │      └─ Current utilization: 35% CPU, 40% Memory               │  │
+│  │                                                                   │  │
+│  │      ✅ RECOMMENDATION: HIGH priority - START HERE              │  │
+│  │      • Staging environment - perfect for testing               │  │
+│  │      • Low risk, immediate savings                             │  │
+│  │                                                                   │  │
+│  ├──────────────────────────────────────────────────────────────────┤  │
+│  │                                                                   │  │
+│  │  ☐  dev-cluster (eu-west-1)                        💰 SAVINGS   │  │
+│  │      3 nodes  •  Current: $800/mo                 +$240/mo (30%)│  │
+│  │      ├─ Status: Healthy  •  k8s v1.27                          │  │
+│  │      ├─ Current types: t3.medium (3)                           │  │
+│  │      └─ Current utilization: 25% CPU, 30% Memory               │  │
+│  │                                                                   │  │
+│  │      ✅ RECOMMENDATION: HIGH priority                           │  │
+│  │      • Dev environment - ideal for testing Karpenter           │  │
+│  │      • Currently over-provisioned                               │  │
+│  │                                                                   │  │
+│  └──────────────────────────────────────────────────────────────────┘  │
+│                                                                           │
+│  ┌──────────────────────────────────────────────────────────────────┐  │
+│  │  SELECTION SUMMARY                                                │  │
+│  │                                                                   │  │
+│  │  Selected clusters: 3 of 4                                       │  │
+│  │  Total nodes to manage: 35 nodes                                │  │
+│  │  Current monthly cost: $9,200                                   │  │
+│  │  Estimated savings: $2,760/mo (30% average)                     │  │
+│  │  Annual impact: ~$33,120/year                                   │  │
+│  │                                                                   │  │
+│  │  ℹ️ These are estimates based on typical Karpenter performance  │  │
+│  │  Actual savings may vary based on workload patterns             │  │
+│  └──────────────────────────────────────────────────────────────────┘  │
+│                                                                           │
+│  [← Back]                        [Skip for Now]  [Continue to Config →] │
+│                                                                           │
+└─────────────────────────────────────────────────────────────────────────┘
+```
 
 ---
 
-#### `AdminGlobalAuditLog` — New tab (or enhance `AdminDashboard`)
-Platform-wide audit log that spans all organizations. Uses the same `GET /api/v1/audit/logs` endpoint but without org-scoping (super admin bypass). Filters: Org, Actor, Event Type, Date Range, Outcome. This is already planned in `roleDefaults.js` as the `global_audit` widget — expand it into a full tab.
+#### **Step 2: Configure Strategy (Per-Cluster)**
 
-**Files to create:** `admin/AdminGlobalAudit.jsx`
-**API:** Add `?global=true` query param to `GET /api/v1/audit/logs` — `require_super_admin` check strips the org filter
+```jsx
+┌─────────────────────────────────────────────────────────────────────────┐
+│  KARPENTER SETUP - STEP 2 OF 4                         [Save & Exit] [✕]│
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                           │
+│  CONFIGURE OPTIMIZATION STRATEGY                                         │
+│                                                                           │
+│  Cluster: prod-web (us-east-1)                    [Switch Cluster ▼]    │
+│                                                                           │
+│  ┌──────────────────────────────────────────────────────────────────┐  │
+│  │  ℹ️ Choose your optimization strategy                            │  │
+│  │                                                                   │  │
+│  │  This determines how Karpenter balances cost savings vs         │  │
+│  │  performance/stability. You can change this anytime.            │  │
+│  └──────────────────────────────────────────────────────────────────┘  │
+│                                                                           │
+│  SELECT STRATEGY:                                                        │
+│                                                                           │
+│  ┌──────────────────────────────────────────────────────────────────┐  │
+│  │  ○  COST-FIRST (Maximum Savings)                                 │  │
+│  │     ────────────────────────────────────────────────────────     │  │
+│  │                                                                   │  │
+│  │     What it does:                                                │  │
+│  │     • Prioritizes cheapest instance types (Graviton, older gen) │  │
+│  │     • Aggressive consolidation (merges nodes frequently)         │  │
+│  │     • 90%+ spot instances                                        │  │
+│  │     • More node replacements/churn                               │  │
+│  │                                                                   │  │
+│  │     Expected results:                                            │  │
+│  │     💰 Savings: 40-50%                                           │  │
+│  │     ⚡ Utilization: 80-90%                                        │  │
+│  │     🔄 Node churn: Medium-High                                   │  │
+│  │                                                                   │  │
+│  │     Best for:                                                    │  │
+│  │     ✅ Dev/staging environments                                  │  │
+│  │     ✅ Batch processing workloads                                │  │
+│  │     ✅ Stateless applications                                    │  │
+│  │     ⚠️ NOT for: Databases, stateful apps                         │  │
+│  │                                                                   │  │
+│  ├──────────────────────────────────────────────────────────────────┤  │
+│  │  ●  BALANCED (Recommended)                                       │  │
+│  │     ────────────────────────────────────────────────────────     │  │
+│  │                                                                   │  │
+│  │     What it does:                                                │  │
+│  │     • Mix of cost and performance optimization                   │  │
+│  │     • Moderate consolidation (avoids excessive churn)            │  │
+│  │     • 70-80% spot instances with on-demand fallback             │  │
+│  │     • Balanced node lifecycle management                         │  │
+│  │                                                                   │  │
+│  │     Expected results:                                            │  │
+│  │     💰 Savings: 30-40%                                           │  │
+│  │     ⚡ Utilization: 70-80%                                        │  │
+│  │     🔄 Node churn: Low-Medium                                    │  │
+│  │                                                                   │  │
+│  │     Best for:                                                    │  │
+│  │     ✅ Production web applications                               │  │
+│  │     ✅ API services                                              │  │
+│  │     ✅ Most general workloads                                    │  │
+│  │     ✅ When you want "set and forget"                            │  │
+│  │                                                                   │  │
+│  ├──────────────────────────────────────────────────────────────────┤  │
+│  │  ○  PERFORMANCE-FIRST (Stability Priority)                       │  │
+│  │     ────────────────────────────────────────────────────────     │  │
+│  │                                                                   │  │
+│  │     What it does:                                                │  │
+│  │     • Favors current-gen, proven instance types                 │  │
+│  │     • Conservative consolidation (less frequent changes)         │  │
+│  │     • 50-60% spot instances (more on-demand for stability)      │  │
+│  │     • Longer node lifetimes                                      │  │
+│  │                                                                   │  │
+│  │     Expected results:                                            │  │
+│  │     💰 Savings: 20-30%                                           │  │
+│  │     ⚡ Utilization: 60-70%                                        │  │
+│  │     🔄 Node churn: Very Low                                      │  │
+│  │                                                                   │  │
+│  │     Best for:                                                    │  │
+│  │     ✅ Mission-critical production apps                          │  │
+│  │     ✅ Stateful workloads (databases, caches)                   │  │
+│  │     ✅ Low-latency requirements                                  │  │
+│  │     ✅ Strict SLA requirements                                   │  │
+│  │                                                                   │  │
+│  └──────────────────────────────────────────────────────────────────┘  │
+│                                                                           │
+│  ┌──────────────────────────────────────────────────────────────────┐  │
+│  │  💡 RECOMMENDATION FOR THIS CLUSTER:                             │  │
+│  │                                                                   │  │
+│  │  We suggest: BALANCED                                            │  │
+│  │                                                                   │  │
+│  │  Why?                                                            │  │
+│  │  • Production cluster (needs stability)                          │  │
+│  │  • Currently low utilization (42% CPU) - room for optimization  │  │
+│  │  • Web workload (good fit for balanced approach)                │  │
+│  │                                                                   │  │
+│  │  You can always change this later in Settings                   │  │
+│  └──────────────────────────────────────────────────────────────────┘  │
+│                                                                           │
+│  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  │
+│                                                                           │
+│  NEXT CLUSTER: prod-api (1 more to configure)         [Configure →]     │
+│                                                                           │
+│  [← Back to Cluster Selection]               [Save & Continue to Step 3]│
+│                                                                           │
+└─────────────────────────────────────────────────────────────────────────┘
+```
 
 ---
 
-#### `AdminSystemAlerts` — Add to `AdminHealth`
-Proactive alerting panel showing:
-- Agents with heartbeat > 30 minutes old (query `clusters.last_heartbeat`)
-- Orgs with pending accounts stuck in `PENDING_VALIDATION` > 24h
-- Approvals in PENDING status > 48h (potential workflow blockage)
-- Any `SAFE_TO_DELETE` resources that have been in that state for > 30 days without action
+#### **Step 3: Configure Instance Settings**
 
-Implement as a polling component in `AdminHealth.jsx` with color-coded alert cards and direct action links.
+```jsx
+┌─────────────────────────────────────────────────────────────────────────┐
+│  KARPENTER SETUP - STEP 3 OF 4                         [Save & Exit] [✕]│
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                           │
+│  CONFIGURE INSTANCE PREFERENCES                                          │
+│                                                                           │
+│  Cluster: prod-web (us-east-1)                    [Switch Cluster ▼]    │
+│  Strategy: Balanced                                                      │
+│                                                                           │
+│  ┌──────────────────────────────────────────────────────────────────┐  │
+│  │  ℹ️ Tell Karpenter which instance types it can use               │  │
+│  │                                                                   │  │
+│  │  Don't worry - Karpenter will automatically choose the best     │  │
+│  │  instance type from your allowed list based on pod requirements │  │
+│  └──────────────────────────────────────────────────────────────────┘  │
+│                                                                           │
+│  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  │
+│                                                                           │
+│  1. INSTANCE FAMILIES                                                    │
+│                                                                           │
+│  ┌──────────────────────────────────────────────────────────────────┐  │
+│  │  What are instance families?                                     │  │
+│  │  Different types optimized for different workloads:              │  │
+│  │  • General Purpose (m): Balanced CPU/memory                      │  │
+│  │  • Compute (c): More CPU, less memory                            │  │
+│  │  • Memory (r): More memory, less CPU                             │  │
+│  │  • Burstable (t): Variable performance, cheapest                 │  │
+│  └──────────────────────────────────────────────────────────────────┘  │
+│                                                                           │
+│  Quick Pick: [Web Tier ▼]  [Apply Preset]                               │
+│  ├─ Web Tier: m5, m6i, m6a, c5, c6i                                     │
+│  ├─ API/Backend: c5, c6i, c6a, c7i, m6i                                 │
+│  ├─ Database: r5, r6i, r6a, m6i                                         │
+│  └─ Batch Processing: t3, t4g, m5, c5                                   │
+│                                                                           │
+│  OR select manually:                                                     │
+│                                                                           │
+│  ☑️ General Purpose (m-family)                 [Expand to see types ▼]  │
+│     ├─ ☑️ m5 (Current gen)        - Intel, proven                       │
+│     ├─ ☑️ m6i (Latest)            - Intel, 15% better price/perf        │
+│     ├─ ☑️ m6a (AMD)               - AMD, 10% cheaper than m6i           │
+│     ├─ ☐ m7i (Newest)            - Intel, cutting edge ($$)             │
+│     └─ ☐ m7a (AMD Latest)        - AMD, newest ($$)                     │
+│                                                                           │
+│  ☑️ Compute Optimized (c-family)               [Expand to see types ▼]  │
+│     ├─ ☑️ c5 (Current gen)        - Good balance                        │
+│     ├─ ☑️ c6i (Latest Intel)      - 15% faster than c5                  │
+│     ├─ ☐ c6a (AMD)               - 10% cheaper than c6i                 │
+│     └─ ☐ c7i (Newest)            - Cutting edge ($$$)                   │
+│                                                                           │
+│  ☐ Memory Optimized (r-family)                 [Expand to see types ▼]  │
+│  ☐ Burstable (t-family)                        [Expand to see types ▼]  │
+│  ☐ Storage Optimized (i-family)                [Expand to see types ▼]  │
+│                                                                           │
+│  💡 TIP: More families = more flexibility = better pricing              │
+│  Currently selected: 8 instance types                                    │
+│                                                                           │
+│  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  │
+│                                                                           │
+│  2. ARCHITECTURE                                                         │
+│                                                                           │
+│  ┌──────────────────────────────────────────────────────────────────┐  │
+│  │  What's the difference?                                          │  │
+│  │  • AMD64 (x86): Traditional, widest compatibility                │  │
+│  │  • ARM64 (Graviton): AWS-designed, 20% cheaper, great perf      │  │
+│  │                                                                   │  │
+│  │  💡 Most apps work on both - enable both for best pricing       │  │
+│  └──────────────────────────────────────────────────────────────────┘  │
+│                                                                           │
+│  ☑️ AMD64 (x86)     - Traditional Intel/AMD processors                  │
+│  ☑️ ARM64 (Graviton) - AWS Graviton (20% cheaper, great performance)   │
+│                                                                           │
+│  ⚠️ Check compatibility:                                                │
+│  ☑️ My workloads support multi-architecture                             │
+│     (If unsure, start with AMD64 only)                                  │
+│                                                                           │
+│  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  │
+│                                                                           │
+│  3. CAPACITY TYPE (Spot vs On-Demand)                                   │
+│                                                                           │
+│  ┌──────────────────────────────────────────────────────────────────┐  │
+│  │  What's spot?                                                    │  │
+│  │  Spot instances are unused AWS capacity at 70% discount.        │  │
+│  │  Trade-off: AWS can interrupt them with 2-min warning.          │  │
+│  │                                                                   │  │
+│  │  How Karpenter handles this:                                    │  │
+│  │  • Automatically moves pods before interruption                  │  │
+│  │  • Replaces with new spot or on-demand                          │  │
+│  │  • Your app stays running                                       │  │
+│  └──────────────────────────────────────────────────────────────────┘  │
+│                                                                           │
+│  Spot target: [━━━━━━━●━━] 75%                                         │
+│               ↑                                                          │
+│               Based on "Balanced" strategy                               │
+│                                                                           │
+│  ☑️ Enable on-demand fallback                                           │
+│     If spot unavailable, use on-demand (prevents stuck pods)            │
+│                                                                           │
+│  Interruption handling: [Rebalance Automatically ▼]                     │
+│  ├─ Rebalance Automatically (Recommended) - Move pods before termination│
+│  ├─ No Action - Let Kubernetes reschedule                              │
+│  └─ Delete and Replace - Faster but brief downtime                     │
+│                                                                           │
+│  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  │
+│                                                                           │
+│  4. RESOURCE LIMITS (per node)                                          │
+│                                                                           │
+│  ┌──────────────────────────────────────────────────────────────────┐  │
+│  │  Why set limits?                                                 │  │
+│  │  Prevents Karpenter from choosing giant (expensive) or tiny     │  │
+│  │  (inefficient) instances                                        │  │
+│  └──────────────────────────────────────────────────────────────────┘  │
+│                                                                           │
+│  vCPU per node:                                                          │
+│  Min: [2]  cores    Max: [16]  cores                                    │
+│        └─ Prevents tiny inefficient nodes                                │
+│                           └─ Prevents expensive large nodes              │
+│                                                                           │
+│  Memory per node:                                                        │
+│  Min: [4]  GiB      Max: [64]  GiB                                      │
+│                                                                           │
+│  💡 Your current nodes: 2-8 vCPU, 4-16 GiB                              │
+│  These limits match your current usage patterns                          │
+│                                                                           │
+│  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  │
+│                                                                           │
+│  ┌──────────────────────────────────────────────────────────────────┐  │
+│  │  PREVIEW: WHAT KARPENTER CAN CHOOSE                              │  │
+│  │                                                                   │  │
+│  │  Based on your selections, Karpenter can provision:             │  │
+│  │  • 24 different instance type combinations                       │  │
+│  │  • Estimated cost range: $0.08 - $0.65/hour per node           │  │
+│  │  • Spot discount potential: Up to 70%                           │  │
+│  │                                                                   │  │
+│  │  Example selections Karpenter might make:                        │  │
+│  │  ├─ Web pods (2 vCPU, 4GB): m6i.large spot ($0.08/hr)          │  │
+│  │  ├─ API pods (4 vCPU, 8GB): c6i.xlarge spot ($0.15/hr)         │  │
+│  │  └─ Worker pods (8 vCPU, 16GB): m6a.2xlarge spot ($0.28/hr)    │  │
+│  └──────────────────────────────────────────────────────────────────┘  │
+│                                                                           │
+│  [← Back to Strategy]    [Save & Continue to Advanced Settings →]       │
+│                                                                           │
+└─────────────────────────────────────────────────────────────────────────┘
+```
 
 ---
 
-#### Admin Dashboard Widget Additions (Super Admin role defaults)
-The `roleDefaults.js` already defines `['platform_health', 'tenant_list', 'global_audit', 'revenue_chart']` for SUPER_ADMIN. Add two more widgets to the registry:
+#### **Step 4: Advanced Settings & Review**
 
-- **`agent_fleet_health`** — compact card showing total agents, healthy count, stale count, last sync time
-- **`top_savings_orgs`** — leaderboard of the top 5 orgs by savings generated this month (good for customer success conversations)
+```jsx
+┌─────────────────────────────────────────────────────────────────────────┐
+│  KARPENTER SETUP - STEP 4 OF 4                         [Save & Exit] [✕]│
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                           │
+│  ADVANCED SETTINGS & REVIEW                                              │
+│                                                                           │
+│  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  │
+│                                                                           │
+│  CONSOLIDATION (Cost Optimization)                                       │
+│                                                                           │
+│  ┌──────────────────────────────────────────────────────────────────┐  │
+│  │  What is consolidation?                                          │  │
+│  │  Karpenter continuously looks for ways to pack your pods onto   │  │
+│  │  fewer, cheaper nodes. When nodes are under-utilized, it moves  │  │
+│  │  pods and terminates empty nodes.                               │  │
+│  │                                                                   │  │
+│  │  Example: 3 nodes at 30% → 2 nodes at 45% (1 node saved)       │  │
+│  └──────────────────────────────────────────────────────────────────┘  │
+│                                                                           │
+│  ☑️ Enable consolidation                                                │
+│                                                                           │
+│  When to consolidate:                                                    │
+│  Utilization threshold: [━━━━━●━━━━] 60%                                │
+│                          ↑                                                │
+│                          Consolidate when nodes below this               │
+│                                                                           │
+│  Wait before consolidating: [60] seconds                                │
+│  (Prevents rapid changes during traffic spikes)                         │
+│                                                                           │
+│  Empty node time-to-live: [30] seconds                                  │
+│  (How long to wait before deleting empty nodes)                         │
+│                                                                           │
+│  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  │
+│                                                                           │
+│  NODE LIFECYCLE                                                          │
+│                                                                           │
+│  ┌──────────────────────────────────────────────────────────────────┐  │
+│  │  Why force node rotation?                                        │  │
+│  │  Regularly replacing nodes helps:                               │  │
+│  │  • Get latest AMI security patches                              │  │
+│  │  • Switch to cheaper instance types as they become available    │  │
+│  │  • Prevent long-running node issues                             │  │
+│  └──────────────────────────────────────────────────────────────────┘  │
+│                                                                           │
+│  ☑️ Force node rotation                                                 │
+│  Max node lifetime: [7] days                                            │
+│                                                                           │
+│  Rotation strategy: [Gradual ▼]                                         │
+│  ├─ Gradual (Recommended) - Replace 1-2 nodes at a time                │
+│  ├─ Aggressive - Replace multiple nodes quickly                         │
+│  └─ Conservative - Only replace when absolutely necessary               │
+│                                                                           │
+│  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  │
+│                                                                           │
+│  WORKLOAD PROTECTION                                                     │
+│                                                                           │
+│  ☑️ Respect PodDisruptionBudgets                                        │
+│     Don't disrupt pods if it would violate PDB (prevents outages)       │
+│                                                                           │
+│  ☑️ Respect node affinity/anti-affinity                                 │
+│     Honor pod scheduling preferences                                     │
+│                                                                           │
+│  ☑️ Respect taints and tolerations                                      │
+│     Don't schedule pods on nodes they can't tolerate                    │
+│                                                                           │
+│  ☑️ Drain nodes gracefully                                              │
+│     Give pods [90] seconds to shut down cleanly                         │
+│                                                                           │
+│  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  │
+│                                                                           │
+│  COST GUARDRAILS                                                         │
+│                                                                           │
+│  ☑️ Enable cost alerts                                                  │
+│     Alert me when cluster cost exceeds: [$5,000] per month             │
+│                                                                           │
+│  ☑️ Block expensive instances                                           │
+│     Never provision instances above: [$2.00] per hour                   │
+│                                                                           │
+│  ☑️ Daily cost budget                                                   │
+│     Stop provisioning new nodes if daily cost exceeds: [$200]           │
+│                                                                           │
+│  Alert method: [Email + Slack ▼]                                        │
+│  Alert recipients: [admin@company.com, ops@company.com]                │
+│                                                                           │
+│  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  │
+│                                                                           │
+│  DEPLOYMENT SUMMARY                                                      │
+│                                                                           │
+│  ┌──────────────────────────────────────────────────────────────────┐  │
+│  │  📋 REVIEW YOUR CONFIGURATION                                     │  │
+│  │                                                                   │  │
+│  │  Clusters to enable: 3                                           │  │
+│  │  ├─ prod-web: Balanced strategy, 75% spot                        │  │
+│  │  ├─ prod-api: Balanced strategy, 75% spot                        │  │
+│  │  └─ staging-cluster: Cost-First strategy, 90% spot              │  │
+│  │                                                                   │  │
+│  │  Total nodes to manage: 35 nodes                                │  │
+│  │  Current monthly cost: $9,200                                   │  │
+│  │  Estimated new cost: $6,440 (30% reduction)                     │  │
+│  │  Estimated monthly savings: $2,760                              │  │
+│  │  Annual impact: ~$33,120/year                                   │  │
+│  │                                                                   │  │
+│  │  Instance families allowed: m5, m6i, m6a, c5, c6i              │  │
+│  │  Architectures: AMD64 + ARM64 (Graviton)                        │  │
+│  │  Spot target: 75-90% depending on cluster                       │  │
+│  │  Consolidation: Enabled                                          │  │
+│  │  Cost alerts: Enabled                                            │  │
+│  │                                                                   │  │
+│  │  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  │  │
+│  │                                                                   │  │
+│  │  WHAT HAPPENS NEXT?                                              │  │
+│  │                                                                   │  │
+│  │  When you click "Deploy", we will:                              │  │
+│  │                                                                   │  │
+│  │  1. Install Karpenter controller (Helm chart) - 2 min           │  │
+│  │  2. Create IAM roles with required permissions - 1 min          │  │
+│  │  3. Deploy NodePool configurations - 30 sec                     │  │
+│  │  4. Set up CloudWatch monitoring - 30 sec                       │  │
+│  │  5. Configure cost alerts - 30 sec                              │  │
+│  │                                                                   │  │
+│  │  Estimated total time: 4-5 minutes                              │  │
+│  │                                                                   │  │
+│  │  ⚡ GRADUAL ROLLOUT STRATEGY:                                    │  │
+│  │  • Day 1: Karpenter manages new pods only (existing unchanged) │  │
+│  │  • Day 2-3: Slowly migrate 25% of existing nodes               │  │
+│  │  • Day 4-5: Migrate another 50% (75% total)                    │  │
+│  │  • Day 6-7: Complete migration to 100%                         │  │
+│  │                                                                   │  │
+│  │  You can pause or rollback anytime                              │  │
+│  └──────────────────────────────────────────────────────────────────┘  │
+│                                                                           │
+│  ☑️ I understand Karpenter will manage node provisioning                │
+│  ☑️ I have reviewed the configuration                                   │
+│  ☑️ I understand this can be paused or disabled anytime                 │
+│                                                                           │
+│  [← Back to Instance Config]  [Save Config Only]  [🚀 Deploy Karpenter]│
+│                                                                           │
+└─────────────────────────────────────────────────────────────────────────┘
+```
 
 ---
 
-### 3.3 How Everything Can Be Managed Through the Platform
+## 📊 **Post-Setup: Live Dashboard**
 
-Here's the full end-to-end management flow once the above additions are in place:
+After setup, replace the setup wizard with an active dashboard:
 
-**Tenant Lifecycle:**
-AdminOrganizations → create/invite → org signs up → Onboarding flow → VerifyStep validates AWS → AdminUsageQuotas sets plan limits → AdminFeatureFlags configures which features are available for their plan.
-
-**Tenant Support:**
-AdminOrganizations → click org row → AdminTenantDrilldown → switch to Clusters tab to see agent health → use AdminImpersonation to log in as that org and reproduce the issue directly → exit impersonation → log the action (auto-recorded in global audit log).
-
-**Revenue Operations:**
-AdminBilling → MRR trend chart → filter upsell_opportunities to orgs near limits → contact them → update their plan in AdminUsageQuotas → Stripe subscription updates automatically.
-
-**Platform Health:**
-AdminHealth → AdminSystemAlerts fires if any agents go stale → AdminAgentFleet shows which cluster → click Force Reconnect → alert clears.
-
-**Feature Rollouts:**
-AdminFeatureFlags → toggle a new feature on for a single pilot org → monitor via AdminGlobalAuditLog to see usage → roll out to all orgs once confident.
-
-**Security & Compliance:**
-AdminGlobalAuditLog → filter by event type `RESOURCE_DELETE` or `ROLE_CHANGE` → export as JSON for compliance reports → cross-reference with AdminImpersonation log to verify no unauthorized access occurred.
+```jsx
+┌─────────────────────────────────────────────────────────────────────────┐
+│  🚀 KARPENTER AUTO-OPTIMIZATION                🟢 ACTIVE    [Settings] │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                           │
+│  STATUS: Running on 3 clusters  •  Managing 35 nodes                    │
+│  Last activity: 3 minutes ago                                            │
+│                                                                           │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │  THIS WEEK'S PERFORMANCE                                        │   │
+│  ├────────────────┬────────────────┬────────────────┬──────────────┤   │
+│  │ AVG            │ OPTIMIZATIONS  │ COST SAVED     │ SPOT         │   │
+│  │ UTILIZATION    │ MADE           │ VS MANUAL      │ COVERAGE     │   │
+│  ├────────────────┼────────────────┼────────────────┼──────────────┤   │
+│  │      78%       │       38       │    $1,240      │     82%      │   │
+│  │  ↑ from 45%    │  auto-sizes    │   this week    │  of nodes    │   │
+│  └────────────────┴────────────────┴────────────────┴──────────────┘   │
+│                                                                           │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │  LIVE ACTIVITY FEED                          [See All Activity →]│   │
+│  │                                                                   │   │
+│  │  🔄 3 min ago  │  prod-web                                       │   │
+│  │  Consolidated 3 under-utilized nodes                            │   │
+│  │  • m5.xlarge (38% util) → Terminated                            │   │
+│  │  • m5.xlarge (35% util) → Terminated                            │   │
+│  │  • m5.xlarge (42% util) → Terminated                            │   │
+│  │  • Moved pods to c6i.large + m6i.large                          │   │
+│  │  💰 Saved: $142/day  •  ⚡ Utilization now: 72%                │   │
+│  │                                                                   │   │
+│  │  ────────────────────────────────────────────────────────────   │   │
+│  │                                                                   │   │
+│  │  🔄 12 min ago  │  prod-api                                      │   │
+│  │  Switched to Graviton instance                                  │   │
+│  │  • r5.2xlarge → r6g.2xlarge (ARM64)                            │   │
+│  │  💰 Saved: $68/day  •  Performance: Same or better             │   │
+│  │                                                                   │   │
+│  │  ────────────────────────────────────────────────────────────   │   │
+│  │                                                                   │   │
+│  │  ⚡ 18 min ago  │  prod-web                                      │   │
+│  │  Spot replacement (interruption)                                │   │
+│  │  • m5.large spot interrupted (AWS reclaiming)                   │   │
+│  │  • Drained pods gracefully                                       │   │
+│  │  • Replaced with c6i.large spot (different AZ)                 │   │
+│  │  ✅ Zero downtime  •  Pods rescheduled in 12 seconds           │   │
+│  │                                                                   │   │
+│  │  ────────────────────────────────────────────────────────────   │   │
+│  │                                                                   │   │
+│  │  💰 45 min ago  │  staging-cluster                               │   │
+│  │  Cost optimization switch                                        │   │
+│  │  • m5.xlarge (on-demand) → m6a.xlarge (spot)                   │   │
+│  │  💰 Saved: $95/day (AMD + spot discount)                       │   │
+│  │                                                                   │   │
+│  └─────────────────────────────────────────────────────────────────┘   │
+│                                                                           │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │  CLUSTER BREAKDOWN                        [View All Clusters →] │   │
+│  │                                                                   │   │
+│  │  🟢 prod-web (us-east-1)                                         │   │
+│  │  ├─ Strategy: Balanced  •  12 nodes  •  82% utilization        │   │
+│  │  ├─ Spot: 10 nodes (83%)  •  On-demand: 2 nodes (17%)          │   │
+│  │  ├─ Cost this week: $520 (was $720 before Karpenter)           │   │
+│  │  └─ 8 optimizations in last 24 hours                            │   │
+│  │                                                                   │   │
+│  │  🟢 prod-api (us-east-1)                                         │   │
+│  │  ├─ Strategy: Balanced  •  18 nodes  •  75% utilization        │   │
+│  │  ├─ Spot: 14 nodes (78%)  •  On-demand: 4 nodes (22%)          │   │
+│  │  ├─ Cost this week: $780 (was $1,100 before Karpenter)         │   │
+│  │  └─ 12 optimizations in last 24 hours                           │   │
+│  │                                                                   │   │
+│  │  🟢 staging-cluster (us-west-2)                                  │   │
+│  │  ├─ Strategy: Cost-First  •  5 nodes  •  88% utilization       │   │
+│  │  ├─ Spot: 5 nodes (100%)  •  On-demand: 0 nodes                │   │
+│  │  ├─ Cost this week: $195 (was $320 before Karpenter)           │   │
+│  │  └─ 6 optimizations in last 24 hours                            │   │
+│  └─────────────────────────────────────────────────────────────────┘   │
+│                                                                           │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │  COST TREND (Last 30 Days)                                       │   │
+│  │                                                                   │   │
+│  │  $10K ┤                                                          │   │
+│  │       │ ████████████████████                                     │   │
+│  │       │ █ Before Karpenter █                                     │   │
+│  │   $8K ┤ ████████████████████                                     │   │
+│  │       │ ████████████████████╲                                    │   │
+│  │   $6K ┤ ████████████████████ ╲    ▓▓▓▓▓▓▓▓▓▓▓                  │   │
+│  │       │                        ╲   ▓ Karpenter ▓                 │   │
+│  │   $4K ┤                         ╲  ▓▓▓▓▓▓▓▓▓▓▓                  │   │
+│  │       │                          ╲▓▓▓▓▓▓▓▓▓▓▓                   │   │
+│  │   $2K ┤                           ▓▓▓▓▓▓▓▓▓▓▓                   │   │
+│  │       │                                                           │   │
+│  │    $0 └───────────────────────────────────────────────────────  │   │
+│  │        Week 1   Week 2   Week 3   Week 4   Week 5   Week 6     │   │
+│  │                          ↑                                        │   │
+│  │                     Karpenter enabled                            │   │
+│  │                                                                   │   │
+│  │  💰 Total saved: $8,640  •  Average reduction: 32%              │   │
+│  └─────────────────────────────────────────────────────────────────┘   │
+│                                                                           │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │  INSTANCE TYPE DISTRIBUTION                                      │   │
+│  │                                                                   │   │
+│  │  Before Karpenter:                                               │   │
+│  │  ███████████████████████████░░░░░░░░░░░░                        │   │
+│  │  m5 (75%)  c5 (15%)  r5 (10%)                                   │   │
+│  │                                                                   │   │
+│  │  With Karpenter (Now):                                           │   │
+│  │  ████████████░░░░░░░░░░░░░░░░░░░░░░░░░░                        │   │
+│  │  m6i (35%)  c6i (28%)  m6a (18%)  r6g (12%)  Other (7%)        │   │
+│  │                                                                   │   │
+│  │  ✅ More diverse = better pricing + better availability          │   │
+│  └─────────────────────────────────────────────────────────────────┘   │
+│                                                                           │
+│  [⚙️ Manage Configuration] [⏸️ Pause Karpenter] [📊 Detailed Analytics] │
+│                                                                           │
+└─────────────────────────────────────────────────────────────────────────┘
+```
 
 ---
 
-## Appendix: Priority Matrix
+## 🎛️ **Settings Panel (For Post-Setup Changes)**
 
-| Item | Effort | Impact | Priority |
-|---|---|---|---|
-| Wire `FleetComposition` to real API | Low | High | P1 |
-| Wire `PendingApprovalsCard` to real API | Low | High | P1 |
-| Wire `PlatformHealthCard` to real API | Low | High | P1 |
-| Wire Billing tab to real Stripe API | Medium | High | P1 |
-| `AdminImpersonation` | Medium | Critical | P1 |
-| `AdminTenantDrilldown` modal | Medium | High | P2 |
-| `AdminFeatureFlags` tab | Medium | High | P2 |
-| Wire unused Hibernation endpoints | Low | Medium | P2 |
-| `AdminAgentFleet` tab | Medium | High | P2 |
-| `AdminSystemAlerts` panel | Low | High | P2 |
-| `AdminRevenueAnalytics` expansion | Medium | High | P2 |
-| Wire `AtharvaAI` to real DB tables | High | High | P2 |
-| `AdminGlobalAuditLog` | Low | Medium | P3 |
-| `ClusterComparisonDrawer` | Medium | Medium | P3 |
-| `AuditHeatmap` view | Low | Low | P3 |
-| `ResourceDependencyGraph` | High | Medium | P3 |
+When user clicks **[Settings]**, show a slide-over with tabs:
+
+```jsx
+┌─────────────────────────────────────────────────────────────────┐
+│  KARPENTER SETTINGS                           [Apply] [Close ✕] │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  TABS: [Clusters] [Strategy] [Instances] [Advanced] [Alerts]   │
+│                                                                  │
+│  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  │
+│                                                                  │
+│  CLUSTERS TAB                                                    │
+│                                                                  │
+│  ☑️ prod-web (us-east-1)              [Edit] [Pause] [Remove]  │
+│  ├─ Status: 🟢 Active                                           │
+│  ├─ Strategy: Balanced                                          │
+│  ├─ Nodes: 12  •  Spot: 83%                                    │
+│  └─ Last activity: 3 min ago                                    │
+│                                                                  │
+│  ☑️ prod-api (us-east-1)              [Edit] [Pause] [Remove]  │
+│  ├─ Status: 🟢 Active                                           │
+│  ├─ Strategy: Balanced                                          │
+│  ├─ Nodes: 18  •  Spot: 78%                                    │
+│  └─ Last activity: 12 min ago                                   │
+│                                                                  │
+│  ☑️ staging-cluster (us-west-2)       [Edit] [Pause] [Remove]  │
+│  ├─ Status: 🟢 Active                                           │
+│  ├─ Strategy: Cost-First                                        │
+│  ├─ Nodes: 5  •  Spot: 100%                                    │
+│  └─ Last activity: 45 min ago                                   │
+│                                                                  │
+│  [+ Add Another Cluster]                                        │
+│                                                                  │
+│  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  │
+│                                                                  │
+│  QUICK ACTIONS:                                                  │
+│  [Pause All]  [Resume All]  [Export Config]  [View Logs]       │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+This design provides:
+✅ **Maximum clarity** - every option explained  
+✅ **Guided setup** - wizard only for one-time configuration  
+✅ **Live visibility** - see exactly what Karpenter is doing  
+✅ **Easy management** - simple controls for ongoing changes  
+✅ **Confidence building** - detailed explanations at every step  
+✅ **No confusion** - clear recommendations and comparisons

@@ -14,7 +14,7 @@ const RebalancingTimeline = () => {
     const fetchHistory = async () => {
         try {
             // Fetch rebalancing status from the new endpoint
-            const response = await api.get('/atharvaai/rebalancing/status?limit=20');
+            const response = await api.get('/api/v1/atharvaai/rebalancing/status?limit=20');
             setEvents(response.data);
         } catch (error) {
             console.error("Failed to fetch rebalancing history:", error);

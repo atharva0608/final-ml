@@ -6,7 +6,7 @@
 >
 > **🔴 Red API Endpoint** = Endpoint exists in backend but is **NOT called** from the frontend (unused)
 >
-> **Last Updated:** 2026-02-18 (11:00) — **FULL COMPONENT AUDIT & HIBERNATION RESTRUCTURE COMPLETE** ✅ Hibernation scheduler completely rebuilt with new window-based workflow (per-window cluster/strategy selection, saved schedules list at top, status indicators). Comprehensive audit performed: 125 total components (118 in components/, 8 in pages/). Identified 6 unused components (~120KB) for deletion. All components verified using REAL APIs (zero mock data). Refactoring opportunities identified: duplicate HealthCard pattern (6 components), duplicate Analysis page pattern (4 components). Application fully functional and production-ready. See deletion table at end of document.
+> **Last Updated:** 2026-02-18 (18:52) — **FULL FILES & COMPONENTS AUDIT COMPLETE** ✅ Right-Sizing page supports dual-mode operation (Manual vs Karpenter) with components: `ManualRightSizing`, `KarpenterEnable`, `KarpenterSetup` (4-step wizard), `KarpenterDashboard` (live monitoring), `KarpenterSettings` (slide-over config). `HibernationScheduleV2.jsx` is the active scheduler (no V3). `HibernationDashboard.jsx` page and `hibernationApi.js` service documented. Total: ~161 component files (across 22 component dirs + 9 pages + 3 stores). Transfer components (TransferAnalysis, TransferHealthCard) confirmed. All prior deletion/refactoring candidates still apply. See deletion table at end.
 
 ---
 
@@ -405,13 +405,25 @@
 
 ## 9. Right-Sizing
 
-> **Data Source**: All right-sizing recommendations are generated from real pod metrics collected by the agent DaemonSet. The agent sends pod-level CPU/memory usage data to `/api/v1/pod-metrics/batch` every 60 seconds, which is aggregated over 14 days to generate accurate right-sizing recommendations.
+> **Architecture (Dual-Mode):** The Right-Sizing page now supports two modes — **Manual Optimization** and **Automatic with Karpenter**. `RightSizing.jsx` is a thin container that routes between the two views based on user selection via `ModeSelector`. The manual logic has been fully extracted into `ManualRightSizing.jsx`.
+>
+> **Data Source**: All manual right-sizing recommendations are generated from real pod metrics collected by the agent DaemonSet. The agent sends pod-level CPU/memory usage data to `/api/v1/pod-metrics/batch` every 60 seconds, which is aggregated over 14 days to generate accurate right-sizing recommendations.
 >
 > **Recommendation Engine**: Analyzes 14 days of pod metrics (CPU/memory utilization) and compares against current instance specs. Recommends smaller instance types when utilization < 60% for both CPU and memory. Accounts for headroom (20% buffer) to prevent over-optimization.
 >
 > **Cost Calculation**: Uses real-time EC2 pricing from Cost Explorer API. Savings = (current_instance_price - recommended_instance_price) * 730 hours/month. Excludes instances with >80% peak utilization from recommendations.
+>
+> **Karpenter Auto-Optimization**: Karpenter mode uses `/api/v1/karpenter/*` endpoints (8 total) to manage automated right-sizing. Status is fetched on mode switch; the view routes to `KarpenterEnable` (one-click setup) or `KarpenterDashboard` (live monitoring) based on setup state.
 
-### Summary Stats
+### Container & Mode Selector
+
+| Component | Type | What It Does | Data Source | API Endpoint | Backend Logic | DB Table | Columns Used | Dependencies | File Name |
+|---|---|---|---|---|---|---|---|---|---|
+| **RightSizing** | Container | Top-level mode-switching container — routes between Manual and Karpenter views, manages mode state, fetches Karpenter status | Real API | `GET /api/v1/karpenter/status` | KarpenterService → returns is_setup, status, active cluster count | clusters | clusters.karpenter_enabled, clusters.karpenter_status | App.js | right-sizing/RightSizing.jsx |
+| **ModeSelector** | Card | Dual-card toggle between Manual and Karpenter modes — shows pros/cons/bestFor for each, Active/Inactive badges | Hardcoded | — | — | — | — | right-sizing/RightSizing.jsx | right-sizing/ModeSelector.jsx |
+| **ManualRightSizing** | Page | Extracted manual right-sizing view — KPI strip, recommendations table, savings tracker, instance detail slide-over, batch apply modal | Real API | `GET /api/v1/pod-metrics/rightsizing?cluster_id={id}` + `POST /api/v1/optimization/apply/{instance_id}` | PodMetricsService.get_rightsizing_recommendations + OptimizationService.apply_recommendation | pod_metrics, instances, approvals | pod_metrics.cpu_usage, pod_metrics.memory_usage, instances.instance_type, instances.price | right-sizing/RightSizing.jsx | right-sizing/ManualRightSizing.jsx |
+
+### Manual Mode — Summary Stats
 
 | Stat Card | Type | What It Shows | Data Source | API Endpoint | Backend Logic | DB Table | Columns Used | Dependencies | File Name |
 |---|---|---|---|---|---|---|---|---|---|
@@ -420,7 +432,7 @@
 | **Optimization Score** | Card | Score /100 based on utilization efficiency | Real API | (included in above) ↑ | Computed as: 100 - (avg_waste_percentage across all instances) | ↑ | ↑ | ↑ | ↑ |
 | **Total Instances Analyzed** | Card | Count of instances with sufficient metrics | Real API | (included in above) ↑ | ↑ same endpoint | ↑ | ↑ | ↑ | ↑ |
 
-### Recommendations Table
+### Manual Mode — Recommendations Table
 
 | Column | Type | What It Shows | Data Source | API Endpoint | Backend Logic | DB Table | Columns Used | Dependencies | File Name |
 |---|---|---|---|---|---|---|---|---|---|
@@ -433,7 +445,7 @@
 | **Confidence** | Badge | Recommendation confidence (High/Medium/Low) based on data completeness | Real API | (included in above) ↑ | High: 14+ days data, Medium: 7-13 days, Low: <7 days | ↑ | ↑ | ↑ | ↑ |
 | **Apply Button** | Button | Applies recommendation (requires approval for prod) | Real API | `POST /api/v1/optimization/apply/{instance_id}` | OptimizationService.apply_recommendation → creates approval request if prod, else executes via boto3 modify_instance_attribute, logs to audit trail | instances, approvals, audit_logs | instances.instance_id, instances.instance_type, approvals.type, audit_logs.event | right-sizing/RightSizing.jsx, api/optimization_routes.py, services/optimization_service.py | App.js |
 
-### Side Panel & Modals
+### Manual Mode — Side Panel & Modals
 
 | UI Element | Type | What It Does | Data Source | API Endpoint | Backend Logic | DB Table | Columns Used | Dependencies | File Name |
 |---|---|---|---|---|---|---|---|---|---|
@@ -443,6 +455,38 @@
 | **ImpactSummary** | Card | 4-stat grid: potential savings, optimization score, total vCPU reduction, total memory reduction | Computed | — | Aggregates data from recommendations table | — | — | right-sizing/RightSizing.jsx | right-sizing/ImpactSummary.jsx |
 | **RecommendationAgeIndicator** | Badge | Shows recommendation freshness: New (<3d, green), Pending (3-7d, yellow), Stale (>7d, orange) | Computed | — | Calculated from recommendation.generated_at timestamp | — | — | right-sizing/RightSizing.jsx | right-sizing/RecommendationAgeIndicator.jsx |
 | **EmptyState** | Display | Shown when no recommendations available (all instances optimized or insufficient metrics) | Hardcoded | — | — | — | — | right-sizing/RightSizing.jsx | shared/EmptyState.jsx |
+
+### Karpenter Mode — Enablement
+
+| Component | Type | What It Does | Data Source | API Endpoint | Backend Logic | DB Table | Columns Used | Dependencies | File Name |
+|---|---|---|---|---|---|---|---|---|---|
+| **KarpenterEnable** | Card | Simplified one-click Karpenter enablement — shows benefits grid (Real-Time Optimization, Instance Selection, Cost Reduction, Fleet Management), configurable strategy selector, instance family picker, Deploy button with acknowledgement checkbox | Real API | `POST /api/v1/karpenter/deploy` | KarpenterService.deploy → installs Karpenter controller (Helm), creates IAM roles, deploys NodePool configs, sets up monitoring | clusters | clusters.karpenter_enabled, clusters.karpenter_config | right-sizing/RightSizing.jsx | right-sizing/KarpenterEnable.jsx |
+| **KarpenterSetup** | Wizard | 4-step setup wizard — Step 1: Cluster Selection (multi-select from connected clusters), Step 2: Strategy (cost-first/balanced/performance-first with comparison matrix), Step 3: Instance Configuration (family/type selector with presets), Step 4: Review & Deploy (summary with acknowledgements) | Real API | `GET /api/v1/clusters` + `POST /api/v1/karpenter/config` + `POST /api/v1/karpenter/deploy` | ClusterService.list_clusters + KarpenterService.save_config + KarpenterService.deploy | clusters | clusters.id, clusters.name, clusters.region, clusters.karpenter_config | right-sizing/RightSizing.jsx | right-sizing/KarpenterSetup.jsx |
+
+### Karpenter Mode — Live Dashboard
+
+| Component | Type | What It Does | Data Source | API Endpoint | Backend Logic | DB Table | Columns Used | Dependencies | File Name |
+|---|---|---|---|---|---|---|---|---|---|
+| **KarpenterDashboard** | Page | Post-setup live monitoring dashboard — KPI strip (Total Savings, Active Clusters, Nodes Optimized, Avg Utilization), activity feed with real-time scaling events, cluster breakdown table, cost trend area chart, instance type distribution pie chart, Settings and Pause All buttons | Real API | `GET /api/v1/karpenter/status` + `GET /api/v1/karpenter/activity` + `GET /api/v1/karpenter/stats` | KarpenterService.get_status + get_activity (scaling events with severity) + get_stats (cost/savings time-series, instance distribution) | clusters, instances, audit_logs | clusters.karpenter_status, clusters.monthly_cost, instances.instance_type, audit_logs.event | right-sizing/RightSizing.jsx | right-sizing/KarpenterDashboard.jsx |
+
+### Karpenter Mode — Settings Panel
+
+| Component | Type | What It Does | Data Source | API Endpoint | Backend Logic | DB Table | Columns Used | Dependencies | File Name |
+|---|---|---|---|---|---|---|---|---|---|
+| **KarpenterSettings** | Slide-over | 5-tab settings panel — Clusters (per-cluster enable/disable/pause/resume), Strategy (cost-first/balanced/performance selector), Instances (family allow/deny list, spot/on-demand mix), Advanced (consolidation threshold, node max lifetime, scaling limits), Alerts (cost threshold, budget, notification channels). Quick actions: Pause All, Resume All, Export Config | Real API | `GET /api/v1/karpenter/config?cluster_id={id}` + `PATCH /api/v1/karpenter/config/{cluster_id}` + `POST /api/v1/karpenter/toggle/{cluster_id}` | KarpenterService.get_config + update_config + toggle_karpenter | clusters | clusters.karpenter_config, clusters.karpenter_enabled | right-sizing/KarpenterDashboard.jsx | right-sizing/KarpenterSettings.jsx |
+
+### Karpenter Backend Endpoints
+
+| Endpoint | Method | What It Does | Backend Logic | Auth Required |
+|---|---|---|---|---|
+| `/api/v1/karpenter/status` | GET | Overall Karpenter status — deployment state, active cluster count, summary metrics | Returns org-wide status with is_setup flag and cluster list | `get_current_user` |
+| `/api/v1/karpenter/config` | GET | Per-cluster Karpenter configuration — strategy, instance families, limits | Query by cluster_id, returns ClusterKarpenterConfig | `get_current_user` |
+| `/api/v1/karpenter/config` | POST | Save wizard config before deploy — persists cluster_configs array | Validates and stores config for each cluster | `RequireAccess("EXECUTION")` |
+| `/api/v1/karpenter/config/{cluster_id}` | PATCH | Update cluster-level settings — strategy, instance families, thresholds | Partial update of existing config | `RequireAccess("EXECUTION")` |
+| `/api/v1/karpenter/deploy` | POST | Deploy Karpenter — install controller (Helm), create IAM roles, deploy NodePool configs, set up monitoring | Kicks off deployment pipeline with gradual rollout option | `RequireAccess("EXECUTION")` |
+| `/api/v1/karpenter/toggle/{cluster_id}` | POST | Pause/resume Karpenter for a single cluster | Sets enabled flag, pauses/resumes node provisioning | `RequireAccess("EXECUTION")` |
+| `/api/v1/karpenter/activity` | GET | Live activity feed — scaling events with severity, timestamps, cluster info | Queries audit_logs for Karpenter events, optional cluster_id filter | `get_current_user` |
+| `/api/v1/karpenter/stats` | GET | Performance KPIs — cost/savings time-series, instance distribution, utilization trends | Aggregates metrics over week/month/all periods | `get_current_user` |
 
 ---
 
@@ -648,37 +692,37 @@
 | **Page Header** | Text | "Cluster Hibernation" + cluster name with status badge | Computed | — | — | — | — | hibernation/HibernationSchedule.jsx | App.js |
 | **Statistics KPIs** | Card Grid | 4 cards: Sleep Hours (weekly total), Awake Hours, Estimated Savings %, Schedule Status | Real API | `GET /api/v1/hibernation/schedules?cluster_id={id}` | HibernationService.list_schedules → calculates total sleep/awake hours from schedule_matrix (168 chars), computes savings % as (sleep_hours/168) × 100 | hibernation_schedules | hibernation_schedules.schedule_matrix, hibernation_schedules.is_active, hibernation_schedules.strategy | hibernation/HibernationSchedule.jsx, api/hibernation_routes.py, services/hibernation_service.py | App.js |
 
-### Hibernation Scheduler Modal (HibernationScheduleV3)
+### Hibernation Scheduler Modal (HibernationScheduleV2)
 
 | UI Element | Type | What It Shows/Does | Data Source | API Endpoint | Backend Logic | DB Table | Columns Used | Dependencies | File Name |
 |---|---|---|---|---|---|---|---|---|---|
-| **Modal Header** | Header | "Hibernation Schedule" title + close button | Hardcoded | — | — | — | — | hibernation/HibernationScheduleV3.jsx | clusters/ClusterList.jsx |
-| **Statistics Bar** | Card Grid | 4 KPI cards: Sleep Hours (weekly total), Awake Hours, Est. Savings %, Status (Scheduled/Not Scheduled) | Computed | — | Calculates from scheduledJobs state: parses sleep_start/wake_start times, multiplies by active days, sums total sleep hours | — | — | hibernation/HibernationScheduleV3.jsx | clusters/ClusterList.jsx |
-| **Scheduled Jobs List** | Table | Shows all saved hibernation schedules with strategy badge, cluster count, days, times, timezone, pre-warm, active/paused status | Real API | `GET /api/v1/hibernation/schedules` | HibernationService.list_schedules → RBAC filtered by organization, returns all schedules with metadata | hibernation_schedules | hibernation_schedules.name, hibernation_schedules.strategy, hibernation_schedules.cluster_ids, hibernation_schedules.sleep_days, hibernation_schedules.sleep_start, hibernation_schedules.wake_start, hibernation_schedules.timezone, hibernation_schedules.pre_warm_minutes, hibernation_schedules.is_active | hibernation/HibernationScheduleV3.jsx, api/hibernation_routes.py, services/hibernation_service.py | clusters/ClusterList.jsx |
-| **New Schedule Window Button** | Button | Opens create form below | N/A | — | — | — | — | hibernation/HibernationScheduleV3.jsx | clusters/ClusterList.jsx |
-| **Empty State** | Display | Shows when no schedules created, CTA to create first schedule | Hardcoded | — | — | — | — | hibernation/HibernationScheduleV3.jsx | clusters/ClusterList.jsx |
+| **Modal Header** | Header | "Hibernation Schedule" title + close button | Hardcoded | — | — | — | — | hibernation/HibernationScheduleV2.jsx | clusters/ClusterList.jsx |
+| **Statistics Bar** | Card Grid | 4 KPI cards: Sleep Hours (weekly total), Awake Hours, Est. Savings %, Status (Scheduled/Not Scheduled) | Computed | — | Calculates from scheduledJobs state: parses sleep_start/wake_start times, multiplies by active days, sums total sleep hours | — | — | hibernation/HibernationScheduleV2.jsx | clusters/ClusterList.jsx |
+| **Scheduled Jobs List** | Table | Shows all saved hibernation schedules with strategy badge, cluster count, days, times, timezone, pre-warm, active/paused status | Real API | `GET /api/v1/hibernation/schedules` | HibernationService.list_schedules → RBAC filtered by organization, returns all schedules with metadata | hibernation_schedules | hibernation_schedules.name, hibernation_schedules.strategy, hibernation_schedules.cluster_ids, hibernation_schedules.sleep_days, hibernation_schedules.sleep_start, hibernation_schedules.wake_start, hibernation_schedules.timezone, hibernation_schedules.pre_warm_minutes, hibernation_schedules.is_active | hibernation/HibernationScheduleV2.jsx, api/hibernation_routes.py, services/hibernation_service.py | clusters/ClusterList.jsx |
+| **New Schedule Window Button** | Button | Opens create form below | N/A | — | — | — | — | hibernation/HibernationScheduleV2.jsx | clusters/ClusterList.jsx |
+| **Empty State** | Display | Shows when no schedules created, CTA to create first schedule | Hardcoded | — | — | — | — | hibernation/HibernationScheduleV2.jsx | clusters/ClusterList.jsx |
 
 ### Schedule Creation/Edit Form (Per-Window Configuration)
 
 | UI Element | Type | What It Shows/Does | Data Source | API Endpoint | Backend Logic | DB Table | Columns Used | Dependencies | File Name |
 |---|---|---|---|---|---|---|---|---|---|
-| **Schedule Name Input** | Input | Text field for schedule name (required) | N/A | — | — | — | — | hibernation/HibernationScheduleV3.jsx | clusters/ClusterList.jsx |
-| **Strategy Selector Cards** | Card Grid | 3 selectable cards: Namespace Sleep (blue, moon icon), Nuclear (red, alert icon), Snapshot & Restore (green, shield icon). Shows wake time + savings % for each | Real API | `GET /api/v1/hibernation/strategies` | Returns 3 strategy metadata objects from modular strategy files (STRATEGY_RULES in namespace_sleep.py, nuclear.py, snapshot_restore.py) | — | — | hibernation/HibernationScheduleV3.jsx, api/hibernation_routes.py, services/hibernation_service.py | clusters/ClusterList.jsx |
-| **Cluster Selection Grid** | Checkbox Grid | Multi-select cluster checkboxes with name + region, scrollable max-height 240px | Real API | `GET /api/v1/clusters` | ClusterService.list_clusters → RBAC filtered | clusters | clusters.id, clusters.name, clusters.region | hibernation/HibernationScheduleV3.jsx, api/cluster_routes.py, services/cluster_service.py | clusters/ClusterList.jsx |
-| **Quick Templates** | Card Grid | 3 preset templates: Business Hours (nights + weekends), Nights Only (6PM-8AM daily), Weekends Off (full weekend sleep). Click to auto-fill days + times | Hardcoded | — | — | — | — | hibernation/HibernationScheduleV3.jsx | clusters/ClusterList.jsx |
-| **Day Selector Buttons** | Button Grid | 7 toggle buttons for Mon-Sun. Blue background when selected | N/A | — | — | — | — | hibernation/HibernationScheduleV3.jsx | clusters/ClusterList.jsx |
-| **Sleep Window Time Inputs** | Time Inputs | 2 time pickers: Sleep At (default 18:00), Wake At (default 08:00). Shows orange warning if overnight schedule | N/A | — | — | — | — | hibernation/HibernationScheduleV3.jsx | clusters/ClusterList.jsx |
-| **Advanced Settings** | Form Grid | Timezone dropdown (9 options: UTC, EST, CST, MST, PST, London, Paris, Tokyo, India) + Pre-warm minutes number input (0-60 range) | Hardcoded | — | — | — | — | hibernation/HibernationScheduleV3.jsx | clusters/ClusterList.jsx |
-| **Save Schedule Button** | Button | Validates form (name, clusters, days required), calls create/update API, clears form, refreshes list, sets is_active=false by default | Real API | `POST /api/v1/hibernation/schedules` (create) or `PUT /api/v1/hibernation/schedules/{id}` (edit) | HibernationService.create_schedule → validates cluster ownership, creates schedule with multi-cluster support (cluster_ids JSON array), logs to audit trail | hibernation_schedules, audit_logs | hibernation_schedules.name, hibernation_schedules.strategy, hibernation_schedules.cluster_ids, hibernation_schedules.sleep_days, hibernation_schedules.sleep_start, hibernation_schedules.wake_start, hibernation_schedules.timezone, hibernation_schedules.pre_warm_minutes, hibernation_schedules.is_overnight, hibernation_schedules.is_active, hibernation_schedules.organization_id, hibernation_schedules.created_by | hibernation/HibernationScheduleV3.jsx, api/hibernation_routes.py, services/hibernation_service.py | clusters/ClusterList.jsx |
-| **Cancel Button** | Button | Clears form and returns to jobs list view | N/A | — | — | — | — | hibernation/HibernationScheduleV3.jsx | clusters/ClusterList.jsx |
+| **Schedule Name Input** | Input | Text field for schedule name (required) | N/A | — | — | — | — | hibernation/HibernationScheduleV2.jsx | clusters/ClusterList.jsx |
+| **Strategy Selector Cards** | Card Grid | 3 selectable cards: Namespace Sleep (blue, moon icon), Nuclear (red, alert icon), Snapshot & Restore (green, shield icon). Shows wake time + savings % for each | Real API | `GET /api/v1/hibernation/strategies` | Returns 3 strategy metadata objects from modular strategy files (STRATEGY_RULES in namespace_sleep.py, nuclear.py, snapshot_restore.py) | — | — | hibernation/HibernationScheduleV2.jsx, api/hibernation_routes.py, services/hibernation_service.py | clusters/ClusterList.jsx |
+| **Cluster Selection Grid** | Checkbox Grid | Multi-select cluster checkboxes with name + region, scrollable max-height 240px | Real API | `GET /api/v1/clusters` | ClusterService.list_clusters → RBAC filtered | clusters | clusters.id, clusters.name, clusters.region | hibernation/HibernationScheduleV2.jsx, api/cluster_routes.py, services/cluster_service.py | clusters/ClusterList.jsx |
+| **Quick Templates** | Card Grid | 3 preset templates: Business Hours (nights + weekends), Nights Only (6PM-8AM daily), Weekends Off (full weekend sleep). Click to auto-fill days + times | Hardcoded | — | — | — | — | hibernation/HibernationScheduleV2.jsx | clusters/ClusterList.jsx |
+| **Day Selector Buttons** | Button Grid | 7 toggle buttons for Mon-Sun. Blue background when selected | N/A | — | — | — | — | hibernation/HibernationScheduleV2.jsx | clusters/ClusterList.jsx |
+| **Sleep Window Time Inputs** | Time Inputs | 2 time pickers: Sleep At (default 18:00), Wake At (default 08:00). Shows orange warning if overnight schedule | N/A | — | — | — | — | hibernation/HibernationScheduleV2.jsx | clusters/ClusterList.jsx |
+| **Advanced Settings** | Form Grid | Timezone dropdown (9 options: UTC, EST, CST, MST, PST, London, Paris, Tokyo, India) + Pre-warm minutes number input (0-60 range) | Hardcoded | — | — | — | — | hibernation/HibernationScheduleV2.jsx | clusters/ClusterList.jsx |
+| **Save Schedule Button** | Button | Validates form (name, clusters, days required), calls create/update API, clears form, refreshes list, sets is_active=false by default | Real API | `POST /api/v1/hibernation/schedules` (create) or `PUT /api/v1/hibernation/schedules/{id}` (edit) | HibernationService.create_schedule → validates cluster ownership, creates schedule with multi-cluster support (cluster_ids JSON array), logs to audit trail | hibernation_schedules, audit_logs | hibernation_schedules.name, hibernation_schedules.strategy, hibernation_schedules.cluster_ids, hibernation_schedules.sleep_days, hibernation_schedules.sleep_start, hibernation_schedules.wake_start, hibernation_schedules.timezone, hibernation_schedules.pre_warm_minutes, hibernation_schedules.is_overnight, hibernation_schedules.is_active, hibernation_schedules.organization_id, hibernation_schedules.created_by | hibernation/HibernationScheduleV2.jsx, api/hibernation_routes.py, services/hibernation_service.py | clusters/ClusterList.jsx |
+| **Cancel Button** | Button | Clears form and returns to jobs list view | N/A | — | — | — | — | hibernation/HibernationScheduleV2.jsx | clusters/ClusterList.jsx |
 
 ### Scheduled Jobs List Actions
 
 | UI Element | Type | What It Does | Data Source | API Endpoint | Backend Logic | DB Table | Columns Used | Dependencies | File Name |
 |---|---|---|---|---|---|---|---|---|---|
-| **Pause/Resume Button** | Button | Toggles schedule active status. Pause icon (amber) when active, Play icon (green) when paused | Real API | `POST /api/v1/hibernation/schedules/{id}/toggle` | HibernationService.toggle_schedule → flips is_active boolean, updates updated_at timestamp | hibernation_schedules | hibernation_schedules.is_active, hibernation_schedules.updated_at | hibernation/HibernationScheduleV3.jsx, api/hibernation_routes.py, services/hibernation_service.py | clusters/ClusterList.jsx |
-| **Edit Button** | Button | Loads schedule data into form, allows editing, updates on save | Real API | — (uses same PUT endpoint as save) | — | — | — | hibernation/HibernationScheduleV3.jsx | clusters/ClusterList.jsx |
-| **Delete Button** | Button | Shows confirmation dialog, deletes schedule on confirm | Real API | `DELETE /api/v1/hibernation/schedules/{id}` | HibernationService.delete_schedule → soft delete or hard delete based on config, logs to audit trail | hibernation_schedules, audit_logs | hibernation_schedules.id | hibernation/HibernationScheduleV3.jsx, api/hibernation_routes.py, services/hibernation_service.py | clusters/ClusterList.jsx |
+| **Pause/Resume Button** | Button | Toggles schedule active status. Pause icon (amber) when active, Play icon (green) when paused | Real API | `POST /api/v1/hibernation/schedules/{id}/toggle` | HibernationService.toggle_schedule → flips is_active boolean, updates updated_at timestamp | hibernation_schedules | hibernation_schedules.is_active, hibernation_schedules.updated_at | hibernation/HibernationScheduleV2.jsx, api/hibernation_routes.py, services/hibernation_service.py | clusters/ClusterList.jsx |
+| **Edit Button** | Button | Loads schedule data into form, allows editing, updates on save | Real API | — (uses same PUT endpoint as save) | — | — | — | hibernation/HibernationScheduleV2.jsx | clusters/ClusterList.jsx |
+| **Delete Button** | Button | Shows confirmation dialog, deletes schedule on confirm | Real API | `DELETE /api/v1/hibernation/schedules/{id}` | HibernationService.delete_schedule → soft delete or hard delete based on config, logs to audit trail | hibernation_schedules, audit_logs | hibernation_schedules.id | hibernation/HibernationScheduleV2.jsx, api/hibernation_routes.py, services/hibernation_service.py | clusters/ClusterList.jsx |
 
 ### Modular Strategy Backend (NEW Architecture)
 
@@ -703,8 +747,7 @@
 
 | Component | Status | Reason | File Location |
 |---|---|---|---|
-| **HibernationScheduleV2** | DEAD CODE | Never imported, replaced by HibernationScheduleV3 | frontend/src/components/hibernation/HibernationScheduleV2.jsx |
-| **HibernationGrid** | DEAD CODE | Never imported, grid now inline in V3 | frontend/src/components/hibernation/HibernationGrid.jsx |
+| **HibernationGrid** | DEAD CODE | Never imported, grid view is handled inline in dashboard components | frontend/src/components/hibernation/HibernationGrid.jsx |
 
 ---
 
@@ -1063,6 +1106,7 @@
 |---|---|---|---|---|---|---|---|---|---|
 | **Onboarding** | Page | Multi-step onboarding flow — fetches state from backend, 4 steps (Welcome, Connect AWS, Verify, Success), animated progress bar, skip option | Real API | `GET /api/v1/onboarding/state` + `POST /api/v1/onboarding/skip` | OnboardingService.get_state → returns current_step, is_completed | accounts | accounts.id, accounts.status | App.js | pages/Onboarding.jsx |
 | **HibernationPage** | Page | Consolidated hibernation management — header with back-to-clusters link, StrategySelector, HibernationScheduler (2/3 width), ValidationPanel + CostAnalytics sidebar (1/3 width), reads clusterId from URL params | Real API | (delegates to child components) | (delegates to child components) | — | — | App.js, store/useHibernationStore.js | pages/HibernationPage.jsx |
+| **HibernationDashboard** | Page | Hibernation schedule list dashboard — Create Schedule button, schedule cards with name/type/clusters/status, toggle active/inactive, edit/delete actions, HibernationWizard modal for create/edit, HistoryLog for execution history | Real API | `GET /api/v1/hibernation/schedules` + `POST /api/v1/hibernation/schedules` + `PUT /api/v1/hibernation/schedules/{id}` + `DELETE /api/v1/hibernation/schedules/{id}` + `POST /api/v1/hibernation/schedules/{id}/toggle` | HibernationService.list/create/update/delete/toggle schedules | hibernation_schedules | hibernation_schedules.id, hibernation_schedules.name, hibernation_schedules.schedule_type, hibernation_schedules.cluster_ids, hibernation_schedules.is_active | App.js | pages/HibernationDashboard.jsx |
 | **AtharvaAiPage** | Page | AtharvaAi engine dashboard page | Mock API | (delegates to child components) | (delegates to child components) | — | — | App.js, store/useAtharvaStore.js | pages/AtharvaAiPage.jsx |
 | **TeamDetails** | Page | Team member list + management for a specific team | Real API | `GET /api/v1/organization/teams/{id}/members` | TeamService.get_team_members | users, teams | users.name, users.role, teams.id | App.js, pages/Teams.jsx | pages/TeamDetails.jsx |
 | **Teams** | Page | Team list page — all teams in organization | Real API | `GET /api/v1/organization/teams` | TeamService.list_teams | teams | teams.id, teams.name, teams.member_count | App.js | pages/Teams.jsx |
@@ -1094,7 +1138,9 @@
 
 | Module | What It Does | Key Methods | File Name |
 |---|---|---|---|
-| **api.js** | Centralized Axios instance + all API namespace objects (clusterAPI, hibernationAPI, atharvaAPI, atharvaaiAPI, onboardingAPI, etc.) | axios.create with JWT interceptor, per-module CRUD methods | services/api.js |
+| **api.js** | Centralized Axios instance + all API namespace objects (clusterAPI, hibernationAPI, atharvaAPI, atharvaaiAPI, onboardingAPI, karpenterAPI, etc.) | axios.create with JWT interceptor, per-module CRUD methods | services/api.js |
+| **karpenterAPI** | Karpenter auto-optimization API namespace — 8 methods for status, config, deploy, toggle, activity, stats | getStatus, getConfig, saveConfig, updateConfig, deploy, toggle, getActivity, getStats | services/api.js (exported) |
+| **hibernationApi.js** | Dedicated hibernation API service — schedule CRUD, toggle, strategy comparison, savings estimation + schedule matrix helpers | listSchedules, getSchedule, createSchedule, updateSchedule, deleteSchedule, toggleSchedule, compareStrategies, estimateSavings, generateScheduleMatrix, formatTimeUntil | services/hibernationApi.js |
 
 ### Dashboard Configuration
 
@@ -1113,7 +1159,8 @@
 
 ## 26. Component Deletion Table
 
-**Total Components Audited:** 125 (118 in components/, 8 in pages/)  
+**Total Components Audited:** 143 (131 in components/, 9 in pages/, 3 stores)  
+**New Since Last Audit:** 6 right-sizing/Karpenter components + 1 page (`HibernationDashboard`) + 1 service (`hibernationApi.js`) + 1 API namespace (`karpenterAPI`) + 1 backend route (`karpenter_routes.py`)  
 **Components Marked for Deletion:** 6 components (~120KB bundle reduction)  
 **Duplicate Patterns Identified:** 10 components (HealthCard pattern × 6, Analysis page pattern × 4)
 
@@ -1227,22 +1274,24 @@ These components follow IDENTICAL patterns and should be consolidated into gener
 
 | Category | Count | Details |
 |----------|-------|---------|
-| **Total Components** | 125 | 118 in components/ + 8 in pages/ |
-| **Unused Components** | 6 | Marked for deletion (~120KB) |
+| **Total Component Files** | ~161 | Across 22 component dirs (incl. sub-dirs) + 9 pages + 3 stores |
+| **Karpenter Components** | 5 | ManualRightSizing, KarpenterEnable, KarpenterSetup, KarpenterDashboard, KarpenterSettings |
+| **Unused Components** | 5 | Marked for deletion (~100KB) |
 | **HealthCard Duplicates** | 6 | Can consolidate to 1 generic (~8KB savings) |
 | **Analysis Page Duplicates** | 4 | Can consolidate to 1 generic (~12KB savings) |
-| **Components Using Real APIs** | 85+ | All major components (100% production-ready) |
+| **Components Using Real APIs** | 90+ | All major components (100% production-ready) |
 | **Components Using Mock Data** | 0 | Zero mock data remaining |
 | **Shared/Reusable Components** | 11 | Badge, Button, Card, Dropdown, EmptyState, GaugeChart, Input, RiskBadge, StatsCard, Switch |
 | **Admin Components Defined** | 12 | 9 actively used, 3 unused (marked for deletion) |
-| **Hibernation Components Defined** | 16 | 14 actively used, 2 unused (marked for deletion) |
+| **Hibernation Components Defined** | 33 | 32 actively used, 1 unused (HibernationGrid — marked for deletion) |
+| **Transfer Components** | 2 | TransferAnalysis, TransferHealthCard |
 
 ---
 
 ### E. Refactoring Priority Roadmap
 
 #### Priority 1: DELETE (Immediate - This Sprint)
-- [ ] Delete 6 unused components (~120KB savings)
+- [ ] Delete 5 unused components (~100KB savings)
 - [ ] Run build to verify no broken imports
 - [ ] Expected impact: ZERO (dead code)
 
@@ -1272,7 +1321,7 @@ These components follow IDENTICAL patterns and should be consolidated into gener
 
 ### F. Testing Checklist After Deletion
 
-After deleting the 6 unused components, verify:
+After deleting the 5 unused components, verify:
 
 - [ ] Application builds without errors (`npm run build`)
 - [ ] No broken imports in any component
@@ -1282,7 +1331,7 @@ After deleting the 6 unused components, verify:
 - [ ] Hibernation page works correctly
 - [ ] Settings page loads all tabs
 - [ ] No console errors in browser
-- [ ] Bundle size reduced by ~120KB (verify in build output)
+- [ ] Bundle size reduced by ~100KB (verify in build output)
 
 **Build Verification Command:**
 ```bash
@@ -1291,7 +1340,6 @@ npm run build
 # Note the bundle size
 
 # Delete unused components
-rm frontend/src/components/hibernation/HibernationScheduleV2.jsx
 rm frontend/src/components/hibernation/HibernationGrid.jsx
 rm frontend/src/components/admin/AdminAgentFleet.jsx
 rm frontend/src/components/admin/AdminImpersonation.jsx
@@ -1300,7 +1348,7 @@ rm frontend/src/components/settings/TeamManagement.jsx
 
 # After deletion
 npm run build
-# Verify bundle size is ~120KB smaller
+# Verify bundle size is ~100KB smaller
 ```
 
 ---
@@ -1308,6 +1356,7 @@ npm run build
 ## END OF DOCUMENT
 
 **Document Status:** ✅ COMPLETE  
-**Last Audit:** 2026-02-18  
+**Last Audit:** 2026-02-18 (18:52 — Full Files & Components Audit)  
+**Previous Audit:** 2026-02-18 (16:00 — Karpenter UI Overhaul Audit)  
 **Next Audit:** Recommended after any major feature additions or refactoring  
 **Maintainer:** Development Team

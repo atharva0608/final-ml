@@ -13,740 +13,1019 @@
 5. [Backend — Schemas](#5-backend--schemas)
 6. [Backend — Core](#6-backend--core)
 7. [Backend — Resource_rules](#7-backend--resource_rules)
-8. [Backend — Hibernation_strategy](#8-backend--hibernation_strategy)
-9. [Backend — Workers](#9-backend--workers)
-10. [Backend — Calculations](#10-backend--calculations)
-11. [Backend — Modules](#11-backend--modules)
-12. [Backend — Scrapers](#12-backend--scrapers)
-13. [Backend — Routers (Legacy)](#13-backend--routers-legacy)
-14. [Backend — Migrations](#14-backend--migrations)
-15. [Backend — Scripts](#15-backend--scripts)
-16. [Agent](#16-agent)
-17. [Frontend — Pages](#17-frontend--pages)
-18. [Frontend — Components](#18-frontend--components)
-19. [Frontend — Services / Hooks / Store / Utils](#19-frontend--services--hooks--store--utils)
-20. [Scripts (Root-Level)](#20-scripts-root-level)
-21. [ML Model](#21-ml-model)
-22. [Documents](#22-documents)
-23. [Duplicate / Unused / Legacy Files](#23-duplicate--unused--legacy-files)
+8. [Backend — Modules (ML)](#8-backend--modules-ml)
+9. [Backend — Calculations](#9-backend--calculations)
+10. [Backend — Scrapers](#10-backend--scrapers)
+11. [Backend — Workers](#11-backend--workers)
+12. [Backend — Routers](#12-backend--routers)
+13. [Backend — Migrations](#13-backend--migrations)
+14. [Backend — Hibernation Strategy](#14-backend--hibernation-strategy)
+15. [Backend — Utils](#15-backend--utils)
+16. [Backend — Scripts](#16-backend--scripts)
+17. [Backend — Templates](#17-backend--templates)
+18. [Backend — Static](#18-backend--static)
+19. [Frontend — Pages](#19-frontend--pages)
+20. [Frontend — Components](#20-frontend--components)
+21. [Frontend — Services](#21-frontend--services)
+22. [Frontend — Hooks](#22-frontend--hooks)
+23. [Frontend — Store (Zustand)](#23-frontend--store-zustand)
+24. [Frontend — Utils](#24-frontend--utils)
+25. [Frontend — App Entry](#25-frontend--app-entry)
+26. [Docker & Infrastructure](#26-docker--infrastructure)
+27. [Helm Charts](#27-helm-charts)
+28. [Root-Level Scripts](#28-root-level-scripts)
+29. [Root-Level Migrations (Alembic)](#29-root-level-migrations-alembic)
+30. [Documents](#30-documents)
+31. [Config](#31-config)
 
 ---
 
 ## 1. Root-Level Files
 
-| File | Purpose | Feature |
-|------|---------|---------|
-| `main.py` (backend/) | FastAPI app entry point, mounts all routers | Core Platform |
-| `start.sh` | Starts backend + frontend containers | DevOps |
-| `rebuild.sh` | Rebuilds Docker containers | DevOps |
-| `redeploy-agent.sh` | Redeploys agent to K8s | DevOps, Agent |
-| `test_real_apis.sh` | Shell script to test live API endpoints | Testing |
-| `test_scanner.py` | Test script for cleanup scanner | Resource Cleanup |
-| `requirements.txt` | Python dependencies | Core Platform |
-| `package.json` | Node.js project config | Frontend |
-| `Dockerfile` | Backend Docker image | DevOps |
-| `docker-compose.yaml` | Multi-container orchestration | DevOps |
-| `.env` | Environment variables | Core Platform |
+| File | Purpose |
+|------|---------|
+| `main.py` | FastAPI application entry point |
+| `alembic.ini` | Alembic migration configuration |
+| `.env` | Environment variables (secrets, DB, Redis, AWS) |
+| `.env.example` | Example env template |
+| `.gitignore` | Git ignore rules |
+| `package.json` | Root-level npm package config |
+| `requirements.txt` | Python dependencies |
+| `start.sh` | Main startup script (orchestrates backend + frontend + workers) |
+| `rebuild.sh` | Quick rebuild script |
+| `check-agent-status.sh` | Agent health check script |
+| `redeploy-agent.sh` | Agent redeployment script |
+| `test_real_apis.sh` | API integration test script |
+| `test_scanner.py` | Scanner test utility |
+| `debug_clusters.py` | Cluster debugging utility |
+| `fix-auth.html` | Auth debugging page |
+| `login_response.json` | Sample login response for testing |
+| `cleanup_hibernation_demo_data.sql` | SQL to clean hibernation demo data |
+| `changelogic.md` | Change logic documentation |
+| `changes.txt` | Change log text |
+
+### Root-Level Summary Docs (Markdown)
+| File | Purpose |
+|------|---------|
+| `ALL_REAL_API_MIGRATION_COMPLETE.md` | Real API migration completion summary |
+| `CHANGELOGIC_IMPLEMENTATION_SUMMARY.md` | Change logic implementation notes |
+| `COMPONENTS_AUDIT_COMPLETE.md` | Component audit results |
+| `COMPONENT_AUDIT_SUMMARY.md` | Audit summary |
+| `DOCUMENTS_ALL_COMPONENTS_UPDATE_SUMMARY.md` | Documentation update summary |
+| `HIBERNATION_COMPLETE_RESTRUCTURE.md` | Hibernation restructure notes |
+| `HIBERNATION_FIXES_COMPLETE.md` | Hibernation fixes summary |
+| `HIBERNATION_IMPLEMENTATION.md` | Hibernation implementation details |
+| `HIBERNATION_INTEGRATION_SUMMARY.md` | Integration summary |
+| `HIBERNATION_MODULAR_INTEGRATION.md` | Modular integration notes |
+| `HIBERNATION_TESTING_GUIDE.md` | Testing guide |
+| `HIBERNATION_UI_IMPROVEMENTS.md` | UI improvements |
+| `HIBERNATION_VERIFICATION_COMPLETE.md` | Verification results |
+| `KARPENTER_IMPLEMENTATION_SUMMARY.md` | Karpenter implementation summary |
+| `MOCK_SYSTEM_REMOVAL_COMPLETE.md` | Mock system removal |
+| `REAL_API_IMPLEMENTATION_COMPLETE.md` | Real API implementation |
+| `REBUILD_RESTART_SUMMARY.md` | Rebuild/restart summary |
+| `REGRESSION_TEST_SUMMARY.md` | Regression testing results |
+| `RIGHT_SIZING_IMPLEMENTATION_COMPLETE.md` | Right-sizing implementation |
 
 ---
 
 ## 2. Backend — API Routes
 
-**Base prefix**: `/api/v1`
+**Directory:** `backend/api/`
 
-| File | Prefix | Endpoints | Purpose | Feature(s) |
-|------|--------|-----------|---------|------------|
-| `__init__.py` | — | 0 | Registers all routers on the main APIRouter | Core Platform |
-| `auth_routes.py` | `/auth` | 8 | Login, signup, token refresh, password reset, invite accept | Authentication, RBAC |
-| `account_routes.py` | `/accounts` | 7 | AWS account CRUD, role verification, discovery trigger | Accounts, Onboarding |
-| `cluster_routes.py` | `/clusters` | 13 | Cluster CRUD, connect/disconnect, node list, scan, agent inject | Cluster Management, Agent |
-| `dashboard_routes.py` | `/dashboard` | 5 | Overview KPIs, cost breakdown, savings projection, fleet, activity feed | Dashboard |
-| `metrics_routes.py` | `/metrics` | 12 | Cost metrics, instance metrics, time-series, cluster utilization, nodegroups, waste breakdown | Metrics, Cost Optimization |
-| `admin_routes.py` | `/admin` | 17 | Platform admin: orgs, clients, stats, health, billing, agent-fleet, config, impersonation | Admin, Platform |
-| `organization_routes.py` | `/organization` | 8 | Org profile, members, invitations, member management | Organization, RBAC |
-| `team_routes.py` | `/teams` | 12 | Team CRUD, member management, permissions, roles | Teams, RBAC |
-| `role_routes.py` | `/roles` | 8 | Role CRUD, permissions list, role assignment, RBAC seed | RBAC |
-| `permission_routes.py` | `/permissions` | 5 | Permission matrix, user permissions, grant/revoke | RBAC |
-| `user_routes.py` | `/users` | 4 | User profile updates, preferences | User Management |
-| `approval_routes.py` | `/approvals` | 11 | Approval requests, delegation, JIT access, approve/reject/revoke | Approvals, Governance |
-| `governance_routes.py` | `/governance` | 3 | Governance policies list, update, auto-pilot run | Governance |
-| `hibernation_routes.py` | `/hibernation` | 8 | Schedules CRUD, toggle, override, strategy comparison | Hibernation |
-| `hygiene_routes.py` | `/hygiene` | 6 | Resource scan, hygiene summary, scan history, authorize resources | Resource Cleanup |
-| `hygiene_policy_routes.py` | `/hygiene-policies` | 5 | Hygiene policy CRUD | Resource Cleanup |
-| `optimization_routes.py` | `/optimization` | 3 | Right-sizing recommendations, batch apply, realized savings | Right-Sizing |
-| `policy_routes.py` | `/policies` | 7 | Cluster policy CRUD, policy templates | Policies |
-| `template_routes.py` | `/templates` | 7 | Node template CRUD, set default | Node Templates |
-| `tag_management_routes.py` | `/tags/resources` | 3 | Get/set resource tags, bulk tag | Tag Management |
-| `tag_policy_routes.py` | `/tags/policies` | 6 | Tag policy CRUD, attach to team | Tag Policies |
-| `tag_template_routes.py` | `/tags/templates` | 5 | Tag template CRUD | Tag Templates |
-| `auto_tag_routes.py` | `/tags/rules` | 8 | Auto-tag rule CRUD, enable/disable, run | Auto-Tagging |
-| `smart_tag_routes.py` | `/tags/smart` | 1 | AI-powered tag suggestions | Smart Tags |
-| `billing_routes.py` | `/billing` | 8 | Stripe portal, webhook, billing status, cost summary, daily costs, by-service, sync | Billing |
-| `ri_routes.py` | `/ri` | 8 | RI utilization overview, recommendations, savings, purchase simulation | RI Optimization |
-| `s3_routes.py` | `/s3` | 2 | S3 tiering overview, recommendations | S3 Optimization |
-| `rds_routes.py` | `/rds` | 2 | RDS analysis overview, recommendations | RDS Optimization |
-| `transfer_routes.py` | `/transfer` | 2 | Data transfer overview, analyze | Data Transfer |
-| `pod_metrics_routes.py` | `/pod-metrics` | 4 | Pod metrics batch upload, list, cleanup, right-sizing | Pod Metrics |
-| `settings_routes.py` | `/settings` | 5 | Platform settings get/update, notification preferences | Settings |
-| `audit_routes.py` | `/audit` | 3 | Audit log list, resource history, export | Audit |
-| `onboarding_routes.py` | `/onboarding` | 7 | Onboarding steps, status, AWS account creation flow | Onboarding |
-| `agent_routes.py` | `/agents` | 3 | Agent heartbeat, WebSocket registration, status | Agent |
-| `installer_routes.py` | `/installer` | 2 | Linux/macOS agent install scripts | Agent, Installer |
-| `lab_routes.py` | `/lab` | 8 | Experiment lab CRUD, run, results, compare | Experiment Lab |
-| `health_routes.py` | `/health` | 1 | System health check | Core Platform |
-| `atharvaai_routes.py` | `/atharvaai` | 5 | Pool rankings, rebalancing timeline, interruption heatmap, auto-rebalance audit | AtharvaAI |
+| File | Purpose |
+|------|---------|
+| `__init__.py` | Router registry — mounts all sub-routers |
+| `INFO.md` | API routes documentation |
+| `account_routes.py` | Account CRUD operations |
+| `admin_routes.py` | Super-admin endpoints (tenants, health, config) |
+| `agent_routes.py` | Agent fleet management |
+| `approval_routes.py` | Approval/ticket workflow |
+| `atharvaai_routes.py` | Atharva AI assistant endpoints |
+| `audit_routes.py` | Audit log retrieval |
+| `auth_routes.py` | Authentication (login, signup, invite, password reset) |
+| `auto_tag_routes.py` | Auto-tag rule management |
+| `billing_routes.py` | Billing and invoice endpoints |
+| `cluster_routes.py` | Cluster CRUD, connect/disconnect, metrics |
+| `dashboard_routes.py` | Dashboard KPIs and summary data |
+| `governance_routes.py` | Governance rule management |
+| `health_routes.py` | Health check endpoint |
+| `hibernation_routes.py` | Hibernation schedule CRUD |
+| `hygiene_policy_routes.py` | Hygiene policy management |
+| `hygiene_routes.py` | Resource hygiene scan and cleanup |
+| `installer_routes.py` | Agent installer (generates YAML) |
+| `karpenter_routes.py` | Karpenter configuration and provisioner management |
+| `lab_routes.py` | Experiment lab management |
+| `metrics_routes.py` | Instance and cost metrics |
+| `onboarding_routes.py` | AWS onboarding flow |
+| `optimization_routes.py` | Optimization job management |
+| `organization_routes.py` | Organization CRUD |
+| `permission_routes.py` | Permission management (RBAC) |
+| `pod_metrics_routes.py` | Pod-level metrics |
+| `policy_routes.py` | Cluster policy management |
+| `rds_routes.py` | RDS analysis endpoints |
+| `ri_routes.py` | Reserved Instance analysis |
+| `role_routes.py` | Role CRUD |
+| `s3_routes.py` | S3 tiering analysis |
+| `settings_routes.py` | User settings |
+| `smart_tag_routes.py` | Smart tag suggestions |
+| `tag_management_routes.py` | Bulk tag operations |
+| `tag_policy_routes.py` | Tag compliance policy |
+| `tag_template_routes.py` | Tag template CRUD |
+| `team_routes.py` | Team management |
+| `template_routes.py` | Rebalancing template management |
+| `transfer_routes.py` | Data transfer optimization |
+| `user_routes.py` | User profile management |
 
 ---
 
 ## 3. Backend — Services
 
-| File | Purpose | Feature(s) |
-|------|---------|------------|
-| `__init__.py` | Package init | — |
-| `auth_service.py` | Auth logic: JWT, login, signup, password hashing | Authentication |
-| `account_service.py` | AWS account management, STS role verification, discovery | Accounts |
-| `cluster_service.py` | Cluster CRUD, K8s connection, node discovery | Cluster Management |
-| `admin_service.py` | Platform admin ops: org/user management, stats, health | Admin |
-| `organization_service.py` | Org CRUD, member invitations, team assignment | Organization |
-| `team_service.py` | Team CRUD, member handling | Teams |
-| `role_service.py` | Role/permission CRUD, RBAC seed | RBAC |
-| `permission_service.py` | Permission matrix, grant/revoke | RBAC |
-| `approval_service.py` | Approval workflow, JIT access, delegation | Approvals, Governance |
-| `governance_service.py` | Governance policy engine, auto-pilot | Governance |
-| `hibernation_service.py` | Schedule management, strategy execution, cost calc | Hibernation |
-| `hygiene_service.py` | AWS resource scanner (14 scan methods), classification | Resource Cleanup |
-| `hygiene_service_additions.py` | Extended hygiene scan helpers | Resource Cleanup |
-| `metrics_service.py` | Dashboard KPIs, cost/instance metrics, time-series | Metrics |
-| `policy_service.py` | Cluster policy engine | Policies |
-| `template_service.py` | Node template management | Node Templates |
-| `tag_management_service.py` | AWS resource tag get/set/bulk operations | Tag Management |
-| `tag_policy_service.py` | Tag policy enforcement, compliance check | Tag Policies |
-| `auto_tag_service.py` | Auto-tag rule execution | Auto-Tagging |
-| `smart_tag_service.py` | AI tag suggestions via OpenAI/LLM | Smart Tags |
-| `tag_suggestion_service.py` | Further tag suggestion helpers | Smart Tags |
-| `onboarding_service.py` | Onboarding step tracking, CloudFormation | Onboarding |
-| `settings_service.py` | Platform settings CRUD | Settings |
-| `audit_service.py` | Audit log creation and queries | Audit |
-| `agent_injector.py` | K8s agent Helm install/upgrade | Agent |
-| `lab_service.py` | Experiment creation, execution, comparison | Experiment Lab |
-| `rightsizing_service.py` | EC2 right-sizing recommendations | Right-Sizing |
-| `ri_analysis_service.py` | Reserved Instance utilization analysis | RI Optimization |
-| `s3_tiering_service.py` | S3 intelligent tiering audit | S3 Optimization |
-| `rds_analysis_service.py` | RDS Multi-AZ, idle instance analysis | RDS Optimization |
-| `transfer_service.py` | Data transfer cost analysis | Data Transfer |
-| `savings_plan_service.py` | Savings Plan utilization tracking | Savings Plans |
-| `resource_cost_service.py` | Per-resource cost estimation via CUR/CE | Cost Optimization |
-| `resource_pricing_service.py` | On-demand pricing lookups | Cost Optimization |
-| `pool_ranking_service.py` | Spot pool scoring and rankings | AtharvaAI |
-| `karpenter_service.py` | Karpenter provisioner integration | Cluster Management |
-| `ml_feature_service.py` | ML feature extraction for model input | AtharvaAI, ML |
+**Directory:** `backend/services/`
+
+| File | Purpose |
+|------|---------|
+| `__init__.py` | Service exports |
+| `INFO.md` | Services documentation |
+| `account_service.py` | Account business logic |
+| `admin_service.py` | Admin operations (tenant management) |
+| `agent_injector.py` | Kubernetes agent injection logic |
+| `approval_service.py` | Approval workflow engine |
+| `audit_service.py` | Audit logging |
+| `auth_service.py` | Authentication & authorization |
+| `auto_tag_service.py` | Auto-tagging engine |
+| `cluster_service.py` | Cluster management & discovery |
+| `governance_service.py` | Governance rule enforcement |
+| `hibernation_service.py` | Hibernation schedule management |
+| `hygiene_service.py` | Resource hygiene scanning (largest service — 128KB) |
+| `hygiene_service_additions.py` | Additional hygiene rules |
+| `karpenter_service.py` | Karpenter provisioner management |
+| `lab_service.py` | Experiment lab logic |
+| `metrics_service.py` | Instance & cost metrics aggregation |
+| `ml_feature_service.py` | ML feature engineering |
+| `onboarding_service.py` | AWS onboarding workflow |
+| `organization_service.py` | Organization management |
+| `permission_service.py` | RBAC permission logic |
+| `policy_service.py` | Cluster policy enforcement |
+| `pool_ranking_service.py` | Instance pool ranking |
+| `rds_analysis_service.py` | RDS multi-AZ analysis |
+| `resource_cost_service.py` | Resource cost calculation |
+| `resource_pricing_service.py` | Pricing data management |
+| `ri_analysis_service.py` | Reserved Instance waste detection |
+| `rightsizing_service.py` | Right-sizing recommendations |
+| `role_service.py` | Role management logic |
+| `s3_tiering_service.py` | S3 intelligent tiering analysis |
+| `savings_plan_service.py` | Savings plan analysis |
+| `settings_service.py` | User settings management |
+| `smart_tag_service.py` | Smart tag suggestions |
+| `tag_management_service.py` | Bulk tag operations |
+| `tag_policy_service.py` | Tag compliance enforcement |
+| `tag_suggestion_service.py` | Tag suggestion engine |
+| `team_service.py` | Team management logic |
+| `template_service.py` | Rebalancing template management |
+| `transfer_service.py` | Data transfer analysis |
 
 ---
 
 ## 4. Backend — Models
 
-| File | Purpose | Feature(s) |
-|------|---------|------------|
-| `__init__.py` | SQLAlchemy model registry, imports all models | Core Platform |
-| `base.py` | Declarative base, common mixins | Core Platform |
-| `user.py` | User model (auth, preferences, roles) | Authentication, RBAC |
-| `organization.py` | Organization model | Organization |
-| `account.py` | AWS Account model | Accounts |
-| `cluster.py` | Cluster model (EKS/K8s) | Cluster Management |
-| `cluster_metric.py` | Cluster time-series metrics | Metrics |
-| `cluster_policy.py` | Cluster-attached policies | Policies |
-| `instance.py` | EC2 instance model | Cluster Management |
-| `billing.py` | Billing/subscription records | Billing |
-| `approval.py` | Approval workflow records | Approvals |
-| `legacy_approval.py` | **LEGACY** — Old approval model pre-refactor | Approvals |
-| `authorized_resource.py` | Resource authorization whitelist | Resource Cleanup |
-| `hibernation_schedule.py` | Hibernate schedule model | Hibernation |
-| `hygiene_policy.py` | Hygiene policy model | Resource Cleanup |
-| `tag_policy.py` | Tag policy model | Tag Policies |
-| `tag_template.py` | Tag template model | Tag Templates |
-| `auto_tag_rule.py` | Auto-tag rule model | Auto-Tagging |
-| `node_template.py` | Node template model | Node Templates |
-| `optimization_job.py` | Right-sizing job tracker | Right-Sizing |
-| `lab_experiment.py` | Experiment Lab model + ExperimentStatus enum | Experiment Lab |
-| `ml_model.py` | ML model metadata storage | AtharvaAI |
-| `pricing.py` | EC2 pricing cache model | Cost Optimization |
-| `spot_price_history.py` | Spot price time-series | AtharvaAI |
-| `ri_utilization.py` | RI utilization records | RI Optimization |
-| `rds_analysis.py` | RDS analysis records | RDS Optimization |
-| `s3_analysis.py` | S3 tiering analysis records | S3 Optimization |
-| `transfer_analysis.py` | Data transfer analysis records | Data Transfer |
-| `savings_plan_utilization.py` | Savings Plan utilization | Savings Plans |
-| `pod_metric.py` | Pod-level metric records | Pod Metrics |
-| `rebalancing_action.py` | AtharvaAI rebalancing action log | AtharvaAI |
-| `termination_event.py` | Spot interruption event log | AtharvaAI |
-| `agent_action.py` | Agent action log | Agent |
-| `api_key.py` | API key management | Authentication |
-| `audit_log.py` | Audit log records | Audit |
-| `invitation.py` | User invitation records | Organization |
-| `permission.py` | Permission definitions | RBAC |
-| `role.py` | Role definitions | RBAC |
-| `team.py` | Team model | Teams |
-| `onboarding.py` | Onboarding progress tracker | Onboarding |
-| `platform_settings.py` | Platform settings key-value | Settings |
-| `system_config.py` | System configuration store | Core Platform |
+**Directory:** `backend/models/`
+
+| File | Purpose |
+|------|---------|
+| `__init__.py` | Model exports & registry |
+| `INFO.md` | Models documentation |
+| `base.py` | SQLAlchemy base model with common fields |
+| `account.py` | Account model (AWS accounts) |
+| `agent_action.py` | Agent action log model |
+| `api_key.py` | API key model |
+| `approval.py` | Approval/ticket model |
+| `audit_log.py` | Audit log model |
+| `authorized_resource.py` | Authorized resource model |
+| `auto_tag_rule.py` | Auto-tag rule model |
+| `billing.py` | Billing model |
+| `cluster.py` | Cluster model |
+| `cluster_metric.py` | Cluster metric time-series |
+| `cluster_policy.py` | Cluster policy model |
+| `hibernation_schedule.py` | Hibernation schedule model |
+| `hibernation_schedule_clusters.py` | Hibernation-cluster association |
+| `hygiene_policy.py` | Hygiene policy model |
+| `instance.py` | EC2 instance model |
+| `invitation.py` | User invitation model |
+| `lab_experiment.py` | Lab experiment model |
+| `legacy_approval.py` | Legacy approval model |
+| `ml_model.py` | ML model metadata |
+| `node_template.py` | Node template (Karpenter) |
+| `onboarding.py` | Onboarding progress model |
+| `optimization_job.py` | Optimization job model |
+| `organization.py` | Organization model |
+| `permission.py` | Permission model |
+| `platform_settings.py` | Platform settings model |
+| `pod_metric.py` | Pod metric model |
+| `pricing.py` | Instance pricing model |
+| `rds_analysis.py` | RDS analysis results model |
+| `rebalancing_action.py` | Rebalancing action log |
+| `ri_utilization.py` | RI utilization model |
+| `role.py` | Role model |
+| `s3_analysis.py` | S3 analysis results model |
+| `savings_plan_utilization.py` | Savings plan utilization model |
+| `spot_price_history.py` | Spot price history model |
+| `system_config.py` | System config model |
+| `tag_policy.py` | Tag policy model |
+| `tag_template.py` | Tag template model |
+| `team.py` | Team model |
+| `termination_event.py` | Spot termination event model |
+| `transfer_analysis.py` | Transfer analysis model |
+| `user.py` | User model (auth, roles, org) |
 
 ---
 
 ## 5. Backend — Schemas
 
-| File | Purpose | Feature(s) |
-|------|---------|------------|
-| `__init__.py` | Package init | — |
-| `auth_schemas.py` | Login/signup request/response models | Authentication |
-| `account_schemas.py` | Account request/response models | Accounts |
-| `cluster_schemas.py` | Cluster/node request/response models | Cluster Management |
-| `dashboard_schemas.py` | Dashboard KPI response models | Dashboard |
-| `metric_schemas.py` | Metric response models | Metrics |
-| `admin_schemas.py` | Admin panel schemas | Admin |
-| `organization_schemas.py` | Org management schemas | Organization |
-| `team_schemas.py` | Team schemas | Teams |
-| `role_schemas.py` | Role/permission schemas | RBAC |
-| `approval_schemas.py` | Approval workflow schemas | Approvals |
-| `hibernation_schemas.py` | Hibernation schedule schemas | Hibernation |
-| `hygiene_schemas.py` | Resource hygiene schemas (ResourceType, HygieneStatus, ResourceItem) | Resource Cleanup |
-| `hygiene_policy_schemas.py` | Hygiene policy request/response | Resource Cleanup |
-| `policy_schemas.py` | Cluster policy schemas | Policies |
-| `template_schemas.py` | Node template schemas | Node Templates |
-| `tag_management_schemas.py` | Tag management schemas | Tag Management |
-| `tag_policy_schemas.py` | Tag policy schemas | Tag Policies |
-| `tag_template_schemas.py` | Tag template schemas | Tag Templates |
-| `auto_tag_schemas.py` | Auto-tag rule schemas | Auto-Tagging |
-| `lab_schemas.py` | Experiment lab schemas | Experiment Lab |
-| `settings_schemas.py` | Settings schemas | Settings |
-| `audit_schemas.py` | Audit log schemas | Audit |
-| `pod_metric_schemas.py` | Pod metric schemas | Pod Metrics |
+**Directory:** `backend/schemas/`
+
+| File | Purpose |
+|------|---------|
+| `__init__.py` | Schema exports |
+| `INFO.md` | Schemas documentation |
+| `account_schemas.py` | Account request/response schemas |
+| `admin_schemas.py` | Admin panel schemas |
+| `approval_schemas.py` | Approval workflow schemas |
+| `audit_schemas.py` | Audit log schemas |
+| `auth_schemas.py` | Auth (login, signup, token) schemas |
+| `auto_tag_schemas.py` | Auto-tag schemas |
+| `cluster_schemas.py` | Cluster schemas (largest — 14KB) |
+| `dashboard_schemas.py` | Dashboard KPI schemas |
+| `hibernation_schemas.py` | Hibernation schedule schemas |
+| `hygiene_policy_schemas.py` | Hygiene policy schemas |
+| `hygiene_schemas.py` | Resource hygiene schemas |
+| `lab_schemas.py` | Lab experiment schemas |
+| `metric_schemas.py` | Metric schemas |
+| `organization_schemas.py` | Organization schemas |
+| `pod_metric_schemas.py` | Pod metric schemas |
+| `policy_schemas.py` | Cluster policy schemas |
+| `role_schemas.py` | Role schemas |
+| `settings_schemas.py` | Settings schemas |
+| `tag_management_schemas.py` | Tag management schemas |
+| `tag_policy_schemas.py` | Tag policy schemas |
+| `tag_template_schemas.py` | Tag template schemas |
+| `team_schemas.py` | Team schemas |
+| `template_schemas.py` | Rebalancing template schemas |
 
 ---
 
 ## 6. Backend — Core
 
-| File | Purpose | Feature(s) |
-|------|---------|------------|
-| `__init__.py` | Package init | — |
-| `config.py` | Pydantic Settings: DB URL, JWT secret, AWS creds, CORS | Core Platform |
-| `dependencies.py` | FastAPI dependency injection (DB session, current user) | Core Platform |
-| `exceptions.py` | Custom HTTP exceptions | Core Platform |
-| `logger.py` | Structured logging config | Core Platform |
-| `validators.py` | Input validation utilities | Core Platform |
-| `crypto.py` | Encryption/decryption for secrets | Core Platform |
-| `redis_client.py` | Redis connection factory | Core Platform |
-| `sse_manager.py` | Server-Sent Events manager for real-time UI updates | Core Platform |
-| `api_gateway.py` | Central API gateway for external service calls | Core Platform |
-| `action_executor.py` | Executes approved actions (terminate, resize, etc.) | Optimization, Governance |
-| `decision_engine.py` | ML-based decision engine for spot optimization | AtharvaAI |
-| `feature_registry.py` | Feature flag registry | Core Platform |
-| `health_service.py` | System health check logic | Core Platform |
+**Directory:** `backend/core/`
+
+| File | Purpose |
+|------|---------|
+| `__init__.py` | Core module exports |
+| `INFO.md` | Core module documentation |
+| `action_executor.py` | AWS action executor (spot launches, terminations) |
+| `api_gateway.py` | Internal API gateway for cross-service calls |
+| `config.py` | Application configuration (Pydantic settings) |
+| `crypto.py` | Encryption/decryption utilities |
+| `decision_engine.py` | Optimization decision logic |
+| `dependencies.py` | FastAPI dependency injection |
+| `exceptions.py` | Custom exception hierarchy |
+| `feature_registry.py` | Feature flag registry (largest — 48KB) |
+| `health_service.py` | Platform health monitoring |
+| `logger.py` | Structured logging configuration |
+| `redis_client.py` | Redis connection setup |
+| `sse_manager.py` | Server-Sent Events manager |
+| `validators.py` | Input validation utilities |
 
 ---
 
 ## 7. Backend — Resource_rules
 
-| File | Purpose | Feature(s) |
-|------|---------|------------|
-| `__init__.py` | `RuleVerdict` enum, shared constants (`SAFE_THRESHOLD_DAYS`, `EXEMPT_KEYWORDS`), helper functions | Resource Cleanup |
-| `compute_rules.py` | Rules: EC2 stopped/running, RI, EKS, ECS, ASG | Resource Cleanup |
-| `storage_rules.py` | Rules: EBS volumes, snapshots, S3, S3 lifecycle, EFS | Resource Cleanup |
-| `database_rules.py` | Rules: RDS idle/legacy, Multi-AZ, DynamoDB, ElastiCache | Resource Cleanup |
-| `network_rules.py` | Rules: ELB, ENI, EIP, NAT Gateway, VPC, VPC Endpoints, TGW | Resource Cleanup |
-| `identity_rules.py` | Rules: IAM Users (dormant), IAM Keys (stale) | Resource Cleanup |
-| `security_rules.py` | Rules: KMS Keys, Secrets Manager, Security Hub, CloudTrail, GuardDuty | Resource Cleanup |
-| `management_rules.py` | Rules: CloudWatch Logs/Alarms, Lambda, EventBridge, Config, SSM | Resource Cleanup |
-
----
-
-## 8. Backend — Hibernation_strategy
-
-**Modular hibernation strategy implementations with editable configuration parameters**
-
-| File | Purpose | Lines | Editable Config | Feature(s) |
-|------|---------|-------|-----------------|------------|
-| `__init__.py` | Exports NamespaceSleepStrategy, NuclearStrategy, SnapshotRestoreStrategy | 30 | — | Hibernation |
-| `namespace_sleep.py` | **NamespaceSleepStrategy**: Scale K8s workloads to 0, let autoscaler drain nodes. Config: SYSTEM_NAMESPACES, GRACE_PERIOD_SECONDS, SLEEP_ORDER, WAKE_ORDER (8 params) | 600+ | ✅ Yes | Hibernation |
-| `nuclear.py` | **NuclearStrategy**: Scale ASGs to 0 directly (hard shutdown). Config: MIN_DESIRED_CAPACITY, SCALE_DOWN_TIMEOUT, TERMINATION_POLICIES (7 params) | 450+ | ✅ Yes | Hibernation |
-| `snapshot_restore.py` | **SnapshotRestoreStrategy**: Snapshot EBS volumes before Nuclear sleep. Config: SNAPSHOT_TIMEOUT, KEEP_SNAPSHOTS_DAYS, PARALLEL_SNAPSHOTS (8 params) | 550+ | ✅ Yes | Hibernation |
-
----
-
-## 9. Backend — Workers
-
-| File | Purpose | Feature(s) |
-|------|---------|------------|
-| `__init__.py` | Package init | — |
-| `app.py` | Celery app initialization and beat schedule | Core Platform |
-| **tasks/** | | |
-| `__init__.py` | Task registration | — |
-| `discovery.py` | Periodic cluster/account discovery | Cluster Management, Accounts |
-| `optimization.py` | Periodic right-sizing analysis | Right-Sizing |
-| `cost_calculator.py` | Periodic cost aggregation | Cost Optimization |
-| `cost_explorer.py` | AWS Cost Explorer sync | Cost Optimization, Billing |
-| `savings_calculator.py` | Realized savings calculation | Cost Optimization |
-| `pricing_task.py` | EC2 pricing data refresh | Cost Optimization |
-| `resource_pricing_worker.py` | Per-resource pricing lookup | Cost Optimization |
-| `hibernation_worker.py` | Cron-based hibernate/wake execution (delegates to modular Hibernation_strategy classes) | Hibernation |
-| `agent_tasks.py` | Agent status polling | Agent |
-| `health.py` | Periodic health checks | Core Platform |
-| `event_processor.py` | Spot interruption event processing | AtharvaAI |
-| `termination_monitor.py` | Monitor instance terminations | AtharvaAI |
-| `auto_rebalancer.py` | Automatic workload rebalancing | AtharvaAI |
-| `atharvaai_worker.py` | AtharvaAI background analysis | AtharvaAI |
-| `approval_cleanup.py` | Expire old approvals | Approvals, Governance |
-| `pod_metrics_cleanup.py` | Purge old pod metrics | Pod Metrics |
-| `report_worker.py` | Scheduled report generation | Reporting |
-
----
-
-## 10. Backend — Calculations
-
-| File | Purpose | Feature(s) |
-|------|---------|------------|
-| `__init__.py` | Package init | — |
-| `cost_calculations.py` | Cost aggregation formulas | Cost Optimization |
-| `metrics_calculations.py` | Metric aggregation formulas | Metrics |
-| `savings_calculations.py` | Savings projection formulas | Cost Optimization |
-
----
-
-## 11. Backend — Modules
-
-| File | Purpose | Feature(s) |
-|------|---------|------------|
-| `__init__.py` | Package init | — |
-| `bin_packer.py` | Bin-packing algorithm for node consolidation | Right-Sizing |
-| `ml_model_server.py` | ONNX model inference server | AtharvaAI |
-| `model_validator.py` | ML model validation checks | AtharvaAI |
-| `rightsizer.py` | Right-sizing recommendation engine | Right-Sizing |
-| `risk_tracker.py` | Spot interruption risk scoring | AtharvaAI |
-| `spot_optimizer.py` | Spot instance optimization logic | AtharvaAI |
-
----
-
-## 12. Backend — Scrapers
-
-| File | Purpose | Feature(s) |
-|------|---------|------------|
-| `__init__.py` | Package init | — |
-| `pricing_collector.py` | Scrapes AWS EC2 pricing JSON | Cost Optimization |
-| `spot_advisor_scraper.py` | Scrapes AWS Spot Advisor data | AtharvaAI |
-
----
-
-## 13. Backend — Routers (Legacy)
-
-| File | Purpose | Feature(s) |
-|------|---------|------------|
-| `actions.py` | **LEGACY** — Old action execution endpoints, replaced by `api/optimization_routes.py` | Right-Sizing |
-| `agents.py` | **LEGACY** — Old agent endpoints, replaced by `api/agent_routes.py` | Agent |
-| `metrics.py` | **LEGACY** — Old metrics endpoints, replaced by `api/metrics_routes.py` | Metrics |
-
----
-
-## 14. Backend — Migrations
-
-| File | Purpose | Feature(s) |
-|------|---------|------------|
-| `004_add_user_status.py` | Add `status` column to users table | Authentication |
-| `005_add_team_model.py` | Create teams table | Teams |
-| `debug_columns.py` | Debug script to inspect DB columns | DevOps |
-| `debug_db.py` | Debug script to inspect DB state | DevOps |
-| `versions/007_cleanup_policies.py` | Create cleanup/hygiene policy tables | Resource Cleanup |
-| `versions/008_core_modules.py` | Create core module tables | Core Platform |
-| `versions/009_dynamic_auto_tags.py` | Create auto-tag rules tables | Auto-Tagging |
-| `versions/010_tag_template_resource_scope.py` | Add resource scope to tag templates | Tag Templates |
-| `versions/011_add_cluster_costs.py` | Add cost columns to clusters | Cluster Management |
-| `versions/20260216_atharvaai_tables.py` | Create AtharvaAI tables (rebalancing, pool rankings) | AtharvaAI |
-
----
-
-## 15. Backend — Scripts
-
-| File | Purpose | Feature(s) |
-|------|---------|------------|
-| `get_admin_token.py` | Generate admin JWT for testing | DevOps |
-| `seed_permissions.py` | Seed platform permissions | RBAC |
-| `seed_rbac.py` | Seed RBAC roles and permissions | RBAC |
-
----
-
-## 16. Agent
-
-| File | Purpose | Feature(s) |
-|------|---------|------------|
-| `main.py` | Agent entry point, starts all threads | Agent |
-| `config.py` | Agent configuration from env vars | Agent |
-| `collector.py` | Collects node/instance metrics from K8s | Agent, Metrics |
-| `pod_metrics_collector.py` | Collects pod-level CPU/memory metrics | Agent, Pod Metrics |
-| `actuator.py` | Executes approved actions on the cluster | Agent, Optimization |
-| `heartbeat.py` | Periodic heartbeat to backend | Agent |
-| `poller.py` | Polls backend for pending actions | Agent |
-| `websocket_client.py` | WebSocket real-time connection to backend | Agent |
-| `Dockerfile` | Agent Docker image | DevOps |
-| `build-and-push.sh` | Build and push agent image | DevOps |
-| `requirements.txt` | Agent Python dependencies | Agent |
-
----
-
-## 17. Frontend — Pages
-
-| File | Purpose | Feature(s) |
-|------|---------|------------|
-| `App.js` | Root component, routing, auth guard | Core Platform |
-| `index.js` | React entry point | Core Platform |
-| `index.css` | Global styles | Core Platform |
-| `pages/AccountAnalytics.jsx` | AWS account analytics page | Accounts, Metrics |
-| `pages/Approvals.jsx` | Approvals management page | Approvals |
-| `pages/AtharvaAiPage.jsx` | AtharvaAI visualization page | AtharvaAI |
-| `pages/HibernationPage.jsx` | Hibernation management page | Hibernation |
-| `pages/Onboarding.jsx` | Onboarding flow page | Onboarding |
-| `pages/Roles.jsx` | Roles management page | RBAC |
-| `pages/TeamDetails.jsx` | Individual team details page | Teams |
-| `pages/Teams.jsx` | Teams list page | Teams |
-
----
-
-## 18. Frontend — Components
-
-### Admin (`components/admin/`)
-
-| File | Purpose | Feature(s) |
-|------|---------|------------|
-| `AdminDashboard.jsx` | Admin panel layout with tabs | Admin |
-| `AdminOverview.jsx` | Platform overview stats | Admin |
-| `AdminOrganizations.jsx` | Organization management table | Admin |
-| `AdminClients.jsx` | Client/user management table | Admin |
-| `AdminHealth.jsx` | System health status cards | Admin |
-| `AdminBilling.jsx` | Billing management panel | Admin, Billing |
-| `AdminConfig.jsx` | System config editor | Admin |
-| `AdminAgentFleet.jsx` | Agent fleet status view | Admin, Agent |
-| `AdminExperiments.jsx` | Experiment overview for admin | Admin, Experiment Lab |
-| `AdminImpersonation.jsx` | Org impersonation toggle | Admin |
-| `AdminTenantDrilldown.jsx` | Tenant deep-dive analytics | Admin |
-| `PlatformSettings.jsx` | Platform settings panel | Admin, Settings |
-
-### Auth (`components/auth/`)
-
-| File | Purpose | Feature(s) |
-|------|---------|------------|
-| `Login.jsx` | Login page | Authentication |
-| `Signup.jsx` | Signup page | Authentication |
-| `InviteAcceptance.jsx` | Invitation acceptance flow | Authentication, Organization |
-
-### Dashboard (`components/dashboard/`)
-
-| File | Purpose | Feature(s) |
-|------|---------|------------|
-| `Dashboard.jsx` | Main dashboard with widget grid | Dashboard |
-| `roleDefaults.js` | Default widget layout per role | Dashboard, RBAC |
-| `widgetRegistry.js` | Widget type registry | Dashboard |
-| `widgets/ActivityFeed.jsx` | Activity feed widget | Dashboard |
-| `widgets/AgentStatusWidget.jsx` | Agent status widget | Dashboard, Agent |
-| `widgets/ClusterHealthCard.jsx` | Cluster health widget | Dashboard, Cluster Management |
-| `widgets/CostKPICard.jsx` | Cost KPI widget | Dashboard, Cost Optimization |
-| `widgets/FleetComposition.jsx` | Fleet composition chart | Dashboard |
-| `widgets/PendingApprovalsCard.jsx` | Pending approvals widget | Dashboard, Approvals |
-| `widgets/PlatformHealthCard.jsx` | Platform health widget | Dashboard, Admin |
-| `widgets/SavingsChart.jsx` | Savings trend chart | Dashboard, Cost Optimization |
-| `widgets/SavingsKPICard.jsx` | Savings KPI widget | Dashboard, Cost Optimization |
-| `widgets/SpendForecastWidget.jsx` | Spending forecast widget | Dashboard, Cost Optimization |
-| `widgets/TenantListCard.jsx` | Tenant list widget | Dashboard, Admin |
-| `widgets/index.js` | Widget exports | Dashboard |
-
-### Cleanup (`components/cleanup/`)
-
-| File | Purpose | Feature(s) |
-|------|---------|------------|
-| `CleanupDashboard.jsx` | Resource hygiene main dashboard | Resource Cleanup |
-| `BulkTagWizard.jsx` | Wizard for bulk-tagging resources | Resource Cleanup, Tag Management |
-| `layout/CleanupSidebar.jsx` | Cleanup sidebar with filters | Resource Cleanup |
-| `layout/FilterPanel.jsx` | Filter panel for resource table | Resource Cleanup |
-| `summary/HeroMetricsPanel.jsx` | Hero metrics: total waste, savings | Resource Cleanup |
-| `summary/SavingsGauge.jsx` | Animated savings gauge chart | Resource Cleanup |
-| `tables/ResourceTable.jsx` | Resource listing table with actions | Resource Cleanup |
-| `wizards/RDSWizard.jsx` | RDS optimization wizard | RDS Optimization |
-| `wizards/RIWizard.jsx` | RI optimization wizard | RI Optimization |
-| `wizards/S3Wizard.jsx` | S3 tiering wizard | S3 Optimization |
-
-### Clusters (`components/clusters/`)
-
-| File | Purpose | Feature(s) |
-|------|---------|------------|
-| `ClusterList.jsx` | Cluster listing with cards | Cluster Management |
-| `ClusterDetails.jsx` | Cluster detail view | Cluster Management |
-| `ClusterDeleteModal.jsx` | Cluster deletion confirmation | Cluster Management |
-| `ClusterDisconnectModal.jsx` | Cluster disconnect confirmation | Cluster Management |
-| `ClusterHealthTimeline.jsx` | Health event timeline | Cluster Management |
-| `ClusterUtilizationSparkline.jsx` | Utilization sparkline chart | Cluster Management, Metrics |
-| `NodeGroupBreakdown.jsx` | Node group details | Cluster Management |
-| `NodeList.jsx` | Node listing table | Cluster Management |
-| `PolicyGapAlert.jsx` | Policy compliance alerts | Cluster Management, Policies |
-| `SpotRatioGauge.jsx` | Spot/On-demand ratio gauge | Cluster Management |
-
-### Hibernation (`components/hibernation/`)
-
-| File | Purpose | Feature(s) |
-|------|---------|------------|
-| `HibernationScheduler.jsx` | Main schedule creation UI | Hibernation |
-| `HibernationSchedule.jsx` | Schedule list/detail view | Hibernation |
-| `HibernationScheduleV2.jsx` | V2 schedule with drag-and-drop | Hibernation |
-| `HibernationGrid.jsx` | Weekly grid view | Hibernation |
-| `HibernationHeader.jsx` | Hibernation page header | Hibernation |
-| `HibernationTypeCard.jsx` | Strategy type selector card | Hibernation |
-| `StrategySelector.jsx` | Strategy comparison selector | Hibernation |
-| `ScheduleTemplates.jsx` | Preset schedule templates | Hibernation |
-| `ClusterOverview.jsx` | Cluster-level hibernation overview | Hibernation |
-| `CostAnalytics.jsx` | Hibernation cost savings analytics | Hibernation, Cost Optimization |
-| `AdvancedConfiguration.jsx` | Advanced hibernation settings | Hibernation |
-| `TimeBasedRules.jsx` | Time-based rule builder | Hibernation |
-| `UnifiedScheduleGrid.jsx` | Unified multi-cluster grid | Hibernation |
-| `MultiTimezone.jsx` | Multi-timezone support | Hibernation |
-| `HistoryLog.jsx` | Hibernation action history | Hibernation |
-| `ValidationPanel.jsx` | Schedule validation checks | Hibernation |
-
-### AtharvaAI (`components/atharvaai/`)
-
-| File | Purpose | Feature(s) |
-|------|---------|------------|
-| `PoolRankings.jsx` | Spot pool rankings table | AtharvaAI |
-| `PoolRankings.css` | Pool rankings styles | AtharvaAI |
-| `RebalancingTimeline.jsx` | Rebalancing event timeline | AtharvaAI |
-| `InterruptionHeatmap.jsx` | Spot interruption heatmap | AtharvaAI |
-| `AutoRebalanceAuditCard.jsx` | Auto-rebalance audit log card | AtharvaAI |
-
-### Right-Sizing (`components/right-sizing/`)
-
-| File | Purpose | Feature(s) |
-|------|---------|------------|
-| `RightSizing.jsx` | Main right-sizing page | Right-Sizing |
-| `BatchApplyModal.jsx` | Batch-apply recommendations modal | Right-Sizing |
-| `ImpactSummary.jsx` | Impact summary of recommendations | Right-Sizing |
-| `InstanceUsageDetailPanel.jsx` | Instance usage detail | Right-Sizing |
-| `RecommendationAgeIndicator.jsx` | Recommendation age badge | Right-Sizing |
-| `SavingsTracker.jsx` | Savings tracker post-apply | Right-Sizing |
-
-### Cost Optimization Modules
-
-| File | Purpose | Feature(s) |
-|------|---------|------------|
-| `ri/RIAnalysis.jsx` | RI utilization analysis page | RI Optimization |
-| `ri/RIHealthCard.jsx` | RI health summary card | RI Optimization |
-| `rds/RDSAnalysis.jsx` | RDS analysis page | RDS Optimization |
-| `rds/RDSHealthCard.jsx` | RDS health summary card | RDS Optimization |
-| `s3/S3Analysis.jsx` | S3 tiering analysis page | S3 Optimization |
-| `s3/S3HealthCard.jsx` | S3 health summary card | S3 Optimization |
-| `transfer/TransferAnalysis.jsx` | Data transfer analysis page | Data Transfer |
-| `transfer/TransferHealthCard.jsx` | Transfer health card | Data Transfer |
-
-### Governance/Approvals (`components/governance/`, `components/approvals/`)
-
-| File | Purpose | Feature(s) |
-|------|---------|------------|
-| `governance/PermissionGate.jsx` | Permission-gated component wrapper | RBAC |
-| `governance/ProtectedButton.jsx` | Button requiring specific permission | RBAC |
-| `governance/JITRequestModal.jsx` | Just-In-Time access request modal | Approvals, Governance |
-| `governance/ActiveJITBanner.jsx` | Active JIT session banner | Approvals, Governance |
-| `approvals/TicketRequestModal.jsx` | Approval ticket request modal | Approvals |
-| `approvals/AccessRequestModal.jsx` | Access request modal | Approvals |
-| `approvals/ActiveWindowBanner.jsx` | Active approval window banner | Approvals |
-
-### Settings (`components/settings/`)
-
-| File | Purpose | Feature(s) |
-|------|---------|------------|
-| `Settings.jsx` | Settings page layout | Settings |
-| `AccountSettings.jsx` | Account-level settings | Settings, Accounts |
-| `CloudIntegrations.jsx` | AWS integration management | Settings, Accounts |
-| `GovernanceManager.jsx` | Governance settings manager | Governance |
-| `GovernanceSettings.jsx` | Governance settings form | Governance |
-| `TeamManagement.jsx` | Team management from settings | Teams |
-| `TeamGovernance.jsx` | Team governance settings | Teams, Governance |
-| `MemberPermissionsModal.jsx` | Member permission editor modal | RBAC |
-| `TagPoliciesList.jsx` | Tag policies listing | Tag Policies |
-| `TagPoliciesManager.jsx` | Tag policies CRUD manager | Tag Policies |
-| `TagTemplateManager.jsx` | Tag template CRUD manager | Tag Templates |
-
-### Policies (`components/policies/`)
-
-| File | Purpose | Feature(s) |
-|------|---------|------------|
-| `PolicyConfig.jsx` | Cluster policy configuration | Policies |
-| `CleanupPolicies.jsx` | Cleanup policy management | Resource Cleanup |
-| `PermissionMatrix.jsx` | Permission matrix viewer | RBAC |
-| `TagTemplateManager.jsx` | Tag template manager (duplicate) | Tag Templates |
-
-### Other Components
-
-| File | Purpose | Feature(s) |
-|------|---------|------------|
-| `layout/MainLayout.jsx` | App chrome: sidebar, topbar, content area | Core Platform |
-| `audit/AuditLog.jsx` | Audit log viewer | Audit |
-| `lab/ExperimentLab.jsx` | Experiment Lab UI | Experiment Lab |
-| `templates/TemplateBuilder.jsx` | Node template builder | Node Templates |
-| `templates/TemplateList.jsx` | Node template listing | Node Templates |
-| `teams/TeamsTab.jsx` | Teams tab component | Teams |
-| `teams/MembersTab.jsx` | Members tab component | Teams |
-| `teams/RolesPoliciesTopTab.jsx` | Roles & policies tab | Teams, RBAC |
-| `onboarding/WelcomeStep.jsx` | Onboarding welcome step | Onboarding |
-| `onboarding/ConnectStep.jsx` | Onboarding AWS connect step | Onboarding |
-| `onboarding/VerifyStep.jsx` | Onboarding verification step | Onboarding |
-| `onboarding/SuccessStep.jsx` | Onboarding success step | Onboarding |
-
-### Shared (`components/shared/`)
-
-| File | Purpose | Feature(s) |
-|------|---------|------------|
-| `index.js` | Shared component exports | Core Platform |
-| `Badge.jsx` | Reusable badge component | Core Platform |
-| `Button.jsx` | Reusable button component | Core Platform |
-| `Card.jsx` | Reusable card component | Core Platform |
-| `Dropdown.jsx` | Reusable dropdown component | Core Platform |
-| `EmptyState.jsx` | Empty state placeholder | Core Platform |
-| `GaugeChart.jsx` | Reusable gauge chart | Core Platform |
-| `Input.jsx` | Reusable input component | Core Platform |
-| `RiskBadge.jsx` | Risk-level badge | Core Platform |
-| `StatsCard.jsx` | Stats card component | Core Platform |
-| `Switch.jsx` | Toggle switch component | Core Platform |
-
----
-
-## 19. Frontend — Services / Hooks / Store / Utils
-
-### Services
-
-| File | Purpose | Feature(s) |
-|------|---------|------------|
-| `services/api.js` | Axios API client with all endpoint functions | Core Platform |
-
-### Hooks
-
-| File | Purpose | Feature(s) |
-|------|---------|------------|
-| `hooks/useAuth.js` | Auth state hook (login, logout, token) | Authentication |
-| `hooks/useDashboard.js` | Dashboard data fetching hook | Dashboard |
-| `hooks/usePermission.js` | Permission checking hook | RBAC |
-
-### Store (Zustand)
-
-| File | Purpose | Feature(s) |
-|------|---------|------------|
-| `store/useStore.js` | Main app state store | Core Platform |
-| `store/useHibernationStore.js` | Hibernation state store | Hibernation |
-| `store/useAtharvaStore.js` | AtharvaAI state store | AtharvaAI |
-
-### Utils
-
-| File | Purpose | Feature(s) |
-|------|---------|------------|
-| `utils/formatters.js` | Number, date, currency formatting helpers | Core Platform |
-
----
-
-## 20. Scripts (Root-Level)
-
-| File | Purpose | Feature(s) |
-|------|---------|------------|
-| `scripts/seed_admin.py` | Seed admin user into DB | DevOps |
-| `scripts/seed_demo_data.py` | Seed demo org, users, clusters, accounts | DevOps |
-| `scripts/seed_test_data.py` | Seed test data for development | DevOps |
-| `scripts/fix_demo_user.py` | Fix demo user credentials | DevOps |
-| `scripts/debug_users.py` | Debug user records | DevOps |
-| `scripts/migrate_to_organizations.py` | Migrate legacy users to org model | DevOps |
-| `scripts/setup_platform_creds.py` | Setup platform AWS credentials | DevOps |
-| `scripts/update_and_seed.py` | Update DB schema + seed data | DevOps |
-| `scripts/publish_agent.sh` | Publish agent Docker image | DevOps |
-| `scripts/publish_helm_chart.sh` | Publish Helm chart to registry | DevOps |
-| `scripts/publish_to_dockerhub.sh` | Push images to DockerHub | DevOps |
-| `scripts/deployment/deploy.sh` | Production deployment script | DevOps |
-| `scripts/deployment/setup.sh` | Initial server setup | DevOps |
-| `scripts/aws/detach_volume.py` | Detach EBS volume via AWS API | AWS Operations |
-| `scripts/aws/launch_spot.py` | Launch spot instance | AWS Operations |
-| `scripts/aws/terminate_instance.py` | Terminate instance | AWS Operations |
-| `scripts/aws/update_asg.py` | Update ASG capacity | AWS Operations |
-
----
-
-## 21. ML Model
-
-### `ml_model/decision_engine/`
-
-| File | Purpose | Feature(s) |
-|------|---------|------------|
-| `webscraper/spot_advisor_enhanced.py` | Enhanced Spot Advisor data scraper | AtharvaAI |
-
-### `ml_model/model/spot_optimizer_v1/`
-
-| File | Purpose | Feature(s) |
-|------|---------|------------|
-| `src/model.py` | LightGBM model for spot interruption prediction | AtharvaAI |
-| `src/data.py` | Data pipeline (pandas-based) | AtharvaAI |
-| `src/data_polars.py` | Data pipeline (polars-based, faster) | AtharvaAI |
-| `src/backtest.py` | Backtesting engine | AtharvaAI |
-| `src/visualize.py` | Training visualization dashboard | AtharvaAI |
-| `src/logger.py` | ML training logger | AtharvaAI |
-| `scripts/train.py` | Local training script | AtharvaAI |
-| `scripts/backtest.py` | Backtesting runner | AtharvaAI |
-| `scripts/optimize_hyperparameters.py` | Hyperparameter optimization | AtharvaAI |
-| `scripts/verify_onnx_local.py` | ONNX model verification | AtharvaAI |
-| `tests/test_decision_engine.py` | Decision engine unit tests | AtharvaAI |
-| `tests/test_threshold_optimization.py` | Threshold optimization tests | AtharvaAI |
-
-### SageMaker Migration (`sagemaker_migration/`)
-
-| File | Purpose | Feature(s) |
-|------|---------|------------|
-| `scripts/train_wrapper.py` | SageMaker training wrapper | AtharvaAI, ML Ops |
-| `scripts/submit_final_training.py` | Submit SageMaker training job | AtharvaAI, ML Ops |
-| `scripts/hpo_submitter.py` | Submit HPO job to SageMaker | AtharvaAI, ML Ops |
-| `scripts/submit_preprocessing_job.py` | Submit preprocessing job | AtharvaAI, ML Ops |
-| `scripts/preprocess_features_sagemaker.py` | Feature preprocessing for SageMaker | AtharvaAI, ML Ops |
-| `scripts/acid_test_entrypoint.py` | Container environment test | AtharvaAI, ML Ops |
-| `scripts/analyze_container_env.py` | Container environment analyzer | AtharvaAI, ML Ops |
-| `scripts/submit_env_check.py` | Environment check submission | AtharvaAI, ML Ops |
-| `scripts/submit_spot_eval.py` | Spot evaluation submission | AtharvaAI, ML Ops |
-| `scripts/test_training_code.py` | Training code tests | AtharvaAI, ML Ops |
-| `scripts/test_wrapper_integration.py` | Wrapper integration tests | AtharvaAI, ML Ops |
-| `spot_processing/preprocess_spot_wrapper.py` | Spot data preprocessing wrapper | AtharvaAI, ML Ops |
-| `spot_processing/submit_spot_processing.py` | Submit spot data processing | AtharvaAI, ML Ops |
-
----
-
-## 22. Documents
+**Directory:** `backend/Resource_rules/`
 
 | File | Purpose |
 |------|---------|
-| `documents/README.md` | Documentation index |
-| `documents/MASTER_SUMMARY.md` | Master project summary |
-| `documents/all-components.md` | UI component catalog with dependencies |
-| `documents/backend-feature.md` | Backend feature documentation |
-| `documents/schema_info.md` | Database schema documentation |
-| `documents/all-files.md` | **This file** — complete file catalog |
+| `__init__.py` | Rules registry & exports |
+| `compute_rules.py` | EC2 compute hygiene rules |
+| `database_rules.py` | RDS/database hygiene rules |
+| `identity_rules.py` | IAM identity hygiene rules |
+| `management_rules.py` | CloudWatch/management hygiene rules |
+| `network_rules.py` | VPC/networking hygiene rules |
+| `security_rules.py` | Security group/WAF hygiene rules |
+| `storage_rules.py` | S3/EBS storage hygiene rules |
 
 ---
 
-## 23. Duplicate / Unused / Legacy Files
+## 8. Backend — Modules (ML)
 
-| File | Status | Reason |
-|------|--------|--------|
-| `backend/routers/actions.py` | **LEGACY** | Superseded by `backend/api/optimization_routes.py`. Old-style router before API restructuring. |
-| `backend/routers/agents.py` | **LEGACY** | Superseded by `backend/api/agent_routes.py`. Old router preserved for backward compat. |
-| `backend/routers/metrics.py` | **LEGACY** | Superseded by `backend/api/metrics_routes.py`. Old router before modularization. |
-| `backend/models/legacy_approval.py` | **LEGACY** | Old approval model before approval/ticket refactor. Kept for migration reference. |
-| `backend/migrations/debug_columns.py` | **UNUSED (Debug)** | One-time debug script to inspect DB columns. Not needed in production. |
-| `backend/migrations/debug_db.py` | **UNUSED (Debug)** | One-time debug script to inspect DB state. Not needed in production. |
-| `backend/test_scanner_fix.py` | **UNUSED (Debug)** | Temporary test script for scanner bug fix. Should be removed. |
-| `test_scanner.py` | **UNUSED (Debug)** | Root-level test script for cleanup scanner. Should be moved to tests/. |
-| `test_real_apis.sh` | **UNUSED (Debug)** | Shell script for live API testing. Not part of CI, should be moved to scripts/. |
-| `scripts/debug_users.py` | **UNUSED (Debug)** | One-time debug script for user records. Not needed in production. |
-| `scripts/fix_demo_user.py` | **UNUSED (Debug)** | One-time fix script for demo user. Not reusable. |
-| `backend/services/hygiene_service_additions.py` | **PARTIAL DUPLICATE** | Extended helper methods for hygiene service. Could be merged into `hygiene_service.py` or `Resource_rules/`. |
-| `components/policies/TagTemplateManager.jsx` | **DUPLICATE** | Identical purpose to `components/settings/TagTemplateManager.jsx`. Two copies of same component. |
-| `components/hibernation/HibernationSchedule.jsx` | **POTENTIAL DUPLICATE** | Overlaps with `HibernationScheduleV2.jsx` — V1 may be legacy. |
-| `ml_model/model/spot_optimizer_v1/src/data.py` | **PARTIAL DUPLICATE** | Pandas-based data pipeline, superseded by `data_polars.py` (faster). Kept for fallback. |
-| `REBUILD_RESTART_SUMMARY.md` | **UNUSED** | One-time build summary document. Not maintained. |
+**Directory:** `backend/modules/`
+
+| File | Purpose |
+|------|---------|
+| `__init__.py` | Module exports |
+| `INFO.md` | Modules documentation |
+| `bin_packer.py` | Bin-packing algorithm for node optimization |
+| `ml_model_server.py` | ML model serving (prediction API) |
+| `model_validator.py` | Model validation utilities |
+| `rightsizer.py` | Right-sizing recommendation engine |
+| `risk_tracker.py` | Risk score tracking |
+| `spot_optimizer.py` | Spot instance optimization |
 
 ---
 
-> **Total files catalogued:** ~220+ (excluding `node_modules`, `__pycache__`, `.git`, training result artifacts)
+## 9. Backend — Calculations
+
+**Directory:** `backend/calculations/`
+
+| File | Purpose |
+|------|---------|
+| `__init__.py` | Calculation exports |
+| `README.md` | Calculations documentation |
+| `cost_calculations.py` | Cost computation formulas |
+| `metrics_calculations.py` | Metric aggregation formulas |
+| `savings_calculations.py` | Savings computation formulas |
+
+---
+
+## 10. Backend — Scrapers
+
+**Directory:** `backend/scrapers/`
+
+| File | Purpose |
+|------|---------|
+| `__init__.py` | Scraper exports |
+| `INFO.md` | Scrapers documentation |
+| `pricing_collector.py` | AWS pricing API collector |
+| `spot_advisor_scraper.py` | Spot Advisor data scraper |
+
+---
+
+## 11. Backend — Workers
+
+**Directory:** `backend/workers/`
+
+| File | Purpose |
+|------|---------|
+| `__init__.py` | Worker app exports |
+| `INFO.md` | Workers documentation |
+| `app.py` | Celery app configuration |
+
+### Worker Tasks (`backend/workers/tasks/`)
+
+| File | Purpose |
+|------|---------|
+| `__init__.py` | Task exports |
+| `agent_tasks.py` | Agent management tasks |
+| `approval_cleanup.py` | Expired approval cleanup |
+| `atharvaai_worker.py` | AtharvaAI async processing |
+| `auto_rebalancer.py` | Automatic rebalancing task |
+| `cost_calculator.py` | Cost calculation task |
+| `cost_explorer.py` | AWS Cost Explorer data fetch |
+| `discovery.py` | Cluster discovery task |
+| `event_processor.py` | Event processing pipeline |
+| `health.py` | Health check task |
+| `hibernation_worker.py` | Hibernation execution task |
+| `optimization.py` | Optimization job runner |
+| `pod_metrics_cleanup.py` | Pod metrics data cleanup |
+| `pricing_task.py` | Pricing data refresh task |
+| `report_worker.py` | Report generation task |
+| `resource_pricing_worker.py` | Resource pricing update task |
+| `savings_calculator.py` | Savings calculation task |
+| `termination_monitor.py` | Spot termination monitoring |
+
+---
+
+## 12. Backend — Routers
+
+**Directory:** `backend/routers/`
+
+| File | Purpose |
+|------|---------|
+| `actions.py` | Action router (execute/rollback) |
+| `agents.py` | Agent router (status, deploy) |
+| `metrics.py` | Metrics router (pod, node) |
+
+---
+
+## 13. Backend — Migrations
+
+### `backend/migrations/`
+
+| File | Purpose |
+|------|---------|
+| `004_add_user_status.py` | Add user status column |
+| `005_add_team_model.py` | Add team model tables |
+| `006_update_hibernation_schedule.py` | Update hibernation schedule schema |
+| `debug_columns.py` | Column debugging utility |
+| `debug_db.py` | Database debugging utility |
+
+#### `backend/migrations/versions/`
+
+| File | Purpose |
+|------|---------|
+| `007_cleanup_policies.py` | Cleanup policy tables |
+| `008_core_modules.py` | Core module tables |
+| `009_dynamic_auto_tags.py` | Dynamic auto-tag tables |
+| `010_tag_template_resource_scope.py` | Tag template scope column |
+| `011_add_cluster_costs.py` | Cluster cost columns |
+| `20260216_atharvaai_tables.py` | AtharvaAI tables |
+
+### Root-level `migrations/` (Alembic)
+
+| File | Purpose |
+|------|---------|
+| `INFO.md` | Migrations documentation |
+| `env.py` | Alembic environment config |
+| `script.py.mako` | Migration template |
+
+#### `migrations/versions/`
+
+| File | Purpose |
+|------|---------|
+| `001_initial_schema.py` | Initial database schema |
+| `002_seed_data.py` | Initial seed data |
+| `003_add_governance_columns.py` | Governance columns |
+| `20260119_0550_…_add_team_member_permissions.py` | Team member permissions |
+| `20260119_0644_…_add_ri_utilization_model.py` | RI utilization model |
+| `20260119_0648_…_add_s3_analysis_model.py` | S3 analysis model |
+| `20260119_0653_…_add_rds_analysis_model.py` | RDS analysis model |
+| `20260119_0657_…_add_transfer_analysis_model.py` | Transfer analysis model |
+| `20260130_1200_fix_tag_templates.py` | Fix tag templates |
+| `20260210_add_cost_explorer_tables.py` | Cost explorer tables |
+| `20260210_hibernation_strategies.py` | Hibernation strategies |
+| `20260210_rename_tickets_to_approvals.py` | Rename tickets → approvals |
+| `20260212_add_account_id_to_instances.py` | Account ID on instances |
+| `20260216_add_schedule_type.py` | Schedule type column |
+| `20260216_pod_metrics.py` | Pod metrics tables |
+
+---
+
+## 14. Backend — Hibernation Strategy
+
+**Directory:** `backend/hibernation_strategy/`
+
+| File | Purpose |
+|------|---------|
+| `__init__.py` | Strategy exports |
+| `namespace_sleep.py` | Namespace sleep strategy (scale to 0) |
+| `nuclear.py` | Nuclear hibernation (full shutdown) |
+| `snapshot_restore.py` | Snapshot & restore strategy |
+
+---
+
+## 15. Backend — Utils
+
+**Directory:** `backend/utils/`
+
+| File | Purpose |
+|------|---------|
+| `INFO.md` | Utils documentation |
+| `pricing_helper.py` | Pricing helper utilities |
+
+---
+
+## 16. Backend — Scripts
+
+**Directory:** `backend/scripts/`
+
+| File | Purpose |
+|------|---------|
+| `get_admin_token.py` | Generate admin auth token |
+| `seed_permissions.py` | Seed RBAC permissions |
+| `seed_rbac.py` | Seed RBAC roles |
+
+---
+
+## 17. Backend — Templates
+
+**Directory:** `backend/templates/`
+
+| File | Purpose |
+|------|---------|
+| `install.sh` | Agent installation script template |
+
+### `backend/templates/aws/`
+
+| File | Purpose |
+|------|---------|
+| `full-access-role.yaml` | AWS IAM full-access role template |
+| `read-only-role.yaml` | AWS IAM read-only role template |
+
+### `backend/templates/k8s/`
+
+| File | Purpose |
+|------|---------|
+| `agent.yaml` | Kubernetes agent deployment template |
+
+---
+
+## 18. Backend — Static
+
+**Directory:** `backend/static/`
+
+| File | Purpose |
+|------|---------|
+| `asset-manifest.json` | Frontend asset manifest |
+| `favicon.ico` | Application favicon |
+| `index.html` | SPA entry point (served by backend) |
+| `logo192.png` | App logo |
+| `manifest.json` | PWA manifest |
+
+### `backend/static/static/css/`
+Compiled CSS bundles (build artifacts).
+
+### `backend/static/static/js/`
+Compiled JS bundles (build artifacts).
+
+---
+
+## 19. Frontend — Pages
+
+**Directory:** `frontend/src/pages/`
+
+| File | Purpose |
+|------|---------|
+| `AccountAnalytics.jsx` | Account analytics page |
+| `Approvals.jsx` | Approval management page |
+| `AtharvaAiPage.jsx` | Atharva AI assistant page |
+| `HibernationDashboard.jsx` | Hibernation dashboard page (wrapper) |
+| `HibernationPage.jsx` | Hibernation page (simple wrapper) |
+| `Onboarding.jsx` | AWS onboarding wizard page |
+| `Roles.jsx` | Role management page |
+| `TeamDetails.jsx` | Team detail view page |
+| `Teams.jsx` | Team management page |
+
+---
+
+## 20. Frontend — Components
+
+### `components/admin/` (13 files)
+
+| File | Purpose |
+|------|---------|
+| `AdminAgentFleet.jsx` | Agent fleet management panel |
+| `AdminBilling.jsx` | Billing administration |
+| `AdminClients.jsx` | Client management |
+| `AdminConfig.jsx` | Platform configuration |
+| `AdminDashboard.jsx` | Admin dashboard root |
+| `AdminExperiments.jsx` | Experiment management |
+| `AdminHealth.jsx` | Platform health monitoring |
+| `AdminImpersonation.jsx` | User impersonation |
+| `AdminOrganizations.jsx` | Organization management |
+| `AdminOverview.jsx` | Admin overview dashboard |
+| `AdminTenantDrilldown.jsx` | Tenant detail view |
+| `PlatformSettings.jsx` | Platform settings panel |
+| `INFO.md` | Admin components documentation |
+
+### `components/approvals/` (3 files)
+
+| File | Purpose |
+|------|---------|
+| `AccessRequestModal.jsx` | Access request modal |
+| `ActiveWindowBanner.jsx` | Active approval window banner |
+| `TicketRequestModal.jsx` | Ticket/approval request modal |
+
+### `components/atharvaai/` (5 files)
+
+| File | Purpose |
+|------|---------|
+| `AutoRebalanceAuditCard.jsx` | Auto-rebalance audit display |
+| `InterruptionHeatmap.jsx` | Spot interruption heatmap |
+| `PoolRankings.css` | Pool rankings styles |
+| `PoolRankings.jsx` | Instance pool rankings |
+| `RebalancingTimeline.jsx` | Rebalancing timeline visualization |
+
+### `components/audit/` (2 files)
+
+| File | Purpose |
+|------|---------|
+| `AuditLog.jsx` | Audit log viewer |
+| `INFO.md` | Audit component documentation |
+
+### `components/auth/` (4 files)
+
+| File | Purpose |
+|------|---------|
+| `InviteAcceptance.jsx` | Invitation acceptance flow |
+| `Login.jsx` | Login form |
+| `Signup.jsx` | Signup form |
+| `INFO.md` | Auth components documentation |
+
+### `components/cleanup/` (10 files)
+
+| File | Purpose |
+|------|---------|
+| `BulkTagWizard.jsx` | Bulk tag application wizard |
+| `CleanupDashboard.jsx` | Resource cleanup dashboard |
+| **layout/** | |
+| `CleanupSidebar.jsx` | Cleanup sidebar navigation |
+| `FilterPanel.jsx` | Resource filter panel |
+| **summary/** | |
+| `HeroMetricsPanel.jsx` | Hero metrics summary |
+| `SavingsGauge.jsx` | Animated savings gauge |
+| **tables/** | |
+| `ResourceTable.jsx` | Resource results table |
+| **wizards/** | |
+| `RDSWizard.jsx` | RDS cleanup wizard |
+| `RIWizard.jsx` | RI cleanup wizard |
+| `S3Wizard.jsx` | S3 cleanup wizard |
+
+### `components/clusters/` (11 files)
+
+| File | Purpose |
+|------|---------|
+| `ClusterDeleteModal.jsx` | Cluster deletion confirmation |
+| `ClusterDetails.jsx` | Cluster detail view |
+| `ClusterDisconnectModal.jsx` | Cluster disconnect modal |
+| `ClusterHealthTimeline.jsx` | Cluster health timeline |
+| `ClusterList.jsx` | Cluster list view |
+| `ClusterUtilizationSparkline.jsx` | Utilization sparkline chart |
+| `NodeGroupBreakdown.jsx` | Node group breakdown |
+| `NodeList.jsx` | Node list table |
+| `PolicyGapAlert.jsx` | Policy gap alert |
+| `SpotRatioGauge.jsx` | Spot ratio gauge |
+| `INFO.md` | Cluster components documentation |
+
+### `components/dashboard/` (16 files)
+
+| File | Purpose |
+|------|---------|
+| `Dashboard.jsx` | Main dashboard component |
+| `roleDefaults.js` | Role-based default widget config |
+| `widgetRegistry.js` | Widget registry |
+| `INFO.md` | Dashboard documentation |
+| **widgets/** | |
+| `ActivityFeed.jsx` | Activity feed widget |
+| `AgentStatusWidget.jsx` | Agent status widget |
+| `ClusterHealthCard.jsx` | Cluster health card |
+| `CostKPICard.jsx` | Cost KPI card |
+| `FleetComposition.jsx` | Fleet composition chart |
+| `PendingApprovalsCard.jsx` | Pending approvals card |
+| `PlatformHealthCard.jsx` | Platform health card |
+| `SavingsChart.jsx` | Savings chart widget |
+| `SavingsKPICard.jsx` | Savings KPI card |
+| `SpendForecastWidget.jsx` | Spend forecast widget |
+| `TenantListCard.jsx` | Tenant list card |
+| `index.js` | Widget exports |
+
+### `components/governance/` (4 files)
+
+| File | Purpose |
+|------|---------|
+| `ActiveJITBanner.jsx` | Active JIT access banner |
+| `JITRequestModal.jsx` | JIT access request modal |
+| `PermissionGate.jsx` | Permission gate wrapper |
+| `ProtectedButton.jsx` | Permission-protected button |
+
+### `components/hibernation/` (33 files)
+
+| File | Purpose |
+|------|---------|
+| `AdvancedConfiguration.jsx` | Advanced hibernation config |
+| `AuditHistory.jsx` | Hibernation audit history |
+| `ClusterOverview.jsx` | Cluster overview for hibernation |
+| `ConflictDetectionModal.jsx` | Schedule conflict detection |
+| `CostAnalytics.jsx` | Cost analytics panel |
+| `CostAnalyticsDashboard.jsx` | Full cost analytics dashboard |
+| `EmergencyControls.jsx` | Emergency hibernation controls |
+| `ExecutionHistory.jsx` | Execution history log |
+| `HibernationDashboard.jsx` | Main hibernation dashboard |
+| `HibernationDashboardNew.jsx` | Redesigned hibernation dashboard |
+| `HibernationGrid.jsx` | Hibernation grid view |
+| `HibernationHeader.jsx` | Hibernation page header |
+| `HibernationSchedule.jsx` | Schedule management (v1) |
+| `HibernationScheduleV2.jsx` | Schedule management (v2) |
+| `HibernationScheduler.jsx` | Schedule creation wizard |
+| `HibernationTypeCard.jsx` | Hibernation type selection card |
+| `HibernationWizard.jsx` | Full hibernation setup wizard |
+| `HistoryLog.jsx` | History log panel |
+| `MultiTimezone.jsx` | Multi-timezone selector |
+| `NotificationSettings.jsx` | Notification settings panel |
+| `ScheduleBuilder.jsx` | Schedule builder component |
+| `ScheduleCalendar.jsx` | Calendar-style schedule view |
+| `ScheduleMatrix.jsx` | Weekly schedule matrix |
+| `ScheduleModal.jsx` | Schedule creation modal |
+| `ScheduleTemplates.jsx` | Pre-built schedule templates |
+| `StatusBanner.jsx` | Hibernation status banner |
+| `StrategySelector.jsx` | Hibernation strategy selector |
+| `TimeBasedRules.jsx` | Time-based rule configuration |
+| `UnifiedScheduleGrid.jsx` | Unified schedule grid |
+| `ValidationPanel.jsx` | Schedule validation panel |
+| `index.js` | Hibernation component exports |
+| `INFO.md` | Hibernation documentation |
+| `README.md` | Hibernation feature README |
+
+### `components/lab/` (1 file)
+
+| File | Purpose |
+|------|---------|
+| `ExperimentLab.jsx` | Experiment lab management |
+
+### `components/layout/` (1 file)
+
+| File | Purpose |
+|------|---------|
+| `MainLayout.jsx` | Main application layout (sidebar + content) |
+
+### `components/onboarding/` (4 files)
+
+| File | Purpose |
+|------|---------|
+| `ConnectStep.jsx` | AWS connection step |
+| `SuccessStep.jsx` | Success confirmation step |
+| `VerifyStep.jsx` | Verification step |
+| `WelcomeStep.jsx` | Welcome/intro step |
+
+### `components/policies/` (5 files)
+
+| File | Purpose |
+|------|---------|
+| `CleanupPolicies.jsx` | Cleanup policy management |
+| `PermissionMatrix.jsx` | Permission matrix view |
+| `PolicyConfig.jsx` | Policy configuration |
+| `TagTemplateManager.jsx` | Tag template manager |
+| `INFO.md` | Policies documentation |
+
+### `components/rds/` (2 files)
+
+| File | Purpose |
+|------|---------|
+| `RDSAnalysis.jsx` | RDS analysis dashboard |
+| `RDSHealthCard.jsx` | RDS health card |
+
+### `components/ri/` (2 files)
+
+| File | Purpose |
+|------|---------|
+| `RIAnalysis.jsx` | RI analysis dashboard |
+| `RIHealthCard.jsx` | RI health card |
+
+### `components/right-sizing/` (11 files)
+
+| File | Purpose |
+|------|---------|
+| `BatchApplyModal.jsx` | Batch apply recommendations modal |
+| `ImpactSummary.jsx` | Impact summary panel |
+| `InstanceUsageDetailPanel.jsx` | Instance usage detail panel |
+| `KarpenterDashboard.jsx` | Karpenter management dashboard |
+| `KarpenterEnable.jsx` | Karpenter enable panel |
+| `KarpenterSettings.jsx` | Karpenter settings panel |
+| `KarpenterSetup.jsx` | Karpenter setup wizard |
+| `ManualRightSizing.jsx` | Manual right-sizing view |
+| `RecommendationAgeIndicator.jsx` | Recommendation age indicator |
+| `RightSizing.jsx` | Right-sizing dashboard |
+| `SavingsTracker.jsx` | Savings tracker panel |
+
+### `components/s3/` (2 files)
+
+| File | Purpose |
+|------|---------|
+| `S3Analysis.jsx` | S3 tiering analysis dashboard |
+| `S3HealthCard.jsx` | S3 health card |
+
+### `components/transfer/` (2 files)
+
+| File | Purpose |
+|------|---------|
+| `TransferAnalysis.jsx` | Data transfer analysis dashboard |
+| `TransferHealthCard.jsx` | Data transfer health card |
+
+### `components/settings/` (12 files)
+
+| File | Purpose |
+|------|---------|
+| `AccountSettings.jsx` | Account settings page |
+| `CloudIntegrations.jsx` | Cloud integration management |
+| `GovernanceManager.jsx` | Governance settings manager |
+| `GovernanceSettings.jsx` | Governance settings form |
+| `MemberPermissionsModal.jsx` | Member permissions modal |
+| `Settings.jsx` | Settings root component |
+| `TagPoliciesList.jsx` | Tag policies list |
+| `TagPoliciesManager.jsx` | Tag policies manager |
+| `TagTemplateManager.jsx` | Tag template manager |
+| `TeamGovernance.jsx` | Team governance settings |
+| `TeamManagement.jsx` | Team management panel |
+| `INFO.md` | Settings documentation |
+
+### `components/shared/` (11 files)
+
+| File | Purpose |
+|------|---------|
+| `Badge.jsx` | Badge component |
+| `Button.jsx` | Button component |
+| `Card.jsx` | Card component |
+| `Dropdown.jsx` | Dropdown component |
+| `EmptyState.jsx` | Empty state placeholder |
+| `GaugeChart.jsx` | Gauge chart component |
+| `Input.jsx` | Input component |
+| `RiskBadge.jsx` | Risk badge component |
+| `StatsCard.jsx` | Stats card component |
+| `Switch.jsx` | Toggle switch component |
+| `index.js` | Shared component exports |
+
+---
+
+## 21. Frontend — Services
+
+**Directory:** `frontend/src/services/`
+
+| File | Purpose |
+|------|---------|
+| `api.js` | Main API service (axios instance + all endpoints) |
+| `hibernationApi.js` | Hibernation-specific API service |
+| `INFO.md` | Services documentation |
+
+---
+
+## 22. Frontend — Hooks
+
+**Directory:** `frontend/src/hooks/`
+
+| File | Purpose |
+|------|---------|
+| `useAuth.js` | Authentication hook |
+| `useDashboard.js` | Dashboard data hook |
+| `usePermission.js` | Permission check hook |
+| `INFO.md` | Hooks documentation |
+
+---
+
+## 23. Frontend — Store (Zustand)
+
+**Directory:** `frontend/src/store/`
+
+| File | Purpose |
+|------|---------|
+| `useAtharvaStore.js` | AtharvaAI state store |
+| `useHibernationStore.js` | Hibernation state store |
+| `useStore.js` | Main application store |
+
+---
+
+## 24. Frontend — Utils
+
+**Directory:** `frontend/src/utils/`
+
+| File | Purpose |
+|------|---------|
+| `formatters.js` | Number/date/currency formatters |
+| `INFO.md` | Utils documentation |
+
+---
+
+## 25. Frontend — App Entry
+
+**Directory:** `frontend/src/`
+
+| File | Purpose |
+|------|---------|
+| `App.js` | Main React app (routing, layout, auth) |
+| `index.js` | ReactDOM entry point |
+| `index.css` | Global styles |
+| `INFO.md` | Frontend source documentation |
+
+---
+
+## 26. Docker & Infrastructure
+
+**Directory:** `docker/`
+
+| File | Purpose |
+|------|---------|
+| `docker-compose.yml` | Multi-container orchestration |
+| `Dockerfile.backend` | Backend container build |
+| `Dockerfile.frontend` | Frontend container build |
+| `nginx.conf` | Nginx reverse proxy config |
+| `.env` | Docker-specific env vars |
+| `INFO.md` | Docker infrastructure documentation |
+
+---
+
+## 27. Helm Charts
+
+**Directory:** `charts/spot-optimizer-agent/`
+
+| File | Purpose |
+|------|---------|
+| `Chart.yaml` | Helm chart metadata |
+| `values.yaml` | Default chart values |
+| **templates/** | |
+| `clusterrole.yaml` | ClusterRole definition |
+| `clusterrolebinding.yaml` | ClusterRoleBinding |
+| `configmap.yaml` | ConfigMap |
+| `daemonset.yaml` | DaemonSet definition |
+| `secret.yaml` | Secret definition |
+| `serviceaccount.yaml` | ServiceAccount |
+
+---
+
+## 28. Root-Level Scripts
+
+**Directory:** `scripts/`
+
+| File | Purpose |
+|------|---------|
+| `INFO.md` | Scripts documentation |
+| `debug_users.py` | User debugging utility |
+| `fix_demo_user.py` | Fix demo user data |
+| `migrate_to_organizations.py` | Migrate to organization model |
+| `publish_agent.sh` | Publish agent package |
+| `publish_helm_chart.sh` | Publish Helm chart |
+| `publish_to_dockerhub.sh` | Publish Docker images |
+| `seed_admin.py` | Seed admin user |
+| `seed_demo_data.py` | Seed demo/test data |
+| `seed_test_data.py` | Seed test data |
+| `setup_platform_creds.py` | Setup platform credentials |
+| `update_and_seed.py` | Update and re-seed data |
+
+### `scripts/aws/`
+
+| File | Purpose |
+|------|---------|
+| `INFO.md` | AWS scripts documentation |
+| `detach_volume.py` | EBS volume detach script |
+| `launch_spot.py` | Spot instance launch script |
+| `terminate_instance.py` | Instance termination script |
+| `update_asg.py` | ASG update script |
+
+### `scripts/deployment/`
+
+| File | Purpose |
+|------|---------|
+| `INFO.md` | Deployment documentation |
+| `deploy.sh` | Deployment script |
+| `setup.sh` | Environment setup script |
+
+---
+
+## 29. Root-Level Migrations (Alembic)
+
+See [Section 13](#13-backend--migrations) for the full migration listing.
+
+---
+
+## 30. Documents
+
+**Directory:** `documents/`
+
+| File | Purpose |
+|------|---------|
+| `MASTER_SUMMARY.md` | Master project summary |
+| `README.md` | Documents directory README |
+| `all-components.md` | All UI components catalog (this companion doc) |
+| `all-files.md` | All files catalog (this document) |
+| `backend-feature.md` | Backend feature documentation |
+| `schema_info.md` | Database schema documentation |
+
+---
+
+## 31. Config
+
+**Directory:** `config/`
+
+| File | Purpose |
+|------|---------|
+| `INFO.md` | Configuration documentation |
+
+**Directory:** `docs/`
+
+| File | Purpose |
+|------|---------|
+| `all-components.md` | Alternative components documentation |
+
+---
+
+## File Count Summary
+
+| Area | Files |
+|------|-------|
+| Backend — API Routes | 41 |
+| Backend — Services | 39 |
+| Backend — Models | 44 |
+| Backend — Schemas | 25 |
+| Backend — Core | 15 |
+| Backend — Resource_rules | 8 |
+| Backend — Modules | 8 |
+| Backend — Calculations | 5 |
+| Backend — Scrapers | 4 |
+| Backend — Workers (incl. tasks) | 21 |
+| Backend — Routers | 3 |
+| Backend — Migrations | 17 |
+| Backend — Hibernation Strategy | 4 |
+| Backend — Utils | 2 |
+| Backend — Scripts | 3 |
+| Backend — Templates | 4 |
+| Backend — Static | 5+ |
+| Frontend — Pages | 9 |
+| Frontend — Components | ~161 |
+| Frontend — Services | 3 |
+| Frontend — Hooks | 4 |
+| Frontend — Store | 3 |
+| Frontend — Utils | 2 |
+| Frontend — App Entry | 4 |
+| Docker & Infrastructure | 6 |
+| Helm Charts | 8 |
+| Root-Level Scripts | ~20 |
+| Root-Level Migrations | ~18 |
+| Documents | 6 |
+| Root-Level Files | ~20 |
+| **Total (approx.)** | **~510** |

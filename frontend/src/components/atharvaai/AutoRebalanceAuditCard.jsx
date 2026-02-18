@@ -16,7 +16,7 @@ const AutoRebalanceAuditCard = () => {
         try {
             // Reusing rebalancing status endpoint but displaying differently
             // In a real app, this might be a dedicated audit log endpoint with "decision reasoning"
-            const response = await api.get('/atharvaai/rebalancing/status?limit=3');
+            const response = await api.get('/api/v1/atharvaai/rebalancing/status?limit=3');
             if (response.data && response.data.length > 0) {
                 // Add mock "reasoning" for demo purposes since backend doesn't store plain text reasoning yet
                 const enriched = response.data.map(d => ({

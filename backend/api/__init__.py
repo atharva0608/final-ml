@@ -27,6 +27,7 @@ from backend.api.rds_routes import router as rds_router
 from backend.api.transfer_routes import router as transfer_router
 from backend.api.hygiene_policy_routes import router as hygiene_policy_router
 from backend.api.agent_routes import router as agent_router
+from backend.api.karpenter_routes import router as karpenter_router
 
 # Tag Management Routes
 from backend.api.tag_policy_routes import router as tag_policy_router
@@ -65,6 +66,7 @@ api_router.include_router(rds_router)
 api_router.include_router(hygiene_policy_router)
 api_router.include_router(transfer_router)
 api_router.include_router(agent_router)
+api_router.include_router(karpenter_router)
 
 # Tag Management
 api_router.include_router(tag_policy_router)

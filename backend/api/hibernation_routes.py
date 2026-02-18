@@ -1,185 +1,148 @@
+"""
+Hibernation Schedule API Routes
 
+REST API endpoints for managing hibernation schedules.
+"""
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from typing import List
-
-from backend.models.user import User
-from backend.models.base import get_db
+from typing import List, Optional
+from backend.core.dependencies import get_db, get_current_user
 from backend.services.hibernation_service import HibernationService
-from backend.core.dependencies import get_current_user
-
-def get_hibernation_service(db: Session = Depends(get_db)) -> HibernationService:
-    return HibernationService(db)
 from backend.schemas.hibernation_schemas import (
-    HibernationScheduleResponse,
-    HibernationScheduleList,
     HibernationScheduleCreate,
     HibernationScheduleUpdate,
-    HibernationScheduleFilter,
-    ManualOverrideRequest,
-    StrategyInfo,
+    HibernationScheduleResponse,
+    HibernationScheduleList,
     StrategyComparisonResponse,
+    SavingsEstimateResponse,
+    ConflictCheckResponse
 )
-from backend.core.exceptions import ResourceNotFoundError, ResourceAlreadyExistsError, ValidationError
+from backend.models.user import User
+from backend.models.hibernation_schedule import HibernationStrategy, ScheduleType
 
-router = APIRouter(prefix="/hibernation", tags=["hibernation"])
+router = APIRouter(prefix="/hibernation", tags=["Hibernation"])
+
 
 @router.get("/schedules", response_model=HibernationScheduleList)
 def list_schedules(
-    page: int = 1,
-    page_size: int = 20,
-    cluster_id: str = None,
-    is_active: bool = None,
-    current_user: User = Depends(get_current_user),
-    service: HibernationService = Depends(get_hibernation_service)
+    cluster_id: Optional[str] = Query(None),
+    is_active: Optional[bool] = Query(None),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
-    """
-    List hibernation schedules
-    """
-    filters = HibernationScheduleFilter(
-        page=page,
-        page_size=page_size,
+    """List hibernation schedules with filtering"""
+    service = HibernationService(db)
+    schedules, total = service.list_schedules(
         cluster_id=cluster_id,
-        is_active=is_active
+        is_active=is_active,
+        page=page,
+        page_size=page_size
     )
-    return service.list_schedules(current_user.id, filters)
+    
+    return {
+        "schedules": schedules,
+        "total": total,
+        "page": page,
+        "page_size": page_size
+    }
 
-@router.post("/schedules", response_model=HibernationScheduleResponse)
-def create_schedule(
-    schedule_data: HibernationScheduleCreate,
-    current_user: User = Depends(get_current_user),
-    service: HibernationService = Depends(get_hibernation_service)
-):
-    """
-    Create a new hibernation schedule for a cluster
-    """
-    try:
-        return service.create_schedule(current_user.id, schedule_data)
-    except (ResourceAlreadyExistsError, ResourceNotFoundError, ValidationError) as e:
-        raise HTTPException(status_code=400, detail=str(e))
 
 @router.get("/schedules/{schedule_id}", response_model=HibernationScheduleResponse)
 def get_schedule(
     schedule_id: str,
-    current_user: User = Depends(get_current_user),
-    service: HibernationService = Depends(get_hibernation_service)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
-    """
-    Get schedule details
-    """
-    try:
-        return service.get_schedule(schedule_id, current_user.id)
-    except ResourceNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+    """Get a specific hibernation schedule"""
+    service = HibernationService(db)
+    return service.get_schedule(schedule_id)
+
+
+@router.post("/schedules", response_model=HibernationScheduleResponse)
+def create_schedule(
+    schedule_data: HibernationScheduleCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Create a new hibernation schedule"""
+    service = HibernationService(db)
+    
+    return service.create_schedule(
+        name=schedule_data.name,
+        description=schedule_data.description,
+        schedule_matrix=schedule_data.schedule_matrix,
+        strategy=HibernationStrategy(schedule_data.strategy),
+        cluster_ids=schedule_data.cluster_ids,
+        schedule_type=ScheduleType(schedule_data.schedule_type),
+        date_overrides=schedule_data.date_overrides,
+        timezone=schedule_data.timezone,
+        pre_warm_minutes=schedule_data.pre_warm_minutes,
+        is_active=schedule_data.is_active
+    )
+
 
 @router.put("/schedules/{schedule_id}", response_model=HibernationScheduleResponse)
 def update_schedule(
     schedule_id: str,
-    update_data: HibernationScheduleUpdate,
-    current_user: User = Depends(get_current_user),
-    service: HibernationService = Depends(get_hibernation_service)
+    schedule_data: HibernationScheduleUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
-    """
-    Update schedule details
-    """
-    try:
-        return service.update_schedule(schedule_id, current_user.id, update_data)
-    except ResourceNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except ValidationError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    """Update an existing hibernation schedule"""
+    service = HibernationService(db)
+    
+    updates = schedule_data.dict(exclude_unset=True)
+    if "strategy" in updates:
+        updates["strategy"] = HibernationStrategy(updates["strategy"])
+    if "schedule_type" in updates:
+        updates["schedule_type"] = ScheduleType(updates["schedule_type"])
+    
+    return service.update_schedule(schedule_id, **updates)
+
 
 @router.delete("/schedules/{schedule_id}")
 def delete_schedule(
     schedule_id: str,
-    current_user: User = Depends(get_current_user),
-    service: HibernationService = Depends(get_hibernation_service)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
-    """
-    Delete a hibernation schedule
-    """
-    try:
-        service.delete_schedule(schedule_id, current_user.id)
-        return {"status": "success", "message": "Schedule deleted"}
-    except ResourceNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+    """Delete a hibernation schedule"""
+    service = HibernationService(db)
+    service.delete_schedule(schedule_id)
+    return {"message": "Schedule deleted successfully"}
+
 
 @router.post("/schedules/{schedule_id}/toggle", response_model=HibernationScheduleResponse)
 def toggle_schedule(
     schedule_id: str,
-    current_user: User = Depends(get_current_user),
-    service: HibernationService = Depends(get_hibernation_service)
+    is_active: bool = Query(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
-    """
-    Toggle schedule active status (Enable/Disable)
-    """
-    try:
-        return service.toggle_schedule(schedule_id, current_user.id)
-    except ResourceNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+    """Activate or pause a hibernation schedule"""
+    service = HibernationService(db)
+    return service.toggle_schedule(schedule_id, is_active)
 
 
-@router.post("/schedules/{schedule_id}/override")
-def override_schedule(
+@router.get("/strategies/compare", response_model=List[StrategyComparisonResponse])
+def compare_strategies(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Get comparison data for all hibernation strategies"""
+    service = HibernationService(db)
+    return service.compare_strategies()
+
+
+@router.get("/schedules/{schedule_id}/savings", response_model=SavingsEstimateResponse)
+def estimate_savings(
     schedule_id: str,
-    override_data: ManualOverrideRequest,
-    current_user: User = Depends(get_current_user),
-    service: HibernationService = Depends(get_hibernation_service),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
-    """
-    Manual wake/sleep override — dispatches Celery task
-    """
-    from backend.models.hibernation_schedule import HibernationSchedule as HibModel
-
-    schedule = db.query(HibModel).filter(HibModel.id == schedule_id).first()
-    if not schedule:
-        raise HTTPException(status_code=404, detail="Schedule not found")
-
-    from backend.workers.tasks.hibernation_worker import manual_sleep_cluster, manual_wake_cluster
-
-    strategy = getattr(schedule, 'strategy', None)
-
-    if override_data.action == "SLEEP":
-        manual_sleep_cluster.delay(schedule.cluster_id, strategy)
-        return {"status": "queued", "action": "SLEEP", "cluster_id": schedule.cluster_id}
-    else:
-        manual_wake_cluster.delay(schedule.cluster_id, strategy)
-        return {"status": "queued", "action": "WAKE", "cluster_id": schedule.cluster_id}
-
-
-@router.get("/strategies", response_model=StrategyComparisonResponse)
-def get_strategies():
-    """
-    Get available hibernation strategies with comparison data
-    """
-    strategies = [
-        StrategyInfo(
-            name="NAMESPACE_SLEEP",
-            display_name="Namespace Sleep",
-            description="Scales workloads to 0 replicas. Cluster Autoscaler drains idle nodes. Fast recovery.",
-            wake_time="~2 min",
-            savings_pct=80,
-            safety="HIGH",
-            best_for="Stateless dev/test workloads"
-        ),
-        StrategyInfo(
-            name="NUCLEAR",
-            display_name="Nuclear",
-            description="Scales all ASGs to 0. Maximum cost savings but slower recovery.",
-            wake_time="~8 min",
-            savings_pct=99,
-            safety="MEDIUM",
-            best_for="Maximum cost reduction, non-critical environments"
-        ),
-        StrategyInfo(
-            name="SNAPSHOT_RESTORE",
-            display_name="Snapshot & Restore",
-            description="Snapshots EBS volumes before Nuclear shutdown. Preserves data with AZ affinity.",
-            wake_time="~12 min",
-            savings_pct=90,
-            safety="HIGH",
-            best_for="Stateful workloads, databases"
-        ),
-    ]
-    return StrategyComparisonResponse(strategies=strategies)
+    """Calculate estimated savings for a schedule"""
+    service = HibernationService(db)
+    schedule = service.get_schedule(schedule_id)
+    return service.calculate_weekly_savings(schedule)
