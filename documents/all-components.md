@@ -6,7 +6,13 @@
 >
 > **🔴 Red API Endpoint** = Endpoint exists in backend but is **NOT called** from the frontend (unused)
 >
-> **Last Updated:** 2026-02-18 (18:52) — **FULL FILES & COMPONENTS AUDIT COMPLETE** ✅ Right-Sizing page supports dual-mode operation (Manual vs Karpenter) with components: `ManualRightSizing`, `KarpenterEnable`, `KarpenterSetup` (4-step wizard), `KarpenterDashboard` (live monitoring), `KarpenterSettings` (slide-over config). `HibernationScheduleV2.jsx` is the active scheduler (no V3). `HibernationDashboard.jsx` page and `hibernationApi.js` service documented. Total: ~161 component files (across 22 component dirs + 9 pages + 3 stores). Transfer components (TransferAnalysis, TransferHealthCard) confirmed. All prior deletion/refactoring candidates still apply. See deletion table at end.
+> **Last Updated:** 2026-02-18 (20:30) — **HIBERNATION & RIGHT-SIZING DOCUMENTATION UPDATE COMPLETE** ✅
+>
+> **Hibernation System**: `HibernationDashboardNew.jsx` is the primary dashboard with LiveProgressBanner, SavingsReport (line chart), ScheduleMatrix (168-hour grid with click-and-drag), StrategySelector (3 strategies), AuditHistory, EmergencyControls, and NotificationSettings. Multi-cluster schedules supported. `HibernationScheduleV2.jsx` is the active scheduler modal. Backend: Modular strategy classes in `backend/Hibernation_strategy/` (namespace_sleep.py, nuclear.py, snapshot_restore.py). Worker: Celery beat task (1-min interval) with strategy dispatcher.
+>
+> **Right-Sizing System**: `RightSizing.jsx` is dual-mode container routing between Manual and Karpenter views. **Manual Mode**: `ManualRightSizing.jsx` with KPI cards, recommendations table (14-day pod metrics analysis), SavingsTracker, InstanceUsageDetailPanel, BatchApplyModal. **Karpenter Mode**: `KarpenterEnable.jsx` (one-click setup), `KarpenterSetup.jsx` (4-step wizard), `KarpenterDashboard.jsx` (live monitoring with activity feed), `KarpenterSettings.jsx` (5-tab slide-over). Backend: 8 Karpenter API endpoints in `karpenter_routes.py`.
+>
+> **Component Count**: ~145 JSX files across 23 component directories + 9 pages. Hibernation: 30 files (including ScheduleMatrix, StrategySelector, AuditHistory, EmergencyControls). Right-Sizing: 12 files (including Karpenter suite).
 
 ---
 
@@ -683,8 +689,32 @@
 > - **SNAPSHOT_RESTORE**: Creates EBS snapshots before Nuclear sleep. Wake time ~12min, savings ~90%, safety HIGHEST. Best for databases/stateful workloads.
 >
 > **Execution Flow**: Celery beat task runs every 1 minute → checks active schedules → converts current time to schedule timezone → checks 168-char matrix (7 days × 24 hours) → triggers sleep/wake via strategy dispatcher → logs to audit trail → updates Redis cache.
+>
+> **Frontend Architecture**: `HibernationDashboardNew.jsx` is the primary dashboard with LiveProgressBanner, SavingsReport (line chart), ScheduleMatrix (168-hour grid), StrategySelector, AuditHistory, EmergencyControls. Multi-cluster schedules supported.
 
-### Main Hibernation Page
+### Main Hibernation Dashboard (HibernationDashboardNew)
+
+| UI Element | Type | What It Does | Data Source | API Endpoint | Backend Logic | DB Table | Columns Used | Dependencies | File Name |
+|---|---|---|---|---|---|---|---|---|---|
+| **Page Header** | Text | "Hibernation Management" title + subtitle | Hardcoded | — | — | — | — | hibernation/HibernationDashboardNew.jsx | App.js |
+| **LiveProgressBanner** | Banner | Active execution progress with progress bar, elapsed time, step counter (e.g. "18/23 nodes"), dismiss button | Real API | `GET /api/v1/hibernation/execution/status` | Returns current execution state if active | hibernation_executions | hibernation_executions.status, hibernation_executions.progress_pct, hibernation_executions.current_step | hibernation/HibernationDashboardNew.jsx | App.js |
+| **Global Stats Cards** | Card Grid | 4 KPI cards: Sleep Hours/Week (total across all schedules), Awake Hours/Week, Monthly Savings (estimated $), Active Schedules Count | Real API | `GET /api/v1/hibernation/schedules` | HibernationService.list_schedules → aggregates sleep hours from all active schedules' schedule_matrix, calculates savings estimate | hibernation_schedules | hibernation_schedules.schedule_matrix, hibernation_schedules.is_active, hibernation_schedules.strategy | hibernation/HibernationDashboardNew.jsx, api/hibernation_routes.py, services/hibernation_service.py | App.js |
+| **Create Schedule Button** | Button | Opens schedule creation modal | N/A | — | — | — | — | hibernation/HibernationDashboardNew.jsx | App.js |
+| **Refresh Button** | Button | Reloads all dashboard data | N/A | — | — | — | — | hibernation/HibernationDashboardNew.jsx | App.js |
+
+### HibernationDashboardNew — Sub-Components
+
+| Component | Type | What It Does | Data Source | API Endpoint | Backend Logic | DB Table | Columns Used | Dependencies | File Name |
+|---|---|---|---|---|---|---|---|---|---|
+| **SavingsReport** | Card + Chart | Line chart showing weekly/monthly savings trend with total saved amount, chart toggle (week/month/all), export CSV button | Real API | `GET /api/v1/hibernation/savings/history` | Aggregates hibernation execution logs, calculates cost savings from sleep duration × cluster hourly cost | audit_logs, hibernation_schedules, clusters | audit_logs.event, audit_logs.timestamp, clusters.monthly_cost | hibernation/HibernationDashboardNew.jsx, api/hibernation_routes.py, services/hibernation_service.py | App.js |
+| **SchedulesList** | Table | All hibernation schedules with: Name, Strategy badge (colored icon), Clusters count, Sleep hours/week, Status toggle (Active/Paused), Last execution, Edit/Delete buttons | Real API | `GET /api/v1/hibernation/schedules` | HibernationService.list_schedules → RBAC filtered, returns all org schedules with metadata | hibernation_schedules | hibernation_schedules.name, hibernation_schedules.strategy, hibernation_schedules.cluster_ids, hibernation_schedules.schedule_matrix, hibernation_schedules.is_active, hibernation_schedules.last_execution_at | hibernation/HibernationDashboardNew.jsx, api/hibernation_routes.py, services/hibernation_service.py | App.js |
+| **ScheduleMatrix** | Grid | 168-hour weekly grid (7 days × 24 hours) with click-and-drag selection, preset buttons (Weeknights, Weekends, Nights Only), Clear/Fill All buttons, sleep hour counter | Controlled Component | — | Manages 168-char bit string: '1'=sleep, '0'=awake. Index=(day×24)+hour | — | — | hibernation/HibernationDashboardNew.jsx | hibernation/ScheduleMatrix.jsx |
+| **StrategySelector** | Card Grid | 3 strategy cards (Namespace Sleep, Nuclear, Snapshot & Restore) with icon, color, wake time, savings %, risk level, description, selected state | Hardcoded | — | — | — | — | hibernation/HibernationDashboardNew.jsx | hibernation/StrategySelector.jsx |
+| **AuditHistory** | Table | Compact execution history: Timestamp, Schedule name, Action (Sleep/Wake), Strategy badge, Duration, Status (Success/Failed), Clusters affected | Real API | `GET /api/v1/audit/logs?resource_type=HIBERNATION` | AuditService.get_audit_logs → filtered by resource type HIBERNATION | audit_logs | audit_logs.timestamp, audit_logs.event, audit_logs.resource, audit_logs.outcome, audit_logs.metadata | hibernation/HibernationDashboardNew.jsx, api/audit_routes.py, services/audit_service.py | hibernation/AuditHistory.jsx |
+| **EmergencyControls** | Card | Emergency sleep/wake buttons for all clusters or per-cluster, confirmation modals, force wake button (red), manual override with reason input | Real API | `POST /api/v1/hibernation/emergency/sleep` + `POST /api/v1/hibernation/emergency/wake` | HibernationService.emergency_sleep/wake → creates temporary schedule, triggers immediate execution, logs as emergency action | hibernation_schedules, audit_logs | hibernation_schedules.cluster_ids, audit_logs.event | hibernation/HibernationDashboardNew.jsx, api/hibernation_routes.py, services/hibernation_service.py | hibernation/EmergencyControls.jsx |
+| **NotificationSettings** | Card | Notification preferences: Email/Slack/Webhook toggles, threshold alerts, execution failure alerts, pre-warm notifications | Real API | `GET /api/v1/hibernation/notifications/settings` + `PATCH /api/v1/hibernation/notifications/settings` | Stores notification config in hibernation_settings table | hibernation_settings | hibernation_settings.notification_channels, hibernation_settings.alert_thresholds | hibernation/HibernationDashboardNew.jsx, api/hibernation_routes.py, services/hibernation_service.py | hibernation/NotificationSettings.jsx |
+
+### Legacy Hibernation Page (HibernationSchedule.jsx)
 
 | UI Element | Type | What It Does | Data Source | API Endpoint | Backend Logic | DB Table | Columns Used | Dependencies | File Name |
 |---|---|---|---|---|---|---|---|---|---|

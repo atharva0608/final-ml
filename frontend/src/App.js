@@ -33,7 +33,7 @@ import AdminExperiments from './components/admin/AdminExperiments';
 import AdminConfig from './components/admin/AdminConfig';
 import AdminBilling from './components/admin/AdminBilling';
 import AdminOrganizations from './components/admin/AdminOrganizations';
-import RightSizing from './components/right-sizing/RightSizing';
+import RightSizing from './components/right-sizing/RightSizingNew';
 import CleanupDashboard from './components/cleanup/CleanupDashboard';
 import GovernanceSettings from './components/settings/GovernanceSettings';
 import TagPoliciesManager from './components/settings/TagPoliciesManager';

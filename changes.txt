@@ -1,795 +1,528 @@
-import { useState, useEffect } from "react";
+# Right-Sizing with Karpenter - Simple Toggle UI (No Wizard)
 
-// ── Icons ────────────────────────────────────────────────────────────────────
-const MoonIcon = ({ size = 16 }) => (<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" /></svg>);
-const SunIcon = ({ size = 16 }) => (<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="5" /><line x1="12" y1="1" x2="12" y2="3" /><line x1="12" y1="21" x2="12" y2="23" /><line x1="4.22" y1="4.22" x2="5.64" y2="5.64" /><line x1="18.36" y1="18.36" x2="19.78" y2="19.78" /><line x1="1" y1="12" x2="3" y2="12" /><line x1="21" y1="12" x2="23" y2="12" /><line x1="4.22" y1="19.78" x2="5.64" y2="18.36" /><line x1="18.36" y1="5.64" x2="19.78" y2="4.22" /></svg>);
-const ZapIcon = ({ size = 16 }) => (<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" /></svg>);
-const ShieldIcon = ({ size = 16 }) => (<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /></svg>);
-const AlertCircleIcon = ({ size = 16 }) => (<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" /></svg>);
-const PlayIcon = ({ size = 16 }) => (<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round"><polygon points="5 3 19 12 5 21 5 3" /></svg>);
-const PauseIcon = ({ size = 16 }) => (<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round"><rect x="6" y="4" width="4" height="16" /><rect x="14" y="4" width="4" height="16" /></svg>);
-const EditIcon = ({ size = 14 }) => (<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" /></svg>);
-const TrashIcon = ({ size = 14 }) => (<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" /></svg>);
-const PlusIcon = ({ size = 16 }) => (<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>);
-const ClockIcon = ({ size = 16 }) => (<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" /></svg>);
-const CheckIcon = ({ size = 16 }) => (<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg>);
-const ChevronDownIcon = ({ size = 14 }) => (<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 12 15 18 9" /></svg>);
-const ServerIcon = ({ size = 16 }) => (<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="2" width="20" height="8" rx="2" ry="2" /><rect x="2" y="14" width="20" height="8" rx="2" ry="2" /><line x1="6" y1="6" x2="6.01" y2="6" /><line x1="6" y1="18" x2="6.01" y2="18" /></svg>);
-const TrendingUpIcon = ({ size = 16 }) => (<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18" /><polyline points="17 6 23 6 23 12" /></svg>);
-const DownloadIcon = ({ size = 13 }) => (<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>);
-const MailIcon = ({ size = 13 }) => (<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" /><polyline points="22,6 12,13 2,6" /></svg>);
-const BarChartIcon = ({ size = 13 }) => (<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="20" x2="18" y2="10" /><line x1="12" y1="20" x2="12" y2="4" /><line x1="6" y1="20" x2="6" y2="14" /></svg>);
-const XIcon = ({ size = 14 }) => (<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>);
-const LogsIcon = ({ size = 13 }) => (<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round"><line x1="8" y1="6" x2="21" y2="6" /><line x1="8" y1="12" x2="21" y2="12" /><line x1="8" y1="18" x2="21" y2="18" /><line x1="3" y1="6" x2="3.01" y2="6" /><line x1="3" y1="12" x2="3.01" y2="12" /><line x1="3" y1="18" x2="3.01" y2="18" /></svg>);
+I'll create a clean, toggle-based interface that's fast and intuitive.
 
-// ── Mock Data ────────────────────────────────────────────────────────────────
-const CLUSTERS = [
-  { id: "1", name: "prod-web-us", region: "us-east-1", status: "active" },
-  { id: "2", name: "staging-api", region: "us-west-2", status: "active" },
-  { id: "3", name: "dev-cluster", region: "eu-west-1", status: "sleeping" },
-  { id: "4", name: "poc-demo", region: "ap-south-1", status: "active" },
-];
+---
 
-const STRATEGIES = [
-  { id: "NAMESPACE_SLEEP", label: "Namespace Sleep", icon: "moon", color: "#6366f1", bg: "rgba(99,102,241,0.08)", border: "rgba(99,102,241,0.25)", wakeTime: "~2 min", savings: "80%", risk: "LOW", desc: "Scales workloads to 0 replicas. Best for stateless apps." },
-  { id: "NUCLEAR", label: "Nuclear", icon: "zap", color: "#ef4444", bg: "rgba(239,68,68,0.08)", border: "rgba(239,68,68,0.25)", wakeTime: "~8 min", savings: "99%", risk: "MEDIUM", desc: "Scales ASGs to 0 directly. Maximum cost reduction." },
-  { id: "SNAPSHOT_RESTORE", label: "Snapshot & Restore", icon: "shield", color: "#22c55e", bg: "rgba(34,197,94,0.08)", border: "rgba(34,197,94,0.25)", wakeTime: "~12 min", savings: "90%", risk: "LOWEST", desc: "Creates EBS snapshots before sleep. For stateful workloads." },
-];
+## 🎯 **Main Page Layout - Simple Mode Switcher**
 
-const INITIAL_SCHEDULES = [
-  { id: "s1", name: "Business Hours Off", strategy: "NAMESPACE_SLEEP", clusterIds: ["1", "2"], days: ["Mon", "Tue", "Wed", "Thu", "Fri"], sleepAt: "20:00", wakeAt: "08:00", timezone: "America/New_York", preWarm: 15, isActive: true, monthlySavings: 2100 },
-  { id: "s2", name: "Weekend Full Shutdown", strategy: "NUCLEAR", clusterIds: ["3"], days: ["Sat", "Sun"], sleepAt: "00:00", wakeAt: "00:00", timezone: "UTC", preWarm: 0, isActive: true, monthlySavings: 1850 },
-  { id: "s3", name: "Dev Nightly", strategy: "SNAPSHOT_RESTORE", clusterIds: ["3", "4"], days: ["Mon", "Tue", "Wed", "Thu", "Fri"], sleepAt: "18:00", wakeAt: "09:00", timezone: "America/Chicago", preWarm: 30, isActive: false, monthlySavings: 900 },
-];
+```jsx
+┌─────────────────────────────────────────────────────────────────────────┐
+│  RIGHT-SIZING DASHBOARD                                    [Refresh] [⚙️]│
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                           │
+│  OPTIMIZATION MODE                                                        │
+│                                                                           │
+│  ┌──────────────────────────────────────────────────────────────────┐  │
+│  │                                                                   │  │
+│  │  ○ Manual Recommendations     ● Karpenter Auto-Sizing            │  │
+│  │     (Review & Apply)              (Fully Automated)               │  │
+│  │                                                                   │  │
+│  └──────────────────────────────────────────────────────────────────┘  │
+│                                                                           │
+└─────────────────────────────────────────────────────────────────────────┘
+```
 
-const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-const TIMEZONES = ["UTC", "America/New_York", "America/Chicago", "America/Denver", "America/Los_Angeles", "Europe/London", "Europe/Paris", "Asia/Tokyo", "Asia/Kolkata"];
-const QUICK_TEMPLATES = [
-  { label: "Business Hours", days: ["Mon", "Tue", "Wed", "Thu", "Fri"], sleepAt: "20:00", wakeAt: "08:00" },
-  { label: "Nights Only", days: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"], sleepAt: "22:00", wakeAt: "06:00" },
-  { label: "Weekends Off", days: ["Sat", "Sun"], sleepAt: "00:00", wakeAt: "00:00" },
-];
+---
 
-const EXECUTION_HISTORY = [
-  { id: 1, action: "SLEEP", cluster: "prod-web-us", strategy: "Namespace Sleep", status: "success", time: "2h ago", duration: "1m 48s", detail: "Scaled 6 deployments to 0 replicas" },
-  { id: 2, action: "WAKE", cluster: "staging-api", strategy: "Namespace Sleep", status: "success", time: "8h ago", duration: "1m 52s", detail: "Restored 4 deployments to original replica count" },
-  { id: 3, action: "SLEEP", cluster: "dev-cluster", strategy: "Nuclear", status: "warning", time: "1d ago", duration: "7m 30s", detail: "2 nodes failed to drain, force terminated" },
-  { id: 4, action: "WAKE", cluster: "poc-demo", strategy: "Snapshot & Restore", status: "error", time: "2d ago", duration: "12m 04s", detail: "EBS snapshot restore failed — volume detach error" },
-  { id: 5, action: "PRE-WARM", cluster: "prod-web-us", strategy: "Namespace Sleep", status: "success", time: "2d ago", duration: "45s", detail: "Pre-warming started 15 min before scheduled wake" },
-];
+## 🚀 **Karpenter Section - Smart Enable/Disable**
 
-const SAVINGS_TREND = [
-  { month: "Sep", value: 2100 }, { month: "Oct", value: 2800 }, { month: "Nov", value: 3200 },
-  { month: "Dec", value: 3900 }, { month: "Jan", value: 4400 }, { month: "Feb", value: 4850 },
-];
+### **State 1: Karpenter OFF (First Time)**
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
-function calcStats(schedules) {
-  let sleepHours = 0;
-  schedules.filter(s => s.isActive).forEach(s => {
-    const sh = parseInt(s.sleepAt.split(":")[0]);
-    const wh = parseInt(s.wakeAt.split(":")[0]);
-    let daily = sh > wh ? (24 - sh + wh) : (sh === wh && s.sleepAt !== s.wakeAt ? 24 : Math.abs(wh - sh));
-    if (s.sleepAt === s.wakeAt) daily = 24;
-    sleepHours += daily * s.days.length;
-  });
-  sleepHours = Math.min(sleepHours, 168);
-  const savings = Math.round((sleepHours / 168) * 100);
-  const activeCount = schedules.filter(s => s.isActive).length;
-  const pausedCount = schedules.filter(s => !s.isActive).length;
-  const monthlySaved = schedules.filter(s => s.isActive).reduce((a, s) => a + (s.monthlySavings || 0), 0);
-  return { sleepHours, awakeHours: 168 - sleepHours, savings, activeCount, pausedCount, monthlySaved };
-}
+```jsx
+┌─────────────────────────────────────────────────────────────────────────┐
+│  🚀 KARPENTER AUTO-SIZING                          ⚪ OFF  [Enable →]  │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                           │
+│  Automatic right-sizing: 30-50% cost reduction, 75%+ utilization        │
+│  Currently using manual mode - recommendations shown below               │
+│                                                                           │
+│  [Learn More]  [Quick Start Guide]                                      │
+│                                                                           │
+└─────────────────────────────────────────────────────────────────────────┘
+```
 
-function getStrategyMeta(id) { return STRATEGIES.find(s => s.id === id) || STRATEGIES[0]; }
-function getClusterNames(ids) { return ids.map(id => CLUSTERS.find(c => c.id === id)?.name || id).join(", "); }
+### **State 2: Click "Enable" → Inline Quick Config**
 
-function detectConflicts(newSched, allSchedules) {
-  const conflicts = [];
-  const sh = parseInt(newSched.sleepAt.split(":")[0]);
-  const wh = parseInt(newSched.wakeAt.split(":")[0]);
-  allSchedules.filter(s => s.id !== newSched.id && s.isActive).forEach(existing => {
-    const sharedClusters = newSched.clusterIds.filter(id => existing.clusterIds.includes(id));
-    if (!sharedClusters.length) return;
-    const sharedDays = newSched.days.filter(d => existing.days.includes(d));
-    if (!sharedDays.length) return;
-    const esh = parseInt(existing.sleepAt.split(":")[0]);
-    const ewh = parseInt(existing.wakeAt.split(":")[0]);
-    const newHours = new Set();
-    for (let h = sh; h !== wh; h = (h + 1) % 24) newHours.add(h);
-    const existHours = new Set();
-    for (let h = esh; h !== ewh; h = (h + 1) % 24) existHours.add(h);
-    const overlap = [...newHours].filter(h => existHours.has(h));
-    if (overlap.length > 0) conflicts.push({ schedule: existing, sharedClusters, overlapHours: overlap.length });
-  });
-  return conflicts;
-}
+```jsx
+┌─────────────────────────────────────────────────────────────────────────┐
+│  🚀 ENABLE KARPENTER                               [Cancel] [Turn On →] │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                           │
+│  SELECT CLUSTERS                                                         │
+│  ┌──────────────────────────────────────────────────────────────────┐  │
+│  │ ☑️ prod-web       12 nodes  •  Est. savings: +$960/mo (30%)     │  │
+│  │ ☑️ prod-api       18 nodes  •  Est. savings: +$1,440/mo (30%)   │  │
+│  │ ☐ staging         5 nodes   •  Est. savings: +$360/mo (30%)     │  │
+│  │ ☐ dev-cluster     3 nodes   •  Est. savings: +$240/mo (30%)     │  │
+│  └──────────────────────────────────────────────────────────────────┘  │
+│                                                                           │
+│  STRATEGY (applies to all selected clusters)                            │
+│  ┌──────────────────────────────────────────────────────────────────┐  │
+│  │ ○ Cost-First         (Max savings, more churn)                   │  │
+│  │ ● Balanced           (Recommended - cost + stability)            │  │
+│  │ ○ Performance-First  (Stable, less churn)                        │  │
+│  └──────────────────────────────────────────────────────────────────┘  │
+│                                                                           │
+│  QUICK SETTINGS                                                          │
+│  Spot target: [━━━━━━━●━━] 75%    Architecture: ☑️ AMD64  ☑️ ARM64     │
+│                                                                           │
+│  [Advanced Settings ▼]                                                  │
+│                                                                           │
+│  Total Est. Savings: $2,400/mo (2 clusters)                             │
+│                                                                           │
+│  [Cancel]                                          [🚀 Turn On Karpenter]│
+│                                                                           │
+└─────────────────────────────────────────────────────────────────────────┘
+```
 
-// ── Shared Styles ─────────────────────────────────────────────────────────────
-const S = {
-  page: { minHeight: "100vh", background: "#f8fafc", fontFamily: "'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif", color: "#0f172a" },
-  topbar: { background: "#fff", borderBottom: "1px solid #e2e8f0", padding: "0 32px", height: 64, display: "flex", alignItems: "center", justifyContent: "space-between", position: "sticky", top: 0, zIndex: 50 },
-  topbarLeft: { display: "flex", alignItems: "center", gap: 12 },
-  pageTitle: { fontSize: 18, fontWeight: 700, color: "#0f172a", letterSpacing: "-0.02em" },
-  pageSubtitle: { fontSize: 13, color: "#64748b", marginTop: 1 },
-  topbarRight: { display: "flex", alignItems: "center", gap: 10 },
-  btnPrimary: { display: "flex", alignItems: "center", gap: 6, padding: "8px 16px", borderRadius: 8, background: "#6366f1", color: "#fff", fontSize: 13, fontWeight: 600, border: "none", cursor: "pointer", letterSpacing: "-0.01em" },
-  btnDanger: { display: "flex", alignItems: "center", gap: 6, padding: "8px 16px", borderRadius: 8, background: "#fef2f2", color: "#ef4444", fontSize: 13, fontWeight: 600, border: "1px solid #fecaca", cursor: "pointer" },
-  btnGhost: { display: "flex", alignItems: "center", gap: 5, padding: "6px 12px", borderRadius: 6, background: "transparent", color: "#64748b", fontSize: 12, fontWeight: 500, border: "1px solid #e2e8f0", cursor: "pointer" },
-  btnIcon: { width: 28, height: 28, borderRadius: 6, border: "none", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0 },
-  content: { padding: "22px 28px", maxWidth: 1500, margin: "0 auto" },
-  card: { background: "#fff", border: "1px solid #e2e8f0", borderRadius: 12, overflow: "hidden" },
-  cardHeader: { padding: "13px 18px", borderBottom: "1px solid #f1f5f9", display: "flex", alignItems: "center", justifyContent: "space-between" },
-  cardTitle: { fontSize: 11, fontWeight: 700, color: "#0f172a", letterSpacing: "0.07em", textTransform: "uppercase" },
-  cardBody: { padding: "18px" },
-  kpiGrid: { display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 14, marginBottom: 20 },
-  kpiCard: { background: "#fff", border: "1px solid #e2e8f0", borderRadius: 12, padding: "18px 22px" },
-  kpiLabel: { fontSize: 11, fontWeight: 600, color: "#94a3b8", letterSpacing: "0.07em", textTransform: "uppercase", marginBottom: 7 },
-  kpiValue: { fontSize: 30, fontWeight: 800, letterSpacing: "-0.03em", lineHeight: 1 },
-  kpiSub: { fontSize: 11, color: "#94a3b8", marginTop: 5 },
-  formRow: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 },
-  label: { fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 4, display: "block" },
-  input: { width: "100%", padding: "8px 12px", fontSize: 13, border: "1px solid #d1d5db", borderRadius: 8, outline: "none", background: "#fff", color: "#0f172a", boxSizing: "border-box", fontFamily: "inherit" },
-  select: { width: "100%", padding: "8px 12px", fontSize: 13, border: "1px solid #d1d5db", borderRadius: 8, outline: "none", background: "#fff", color: "#0f172a", boxSizing: "border-box", fontFamily: "inherit", appearance: "none", cursor: "pointer" },
-  badge: (color, bg, extra = {}) => ({ display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 8px", borderRadius: 100, fontSize: 11, fontWeight: 600, color, background: bg, ...extra }),
-  dayBtn: (active) => ({ width: 36, height: 28, borderRadius: 6, border: "1px solid", fontSize: 11, fontWeight: 600, cursor: "pointer", background: active ? "#6366f1" : "#f8fafc", color: active ? "#fff" : "#64748b", borderColor: active ? "#6366f1" : "#e2e8f0" }),
-};
+### **State 3: Karpenter ON (Active)**
 
-// ── Strategy Icon ─────────────────────────────────────────────────────────────
-function StrategyIcon({ type, size = 16 }) {
-  if (type === "moon") return <MoonIcon size={size} />;
-  if (type === "zap") return <ZapIcon size={size} />;
-  if (type === "shield") return <ShieldIcon size={size} />;
-  return <MoonIcon size={size} />;
-}
+```jsx
+┌─────────────────────────────────────────────────────────────────────────┐
+│  🚀 KARPENTER AUTO-SIZING        🟢 ON     [⚙️ Settings] [⏸️ Pause]    │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                           │
+│  Active on 2 clusters  •  35 nodes managed  •  Last action: 3 min ago   │
+│                                                                           │
+│  ┌────────────────┬────────────────┬────────────────┬────────────────┐ │
+│  │ AVG UTIL       │ OPTIMIZATIONS  │ SAVED THIS WEEK│ SPOT COVERAGE  │ │
+│  ├────────────────┼────────────────┼────────────────┼────────────────┤ │
+│  │      78%       │       38       │    $1,240      │      82%       │ │
+│  │  ↑ from 45%    │   auto-sizes   │   vs manual    │   of nodes     │ │
+│  └────────────────┴────────────────┴────────────────┴────────────────┘ │
+│                                                                           │
+│  RECENT ACTIONS (Last 6h)                             [View All →]      │
+│  • prod-web: Consolidated 3 m5.xlarge → 2 c6i.large (saved $42/day)    │
+│  • prod-api: Switched r5.2xlarge → r6g.2xlarge Graviton (-$68/day)     │
+│  • prod-web: Replaced spot interruption in 12 sec (zero downtime)      │
+│                                                                           │
+│  ACTIVE CLUSTERS                                      [Manage →]        │
+│  🟢 prod-web (12 nodes, 82% util) • 🟢 prod-api (18 nodes, 75% util)   │
+│                                                                           │
+└─────────────────────────────────────────────────────────────────────────┘
+```
 
-// ── KPI Card ──────────────────────────────────────────────────────────────────
-function KPICard({ label, value, sub, color = "#0f172a", accent }) {
-  return (
-    <div style={{ ...S.kpiCard, borderTop: `3px solid ${accent || "#e2e8f0"}` }}>
-      <div style={S.kpiLabel}>{label}</div>
-      <div style={{ ...S.kpiValue, color }}>{value}</div>
-      <div style={S.kpiSub}>{sub}</div>
-    </div>
-  );
-}
+---
 
-// ── Live Progress Banner ──────────────────────────────────────────────────────
-function LiveProgressBanner({ onDismiss }) {
-  const [progress, setProgress] = useState(65);
-  const [elapsed, setElapsed] = useState(134);
-  const [step, setStep] = useState(18);
-  const total = 23;
+## 🎛️ **Settings Panel - Quick Access**
 
-  useEffect(() => {
-    const t = setInterval(() => {
-      setProgress(p => Math.min(p + 0.35, 99));
-      setElapsed(e => e + 1);
-      setStep(s => Math.min(s + 0.04, total - 0.01));
-    }, 1000);
-    return () => clearInterval(t);
-  }, []);
+Click **[⚙️ Settings]** → Slide-over panel
 
-  const fmt = (s) => `${Math.floor(s / 60)}m ${Math.floor(s % 60)}s`;
-  const remaining = Math.max(0, Math.round(((100 - progress) / progress) * elapsed));
-  const pct = Math.round(progress);
+```jsx
+┌─────────────────────────────────────────────────────────────────┐
+│  KARPENTER SETTINGS                              [Save] [Close] │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  │
+│                                                                  │
+│  CLUSTERS                                                        │
+│                                                                  │
+│  prod-web (us-east-1)                  [ON 🟢] [Edit ▼]        │
+│  ├─ Strategy: Balanced                                          │
+│  ├─ Spot: 75%                                                   │
+│  └─ 12 nodes, 82% util                                          │
+│                                                                  │
+│  prod-api (us-east-1)                  [ON 🟢] [Edit ▼]        │
+│  ├─ Strategy: Balanced                                          │
+│  ├─ Spot: 75%                                                   │
+│  └─ 18 nodes, 75% util                                          │
+│                                                                  │
+│  staging (us-west-2)                   [OFF ⚪] [Enable]        │
+│                                                                  │
+│  dev-cluster (eu-west-1)               [OFF ⚪] [Enable]        │
+│                                                                  │
+│  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  │
+│                                                                  │
+│  GLOBAL DEFAULTS                                                │
+│  (Applied to all clusters unless overridden)                    │
+│                                                                  │
+│  Strategy: [Balanced ▼]                                         │
+│  Spot target: [━━━━━━━●━━] 75%                                 │
+│  Architecture: ☑️ AMD64  ☑️ ARM64                               │
+│  Instance families: [m5, m6i, m6a, c5, c6i, r5...] [Edit]     │
+│  Consolidation: [Enabled ▼]  Threshold: 60%                    │
+│                                                                  │
+│  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  │
+│                                                                  │
+│  QUICK ACTIONS                                                   │
+│  [Pause All]  [Resume All]  [Reset to Defaults]                │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
 
-  return (
-    <div style={{ background: "linear-gradient(135deg, #1e1b4b 0%, #312e81 100%)", borderBottom: "1px solid #4338ca", padding: "10px 28px", display: "flex", alignItems: "center", gap: 16 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
-        <div style={{ width: 8, height: 8, borderRadius: "50%", background: "#a5f3fc", animation: "blink 1.4s ease-in-out infinite" }} />
-        <span style={{ fontSize: 11, fontWeight: 700, color: "#c7d2fe", letterSpacing: "0.06em" }}>HIBERNATION IN PROGRESS</span>
-      </div>
-      <div style={{ width: 1, height: 16, background: "#4338ca", flexShrink: 0 }} />
-      <div style={{ fontSize: 12, color: "#a5b4fc" }}>
-        <span style={{ fontWeight: 700, color: "#e0e7ff" }}>Weekend Shutdown</span>
-        {" · "}Scaling deployments to 0 replicas ({Math.floor(step)}/{total})
-      </div>
-      <div style={{ flex: 1, background: "rgba(255,255,255,0.12)", borderRadius: 99, height: 5, minWidth: 60 }}>
-        <div style={{ height: "100%", borderRadius: 99, background: "linear-gradient(90deg, #818cf8, #a5f3fc)", width: `${pct}%`, transition: "width 1s linear" }} />
-      </div>
-      <span style={{ fontSize: 12, fontWeight: 700, color: "#e0e7ff", flexShrink: 0 }}>{pct}%</span>
-      <span style={{ fontSize: 11, color: "#818cf8", flexShrink: 0 }}>{fmt(elapsed)} · ~{fmt(remaining)} left</span>
-      <button style={{ ...S.btnGhost, fontSize: 11, padding: "4px 9px", color: "#a5b4fc", borderColor: "#4338ca", background: "rgba(255,255,255,0.06)", gap: 4 }}>
-        <LogsIcon size={11} /> View Logs
-      </button>
-      <button onClick={onDismiss} style={{ ...S.btnGhost, fontSize: 11, padding: "4px 9px", color: "#f87171", borderColor: "#7f1d1d", background: "rgba(239,68,68,0.12)", gap: 4 }}>
-        <XIcon size={11} /> Cancel
-      </button>
-    </div>
-  );
-}
+### **Per-Cluster Edit Dropdown**
 
-// ── Conflict Modal ─────────────────────────────────────────────────────────────
-function ConflictModal({ conflicts, newSchedule, onResolve, onGoBack }) {
-  const [resolution, setResolution] = useState("deactivate");
-  const conflict = conflicts[0];
-  const sharedNames = conflict.sharedClusters.map(id => CLUSTERS.find(c => c.id === id)?.name).join(", ");
+Click **[Edit ▼]** on any cluster:
 
-  const resolutions = [
-    { id: "deactivate", label: `Deactivate "${conflict.schedule.name}"`, recommended: true },
-    { id: "exclude", label: `Exclude ${sharedNames} from new schedule` },
-    { id: "adjust", label: "Adjust time window to avoid overlap" },
-    { id: "continue", label: "Continue anyway (last schedule wins)" },
-  ];
+```jsx
+┌─────────────────────────────────────────────────────────────────┐
+│  prod-web CONFIGURATION                                          │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  Strategy:                                                       │
+│  ○ Cost-First    ● Balanced    ○ Performance-First              │
+│                                                                  │
+│  Spot target: [━━━━━━━●━━] 75%                                 │
+│                                                                  │
+│  Architecture: ☑️ AMD64  ☑️ ARM64                               │
+│                                                                  │
+│  Instance families: [Quick Pick: Web Tier ▼]                   │
+│  ☑️ m5, m6i, m6a  ☑️ c5, c6i  ☐ r5, r6i                        │
+│                                                                  │
+│  Consolidation: [Enabled ▼]  Threshold: [60%]                  │
+│                                                                  │
+│  [More Options ▼]                                                │
+│                                                                  │
+│  [Reset to Global]  [Apply]  [Cancel]                          │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
 
-  return (
-    <div style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.55)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: 20, backdropFilter: "blur(4px)", animation: "fadeIn 0.15s ease" }}>
-      <div style={{ background: "#fff", borderRadius: 16, width: "100%", maxWidth: 500, boxShadow: "0 24px 64px rgba(0,0,0,0.2)", overflow: "hidden" }}>
-        {/* Header */}
-        <div style={{ padding: "18px 22px 14px", borderBottom: "1px solid #fef3c7", background: "#fffbeb" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <div style={{ width: 36, height: 36, borderRadius: 10, background: "#fef3c7", display: "flex", alignItems: "center", justifyContent: "center", color: "#d97706", flexShrink: 0 }}>
-              <AlertCircleIcon size={18} />
-            </div>
-            <div>
-              <div style={{ fontSize: 15, fontWeight: 700, color: "#0f172a" }}>Schedule Conflict Detected</div>
-              <div style={{ fontSize: 12, color: "#64748b", marginTop: 1 }}>Your new schedule overlaps with an existing one</div>
-            </div>
-          </div>
-        </div>
+---
 
-        <div style={{ padding: "18px 22px" }}>
-          {/* Cards */}
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 14 }}>
-            {[
-              { tag: "New Schedule", name: newSchedule.name, clusters: newSchedule.clusterIds.map(id => CLUSTERS.find(c => c.id === id)?.name).join(", "), time: `${newSchedule.sleepAt}–${newSchedule.wakeAt}`, color: "#6366f1", bg: "#eef2ff" },
-              { tag: "Conflicts With", name: conflict.schedule.name, clusters: sharedNames, time: `${conflict.schedule.sleepAt}–${conflict.schedule.wakeAt}`, color: "#ef4444", bg: "#fef2f2" },
-            ].map(item => (
-              <div key={item.tag} style={{ padding: "11px 13px", borderRadius: 10, background: item.bg, border: `1px solid ${item.color}20` }}>
-                <div style={{ fontSize: 10, fontWeight: 700, color: item.color, letterSpacing: "0.07em", textTransform: "uppercase", marginBottom: 5 }}>{item.tag}</div>
-                <div style={{ fontSize: 13, fontWeight: 700, color: "#0f172a", marginBottom: 4 }}>{item.name}</div>
-                <div style={{ fontSize: 11, color: "#64748b" }}>
-                  <div>📍 {item.clusters}</div>
-                  <div>🕐 {item.time}</div>
-                </div>
-              </div>
-            ))}
-          </div>
+## 🔄 **Toggle Between Modes**
 
-          {/* Overlap callout */}
-          <div style={{ padding: "9px 13px", borderRadius: 8, background: "#fffbeb", border: "1px solid #fde68a", marginBottom: 14, fontSize: 12, color: "#92400e", display: "flex", alignItems: "center", gap: 7 }}>
-            <AlertCircleIcon size={12} />
-            Overlap: <strong>{conflict.overlapHours}h/day</strong> on cluster <strong>{sharedNames}</strong>
-          </div>
+### **When on Manual Mode (showing recommendations table)**
 
-          {/* Resolution options */}
-          <div style={{ marginBottom: 16 }}>
-            <div style={{ fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 7 }}>Resolution Options</div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-              {resolutions.map(r => (
-                <label key={r.id} style={{ display: "flex", alignItems: "center", gap: 9, padding: "9px 11px", borderRadius: 8, cursor: "pointer", border: "1px solid", borderColor: resolution === r.id ? "#6366f1" : "#e2e8f0", background: resolution === r.id ? "#eef2ff" : "#fafafa" }}>
-                  <input type="radio" name="res" value={r.id} checked={resolution === r.id} onChange={() => setResolution(r.id)} style={{ accentColor: "#6366f1" }} />
-                  <span style={{ fontSize: 13, color: "#0f172a", flex: 1 }}>{r.label}</span>
-                  {r.recommended && <span style={S.badge("#16a34a", "#f0fdf4")}>Recommended</span>}
-                </label>
-              ))}
-            </div>
-          </div>
+Top of page shows:
 
-          <div style={{ display: "flex", gap: 8 }}>
-            <button onClick={onGoBack} style={{ ...S.btnGhost, flex: 1, justifyContent: "center", padding: "9px" }}>Go Back</button>
-            <button onClick={() => onResolve(resolution)} style={{ ...S.btnPrimary, flex: 1, justifyContent: "center", padding: "9px" }}>Apply Resolution</button>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
+```jsx
+┌─────────────────────────────────────────────────────────────────┐
+│  OPTIMIZATION MODE: ● Manual  ○ Karpenter                       │
+│                                                                  │
+│  💡 Want automated optimization? Enable Karpenter above         │
+└─────────────────────────────────────────────────────────────────┘
 
-// ── Savings Report ────────────────────────────────────────────────────────────
-function SavingsReport({ schedules }) {
-  const active = schedules.filter(s => s.isActive);
-  const totalSaved = active.reduce((a, s) => a + (s.monthlySavings || 0), 0);
-  const projected = totalSaved * 12;
-  const maxVal = Math.max(...SAVINGS_TREND.map(d => d.value));
-  const W = 280, H = 80, PAD = 20;
-  const pts = SAVINGS_TREND.map((d, i) => ({ x: PAD + (i / (SAVINGS_TREND.length - 1)) * (W - PAD * 2), y: H - 12 - ((d.value / maxVal) * (H - 24)) }));
+[Shows regular recommendations table below]
+```
 
-  return (
-    <div style={S.card}>
-      <div style={{ ...S.cardHeader, background: "linear-gradient(135deg, #f0fdf4, #ecfdf5)" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
-          <TrendingUpIcon size={13} />
-          <span style={S.cardTitle}>Savings Report</span>
-        </div>
-        <span style={S.badge("#16a34a", "#f0fdf4")}>Feb 2026</span>
-      </div>
+### **When on Karpenter Mode (showing dashboard)**
 
-      {/* Top KPIs */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", borderBottom: "1px solid #f1f5f9" }}>
-        <div style={{ padding: "13px 15px", borderRight: "1px solid #f1f5f9" }}>
-          <div style={{ fontSize: 10, fontWeight: 700, color: "#94a3b8", letterSpacing: "0.07em", textTransform: "uppercase", marginBottom: 4 }}>Saved This Month</div>
-          <div style={{ fontSize: 22, fontWeight: 800, color: "#16a34a", letterSpacing: "-0.02em" }}>${totalSaved.toLocaleString()}</div>
-          <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 2 }}>42% less than baseline</div>
-        </div>
-        <div style={{ padding: "13px 15px" }}>
-          <div style={{ fontSize: 10, fontWeight: 700, color: "#94a3b8", letterSpacing: "0.07em", textTransform: "uppercase", marginBottom: 4 }}>Projected Annual</div>
-          <div style={{ fontSize: 22, fontWeight: 800, color: "#6366f1", letterSpacing: "-0.02em" }}>~${Math.round(projected / 1000)}K</div>
-          <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 2 }}>at current rate</div>
-        </div>
-      </div>
+Top of page shows:
 
-      {/* Trend chart */}
-      <div style={{ padding: "14px 16px 6px" }}>
-        <div style={{ fontSize: 11, fontWeight: 600, color: "#64748b", marginBottom: 8 }}>Savings Trend — Last 6 Months</div>
-        <svg width="100%" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="xMidYMid meet" style={{ overflow: "visible" }}>
-          <defs>
-            <linearGradient id="sg" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="#22c55e" stopOpacity="0.25" />
-              <stop offset="100%" stopColor="#22c55e" stopOpacity="0.01" />
-            </linearGradient>
-          </defs>
-          <path d={`M ${pts.map(p => `${p.x},${p.y}`).join(" L ")} L ${pts[pts.length - 1].x},${H - 12} L ${pts[0].x},${H - 12} Z`} fill="url(#sg)" />
-          <polyline points={pts.map(p => `${p.x},${p.y}`).join(" ")} fill="none" stroke="#22c55e" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-          {pts.map((p, i) => (
-            <g key={i}>
-              <circle cx={p.x} cy={p.y} r="3.5" fill="#22c55e" stroke="#fff" strokeWidth="1.5" />
-              <text x={p.x} y={H - 1} textAnchor="middle" fontSize="9" fill="#94a3b8" fontFamily="DM Sans, sans-serif">{SAVINGS_TREND[i].month}</text>
-            </g>
-          ))}
-        </svg>
-      </div>
+```jsx
+┌─────────────────────────────────────────────────────────────────┐
+│  OPTIMIZATION MODE: ○ Manual  ● Karpenter                       │
+│                                                                  │
+│  ℹ️ Karpenter is managing optimization automatically            │
+└─────────────────────────────────────────────────────────────────┘
 
-      {/* Per-schedule breakdown */}
-      <div style={{ padding: "0 16px 14px" }}>
-        <div style={{ fontSize: 11, fontWeight: 600, color: "#64748b", marginBottom: 8 }}>Breakdown by Schedule</div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
-          {active.length === 0 && <div style={{ fontSize: 12, color: "#94a3b8", textAlign: "center", padding: 8 }}>No active schedules</div>}
-          {active.map(s => {
-            const st = getStrategyMeta(s.strategy);
-            const pct = totalSaved > 0 ? Math.round((s.monthlySavings / totalSaved) * 100) : 0;
-            return (
-              <div key={s.id}>
-                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                    <div style={{ width: 8, height: 8, borderRadius: 2, background: st.color, flexShrink: 0 }} />
-                    <span style={{ fontSize: 12, color: "#374151", fontWeight: 500 }}>{s.name}</span>
-                  </div>
-                  <span style={{ fontSize: 12, fontWeight: 700, color: "#0f172a" }}>
-                    ${s.monthlySavings.toLocaleString()}<span style={{ fontWeight: 400, color: "#94a3b8", fontSize: 11 }}>/mo ({pct}%)</span>
-                  </span>
-                </div>
-                <div style={{ height: 4, background: "#f1f5f9", borderRadius: 99 }}>
-                  <div style={{ height: "100%", borderRadius: 99, background: st.color, width: `${pct}%`, transition: "width 0.6s ease" }} />
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </div>
+[Shows Karpenter dashboard below]
+```
 
-      {/* Footer actions */}
-      <div style={{ padding: "11px 14px", borderTop: "1px solid #f1f5f9", display: "flex", gap: 6 }}>
-        {[{ icon: <DownloadIcon />, label: "Export" }, { icon: <MailIcon />, label: "Email Team" }, { icon: <BarChartIcon />, label: "Detailed View" }].map(a => (
-          <button key={a.label} style={{ ...S.btnGhost, flex: 1, justifyContent: "center", fontSize: 11, padding: "5px 4px" }}>{a.icon}{a.label}</button>
-        ))}
-      </div>
-    </div>
-  );
-}
+---
 
-// ── Strategy Selector ─────────────────────────────────────────────────────────
-function StrategySelector({ value, onChange }) {
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-      {STRATEGIES.map(st => (
-        <button key={st.id} onClick={() => onChange(st.id)} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 11px", borderRadius: 8, border: "1px solid", borderColor: value === st.id ? st.color : "#e2e8f0", background: value === st.id ? st.bg : "#fafafa", cursor: "pointer", textAlign: "left", width: "100%" }}>
-          <div style={{ width: 28, height: 28, borderRadius: 7, display: "flex", alignItems: "center", justifyContent: "center", background: st.bg, color: st.color, flexShrink: 0, border: `1px solid ${st.border}` }}>
-            <StrategyIcon type={st.icon} size={13} />
-          </div>
-          <div style={{ flex: 1 }}>
-            <div style={{ display: "flex", justifyContent: "space-between" }}>
-              <span style={{ fontSize: 13, fontWeight: 600, color: "#0f172a" }}>{st.label}</span>
-              <span style={{ fontSize: 11, fontWeight: 700, color: st.color }}>{st.savings}</span>
-            </div>
-            <div style={{ fontSize: 11, color: "#64748b", marginTop: 1 }}>Wake: {st.wakeTime} · Risk: {st.risk}</div>
-          </div>
-          {value === st.id && <CheckIcon size={12} />}
-        </button>
-      ))}
-    </div>
-  );
-}
+## 🎚️ **Pause/Resume Toggle**
 
-// ── Schedule Form ─────────────────────────────────────────────────────────────
-function ScheduleForm({ initial, onSave, onCancel }) {
-  const blank = { name: "", strategy: "NAMESPACE_SLEEP", clusterIds: [], days: ["Mon", "Tue", "Wed", "Thu", "Fri"], sleepAt: "20:00", wakeAt: "08:00", timezone: "UTC", preWarm: 15, monthlySavings: 1200 };
-  const [form, setForm] = useState(initial || blank);
-  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
-  const toggleDay = (d) => set("days", form.days.includes(d) ? form.days.filter(x => x !== d) : [...form.days, d]);
-  const toggleCluster = (id) => set("clusterIds", form.clusterIds.includes(id) ? form.clusterIds.filter(x => x !== id) : [...form.clusterIds, id]);
-  const valid = form.name.trim() && form.clusterIds.length > 0 && form.days.length > 0;
-  const isOvernight = form.sleepAt > form.wakeAt;
+Click **[⏸️ Pause]**:
 
-  return (
-    <div style={{ ...S.card, marginBottom: 14 }}>
-      <div style={{ ...S.cardHeader, background: "#fafafa" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
-          <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#6366f1" }} />
-          <span style={S.cardTitle}>{initial ? "Edit Schedule" : "New Schedule"}</span>
-        </div>
-        <button onClick={onCancel} style={{ ...S.btnGhost, padding: "3px 9px", fontSize: 11 }}>Cancel</button>
-      </div>
-      <div style={S.cardBody}>
-        {/* Name */}
-        <div style={{ marginBottom: 12 }}>
-          <label style={S.label}>Schedule Name <span style={{ color: "#ef4444" }}>*</span></label>
-          <input style={S.input} placeholder="e.g. Business Hours Off" value={form.name} onChange={e => set("name", e.target.value)} />
-        </div>
+```jsx
+┌─────────────────────────────────────────────────────────────────┐
+│  PAUSE KARPENTER?                                   [Cancel] [✕]│
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  This will temporarily stop automatic optimization on:          │
+│  • prod-web (12 nodes)                                          │
+│  • prod-api (18 nodes)                                          │
+│                                                                  │
+│  What happens:                                                   │
+│  ✅ Existing nodes remain as-is (no changes)                   │
+│  ✅ New pods will still be scheduled                            │
+│  ❌ No automatic optimization or consolidation                  │
+│  ❌ No cost savings until resumed                               │
+│                                                                  │
+│  You can resume anytime.                                        │
+│                                                                  │
+│  [Cancel]                                      [⏸️ Pause Now]   │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
 
-        {/* Strategy */}
-        <div style={{ marginBottom: 13 }}>
-          <label style={S.label}>Hibernation Strategy</label>
-          <StrategySelector value={form.strategy} onChange={v => set("strategy", v)} />
-        </div>
+After pausing:
 
-        {/* Target Clusters — multi-select list with live status */}
-        <div style={{ marginBottom: 13 }}>
-          <label style={S.label}>
-            Target Clusters <span style={{ color: "#ef4444" }}>*</span>
-            {form.clusterIds.length > 0 && <span style={{ fontWeight: 400, color: "#6366f1", marginLeft: 6 }}>{form.clusterIds.length} selected</span>}
-          </label>
-          <div style={{ border: "1px solid #e2e8f0", borderRadius: 10, overflow: "hidden" }}>
-            {CLUSTERS.map((c, i) => {
-              const selected = form.clusterIds.includes(c.id);
-              const sleeping = c.status === "sleeping";
-              return (
-                <label key={c.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", cursor: "pointer", borderBottom: i < CLUSTERS.length - 1 ? "1px solid #f1f5f9" : "none", background: selected ? "rgba(99,102,241,0.04)" : "#fff" }}>
-                  <input type="checkbox" checked={selected} onChange={() => toggleCluster(c.id)} style={{ accentColor: "#6366f1", cursor: "pointer", width: 14, height: 14, flexShrink: 0 }} />
-                  <div style={{ flex: 1 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
-                      <span style={{ fontSize: 13, fontWeight: 600, color: "#0f172a" }}>{c.name}</span>
-                      <span style={{ ...S.badge(sleeping ? "#6366f1" : "#16a34a", sleeping ? "#eef2ff" : "#f0fdf4"), fontSize: 10, padding: "1px 6px" }}>
-                        {sleeping ? "😴 Sleeping" : "● Active"}
-                      </span>
-                    </div>
-                    <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 1 }}>{c.region}</div>
-                  </div>
-                  {selected && <div style={{ color: "#6366f1", flexShrink: 0 }}><CheckIcon size={13} /></div>}
-                </label>
-              );
-            })}
-          </div>
-          {form.clusterIds.length === 0 && <div style={{ fontSize: 11, color: "#ef4444", marginTop: 4 }}>Select at least one cluster</div>}
-        </div>
+```jsx
+┌─────────────────────────────────────────────────────────────────┐
+│  🚀 KARPENTER AUTO-SIZING       ⏸️ PAUSED    [⚙️] [▶️ Resume]  │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  ⚠️ Automatic optimization is paused                            │
+│  Paused: 2 hours ago  •  2 clusters affected                    │
+│                                                                  │
+│  While paused:                                                   │
+│  • Nodes remain at current configuration                        │
+│  • No automatic changes will occur                              │
+│  • You're missing ~$85/day in potential savings                │
+│                                                                  │
+│  [View Pre-Pause Stats]                        [▶️ Resume Now]  │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
 
-        {/* Quick templates */}
-        <div style={{ marginBottom: 13 }}>
-          <label style={S.label}>Quick Templates</label>
-          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-            {QUICK_TEMPLATES.map(t => (
-              <button key={t.label} onClick={() => setForm(f => ({ ...f, ...t }))} style={{ ...S.btnGhost, fontSize: 11, padding: "4px 10px" }}>{t.label}</button>
-            ))}
-          </div>
-        </div>
+---
 
-        {/* Days */}
-        <div style={{ marginBottom: 13 }}>
-          <label style={S.label}>Active Days <span style={{ color: "#ef4444" }}>*</span></label>
-          <div style={{ display: "flex", gap: 5 }}>
-            {DAYS.map(d => <button key={d} onClick={() => toggleDay(d)} style={S.dayBtn(form.days.includes(d))}>{d.slice(0, 2)}</button>)}
-          </div>
-        </div>
+## 🎯 **Turn Off Completely**
 
-        {/* Times */}
-        <div style={S.formRow}>
-          <div><label style={S.label}>Sleep At</label><input type="time" style={S.input} value={form.sleepAt} onChange={e => set("sleepAt", e.target.value)} /></div>
-          <div><label style={S.label}>Wake At</label><input type="time" style={S.input} value={form.wakeAt} onChange={e => set("wakeAt", e.target.value)} /></div>
-        </div>
+Click **[⚙️ Settings]** → **[Turn Off Karpenter]** button at bottom:
 
-        {/* Timezone + Prewarm */}
-        <div style={S.formRow}>
-          <div>
-            <label style={S.label}>Timezone</label>
-            <div style={{ position: "relative" }}>
-              <select style={S.select} value={form.timezone} onChange={e => set("timezone", e.target.value)}>
-                {TIMEZONES.map(tz => <option key={tz} value={tz}>{tz}</option>)}
-              </select>
-              <div style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", pointerEvents: "none", color: "#94a3b8" }}><ChevronDownIcon /></div>
-            </div>
-          </div>
-          <div><label style={S.label}>Pre-warm (minutes)</label><input type="number" min={0} max={60} style={S.input} value={form.preWarm} onChange={e => set("preWarm", parseInt(e.target.value) || 0)} /></div>
-        </div>
+```jsx
+┌─────────────────────────────────────────────────────────────────┐
+│  DISABLE KARPENTER?                                 [Cancel] [✕]│
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  ⚠️ This will completely disable Karpenter on all clusters      │
+│                                                                  │
+│  What happens:                                                   │
+│  1. Stop all automatic optimization                             │
+│  2. Keep current nodes (no changes)                             │
+│  3. Remove Karpenter controller from clusters                   │
+│  4. Revert to manual node management                            │
+│                                                                  │
+│  You can re-enable later, but will need to reconfigure.        │
+│                                                                  │
+│  Are you sure?                                                   │
+│                                                                  │
+│  [Cancel]                                [🔴 Yes, Turn Off]     │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
 
-        {isOvernight && (
-          <div style={{ padding: "8px 11px", borderRadius: 7, marginBottom: 12, background: "#fffbeb", border: "1px solid #fde68a", fontSize: 12, color: "#92400e", display: "flex", alignItems: "center", gap: 6 }}>
-            <AlertCircleIcon size={12} /> Overnight schedule — clusters sleep past midnight until {form.wakeAt} next day.
-          </div>
-        )}
+---
 
-        <button onClick={() => valid && onSave({ ...form, id: initial?.id || `s${Date.now()}`, isActive: true })} disabled={!valid} style={{ ...S.btnPrimary, width: "100%", justifyContent: "center", opacity: valid ? 1 : 0.4, cursor: valid ? "pointer" : "not-allowed" }}>
-          <CheckIcon size={13} /> {initial ? "Update Schedule" : "Create Schedule"}
-        </button>
-      </div>
-    </div>
-  );
-}
+## 📱 **Mobile View**
 
-// ── Schedule Item ─────────────────────────────────────────────────────────────
-function ScheduleItem({ schedule, onToggle, onEdit, onDelete }) {
-  const st = getStrategyMeta(schedule.strategy);
-  return (
-    <div style={{ display: "flex", alignItems: "flex-start", gap: 11, padding: "12px", borderRadius: 10, marginBottom: 7, border: "1px solid #e2e8f0", borderLeft: `3px solid ${schedule.isActive ? st.color : "#cbd5e1"}`, background: "#fff" }}>
-      <div style={{ flexShrink: 0, marginTop: 2, color: st.color }}><StrategyIcon type={st.icon} size={13} /></div>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 3 }}>
-          <span style={{ fontSize: 13, fontWeight: 700, color: "#0f172a" }}>{schedule.name}</span>
-          <span style={S.badge(schedule.isActive ? "#16a34a" : "#64748b", schedule.isActive ? "#f0fdf4" : "#f1f5f9")}>{schedule.isActive ? "● Active" : "Paused"}</span>
-        </div>
-        <div style={{ fontSize: 11, color: "#64748b", display: "flex", flexWrap: "wrap", gap: "2px 10px" }}>
-          <span style={{ display: "flex", alignItems: "center", gap: 3 }}><ServerIcon size={10} />{getClusterNames(schedule.clusterIds)}</span>
-          <span style={{ display: "flex", alignItems: "center", gap: 3 }}><ClockIcon size={10} />{schedule.days.join(", ")} · {schedule.sleepAt}–{schedule.wakeAt}</span>
-        </div>
-        <div style={{ marginTop: 5, display: "flex", alignItems: "center", gap: 5 }}>
-          <div style={{ fontSize: 10, fontWeight: 600, padding: "2px 6px", borderRadius: 4, background: st.bg, color: st.color, border: `1px solid ${st.border}` }}>{st.label}</div>
-          <span style={{ fontSize: 10, color: "#94a3b8" }}>·</span>
-          <span style={{ fontSize: 11, color: "#22c55e", fontWeight: 600 }}>${schedule.monthlySavings?.toLocaleString() || 0}/mo</span>
-          {schedule.preWarm > 0 && <><span style={{ fontSize: 10, color: "#94a3b8" }}>·</span><span style={{ fontSize: 10, color: "#f59e0b" }}>⏱ {schedule.preWarm}m</span></>}
-        </div>
-      </div>
-      <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
-        <button onClick={() => onToggle(schedule.id)} style={{ ...S.btnIcon, background: schedule.isActive ? "#fffbeb" : "#f0fdf4", color: schedule.isActive ? "#d97706" : "#16a34a", border: `1px solid ${schedule.isActive ? "#fde68a" : "#bbf7d0"}` }}>{schedule.isActive ? <PauseIcon size={11} /> : <PlayIcon size={11} />}</button>
-        <button onClick={() => onEdit(schedule)} style={{ ...S.btnIcon, background: "#f8fafc", color: "#64748b", border: "1px solid #e2e8f0" }}><EditIcon size={11} /></button>
-        <button onClick={() => onDelete(schedule.id)} style={{ ...S.btnIcon, background: "#fef2f2", color: "#ef4444", border: "1px solid #fecaca" }}><TrashIcon size={11} /></button>
-      </div>
-    </div>
-  );
-}
+On mobile, everything collapses:
 
-// ── Emergency Controls ────────────────────────────────────────────────────────
-function EmergencyControls() {
-  const [sel, setSel] = useState({});
-  const [hrs, setHrs] = useState(4);
-  const controls = [
-    { key: "shutdown", label: "SHUTDOWN", sub: "Immediate hibernate", icon: <AlertCircleIcon size={12} />, color: "#ef4444", btnLabel: "Shutdown Now", btnBg: "#ef4444" },
-    { key: "temp", label: "TEMPORARY", sub: "Duration-based sleep", icon: <ClockIcon size={12} />, color: "#f59e0b", btnLabel: "Hibernate", btnBg: "#f59e0b", extra: true },
-    { key: "wake", label: "WAKE", sub: "Immediate wake", icon: <SunIcon size={12} />, color: "#22c55e", btnLabel: "Wake Now", btnBg: "#22c55e" },
-  ];
-  return (
-    <div style={S.card}>
-      <div style={S.cardHeader}>
-        <div style={{ display: "flex", alignItems: "center", gap: 7 }}><AlertCircleIcon size={12} /><span style={S.cardTitle}>Emergency Controls</span></div>
-        <span style={S.badge("#f59e0b", "#fffbeb")}>Immediate</span>
-      </div>
-      <div style={{ padding: "10px 12px", display: "flex", flexDirection: "column", gap: 8 }}>
-        {controls.map(c => (
-          <div key={c.key} style={{ padding: "11px 12px", borderRadius: 9, border: `1px solid ${c.color}28`, background: `${c.color}07` }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 7 }}>
-              <div style={{ color: c.color }}>{c.icon}</div>
-              <div>
-                <div style={{ fontSize: 10, fontWeight: 700, color: c.color, letterSpacing: "0.05em" }}>{c.label}</div>
-                <div style={{ fontSize: 10, color: "#64748b" }}>{c.sub}</div>
-              </div>
-            </div>
-            {c.extra && (
-              <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 7 }}>
-                <input type="number" min={1} max={24} value={hrs} onChange={e => setHrs(e.target.value)} style={{ ...S.input, width: 52, textAlign: "center", padding: "5px 8px" }} />
-                <span style={{ fontSize: 12, color: "#64748b" }}>hrs</span>
-              </div>
-            )}
-            <select value={sel[c.key] || ""} onChange={e => setSel(p => ({ ...p, [c.key]: e.target.value }))} style={{ ...S.select, fontSize: 12, marginBottom: 7, background: "#fff" }}>
-              <option value="">Select Clusters ▾</option>
-              <option value="all">All Clusters</option>
-              {CLUSTERS.map(cl => <option key={cl.id} value={cl.id}>{cl.name}</option>)}
-            </select>
-            <button style={{ background: c.btnBg, color: "#fff", border: "none", width: "100%", padding: "7px", borderRadius: 7, fontSize: 11, fontWeight: 700, cursor: "pointer", letterSpacing: "0.04em" }}>{c.btnLabel.toUpperCase()}</button>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
+```jsx
+┌────────────────────────────────────┐
+│ RIGHT-SIZING              [☰ Menu] │
+├────────────────────────────────────┤
+│ MODE:                               │
+│ ○ Manual  ● Karpenter              │
+├────────────────────────────────────┤
+│ 🚀 KARPENTER                       │
+│ 🟢 ON                              │
+│                                     │
+│ 2 clusters  •  35 nodes            │
+│ $1,240 saved this week             │
+│                                     │
+│ [Settings]  [Pause]                │
+├────────────────────────────────────┤
+│ RECENT ACTIONS:                    │
+│ • 3m: Consolidated 3 nodes         │
+│ • 12m: Switched to Graviton        │
+│ • 18m: Spot replacement            │
+│                                     │
+│ [View All →]                       │
+└────────────────────────────────────┘
+```
 
-// ── Audit History ─────────────────────────────────────────────────────────────
-function AuditHistory() {
-  const aColors = { SLEEP: ["#6366f1", "#eef2ff"], WAKE: ["#22c55e", "#f0fdf4"], "PRE-WARM": ["#f59e0b", "#fffbeb"] };
-  const sDot = { success: "#22c55e", warning: "#f59e0b", error: "#ef4444" };
-  return (
-    <div style={S.card}>
-      <div style={S.cardHeader}>
-        <span style={S.cardTitle}>Execution History</span>
-        <button style={{ ...S.btnGhost, fontSize: 11, padding: "3px 8px" }}>View All</button>
-      </div>
-      {EXECUTION_HISTORY.map((h, i) => {
-        const [ac, abg] = aColors[h.action] || ["#64748b", "#f1f5f9"];
-        return (
-          <div key={h.id} style={{ padding: "10px 16px", borderBottom: i < EXECUTION_HISTORY.length - 1 ? "1px solid #f1f5f9" : "none", display: "flex", gap: 9 }}>
-            <div style={{ width: 7, height: 7, borderRadius: "50%", background: sDot[h.status], marginTop: 5, flexShrink: 0, boxShadow: `0 0 0 3px ${sDot[h.status]}22` }} />
-            <div style={{ flex: 1 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 2 }}>
-                <span style={S.badge(ac, abg)}>{h.action}</span>
-                <span style={{ fontSize: 12, fontWeight: 600, color: "#0f172a" }}>{h.cluster}</span>
-                <span style={{ fontSize: 11, color: "#94a3b8", marginLeft: "auto" }}>{h.time}</span>
-              </div>
-              <div style={{ fontSize: 11, color: "#64748b" }}>{h.detail}</div>
-              <div style={{ fontSize: 10, color: "#94a3b8", marginTop: 2 }}>{h.duration} · {h.strategy}</div>
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
+---
 
-// ── Strategy Reference ────────────────────────────────────────────────────────
-function StrategyReference() {
-  return (
-    <div style={S.card}>
-      <div style={S.cardHeader}><span style={S.cardTitle}>Strategy Reference</span></div>
-      <div style={{ padding: "10px 12px", display: "flex", flexDirection: "column", gap: 6 }}>
-        {STRATEGIES.map(st => (
-          <div key={st.id} style={{ padding: "9px 11px", borderRadius: 8, border: `1px solid ${st.border}`, background: st.bg }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 3 }}>
-              <div style={{ color: st.color }}><StrategyIcon type={st.icon} size={12} /></div>
-              <span style={{ fontSize: 12, fontWeight: 700, color: st.color }}>{st.label}</span>
-              <span style={{ marginLeft: "auto", fontSize: 11, fontWeight: 700, color: st.color }}>{st.savings}</span>
-            </div>
-            <div style={{ fontSize: 11, color: "#64748b", marginBottom: 3 }}>{st.desc}</div>
-            <div style={{ display: "flex", gap: 10 }}>
-              <span style={{ fontSize: 10, color: "#94a3b8" }}>⏱ {st.wakeTime}</span>
-              <span style={{ fontSize: 10, color: "#94a3b8" }}>Risk: {st.risk}</span>
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
+## 🎨 **Visual States Summary**
 
-// ── Main Component ────────────────────────────────────────────────────────────
-export default function HibernationManagement() {
-  const [schedules, setSchedules] = useState(INITIAL_SCHEDULES);
-  const [showForm, setShowForm] = useState(false);
-  const [editingSchedule, setEditingSchedule] = useState(null);
-  const [toast, setToast] = useState(null);
-  const [conflictData, setConflictData] = useState(null);
-  const [showProgress, setShowProgress] = useState(true);
+| State | Visual | Actions Available |
+|-------|--------|-------------------|
+| **OFF (First Time)** | ⚪ OFF [Enable →] | Enable (shows inline config) |
+| **Enabling** | Inline config form | Select clusters, strategy, Turn On |
+| **ON (Active)** | 🟢 ON [⚙️ Settings] [⏸️ Pause] | Settings, Pause, View dashboard |
+| **PAUSED** | ⏸️ PAUSED [▶️ Resume] | Resume, Settings |
+| **OFF (Disabled)** | ⚪ OFF [Enable →] | Re-enable (remembers previous config) |
 
-  const stats = calcStats(schedules);
+---
 
-  const showToast = (msg, type = "success") => {
-    setToast({ msg, type });
-    setTimeout(() => setToast(null), 2800);
-  };
+## 🔧 **Key Features**
 
-  const handleSave = (schedule) => {
-    const conflicts = detectConflicts(schedule, schedules);
-    if (conflicts.length > 0) { setConflictData({ conflicts, pendingSchedule: schedule }); return; }
-    commitSave(schedule);
-  };
+✅ **No wizard** - inline config appears when clicking "Enable"  
+✅ **Quick toggle** - ON/OFF/Pause with single click  
+✅ **Mode switch** - Radio button to switch Manual ↔ Karpenter view  
+✅ **Per-cluster control** - Enable/disable per cluster in Settings  
+✅ **Smart defaults** - "Balanced" strategy pre-selected  
+✅ **Persistent config** - Remembers settings when re-enabling  
+✅ **Clear status** - Always shows what's happening  
+✅ **Mobile friendly** - Collapses nicely on small screens  
 
-  const commitSave = (schedule) => {
-    if (editingSchedule) {
-      setSchedules(s => s.map(x => x.id === schedule.id ? schedule : x));
-      showToast("Schedule updated");
-    } else {
-      setSchedules(s => [...s, schedule]);
-      showToast("Schedule created");
-    }
-    setShowForm(false);
-    setEditingSchedule(null);
-    setConflictData(null);
-  };
+---
 
-  const handleConflictResolution = (resolution) => {
-    const { pendingSchedule, conflicts } = conflictData;
-    if (resolution === "deactivate") {
-      setSchedules(s => s.map(x => x.id === conflicts[0].schedule.id ? { ...x, isActive: false } : x));
-    }
-    commitSave(pendingSchedule);
-  };
+## 🎯 **User Flow Examples**
 
-  const handleToggle = (id) => {
-    const s = schedules.find(x => x.id === id);
-    setSchedules(prev => prev.map(x => x.id === id ? { ...x, isActive: !x.isActive } : x));
-    showToast(`Schedule ${s?.isActive ? "paused" : "resumed"}`);
-  };
+### **First Time Enable**
+1. Click **[Enable →]**
+2. Select 2 clusters → Auto-calculates savings
+3. Keep "Balanced" strategy (pre-selected)
+4. Click **[Turn On Karpenter]**
+5. Done ✅ (30 seconds total)
 
-  const handleEdit = (schedule) => { setEditingSchedule(schedule); setShowForm(true); };
-  const handleDelete = (id) => { setSchedules(s => s.filter(x => x.id !== id)); showToast("Schedule deleted", "warning"); };
-  const handleNew = () => { setEditingSchedule(null); setShowForm(true); };
-  const handleCancel = () => { setShowForm(false); setEditingSchedule(null); };
+### **Pause During Incident**
+1. Click **[⏸️ Pause]**
+2. Confirm
+3. Done ✅ (5 seconds)
 
-  return (
-    <div style={S.page}>
-      <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&display=swap');
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        input[type=time]::-webkit-calendar-picker-indicator { opacity: 0.4; cursor: pointer; }
-        button:hover { opacity: 0.86; }
-        @keyframes slideIn { from { transform: translateY(-10px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
-        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
-        @keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
-      `}</style>
+### **Resume After Testing**
+1. Click **[▶️ Resume]**
+2. Done ✅ (1 click)
 
-      {/* Conflict Modal */}
-      {conflictData && (
-        <ConflictModal
-          conflicts={conflictData.conflicts}
-          newSchedule={conflictData.pendingSchedule}
-          onResolve={handleConflictResolution}
-          onGoBack={() => setConflictData(null)}
-        />
-      )}
+### **Change Strategy**
+1. Click **[⚙️ Settings]**
+2. Change dropdown: Balanced → Cost-First
+3. Click **[Save]**
+4. Done ✅ (10 seconds)
 
-      {/* Toast */}
-      {toast && (
-        <div style={{ position: "fixed", top: 20, right: 20, zIndex: 300, padding: "10px 16px", borderRadius: 10, background: toast.type === "warning" ? "#fffbeb" : toast.type === "error" ? "#fef2f2" : "#f0fdf4", border: `1px solid ${toast.type === "warning" ? "#fde68a" : toast.type === "error" ? "#fecaca" : "#bbf7d0"}`, color: toast.type === "warning" ? "#92400e" : toast.type === "error" ? "#991b1b" : "#166534", fontSize: 13, fontWeight: 600, boxShadow: "0 4px 20px rgba(0,0,0,0.1)", animation: "slideIn 0.2s ease", display: "flex", alignItems: "center", gap: 8 }}>
-          {toast.type === "success" ? <CheckIcon size={14} /> : <AlertCircleIcon size={14} />}
-          {toast.msg}
-        </div>
-      )}
+### **Turn Off Completely**
+1. Click **[⚙️ Settings]**
+2. Scroll to bottom → **[Turn Off Karpenter]**
+3. Confirm
+4. Done ✅ (15 seconds)
 
-      {/* Top Bar */}
-      <div style={S.topbar}>
-        <div style={S.topbarLeft}>
-          <div style={{ width: 32, height: 32, borderRadius: 8, background: "linear-gradient(135deg, #6366f1, #8b5cf6)", display: "flex", alignItems: "center", justifyContent: "center", color: "#fff" }}>
-            <MoonIcon size={16} />
-          </div>
-          <div>
-            <div style={S.pageTitle}>Hibernation Management</div>
-            <div style={S.pageSubtitle}>Automated cluster sleep schedules and cost optimization</div>
-          </div>
-        </div>
-        <div style={S.topbarRight}>
-          <button style={S.btnDanger}><SunIcon size={14} /> Emergency Wake All</button>
-          <button style={S.btnPrimary} onClick={handleNew}><PlusIcon size={14} /> New Schedule</button>
-        </div>
-      </div>
+This is the **fastest, cleanest** way to manage Karpenter! 🚀
+┌─────────────────────────────────────────────────────────────────┐
+│  KARPENTER SETTINGS                           [Apply] [Close ✕] │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  TABS: [Clusters] [Strategy] [Instances] [Advanced] [Alerts]   │
+│                                                                  │
+│  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  │
+│                                                                  │
+│  CLUSTERS TAB                                                    │
+│                                                                  │
+│  ☑️ prod-web (us-east-1)              [Edit] [Pause] [Remove]  │
+│  ├─ Status: 🟢 Active                                           │
+│  ├─ Strategy: Balanced                                          │
+│  ├─ Nodes: 12  •  Spot: 83%                                    │
+│  └─ Last activity: 3 min ago                                    │
+│                                                                  │
+│  ☑️ prod-api (us-east-1)              [Edit] [Pause] [Remove]  │
+│  ├─ Status: 🟢 Active                                           │
+│  ├─ Strategy: Balanced                                          │
+│  ├─ Nodes: 18  •  Spot: 78%                                    │
+│  └─ Last activity: 12 min ago                                   │
+│                                                                  │
+│  ☑️ staging-cluster (us-west-2)       [Edit] [Pause] [Remove]  │
+│  ├─ Status: 🟢 Active                                           │
+│  ├─ Strategy: Cost-First                                        │
+│  ├─ Nodes: 5  •  Spot: 100%                                    │
+│  └─ Last activity: 45 min ago                                   │
+│                                                                  │
+│  [+ Add Another Cluster]                                        │
+│                                                                  │
+│  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  │
+│                                                                  │
+│  QUICK ACTIONS:                                                  │
+│  [Pause All]  [Resume All]  [Export Config]  [View Logs]       │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
 
-      {/* Live Progress Banner */}
-      {showProgress && <LiveProgressBanner onDismiss={() => setShowProgress(false)} />}
-
-      {/* Content */}
-      <div style={S.content}>
-        {/* KPI Strip */}
-        <div style={S.kpiGrid}>
-          <KPICard label="Saved This Month" value={`$${stats.monthlySaved.toLocaleString()}`} sub="vs. always-on baseline" color="#16a34a" accent="#22c55e" />
-          <KPICard label="Sleep Hours / Week" value={`${stats.sleepHours}h`} sub="of 168h total" color="#6366f1" accent="#6366f1" />
-          <KPICard label="Est. Savings" value={`${stats.savings}%`} sub="per week vs always-on" color={stats.savings > 30 ? "#22c55e" : "#f59e0b"} accent={stats.savings > 30 ? "#22c55e" : "#f59e0b"} />
-          <KPICard label="Schedules" value={stats.activeCount} sub={`${stats.pausedCount} paused`} color="#0f172a" accent="#e2e8f0" />
-        </div>
-
-        {/* Three-column layout */}
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 340px", gap: 18, alignItems: "start" }}>
-
-          {/* Col 1: Form + Schedules */}
-          <div>
-            {showForm && <ScheduleForm initial={editingSchedule} onSave={handleSave} onCancel={handleCancel} />}
-            <div style={S.card}>
-              <div style={S.cardHeader}>
-                <span style={S.cardTitle}>Active Schedules ({schedules.length})</span>
-                {!showForm && <button style={{ ...S.btnGhost, fontSize: 11 }} onClick={handleNew}><PlusIcon size={12} />New</button>}
-              </div>
-              {schedules.length === 0 ? (
-                <div style={{ padding: "40px 20px", textAlign: "center" }}>
-                  <div style={{ fontSize: 36, marginBottom: 10, opacity: 0.2 }}>🌙</div>
-                  <div style={{ fontSize: 14, fontWeight: 700, color: "#0f172a", marginBottom: 6 }}>No Hibernation Schedules</div>
-                  <div style={{ fontSize: 12, color: "#64748b", marginBottom: 16 }}>Create your first schedule to start saving costs</div>
-                  <button style={S.btnPrimary} onClick={handleNew}><PlusIcon size={13} />Create Schedule</button>
-                </div>
-              ) : (
-                <div style={{ padding: "10px" }}>
-                  {schedules.map(s => <ScheduleItem key={s.id} schedule={s} onToggle={handleToggle} onEdit={handleEdit} onDelete={handleDelete} />)}
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Col 2: Audit + Emergency */}
-          <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-            <AuditHistory />
-            <EmergencyControls />
-          </div>
-
-          {/* Col 3: Savings Report + Strategy */}
-          <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-            <SavingsReport schedules={schedules} />
-            <StrategyReference />
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
+┌─────────────────────────────────────────────────────────────────────────┐
+│  🚀 KARPENTER AUTO-OPTIMIZATION                🟢 ACTIVE    [Settings] │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                           │
+│  STATUS: Running on 3 clusters  •  Managing 35 nodes                    │
+│  Last activity: 3 minutes ago                                            │
+│                                                                           │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │  THIS WEEK'S PERFORMANCE                                        │   │
+│  ├────────────────┬────────────────┬────────────────┬──────────────┤   │
+│  │ AVG            │ OPTIMIZATIONS  │ COST SAVED     │ SPOT         │   │
+│  │ UTILIZATION    │ MADE           │ VS MANUAL      │ COVERAGE     │   │
+│  ├────────────────┼────────────────┼────────────────┼──────────────┤   │
+│  │      78%       │       38       │    $1,240      │     82%      │   │
+│  │  ↑ from 45%    │  auto-sizes    │   this week    │  of nodes    │   │
+│  └────────────────┴────────────────┴────────────────┴──────────────┘   │
+│                                                                           │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │  LIVE ACTIVITY FEED                          [See All Activity →]│   │
+│  │                                                                   │   │
+│  │  🔄 3 min ago  │  prod-web                                       │   │
+│  │  Consolidated 3 under-utilized nodes                            │   │
+│  │  • m5.xlarge (38% util) → Terminated                            │   │
+│  │  • m5.xlarge (35% util) → Terminated                            │   │
+│  │  • m5.xlarge (42% util) → Terminated                            │   │
+│  │  • Moved pods to c6i.large + m6i.large                          │   │
+│  │  💰 Saved: $142/day  •  ⚡ Utilization now: 72%                │   │
+│  │                                                                   │   │
+│  │  ────────────────────────────────────────────────────────────   │   │
+│  │                                                                   │   │
+│  │  🔄 12 min ago  │  prod-api                                      │   │
+│  │  Switched to Graviton instance                                  │   │
+│  │  • r5.2xlarge → r6g.2xlarge (ARM64)                            │   │
+│  │  💰 Saved: $68/day  •  Performance: Same or better             │   │
+│  │                                                                   │   │
+│  │  ────────────────────────────────────────────────────────────   │   │
+│  │                                                                   │   │
+│  │  ⚡ 18 min ago  │  prod-web                                      │   │
+│  │  Spot replacement (interruption)                                │   │
+│  │  • m5.large spot interrupted (AWS reclaiming)                   │   │
+│  │  • Drained pods gracefully                                       │   │
+│  │  • Replaced with c6i.large spot (different AZ)                 │   │
+│  │  ✅ Zero downtime  •  Pods rescheduled in 12 seconds           │   │
+│  │                                                                   │   │
+│  │  ────────────────────────────────────────────────────────────   │   │
+│  │                                                                   │   │
+│  │  💰 45 min ago  │  staging-cluster                               │   │
+│  │  Cost optimization switch                                        │   │
+│  │  • m5.xlarge (on-demand) → m6a.xlarge (spot)                   │   │
+│  │  💰 Saved: $95/day (AMD + spot discount)                       │   │
+│  │                                                                   │   │
+│  └─────────────────────────────────────────────────────────────────┘   │
+│                                                                           │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │  CLUSTER BREAKDOWN                        [View All Clusters →] │   │
+│  │                                                                   │   │
+│  │  🟢 prod-web (us-east-1)                                         │   │
+│  │  ├─ Strategy: Balanced  •  12 nodes  •  82% utilization        │   │
+│  │  ├─ Spot: 10 nodes (83%)  •  On-demand: 2 nodes (17%)          │   │
+│  │  ├─ Cost this week: $520 (was $720 before Karpenter)           │   │
+│  │  └─ 8 optimizations in last 24 hours                            │   │
+│  │                                                                   │   │
+│  │  🟢 prod-api (us-east-1)                                         │   │
+│  │  ├─ Strategy: Balanced  •  18 nodes  •  75% utilization        │   │
+│  │  ├─ Spot: 14 nodes (78%)  •  On-demand: 4 nodes (22%)          │   │
+│  │  ├─ Cost this week: $780 (was $1,100 before Karpenter)         │   │
+│  │  └─ 12 optimizations in last 24 hours                           │   │
+│  │                                                                   │   │
+│  │  🟢 staging-cluster (us-west-2)                                  │   │
+│  │  ├─ Strategy: Cost-First  •  5 nodes  •  88% utilization       │   │
+│  │  ├─ Spot: 5 nodes (100%)  •  On-demand: 0 nodes                │   │
+│  │  ├─ Cost this week: $195 (was $320 before Karpenter)           │   │
+│  │  └─ 6 optimizations in last 24 hours                            │   │
+│  └─────────────────────────────────────────────────────────────────┘   │
+│                                                                           │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │  COST TREND (Last 30 Days)                                       │   │
+│  │                                                                   │   │
+│  │  $10K ┤                                                          │   │
+│  │       │ ████████████████████                                     │   │
+│  │       │ █ Before Karpenter █                                     │   │
+│  │   $8K ┤ ████████████████████                                     │   │
+│  │       │ ████████████████████╲                                    │   │
+│  │   $6K ┤ ████████████████████ ╲    ▓▓▓▓▓▓▓▓▓▓▓                  │   │
+│  │       │                        ╲   ▓ Karpenter ▓                 │   │
+│  │   $4K ┤                         ╲  ▓▓▓▓▓▓▓▓▓▓▓                  │   │
+│  │       │                          ╲▓▓▓▓▓▓▓▓▓▓▓                   │   │
+│  │   $2K ┤                           ▓▓▓▓▓▓▓▓▓▓▓                   │   │
+│  │       │                                                           │   │
+│  │    $0 └───────────────────────────────────────────────────────  │   │
+│  │        Week 1   Week 2   Week 3   Week 4   Week 5   Week 6     │   │
+│  │                          ↑                                        │   │
+│  │                     Karpenter enabled                            │   │
+│  │                                                                   │   │
+│  │  💰 Total saved: $8,640  •  Average reduction: 32%              │   │
+│  └─────────────────────────────────────────────────────────────────┘   │
+│                                                                           │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │  INSTANCE TYPE DISTRIBUTION                                      │   │
+│  │                                                                   │   │
+│  │  Before Karpenter:                                               │   │
+│  │  ███████████████████████████░░░░░░░░░░░░                        │   │
+│  │  m5 (75%)  c5 (15%)  r5 (10%)                                   │   │
+│  │                                                                   │   │
+│  │  With Karpenter (Now):                                           │   │
+│  │  ████████████░░░░░░░░░░░░░░░░░░░░░░░░░░                        │   │
+│  │  m6i (35%)  c6i (28%)  m6a (18%)  r6g (12%)  Other (7%)        │   │
+│  │                                                                   │   │
+│  │  ✅ More diverse = better pricing + better availability          │   │
+│  └─────────────────────────────────────────────────────────────────┘   │
+│                                                                           │
+│  [⚙️ Manage Configuration] [⏸️ Pause Karpenter] [📊 Detailed Analytics] │
+│                                                                           │
+└─────────────────────────────────────────────────────────────────────────┘

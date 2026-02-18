@@ -1,7 +1,9 @@
 # All Files — Deep Scan Catalog
 
 > Auto-generated deep scan of every file in the project.
-> Last updated: 2026-02-18
+> Last updated: 2026-02-18 (20:30)
+>
+> **Recent Updates**: Hibernation components (30 files) and Right-Sizing components (12 files) updated with detailed descriptions. Added: `HibernationDashboardNew.jsx`, `ScheduleMatrix.jsx`, `StrategySelector.jsx`, `AuditHistory.jsx`, `EmergencyControls.jsx`, `NotificationSettings.jsx`, `KarpenterDashboard.jsx`, `KarpenterEnable.jsx`, `KarpenterSetup.jsx`, `KarpenterSettings.jsx`, `ManualRightSizing.jsx`, `RightSizingNew.jsx`. Backend: Enhanced descriptions for `hibernation_routes.py`, `hibernation_service.py`, `karpenter_routes.py`, `karpenter_service.py`.
 
 ---
 
@@ -110,7 +112,7 @@
 | `dashboard_routes.py` | Dashboard KPIs and summary data |
 | `governance_routes.py` | Governance rule management |
 | `health_routes.py` | Health check endpoint |
-| `hibernation_routes.py` | Hibernation schedule CRUD |
+| `hibernation_routes.py` | Hibernation schedule CRUD, emergency sleep/wake, execution status, savings history, notification settings |
 | `hygiene_policy_routes.py` | Hygiene policy management |
 | `hygiene_routes.py` | Resource hygiene scan and cleanup |
 | `installer_routes.py` | Agent installer (generates YAML) |
@@ -156,10 +158,10 @@
 | `auto_tag_service.py` | Auto-tagging engine |
 | `cluster_service.py` | Cluster management & discovery |
 | `governance_service.py` | Governance rule enforcement |
-| `hibernation_service.py` | Hibernation schedule management |
+| `hibernation_service.py` | Hibernation schedule management, multi-cluster support, emergency controls, savings calculation |
 | `hygiene_service.py` | Resource hygiene scanning (largest service — 128KB) |
 | `hygiene_service_additions.py` | Additional hygiene rules |
-| `karpenter_service.py` | Karpenter provisioner management |
+| `karpenter_service.py` | Karpenter deployment, configuration, status monitoring, cluster-level settings, activity tracking |
 | `lab_service.py` | Experiment lab logic |
 | `metrics_service.py` | Instance & cost metrics aggregation |
 | `ml_feature_service.py` | ML feature engineering |
@@ -676,43 +678,42 @@ Compiled JS bundles (build artifacts).
 | `PermissionGate.jsx` | Permission gate wrapper |
 | `ProtectedButton.jsx` | Permission-protected button |
 
-### `components/hibernation/` (33 files)
+### `components/hibernation/` (30 files)
 
 | File | Purpose |
 |------|---------|
-| `AdvancedConfiguration.jsx` | Advanced hibernation config |
-| `AuditHistory.jsx` | Hibernation audit history |
+| `AdvancedConfiguration.jsx` | Advanced hibernation configuration options |
+| `AuditHistory.jsx` | Compact execution history table with timestamps, actions, status |
 | `ClusterOverview.jsx` | Cluster overview for hibernation |
-| `ConflictDetectionModal.jsx` | Schedule conflict detection |
+| `ConflictDetectionModal.jsx` | Schedule conflict detection and resolution modal |
 | `CostAnalytics.jsx` | Cost analytics panel |
-| `CostAnalyticsDashboard.jsx` | Full cost analytics dashboard |
-| `EmergencyControls.jsx` | Emergency hibernation controls |
-| `ExecutionHistory.jsx` | Execution history log |
-| `HibernationDashboard.jsx` | Main hibernation dashboard |
-| `HibernationDashboardNew.jsx` | Redesigned hibernation dashboard |
-| `HibernationGrid.jsx` | Hibernation grid view |
-| `HibernationHeader.jsx` | Hibernation page header |
-| `HibernationSchedule.jsx` | Schedule management (v1) |
-| `HibernationScheduleV2.jsx` | Schedule management (v2) |
-| `HibernationScheduler.jsx` | Schedule creation wizard |
+| `CostAnalyticsDashboard.jsx` | Full cost analytics dashboard with savings breakdown |
+| `EmergencyControls.jsx` | Emergency sleep/wake controls with force override buttons |
+| `ExecutionHistory.jsx` | Detailed execution history log with filters |
+| `HibernationDashboard.jsx` | Main hibernation dashboard (wrapper component) |
+| `HibernationDashboardNew.jsx` | **Primary dashboard**: LiveProgressBanner, SavingsReport, ScheduleMatrix (168-hour grid), StrategySelector, AuditHistory, EmergencyControls |
+| `HibernationGrid.jsx` | Hibernation grid view (legacy/unused) |
+| `HibernationHeader.jsx` | Hibernation page header component |
+| `HibernationSchedule.jsx` | Legacy schedule management (v1) |
+| `HibernationScheduleV2.jsx` | **Active scheduler**: Multi-cluster schedules, strategy selector, timezone support, pre-warm config |
+| `HibernationScheduler.jsx` | Schedule creation wizard (alternative UI) |
 | `HibernationTypeCard.jsx` | Hibernation type selection card |
 | `HibernationWizard.jsx` | Full hibernation setup wizard |
 | `HistoryLog.jsx` | History log panel |
-| `MultiTimezone.jsx` | Multi-timezone selector |
-| `NotificationSettings.jsx` | Notification settings panel |
+| `MultiTimezone.jsx` | Multi-timezone selector component |
+| `NotificationSettings.jsx` | Notification settings: Email/Slack/Webhook, threshold alerts, failure notifications |
 | `ScheduleBuilder.jsx` | Schedule builder component |
 | `ScheduleCalendar.jsx` | Calendar-style schedule view |
-| `ScheduleMatrix.jsx` | Weekly schedule matrix |
+| `ScheduleMatrix.jsx` | **168-hour weekly grid** (7 days × 24 hours) with click-and-drag, presets (Weeknights/Weekends/Nights), Clear/Fill All |
 | `ScheduleModal.jsx` | Schedule creation modal |
-| `ScheduleTemplates.jsx` | Pre-built schedule templates |
-| `StatusBanner.jsx` | Hibernation status banner |
-| `StrategySelector.jsx` | Hibernation strategy selector |
+| `ScheduleTemplates.jsx` | Pre-built schedule templates (Business Hours, Nights Only, Weekends Off) |
+| `StatusBanner.jsx` | Live status banner with current hibernation state |
+| `StrategySelector.jsx` | Strategy selector cards (Namespace Sleep, Nuclear, Snapshot & Restore) with wake time, savings %, risk level |
 | `TimeBasedRules.jsx` | Time-based rule configuration |
-| `UnifiedScheduleGrid.jsx` | Unified schedule grid |
-| `ValidationPanel.jsx` | Schedule validation panel |
+| `UnifiedScheduleGrid.jsx` | Unified schedule grid component |
+| `ValidationPanel.jsx` | Schedule validation panel with conflict detection |
 | `index.js` | Hibernation component exports |
-| `INFO.md` | Hibernation documentation |
-| `README.md` | Hibernation feature README |
+| `README.md` | Hibernation feature documentation |
 
 ### `components/lab/` (1 file)
 
@@ -759,21 +760,22 @@ Compiled JS bundles (build artifacts).
 | `RIAnalysis.jsx` | RI analysis dashboard |
 | `RIHealthCard.jsx` | RI health card |
 
-### `components/right-sizing/` (11 files)
+### `components/right-sizing/` (12 files)
 
 | File | Purpose |
 |------|---------|
 | `BatchApplyModal.jsx` | Batch apply recommendations modal |
 | `ImpactSummary.jsx` | Impact summary panel |
 | `InstanceUsageDetailPanel.jsx` | Instance usage detail panel |
-| `KarpenterDashboard.jsx` | Karpenter management dashboard |
-| `KarpenterEnable.jsx` | Karpenter enable panel |
-| `KarpenterSettings.jsx` | Karpenter settings panel |
-| `KarpenterSetup.jsx` | Karpenter setup wizard |
-| `ManualRightSizing.jsx` | Manual right-sizing view |
-| `RecommendationAgeIndicator.jsx` | Recommendation age indicator |
-| `RightSizing.jsx` | Right-sizing dashboard |
-| `SavingsTracker.jsx` | Savings tracker panel |
+| `KarpenterDashboard.jsx` | Karpenter live monitoring dashboard with KPI strip, activity feed, cost trends |
+| `KarpenterEnable.jsx` | Simplified one-click Karpenter enablement with benefits grid and deploy button |
+| `KarpenterSettings.jsx` | 5-tab settings slide-over: Clusters, Strategy, Instances, Advanced, Alerts |
+| `KarpenterSetup.jsx` | 4-step setup wizard: Cluster selection, Strategy, Instance config, Review & Deploy |
+| `ManualRightSizing.jsx` | Manual right-sizing view with KPI cards, recommendations table, savings tracker |
+| `RecommendationAgeIndicator.jsx` | Recommendation age indicator badge (New/Pending/Stale) |
+| `RightSizing.jsx` | Right-sizing container with mode switcher (Manual/Karpenter) |
+| `RightSizingNew.jsx` | Enhanced dashboard with Karpenter integration and inline configuration |
+| `SavingsTracker.jsx` | Savings tracker area chart with monthly aggregation |
 
 ### `components/s3/` (2 files)
 
@@ -830,8 +832,8 @@ Compiled JS bundles (build artifacts).
 
 | File | Purpose |
 |------|---------|
-| `api.js` | Main API service (axios instance + all endpoints) |
-| `hibernationApi.js` | Hibernation-specific API service |
+| `api.js` | Main API service (axios instance + all endpoints), includes karpenterAPI object with 8 Karpenter endpoints |
+| `hibernationApi.js` | Hibernation-specific API service: schedules CRUD, emergency sleep/wake, execution status, savings history |
 | `INFO.md` | Services documentation |
 
 ---
