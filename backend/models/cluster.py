@@ -20,6 +20,10 @@ class ClusterType(enum.Enum):
     GKE = "GKE" # Provision for future
     AKS = "AKS" # Provision for future
 
+class KarpenterMode(enum.Enum):
+    DRY_RUN = "dry_run"     # Insights only — no EC2 changes
+    AUTO = "auto"            # Full autonomous management
+
 class Cluster(Base):
     __tablename__ = "clusters"
 
@@ -69,7 +73,10 @@ class Cluster(Base):
     mem_usage_pct = Column(Float, default=0.0)  # Memory usage percentage
 
     tags = Column(JSON, default={})
-    
+
+    # Karpenter operating mode: null = not installed, dry_run = insights only, auto = full management
+    karpenter_mode = Column(Enum(KarpenterMode), nullable=True, default=None)
+
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

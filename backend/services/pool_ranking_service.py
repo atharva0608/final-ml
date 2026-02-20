@@ -22,9 +22,10 @@ import numpy as np
 import json
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Tuple
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from sqlalchemy.orm import Session
 from redis import Redis
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from backend.services.ml_feature_service import MLFeatureService
 from backend.core.logger import logger
@@ -54,6 +55,7 @@ class InstancePool:
     ondemand_price: float
     spot_advisor_rank: int  # 0-5 (0=<5% interruption, 5=>20%)
     has_capacity: bool = True
+    capacity_uncertain: bool = False  # True when capacity check timed out — pool included but flagged
 
 
 @dataclass
@@ -286,13 +288,45 @@ class PoolRankingService:
         """
         Step 5: Validate real-time capacity using AWS API.
 
-        This would call AWS EC2 DescribeSpotPriceHistory or RunInstances (dry-run).
-        For now, assuming all pools have capacity.
+        Uses ThreadPoolExecutor for parallel capacity validation.
+        Pools that time out are included but flagged as capacity_uncertain.
         """
-        # TODO: Implement AWS API call to check capacity
-        # For now, mark all as having capacity
-        for pool in pools:
-            pool.has_capacity = True
+        def _check_single_capacity(pool: InstancePool, region: str) -> bool:
+            """
+            Check capacity for a single pool via RunInstances --dry-run.
+            Results are cached in Redis for 15 minutes.
+            """
+            cache_key = f"capacity:{pool.instance_type}:{pool.az}"
+            cached = self.redis.get(cache_key)
+            if cached is not None:
+                return cached == b"1" or cached == "1"
+            
+            # TODO: Replace with real AWS RunInstances --dry-run call 
+            # For now, assume capacity exists
+            has_capacity = True
+            
+            # Cache result for 15 minutes
+            self.redis.setex(cache_key, 900, "1" if has_capacity else "0")
+            return has_capacity
+
+        # Parallel capacity check with ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=20) as executor:
+            futures = {
+                executor.submit(_check_single_capacity, pool, region): pool 
+                for pool in pools
+            }
+            for future in as_completed(futures, timeout=30):
+                pool = futures[future]
+                try:
+                    pool.has_capacity = future.result()
+                except TimeoutError:
+                    pool.has_capacity = True  # Assume capacity on timeout, don't block ranking
+                    pool.capacity_uncertain = True
+                    logger.warning(f"Capacity check timed out for {pool.instance_type}/{pool.az}")
+                except Exception as e:
+                    pool.has_capacity = True  # Assume capacity on error
+                    pool.capacity_uncertain = True
+                    logger.warning(f"Capacity check failed for {pool.instance_type}/{pool.az}: {e}")
 
         return [pool for pool in pools if pool.has_capacity]
 
@@ -315,9 +349,12 @@ class PoolRankingService:
 
         return pools
 
-    def _step7_ml_scoring(self, pools: List[InstancePool]) -> List[ScoredPool]:
+    def _step7_ml_scoring(self, pools: List[InstancePool], region: str = "ap-south-1") -> List[ScoredPool]:
         """
         Step 7: ML Model Scoring using ONNX models.
+
+        Includes circuit breaker: if ONNX fails >5 times in 10 minutes,
+        switches to fallback scoring and sets degraded mode flag.
 
         For each pool:
         1. Engineer 45 features
@@ -326,8 +363,20 @@ class PoolRankingService:
         4. Check System B flags → apply penalty if risky
         5. Calculate final_score = (savings_pct × 100) - (cost × 0.1)
         """
+        # ── Circuit Breaker Check ──────────────────────────────────
+        ml_fail_count = int(self.redis.get("atharvaai:ml_fail_count") or 0)
+        if ml_fail_count > 5:
+            self.redis.set("atharvaai:ml_degraded", "true", ex=600)  # 10-minute flag
+            logger.error("ML circuit breaker OPEN — using fallback scoring (>5 failures in 10 min)")
+            return self._fallback_scoring(pools)
+
         if not self.classifier_session or not self.regressor_session:
             logger.error("ONNX models not loaded - using fallback scoring")
+            # Increment circuit breaker counter
+            pipe = self.redis.pipeline()
+            pipe.incr("atharvaai:ml_fail_count")
+            pipe.expire("atharvaai:ml_fail_count", 600)  # 10-minute window
+            pipe.execute()
             return self._fallback_scoring(pools)
 
         scored_pools = []
@@ -359,9 +408,10 @@ class PoolRankingService:
                 savings_pct = float(classifier_output)
                 cost_estimate = float(regressor_output)
 
-                # Check System B blacklist flag
+                # Check System B blacklist flag — namespaced by region
+                blacklist_key = f"risky_pools:{region}"
                 is_flagged = self.redis.sismember(
-                    "risky_pools",
+                    blacklist_key,
                     f"{pool.instance_type}:{pool.az}"
                 )
 
@@ -385,8 +435,16 @@ class PoolRankingService:
 
             except Exception as e:
                 logger.error(f"ML scoring failed for {pool.instance_type}/{pool.az}: {e}")
-                # Skip this pool or use fallback
+                # Increment circuit breaker counter on per-pool ML failure
+                pipe = self.redis.pipeline()
+                pipe.incr("atharvaai:ml_fail_count")
+                pipe.expire("atharvaai:ml_fail_count", 600)
+                pipe.execute()
                 continue
+
+        # Clear degraded flag on successful pipeline completion
+        if scored_pools:
+            self.redis.delete("atharvaai:ml_degraded")
 
         return scored_pools
 

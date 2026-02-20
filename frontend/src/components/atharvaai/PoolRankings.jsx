@@ -1,11 +1,14 @@
 import React, { useState, useEffect } from 'react';
-import { atharvaaiAPI } from '../../services/api';
+import { atharvaaiAPI, templateAPI } from '../../services/api';
 import './PoolRankings.css';
 
-const PoolRankings = ({ clusterId }) => {
+const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
     const [pools, setPools] = useState([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
+    const [selectedTemplate, setSelectedTemplate] = useState(null);
+    const [availableTemplates, setAvailableTemplates] = useState([]);
+    const [templateApplied, setTemplateApplied] = useState(null);
     const [template, setTemplate] = useState({
         architecture: ['amd64'],
         vcpu_min: 2,
@@ -19,6 +22,42 @@ const PoolRankings = ({ clusterId }) => {
     });
     const [blacklist, setBlacklist] = useState([]);
     const [autoRefresh, setAutoRefresh] = useState(true);
+
+    // Auto-load default template on mount (or use initialTemplateId from query params)
+    useEffect(() => {
+        const loadTemplates = async () => {
+            try {
+                const { data } = await templateAPI.list();
+                const templates = Array.isArray(data) ? data : (data?.templates || []);
+                setAvailableTemplates(templates);
+
+                // If initialTemplateId provided (from query param), use that
+                if (initialTemplateId) {
+                    const template = templates.find(t => t.id === initialTemplateId);
+                    if (template) {
+                        setSelectedTemplate(template);
+                        return;
+                    }
+                }
+
+                // Otherwise, load default template
+                try {
+                    const { data: defaultTemplate } = await templateAPI.getDefault();
+                    setSelectedTemplate(defaultTemplate);
+                } catch (err) {
+                    if (err.response?.status === 404) {
+                        console.log('No default template set, showing all pools');
+                    } else {
+                        console.error('Error loading default template:', err);
+                    }
+                }
+            } catch (err) {
+                console.error('Error loading templates:', err);
+            }
+        };
+
+        loadTemplates();
+    }, [initialTemplateId]);
 
     useEffect(() => {
         if (clusterId) {
@@ -35,14 +74,29 @@ const PoolRankings = ({ clusterId }) => {
         }, 30000);
 
         return () => clearInterval(interval);
-    }, [autoRefresh, template, clusterId]);
+    }, [autoRefresh, template, clusterId, selectedTemplate]);
 
     const fetchPoolRankings = async () => {
         if (!clusterId) return;
         try {
             setLoading(true);
-            const response = await atharvaaiAPI.getRankings(template, 'ap-south-1', 20, clusterId);
-            setPools(response.data);
+
+            // If a template is selected, use the template-based endpoint
+            if (selectedTemplate?.id) {
+                const response = await atharvaaiAPI.getRankingsForTemplate(
+                    selectedTemplate.id,
+                    'ap-south-1',
+                    20
+                );
+                setPools(response.data);
+                setTemplateApplied(response.data.template_applied || { id: selectedTemplate.id, name: selectedTemplate.name });
+            } else {
+                // Fall back to body-based template
+                const response = await atharvaaiAPI.getRankings(template, 'ap-south-1', 20, clusterId);
+                setPools(response.data);
+                setTemplateApplied(null);
+            }
+
             setError(null);
         } catch (err) {
             setError(err.response?.data?.detail || 'Failed to fetch pool rankings');
@@ -116,6 +170,51 @@ const PoolRankings = ({ clusterId }) => {
                         <span className="text-sm text-gray-700">Auto-refresh (30s)</span>
                     </label>
                 </div>
+            </div>
+
+            {/* Template Selector */}
+            <div className="mb-6 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+                <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-4">
+                        <label className="text-sm font-semibold text-gray-700">Filter by Template:</label>
+                        <select
+                            value={selectedTemplate?.id || ''}
+                            onChange={(e) => {
+                                const template = availableTemplates.find(t => t.id === e.target.value);
+                                setSelectedTemplate(template || null);
+                            }}
+                            className="px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        >
+                            <option value="">No template filter</option>
+                            {availableTemplates.map((t) => (
+                                <option key={t.id} value={t.id}>
+                                    {t.name} {t.is_default ? '(Default)' : ''}
+                                </option>
+                            ))}
+                        </select>
+                    </div>
+                    {templateApplied && (
+                        <div className="flex items-center gap-2">
+                            <span className="px-3 py-1 bg-green-100 text-green-800 rounded-full text-sm font-medium">
+                                Template Applied: {templateApplied.name}
+                            </span>
+                        </div>
+                    )}
+                </div>
+                {selectedTemplate && (
+                    <div className="mt-2 text-xs text-gray-600">
+                        <span className="font-semibold">Active Constraints:</span> {' '}
+                        {selectedTemplate.allowed_families?.length > 0 && (
+                            <span>Families: {selectedTemplate.allowed_families.join(', ')}</span>
+                        )}
+                        {selectedTemplate.vcpu_min && selectedTemplate.vcpu_max && (
+                            <span> | vCPU: {selectedTemplate.vcpu_min}-{selectedTemplate.vcpu_max}</span>
+                        )}
+                        {selectedTemplate.memory_gb_min && selectedTemplate.memory_gb_max && (
+                            <span> | Memory: {selectedTemplate.memory_gb_min}-{selectedTemplate.memory_gb_max} GB</span>
+                        )}
+                    </div>
+                )}
             </div>
 
             {/* Global Blacklist Alert */}

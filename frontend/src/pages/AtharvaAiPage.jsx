@@ -1,10 +1,12 @@
 import React from 'react';
+import { useSearchParams } from 'react-router-dom';
 import PoolRankings from '../components/atharvaai/PoolRankings';
 import InterruptionHeatmap from '../components/atharvaai/InterruptionHeatmap';
 import RebalancingTimeline from '../components/atharvaai/RebalancingTimeline';
 import AutoRebalanceAuditCard from '../components/atharvaai/AutoRebalanceAuditCard';
 
 const AtharvaAiPage = () => {
+    const [searchParams] = useSearchParams();
     const [selectedClusterId, setSelectedClusterId] = React.useState('');
     const [clusters, setClusters] = React.useState([]);
 
@@ -69,7 +71,10 @@ const AtharvaAiPage = () => {
 
             {/* Main Pool Rankings - Bottom */}
             <div className="mb-6">
-                <PoolRankings clusterId={selectedClusterId} />
+                <PoolRankings
+                    clusterId={selectedClusterId}
+                    initialTemplateId={searchParams.get('template_id')}
+                />
             </div>
         </div>
     );

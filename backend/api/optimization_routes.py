@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from typing import List
 from pydantic import BaseModel
@@ -8,6 +8,7 @@ from backend.models.user import User
 from backend.models.account import Account
 from backend.core.dependencies import get_current_user
 from backend.modules.rightsizer import get_rightsizer
+from backend.core.logger import logger
 
 router = APIRouter(prefix="/optimization", tags=["Optimization"])
 
@@ -201,3 +202,110 @@ def get_realized_savings(
         "this_month": round(this_month_savings, 2),
         "trend": trend
     }
+
+
+@router.post(
+    "/apply/{instance_id}/validated",
+    summary="Apply right-sizing with real-time validation"
+)
+def apply_rightsizing_validated(
+    instance_id: str,
+    target_instance_type: str = Query(...),
+    target_az: str = Query(None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Applies a right-sizing recommendation with real-time validation:
+    1. Checks AtharvaAI blacklist for target pool
+    2. Validates target type against org's default Node Template
+    3. Returns 409 Conflict if validation fails
+    4. Proceeds with normal apply if validation passes
+    """
+    # 1. Blacklist check
+    try:
+        import redis
+        from backend.core.config import settings
+        r = redis.Redis.from_url(settings.REDIS_URL, decode_responses=True)
+        pool_key = f"{target_instance_type}:{target_az}" if target_az else target_instance_type
+        if r.sismember("risky_pools", pool_key):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "POOL_BLACKLISTED",
+                    "message": f"{target_instance_type} in {target_az} is currently blacklisted due to recent spot interruptions",
+                    "suggestion": "Choose a different instance type or wait for blacklist expiry"
+                }
+            )
+    except redis.ConnectionError:
+        logger.warning("Redis connection failed during blacklist check, skipping validation")
+        pass  # If Redis is down, skip blacklist check
+
+    # 2. Template compliance check
+    from backend.services.template_service import get_template_service
+    template_service = get_template_service(db)
+    default_template = template_service.get_default_template(current_user.id)
+
+    if default_template:
+        family = target_instance_type.rsplit(".", 1)[0] if "." in target_instance_type else ""
+        if hasattr(default_template, 'families') and default_template.families:
+            if family not in default_template.families:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error": "TEMPLATE_VIOLATION",
+                        "message": f"{family} family is not allowed by your Node Template '{default_template.name}'",
+                        "suggestion": "Update your Node Template or choose a different instance type"
+                    }
+                )
+
+    # 3. If validation passes, apply the recommendation
+    from backend.models.instance import Instance
+    from backend.models.audit_log import AuditLog
+    import uuid
+
+    instance = db.query(Instance).filter(Instance.instance_id == instance_id).first()
+    if not instance:
+        raise HTTPException(status_code=404, detail="Instance not found")
+
+    try:
+        # Create audit log entry
+        audit_entry = AuditLog(
+            id=str(uuid.uuid4()),
+            timestamp=datetime.utcnow(),
+            actor_id=str(current_user.id),
+            actor_name=current_user.email,
+            event="RIGHTSIZING_APPLIED_VALIDATED",
+            resource=instance_id,
+            resource_type="INSTANCE",
+            outcome="PENDING",
+            ip_address="system",
+            details={"target_type": target_instance_type, "target_az": target_az}
+        )
+        db.add(audit_entry)
+
+        # Tag instance for right-sizing action
+        if not instance.tags:
+            instance.tags = {}
+        instance.tags['spot-optimizer/resize-pending'] = 'true'
+        instance.tags['spot-optimizer/resize-target-type'] = target_instance_type
+        instance.tags['spot-optimizer/resize-requested-at'] = datetime.utcnow().isoformat()
+        instance.tags['spot-optimizer/resize-requested-by'] = current_user.email
+
+        db.commit()
+
+        return {
+            "status": "applied",
+            "instance_id": instance_id,
+            "new_type": target_instance_type,
+            "validated": True,
+            "message": "Right-sizing recommendation applied successfully with validation"
+        }
+
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to apply validated right-sizing: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to apply recommendation: {str(e)}"
+        )

@@ -57,6 +57,10 @@ class AuditLog(Base):
     diff_before = Column(JSONB, nullable=True)
     diff_after = Column(JSONB, nullable=True)
 
+    # Tamper evidence — SHA-256 hash of (actor_id + event + resource + timestamp + diffs)
+    # Computed on insert by audit_service. Periodic Celery task re-verifies integrity.
+    checksum = Column(String(64), nullable=True)
+
     # Indexes for query performance
     __table_args__ = (
         Index("idx_audit_timestamp_desc", timestamp.desc()),

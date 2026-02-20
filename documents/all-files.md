@@ -1,9 +1,9 @@
 # All Files — Deep Scan Catalog
 
 > Auto-generated deep scan of every file in the project.
-> Last updated: 2026-02-18 (20:30)
+> Last updated: 2026-02-20 (12:20)
 >
-> **Recent Updates**: Hibernation components (30 files) and Right-Sizing components (12 files) updated with detailed descriptions. Added: `HibernationDashboardNew.jsx`, `ScheduleMatrix.jsx`, `StrategySelector.jsx`, `AuditHistory.jsx`, `EmergencyControls.jsx`, `NotificationSettings.jsx`, `KarpenterDashboard.jsx`, `KarpenterEnable.jsx`, `KarpenterSetup.jsx`, `KarpenterSettings.jsx`, `ManualRightSizing.jsx`, `RightSizingNew.jsx`. Backend: Enhanced descriptions for `hibernation_routes.py`, `hibernation_service.py`, `karpenter_routes.py`, `karpenter_service.py`.
+> **Recent Updates**: Right-Sizing consolidated from 12 separate files into single `RightSizingDashboard.jsx` (50KB all-in-one). Hibernation components (29 files) intact. Pages reduced from 9 to 7 (`HibernationDashboard.jsx`, `HibernationPage.jsx` removed — hibernation now accessed via component). Added: `REAL_IMPLEMENTATION_PLAN.md`, `Q&A.md` to documents. `CLAUDE.md` updated with comprehensive project reference. Backend: `REAL_IMPLEMENTATION_PLAN.md` created for AtharvaAI, Hibernation, and Right-Sizing real AWS API integration.
 
 ---
 
@@ -48,6 +48,7 @@
 |------|---------|
 | `main.py` | FastAPI application entry point |
 | `alembic.ini` | Alembic migration configuration |
+| `CLAUDE.md` | Comprehensive project reference (structure, API routes, services, schemas, troubleshooting) |
 | `.env` | Environment variables (secrets, DB, Redis, AWS) |
 | `.env.example` | Example env template |
 | `.gitignore` | Git ignore rules |
@@ -549,8 +550,6 @@ Compiled JS bundles (build artifacts).
 | `AccountAnalytics.jsx` | Account analytics page |
 | `Approvals.jsx` | Approval management page |
 | `AtharvaAiPage.jsx` | Atharva AI assistant page |
-| `HibernationDashboard.jsx` | Hibernation dashboard page (wrapper) |
-| `HibernationPage.jsx` | Hibernation page (simple wrapper) |
 | `Onboarding.jsx` | AWS onboarding wizard page |
 | `Roles.jsx` | Role management page |
 | `TeamDetails.jsx` | Team detail view page |
@@ -678,7 +677,7 @@ Compiled JS bundles (build artifacts).
 | `PermissionGate.jsx` | Permission gate wrapper |
 | `ProtectedButton.jsx` | Permission-protected button |
 
-### `components/hibernation/` (30 files)
+### `components/hibernation/` (29 files)
 
 | File | Purpose |
 |------|---------|
@@ -690,13 +689,9 @@ Compiled JS bundles (build artifacts).
 | `CostAnalyticsDashboard.jsx` | Full cost analytics dashboard with savings breakdown |
 | `EmergencyControls.jsx` | Emergency sleep/wake controls with force override buttons |
 | `ExecutionHistory.jsx` | Detailed execution history log with filters |
-| `HibernationDashboard.jsx` | Main hibernation dashboard (wrapper component) |
 | `HibernationDashboardNew.jsx` | **Primary dashboard**: LiveProgressBanner, SavingsReport, ScheduleMatrix (168-hour grid), StrategySelector, AuditHistory, EmergencyControls |
-| `HibernationGrid.jsx` | Hibernation grid view (legacy/unused) |
 | `HibernationHeader.jsx` | Hibernation page header component |
-| `HibernationSchedule.jsx` | Legacy schedule management (v1) |
-| `HibernationScheduleV2.jsx` | **Active scheduler**: Multi-cluster schedules, strategy selector, timezone support, pre-warm config |
-| `HibernationScheduler.jsx` | Schedule creation wizard (alternative UI) |
+| `HibernationScheduler.jsx` | Schedule creation wizard |
 | `HibernationTypeCard.jsx` | Hibernation type selection card |
 | `HibernationWizard.jsx` | Full hibernation setup wizard |
 | `HistoryLog.jsx` | History log panel |
@@ -713,6 +708,7 @@ Compiled JS bundles (build artifacts).
 | `UnifiedScheduleGrid.jsx` | Unified schedule grid component |
 | `ValidationPanel.jsx` | Schedule validation panel with conflict detection |
 | `index.js` | Hibernation component exports |
+| `INFO.md` | Hibernation component documentation |
 | `README.md` | Hibernation feature documentation |
 
 ### `components/lab/` (1 file)
@@ -760,22 +756,11 @@ Compiled JS bundles (build artifacts).
 | `RIAnalysis.jsx` | RI analysis dashboard |
 | `RIHealthCard.jsx` | RI health card |
 
-### `components/right-sizing/` (12 files)
+### `components/right-sizing/` (1 file — consolidated)
 
 | File | Purpose |
 |------|---------|
-| `BatchApplyModal.jsx` | Batch apply recommendations modal |
-| `ImpactSummary.jsx` | Impact summary panel |
-| `InstanceUsageDetailPanel.jsx` | Instance usage detail panel |
-| `KarpenterDashboard.jsx` | Karpenter live monitoring dashboard with KPI strip, activity feed, cost trends |
-| `KarpenterEnable.jsx` | Simplified one-click Karpenter enablement with benefits grid and deploy button |
-| `KarpenterSettings.jsx` | 5-tab settings slide-over: Clusters, Strategy, Instances, Advanced, Alerts |
-| `KarpenterSetup.jsx` | 4-step setup wizard: Cluster selection, Strategy, Instance config, Review & Deploy |
-| `ManualRightSizing.jsx` | Manual right-sizing view with KPI cards, recommendations table, savings tracker |
-| `RecommendationAgeIndicator.jsx` | Recommendation age indicator badge (New/Pending/Stale) |
-| `RightSizing.jsx` | Right-sizing container with mode switcher (Manual/Karpenter) |
-| `RightSizingNew.jsx` | Enhanced dashboard with Karpenter integration and inline configuration |
-| `SavingsTracker.jsx` | Savings tracker area chart with monthly aggregation |
+| `RightSizingDashboard.jsx` | **All-in-one 50KB consolidated dashboard** — Dual-mode container (Manual/Karpenter) with mode switcher, KPI strip, recommendations table with Pool Health column and Template compliance, enriched recommendations with blacklist checking, SavingsTracker, InstanceUsageDetailPanel, BatchApplyModal, ImpactSummary, RecommendationAgeIndicator, KarpenterEnable (one-click setup), KarpenterSetup (4-step wizard), KarpenterDashboard (live monitoring), KarpenterSettings (5-tab slide-over). Previously 12 separate files now consolidated into single component |
 
 ### `components/s3/` (2 files)
 
@@ -973,6 +958,8 @@ See [Section 13](#13-backend--migrations) for the full migration listing.
 |------|---------|
 | `MASTER_SUMMARY.md` | Master project summary |
 | `README.md` | Documents directory README |
+| `REAL_IMPLEMENTATION_PLAN.md` | Real implementation plan for AtharvaAI, Hibernation, and Right-Sizing AWS API integration |
+| `Q&A.md` | Questions & answers documentation |
 | `all-components.md` | All UI components catalog (this companion doc) |
 | `all-files.md` | All files catalog (this document) |
 | `backend-feature.md` | Backend feature documentation |
@@ -1017,8 +1004,8 @@ See [Section 13](#13-backend--migrations) for the full migration listing.
 | Backend — Scripts | 3 |
 | Backend — Templates | 4 |
 | Backend — Static | 5+ |
-| Frontend — Pages | 9 |
-| Frontend — Components | ~161 |
+| Frontend — Pages | 7 |
+| Frontend — Components | ~141 |
 | Frontend — Services | 3 |
 | Frontend — Hooks | 4 |
 | Frontend — Store | 3 |
@@ -1028,6 +1015,6 @@ See [Section 13](#13-backend--migrations) for the full migration listing.
 | Helm Charts | 8 |
 | Root-Level Scripts | ~20 |
 | Root-Level Migrations | ~18 |
-| Documents | 6 |
-| Root-Level Files | ~20 |
-| **Total (approx.)** | **~510** |
+| Documents | 8 |
+| Root-Level Files | ~21 |
+| **Total (approx.)** | **~498** |

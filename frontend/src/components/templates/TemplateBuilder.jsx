@@ -7,10 +7,11 @@ import { templatesAPI } from '../../services/api';
 const TemplateBuilder = ({ template, onSave, onCancel }) => {
     const [activeTab, setActiveTab] = useState('compute');
     const [options, setOptions] = useState({
-        families: [],
+        instance_families: {},
         architectures: [],
         disk_types: [],
-        strategies: []
+        strategies: [],
+        sizes: []
     });
 
     const [formData, setFormData] = useState({
@@ -42,12 +43,24 @@ const TemplateBuilder = ({ template, onSave, onCancel }) => {
         const fetchOptions = async () => {
             try {
                 const response = await templatesAPI.getOptions();
-                setOptions(response.data);
-                // Initialize instance_families if creating new
-                if (!template) {
+                const data = response.data;
+
+                // Transform the data structure
+                setOptions({
+                    instance_families: data.instance_families || {},
+                    architectures: data.architectures || [],
+                    disk_types: data.disk_types || [],
+                    strategies: data.strategies || [],
+                    sizes: data.sizes || []
+                });
+
+                // Initialize instance_families if creating new (select some defaults)
+                if (!template && data.instance_families) {
+                    const generalPurpose = data.instance_families.general_purpose || [];
+                    const defaultFamilies = generalPurpose.slice(0, 3).map(f => f.family);
                     setFormData(prev => ({
                         ...prev,
-                        instance_families: response.data.families.slice(0, 5)
+                        instance_families: defaultFamilies
                     }));
                 }
             } catch (error) {
@@ -173,7 +186,9 @@ const TemplateBuilder = ({ template, onSave, onCancel }) => {
                                             className="w-full form-select rounded-lg border-gray-300"
                                         >
                                             {options.architectures.map(arch => (
-                                                <option key={arch} value={arch}>{arch === 'x86_64' ? 'x86_64 (Intel/AMD)' : 'arm64 (AWS Graviton)'}</option>
+                                                <option key={arch.value} value={arch.value}>
+                                                    {arch.label} - {arch.description}
+                                                </option>
                                             ))}
                                             {options.architectures.length === 0 && (
                                                 <option value={formData.architecture}>{formData.architecture}</option>
@@ -194,30 +209,51 @@ const TemplateBuilder = ({ template, onSave, onCancel }) => {
                                 </div>
 
                                 <div>
-                                    <label className="block text-sm font-medium text-gray-700 mb-2">Allowed Families</label>
-                                    <div className="grid grid-cols-4 gap-3">
-                                        {options.families.map(fam => (
-                                            <label key={fam} className="flex items-center space-x-2 p-2 border rounded hover:bg-gray-50 cursor-pointer">
-                                                <input
-                                                    type="checkbox"
-                                                    checked={formData.instance_families.includes(fam)}
-                                                    onChange={(e) => {
-                                                        const newFamilies = e.target.checked
-                                                            ? [...formData.instance_families, fam]
-                                                            : formData.instance_families.filter(f => f !== fam);
-                                                        setFormData({ ...formData, instance_families: newFamilies });
-                                                    }}
-                                                    className="rounded text-blue-600"
-                                                />
-                                                <span className="text-sm font-medium uppercase">{fam}</span>
-                                            </label>
-                                        ))}
-                                        {options.families.length === 0 && (
-                                            <div className="col-span-4 py-4 text-center text-gray-400 animate-pulse">
-                                                Loading instance families...
-                                            </div>
-                                        )}
-                                    </div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-2">Allowed Instance Families</label>
+                                    {Object.keys(options.instance_families).length === 0 ? (
+                                        <div className="py-4 text-center text-gray-400 animate-pulse">
+                                            Loading instance families...
+                                        </div>
+                                    ) : (
+                                        <div className="space-y-4">
+                                            {Object.entries(options.instance_families).map(([category, families]) => (
+                                                <div key={category} className="border rounded-lg p-3 bg-gray-50">
+                                                    <h4 className="text-xs font-semibold text-gray-600 uppercase mb-2">
+                                                        {category.replace(/_/g, ' ')}
+                                                    </h4>
+                                                    <div className="grid grid-cols-2 lg:grid-cols-3 gap-2">
+                                                        {families.map(fam => (
+                                                            <label key={fam.family} className="flex items-start space-x-2 p-2 border border-gray-200 bg-white rounded hover:bg-blue-50 cursor-pointer transition-colors">
+                                                                <input
+                                                                    type="checkbox"
+                                                                    checked={formData.instance_families.includes(fam.family)}
+                                                                    onChange={(e) => {
+                                                                        const newFamilies = e.target.checked
+                                                                            ? [...formData.instance_families, fam.family]
+                                                                            : formData.instance_families.filter(f => f !== fam.family);
+                                                                        setFormData({ ...formData, instance_families: newFamilies });
+                                                                    }}
+                                                                    className="rounded text-blue-600 mt-0.5"
+                                                                />
+                                                                <div className="flex-1">
+                                                                    <div className="flex items-center gap-2">
+                                                                        <span className="text-sm font-bold uppercase text-gray-900">{fam.family}</span>
+                                                                        {fam.burstable && (
+                                                                            <span className="text-xs px-1.5 py-0.5 bg-yellow-100 text-yellow-700 rounded">Burstable</span>
+                                                                        )}
+                                                                    </div>
+                                                                    <div className="text-xs text-gray-500 mt-0.5">
+                                                                        <div>Gen {fam.generation} | {fam.arch.join(', ')}</div>
+                                                                        <div>{fam.vcpu_range} vCPU | {fam.memory_range}</div>
+                                                                    </div>
+                                                                </div>
+                                                            </label>
+                                                        ))}
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
                                 </div>
 
                                 <div className="grid grid-cols-2 gap-6">
@@ -250,7 +286,9 @@ const TemplateBuilder = ({ template, onSave, onCancel }) => {
                                             className="w-full form-select rounded-lg border-gray-300"
                                         >
                                             {options.disk_types.map(dt => (
-                                                <option key={dt} value={dt}>{dt} (General Purpose)</option>
+                                                <option key={dt.value} value={dt.value}>
+                                                    {dt.label} - IOPS: {dt.iops}
+                                                </option>
                                             ))}
                                             {options.disk_types.length === 0 && (
                                                 <option value={formData.root_volume_type}>{formData.root_volume_type}</option>

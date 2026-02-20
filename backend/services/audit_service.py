@@ -14,6 +14,8 @@ from backend.schemas.audit_schemas import (
 )
 from backend.core.logger import StructuredLogger
 from datetime import datetime
+import hashlib
+import json
 
 logger = StructuredLogger(__name__)
 
@@ -69,6 +71,9 @@ class AuditService:
             diff_after=diff_after
         )
 
+        # Compute tamper-evidence checksum
+        audit_entry.checksum = self._compute_checksum(audit_entry)
+
         self.db.add(audit_entry)
         self.db.commit()
         self.db.refresh(audit_entry)
@@ -82,6 +87,21 @@ class AuditService:
         )
 
         return audit_entry
+
+    def _compute_checksum(self, log: AuditLog) -> str:
+        """
+        Compute SHA-256 checksum for tamper evidence.
+        Hash of critical fields that should never change after insertion.
+        """
+        payload = (
+            f"{log.actor_id}|"
+            f"{log.event}|"
+            f"{log.resource}|"
+            f"{log.timestamp.isoformat() if log.timestamp else ''}|"
+            f"{json.dumps(log.diff_before, sort_keys=True, default=str) if log.diff_before else ''}|"
+            f"{json.dumps(log.diff_after, sort_keys=True, default=str) if log.diff_after else ''}"
+        )
+        return hashlib.sha256(payload.encode('utf-8')).hexdigest()
 
     def get_audit_logs(
         self,

@@ -565,6 +565,46 @@ class ClusterService:
         if not cluster:
             raise ResourceNotFoundError("Cluster", cluster_id)
 
+        # ── Pre-Deletion Safety Checks ──────────────────────────────
+        # Prevent deletion of clusters with active infrastructure dependencies
+        
+        # Check 1: Karpenter active? Orphaned controller would keep provisioning nodes
+        if getattr(cluster, 'karpenter_enabled', None) and getattr(cluster, 'karpenter_mode', None) in ('auto', 'dry_run'):
+            raise ValidationError(
+                "Cannot delete cluster with active Karpenter. "
+                "Disable Karpenter before deleting this cluster."
+            )
+        
+        # Check 2: Active hibernation schedules? Would fail silently
+        try:
+            from backend.models.hibernation_schedule import HibernationSchedule
+            active_schedules = self.db.query(HibernationSchedule).filter(
+                HibernationSchedule.clusters.any(id=cluster_id),
+                HibernationSchedule.is_active == "Y"
+            ).count()
+            if active_schedules > 0:
+                raise ValidationError(
+                    f"Cannot delete cluster: {active_schedules} active hibernation schedule(s) "
+                    f"reference this cluster. Remove them first."
+                )
+        except ImportError:
+            pass  # Model not available — skip check
+        
+        # Check 3: Pending approvals? Would become orphaned
+        try:
+            from backend.models.approval import Approval
+            pending_approvals = self.db.query(Approval).filter(
+                Approval.resource == cluster_id,
+                Approval.status == 'PENDING'
+            ).count()
+            if pending_approvals > 0:
+                raise ValidationError(
+                    f"Cannot delete cluster: {pending_approvals} pending approval(s) exist. "
+                    f"Resolve them first."
+                )
+        except ImportError:
+            pass  # Model not available — skip check
+
 
         # Remove active instances check - allow forced deletion
         # Check for active instances just for logging

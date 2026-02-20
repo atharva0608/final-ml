@@ -25,7 +25,6 @@ import { HibernationDashboard } from './components/hibernation';
 import AtharvaAiPage from './pages/AtharvaAiPage';
 import AuditLog from './components/audit/AuditLog';
 import Settings from './components/settings/Settings';
-import ExperimentLab from './components/lab/ExperimentLab';
 import AdminDashboard from './components/admin/AdminDashboard';
 import AdminClients from './components/admin/AdminClients';
 import AdminHealth from './components/admin/AdminHealth';
@@ -33,7 +32,7 @@ import AdminExperiments from './components/admin/AdminExperiments';
 import AdminConfig from './components/admin/AdminConfig';
 import AdminBilling from './components/admin/AdminBilling';
 import AdminOrganizations from './components/admin/AdminOrganizations';
-import RightSizing from './components/right-sizing/RightSizingNew';
+import RightSizingDashboard from './components/right-sizing/RightSizingDashboard';
 import CleanupDashboard from './components/cleanup/CleanupDashboard';
 import GovernanceSettings from './components/settings/GovernanceSettings';
 import TagPoliciesManager from './components/settings/TagPoliciesManager';
@@ -267,7 +266,7 @@ function App() {
                 sectionName="Right-Sizing"
                 sectionDescription="View and apply instance right-sizing recommendations"
               >
-                <RightSizing />
+                <RightSizingDashboard />
               </PermissionGate>
             } />
             <Route path="hibernation/:clusterId?" element={

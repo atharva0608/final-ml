@@ -2,15 +2,17 @@
  * Template Management Component
  */
 import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { templateAPI } from '../../services/api';
 import { useTemplateStore } from '../../store/useStore';
 import { Card, Button, Badge, Input } from '../shared';
-import { FiPlus, FiEdit2, FiTrash2, FiCheck } from 'react-icons/fi';
+import { FiPlus, FiEdit2, FiTrash2, FiCheck, FiActivity } from 'react-icons/fi';
 import toast from 'react-hot-toast';
 
 import TemplateBuilder from './TemplateBuilder';
 
 const TemplateList = () => {
+  const navigate = useNavigate();
   const { templates, setTemplates, setLoading, loading } = useTemplateStore();
   const [showCreateModal, setShowCreateModal] = useState(false);
 
@@ -138,16 +140,49 @@ const TemplateList = () => {
                 </div>
               </div>
 
-              {!template.is_default && (
+              {/* Usage Stats */}
+              {(template.last_used_by_atharva_at || template.atharva_rankings_count > 0) && (
+                <div className="mt-3 pt-3 border-t border-gray-100">
+                  <div className="flex items-center gap-2 text-xs text-gray-500">
+                    <FiActivity className="w-3 h-3" />
+                    <span>
+                      {template.last_used_by_atharva_at ? (
+                        <>Last used by AtharvaAI: {new Date(template.last_used_by_atharva_at).toLocaleDateString()}</>
+                      ) : (
+                        <>Never used by AtharvaAI</>
+                      )}
+                    </span>
+                  </div>
+                  {template.atharva_rankings_count > 0 && (
+                    <div className="text-xs text-gray-400 mt-1">
+                      Used {template.atharva_rankings_count} times
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Action Buttons */}
+              <div className="mt-4 space-y-2">
                 <Button
                   variant="outline"
                   size="sm"
-                  className="w-full mt-4"
-                  onClick={() => handleSetDefault(template.id)}
+                  className="w-full"
+                  icon={<FiActivity />}
+                  onClick={() => navigate(`/atharvaai?template_id=${template.id}`)}
                 >
-                  Set as Default
+                  Test in AtharvaAI
                 </Button>
-              )}
+                {!template.is_default && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="w-full"
+                    onClick={() => handleSetDefault(template.id)}
+                  >
+                    Set as Default
+                  </Button>
+                )}
+              </div>
             </Card>
           ))}
         </div>

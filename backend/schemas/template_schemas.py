@@ -125,6 +125,8 @@ class NodeTemplateResponse(BaseModel):
     disk_type: str = Field(..., description="EBS disk type")
     disk_size: int = Field(..., description="Disk size in GB")
     is_default: bool = Field(..., description="Is default template")
+    last_used_by_atharva_at: Optional[datetime] = Field(None, description="Last used by AtharvaAI timestamp")
+    atharva_rankings_count: int = Field(default=0, description="Number of times used by AtharvaAI")
     created_at: datetime = Field(..., description="Creation timestamp")
     updated_at: datetime = Field(..., description="Last update timestamp")
 

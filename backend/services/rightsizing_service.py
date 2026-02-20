@@ -30,9 +30,23 @@ class RightSizingService:
     OVERSIZED_THRESHOLD_PCT = 50  # Flag as oversized if usage < 50% of request
     UNDERSIZED_THRESHOLD_PCT = 95  # Flag as undersized if P99 usage > request
 
-    # Cost estimation (simplified - can be enhanced with actual pricing data)
-    CPU_COST_PER_CORE_HOUR = 0.04  # $0.04 per vCPU hour (AWS m5.large baseline)
-    MEMORY_COST_PER_GB_HOUR = 0.005  # $0.005 per GB hour
+    # Cost estimation — tiered by instance family for accuracy
+    # TODO: Replace with real AWS Pricing API data for production use
+    # These are on-demand rates for us-east-1 as of 2024 (approximate)
+    INSTANCE_FAMILY_COSTS = {
+        # family: (cpu_cost_per_core_hour, memory_cost_per_gb_hour)
+        "m5": (0.048, 0.006),    # General purpose
+        "m6i": (0.046, 0.006),   # Current-gen general purpose
+        "c5": (0.042, 0.005),    # Compute optimized
+        "c6i": (0.040, 0.005),   # Current-gen compute optimized
+        "r5": (0.063, 0.008),    # Memory optimized
+        "r6i": (0.063, 0.008),   # Current-gen memory optimized
+        "t3": (0.021, 0.003),    # Burstable
+        "t3a": (0.019, 0.003),   # AMD Burstable
+    }
+    # Fallback if family not found (weighted average across common families)
+    CPU_COST_PER_CORE_HOUR = 0.04   # Fallback default
+    MEMORY_COST_PER_GB_HOUR = 0.005  # Fallback default
 
     def __init__(self, db: Session):
         self.db = db

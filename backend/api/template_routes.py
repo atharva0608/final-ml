@@ -3,7 +3,7 @@ Node Template Routes
 
 FastAPI endpoints for managing node templates (instance families, disk configs, strategies)
 """
-from fastapi import APIRouter, Depends, status, Query
+from fastapi import APIRouter, Depends, status, Query, HTTPException
 from sqlalchemy.orm import Session
 from typing import Optional
 
@@ -26,28 +26,16 @@ router = APIRouter(prefix="/templates", tags=["Templates"])
     summary="Get template configuration options",
     description="Returns valid AWS instance families, volume types, and strategies"
 )
-def get_template_options(current_user: User = Depends(get_current_user)):
+def get_template_options(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     """
     Returns available options for building a node template.
-    This replaces hardcoded lists in the frontend.
+    Groups instance families by category with metadata.
     """
-    return {
-        "architectures": ["x86_64", "arm64"],
-        "disk_types": ["GP3", "GP2", "IO1", "IO2"],
-        "strategies": ["CHEAPEST", "BALANCED", "PERFORMANCE"],
-        "families": [
-            # General purpose
-            't2', 't3', 't3a', 't4g', 'm5', 'm5a', 'm5n', 'm6i', 'm6a', 'm6g', 'm7i', 'm7g',
-            # Compute optimized
-            'c5', 'c5a', 'c5n', 'c6i', 'c6a', 'c6g', 'c7i', 'c7g',
-            # Memory optimized
-            'r5', 'r5a', 'r5n', 'r6i', 'r6a', 'r6g', 'r7i', 'r7g', 'x1', 'x2gd',
-            # Storage optimized
-            'i3', 'i3en', 'i4i', 'd2', 'd3', 'h1',
-            # Accelerated computing
-            'p3', 'p4', 'g4dn', 'g5', 'inf1', 'inf2'
-        ]
-    }
+    service = get_template_service(db)
+    return service.get_template_options()
 
 
 @router.get("/", response_model=NodeTemplateList, summary="List node templates")
@@ -69,6 +57,32 @@ def create_template(
     """Create a new node template"""
     service = get_template_service(db)
     return service.create_template(current_user.id, template_data)
+
+
+@router.get("/default", response_model=NodeTemplateResponse, summary="Get default template")
+def get_default_template(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get the user's default node template"""
+    service = get_template_service(db)
+    template = service.get_default_template(current_user.id)
+    if not template:
+        raise HTTPException(status_code=404, detail="No default template set")
+
+    return NodeTemplateResponse(
+        id=template.id,
+        user_id=template.user_id,
+        name=template.name,
+        families=template.families,
+        architecture=template.architecture,
+        strategy=template.strategy.value,
+        disk_type=template.disk_type.value,
+        disk_size=template.disk_size,
+        is_default=(template.is_default == "Y"),
+        created_at=template.created_at,
+        updated_at=template.updated_at
+    )
 
 
 @router.get("/{template_id}", response_model=NodeTemplateResponse, summary="Get template details")

@@ -1,5 +1,8 @@
 """
 Hibernation Worker - Celery tasks for executing hibernation schedules
+
+Enterprise-grade with Redis distributed locking to prevent race conditions
+when multiple workers attempt to execute the same schedule/cluster simultaneously.
 """
 from celery import shared_task
 from backend.models.base import SessionLocal
@@ -10,19 +13,80 @@ from backend.hibernation_strategy import (
     NuclearStrategy,
     SnapshotRestoreStrategy
 )
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 import logging
+import uuid
+import os
 
 logger = logging.getLogger(__name__)
 
+# ──────────────────────────────────────────────────────────────
+# Redis Distributed Lock Helpers
+# ──────────────────────────────────────────────────────────────
+
+def _get_redis():
+    """Get Redis client for distributed locking"""
+    from redis import Redis
+    return Redis.from_url(
+        os.environ.get("REDIS_URL", "redis://redis:6379/0"),
+        decode_responses=True
+    )
+
+
+def _acquire_lock(redis_client, schedule_id: str, cluster_id: str, ttl_seconds: int = 180) -> str | None:
+    """
+    Acquire a distributed lock for a schedule+cluster combination.
+    Uses SET NX EX for atomic lock acquisition.
+    
+    Returns lock_value if acquired, None if already locked.
+    """
+    lock_key = f"hibernation:lock:{schedule_id}:{cluster_id}"
+    lock_value = str(uuid.uuid4())
+    
+    acquired = redis_client.set(lock_key, lock_value, nx=True, ex=ttl_seconds)
+    if acquired:
+        logger.debug(f"Lock acquired: {lock_key} = {lock_value}")
+        return lock_value
+    else:
+        existing = redis_client.get(lock_key)
+        logger.info(f"Lock NOT acquired for {lock_key} — held by {existing}")
+        return None
+
+
+def _release_lock(redis_client, schedule_id: str, cluster_id: str, lock_value: str):
+    """
+    Release a distributed lock ONLY if we still own it.
+    Prevents releasing a lock acquired by another worker after TTL expiry.
+    """
+    lock_key = f"hibernation:lock:{schedule_id}:{cluster_id}"
+    current = redis_client.get(lock_key)
+    if current == lock_value:
+        redis_client.delete(lock_key)
+        logger.debug(f"Lock released: {lock_key}")
+    else:
+        logger.warning(f"Lock {lock_key} NOT released — ownership changed (ours={lock_value}, current={current})")
+
+
+# ──────────────────────────────────────────────────────────────
+# Celery Tasks
+# ──────────────────────────────────────────────────────────────
 
 @shared_task(name="execute_hibernation_scheduler")
 def execute_hibernation_scheduler():
     """
-    Main scheduler task - runs every 1 minute to check for schedules that need execution
+    Main scheduler task - runs every 1 minute to check for schedules that need execution.
+    Uses Redis locking to prevent duplicate execution when multiple workers are running.
     """
     db = SessionLocal()
+    redis = _get_redis()
+    
+    # Acquire a global scheduler lock to prevent duplicate schedule checking
+    scheduler_lock = str(uuid.uuid4())
+    if not redis.set("hibernation:scheduler_lock", scheduler_lock, nx=True, ex=55):
+        logger.debug("Scheduler lock not acquired — another worker is checking schedules")
+        db.close()
+        return
     
     try:
         # Get all active schedules
@@ -58,13 +122,17 @@ def execute_hibernation_scheduler():
                 logger.error(f"Error checking schedule {schedule.id}: {e}")
                 
     finally:
+        # Release scheduler lock only if we still own it
+        if redis.get("hibernation:scheduler_lock") == scheduler_lock:
+            redis.delete("hibernation:scheduler_lock")
         db.close()
 
 
-@shared_task(name="execute_hibernation")
-def execute_hibernation(schedule_id: str):
-    """Execute sleep action for a schedule"""
+@shared_task(name="execute_hibernation", bind=True, max_retries=2)
+def execute_hibernation(self, schedule_id: str):
+    """Execute sleep action for a schedule — with per-cluster distributed locking"""
     db = SessionLocal()
+    redis = _get_redis()
     
     try:
         schedule = db.query(HibernationSchedule).filter(
@@ -80,8 +148,14 @@ def execute_hibernation(schedule_id: str):
         # Get appropriate strategy
         strategy_class = _get_strategy_class(schedule.strategy)
         
-        # Execute sleep for each cluster
+        # Execute sleep for each cluster — with per-cluster locking
         for cluster in schedule.clusters:
+            # Acquire distributed lock for this schedule+cluster
+            lock_value = _acquire_lock(redis, schedule_id, cluster.id, ttl_seconds=300)
+            if not lock_value:
+                logger.warning(f"Skipping cluster {cluster.name} — locked by another worker")
+                continue
+            
             try:
                 cluster_config = {
                     "cluster_name": cluster.name,
@@ -92,10 +166,13 @@ def execute_hibernation(schedule_id: str):
                 strategy = strategy_class(cluster_config)
                 result = strategy.sleep(schedule.saved_state.get(cluster.id, {}))
                 
-                # Save state
+                # Save state with version timestamp for staleness detection
                 if not schedule.saved_state:
                     schedule.saved_state = {}
-                schedule.saved_state[cluster.id] = result.get("state", {})
+                state_data = result.get("state", {})
+                state_data["state_captured_at"] = datetime.utcnow().isoformat()
+                state_data["captured_by_worker"] = lock_value
+                schedule.saved_state[cluster.id] = state_data
                 
                 logger.info(f"Hibernated cluster {cluster.name}")
                 
@@ -105,6 +182,8 @@ def execute_hibernation(schedule_id: str):
                 schedule.last_action_at = datetime.utcnow()
                 db.commit()
                 return
+            finally:
+                _release_lock(redis, schedule_id, cluster.id, lock_value)
         
         # Update schedule state
         schedule.last_action = "SLEEP"
@@ -127,10 +206,11 @@ def execute_hibernation(schedule_id: str):
         db.close()
 
 
-@shared_task(name="execute_wake")
-def execute_wake(schedule_id: str):
-    """Execute wake action for a schedule"""
+@shared_task(name="execute_wake", bind=True, max_retries=2)
+def execute_wake(self, schedule_id: str):
+    """Execute wake action for a schedule — with per-cluster distributed locking and state staleness check"""
     db = SessionLocal()
+    redis = _get_redis()
     
     try:
         schedule = db.query(HibernationSchedule).filter(
@@ -146,8 +226,14 @@ def execute_wake(schedule_id: str):
         # Get appropriate strategy
         strategy_class = _get_strategy_class(schedule.strategy)
         
-        # Execute wake for each cluster
+        # Execute wake for each cluster — with per-cluster locking
         for cluster in schedule.clusters:
+            # Acquire distributed lock
+            lock_value = _acquire_lock(redis, schedule_id, cluster.id, ttl_seconds=300)
+            if not lock_value:
+                logger.warning(f"Skipping wake for cluster {cluster.name} — locked by another worker")
+                continue
+            
             try:
                 cluster_config = {
                     "cluster_name": cluster.name,
@@ -157,6 +243,22 @@ def execute_wake(schedule_id: str):
                 
                 strategy = strategy_class(cluster_config)
                 saved_state = schedule.saved_state.get(cluster.id, {})
+                
+                # Check state staleness — warn if saved state is >24h old
+                state_captured_at = saved_state.get("state_captured_at")
+                if state_captured_at:
+                    try:
+                        captured_time = datetime.fromisoformat(state_captured_at)
+                        age = datetime.utcnow() - captured_time
+                        if age > timedelta(hours=24):
+                            logger.warning(
+                                f"⚠️ Stale hibernation state for cluster {cluster.name} — "
+                                f"captured {age.total_seconds() / 3600:.1f}h ago. "
+                                f"Replica counts may have changed since hibernation."
+                            )
+                    except (ValueError, TypeError):
+                        logger.warning(f"Invalid state_captured_at for cluster {cluster.name}")
+                
                 result = strategy.wake(saved_state)
                 
                 logger.info(f"Woke cluster {cluster.name}")
@@ -167,6 +269,8 @@ def execute_wake(schedule_id: str):
                 schedule.last_action_at = datetime.utcnow()
                 db.commit()
                 return
+            finally:
+                _release_lock(redis, schedule_id, cluster.id, lock_value)
         
         # Update schedule state
         schedule.last_action = "WAKE"

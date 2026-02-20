@@ -55,6 +55,8 @@ class TemplateService:
                 disk_type=t.disk_type.value,
                 disk_size=t.disk_size,
                 is_default=(t.is_default == "Y"),
+                last_used_by_atharva_at=t.last_used_by_atharva_at,
+                atharva_rankings_count=t.atharva_rankings_count or 0,
                 created_at=t.created_at,
                 updated_at=t.updated_at
             )
@@ -100,6 +102,8 @@ class TemplateService:
             disk_type=template.disk_type.value,
             disk_size=template.disk_size,
             is_default=(template.is_default == "Y"),
+            last_used_by_atharva_at=template.last_used_by_atharva_at,
+            atharva_rankings_count=template.atharva_rankings_count or 0,
             created_at=template.created_at,
             updated_at=template.updated_at
         )
@@ -161,6 +165,9 @@ class TemplateService:
         self.db.commit()
         self.db.refresh(new_template)
 
+        # Invalidate AtharvaAI cache
+        self._invalidate_atharva_cache(user_id)
+
         logger.info(
             "Template created",
             template_id=new_template.id,
@@ -178,6 +185,8 @@ class TemplateService:
             disk_type=new_template.disk_type.value,
             disk_size=new_template.disk_size,
             is_default=(new_template.is_default == "Y"),
+            last_used_by_atharva_at=new_template.last_used_by_atharva_at,
+            atharva_rankings_count=new_template.atharva_rankings_count or 0,
             created_at=new_template.created_at,
             updated_at=new_template.updated_at
         )
@@ -241,6 +250,9 @@ class TemplateService:
         self.db.commit()
         self.db.refresh(template)
 
+        # Invalidate AtharvaAI cache
+        self._invalidate_atharva_cache(user_id)
+
         logger.info(
             "Template updated",
             template_id=template_id,
@@ -257,6 +269,8 @@ class TemplateService:
             disk_type=template.disk_type.value,
             disk_size=template.disk_size,
             is_default=(template.is_default == "Y"),
+            last_used_by_atharva_at=template.last_used_by_atharva_at,
+            atharva_rankings_count=template.atharva_rankings_count or 0,
             created_at=template.created_at,
             updated_at=template.updated_at
         )
@@ -354,6 +368,9 @@ class TemplateService:
         self.db.commit()
         self.db.refresh(template)
 
+        # Invalidate AtharvaAI cache
+        self._invalidate_atharva_cache(user_id)
+
         logger.info(
             "Template set as default",
             template_id=template_id,
@@ -373,6 +390,122 @@ class TemplateService:
             created_at=template.created_at,
             updated_at=template.updated_at
         )
+
+    def get_default_template(self, user_id: str, track_atharva_usage: bool = False):
+        """
+        Get the default template for a user
+
+        Args:
+            user_id: User UUID
+            track_atharva_usage: If True, updates last_used_by_atharva_at and increments counter
+
+        Returns:
+            NodeTemplate or None
+        """
+        template = self.db.query(NodeTemplate).filter(
+            NodeTemplate.user_id == user_id,
+            NodeTemplate.is_default == "Y"
+        ).first()
+
+        # Update usage tracking if requested (when used by AtharvaAI)
+        if template and track_atharva_usage:
+            template.last_used_by_atharva_at = datetime.utcnow()
+            template.atharva_rankings_count = (template.atharva_rankings_count or 0) + 1
+            self.db.commit()
+            logger.info(
+                "Template usage tracked",
+                template_id=template.id,
+                user_id=user_id,
+                usage_count=template.atharva_rankings_count
+            )
+
+        return template
+
+    def _invalidate_atharva_cache(self, user_id: str):
+        """Invalidate AtharvaAI Redis cache when template changes"""
+        try:
+            import redis
+            from backend.core.config import settings
+            r = redis.Redis.from_url(settings.REDIS_URL, decode_responses=True)
+            # Delete cached rankings for this user
+            cache_pattern = f"atharva_rankings:{user_id}:*"
+            keys = r.keys(cache_pattern)
+            if keys:
+                r.delete(*keys)
+                logger.info(f"Invalidated {len(keys)} AtharvaAI cache entries for user {user_id}")
+        except Exception as e:
+            logger.warning(f"Failed to invalidate AtharvaAI cache: {e}")
+
+    def get_template_options(self):
+        """
+        Returns available options for building a node template.
+        Groups instance families by category with metadata.
+        """
+        return {
+            "architectures": [
+                {"value": "x86_64", "label": "x86_64 (AMD64)", "description": "Intel/AMD processors"},
+                {"value": "arm64", "label": "ARM64 (Graviton)", "description": "AWS Graviton processors, ~20% cheaper"}
+            ],
+            "disk_types": [
+                {"value": "GP3", "label": "General Purpose SSD (GP3)", "iops": "3000-16000", "throughput": "125-1000 MB/s"},
+                {"value": "GP2", "label": "General Purpose SSD (GP2)", "iops": "100-16000", "throughput": "128-250 MB/s"},
+                {"value": "IO1", "label": "Provisioned IOPS (IO1)", "iops": "100-64000", "throughput": "256-1000 MB/s"},
+                {"value": "IO2", "label": "Provisioned IOPS (IO2)", "iops": "100-64000", "throughput": "256-4000 MB/s"}
+            ],
+            "strategies": [
+                {"value": "CHEAPEST", "label": "Cheapest", "description": "Minimize cost, higher interruption risk"},
+                {"value": "BALANCED", "label": "Balanced", "description": "Balance cost and stability"},
+                {"value": "PERFORMANCE", "label": "Performance", "description": "Maximize performance, higher cost"}
+            ],
+            "instance_families": {
+                "general_purpose": [
+                    {"family": "t3", "arch": ["x86_64"], "generation": 3, "vcpu_range": "2-8", "memory_range": "0.5-32 GB", "burstable": True},
+                    {"family": "t3a", "arch": ["x86_64"], "generation": 3, "vcpu_range": "2-8", "memory_range": "0.5-32 GB", "burstable": True},
+                    {"family": "t4g", "arch": ["arm64"], "generation": 4, "vcpu_range": "2-8", "memory_range": "0.5-32 GB", "burstable": True},
+                    {"family": "m5", "arch": ["x86_64"], "generation": 5, "vcpu_range": "2-96", "memory_range": "8-384 GB", "burstable": False},
+                    {"family": "m5a", "arch": ["x86_64"], "generation": 5, "vcpu_range": "2-96", "memory_range": "8-384 GB", "burstable": False},
+                    {"family": "m6i", "arch": ["x86_64"], "generation": 6, "vcpu_range": "2-128", "memory_range": "8-512 GB", "burstable": False},
+                    {"family": "m6g", "arch": ["arm64"], "generation": 6, "vcpu_range": "2-64", "memory_range": "8-256 GB", "burstable": False},
+                    {"family": "m7i", "arch": ["x86_64"], "generation": 7, "vcpu_range": "2-192", "memory_range": "8-768 GB", "burstable": False},
+                    {"family": "m7g", "arch": ["arm64"], "generation": 7, "vcpu_range": "2-64", "memory_range": "8-256 GB", "burstable": False}
+                ],
+                "compute_optimized": [
+                    {"family": "c5", "arch": ["x86_64"], "generation": 5, "vcpu_range": "2-96", "memory_range": "4-192 GB", "burstable": False},
+                    {"family": "c5a", "arch": ["x86_64"], "generation": 5, "vcpu_range": "2-96", "memory_range": "4-192 GB", "burstable": False},
+                    {"family": "c6i", "arch": ["x86_64"], "generation": 6, "vcpu_range": "2-128", "memory_range": "4-256 GB", "burstable": False},
+                    {"family": "c6g", "arch": ["arm64"], "generation": 6, "vcpu_range": "2-64", "memory_range": "4-128 GB", "burstable": False},
+                    {"family": "c7i", "arch": ["x86_64"], "generation": 7, "vcpu_range": "2-192", "memory_range": "4-384 GB", "burstable": False},
+                    {"family": "c7g", "arch": ["arm64"], "generation": 7, "vcpu_range": "2-64", "memory_range": "4-128 GB", "burstable": False}
+                ],
+                "memory_optimized": [
+                    {"family": "r5", "arch": ["x86_64"], "generation": 5, "vcpu_range": "2-96", "memory_range": "16-768 GB", "burstable": False},
+                    {"family": "r5a", "arch": ["x86_64"], "generation": 5, "vcpu_range": "2-96", "memory_range": "16-768 GB", "burstable": False},
+                    {"family": "r6i", "arch": ["x86_64"], "generation": 6, "vcpu_range": "2-128", "memory_range": "16-1024 GB", "burstable": False},
+                    {"family": "r6g", "arch": ["arm64"], "generation": 6, "vcpu_range": "2-64", "memory_range": "16-512 GB", "burstable": False},
+                    {"family": "r7i", "arch": ["x86_64"], "generation": 7, "vcpu_range": "2-192", "memory_range": "16-1536 GB", "burstable": False},
+                    {"family": "r7g", "arch": ["arm64"], "generation": 7, "vcpu_range": "2-64", "memory_range": "16-512 GB", "burstable": False}
+                ],
+                "storage_optimized": [
+                    {"family": "i3", "arch": ["x86_64"], "generation": 3, "vcpu_range": "2-72", "memory_range": "15.25-512 GB", "burstable": False},
+                    {"family": "i3en", "arch": ["x86_64"], "generation": 3, "vcpu_range": "2-96", "memory_range": "16-768 GB", "burstable": False},
+                    {"family": "i4i", "arch": ["x86_64"], "generation": 4, "vcpu_range": "2-128", "memory_range": "16-1024 GB", "burstable": False}
+                ],
+                "accelerated_computing": [
+                    {"family": "p3", "arch": ["x86_64"], "generation": 3, "vcpu_range": "8-96", "memory_range": "61-768 GB", "burstable": False},
+                    {"family": "g4dn", "arch": ["x86_64"], "generation": 4, "vcpu_range": "4-96", "memory_range": "16-384 GB", "burstable": False},
+                    {"family": "g5", "arch": ["x86_64"], "generation": 5, "vcpu_range": "4-192", "memory_range": "16-768 GB", "burstable": False},
+                    {"family": "inf2", "arch": ["x86_64"], "generation": 2, "vcpu_range": "4-192", "memory_range": "16-768 GB", "burstable": False}
+                ]
+            },
+            "sizes": ["nano", "micro", "small", "medium", "large", "xlarge", "2xlarge", "4xlarge", "8xlarge", "12xlarge", "16xlarge", "24xlarge", "metal"],
+            "interruption_tolerance_levels": [
+                {"value": 1, "label": "Very Low Risk Only", "description": "<5% interruption frequency"},
+                {"value": 2, "label": "Low Risk", "description": "<10% interruption frequency"},
+                {"value": 3, "label": "Moderate Risk", "description": "<15% interruption frequency"},
+                {"value": 4, "label": "High Risk Acceptable", "description": "<20% interruption frequency"},
+                {"value": 5, "label": "Any Risk", "description": "No interruption filtering"}
+            ]
+        }
 
 
 def get_template_service(db: Session) -> TemplateService:

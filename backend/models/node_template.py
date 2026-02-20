@@ -48,6 +48,10 @@ class NodeTemplate(Base):
     # Default flag
     is_default = Column(String(1), nullable=False, default="N")  # Y/N
 
+    # AtharvaAI usage tracking
+    last_used_by_atharva_at = Column(DateTime, nullable=True)
+    atharva_rankings_count = Column(Integer, nullable=False, default=0)
+
     # Timestamps
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)

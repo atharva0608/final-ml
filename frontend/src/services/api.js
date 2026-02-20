@@ -132,7 +132,14 @@ export const optimizationAPI = {
     getRightsizing: (clusterId, params = {}) => api.get('/api/v1/pod-metrics/right-sizing/recommendations', {
         params: { cluster_id: clusterId, ...params }
     }),
+    getEnrichedRightsizing: (clusterId, params = {}) => api.get('/api/v1/pod-metrics/rightsizing/enriched', {
+        params: { cluster_id: clusterId, ...params }
+    }),
     applyRecommendation: (id) => api.post(`/api/v1/optimization/apply/${id}`),
+    applyRightsizingValidated: (instanceId, targetType, targetAz) =>
+        api.post(`/api/v1/optimization/apply/${instanceId}/validated`, null, {
+            params: { target_instance_type: targetType, target_az: targetAz }
+        }),
     getSavingsRealized: () => api.get('/api/v1/optimization/savings/realized'),
     batchApplyRecommendations: (data) => api.post('/api/v1/optimization/rightsizing/batch-apply', data),
     getInstanceMetrics: (instanceId, days = 14) => api.get('/api/v1/pod-metrics/', {
@@ -177,6 +184,7 @@ export const templateAPI = {
     delete: (id) => api.delete(`/api/v1/templates/${id}`),
     setDefault: (id) => api.post(`/api/v1/templates/${id}/set-default`),
     getOptions: () => api.get('/api/v1/templates/options'),
+    getDefault: () => api.get('/api/v1/templates/default'),
 };
 export const templatesAPI = templateAPI;
 
@@ -273,8 +281,20 @@ export const atharvaaiAPI = {
             params: { region, limit, cluster_id: clusterId }
         }),
 
+    // Get rankings using a saved template ID
+    getRankingsForTemplate: (templateId, region = 'ap-south-1', limit = 10) =>
+        api.post('/api/v1/atharvaai/pools/rankings', null, {
+            params: { template_id: templateId, region, limit }
+        }),
+
     // Get globally flagged risky pools (System B)
     getBlacklist: () => api.get('/api/v1/atharvaai/blacklist'),
+
+    // Check if specific pool is blacklisted
+    checkBlacklist: (instanceType, az) =>
+        api.get('/api/v1/atharvaai/blacklist/check', {
+            params: { instance_type: instanceType, az }
+        }),
 
     // Get auto-rebalancing status (System B)
     getRebalancingStatus: (clusterId = null, limit = 10) =>
@@ -347,6 +367,16 @@ export const karpenterAPI = {
     toggle: (clusterId, enabled) => api.post(`/api/v1/karpenter/toggle/${clusterId}`, { enabled }),
     getActivity: (clusterId, limit = 20) => api.get('/api/v1/karpenter/activity', { params: { cluster_id: clusterId, limit } }),
     getStats: (period = 'week') => api.get('/api/v1/karpenter/stats', { params: { period } }),
+
+    // Dry-run recommendations (mode-aware)
+    getRecommendations: (clusterId = null, statusFilter = null) => api.get('/api/v1/karpenter/recommendations', {
+        params: { cluster_id: clusterId, status_filter: statusFilter }
+    }),
+    applyRecommendation: (recommendationId, data) => api.post(`/api/v1/karpenter/apply-recommendation/${recommendationId}`, data),
+    batchApplyRecommendations: (instanceIds) => api.post('/api/v1/karpenter/apply-recommendations/batch', { instance_ids: instanceIds }),
+
+    // Mode management
+    switchMode: (clusterId, mode) => api.patch(`/api/v1/karpenter/mode/${clusterId}`, { mode }),
 };
 
 export default api;

@@ -84,11 +84,12 @@ class RebalancingStatusResponse(BaseModel):
 
 # Endpoints
 
-@router.post("/pools/rankings", response_model=List[PoolRankingResponse])
+@router.post("/pools/rankings", response_model=dict)
 async def get_pool_rankings(
-    template: NodeTemplateRequest,
+    template: Optional[NodeTemplateRequest] = None,
     region: str = Query("ap-south-1", description="AWS region"),
     limit: int = Query(10, ge=1, le=100, description="Maximum pools to return"),
+    template_id: Optional[str] = Query(None, description="Node template ID to use for filtering"),
     db: Session = Depends(get_db)
 ):
     """
@@ -105,10 +106,42 @@ async def get_pool_rankings(
     8. Final Ranking & Caching
 
     **Returns**: Top N pools sorted by ML score (savings % vs cost).
+
+    **Note**: Either provide template in body OR template_id as query param (not both).
     """
     try:
         # Get Redis client
         redis = get_redis_client()
+
+        # Determine which template to use
+        template_applied = None
+        if template_id:
+            # Fetch template from database
+            from backend.services.template_service import get_template_service
+            from backend.models.user import User
+            from backend.core.dependencies import get_current_user
+
+            template_service = get_template_service(db)
+            db_template = db.query(__import__('backend.models.node_template', fromlist=['NodeTemplate']).NodeTemplate).filter_by(id=template_id).first()
+
+            if not db_template:
+                raise HTTPException(status_code=404, detail=f"Template {template_id} not found")
+
+            # Convert DB template to NodeTemplateRequest
+            template = NodeTemplateRequest(
+                architecture=[db_template.architecture] if db_template.architecture else ["x86_64"],
+                vcpu_min=2,  # Default values - adjust based on template
+                vcpu_max=128,
+                memory_gb_min=4,
+                memory_gb_max=512,
+                allowed_families=db_template.families if db_template.families else None,
+                allowed_sizes=None,
+                allowed_azs=None,
+                excluded_instance_types=None
+            )
+            template_applied = {"id": db_template.id, "name": db_template.name}
+        elif not template:
+            raise HTTPException(status_code=400, detail="Either template body or template_id must be provided")
 
         # Convert request to NodeTemplate
         node_template = NodeTemplate(
@@ -126,9 +159,9 @@ async def get_pool_rankings(
         ranked_pools = ranking_service.rank_pools(node_template, region, limit)
 
         # Convert to response models
-        response = []
+        pools = []
         for scored_pool in ranked_pools:
-            response.append(PoolRankingResponse(
+            pools.append(PoolRankingResponse(
                 instance_type=scored_pool.pool.instance_type,
                 az=scored_pool.pool.az,
                 architecture=scored_pool.pool.architecture,
@@ -145,7 +178,12 @@ async def get_pool_rankings(
                 timestamp=scored_pool.timestamp.isoformat()
             ))
 
-        return response
+        return {
+            "pools": pools,
+            "template_applied": template_applied,
+            "region": region,
+            "total_results": len(pools)
+        }
 
     except Exception as e:
         logger.error(f"Pool ranking failed: {e}")
@@ -205,6 +243,68 @@ async def get_blacklisted_pools():
     except Exception as e:
         logger.error(f"Failed to get blacklist: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to get blacklist: {str(e)}")
+
+
+@router.get(
+    "/blacklist/check",
+    summary="Check if a specific pool is blacklisted",
+    description="Quick check for a single instance_type + AZ combination"
+)
+def check_blacklisted_pool(
+    instance_type: str = Query(..., description="Instance type to check, e.g. m5.xlarge"),
+    az: str = Query(..., description="Availability zone, e.g. us-east-1a"),
+):
+    """
+    Check if a specific instance_type + az combination is currently blacklisted.
+    Returns blacklisted status, risk score, reason, and TTL.
+    Used by Right-Sizing to validate recommendations before showing to user.
+    """
+    import redis
+    import json
+    from backend.core.config import settings
+
+    try:
+        r = redis.Redis.from_url(settings.REDIS_URL, decode_responses=True)
+        pool_key = f"{instance_type}:{az}"
+
+        # Check if in risky_pools set
+        is_blacklisted = r.sismember("risky_pools", pool_key)
+
+        if not is_blacklisted:
+            return {
+                "instance_type": instance_type,
+                "az": az,
+                "blacklisted": False,
+                "risk_score": 0,
+                "reason": None,
+                "expires_in_seconds": None
+            }
+
+        # Get metadata if available
+        metadata_key = f"risky_pool_meta:{pool_key}"
+        metadata = r.get(metadata_key)
+        meta = json.loads(metadata) if metadata else {}
+        ttl = r.ttl(metadata_key)
+
+        return {
+            "instance_type": instance_type,
+            "az": az,
+            "blacklisted": True,
+            "risk_score": meta.get("risk_score", 5),
+            "reason": meta.get("reason", "Recent spot interruption detected"),
+            "expires_in_seconds": max(ttl, 0) if ttl > 0 else None
+        }
+    except Exception as e:
+        logger.warning(f"Redis blacklist check failed: {e}")
+        return {
+            "instance_type": instance_type,
+            "az": az,
+            "blacklisted": False,
+            "risk_score": 0,
+            "reason": None,
+            "expires_in_seconds": None,
+            "warning": "Blacklist check unavailable"
+        }
 
 
 @router.get("/rebalancing/status", response_model=List[RebalancingStatusResponse])
@@ -364,10 +464,28 @@ async def get_interruption_heatmap(
 
 @router.get("/health")
 async def health_check():
-    """Health check endpoint for AtharvaAi system."""
+    """
+    Health check endpoint for AtharvaAi system.
+    
+    Reports ML pipeline status including circuit breaker state.
+    Operators should monitor `ml_status` — if "degraded", fallback scoring
+    is active and rankings may be less accurate.
+    """
+    try:
+        redis = get_redis_client()
+        ml_degraded = redis.get("atharvaai:ml_degraded")
+        ml_fail_count = int(redis.get("atharvaai:ml_fail_count") or 0)
+        is_degraded = ml_degraded == b"true" or ml_degraded == "true"
+    except Exception:
+        is_degraded = False
+        ml_fail_count = 0
+
     return {
-        "status": "healthy",
+        "status": "degraded" if is_degraded else "healthy",
         "service": "AtharvaAi Pool Selection & Termination Monitoring",
         "version": "1.0.0",
-        "timestamp": datetime.utcnow().isoformat()
+        "timestamp": datetime.utcnow().isoformat(),
+        "ml_status": "degraded" if is_degraded else "healthy",
+        "fallback_active": is_degraded,
+        "ml_fail_count_10min": ml_fail_count
     }
