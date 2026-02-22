@@ -53,5 +53,11 @@ class Organization(Base):
     tag_templates = relationship("TagTemplate", back_populates="organization", cascade="all, delete-orphan")
     auto_tag_rules = relationship("AutoTagRule", back_populates="organization", cascade="all, delete-orphan")
 
+    # Tag Governance Relationships (scoring, automation, compliance)
+    tag_scoring_config = relationship("TagScoringConfig", back_populates="organization", uselist=False, cascade="all, delete-orphan")
+    tag_automation_rules = relationship("TagAutomationRule", back_populates="organization", cascade="all, delete-orphan")
+    tag_compliance_scores = relationship("TagComplianceScore", back_populates="organization", cascade="all, delete-orphan")
+    tag_automation_logs = relationship("TagAutomationLog", back_populates="organization", cascade="all, delete-orphan")
+
     def __repr__(self):
         return f"<Organization(id={self.id}, name={self.name})>"

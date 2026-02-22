@@ -2,7 +2,7 @@
 Tag Policy Model
 Defines tag governance policies with validation rules and enforcement levels
 """
-from sqlalchemy import Column, String, DateTime, Boolean, JSON, Text, ForeignKey
+from sqlalchemy import Column, String, DateTime, Boolean, JSON, Text, Integer, ForeignKey
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from enum import Enum
@@ -18,8 +18,11 @@ class EnforcementLevel(str, Enum):
 
 class ValueMode(str, Enum):
     """Tag value validation mode"""
-    FREE_TEXT = "free_text"    # Any value allowed
-    PREDEFINED = "predefined"  # Must match allowed_values list
+    FREE_TEXT = "free_text"    # Any value allowed (maps to UI 'free')
+    PREDEFINED = "predefined"  # Must match allowed_values list (maps to UI 'allowed')
+    PATTERN = "pattern"        # Must match validation_regex
+    EMAIL = "email"            # Must be valid email format
+    ARN = "arn"                # Must be valid AWS ARN format
 
 
 class TagPolicy(Base):
@@ -51,6 +54,9 @@ class TagPolicy(Base):
     resource_types = Column(JSON, default=list)                 # ["EC2", "S3", "RDS"] or ["*"] for all
     regions = Column(JSON, default=list)                        # ["us-east-1"] or ["*"] for all
     
+    # Denormalized Counts
+    resource_count = Column(Integer, default=0)  # Updated by compliance scan
+
     # Metadata
     is_active = Column(Boolean, default=True, index=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)

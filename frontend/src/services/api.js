@@ -147,10 +147,6 @@ export const optimizationAPI = {
     }),
 };
 
-export const healthAPI = {
-    getSystemHealth: () => api.get('/api/v1/health/system'),
-};
-
 export const policyAPI = {
     listPolicies: (params) => api.get('/api/v1/policies', { params }),
     getPolicy: (id) => api.get(`/api/v1/policies/cluster/${id}`), // Fixed: use cluster endpoint
@@ -200,14 +196,6 @@ export const experimentsAPI = {
     getResults: (id) => api.get(`/api/v1/lab/experiments/${id}/results`),
 };
 export const labAPI = experimentsAPI;
-
-export const settingsAPI = {
-    getProfile: () => api.get('/api/v1/settings/profile'),
-    updateProfile: (data) => api.patch('/api/v1/settings/profile', data),
-    getIntegrations: () => api.get('/api/v1/settings/integrations'),
-    addIntegration: (data) => api.post('/api/v1/settings/integrations', data),
-    deleteIntegration: (id) => api.delete(`/api/v1/settings/integrations/${id}`),
-};
 
 export const onboardingAPI = {
     getState: () => api.get('/api/v1/onboarding/state'),

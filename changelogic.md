@@ -1,785 +1,610 @@
-# Right-Sizing with Karpenter - Ultra-Detailed UI Design
+import { useState } from "react";
 
-I'll create a comprehensive, crystal-clear interface with maximum visibility and guidance.
+const NAV_STRUCTURE = [
+  {
+    section: "OVERVIEW",
+    items: [
+      {
+        id: "dashboard",
+        label: "Dashboard",
+        icon: "⌂",
+        badge: null,
+        description: "KPIs, cost trends, fleet overview"
+      }
+    ]
+  },
+  {
+    section: "COST INTELLIGENCE",
+    items: [
+      {
+        id: "atharvaai",
+        label: "AtharvaAI Optimizer",
+        icon: "◈",
+        badge: "ML",
+        badgeColor: "#6366f1",
+        description: "ML pool rankings & interruption heatmap",
+        sub: [
+          { id: "atharvaai-rankings", label: "Pool Rankings" },
+          { id: "atharvaai-heatmap", label: "Interruption Heatmap" },
+          { id: "atharvaai-rebalancing", label: "Rebalancing Timeline" }
+        ]
+      },
+      {
+        id: "rightsizing",
+        label: "Right-Sizing",
+        icon: "⇄",
+        badge: null,
+        description: "Manual & Karpenter auto-optimization",
+        sub: [
+          { id: "rs-manual", label: "Manual Mode" },
+          { id: "rs-karpenter", label: "Karpenter Auto" },
+          { id: "rs-savings", label: "Savings Tracker" }
+        ]
+      },
+      {
+        id: "resource-hygiene",
+        label: "Resource Hygiene",
+        icon: "⊘",
+        badge: null,
+        description: "Zombie detection & cleanup across 9 AWS resource types"
+      },
+      {
+        id: "hibernation",
+        label: "Hibernation",
+        icon: "◑",
+        badge: null,
+        description: "Scheduled cluster sleep/wake strategies",
+        sub: [
+          { id: "hib-schedules", label: "Schedules" },
+          { id: "hib-strategies", label: "Strategies" },
+          { id: "hib-history", label: "Execution History" }
+        ]
+      }
+    ]
+  },
 
----
+  {
+    section: "INFRASTRUCTURE",
+    items: [
+      {
+        id: "clusters",
+        label: "Clusters",
+        icon: "⬡",
+        badge: null,
+        description: "EKS clusters, nodes, policies"
+      },
+      {
+        id: "templates",
+        label: "Node Templates",
+        icon: "◻",
+        badge: null,
+        description: "Instance family & architecture templates"
+      }
+    ]
+  },
+  {
+    section: "GOVERNANCE",
+    items: [
+      {
+        id: "approvals",
+        label: "Approvals",
+        icon: "✓",
+        badge: "3",
+        badgeColor: "#f59e0b",
+        description: "JIT access requests & grants"
+      },
+      {
+        id: "tagging",
+        label: "Tagging Policies",
+        icon: "◇",
+        badge: null,
+        description: "Tag enforcement & bulk tagging"
+      },
+      {
+        id: "automation",
+        label: "Automation",
+        icon: "⚡",
+        badge: null,
+        description: "Autopilot rules & governance policies"
+      }
+    ]
+  },
+  {
+    section: "ORGANIZATION",
+    items: [
+      {
+        id: "teams",
+        label: "Teams & Members",
+        icon: "⊹",
+        badge: null,
+        description: "Members, roles & permissions"
+      }
+    ]
+  },
+  {
+    section: "SYSTEM",
+    items: [
+      {
+        id: "audit",
+        label: "Audit Logs",
+        icon: "≡",
+        badge: null,
+        description: "Tamper-evident activity trail"
+      },
+      {
+        id: "settings",
+        label: "Settings",
+        icon: "◎",
+        badge: null,
+        description: "AWS integrations, billing, profile"
+      }
+    ]
+  }
+];
 
-## 🎯 **Complete Page Structure**
+// Search index — all searchable terms mapped to nav ids
+const SEARCH_INDEX = [
+  // AtharvaAI
+  { id: "atharvaai", terms: ["ml", "machine learning", "pool", "rankings", "onnx", "spot advisor", "interruption", "heatmap", "rebalancing", "blacklist", "capacity"] },
+  // Right-Sizing
+  { id: "rightsizing", terms: ["karpenter", "right sizing", "rightsizing", "downsize", "recommendations", "cpu", "memory", "utilization", "overprovisioned", "savings"] },
+  // Resource Hygiene
+  { id: "resource-hygiene", terms: ["zombie", "cleanup", "ebs", "ec2", "elastic ip", "s3", "snapshot", "stopped", "orphaned", "waste", "idle", "unused", "delete", "scan"] },
+  // Hibernation
+  { id: "hibernation", terms: ["sleep", "wake", "schedule", "namespace sleep", "nuclear", "snapshot restore", "cost schedule", "off hours", "weekends", "nights"] },
+  // Clusters
+  { id: "clusters", terms: ["cluster", "eks", "node", "nodegroup", "heartbeat", "agent", "spot ratio"] },
+  // Templates
+  { id: "templates", terms: ["template", "instance family", "architecture", "arm64", "amd64", "blacklist"] },
+  // Approvals
+  { id: "approvals", terms: ["approval", "jit", "access", "request", "grant", "permission", "revoke"] },
+  // Tagging
+  { id: "tagging", terms: ["tag", "tagging", "policy", "compliance", "bulk tag", "enforcement"] },
+  // Automation
+  { id: "automation", terms: ["autopilot", "automation", "governance", "rule", "auto cleanup"] },
+  // Teams
+  { id: "teams", terms: ["team", "member", "role", "invite", "organization", "permission", "rbac"] },
+  // Audit
+  { id: "audit", terms: ["audit", "log", "history", "event", "checksum", "activity", "diff"] },
+  // Settings
+  { id: "settings", terms: ["settings", "aws", "account", "integration", "billing", "profile", "password", "notification"] },
+  // Dashboard
+  { id: "dashboard", terms: ["dashboard", "kpi", "overview", "widget", "cost", "savings", "fleet", "home"] }
+];
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│  RIGHT-SIZING & AUTO-OPTIMIZATION                                        │
-│  ┌─────────────────────────────────────────────────────────────────┐   │
-│  │ ℹ️ INFO BAR                                                      │   │
-│  │ You're viewing: Manual Recommendations                          │   │
-│  │ What this means: Review and manually apply instance resize      │   │
-│  │ suggestions based on 14-day usage analysis                      │   │
-│  │                                                                   │   │
-│  │ 💡 Want automated optimization? Enable Karpenter below          │   │
-│  └─────────────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────────────┘
-```
+function searchNav(query) {
+  if (!query.trim()) return [];
+  const q = query.toLowerCase();
+  const results = new Set();
+  SEARCH_INDEX.forEach(({ id, terms }) => {
+    if (terms.some(t => t.includes(q) || q.includes(t.split(" ")[0]))) {
+      results.add(id);
+    }
+  });
+  // Also search labels directly
+  NAV_STRUCTURE.forEach(section => {
+    section.items.forEach(item => {
+      if (item.label.toLowerCase().includes(q)) results.add(item.id);
+      (item.sub || []).forEach(s => {
+        if (s.label.toLowerCase().includes(q)) results.add(item.id);
+      });
+    });
+  });
+  return [...results];
+}
 
----
+export default function SpotOptimizerSidebar() {
+  const [active, setActive] = useState("dashboard");
+  const [expanded, setExpanded] = useState(new Set(["atharvaai", "rightsizing", "hibernation"]));
+  const [search, setSearch] = useState("");
+  const [collapsed, setCollapsed] = useState(false);
 
-## 🎛️ **Top Control Panel - Clear Mode Selector**
+  const searchResults = searchNav(search);
 
-```jsx
-┌─────────────────────────────────────────────────────────────────────────┐
-│  HOW DO YOU WANT TO OPTIMIZE?                                            │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                           │
-│  ┌─────────────────────────────────┬─────────────────────────────────┐ │
-│  │  📊 MANUAL OPTIMIZATION         │  🚀 AUTOMATIC WITH KARPENTER   │ │
-│  ├─────────────────────────────────┼─────────────────────────────────┤ │
-│  │  [●] ACTIVE                     │  [○] INACTIVE                   │ │
-│  │                                  │                                  │ │
-│  │  ✅ You review each suggestion  │  ✅ Fully automated right-sizing│ │
-│  │  ✅ You decide when to apply    │  ✅ Real-time optimization      │ │
-│  │  ✅ Full manual control         │  ✅ Continuous cost reduction   │ │
-│  │                                  │                                  │ │
-│  │  ⚠️ Requires manual action      │  ⚠️ Requires Karpenter setup    │ │
-│  │  ⚠️ Recommendations age stale   │  ⚠️ Less direct control         │ │
-│  │                                  │                                  │ │
-│  │  Best for:                       │  Best for:                       │ │
-│  │  • One-time optimization        │  • Ongoing optimization         │ │
-│  │  • Strict change control        │  • Dynamic workloads            │ │
-│  │  • Testing/validation           │  • Dev/staging environments     │ │
-│  │                                  │                                  │ │
-│  │  [Continue with Manual →]       │  [Setup Karpenter →]            │ │
-│  └─────────────────────────────────┴─────────────────────────────────┘ │
-│                                                                           │
-│  💡 TIP: You can use BOTH modes on different clusters                   │
-│     Example: Manual for production, Karpenter for dev/staging           │
-│                                                                           │
-└─────────────────────────────────────────────────────────────────────────┘
-```
+  const toggleExpand = (id) => {
+    setExpanded(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  };
 
----
+  const isHighlighted = (id) => search.trim() && searchResults.includes(id);
+  const isVisible = (id) => !search.trim() || searchResults.includes(id);
 
-## 🚀 **Karpenter Setup - Step-by-Step Inline Guide**
+  return (
+    <div style={{
+      display: "flex",
+      height: "100vh",
+      fontFamily: "'DM Sans', 'Outfit', system-ui, sans-serif",
+      background: "#f0f2f5"
+    }}>
+      {/* SIDEBAR */}
+      <nav style={{
+        width: collapsed ? 60 : 260,
+        minWidth: collapsed ? 60 : 260,
+        height: "100vh",
+        background: "#0f1117",
+        display: "flex",
+        flexDirection: "column",
+        transition: "width 0.22s cubic-bezier(.4,0,.2,1), min-width 0.22s",
+        overflow: "hidden",
+        position: "relative",
+        boxShadow: "4px 0 24px rgba(0,0,0,0.18)"
+      }}>
+        {/* Header */}
+        <div style={{
+          padding: collapsed ? "20px 0" : "20px 16px",
+          borderBottom: "1px solid rgba(255,255,255,0.07)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: collapsed ? "center" : "space-between",
+          flexShrink: 0
+        }}>
+          {!collapsed && (
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <div style={{
+                width: 30, height: 30, borderRadius: 8,
+                background: "linear-gradient(135deg, #3b82f6, #6366f1)",
+                display: "flex", alignItems: "center", justifyContent: "center",
+                fontSize: 14, color: "#fff", fontWeight: 700, flexShrink: 0
+              }}>S</div>
+              <div>
+                <div style={{ color: "#fff", fontWeight: 700, fontSize: 14, letterSpacing: "-0.3px" }}>Spot Optimizer</div>
+                <div style={{ color: "#4b5563", fontSize: 10, letterSpacing: "0.08em", textTransform: "uppercase" }}>ORG_ADMIN</div>
+              </div>
+            </div>
+          )}
+          {collapsed && (
+            <div style={{
+              width: 30, height: 30, borderRadius: 8,
+              background: "linear-gradient(135deg, #3b82f6, #6366f1)",
+              display: "flex", alignItems: "center", justifyContent: "center",
+              fontSize: 14, color: "#fff", fontWeight: 700
+            }}>S</div>
+          )}
+          <button
+            onClick={() => setCollapsed(c => !c)}
+            style={{
+              background: "rgba(255,255,255,0.06)", border: "none",
+              borderRadius: 6, color: "#6b7280", cursor: "pointer",
+              width: 24, height: 24, display: "flex", alignItems: "center",
+              justifyContent: "center", fontSize: 11, flexShrink: 0,
+              transition: "background 0.15s",
+              marginLeft: collapsed ? 0 : 0
+            }}
+          >
+            {collapsed ? "›" : "‹"}
+          </button>
+        </div>
 
-### **Initial State: Setup Card**
+        {/* Search */}
+        {!collapsed && (
+          <div style={{ padding: "12px 12px 8px", flexShrink: 0 }}>
+            <div style={{ position: "relative" }}>
+              <span style={{
+                position: "absolute", left: 9, top: "50%", transform: "translateY(-50%)",
+                color: "#4b5563", fontSize: 12, pointerEvents: "none"
+              }}>⌕</span>
+              <input
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+                placeholder="Search features..."
+                style={{
+                  width: "100%", boxSizing: "border-box",
+                  background: "rgba(255,255,255,0.06)",
+                  border: "1px solid rgba(255,255,255,0.08)",
+                  borderRadius: 8, color: "#e5e7eb",
+                  padding: "7px 10px 7px 28px",
+                  fontSize: 12, outline: "none",
+                  transition: "border-color 0.15s",
+                  fontFamily: "inherit"
+                }}
+                onFocus={e => e.target.style.borderColor = "rgba(99,102,241,0.5)"}
+                onBlur={e => e.target.style.borderColor = "rgba(255,255,255,0.08)"}
+              />
+              {search && (
+                <button
+                  onClick={() => setSearch("")}
+                  style={{
+                    position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)",
+                    background: "none", border: "none", color: "#6b7280",
+                    cursor: "pointer", fontSize: 11, padding: 0, lineHeight: 1
+                  }}
+                >✕</button>
+              )}
+            </div>
+            {search && searchResults.length > 0 && (
+              <div style={{ color: "#4b5563", fontSize: 10, marginTop: 5, paddingLeft: 2 }}>
+                {searchResults.length} result{searchResults.length !== 1 ? "s" : ""} for "{search}"
+              </div>
+            )}
+            {search && searchResults.length === 0 && (
+              <div style={{ color: "#ef4444", fontSize: 10, marginTop: 5, paddingLeft: 2 }}>
+                No features found
+              </div>
+            )}
+          </div>
+        )}
 
-```jsx
-┌─────────────────────────────────────────────────────────────────────────┐
-│  🚀 KARPENTER AUTO-OPTIMIZATION                    STATUS: ⚪ NOT SETUP │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                           │
-│  ┌──────────────────────────────────────────────────────────────────┐  │
-│  │  WHAT IS KARPENTER?                                              │  │
-│  │                                                                   │  │
-│  │  Karpenter is a Kubernetes node provisioner that automatically  │  │
-│  │  selects the best instance types and sizes based on your actual │  │
-│  │  pod requirements - in real-time.                               │  │
-│  │                                                                   │  │
-│  │  Instead of you manually reviewing and applying recommendations │  │
-│  │  (which can become stale), Karpenter continuously monitors your │  │
-│  │  workloads and makes adjustments automatically.                 │  │
-│  │                                                                   │  │
-│  │  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  │  │
-│  │                                                                   │  │
-│  │  BENEFITS:                                                        │  │
-│  │  ✅ 30-50% cost reduction (vs manual sizing)                    │  │
-│  │  ✅ 75%+ average utilization (vs typical 40-50%)                │  │
-│  │  ✅ Automatic spot instance management                           │  │
-│  │  ✅ Right-sized nodes every time                                 │  │
-│  │  ✅ Zero manual intervention needed                              │  │
-│  │                                                                   │  │
-│  │  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  │  │
-│  │                                                                   │  │
-│  │  HOW IT WORKS:                                                    │  │
-│  │  1. Karpenter watches pod scheduling requests                   │  │
-│  │  2. Selects optimal instance type from allowed families         │  │
-│  │  3. Provisions nodes within seconds                             │  │
-│  │  4. Continuously consolidates under-utilized nodes              │  │
-│  │  5. Replaces expensive instances with cheaper alternatives      │  │
-│  │                                                                   │  │
-│  │  [📖 Read Full Documentation] [▶️ Watch 2-min Demo Video]       │  │
-│  └──────────────────────────────────────────────────────────────────┘  │
-│                                                                           │
-│  ┌──────────────────────────────────────────────────────────────────┐  │
-│  │  SETUP ESTIMATE                                                   │  │
-│  │                                                                   │  │
-│  │  ⏱️ Time: 3-5 minutes                                            │  │
-│  │  🔧 Complexity: Easy (we guide you through everything)          │  │
-│  │  💰 Estimated savings for your clusters: $2,400/month (37%)     │  │
-│  │  ⚡ Can be enabled/disabled anytime                              │  │
-│  └──────────────────────────────────────────────────────────────────┘  │
-│                                                                           │
-│  [Maybe Later]                               [🚀 Start Karpenter Setup] │
-│                                                                           │
-└─────────────────────────────────────────────────────────────────────────┘
-```
+        {/* Nav Sections */}
+        <div style={{
+          flex: 1, overflowY: "auto", overflowX: "hidden",
+          padding: collapsed ? "8px 0" : "4px 8px 8px",
+          scrollbarWidth: "none"
+        }}>
+          {NAV_STRUCTURE.map(section => {
+            const visibleItems = section.items.filter(item => isVisible(item.id));
+            if (search && visibleItems.length === 0) return null;
 
----
+            return (
+              <div key={section.section} style={{ marginBottom: 2 }}>
+                {!collapsed && (
+                  <div style={{
+                    color: "#374151", fontSize: 9.5, fontWeight: 700,
+                    letterSpacing: "0.1em", textTransform: "uppercase",
+                    padding: "12px 8px 4px",
+                    opacity: search && visibleItems.length === 0 ? 0.3 : 1
+                  }}>
+                    {section.section}
+                  </div>
+                )}
+                {collapsed && <div style={{ height: 8 }} />}
 
-### **Setup Wizard (Only for Initial Setup - One Time)**
+                {section.items.map(item => {
+                  const visible = isVisible(item.id);
+                  const highlighted = isHighlighted(item.id);
+                  const isActive = active === item.id || (item.sub || []).some(s => s.id === active);
+                  const isOpen = expanded.has(item.id);
+                  const hasSub = item.sub && item.sub.length > 0;
 
-This is acceptable because it's a **one-time setup**, not a repetitive action.
+                  if (!visible && search) return null;
 
-#### **Step 1: Choose Clusters**
+                  return (
+                    <div key={item.id}>
+                      {/* Main item */}
+                      <button
+                        onClick={() => {
+                          if (hasSub) {
+                            toggleExpand(item.id);
+                            setActive(item.id);
+                          } else {
+                            setActive(item.id);
+                          }
+                        }}
+                        title={collapsed ? item.label : undefined}
+                        style={{
+                          width: "100%", display: "flex", alignItems: "center",
+                          gap: 9, padding: collapsed ? "9px 0" : "8px 10px",
+                          justifyContent: collapsed ? "center" : "flex-start",
+                          background: isActive
+                            ? "rgba(59,130,246,0.12)"
+                            : highlighted
+                            ? "rgba(99,102,241,0.1)"
+                            : "transparent",
+                          border: "none",
+                          borderRadius: 8,
+                          cursor: "pointer",
+                          position: "relative",
+                          transition: "background 0.12s",
+                          textAlign: "left",
+                          outline: "none",
+                          marginBottom: 1
+                        }}
+                        onMouseEnter={e => {
+                          if (!isActive) e.currentTarget.style.background = "rgba(255,255,255,0.04)";
+                        }}
+                        onMouseLeave={e => {
+                          if (!isActive) e.currentTarget.style.background = highlighted ? "rgba(99,102,241,0.1)" : "transparent";
+                        }}
+                      >
+                        {/* Active indicator */}
+                        {isActive && (
+                          <span style={{
+                            position: "absolute", left: 0, top: "20%", bottom: "20%",
+                            width: 3, borderRadius: "0 3px 3px 0",
+                            background: "linear-gradient(180deg, #3b82f6, #6366f1)"
+                          }} />
+                        )}
 
-```jsx
-┌─────────────────────────────────────────────────────────────────────────┐
-│  KARPENTER SETUP - STEP 1 OF 4                         [Save & Exit] [✕]│
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                           │
-│  SELECT CLUSTERS TO ENABLE KARPENTER                                     │
-│                                                                           │
-│  ┌──────────────────────────────────────────────────────────────────┐  │
-│  │  ℹ️ Which clusters should use automatic optimization?            │  │
-│  │                                                                   │  │
-│  │  💡 RECOMMENDATION: Start with dev/staging clusters first       │  │
-│  │  Validate behavior before enabling on production                │  │
-│  └──────────────────────────────────────────────────────────────────┘  │
-│                                                                           │
-│  ┌──────────────────────────────────────────────────────────────────┐  │
-│  │                                                                   │  │
-│  │  ☑️  prod-web (us-east-1)                          💰 SAVINGS   │  │
-│  │      12 nodes  •  Current: $3,200/mo             +$960/mo (30%)│  │
-│  │      ├─ Status: Healthy  •  k8s v1.28                          │  │
-│  │      ├─ Current types: m5.xlarge (8), c5.large (4)             │  │
-│  │      └─ Current utilization: 42% CPU, 38% Memory               │  │
-│  │                                                                   │  │
-│  │      ⚠️ RECOMMENDATION: Medium priority                         │  │
-│  │      • This is a production cluster - consider testing first   │  │
-│  │      • Current utilization is low (good candidate)             │  │
-│  │                                                                   │  │
-│  ├──────────────────────────────────────────────────────────────────┤  │
-│  │                                                                   │  │
-│  │  ☑️  prod-api (us-east-1)                          💰 SAVINGS   │  │
-│  │      18 nodes  •  Current: $4,800/mo           +$1,440/mo (30%)│  │
-│  │      ├─ Status: Healthy  •  k8s v1.28                          │  │
-│  │      ├─ Current types: r5.xlarge (12), m5.large (6)            │  │
-│  │      └─ Current utilization: 38% CPU, 45% Memory               │  │
-│  │                                                                   │  │
-│  │      ⚠️ RECOMMENDATION: Medium priority                         │  │
-│  │      • Production cluster - test on staging first              │  │
-│  │      • Mix of instance types suggests manual tuning struggles  │  │
-│  │                                                                   │  │
-│  ├──────────────────────────────────────────────────────────────────┤  │
-│  │                                                                   │  │
-│  │  ☑️  staging-cluster (us-west-2)                   💰 SAVINGS   │  │
-│  │      5 nodes  •  Current: $1,200/mo               +$360/mo (30%)│  │
-│  │      ├─ Status: Healthy  •  k8s v1.28                          │  │
-│  │      ├─ Current types: m5.large (5)                            │  │
-│  │      └─ Current utilization: 35% CPU, 40% Memory               │  │
-│  │                                                                   │  │
-│  │      ✅ RECOMMENDATION: HIGH priority - START HERE              │  │
-│  │      • Staging environment - perfect for testing               │  │
-│  │      • Low risk, immediate savings                             │  │
-│  │                                                                   │  │
-│  ├──────────────────────────────────────────────────────────────────┤  │
-│  │                                                                   │  │
-│  │  ☐  dev-cluster (eu-west-1)                        💰 SAVINGS   │  │
-│  │      3 nodes  •  Current: $800/mo                 +$240/mo (30%)│  │
-│  │      ├─ Status: Healthy  •  k8s v1.27                          │  │
-│  │      ├─ Current types: t3.medium (3)                           │  │
-│  │      └─ Current utilization: 25% CPU, 30% Memory               │  │
-│  │                                                                   │  │
-│  │      ✅ RECOMMENDATION: HIGH priority                           │  │
-│  │      • Dev environment - ideal for testing Karpenter           │  │
-│  │      • Currently over-provisioned                               │  │
-│  │                                                                   │  │
-│  └──────────────────────────────────────────────────────────────────┘  │
-│                                                                           │
-│  ┌──────────────────────────────────────────────────────────────────┐  │
-│  │  SELECTION SUMMARY                                                │  │
-│  │                                                                   │  │
-│  │  Selected clusters: 3 of 4                                       │  │
-│  │  Total nodes to manage: 35 nodes                                │  │
-│  │  Current monthly cost: $9,200                                   │  │
-│  │  Estimated savings: $2,760/mo (30% average)                     │  │
-│  │  Annual impact: ~$33,120/year                                   │  │
-│  │                                                                   │  │
-│  │  ℹ️ These are estimates based on typical Karpenter performance  │  │
-│  │  Actual savings may vary based on workload patterns             │  │
-│  └──────────────────────────────────────────────────────────────────┘  │
-│                                                                           │
-│  [← Back]                        [Skip for Now]  [Continue to Config →] │
-│                                                                           │
-└─────────────────────────────────────────────────────────────────────────┘
-```
+                        {/* Icon */}
+                        <span style={{
+                          fontSize: 15,
+                          color: isActive ? "#60a5fa" : highlighted ? "#818cf8" : "#6b7280",
+                          width: 18, textAlign: "center", flexShrink: 0,
+                          transition: "color 0.12s"
+                        }}>
+                          {item.icon}
+                        </span>
 
----
+                        {!collapsed && (
+                          <>
+                            <span style={{
+                              color: isActive ? "#e5e7eb" : highlighted ? "#c7d2fe" : "#9ca3af",
+                              fontSize: 13, fontWeight: isActive ? 600 : 400,
+                              flex: 1, letterSpacing: "-0.1px",
+                              transition: "color 0.12s"
+                            }}>
+                              {item.label}
+                            </span>
 
-#### **Step 2: Configure Strategy (Per-Cluster)**
+                            {/* Badge */}
+                            {item.badge && (
+                              <span style={{
+                                background: item.badgeColor || "#374151",
+                                color: "#fff", fontSize: 9, fontWeight: 700,
+                                padding: "1px 6px", borderRadius: 10,
+                                letterSpacing: "0.04em"
+                              }}>
+                                {item.badge}
+                              </span>
+                            )}
 
-```jsx
-┌─────────────────────────────────────────────────────────────────────────┐
-│  KARPENTER SETUP - STEP 2 OF 4                         [Save & Exit] [✕]│
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                           │
-│  CONFIGURE OPTIMIZATION STRATEGY                                         │
-│                                                                           │
-│  Cluster: prod-web (us-east-1)                    [Switch Cluster ▼]    │
-│                                                                           │
-│  ┌──────────────────────────────────────────────────────────────────┐  │
-│  │  ℹ️ Choose your optimization strategy                            │  │
-│  │                                                                   │  │
-│  │  This determines how Karpenter balances cost savings vs         │  │
-│  │  performance/stability. You can change this anytime.            │  │
-│  └──────────────────────────────────────────────────────────────────┘  │
-│                                                                           │
-│  SELECT STRATEGY:                                                        │
-│                                                                           │
-│  ┌──────────────────────────────────────────────────────────────────┐  │
-│  │  ○  COST-FIRST (Maximum Savings)                                 │  │
-│  │     ────────────────────────────────────────────────────────     │  │
-│  │                                                                   │  │
-│  │     What it does:                                                │  │
-│  │     • Prioritizes cheapest instance types (Graviton, older gen) │  │
-│  │     • Aggressive consolidation (merges nodes frequently)         │  │
-│  │     • 90%+ spot instances                                        │  │
-│  │     • More node replacements/churn                               │  │
-│  │                                                                   │  │
-│  │     Expected results:                                            │  │
-│  │     💰 Savings: 40-50%                                           │  │
-│  │     ⚡ Utilization: 80-90%                                        │  │
-│  │     🔄 Node churn: Medium-High                                   │  │
-│  │                                                                   │  │
-│  │     Best for:                                                    │  │
-│  │     ✅ Dev/staging environments                                  │  │
-│  │     ✅ Batch processing workloads                                │  │
-│  │     ✅ Stateless applications                                    │  │
-│  │     ⚠️ NOT for: Databases, stateful apps                         │  │
-│  │                                                                   │  │
-│  ├──────────────────────────────────────────────────────────────────┤  │
-│  │  ●  BALANCED (Recommended)                                       │  │
-│  │     ────────────────────────────────────────────────────────     │  │
-│  │                                                                   │  │
-│  │     What it does:                                                │  │
-│  │     • Mix of cost and performance optimization                   │  │
-│  │     • Moderate consolidation (avoids excessive churn)            │  │
-│  │     • 70-80% spot instances with on-demand fallback             │  │
-│  │     • Balanced node lifecycle management                         │  │
-│  │                                                                   │  │
-│  │     Expected results:                                            │  │
-│  │     💰 Savings: 30-40%                                           │  │
-│  │     ⚡ Utilization: 70-80%                                        │  │
-│  │     🔄 Node churn: Low-Medium                                    │  │
-│  │                                                                   │  │
-│  │     Best for:                                                    │  │
-│  │     ✅ Production web applications                               │  │
-│  │     ✅ API services                                              │  │
-│  │     ✅ Most general workloads                                    │  │
-│  │     ✅ When you want "set and forget"                            │  │
-│  │                                                                   │  │
-│  ├──────────────────────────────────────────────────────────────────┤  │
-│  │  ○  PERFORMANCE-FIRST (Stability Priority)                       │  │
-│  │     ────────────────────────────────────────────────────────     │  │
-│  │                                                                   │  │
-│  │     What it does:                                                │  │
-│  │     • Favors current-gen, proven instance types                 │  │
-│  │     • Conservative consolidation (less frequent changes)         │  │
-│  │     • 50-60% spot instances (more on-demand for stability)      │  │
-│  │     • Longer node lifetimes                                      │  │
-│  │                                                                   │  │
-│  │     Expected results:                                            │  │
-│  │     💰 Savings: 20-30%                                           │  │
-│  │     ⚡ Utilization: 60-70%                                        │  │
-│  │     🔄 Node churn: Very Low                                      │  │
-│  │                                                                   │  │
-│  │     Best for:                                                    │  │
-│  │     ✅ Mission-critical production apps                          │  │
-│  │     ✅ Stateful workloads (databases, caches)                   │  │
-│  │     ✅ Low-latency requirements                                  │  │
-│  │     ✅ Strict SLA requirements                                   │  │
-│  │                                                                   │  │
-│  └──────────────────────────────────────────────────────────────────┘  │
-│                                                                           │
-│  ┌──────────────────────────────────────────────────────────────────┐  │
-│  │  💡 RECOMMENDATION FOR THIS CLUSTER:                             │  │
-│  │                                                                   │  │
-│  │  We suggest: BALANCED                                            │  │
-│  │                                                                   │  │
-│  │  Why?                                                            │  │
-│  │  • Production cluster (needs stability)                          │  │
-│  │  • Currently low utilization (42% CPU) - room for optimization  │  │
-│  │  • Web workload (good fit for balanced approach)                │  │
-│  │                                                                   │  │
-│  │  You can always change this later in Settings                   │  │
-│  └──────────────────────────────────────────────────────────────────┘  │
-│                                                                           │
-│  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  │
-│                                                                           │
-│  NEXT CLUSTER: prod-api (1 more to configure)         [Configure →]     │
-│                                                                           │
-│  [← Back to Cluster Selection]               [Save & Continue to Step 3]│
-│                                                                           │
-└─────────────────────────────────────────────────────────────────────────┘
-```
+                            {/* Chevron for expandable */}
+                            {hasSub && (
+                              <span style={{
+                                color: "#4b5563", fontSize: 10,
+                                transform: isOpen ? "rotate(90deg)" : "rotate(0deg)",
+                                transition: "transform 0.18s",
+                                marginLeft: item.badge ? 4 : 0
+                              }}>›</span>
+                            )}
+                          </>
+                        )}
 
----
+                        {/* Collapsed badge dot */}
+                        {collapsed && item.badge && (
+                          <span style={{
+                            position: "absolute", top: 5, right: 8,
+                            width: 6, height: 6, borderRadius: "50%",
+                            background: item.badgeColor || "#f59e0b"
+                          }} />
+                        )}
+                      </button>
 
-#### **Step 3: Configure Instance Settings**
+                      {/* Tooltip on hover when collapsed */}
+                      {/* Sub-items */}
+                      {!collapsed && hasSub && isOpen && (
+                        <div style={{
+                          paddingLeft: 26,
+                          borderLeft: "1px solid rgba(255,255,255,0.06)",
+                          marginLeft: 18,
+                          marginBottom: 2,
+                          marginTop: 1
+                        }}>
+                          {item.sub.map(sub => (
+                            <button
+                              key={sub.id}
+                              onClick={() => setActive(sub.id)}
+                              style={{
+                                width: "100%", display: "flex", alignItems: "center",
+                                gap: 6, padding: "6px 8px",
+                                background: active === sub.id ? "rgba(59,130,246,0.1)" : "transparent",
+                                border: "none", borderRadius: 6,
+                                cursor: "pointer", textAlign: "left", outline: "none",
+                                marginBottom: 1, transition: "background 0.12s"
+                              }}
+                              onMouseEnter={e => {
+                                if (active !== sub.id) e.currentTarget.style.background = "rgba(255,255,255,0.03)";
+                              }}
+                              onMouseLeave={e => {
+                                if (active !== sub.id) e.currentTarget.style.background = "transparent";
+                              }}
+                            >
+                              <span style={{
+                                width: 4, height: 4, borderRadius: "50%", flexShrink: 0,
+                                background: active === sub.id ? "#60a5fa" : "#374151"
+                              }} />
+                              <span style={{
+                                color: active === sub.id ? "#93c5fd" : "#6b7280",
+                                fontSize: 12, fontWeight: active === sub.id ? 500 : 400
+                              }}>
+                                {sub.label}
+                              </span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })}
+        </div>
 
-```jsx
-┌─────────────────────────────────────────────────────────────────────────┐
-│  KARPENTER SETUP - STEP 3 OF 4                         [Save & Exit] [✕]│
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                           │
-│  CONFIGURE INSTANCE PREFERENCES                                          │
-│                                                                           │
-│  Cluster: prod-web (us-east-1)                    [Switch Cluster ▼]    │
-│  Strategy: Balanced                                                      │
-│                                                                           │
-│  ┌──────────────────────────────────────────────────────────────────┐  │
-│  │  ℹ️ Tell Karpenter which instance types it can use               │  │
-│  │                                                                   │  │
-│  │  Don't worry - Karpenter will automatically choose the best     │  │
-│  │  instance type from your allowed list based on pod requirements │  │
-│  └──────────────────────────────────────────────────────────────────┘  │
-│                                                                           │
-│  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  │
-│                                                                           │
-│  1. INSTANCE FAMILIES                                                    │
-│                                                                           │
-│  ┌──────────────────────────────────────────────────────────────────┐  │
-│  │  What are instance families?                                     │  │
-│  │  Different types optimized for different workloads:              │  │
-│  │  • General Purpose (m): Balanced CPU/memory                      │  │
-│  │  • Compute (c): More CPU, less memory                            │  │
-│  │  • Memory (r): More memory, less CPU                             │  │
-│  │  • Burstable (t): Variable performance, cheapest                 │  │
-│  └──────────────────────────────────────────────────────────────────┘  │
-│                                                                           │
-│  Quick Pick: [Web Tier ▼]  [Apply Preset]                               │
-│  ├─ Web Tier: m5, m6i, m6a, c5, c6i                                     │
-│  ├─ API/Backend: c5, c6i, c6a, c7i, m6i                                 │
-│  ├─ Database: r5, r6i, r6a, m6i                                         │
-│  └─ Batch Processing: t3, t4g, m5, c5                                   │
-│                                                                           │
-│  OR select manually:                                                     │
-│                                                                           │
-│  ☑️ General Purpose (m-family)                 [Expand to see types ▼]  │
-│     ├─ ☑️ m5 (Current gen)        - Intel, proven                       │
-│     ├─ ☑️ m6i (Latest)            - Intel, 15% better price/perf        │
-│     ├─ ☑️ m6a (AMD)               - AMD, 10% cheaper than m6i           │
-│     ├─ ☐ m7i (Newest)            - Intel, cutting edge ($$)             │
-│     └─ ☐ m7a (AMD Latest)        - AMD, newest ($$)                     │
-│                                                                           │
-│  ☑️ Compute Optimized (c-family)               [Expand to see types ▼]  │
-│     ├─ ☑️ c5 (Current gen)        - Good balance                        │
-│     ├─ ☑️ c6i (Latest Intel)      - 15% faster than c5                  │
-│     ├─ ☐ c6a (AMD)               - 10% cheaper than c6i                 │
-│     └─ ☐ c7i (Newest)            - Cutting edge ($$$)                   │
-│                                                                           │
-│  ☐ Memory Optimized (r-family)                 [Expand to see types ▼]  │
-│  ☐ Burstable (t-family)                        [Expand to see types ▼]  │
-│  ☐ Storage Optimized (i-family)                [Expand to see types ▼]  │
-│                                                                           │
-│  💡 TIP: More families = more flexibility = better pricing              │
-│  Currently selected: 8 instance types                                    │
-│                                                                           │
-│  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  │
-│                                                                           │
-│  2. ARCHITECTURE                                                         │
-│                                                                           │
-│  ┌──────────────────────────────────────────────────────────────────┐  │
-│  │  What's the difference?                                          │  │
-│  │  • AMD64 (x86): Traditional, widest compatibility                │  │
-│  │  • ARM64 (Graviton): AWS-designed, 20% cheaper, great perf      │  │
-│  │                                                                   │  │
-│  │  💡 Most apps work on both - enable both for best pricing       │  │
-│  └──────────────────────────────────────────────────────────────────┘  │
-│                                                                           │
-│  ☑️ AMD64 (x86)     - Traditional Intel/AMD processors                  │
-│  ☑️ ARM64 (Graviton) - AWS Graviton (20% cheaper, great performance)   │
-│                                                                           │
-│  ⚠️ Check compatibility:                                                │
-│  ☑️ My workloads support multi-architecture                             │
-│     (If unsure, start with AMD64 only)                                  │
-│                                                                           │
-│  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  │
-│                                                                           │
-│  3. CAPACITY TYPE (Spot vs On-Demand)                                   │
-│                                                                           │
-│  ┌──────────────────────────────────────────────────────────────────┐  │
-│  │  What's spot?                                                    │  │
-│  │  Spot instances are unused AWS capacity at 70% discount.        │  │
-│  │  Trade-off: AWS can interrupt them with 2-min warning.          │  │
-│  │                                                                   │  │
-│  │  How Karpenter handles this:                                    │  │
-│  │  • Automatically moves pods before interruption                  │  │
-│  │  • Replaces with new spot or on-demand                          │  │
-│  │  • Your app stays running                                       │  │
-│  └──────────────────────────────────────────────────────────────────┘  │
-│                                                                           │
-│  Spot target: [━━━━━━━●━━] 75%                                         │
-│               ↑                                                          │
-│               Based on "Balanced" strategy                               │
-│                                                                           │
-│  ☑️ Enable on-demand fallback                                           │
-│     If spot unavailable, use on-demand (prevents stuck pods)            │
-│                                                                           │
-│  Interruption handling: [Rebalance Automatically ▼]                     │
-│  ├─ Rebalance Automatically (Recommended) - Move pods before termination│
-│  ├─ No Action - Let Kubernetes reschedule                              │
-│  └─ Delete and Replace - Faster but brief downtime                     │
-│                                                                           │
-│  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  │
-│                                                                           │
-│  4. RESOURCE LIMITS (per node)                                          │
-│                                                                           │
-│  ┌──────────────────────────────────────────────────────────────────┐  │
-│  │  Why set limits?                                                 │  │
-│  │  Prevents Karpenter from choosing giant (expensive) or tiny     │  │
-│  │  (inefficient) instances                                        │  │
-│  └──────────────────────────────────────────────────────────────────┘  │
-│                                                                           │
-│  vCPU per node:                                                          │
-│  Min: [2]  cores    Max: [16]  cores                                    │
-│        └─ Prevents tiny inefficient nodes                                │
-│                           └─ Prevents expensive large nodes              │
-│                                                                           │
-│  Memory per node:                                                        │
-│  Min: [4]  GiB      Max: [64]  GiB                                      │
-│                                                                           │
-│  💡 Your current nodes: 2-8 vCPU, 4-16 GiB                              │
-│  These limits match your current usage patterns                          │
-│                                                                           │
-│  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  │
-│                                                                           │
-│  ┌──────────────────────────────────────────────────────────────────┐  │
-│  │  PREVIEW: WHAT KARPENTER CAN CHOOSE                              │  │
-│  │                                                                   │  │
-│  │  Based on your selections, Karpenter can provision:             │  │
-│  │  • 24 different instance type combinations                       │  │
-│  │  • Estimated cost range: $0.08 - $0.65/hour per node           │  │
-│  │  • Spot discount potential: Up to 70%                           │  │
-│  │                                                                   │  │
-│  │  Example selections Karpenter might make:                        │  │
-│  │  ├─ Web pods (2 vCPU, 4GB): m6i.large spot ($0.08/hr)          │  │
-│  │  ├─ API pods (4 vCPU, 8GB): c6i.xlarge spot ($0.15/hr)         │  │
-│  │  └─ Worker pods (8 vCPU, 16GB): m6a.2xlarge spot ($0.28/hr)    │  │
-│  └──────────────────────────────────────────────────────────────────┘  │
-│                                                                           │
-│  [← Back to Strategy]    [Save & Continue to Advanced Settings →]       │
-│                                                                           │
-└─────────────────────────────────────────────────────────────────────────┘
-```
+        {/* Footer */}
+        <div style={{
+          borderTop: "1px solid rgba(255,255,255,0.07)",
+          padding: collapsed ? "12px 0" : "12px 12px",
+          flexShrink: 0
+        }}>
+          {!collapsed ? (
+            <div style={{
+              display: "flex", alignItems: "center", gap: 10,
+              padding: "6px 8px", borderRadius: 8,
+              background: "rgba(255,255,255,0.04)"
+            }}>
+              <div style={{
+                width: 28, height: 28, borderRadius: "50%",
+                background: "linear-gradient(135deg, #3b82f6, #6366f1)",
+                display: "flex", alignItems: "center", justifyContent: "center",
+                fontSize: 12, color: "#fff", fontWeight: 700, flexShrink: 0
+              }}>A</div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ color: "#d1d5db", fontSize: 12, fontWeight: 500, truncate: "ellipsis", overflow: "hidden", whiteSpace: "nowrap" }}>ath@gmail.com</div>
+                <div style={{ color: "#4b5563", fontSize: 10 }}>ORG_ADMIN</div>
+              </div>
+              <button style={{
+                background: "none", border: "none", color: "#4b5563",
+                cursor: "pointer", fontSize: 14, padding: 0
+              }}>⇥</button>
+            </div>
+          ) : (
+            <div style={{ display: "flex", justifyContent: "center" }}>
+              <div style={{
+                width: 28, height: 28, borderRadius: "50%",
+                background: "linear-gradient(135deg, #3b82f6, #6366f1)",
+                display: "flex", alignItems: "center", justifyContent: "center",
+                fontSize: 12, color: "#fff", fontWeight: 700
+              }}>A</div>
+            </div>
+          )}
+        </div>
+      </nav>
 
----
+      {/* MAIN CONTENT AREA — Preview */}
+      <div style={{ flex: 1, padding: 32, overflowY: "auto" }}>
+        <div style={{ maxWidth: 680 }}>
+          <h2 style={{ fontFamily: "inherit", fontSize: 22, fontWeight: 700, color: "#111827", marginBottom: 6 }}>
+            Sidebar Redesign
+          </h2>
+          <p style={{ color: "#6b7280", fontSize: 14, marginBottom: 28, lineHeight: 1.6 }}>
+            Navigation restructured into 7 logical sections. Use the search box to find any feature instantly — it searches labels, descriptions, and keywords (e.g. "zombie", "karpenter", "jit", "onnx").
+          </p>
 
-#### **Step 4: Advanced Settings & Review**
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 24 }}>
+            {[
+              { before: "Dashboard, Approvals, Teams, Clusters (flat)", after: "Overview → Infrastructure → Organization", label: "Platform nav" },
+              { before: "AtharvaAI, Right-Sizing, Resource Hygiene, Hibernation (flat)", after: "Cost Intelligence section with sub-items", label: "Core features" },
+              { before: "Tagging & Templates scattered in Optimizations", after: "Governance + Infrastructure sections", label: "Structure" },
+              { before: "No search — must scroll to find features", after: "Semantic search: 'zombie', 'jit', 'karpenter'", label: "Discovery" },
+            ].map(row => (
+              <div key={row.label} style={{
+                background: "#fff", borderRadius: 10, padding: 16,
+                border: "1px solid #e5e7eb"
+              }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: "#6366f1", marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                  {row.label}
+                </div>
+                <div style={{ fontSize: 12, color: "#ef4444", marginBottom: 4, display: "flex", gap: 4 }}>
+                  <span>✕</span><span style={{ color: "#6b7280" }}>{row.before}</span>
+                </div>
+                <div style={{ fontSize: 12, color: "#10b981", display: "flex", gap: 4 }}>
+                  <span>✓</span><span style={{ color: "#6b7280" }}>{row.after}</span>
+                </div>
+              </div>
+            ))}
+          </div>
 
-```jsx
-┌─────────────────────────────────────────────────────────────────────────┐
-│  KARPENTER SETUP - STEP 4 OF 4                         [Save & Exit] [✕]│
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                           │
-│  ADVANCED SETTINGS & REVIEW                                              │
-│                                                                           │
-│  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  │
-│                                                                           │
-│  CONSOLIDATION (Cost Optimization)                                       │
-│                                                                           │
-│  ┌──────────────────────────────────────────────────────────────────┐  │
-│  │  What is consolidation?                                          │  │
-│  │  Karpenter continuously looks for ways to pack your pods onto   │  │
-│  │  fewer, cheaper nodes. When nodes are under-utilized, it moves  │  │
-│  │  pods and terminates empty nodes.                               │  │
-│  │                                                                   │  │
-│  │  Example: 3 nodes at 30% → 2 nodes at 45% (1 node saved)       │  │
-│  └──────────────────────────────────────────────────────────────────┘  │
-│                                                                           │
-│  ☑️ Enable consolidation                                                │
-│                                                                           │
-│  When to consolidate:                                                    │
-│  Utilization threshold: [━━━━━●━━━━] 60%                                │
-│                          ↑                                                │
-│                          Consolidate when nodes below this               │
-│                                                                           │
-│  Wait before consolidating: [60] seconds                                │
-│  (Prevents rapid changes during traffic spikes)                         │
-│                                                                           │
-│  Empty node time-to-live: [30] seconds                                  │
-│  (How long to wait before deleting empty nodes)                         │
-│                                                                           │
-│  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  │
-│                                                                           │
-│  NODE LIFECYCLE                                                          │
-│                                                                           │
-│  ┌──────────────────────────────────────────────────────────────────┐  │
-│  │  Why force node rotation?                                        │  │
-│  │  Regularly replacing nodes helps:                               │  │
-│  │  • Get latest AMI security patches                              │  │
-│  │  • Switch to cheaper instance types as they become available    │  │
-│  │  • Prevent long-running node issues                             │  │
-│  └──────────────────────────────────────────────────────────────────┘  │
-│                                                                           │
-│  ☑️ Force node rotation                                                 │
-│  Max node lifetime: [7] days                                            │
-│                                                                           │
-│  Rotation strategy: [Gradual ▼]                                         │
-│  ├─ Gradual (Recommended) - Replace 1-2 nodes at a time                │
-│  ├─ Aggressive - Replace multiple nodes quickly                         │
-│  └─ Conservative - Only replace when absolutely necessary               │
-│                                                                           │
-│  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  │
-│                                                                           │
-│  WORKLOAD PROTECTION                                                     │
-│                                                                           │
-│  ☑️ Respect PodDisruptionBudgets                                        │
-│     Don't disrupt pods if it would violate PDB (prevents outages)       │
-│                                                                           │
-│  ☑️ Respect node affinity/anti-affinity                                 │
-│     Honor pod scheduling preferences                                     │
-│                                                                           │
-│  ☑️ Respect taints and tolerations                                      │
-│     Don't schedule pods on nodes they can't tolerate                    │
-│                                                                           │
-│  ☑️ Drain nodes gracefully                                              │
-│     Give pods [90] seconds to shut down cleanly                         │
-│                                                                           │
-│  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  │
-│                                                                           │
-│  COST GUARDRAILS                                                         │
-│                                                                           │
-│  ☑️ Enable cost alerts                                                  │
-│     Alert me when cluster cost exceeds: [$5,000] per month             │
-│                                                                           │
-│  ☑️ Block expensive instances                                           │
-│     Never provision instances above: [$2.00] per hour                   │
-│                                                                           │
-│  ☑️ Daily cost budget                                                   │
-│     Stop provisioning new nodes if daily cost exceeds: [$200]           │
-│                                                                           │
-│  Alert method: [Email + Slack ▼]                                        │
-│  Alert recipients: [admin@company.com, ops@company.com]                │
-│                                                                           │
-│  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  │
-│                                                                           │
-│  DEPLOYMENT SUMMARY                                                      │
-│                                                                           │
-│  ┌──────────────────────────────────────────────────────────────────┐  │
-│  │  📋 REVIEW YOUR CONFIGURATION                                     │  │
-│  │                                                                   │  │
-│  │  Clusters to enable: 3                                           │  │
-│  │  ├─ prod-web: Balanced strategy, 75% spot                        │  │
-│  │  ├─ prod-api: Balanced strategy, 75% spot                        │  │
-│  │  └─ staging-cluster: Cost-First strategy, 90% spot              │  │
-│  │                                                                   │  │
-│  │  Total nodes to manage: 35 nodes                                │  │
-│  │  Current monthly cost: $9,200                                   │  │
-│  │  Estimated new cost: $6,440 (30% reduction)                     │  │
-│  │  Estimated monthly savings: $2,760                              │  │
-│  │  Annual impact: ~$33,120/year                                   │  │
-│  │                                                                   │  │
-│  │  Instance families allowed: m5, m6i, m6a, c5, c6i              │  │
-│  │  Architectures: AMD64 + ARM64 (Graviton)                        │  │
-│  │  Spot target: 75-90% depending on cluster                       │  │
-│  │  Consolidation: Enabled                                          │  │
-│  │  Cost alerts: Enabled                                            │  │
-│  │                                                                   │  │
-│  │  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  │  │
-│  │                                                                   │  │
-│  │  WHAT HAPPENS NEXT?                                              │  │
-│  │                                                                   │  │
-│  │  When you click "Deploy", we will:                              │  │
-│  │                                                                   │  │
-│  │  1. Install Karpenter controller (Helm chart) - 2 min           │  │
-│  │  2. Create IAM roles with required permissions - 1 min          │  │
-│  │  3. Deploy NodePool configurations - 30 sec                     │  │
-│  │  4. Set up CloudWatch monitoring - 30 sec                       │  │
-│  │  5. Configure cost alerts - 30 sec                              │  │
-│  │                                                                   │  │
-│  │  Estimated total time: 4-5 minutes                              │  │
-│  │                                                                   │  │
-│  │  ⚡ GRADUAL ROLLOUT STRATEGY:                                    │  │
-│  │  • Day 1: Karpenter manages new pods only (existing unchanged) │  │
-│  │  • Day 2-3: Slowly migrate 25% of existing nodes               │  │
-│  │  • Day 4-5: Migrate another 50% (75% total)                    │  │
-│  │  • Day 6-7: Complete migration to 100%                         │  │
-│  │                                                                   │  │
-│  │  You can pause or rollback anytime                              │  │
-│  └──────────────────────────────────────────────────────────────────┘  │
-│                                                                           │
-│  ☑️ I understand Karpenter will manage node provisioning                │
-│  ☑️ I have reviewed the configuration                                   │
-│  ☑️ I understand this can be paused or disabled anytime                 │
-│                                                                           │
-│  [← Back to Instance Config]  [Save Config Only]  [🚀 Deploy Karpenter]│
-│                                                                           │
-└─────────────────────────────────────────────────────────────────────────┘
-```
-
----
-
-## 📊 **Post-Setup: Live Dashboard**
-
-After setup, replace the setup wizard with an active dashboard:
-
-```jsx
-┌─────────────────────────────────────────────────────────────────────────┐
-│  🚀 KARPENTER AUTO-OPTIMIZATION                🟢 ACTIVE    [Settings] │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                           │
-│  STATUS: Running on 3 clusters  •  Managing 35 nodes                    │
-│  Last activity: 3 minutes ago                                            │
-│                                                                           │
-│  ┌─────────────────────────────────────────────────────────────────┐   │
-│  │  THIS WEEK'S PERFORMANCE                                        │   │
-│  ├────────────────┬────────────────┬────────────────┬──────────────┤   │
-│  │ AVG            │ OPTIMIZATIONS  │ COST SAVED     │ SPOT         │   │
-│  │ UTILIZATION    │ MADE           │ VS MANUAL      │ COVERAGE     │   │
-│  ├────────────────┼────────────────┼────────────────┼──────────────┤   │
-│  │      78%       │       38       │    $1,240      │     82%      │   │
-│  │  ↑ from 45%    │  auto-sizes    │   this week    │  of nodes    │   │
-│  └────────────────┴────────────────┴────────────────┴──────────────┘   │
-│                                                                           │
-│  ┌─────────────────────────────────────────────────────────────────┐   │
-│  │  LIVE ACTIVITY FEED                          [See All Activity →]│   │
-│  │                                                                   │   │
-│  │  🔄 3 min ago  │  prod-web                                       │   │
-│  │  Consolidated 3 under-utilized nodes                            │   │
-│  │  • m5.xlarge (38% util) → Terminated                            │   │
-│  │  • m5.xlarge (35% util) → Terminated                            │   │
-│  │  • m5.xlarge (42% util) → Terminated                            │   │
-│  │  • Moved pods to c6i.large + m6i.large                          │   │
-│  │  💰 Saved: $142/day  •  ⚡ Utilization now: 72%                │   │
-│  │                                                                   │   │
-│  │  ────────────────────────────────────────────────────────────   │   │
-│  │                                                                   │   │
-│  │  🔄 12 min ago  │  prod-api                                      │   │
-│  │  Switched to Graviton instance                                  │   │
-│  │  • r5.2xlarge → r6g.2xlarge (ARM64)                            │   │
-│  │  💰 Saved: $68/day  •  Performance: Same or better             │   │
-│  │                                                                   │   │
-│  │  ────────────────────────────────────────────────────────────   │   │
-│  │                                                                   │   │
-│  │  ⚡ 18 min ago  │  prod-web                                      │   │
-│  │  Spot replacement (interruption)                                │   │
-│  │  • m5.large spot interrupted (AWS reclaiming)                   │   │
-│  │  • Drained pods gracefully                                       │   │
-│  │  • Replaced with c6i.large spot (different AZ)                 │   │
-│  │  ✅ Zero downtime  •  Pods rescheduled in 12 seconds           │   │
-│  │                                                                   │   │
-│  │  ────────────────────────────────────────────────────────────   │   │
-│  │                                                                   │   │
-│  │  💰 45 min ago  │  staging-cluster                               │   │
-│  │  Cost optimization switch                                        │   │
-│  │  • m5.xlarge (on-demand) → m6a.xlarge (spot)                   │   │
-│  │  💰 Saved: $95/day (AMD + spot discount)                       │   │
-│  │                                                                   │   │
-│  └─────────────────────────────────────────────────────────────────┘   │
-│                                                                           │
-│  ┌─────────────────────────────────────────────────────────────────┐   │
-│  │  CLUSTER BREAKDOWN                        [View All Clusters →] │   │
-│  │                                                                   │   │
-│  │  🟢 prod-web (us-east-1)                                         │   │
-│  │  ├─ Strategy: Balanced  •  12 nodes  •  82% utilization        │   │
-│  │  ├─ Spot: 10 nodes (83%)  •  On-demand: 2 nodes (17%)          │   │
-│  │  ├─ Cost this week: $520 (was $720 before Karpenter)           │   │
-│  │  └─ 8 optimizations in last 24 hours                            │   │
-│  │                                                                   │   │
-│  │  🟢 prod-api (us-east-1)                                         │   │
-│  │  ├─ Strategy: Balanced  •  18 nodes  •  75% utilization        │   │
-│  │  ├─ Spot: 14 nodes (78%)  •  On-demand: 4 nodes (22%)          │   │
-│  │  ├─ Cost this week: $780 (was $1,100 before Karpenter)         │   │
-│  │  └─ 12 optimizations in last 24 hours                           │   │
-│  │                                                                   │   │
-│  │  🟢 staging-cluster (us-west-2)                                  │   │
-│  │  ├─ Strategy: Cost-First  •  5 nodes  •  88% utilization       │   │
-│  │  ├─ Spot: 5 nodes (100%)  •  On-demand: 0 nodes                │   │
-│  │  ├─ Cost this week: $195 (was $320 before Karpenter)           │   │
-│  │  └─ 6 optimizations in last 24 hours                            │   │
-│  └─────────────────────────────────────────────────────────────────┘   │
-│                                                                           │
-│  ┌─────────────────────────────────────────────────────────────────┐   │
-│  │  COST TREND (Last 30 Days)                                       │   │
-│  │                                                                   │   │
-│  │  $10K ┤                                                          │   │
-│  │       │ ████████████████████                                     │   │
-│  │       │ █ Before Karpenter █                                     │   │
-│  │   $8K ┤ ████████████████████                                     │   │
-│  │       │ ████████████████████╲                                    │   │
-│  │   $6K ┤ ████████████████████ ╲    ▓▓▓▓▓▓▓▓▓▓▓                  │   │
-│  │       │                        ╲   ▓ Karpenter ▓                 │   │
-│  │   $4K ┤                         ╲  ▓▓▓▓▓▓▓▓▓▓▓                  │   │
-│  │       │                          ╲▓▓▓▓▓▓▓▓▓▓▓                   │   │
-│  │   $2K ┤                           ▓▓▓▓▓▓▓▓▓▓▓                   │   │
-│  │       │                                                           │   │
-│  │    $0 └───────────────────────────────────────────────────────  │   │
-│  │        Week 1   Week 2   Week 3   Week 4   Week 5   Week 6     │   │
-│  │                          ↑                                        │   │
-│  │                     Karpenter enabled                            │   │
-│  │                                                                   │   │
-│  │  💰 Total saved: $8,640  •  Average reduction: 32%              │   │
-│  └─────────────────────────────────────────────────────────────────┘   │
-│                                                                           │
-│  ┌─────────────────────────────────────────────────────────────────┐   │
-│  │  INSTANCE TYPE DISTRIBUTION                                      │   │
-│  │                                                                   │   │
-│  │  Before Karpenter:                                               │   │
-│  │  ███████████████████████████░░░░░░░░░░░░                        │   │
-│  │  m5 (75%)  c5 (15%)  r5 (10%)                                   │   │
-│  │                                                                   │   │
-│  │  With Karpenter (Now):                                           │   │
-│  │  ████████████░░░░░░░░░░░░░░░░░░░░░░░░░░                        │   │
-│  │  m6i (35%)  c6i (28%)  m6a (18%)  r6g (12%)  Other (7%)        │   │
-│  │                                                                   │   │
-│  │  ✅ More diverse = better pricing + better availability          │   │
-│  └─────────────────────────────────────────────────────────────────┘   │
-│                                                                           │
-│  [⚙️ Manage Configuration] [⏸️ Pause Karpenter] [📊 Detailed Analytics] │
-│                                                                           │
-└─────────────────────────────────────────────────────────────────────────┘
-```
-
----
-
-## 🎛️ **Settings Panel (For Post-Setup Changes)**
-
-When user clicks **[Settings]**, show a slide-over with tabs:
-
-```jsx
-┌─────────────────────────────────────────────────────────────────┐
-│  KARPENTER SETTINGS                           [Apply] [Close ✕] │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  TABS: [Clusters] [Strategy] [Instances] [Advanced] [Alerts]   │
-│                                                                  │
-│  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  │
-│                                                                  │
-│  CLUSTERS TAB                                                    │
-│                                                                  │
-│  ☑️ prod-web (us-east-1)              [Edit] [Pause] [Remove]  │
-│  ├─ Status: 🟢 Active                                           │
-│  ├─ Strategy: Balanced                                          │
-│  ├─ Nodes: 12  •  Spot: 83%                                    │
-│  └─ Last activity: 3 min ago                                    │
-│                                                                  │
-│  ☑️ prod-api (us-east-1)              [Edit] [Pause] [Remove]  │
-│  ├─ Status: 🟢 Active                                           │
-│  ├─ Strategy: Balanced                                          │
-│  ├─ Nodes: 18  •  Spot: 78%                                    │
-│  └─ Last activity: 12 min ago                                   │
-│                                                                  │
-│  ☑️ staging-cluster (us-west-2)       [Edit] [Pause] [Remove]  │
-│  ├─ Status: 🟢 Active                                           │
-│  ├─ Strategy: Cost-First                                        │
-│  ├─ Nodes: 5  •  Spot: 100%                                    │
-│  └─ Last activity: 45 min ago                                   │
-│                                                                  │
-│  [+ Add Another Cluster]                                        │
-│                                                                  │
-│  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  │
-│                                                                  │
-│  QUICK ACTIONS:                                                  │
-│  [Pause All]  [Resume All]  [Export Config]  [View Logs]       │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
-```
-
----
-
-This design provides:
-✅ **Maximum clarity** - every option explained  
-✅ **Guided setup** - wizard only for one-time configuration  
-✅ **Live visibility** - see exactly what Karpenter is doing  
-✅ **Easy management** - simple controls for ongoing changes  
-✅ **Confidence building** - detailed explanations at every step  
-✅ **No confusion** - clear recommendations and comparisons
+          <div style={{ background: "#fff", borderRadius: 10, padding: 20, border: "1px solid #e5e7eb" }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: "#111827", marginBottom: 12 }}>Search examples to try</div>
+            {[
+              ["zombie", "→ Resource Hygiene"],
+              ["karpenter", "→ Right-Sizing"],
+              ["jit", "→ Approvals"],
+              ["onnx", "→ AtharvaAI Optimizer"],
+              ["sleep", "→ Hibernation"],
+              ["multi-az", "→ RDS Analysis"],
+            ].map(([term, result]) => (
+              <div key={term} style={{ display: "flex", gap: 8, marginBottom: 6, fontSize: 12 }}>
+                <code style={{ background: "#f3f4f6", padding: "2px 6px", borderRadius: 4, color: "#374151", fontFamily: "monospace" }}>{term}</code>
+                <span style={{ color: "#6b7280" }}>{result}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

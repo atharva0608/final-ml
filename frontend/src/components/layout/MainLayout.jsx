@@ -1,17 +1,8 @@
-/**
- * Main Layout Component
- *
- * Layout with sidebar navigation and header
- */
 import React, { useState, useEffect } from 'react';
 import { Outlet, Link, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../../hooks/useAuth';
 import { clusterAPI } from '../../services/api';
-import { Button } from '../shared';
 import { FiHome, FiServer, FiFileText, FiSettings, FiTarget, FiClock, FiBarChart2, FiUsers, FiActivity, FiLogOut, FiClipboard, FiBriefcase, FiCheckSquare, FiShield, FiLock, FiTag, FiZap, FiCpu } from 'react-icons/fi';
-
-// TEMPORARILY DISABLED - Causing date formatting errors
-// import ActiveWindowBanner from '../approvals/ActiveWindowBanner';
 
 // Cluster Notification Badge Component
 const ClusterBadge = () => {
@@ -62,28 +53,246 @@ const ClusterBadge = () => {
   return null;
 };
 
+const routeMap = {
+  "dashboard": "/dashboard",
+  "atharvaai": "/atharva-ai",
+  "atharvaai-rankings": "/atharva-ai?tab=rankings",
+  "atharvaai-heatmap": "/atharva-ai?tab=heatmap",
+  "atharvaai-rebalancing": "/atharva-ai?tab=rebalancing",
+  "rightsizing": "/right-sizing",
+  "rs-manual": "/right-sizing?tab=manual",
+  "rs-karpenter": "/right-sizing?tab=karpenter",
+  "rs-savings": "/right-sizing?tab=savings",
+  "resource-hygiene": "/hygiene",
+  "hibernation": "/hibernation",
+  "hib-schedules": "/hibernation?tab=schedules",
+  "hib-strategies": "/hibernation?tab=strategies",
+  "hib-history": "/hibernation?tab=history",
+  "clusters": "/clusters",
+  "templates": "/templates",
+  "approvals": "/approvals",
+  "tagging": "/tagging-policies",
+  "automation": "/automation-settings",
+  "teams": "/teams",
+  "audit": "/audit",
+  "settings": "/settings"
+};
+
+const NAV_STRUCTURE = [
+  {
+    section: "OVERVIEW",
+    items: [
+      {
+        id: "dashboard",
+        label: "Dashboard",
+        icon: "⌂",
+        badge: null,
+        description: "KPIs, cost trends, fleet overview"
+      }
+    ]
+  },
+  {
+    section: "COST INTELLIGENCE",
+    items: [
+      {
+        id: "atharvaai",
+        label: "AtharvaAI Optimizer",
+        icon: "◈",
+        badge: "ML",
+        badgeColor: "#6366f1",
+        description: "ML pool rankings & interruption heatmap",
+        sub: [
+          { id: "atharvaai-rankings", label: "Pool Rankings" },
+          { id: "atharvaai-heatmap", label: "Interruption Heatmap" },
+          { id: "atharvaai-rebalancing", label: "Rebalancing Timeline" }
+        ]
+      },
+      {
+        id: "rightsizing",
+        label: "Right-Sizing",
+        icon: "⇄",
+        badge: null,
+        description: "Manual & Karpenter auto-optimization",
+        sub: [
+          { id: "rs-manual", label: "Manual Mode" },
+          { id: "rs-karpenter", label: "Karpenter Auto" },
+          { id: "rs-savings", label: "Savings Tracker" }
+        ]
+      },
+      {
+        id: "resource-hygiene",
+        label: "Resource Hygiene",
+        icon: "⊘",
+        badge: null,
+        description: "Zombie detection & cleanup across 9 AWS resource types"
+      },
+      {
+        id: "hibernation",
+        label: "Hibernation",
+        icon: "◑",
+        badge: null,
+        description: "Scheduled cluster sleep/wake strategies",
+        sub: [
+          { id: "hib-schedules", label: "Schedules" },
+          { id: "hib-strategies", label: "Strategies" },
+          { id: "hib-history", label: "Execution History" }
+        ]
+      }
+    ]
+  },
+  {
+    section: "INFRASTRUCTURE",
+    items: [
+      {
+        id: "clusters",
+        label: "Clusters",
+        icon: "⬡",
+        badge: null,
+        description: "EKS clusters, nodes, policies"
+      },
+      {
+        id: "templates",
+        label: "Node Templates",
+        icon: "◻",
+        badge: null,
+        description: "Instance family & architecture templates"
+      }
+    ]
+  },
+  {
+    section: "GOVERNANCE",
+    items: [
+      {
+        id: "approvals",
+        label: "Approvals",
+        icon: "✓",
+        badge: "3",
+        badgeColor: "#f59e0b",
+        description: "JIT access requests & grants"
+      },
+      {
+        id: "tagging",
+        label: "Tagging Policies",
+        icon: "◇",
+        badge: null,
+        description: "Tag enforcement & bulk tagging"
+      },
+      {
+        id: "automation",
+        label: "Automation",
+        icon: "⚡",
+        badge: null,
+        description: "Autopilot rules & governance policies"
+      }
+    ]
+  },
+  {
+    section: "ORGANIZATION",
+    items: [
+      {
+        id: "teams",
+        label: "Teams & Members",
+        icon: "⊹",
+        badge: null,
+        description: "Members, roles & permissions"
+      }
+    ]
+  },
+  {
+    section: "SYSTEM",
+    items: [
+      {
+        id: "audit",
+        label: "Audit Logs",
+        icon: "≡",
+        badge: null,
+        description: "Tamper-evident activity trail"
+      },
+      {
+        id: "settings",
+        label: "Settings",
+        icon: "◎",
+        badge: null,
+        description: "AWS integrations, billing, profile"
+      }
+    ]
+  }
+];
+
+const SEARCH_INDEX = [
+  { id: "atharvaai", terms: ["ml", "machine learning", "pool", "rankings", "onnx", "spot advisor", "interruption", "heatmap", "rebalancing", "blacklist", "capacity"] },
+  { id: "rightsizing", terms: ["karpenter", "right sizing", "rightsizing", "downsize", "recommendations", "cpu", "memory", "utilization", "overprovisioned", "savings"] },
+  { id: "resource-hygiene", terms: ["zombie", "cleanup", "ebs", "ec2", "elastic ip", "s3", "snapshot", "stopped", "orphaned", "waste", "idle", "unused", "delete", "scan"] },
+  { id: "hibernation", terms: ["sleep", "wake", "schedule", "namespace sleep", "nuclear", "snapshot restore", "cost schedule", "off hours", "weekends", "nights"] },
+  { id: "clusters", terms: ["cluster", "eks", "node", "nodegroup", "heartbeat", "agent", "spot ratio"] },
+  { id: "templates", terms: ["template", "instance family", "architecture", "arm64", "amd64", "blacklist"] },
+  { id: "approvals", terms: ["approval", "jit", "access", "request", "grant", "permission", "revoke"] },
+  { id: "tagging", terms: ["tag", "tagging", "policy", "compliance", "bulk tag", "enforcement"] },
+  { id: "automation", terms: ["autopilot", "automation", "governance", "rule", "auto cleanup"] },
+  { id: "teams", terms: ["team", "member", "role", "invite", "organization", "permission", "rbac"] },
+  { id: "audit", terms: ["audit", "log", "history", "event", "checksum", "activity", "diff"] },
+  { id: "settings", terms: ["settings", "aws", "account", "integration", "billing", "profile", "password", "notification"] },
+  { id: "dashboard", terms: ["dashboard", "kpi", "overview", "widget", "cost", "savings", "fleet", "home"] }
+];
+
+function searchNav(query) {
+  if (!query.trim()) return [];
+  const q = query.toLowerCase();
+  const results = new Set();
+  SEARCH_INDEX.forEach(({ id, terms }) => {
+    if (terms.some(t => t.includes(q) || q.includes(t.split(" ")[0]))) {
+      results.add(id);
+    }
+  });
+  NAV_STRUCTURE.forEach(section => {
+    section.items.forEach(item => {
+      if (item.label.toLowerCase().includes(q)) results.add(item.id);
+      (item.sub || []).forEach(s => {
+        if (s.label.toLowerCase().includes(q)) results.add(item.id);
+      });
+    });
+  });
+  return [...results];
+}
+
 const MainLayout = () => {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
 
-  const navigation = [
-    { name: 'Dashboard', path: '/dashboard', icon: FiHome, requiresPermission: false },
-    { name: 'Approvals', path: '/approvals', icon: FiCheckSquare, requiresPermission: false },
-    { name: 'Teams', path: '/teams', icon: FiUsers, requiresPermission: true, badge: 'locked' },
-    { name: 'Clusters', path: '/clusters', icon: FiServer, requiresPermission: true, badge: 'locked' },
-  ];
+  // Navigation active state determined by current pathname and hash
+  const currentPath = location.pathname;
+  let activeId = "dashboard";
+  for (const [id, route] of Object.entries(routeMap)) {
+    const basePath = route.split("?")[0];
+    // Exact match or sub-route match (e.g., /hibernation/123 matches /hibernation)
+    const matchesPath = currentPath === basePath || currentPath.startsWith(basePath + '/');
+    const matchesSearch = route.includes("?") ? location.search.includes(route.split("?")[1]) : true;
 
-  const optimizationNavigation = [
-    { name: 'AtharvaAi', path: '/atharva-ai', icon: FiCpu, requiresPermission: true, badge: 'beta' },
-    { name: 'Tagging Policies', path: '/tagging-policies', icon: FiTag, requiresPermission: true, badge: 'locked' },
-    { name: 'Templates', path: '/templates', icon: FiFileText, requiresPermission: true, badge: 'locked' },
-    { name: 'Right-Sizing', path: '/right-sizing', icon: FiBarChart2, requiresPermission: true, badge: 'locked' },
-    { name: 'Resource Hygiene', path: '/hygiene', icon: FiActivity, requiresPermission: true, badge: 'locked' },
-    { name: 'Hibernation', path: '/hibernation', icon: FiClock, requiresPermission: true, badge: 'locked' },
-    { name: 'Automation Settings', path: '/automation-settings', icon: FiZap, requiresPermission: true, badge: 'locked' },
-  ];
+    if (matchesPath && matchesSearch) {
+      activeId = id;
+    }
+  }
+
+  // Pre-expand sections
+  const [expanded, setExpanded] = useState(new Set(["atharvaai", "rightsizing", "hibernation"]));
+  const [search, setSearch] = useState("");
+
+  const searchResults = searchNav(search);
+
+  const toggleExpand = (id) => {
+    setExpanded(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  };
+
+  const isHighlighted = (id) => search.trim() && searchResults.includes(id);
+  const isVisible = (id) => !search.trim() || searchResults.includes(id);
+
+  const isSuperAdmin = user?.role === 'SUPER_ADMIN' || user?.role === 'super_admin';
 
   const adminNavigation = [
     { name: 'Command Center', path: '/admin', icon: FiActivity },
@@ -92,28 +301,15 @@ const MainLayout = () => {
     { name: 'System Health', path: '/admin/health', icon: FiServer },
     { name: 'Experiments', path: '/admin/experiments', icon: FiTarget },
     { name: 'Configuration', path: '/admin/config', icon: FiSettings },
-    { name: 'Billing', path: '/admin/billing', icon: FiBarChart2 }, // Using BarChart for Billing
-  ];
-
-  const systemNavigation = [
-    { name: 'Audit Logs', path: '/audit', icon: FiClipboard, requiresPermission: true, badge: 'locked' },
-    { name: 'Settings', path: '/settings', icon: FiSettings, requiresPermission: false },
+    { name: 'Billing', path: '/admin/billing', icon: FiBarChart2 },
   ];
 
   const isActive = (path) => location.pathname === path;
 
-  // Determine which navigation to show
-  const isSuperAdmin = user?.role === 'SUPER_ADMIN' || user?.role === 'super_admin';
-
   if (isSuperAdmin) {
     return (
       <div className="min-h-screen bg-gray-50 flex">
-        {/* TEMPORARILY DISABLED - Causing date formatting errors */}
-        {/* <ActiveWindowBanner /> */}
-
-        <div
-          className={`fixed inset-y-0 left-0 bg-white border-r border-gray-200 transition-all duration-300 z-30 ${isSidebarOpen ? 'w-64' : 'w-0 -translate-x-full'}`}
-        >
+        <div className={`fixed inset-y-0 left-0 bg-white border-r border-gray-200 transition-all duration-300 z-30 ${isSidebarOpen ? 'w-64' : 'w-0 -translate-x-full'}`}>
           <div className="h-16 flex items-center px-6 border-b border-gray-200 justify-between">
             <h1 className="text-xl font-bold text-gray-900 truncate">Admin Console</h1>
           </div>
@@ -134,7 +330,6 @@ const MainLayout = () => {
                 </Link>
               );
             })}
-            {/* Admin Impersonation Notice */}
             <div className="mt-8 px-4">
               <div className="p-3 bg-yellow-50 rounded-lg border border-yellow-200">
                 <p className="text-xs text-yellow-800 font-medium truncate">Client View Hidden</p>
@@ -142,7 +337,6 @@ const MainLayout = () => {
               </div>
             </div>
           </nav>
-          {/* User Profile */}
           <div className="absolute bottom-0 w-full p-4 border-t border-gray-200 bg-white">
             <div className="flex items-center justify-between">
               <div className="flex items-center overflow-hidden">
@@ -156,26 +350,16 @@ const MainLayout = () => {
                   <p className="text-xs text-gray-500 truncate">{user?.role}</p>
                 </div>
               </div>
-              <button
-                onClick={logout}
-                className="p-2 text-gray-400 hover:text-gray-600 transition-colors flex-shrink-0"
-              >
+              <button onClick={logout} className="p-2 text-gray-400 hover:text-gray-600 transition-colors flex-shrink-0">
                 <FiLogOut className="w-5 h-5" />
               </button>
             </div>
           </div>
         </div>
-
-        {/* Main Content Wrapper */}
         <div className={`flex-1 flex flex-col min-w-0 transition-all duration-300 ${isSidebarOpen ? 'pl-64' : 'pl-0'}`}>
-          {/* Header */}
           <header className="h-16 bg-white border-b border-gray-200 flex items-center justify-between px-4 sm:px-6 lg:px-8 z-20">
             <div className="flex items-center gap-4">
-              <button
-                onClick={() => setIsSidebarOpen(!isSidebarOpen)}
-                className="p-2 -ml-2 text-gray-500 hover:text-gray-700 rounded-md hover:bg-gray-100 focus:outline-none"
-                aria-label="Toggle sidebar"
-              >
+              <button onClick={() => setIsSidebarOpen(!isSidebarOpen)} className="p-2 -ml-2 text-gray-500 hover:text-gray-700 rounded-md hover:bg-gray-100 focus:outline-none">
                 <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
                 </svg>
@@ -195,120 +379,346 @@ const MainLayout = () => {
     );
   }
 
-  // STANDARD USER VIEW (With Optimization Section)
   return (
-    <div className="min-h-screen bg-gray-50 flex">
-      {/* TEMPORARILY DISABLED - Causing date formatting errors */}
-      {/* <ActiveWindowBanner /> */}
-
-      {/* Sidebar */}
-      <div
-        className={`fixed inset-y-0 left-0 bg-white border-r border-gray-200 transition-all duration-300 z-30 ${isSidebarOpen ? 'w-64' : 'w-0 -translate-x-full'}`}
-      >
-        <div className="h-16 flex items-center px-6 border-b border-gray-200 justify-between">
-          <h1 className="text-xl font-bold text-gray-900 truncate">Spot Optimizer</h1>
-        </div>
-
-        <nav className="flex-1 px-4 py-4 space-y-6 overflow-y-auto h-[calc(100vh-8rem)]">
-          {/* Main Group */}
-          <div className="space-y-1">
-            <p className="px-4 text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Platform</p>
-            {navigation.map((item) => {
-              const Icon = item.icon;
-              const showBadge = item.name === 'Clusters';
-              return (
-                <Link
-                  key={item.path}
-                  to={item.path}
-                  className={`flex items-center px-4 py-2 text-sm font-medium rounded-lg transition-colors relative ${isActive(item.path)
-                    ? 'bg-blue-50 text-blue-700'
-                    : 'text-gray-700 hover:bg-gray-50'
-                    }`}
-                >
-                  <Icon className="w-5 h-5 mr-3 flex-shrink-0" />
-                  <span className="truncate">{item.name}</span>
-                  {showBadge && <ClusterBadge />}
-                </Link>
-              );
-            })}
-          </div>
-
-          {/* Optimization Group */}
-          <div className="space-y-1">
-            <p className="px-4 text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Optimizations</p>
-            {optimizationNavigation.map((item) => {
-              const Icon = item.icon;
-              return (
-                <Link
-                  key={item.path}
-                  to={item.path}
-                  className={`flex items-center px-4 py-2 text-sm font-medium rounded-lg transition-colors relative ${isActive(item.path)
-                    ? 'bg-blue-50 text-blue-700'
-                    : 'text-gray-700 hover:bg-gray-50'
-                    }`}
-                >
-                  <Icon className="w-5 h-5 mr-3 flex-shrink-0" />
-                  <span className="truncate">{item.name}</span>
-                </Link>
-              );
-            })}
-          </div>
-
-          {/* System Group */}
-          <div className="space-y-1">
-            <p className="px-4 text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">System</p>
-            {systemNavigation.map((item) => {
-              const Icon = item.icon;
-              return (
-                <Link
-                  key={item.path}
-                  to={item.path}
-                  className={`flex items-center px-4 py-2 text-sm font-medium rounded-lg transition-colors relative ${isActive(item.path)
-                    ? 'bg-blue-50 text-blue-700'
-                    : 'text-gray-700 hover:bg-gray-50'
-                    }`}
-                >
-                  <Icon className="w-5 h-5 mr-3 flex-shrink-0" />
-                  <span className="truncate">{item.name}</span>
-                </Link>
-              );
-            })}
-          </div>
-
-        </nav>
-
-        {/* User Profile */}
-        <div className="absolute bottom-0 w-full p-4 border-t border-gray-200 bg-white">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center overflow-hidden">
-              <div className="w-8 h-8 bg-blue-600 rounded-full flex items-center justify-center flex-shrink-0">
-                <span className="text-white text-sm font-medium">
-                  {user?.email?.[0].toUpperCase()}
-                </span>
-              </div>
-              <div className="ml-3 truncate">
-                <p className="text-sm font-medium text-gray-900 truncate">{user?.email}</p>
-                <p className="text-xs text-gray-500 truncate">{user?.role}</p>
+    <div style={{
+      display: "flex",
+      height: "100vh",
+      fontFamily: "'DM Sans', 'Outfit', system-ui, sans-serif",
+      background: "#f0f2f5"
+    }}>
+      {/* SIDEBAR */}
+      <nav style={{
+        width: !isSidebarOpen ? 60 : 260,
+        minWidth: !isSidebarOpen ? 60 : 260,
+        height: "100vh",
+        background: "#0f1117",
+        display: "flex",
+        flexDirection: "column",
+        transition: "width 0.22s cubic-bezier(.4,0,.2,1), min-width 0.22s",
+        overflow: "hidden",
+        position: "relative",
+        boxShadow: "4px 0 24px rgba(0,0,0,0.18)",
+        zIndex: 30
+      }}>
+        {/* Header */}
+        <div style={{
+          padding: !isSidebarOpen ? "20px 0" : "20px 16px",
+          borderBottom: "1px solid rgba(255,255,255,0.07)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: !isSidebarOpen ? "center" : "space-between",
+          flexShrink: 0
+        }}>
+          {isSidebarOpen && (
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <div style={{
+                width: 30, height: 30, borderRadius: 8,
+                background: "linear-gradient(135deg, #3b82f6, #6366f1)",
+                display: "flex", alignItems: "center", justifyContent: "center",
+                fontSize: 14, color: "#fff", fontWeight: 700, flexShrink: 0
+              }}>S</div>
+              <div>
+                <div style={{ color: "#fff", fontWeight: 700, fontSize: 14, letterSpacing: "-0.3px" }}>Spot Optimizer</div>
+                <div style={{ color: "#4b5563", fontSize: 10, letterSpacing: "0.08em", textTransform: "uppercase" }}>{user?.role || 'USER'}</div>
               </div>
             </div>
-            <button
-              onClick={logout}
-              className="p-2 text-gray-400 hover:text-gray-600 transition-colors flex-shrink-0"
-            >
-              <FiLogOut className="w-5 h-5" />
-            </button>
-          </div>
+          )}
+          {!isSidebarOpen && (
+            <div style={{
+              width: 30, height: 30, borderRadius: 8,
+              background: "linear-gradient(135deg, #3b82f6, #6366f1)",
+              display: "flex", alignItems: "center", justifyContent: "center",
+              fontSize: 14, color: "#fff", fontWeight: 700
+            }}>S</div>
+          )}
+          <button
+            onClick={() => setIsSidebarOpen(c => !c)}
+            style={{
+              background: "rgba(255,255,255,0.06)", border: "none",
+              borderRadius: 6, color: "#6b7280", cursor: "pointer",
+              width: 24, height: 24, display: "flex", alignItems: "center",
+              justifyContent: "center", fontSize: 11, flexShrink: 0,
+              transition: "background 0.15s"
+            }}
+          >
+            {!isSidebarOpen ? "›" : "‹"}
+          </button>
         </div>
-      </div>
+
+        {/* Search */}
+        {isSidebarOpen && (
+          <div style={{ padding: "12px 12px 8px", flexShrink: 0 }}>
+            <div style={{ position: "relative" }}>
+              <span style={{
+                position: "absolute", left: 9, top: "50%", transform: "translateY(-50%)",
+                color: "#4b5563", fontSize: 12, pointerEvents: "none"
+              }}>⌕</span>
+              <input
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+                placeholder="Search features..."
+                style={{
+                  width: "100%", boxSizing: "border-box",
+                  background: "rgba(255,255,255,0.06)",
+                  border: "1px solid rgba(255,255,255,0.08)",
+                  borderRadius: 8, color: "#e5e7eb",
+                  padding: "7px 10px 7px 28px",
+                  fontSize: 12, outline: "none",
+                  transition: "border-color 0.15s",
+                  fontFamily: "inherit"
+                }}
+                onFocus={e => e.target.style.borderColor = "rgba(99,102,241,0.5)"}
+                onBlur={e => e.target.style.borderColor = "rgba(255,255,255,0.08)"}
+              />
+              {search && (
+                <button
+                  onClick={() => setSearch("")}
+                  style={{
+                    position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)",
+                    background: "none", border: "none", color: "#6b7280",
+                    cursor: "pointer", fontSize: 11, padding: 0, lineHeight: 1
+                  }}
+                >✕</button>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Nav Sections */}
+        <div style={{
+          flex: 1, overflowY: "auto", overflowX: "hidden",
+          padding: !isSidebarOpen ? "8px 0" : "4px 8px 8px",
+          scrollbarWidth: "none"
+        }}>
+          {NAV_STRUCTURE.map(section => {
+            const visibleItems = section.items.filter(item => isVisible(item.id));
+            if (search && visibleItems.length === 0) return null;
+
+            return (
+              <div key={section.section} style={{ marginBottom: 2 }}>
+                {isSidebarOpen && (
+                  <div style={{
+                    color: "#374151", fontSize: 9.5, fontWeight: 700,
+                    letterSpacing: "0.1em", textTransform: "uppercase",
+                    padding: "12px 8px 4px",
+                    opacity: search && visibleItems.length === 0 ? 0.3 : 1
+                  }}>
+                    {section.section}
+                  </div>
+                )}
+                {!isSidebarOpen && <div style={{ height: 8 }} />}
+
+                {section.items.map(item => {
+                  const visible = isVisible(item.id);
+                  const highlighted = isHighlighted(item.id);
+                  const isActiveState = activeId === item.id || (item.sub || []).some(s => s.id === activeId);
+                  const isOpen = expanded.has(item.id);
+                  const hasSub = item.sub && item.sub.length > 0;
+
+                  if (!visible && search) return null;
+
+                  return (
+                    <div key={item.id}>
+                      <button
+                        onClick={() => {
+                          if (hasSub) {
+                            toggleExpand(item.id);
+                            navigate(routeMap[item.id] || "/dashboard");
+                          } else {
+                            navigate(routeMap[item.id] || "/dashboard");
+                          }
+                        }}
+                        title={!isSidebarOpen ? item.label : undefined}
+                        style={{
+                          width: "100%", display: "flex", alignItems: "center",
+                          gap: 9, padding: !isSidebarOpen ? "9px 0" : "8px 10px",
+                          justifyContent: !isSidebarOpen ? "center" : "flex-start",
+                          background: isActiveState
+                            ? "rgba(59,130,246,0.12)"
+                            : highlighted
+                              ? "rgba(99,102,241,0.1)"
+                              : "transparent",
+                          border: "none",
+                          borderRadius: 8,
+                          cursor: "pointer",
+                          position: "relative",
+                          transition: "background 0.12s",
+                          textAlign: "left",
+                          outline: "none",
+                          marginBottom: 1
+                        }}
+                        onMouseEnter={e => {
+                          if (!isActiveState) e.currentTarget.style.background = "rgba(255,255,255,0.04)";
+                        }}
+                        onMouseLeave={e => {
+                          if (!isActiveState) e.currentTarget.style.background = highlighted ? "rgba(99,102,241,0.1)" : "transparent";
+                        }}
+                      >
+                        {isActiveState && (
+                          <span style={{
+                            position: "absolute", left: 0, top: "20%", bottom: "20%",
+                            width: 3, borderRadius: "0 3px 3px 0",
+                            background: "linear-gradient(180deg, #3b82f6, #6366f1)"
+                          }} />
+                        )}
+
+                        <span style={{
+                          fontSize: 15,
+                          color: isActiveState ? "#60a5fa" : highlighted ? "#818cf8" : "#6b7280",
+                          width: 18, textAlign: "center", flexShrink: 0,
+                          transition: "color 0.12s"
+                        }}>
+                          {item.icon}
+                        </span>
+
+                        {isSidebarOpen && (
+                          <>
+                            <span style={{
+                              color: isActiveState ? "#e5e7eb" : highlighted ? "#c7d2fe" : "#9ca3af",
+                              fontSize: 13, fontWeight: isActiveState ? 600 : 400,
+                              flex: 1, letterSpacing: "-0.1px",
+                              transition: "color 0.12s"
+                            }}>
+                              {item.label}
+                            </span>
+
+                            {item.id === "clusters" && <ClusterBadge />}
+
+                            {item.badge && item.id !== "clusters" && (
+                              <span style={{
+                                background: item.badgeColor || "#374151",
+                                color: "#fff", fontSize: 9, fontWeight: 700,
+                                padding: "1px 6px", borderRadius: 10,
+                                letterSpacing: "0.04em"
+                              }}>
+                                {item.badge}
+                              </span>
+                            )}
+
+                            {hasSub && (
+                              <span style={{
+                                color: "#4b5563", fontSize: 10,
+                                transform: isOpen ? "rotate(90deg)" : "rotate(0deg)",
+                                transition: "transform 0.18s",
+                                marginLeft: item.badge ? 4 : 0
+                              }}>›</span>
+                            )}
+                          </>
+                        )}
+                        {!isSidebarOpen && item.badge && item.id !== "clusters" && (
+                          <span style={{
+                            position: "absolute", top: 5, right: 8,
+                            width: 6, height: 6, borderRadius: "50%",
+                            background: item.badgeColor || "#f59e0b"
+                          }} />
+                        )}
+                      </button>
+
+                      {isSidebarOpen && hasSub && isOpen && (
+                        <div style={{
+                          paddingLeft: 26,
+                          borderLeft: "1px solid rgba(255,255,255,0.06)",
+                          marginLeft: 18,
+                          marginBottom: 2,
+                          marginTop: 1
+                        }}>
+                          {item.sub.map(sub => {
+                            const isSubActive = activeId === sub.id;
+                            return (
+                              <button
+                                key={sub.id}
+                                onClick={() => navigate(routeMap[sub.id] || "/dashboard")}
+                                style={{
+                                  width: "100%", display: "flex", alignItems: "center",
+                                  gap: 6, padding: "6px 8px",
+                                  background: isSubActive ? "rgba(59,130,246,0.1)" : "transparent",
+                                  border: "none", borderRadius: 6,
+                                  cursor: "pointer", textAlign: "left", outline: "none",
+                                  marginBottom: 1, transition: "background 0.12s"
+                                }}
+                                onMouseEnter={e => {
+                                  if (!isSubActive) e.currentTarget.style.background = "rgba(255,255,255,0.03)";
+                                }}
+                                onMouseLeave={e => {
+                                  if (!isSubActive) e.currentTarget.style.background = "transparent";
+                                }}
+                              >
+                                <span style={{
+                                  width: 4, height: 4, borderRadius: "50%", flexShrink: 0,
+                                  background: isSubActive ? "#60a5fa" : "#374151"
+                                }} />
+                                <span style={{
+                                  color: isSubActive ? "#93c5fd" : "#6b7280",
+                                  fontSize: 12, fontWeight: isSubActive ? 500 : 400
+                                }}>
+                                  {sub.label}
+                                </span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Footer */}
+        <div style={{
+          borderTop: "1px solid rgba(255,255,255,0.07)",
+          padding: !isSidebarOpen ? "12px 0" : "12px 12px",
+          flexShrink: 0
+        }}>
+          {isSidebarOpen ? (
+            <div style={{
+              display: "flex", alignItems: "center", gap: 10,
+              padding: "6px 8px", borderRadius: 8,
+              background: "rgba(255,255,255,0.04)"
+            }}>
+              <div style={{
+                width: 28, height: 28, borderRadius: "50%",
+                background: "linear-gradient(135deg, #3b82f6, #6366f1)",
+                display: "flex", alignItems: "center", justifyContent: "center",
+                fontSize: 12, color: "#fff", fontWeight: 700, flexShrink: 0
+              }}>
+                {user?.email?.[0].toUpperCase() || 'U'}
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ color: "#d1d5db", fontSize: 12, fontWeight: 500, overflow: "hidden", whiteSpace: "nowrap" }}>{user?.email || 'user@example.com'}</div>
+                <div style={{ color: "#4b5563", fontSize: 10 }}>{user?.role || 'USER'}</div>
+              </div>
+              <button onClick={logout} style={{
+                background: "none", border: "none", color: "#4b5563",
+                cursor: "pointer", fontSize: 14, padding: 0
+              }} title="Logout">
+                <FiLogOut />
+              </button>
+            </div>
+          ) : (
+            <div style={{ display: "flex", justifyContent: "center" }} onClick={logout} title="Logout" className="cursor-pointer">
+              <div style={{
+                width: 28, height: 28, borderRadius: "50%",
+                background: "linear-gradient(135deg, #3b82f6, #6366f1)",
+                display: "flex", alignItems: "center", justifyContent: "center",
+                fontSize: 12, color: "#fff", fontWeight: 700
+              }}>
+                {user?.email?.[0].toUpperCase() || 'U'}
+              </div>
+            </div>
+          )}
+        </div>
+      </nav>
 
       {/* Main Content */}
-      <div className={`flex-1 flex flex-col min-w-0 transition-all duration-300 ${isSidebarOpen ? 'pl-64' : 'pl-0'}`}>
-        {/* Header */}
+      <div className="flex-1 flex flex-col min-w-0 transition-all duration-300">
         <header className="h-16 bg-white border-b border-gray-200 flex items-center justify-between px-4 sm:px-6 lg:px-8 z-20">
           <div className="flex items-center gap-4">
             <button
               onClick={() => setIsSidebarOpen(!isSidebarOpen)}
-              className="p-2 -ml-2 text-gray-500 hover:text-gray-700 rounded-md hover:bg-gray-100 focus:outline-none"
+              className="p-2 -ml-2 text-gray-500 hover:text-gray-700 rounded-md hover:bg-gray-100 focus:outline-none md:hidden"
               aria-label="Toggle sidebar"
             >
               <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -316,17 +726,26 @@ const MainLayout = () => {
               </svg>
             </button>
             <h2 className="text-lg font-semibold text-gray-900">
-              {[...navigation, ...optimizationNavigation, ...systemNavigation].find(item => isActive(item.path))?.name || 'Dashboard'}
+              {(() => {
+                let currentItemLabel = 'Dashboard';
+                NAV_STRUCTURE.forEach(sec => {
+                  sec.items.forEach(item => {
+                    if (item.id === activeId) currentItemLabel = item.label;
+                    if (item.sub) {
+                      item.sub.forEach(si => {
+                        if (si.id === activeId) currentItemLabel = si.label;
+                      });
+                    }
+                  });
+                });
+                return currentItemLabel;
+              })()}
             </h2>
-          </div>
-          <div className="flex items-center gap-4">
-            {/* Settings is now in the sidebar */}
           </div>
         </header>
 
-        {/* Page Content */}
         <main className="flex-1 overflow-y-auto">
-          <div className="p-8 h-full">
+          <div className="p-0 sm:p-8 h-full">
             <Outlet />
           </div>
         </main>

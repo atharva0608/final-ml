@@ -29,11 +29,7 @@ from backend.api import (
     team_router,
     user_router,
     governance_router,
-    hygiene_policy_router,
 )
-
-# Dashboard Routes (Three Pricing Models)
-from backend.api.dashboard_routes import router as dashboard_router
 
 # Additional Analysis Routes
 from backend.api.ri_routes import router as ri_router
@@ -74,7 +70,6 @@ __all__ = [
 ]
 
 from backend.api import account_routes
-from backend.api import settings_routes
 
 logger = StructuredLogger(__name__)
 
@@ -396,20 +391,12 @@ app.include_router(optimization_router, prefix="/api/v1")
 
 # Hygiene routes
 app.include_router(hygiene_router, prefix="/api/v1")
-app.include_router(hygiene_policy_router, prefix="/api/v1")
-
-# Dashboard routes (Three Pricing Models)
-app.include_router(dashboard_router, prefix="/api/v1")
-
 
 # Team routes
 app.include_router(team_router, prefix="/api/v1")
 
 # User routes
 app.include_router(user_router, prefix="/api/v1")
-
-# Settings routes
-app.include_router(settings_routes.router, prefix="/api/v1")
 
 # Role routes (RBAC)
 # Role routes (RBAC)
