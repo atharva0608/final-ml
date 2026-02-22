@@ -6,7 +6,7 @@
 >
 > **🔴 Red API Endpoint** = Endpoint exists in backend but is **NOT called** from the frontend (unused)
 >
-> **Last Updated:** 2026-02-22 16:10 IST (Full Component Re-Audit — All Components Verified Against Filesystem) — **CODEBASE ACCURACY AUDIT COMPLETE** ✅
+> **Last Updated:** 2026-02-22 17:15 IST — **CODEBASE ACCURACY AUDIT COMPLETE** ✅
 >
 > **Integration Architecture**: Three-system integration connecting Node Templates, AtharvaAI ML Pool Optimizer, and Right-Sizing with enriched recommendations, blacklist checking, template compliance validation, and pool health indicators. Templates track usage stats (last_used_by_atharva_at, atharva_rankings_count), AtharvaAI accepts template_id parameter, Right-Sizing validates recommendations against template blacklists.
 >
@@ -1007,29 +1007,42 @@ All legacy hibernation components have been removed. The current implementation 
 
 ## Unused Backend Endpoints Summary
 
-> 🔴 These backend route files exist but have **no corresponding frontend usage**:
+> **Cleanup completed 2026-02-22.** The original audit listed 19 items as unused. Investigation found **11 were incorrectly listed** (actively used via raw `api.get()` calls, agent-facing, or called by admin components). The remaining **8 genuinely unused items** were cleaned up as follows:
 
-| Backend Route File | Endpoints | Status | Backend Logic | DB Table | Columns Used | Dependencies | File Name |
-|---|---|---|---|---|---|---|---|
-| 🔴 `settings_routes.py` | `GET/PATCH /api/v1/settings/profile`, `GET/POST/DELETE /api/v1/settings/integrations` | settingsAPI defined in `api.js` but **never imported** in any component | Not wired | — | — | — | — |
-| 🔴 `lab_routes.py` | `GET/POST /api/v1/lab/experiments`, `POST .../start`, `POST .../stop`, `GET .../results` | experimentsAPI defined but **no Lab page exists** in sidebar | Not wired | lab_experiments | lab_experiments.* | — | — |
-| 🔴 `smart_tag_routes.py` | Smart tagging endpoints | No frontend integration | Not wired | — | — | — | — |
-| 🔴 `auto_tag_routes.py` | Auto-tagging endpoints | No frontend integration | Not wired | auto_tag_rules | auto_tag_rules.* | — | — |
-| 🔴 `hygiene_policy_routes.py` | Hygiene policy management | No frontend integration | Not wired | cleanup_policies | cleanup_policies.* | — | — |
-| 🔴 `rds_routes.py` | RDS analysis endpoints | No frontend integration | Not wired | rds_analysis | rds_analysis.* | — | — |
-| 🔴 `ri_routes.py` | Reserved Instance analysis | No frontend integration | Not wired | ri_utilization | ri_utilization.* | — | — |
-| 🔴 `s3_routes.py` | S3 tiering analysis | No frontend integration | Not wired | s3_analysis | s3_analysis.* | — | — |
-| 🔴 `transfer_routes.py` | Data transfer optimization | No frontend integration | Not wired | transfer_analysis | transfer_analysis.* | — | — |
-| 🔴 `installer_routes.py` | Agent installer routes | Used only during onboarding, not via sidebar | Not wired | — | — | — | — |
-| 🔴 `dashboard_routes.py` | Dashboard-specific routes | Frontend uses `metricAPI` instead | Not wired | — | — | — | — |
-| 🔴 `billing_routes.py` | `POST /api/v1/billing/portal-session`, `GET /api/v1/billing/status`, `GET /api/v1/billing/cost-summary`, `GET /api/v1/billing/daily-costs`, `GET /api/v1/billing/costs-by-service`, `GET /api/v1/billing/sync-status`, `POST /api/v1/billing/trigger-sync` | Stripe Billing Portal + AWS Cost Explorer endpoints — frontend Billing tab uses hardcoded data only | Not wired | daily_costs, organizations | daily_costs.amount, daily_costs.service, organizations.stripe_* | — | — |
-| 🔴 `health_routes.py` | `GET /api/v1/health/system` | System health endpoint (super admin only) — AdminHealth component uses `GET /api/v1/admin/health` instead | Not wired | — | — | — | — |
-| 🔴 `pod_metrics_routes.py` | `POST /api/v1/pod-metrics/batch`, `GET /api/v1/pod-metrics/`, `DELETE /api/v1/pod-metrics/cleanup`, `GET /api/v1/pod-metrics/rightsizing` | DaemonSet pod-level metrics collection + right-sizing recommendations — agent-only endpoints, no frontend UI | Not wired | pod_metrics | pod_metrics.* | — | — |
-| 🔴 `agent_routes.py` | `POST /api/v1/agents/register`, `POST /api/v1/agents/deregister`, `POST /api/v1/agents/heartbeat` | K8s agent registration + heartbeat endpoints — called by DaemonSet agent only, no frontend UI | Not wired | clusters | clusters.status, clusters.agent_installed, clusters.last_heartbeat | — | — |
-| 🔴 `metrics_routes.py` | `GET /api/v1/metrics/cluster/{id}/utilization`, `GET /api/v1/metrics/cluster/{id}/nodegroups`, `GET /api/v1/metrics/cluster/{id}/health-timeline` | Cluster utilization history (7 days), node group breakdown by lifecycle, health event timeline (24h) — backend implemented but **not called from frontend** | Not wired | clusters, instances, cluster_metrics | clusters.cpu_usage_pct, clusters.memory_usage_pct, instances.lifecycle, cluster_metrics.* | — | — |
-| 🔴 `metrics_routes.py` | `GET /api/v1/metrics/teams/{team_id}/summary`, `GET /api/v1/metrics/accounts/{account_id}/summary` | Team consolidated stats, account consolidated stats — backend implemented but **not called from frontend** | Not wired | teams, accounts, instances | teams.name, accounts.aws_account_id, instances.price | — | — |
-| 🔴 `metrics_routes.py` | `GET /api/v1/metrics/cost/breakdown`, `GET /api/v1/metrics/waste-breakdown` | Cost breakdown by service category, A+B waste breakdown for financial dashboard — backend implemented but **not called from frontend** | Not wired | daily_costs, instances | daily_costs.service, daily_costs.amount, instances.lifecycle | — | — |
-| 🔴 `admin_routes.py` | `GET /api/v1/admin/config/{key}`, `PATCH /api/v1/admin/config`, `GET /api/v1/admin/platform/connection`, `POST /api/v1/admin/platform/connect`, `DELETE /api/v1/admin/platform/disconnect` | System config management, platform AWS connection endpoints — backend implemented but **not called from frontend** | Not wired | system_config | system_config.key, system_config.value | — | — |
+### Deleted (Dead Code Removed)
+
+| Item | What Was Removed | Reason |
+|---|---|---|
+| `settings_routes.py` | Route file + `settings_service.py` + `settings_schemas.py` + `settingsAPI` from api.js | Never registered in `__init__.py`. Frontend uses `authAPI` for profile operations |
+| `smart_tag_routes.py` | Route file + `smart_tag_service.py` + unregistered from `__init__.py` | Abandoned: no API namespace, no frontend components |
+| `auto_tag_routes.py` | Route file + `auto_tag_service.py` + `auto_tag_schemas.py` + unregistered from `__init__.py` | Abandoned: no API namespace, no frontend components |
+| `hygiene_policy_routes.py` | Route file + unregistered from `__init__.py` (model + schema retained, used by `hygiene_service.py`) | Abandoned: no API namespace, no frontend components |
+| `dashboard_routes.py` | Route file (was never registered in `__init__.py`) | Redundant: frontend uses `metricAPI` via `metrics_routes.py` |
+| `metrics_routes.py` endpoints | `GET /cost/breakdown` + `GET /waste-breakdown` functions removed | Zero frontend callers; service methods retained in `metrics_service.py` |
+| `healthAPI` in api.js | Removed dead export | Never imported; `AdminHealth.jsx` uses raw `api.get('/api/v1/health/system')` |
+
+### Bug Fix
+
+| Fix | Detail |
+|---|---|
+| Duplicate `s3_router` | `__init__.py` had `api_router.include_router(s3_router)` registered twice; removed the duplicate |
+
+### Previously Listed But Actually In Use (Corrected)
+
+| Route File | Actual Status |
+|---|---|
+| `lab_routes.py` | Connected to `AdminExperiments.jsx` via `experimentsAPI` |
+| `rds_routes.py` | Used by `RDSAnalysis.jsx` + `RDSHealthCard.jsx` (raw `api.get()`) |
+| `ri_routes.py` | Used by `RIAnalysis.jsx` + `RIHealthCard.jsx` (raw `api.get()`) |
+| `s3_routes.py` | Used by `S3Analysis.jsx` + `S3HealthCard.jsx` (raw `api.get()`) |
+| `transfer_routes.py` | Used by `TransferAnalysis.jsx` + `TransferHealthCard.jsx` (raw `api.get()`) |
+| `installer_routes.py` | Agent infrastructure (curl-piped for DaemonSet setup) |
+| `health_routes.py` | Used by `AdminHealth.jsx` via `api.get('/api/v1/health/system')` |
+| `pod_metrics_routes.py` | Core right-sizing system + agent ingestion |
+| `agent_routes.py` | Agent lifecycle management (DaemonSet heartbeat) |
+| `metrics_routes.py` cluster/team/account endpoints | Used by cluster detail components, `TeamDetails.jsx`, `AccountAnalytics.jsx` |
+| `admin_routes.py` config/platform endpoints | Used by `AdminConfig.jsx` + `PlatformSettings.jsx` |
+| `billing_routes.py` | Excluded from cleanup (pending separate review) |
 
 ---
 
@@ -1187,9 +1200,10 @@ All legacy hibernation components have been removed. The current implementation 
 ## 25. Component Status Summary
 
 **Total Components Active:** ~130 JSX/JS files across 22 component dirs + 7 pages + 3 stores + 3 hooks + 2 services + 1 utils
-**Component Directories:** admin(9), approvals(3), atharvaai(4), audit(1), auth(3), cleanup(10), clusters(10), dashboard(15 incl. widgets), governance(4), hibernation(27 incl. index.js), layout(1), onboarding(4), policies(3), rds(2), ri(2), right-sizing(1), s3(2), settings(11), shared(10 + index.js), teams(3 NEW), templates(2), transfer(2)
+**Component Directories:** admin(9), approvals(3), atharvaai(4), audit(1), auth(3), cleanup(10), clusters(10), dashboard(15 incl. widgets), governance(4), hibernation(27 incl. index.js), layout(1), onboarding(4), policies(3), rds(2), ri(2), right-sizing(1), s3(2), settings(11), shared(10 + index.js), teams(3), templates(2), transfer(2)
 **Pages:** AccountAnalytics, Approvals, AtharvaAiPage, Onboarding, Roles, TeamDetails, Teams (7 total)
-**Recent Changes (2026-02-22):** Added 3 dedicated team components (`MembersTab.jsx`, `TeamsTab.jsx`, `RolesPoliciesTopTab.jsx`). `settings/TeamManagement.jsx` now legacy.
+**Backend Route Files:** 34 active (5 dead route files deleted: `settings_routes`, `smart_tag_routes`, `auto_tag_routes`, `hygiene_policy_routes`, `dashboard_routes`)
+**Frontend API:** `settingsAPI` and `healthAPI` removed from `api.js` (dead exports)
 **Duplicate Patterns Identified:** 10 components (HealthCard pattern × 6, Analysis page pattern × 4)
 
 
@@ -1350,9 +1364,9 @@ These components follow IDENTICAL patterns and should be consolidated into gener
 ## END OF DOCUMENT
 
 **Document Status:** ✅ COMPLETE & VERIFIED
-**Last Audit:** 2026-02-22 16:35 IST
-**Verification Method:** Filesystem scan across all 22 component dirs + `App.js` route cross-reference
-**Accuracy Level:** 100% — All ~130 component files verified to exist in filesystem
+**Last Audit:** 2026-02-22 17:15 IST
+**Verification Method:** Filesystem scan across all 22 component dirs + `App.js` route cross-reference + backend `__init__.py` router audit
+**Accuracy Level:** 100% — All ~130 component files + 34 backend route files verified
 **System Implementation:** 100% Real Data (no mock fallbacks remaining)
 **Maintainer:** Development Team
 
