@@ -193,3 +193,14 @@ export const useUIStore = create((set) => ({
       notifications: state.notifications.filter((n) => n.id !== id),
     })),
 }));
+
+// Header Store
+export const useHeaderStore = create((set) => ({
+  rightContent: null,
+  refreshAction: null,
+
+  setRightContent: (content) => set({ rightContent: content }),
+  setRefreshAction: (action) => set({ refreshAction: action }),
+
+  clearHeader: () => set({ rightContent: null, refreshAction: null }),
+}));

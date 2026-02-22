@@ -1,9 +1,9 @@
 import React, { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { useDashboard } from '../../hooks/useDashboard';
 import { auditAPI, clusterAPI, accountsAPI } from '../../services/api';
 import api from '../../services/api';
-import { useAuthStore } from '../../store/useStore';
+import { useAuthStore, useHeaderStore } from '../../store/useStore';
 import toast from 'react-hot-toast';
 
 // Widgets
@@ -203,6 +203,7 @@ const FeatureRow = ({ icon, iconBg, label, value, status, statusColor, cta, onCl
 export default function Dashboard() {
   const navigate = useNavigate();
   const { user } = useAuthStore();
+  const headerStore = useHeaderStore();
   const { dashboardKPIs, loading: dashboardLoading, refreshDashboard } = useDashboard();
 
   const [dataLoading, setDataLoading] = useState(true);
@@ -210,7 +211,23 @@ export default function Dashboard() {
   const [clusters, setClusters] = useState([]);
   const [activityFeed, setActivityFeed] = useState([]);
   const [showAccessModal, setShowAccessModal] = useState(false);
-  const [activeTab, setActiveTab] = useState("overview");
+
+  const location = useLocation();
+  const queryParams = new URLSearchParams(location.search);
+  const tabFromUrl = queryParams.get("tab") || "overview";
+
+  const [activeTab, setActiveTab] = useState(tabFromUrl);
+
+  useEffect(() => {
+    if (tabFromUrl !== activeTab) {
+      setActiveTab(tabFromUrl);
+    }
+  }, [tabFromUrl]);
+
+  const handleTabChange = (tabId) => {
+    setActiveTab(tabId);
+    navigate(`/dashboard?tab=${tabId}`);
+  };
 
   // Health Data States
   const [riHealth, setRiHealth] = useState({ status: "no_data", waste_pct: 0, savings_potential: 0 });
@@ -268,6 +285,15 @@ export default function Dashboard() {
     fetchData();
   }, []);
 
+  // Sync refresh action to global header
+  useEffect(() => {
+    headerStore.setRefreshAction({
+      onClick: refreshDashboard,
+      loading: dashboardLoading || dataLoading,
+    });
+    return () => headerStore.clearHeader();
+  }, [refreshDashboard, dashboardLoading, dataLoading]);
+
   const hasNoData = !dashboardLoading && !dataLoading && accounts.length === 0 && user?.role !== 'SUPER_ADMIN';
 
   const handleConnectClick = () => {
@@ -293,102 +319,6 @@ export default function Dashboard() {
       fontFamily: "'DM Sans', 'Outfit', system-ui, sans-serif",
       color: C.text
     }}>
-      {/* ── TOP BAR — floating glass pill ── */}
-      <div style={{
-        position: "sticky", top: 0, zIndex: 20,
-        padding: "10px 28px",
-        background: "rgba(248,249,251,0.7)",
-        backdropFilter: "blur(16px)",
-        WebkitBackdropFilter: "blur(16px)",
-        borderBottom: "1px solid rgba(232,234,237,0.6)",
-      }}>
-        <div style={{
-          display: "flex", alignItems: "center",
-          background: "rgba(255,255,255,0.88)",
-          backdropFilter: "blur(12px)",
-          WebkitBackdropFilter: "blur(12px)",
-          border: "1px solid rgba(255,255,255,0.95)",
-          borderRadius: 16,
-          boxShadow: "0 2px 20px rgba(0,0,0,0.07), 0 1px 3px rgba(0,0,0,0.04)",
-          height: 52,
-          padding: "0 6px",
-          gap: 2,
-          maxWidth: 1400,
-          margin: "0 auto",
-        }}>
-          {/* Title */}
-          <div style={{
-            paddingLeft: 14, paddingRight: 18,
-            borderRight: "1px solid #e8eaed",
-            marginRight: 4, height: 28,
-            display: "flex", alignItems: "center", flexShrink: 0,
-          }}>
-            <h1 style={{
-              fontSize: 15, fontWeight: 800, margin: 0,
-              letterSpacing: "-0.4px", color: C.text,
-            }}>Dashboard</h1>
-          </div>
-
-          {/* Tabs */}
-          <div style={{ display: "flex", gap: 2, flex: 1 }}>
-            {tabs.map(t => {
-              const isActive = activeTab === t.id;
-              return (
-                <button
-                  key={t.id}
-                  onClick={() => setActiveTab(t.id)}
-                  style={{
-                    padding: "6px 16px", borderRadius: 10, border: "none",
-                    background: isActive
-                      ? "linear-gradient(135deg, #2563eb 0%, #4f46e5 100%)"
-                      : "transparent",
-                    color: isActive ? "#fff" : C.muted,
-                    fontWeight: isActive ? 600 : 400,
-                    fontSize: 13, cursor: "pointer",
-                    transition: "all 0.18s cubic-bezier(.4,0,.2,1)",
-                    letterSpacing: "-0.1px",
-                    fontFamily: "inherit",
-                    boxShadow: isActive
-                      ? "0 2px 8px rgba(37,99,235,0.28), inset 0 1px 0 rgba(255,255,255,0.15)"
-                      : "none",
-                    whiteSpace: "nowrap",
-                  }}
-                  onMouseEnter={e => {
-                    if (!isActive) { e.currentTarget.style.background = "#f3f4f6"; e.currentTarget.style.color = C.text; }
-                  }}
-                  onMouseLeave={e => {
-                    if (!isActive) { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = C.muted; }
-                  }}
-                >{t.label}</button>
-              );
-            })}
-          </div>
-
-          {/* Actions */}
-          <div style={{ display: "flex", gap: 6, paddingRight: 6, flexShrink: 0 }}>
-            <button
-              onClick={refreshDashboard}
-              style={{
-                padding: "6px 16px", borderRadius: 9, border: "none",
-                background: "linear-gradient(135deg, #2563eb 0%, #4f46e5 100%)",
-                color: "#fff", fontSize: 12, fontWeight: 600,
-                cursor: "pointer", display: "flex", alignItems: "center", gap: 6,
-                fontFamily: "inherit",
-                boxShadow: "0 2px 8px rgba(37,99,235,0.32), inset 0 1px 0 rgba(255,255,255,0.15)",
-                transition: "all 0.15s",
-              }}
-              onMouseEnter={e => { e.currentTarget.style.boxShadow = "0 4px 14px rgba(37,99,235,0.44)"; e.currentTarget.style.transform = "translateY(-1px)"; }}
-              onMouseLeave={e => { e.currentTarget.style.boxShadow = "0 2px 8px rgba(37,99,235,0.32), inset 0 1px 0 rgba(255,255,255,0.15)"; e.currentTarget.style.transform = "translateY(0)"; }}
-            >
-              <svg width="12" height="12" viewBox="0 0 14 14" fill="none">
-                <path d="M7 1.5v3M7 1.5L5 3.5M7 1.5L9 3.5M1.5 7h11M10.5 4.5A5.5 5.5 0 1 1 3.5 4.5" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
-              Refresh
-            </button>
-          </div>
-        </div>
-      </div>
-
       <div style={{ padding: "24px 28px", maxWidth: 1400, margin: "0 auto" }}>
 
         <AccessRequestModal

@@ -36,6 +36,11 @@ from backend.models.tag_policy import TagPolicy, EnforcementLevel, ValueMode
 from backend.models.tag_template import TagTemplate
 from backend.models.auto_tag_rule import AutoTagRule, RunMode
 
+from backend.models.tag_scoring_config import TagScoringConfig
+from backend.models.tag_automation_rule import TagAutomationRule
+from backend.models.tag_compliance_score import TagComplianceScore
+from backend.models.tag_automation_log import TagAutomationLog
+
 __all__ = [
     "User",
     "Organization",
@@ -75,4 +80,8 @@ __all__ = [
     "EnforcementLevel",
     "ValueMode",
     "RunMode",
+    "TagScoringConfig",
+    "TagAutomationRule",
+    "TagComplianceScore",
+    "TagAutomationLog",
 ]

@@ -123,21 +123,19 @@ const ScheduleCalendar = ({ schedule, editable = false, onChange }) => {
       <div className="flex space-x-2">
         <button
           onClick={() => setViewMode('week')}
-          className={`px-3 py-1 rounded ${
-            viewMode === 'week'
+          className={`px-3 py-1 rounded ${viewMode === 'week'
               ? 'bg-blue-600 text-white'
               : 'bg-gray-200 text-gray-700'
-          }`}
+            }`}
         >
           Week View
         </button>
         <button
           onClick={() => setViewMode('compact')}
-          className={`px-3 py-1 rounded ${
-            viewMode === 'compact'
+          className={`px-3 py-1 rounded ${viewMode === 'compact'
               ? 'bg-blue-600 text-white'
               : 'bg-gray-200 text-gray-700'
-          }`}
+            }`}
         >
           Compact View
         </button>

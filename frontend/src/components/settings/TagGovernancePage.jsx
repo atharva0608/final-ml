@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 
 // ── Tailwind color tokens matching your app ──────────────────────────────────
 // Primary green: #059669 / emerald-600
@@ -221,18 +222,34 @@ const StepWizard = ({ steps, currentStep }) => (
 // MAIN APP
 // ═══════════════════════════════════════════════════════════════════════════════
 export default function TagGovernancePage() {
-  const [activeTab, setActiveTab] = useState("policies");
+  const location = useLocation();
+  const navigate = useNavigate();
+  const queryParams = new URLSearchParams(location.search);
+  const tabFromUrl = queryParams.get("tab") || "policies";
+
+  const [activeTab, setActiveTab] = useState(tabFromUrl);
+
+  useEffect(() => {
+    if (tabFromUrl !== activeTab) {
+      setActiveTab(tabFromUrl);
+    }
+  }, [tabFromUrl]);
+
+  const handleTabChange = (tabId) => {
+    setActiveTab(tabId);
+    navigate(`?tab=${tabId}`);
+  };
 
   return (
     <div className="min-h-screen bg-gray-50" style={{ fontFamily: "'DM Sans', 'Nunito', system-ui, sans-serif" }}>
       {/* Top tab bar — matching your app */}
       <div className="bg-white border-b border-gray-200 px-6">
         <div className="flex items-center gap-1">
-          <TabBtn id="policies" active={activeTab === "policies"} onClick={setActiveTab} icon={<I.Shield />} label="Governance Policies" accent="red" />
-          <TabBtn id="templates" active={activeTab === "templates"} onClick={setActiveTab} icon={<I.Layers />} label="Tag Templates" accent="green" />
-          <TabBtn id="scoring" active={activeTab === "scoring"} onClick={setActiveTab} icon={<I.Target />} label="Scoring Engine" accent="green" />
-          <TabBtn id="automation" active={activeTab === "automation"} onClick={setActiveTab} icon={<I.Zap />} label="Automation Rules" accent="green" />
-          <TabBtn id="monitor" active={activeTab === "monitor"} onClick={setActiveTab} icon={<I.Activity />} label="Compliance Monitor" accent="green" />
+          <TabBtn id="policies" active={activeTab === "policies"} onClick={handleTabChange} icon={<I.Shield />} label="Governance Policies" accent="red" />
+          <TabBtn id="templates" active={activeTab === "templates"} onClick={handleTabChange} icon={<I.Layers />} label="Tag Templates" accent="green" />
+          <TabBtn id="scoring" active={activeTab === "scoring"} onClick={handleTabChange} icon={<I.Target />} label="Scoring Engine" accent="green" />
+          <TabBtn id="automation" active={activeTab === "automation"} onClick={handleTabChange} icon={<I.Zap />} label="Automation Rules" accent="green" />
+          <TabBtn id="monitor" active={activeTab === "monitor"} onClick={handleTabChange} icon={<I.Activity />} label="Compliance Monitor" accent="green" />
         </div>
       </div>
 
@@ -268,9 +285,9 @@ function PoliciesTab() {
   const [editItem, setEditItem] = useState(null);
   const [policies, setPolicies] = useState([
     { id: 1, key: "owner", enforcement: "required", valueMode: "free", pattern: "^[a-z]+@company\\.com$", description: "Team email address responsible for this resource", enabled: true, resources: 847 },
-    { id: 2, key: "environment", enforcement: "strict", valueMode: "allowed", allowedValues: ["production","staging","development","sandbox"], description: "Deployment environment classification", enabled: true, resources: 1203 },
+    { id: 2, key: "environment", enforcement: "strict", valueMode: "allowed", allowedValues: ["production", "staging", "development", "sandbox"], description: "Deployment environment classification", enabled: true, resources: 1203 },
     { id: 3, key: "cost-center", enforcement: "required", valueMode: "pattern", pattern: "^CC-[0-9]{4}$", description: "Finance department cost tracking code", enabled: true, resources: 612 },
-    { id: 4, key: "data-classification", enforcement: "advisory", valueMode: "allowed", allowedValues: ["public","internal","confidential","restricted"], description: "Data sensitivity level for compliance", enabled: false, resources: 0 },
+    { id: 4, key: "data-classification", enforcement: "advisory", valueMode: "allowed", allowedValues: ["public", "internal", "confidential", "restricted"], description: "Data sensitivity level for compliance", enabled: false, resources: 0 },
   ]);
 
   const grouped = {
@@ -491,23 +508,23 @@ function TemplatesTab() {
     {
       id: 1, name: "EC2 Workload Standard", description: "Standard tagging for production compute resources", scope: ["EC2", "EBS"], isDefault: true,
       tags: [
-        { key: "environment", required: true, type: "enum", values: ["production","staging","development"], weight: 20, description: "Deployment environment" },
+        { key: "environment", required: true, type: "enum", values: ["production", "staging", "development"], weight: 20, description: "Deployment environment" },
         { key: "owner", required: true, type: "email", values: [], weight: 20, description: "Responsible team email" },
-        { key: "team", required: true, type: "enum", values: ["platform","data","backend","frontend","security"], weight: 15, description: "Owning team" },
+        { key: "team", required: true, type: "enum", values: ["platform", "data", "backend", "frontend", "security"], weight: 15, description: "Owning team" },
         { key: "cost-center", required: true, type: "pattern", values: [], pattern: "CC-[0-9]{4}", weight: 20, description: "Finance cost center" },
         { key: "project", required: false, type: "free", values: [], weight: 10, description: "Project name" },
-        { key: "data-classification", required: false, type: "enum", values: ["public","internal","confidential","restricted"], weight: 15, description: "Data sensitivity" },
+        { key: "data-classification", required: false, type: "enum", values: ["public", "internal", "confidential", "restricted"], weight: 15, description: "Data sensitivity" },
       ],
       resources: 847, compliance: 91
     },
     {
       id: 2, name: "Database Resources", description: "For RDS, DynamoDB, and caching layers", scope: ["RDS", "DynamoDB", "ElastiCache"],
       tags: [
-        { key: "environment", required: true, type: "enum", values: ["production","staging","development"], weight: 15, description: "" },
+        { key: "environment", required: true, type: "enum", values: ["production", "staging", "development"], weight: 15, description: "" },
         { key: "owner", required: true, type: "email", values: [], weight: 20, description: "" },
         { key: "cost-center", required: true, type: "pattern", values: [], weight: 20, description: "" },
-        { key: "backup-policy", required: true, type: "enum", values: ["daily","weekly","monthly","none"], weight: 20, description: "Backup frequency requirement" },
-        { key: "data-classification", required: true, type: "enum", values: ["public","internal","confidential","restricted"], weight: 25, description: "" },
+        { key: "backup-policy", required: true, type: "enum", values: ["daily", "weekly", "monthly", "none"], weight: 20, description: "Backup frequency requirement" },
+        { key: "data-classification", required: true, type: "enum", values: ["public", "internal", "confidential", "restricted"], weight: 25, description: "" },
       ],
       resources: 142, compliance: 78
     },
@@ -1341,7 +1358,7 @@ function MonitorTab() {
     { label: "Total Analyzed", value: resources.length, sub: "Resources", icon: <I.Package />, color: "gray" },
     { label: "Compliant", value: resources.filter(r => r.status === "compliant" || r.status === "passing").length, sub: "Above threshold", icon: <I.ShieldCheck />, color: "green" },
     { label: "Needs Remediation", value: resources.filter(r => r.status === "review" || r.status === "critical").length, sub: "Below threshold", icon: <I.AlertTriangle />, color: "amber" },
-    { label: "Monthly Cost at Risk", value: `$${resources.filter(r => ["review","critical","deletion"].includes(r.status)).reduce((s, r) => s + r.cost, 0).toLocaleString()}`, sub: "Non-compliant spend", icon: <I.TrendingUp />, color: "red" },
+    { label: "Monthly Cost at Risk", value: `$${resources.filter(r => ["review", "critical", "deletion"].includes(r.status)).reduce((s, r) => s + r.cost, 0).toLocaleString()}`, sub: "Non-compliant spend", icon: <I.TrendingUp />, color: "red" },
   ];
 
   const colorMap = { gray: "text-gray-500 bg-gray-50 border-gray-200", green: "text-emerald-600 bg-emerald-50 border-emerald-200", amber: "text-amber-600 bg-amber-50 border-amber-200", red: "text-red-600 bg-red-50 border-red-200" };
@@ -1395,7 +1412,7 @@ function MonitorTab() {
           ))}
         </div>
         <div className="flex flex-wrap gap-4 mt-3 text-xs text-gray-500">
-          {[["bg-emerald-500","Compliant","28%"], ["bg-blue-400","Passing","15%"], ["bg-amber-400","Needs Review","36%"], ["bg-red-400","Critical","14%"], ["bg-red-600","Pending Deletion","7%"]].map(([c, l, p]) => (
+          {[["bg-emerald-500", "Compliant", "28%"], ["bg-blue-400", "Passing", "15%"], ["bg-amber-400", "Needs Review", "36%"], ["bg-red-400", "Critical", "14%"], ["bg-red-600", "Pending Deletion", "7%"]].map(([c, l, p]) => (
             <div key={l} className="flex items-center gap-1.5"><div className={`w-3 h-3 rounded ${c}`} />{l} {p}</div>
           ))}
         </div>

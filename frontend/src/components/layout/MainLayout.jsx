@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Outlet, Link, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../../hooks/useAuth';
+import { useHeaderStore } from '../../store/useStore';
 import { clusterAPI } from '../../services/api';
 import { FiHome, FiServer, FiFileText, FiSettings, FiTarget, FiClock, FiBarChart2, FiUsers, FiActivity, FiLogOut, FiClipboard, FiBriefcase, FiCheckSquare, FiShield, FiLock, FiTag, FiZap, FiCpu } from 'react-icons/fi';
 
@@ -55,6 +56,10 @@ const ClusterBadge = () => {
 
 const routeMap = {
   "dashboard": "/dashboard",
+  "dashboard-overview": "/dashboard?tab=overview",
+  "dashboard-cost": "/dashboard?tab=cost",
+  "dashboard-infra": "/dashboard?tab=infra",
+  "dashboard-gov": "/dashboard?tab=governance",
   "atharvaai": "/atharva-ai",
   "atharvaai-rankings": "/atharva-ai?tab=rankings",
   "atharvaai-heatmap": "/atharva-ai?tab=heatmap",
@@ -71,7 +76,12 @@ const routeMap = {
   "clusters": "/clusters",
   "templates": "/templates",
   "approvals": "/approvals",
-  "tagging": "/tagging-policies",
+  "tag-governance": "/tagging-policies",
+  "tag-policies": "/tagging-policies?tab=policies",
+  "tag-templates": "/tagging-policies?tab=templates",
+  "tag-scoring": "/tagging-policies?tab=scoring",
+  "tag-automation": "/tagging-policies?tab=automation",
+  "tag-monitor": "/tagging-policies?tab=monitor",
   "automation": "/automation-settings",
   "teams": "/teams",
   "audit": "/audit",
@@ -87,7 +97,13 @@ const NAV_STRUCTURE = [
         label: "Dashboard",
         icon: "⌂",
         badge: null,
-        description: "KPIs, cost trends, fleet overview"
+        description: "KPIs, cost trends, fleet overview",
+        sub: [
+          { id: "dashboard-overview", label: "Overview" },
+          { id: "dashboard-cost", label: "Cost Intelligence" },
+          { id: "dashboard-infra", label: "Infrastructure" },
+          { id: "dashboard-gov", label: "Governance" }
+        ]
       }
     ]
   },
@@ -171,11 +187,18 @@ const NAV_STRUCTURE = [
         description: "JIT access requests & grants"
       },
       {
-        id: "tagging",
-        label: "Tagging Policies",
+        id: "tag-governance",
+        label: "Tag Governance",
         icon: "◇",
         badge: null,
-        description: "Tag enforcement & bulk tagging"
+        description: "Tag policies, templates & automation",
+        sub: [
+          { id: "tag-policies", label: "Governance Policies" },
+          { id: "tag-templates", label: "Tag Templates" },
+          { id: "tag-scoring", label: "Scoring Engine" },
+          { id: "tag-automation", label: "Automation Rules" },
+          { id: "tag-monitor", label: "Compliance Monitor" }
+        ]
       },
       {
         id: "automation",
@@ -227,7 +250,7 @@ const SEARCH_INDEX = [
   { id: "clusters", terms: ["cluster", "eks", "node", "nodegroup", "heartbeat", "agent", "spot ratio"] },
   { id: "templates", terms: ["template", "instance family", "architecture", "arm64", "amd64", "blacklist"] },
   { id: "approvals", terms: ["approval", "jit", "access", "request", "grant", "permission", "revoke"] },
-  { id: "tagging", terms: ["tag", "tagging", "policy", "compliance", "bulk tag", "enforcement"] },
+  { id: "tag-governance", terms: ["tag", "tagging", "policy", "compliance", "bulk tag", "enforcement", "template", "automation", "scoring"] },
   { id: "automation", terms: ["autopilot", "automation", "governance", "rule", "auto cleanup"] },
   { id: "teams", terms: ["team", "member", "role", "invite", "organization", "permission", "rbac"] },
   { id: "audit", terms: ["audit", "log", "history", "event", "checksum", "activity", "diff"] },
@@ -257,8 +280,9 @@ function searchNav(query) {
 
 const MainLayout = () => {
   const { user, logout } = useAuth();
-  const navigate = useNavigate();
+  const headerStore = useHeaderStore();
   const location = useLocation();
+  const navigate = useNavigate();
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
 
   // Navigation active state determined by current pathname and hash
@@ -714,38 +738,115 @@ const MainLayout = () => {
 
       {/* Main Content */}
       <div className="flex-1 flex flex-col min-w-0 transition-all duration-300">
-        <header className="h-16 bg-white border-b border-gray-200 flex items-center justify-between px-4 sm:px-6 lg:px-8 z-20">
-          <div className="flex items-center gap-4">
+
+        {/* Glass Pill Navbar */}
+        <div className="px-6 pt-5 pb-2 z-20 sticky top-0 bg-[#f0f2f5]/80 backdrop-blur-md">
+          <div style={{
+            display: "flex", alignItems: "center",
+            background: "rgba(255,255,255,0.9)",
+            border: "1px solid rgba(255,255,255,0.95)",
+            borderRadius: 14,
+            boxShadow: "0 2px 16px rgba(0,0,0,0.06), 0 1px 3px rgba(0,0,0,0.04)",
+            height: 50, padding: "0 6px", gap: 2,
+          }}>
+            {/* Mobile menu toggle */}
             <button
               onClick={() => setIsSidebarOpen(!isSidebarOpen)}
-              className="p-2 -ml-2 text-gray-500 hover:text-gray-700 rounded-md hover:bg-gray-100 focus:outline-none md:hidden"
+              className="p-2 text-gray-500 hover:text-gray-700 rounded-md hover:bg-gray-100 focus:outline-none md:hidden mr-2"
               aria-label="Toggle sidebar"
             >
               <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
               </svg>
             </button>
-            <h2 className="text-lg font-semibold text-gray-900">
-              {(() => {
-                let currentItemLabel = 'Dashboard';
-                NAV_STRUCTURE.forEach(sec => {
-                  sec.items.forEach(item => {
-                    if (item.id === activeId) currentItemLabel = item.label;
-                    if (item.sub) {
-                      item.sub.forEach(si => {
-                        if (si.id === activeId) currentItemLabel = si.label;
-                      });
-                    }
-                  });
-                });
-                return currentItemLabel;
-              })()}
-            </h2>
-          </div>
-        </header>
 
-        <main className="flex-1 overflow-y-auto">
-          <div className="p-0 sm:p-8 h-full">
+            {(() => {
+              let currentItemLabel = 'Dashboard';
+              let parentTabs = [];
+              NAV_STRUCTURE.forEach(sec => {
+                sec.items.forEach(item => {
+                  if (item.id === activeId) {
+                    currentItemLabel = item.label;
+                    if (item.sub) parentTabs = item.sub;
+                  }
+                  if (item.sub) {
+                    item.sub.forEach(si => {
+                      if (si.id === activeId) {
+                        currentItemLabel = item.label;
+                        parentTabs = item.sub;
+                      }
+                    });
+                  }
+                });
+              });
+
+              return (
+                <>
+                  <div style={{ paddingLeft: 10, paddingRight: 18, borderRight: (parentTabs.length > 0 || headerStore.rightContent || headerStore.refreshAction) ? `1px solid #e8eaed` : 'none', marginRight: 4, height: 26, display: "flex", alignItems: "center", flexShrink: 0 }}>
+                    <h1 style={{ fontSize: 15, fontWeight: 800, margin: 0, letterSpacing: "-0.4px" }}>{currentItemLabel}</h1>
+                  </div>
+
+                  {/* Tabs */}
+                  {parentTabs.length > 0 && (
+                    <div className="hidden sm:flex" style={{ alignItems: "center", gap: 4, flex: 1, paddingLeft: 8 }}>
+                      {parentTabs.map(tab => (
+                        <Link
+                          key={tab.id}
+                          to={routeMap[tab.id] || `/${tab.id}`}
+                          style={{
+                            padding: "6px 12px",
+                            borderRadius: 8,
+                            border: "none",
+                            textDecoration: "none",
+                            background: activeId === tab.id ? "#2563eb" : "transparent",
+                            color: activeId === tab.id ? "#ffffff" : "#6b7280",
+                            fontSize: 13,
+                            fontWeight: activeId === tab.id ? 600 : 500,
+                            cursor: "pointer",
+                            transition: "all 0.2s"
+                          }}
+                        >
+                          {tab.label}
+                        </Link>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Placeholder for when no tabs exist so right items float to right */}
+                  {parentTabs.length === 0 && <div style={{ flex: 1 }} />}
+                </>
+              );
+            })()}
+
+            {/* Right Content */}
+            <div style={{ display: "flex", gap: 6, paddingRight: 6, alignItems: "center", marginLeft: "auto" }}>
+              {headerStore.rightContent}
+              {headerStore.refreshAction && (
+                <button
+                  onClick={headerStore.refreshAction.onClick}
+                  disabled={headerStore.refreshAction.loading}
+                  style={{
+                    padding: "6px 14px", borderRadius: 9, border: "none",
+                    background: "linear-gradient(135deg, #2563eb, #4f46e5)",
+                    color: "#fff", fontSize: 12, fontWeight: 600,
+                    cursor: headerStore.refreshAction.loading ? "not-allowed" : "pointer", fontFamily: "inherit",
+                    display: "flex", alignItems: "center", gap: 6,
+                    boxShadow: "0 2px 8px rgba(37,99,235,0.28)",
+                    opacity: headerStore.refreshAction.loading ? 0.7 : 1
+                  }}
+                >
+                  <svg width="12" height="12" viewBox="0 0 14 14" fill="none" className={headerStore.refreshAction.loading ? 'animate-spin' : ''}>
+                    <path d="M7 1.5v3M7 1.5L5 3.5M7 1.5L9 3.5M1.5 7h11M10.5 4.5A5.5 5.5 0 1 1 3.5 4.5" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                  Refresh
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <main className="flex-1 overflow-y-auto pt-2">
+          <div className="p-0 sm:px-8 pb-8 h-full">
             <Outlet />
           </div>
         </main>
