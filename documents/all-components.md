@@ -260,7 +260,6 @@
 
 ## 6. AtharvaAI - ML Pool Optimizer
 
-**NOTE**: Mock `atharva` system DELETED (2026-02-17). All components now use real ML-based `atharvaai` system with 8-step pipeline.
 
 ### Page Layout
 
@@ -311,27 +310,6 @@
 | **Health Endpoint** | API | Reports ML pipeline health including circuit breaker state | Real API | `GET /api/v1/atharvaai/health` | Reads `atharvaai:ml_degraded` and `atharvaai:ml_fail_count` from Redis. Returns `status`, `ml_status`, `fallback_active`, `ml_fail_count_10min` | — (Redis) | — | api/atharvaai_routes.py | — |
 | **AWS Rate Limiter** | Utility | Per-account, per-API Redis sliding window rate limiter for AWS API calls | Real Data | — | `AWSAPIRateLimiter` class in `backend/core/aws_rate_limiter.py`. Limits: RunInstances 5/s, DescribeSpotPriceHistory 20/s, GetProducts 10/s. Factory methods: `for_capacity_check()`, `for_pricing()`, `for_spot_history()` | — (Redis) | — | backend/core/aws_rate_limiter.py | — |
 
-### DELETED Components (Legacy System Cleanup)
-
-**The following mock/legacy components were DELETED and NO LONGER EXIST:**
-
-#### Mock AtharvaAI System (Deleted 2026-02-17)
-| ❌ DELETED Component | Former File | Reason |
-|---|---|---|
-| ❌ OptimizationStatusHeader | atharva/OptimizationStatusHeader.jsx | Mock in-memory data, replaced by real ML system |
-| ❌ LivePoolRankings | atharva/LivePoolRankings.jsx | Mock random data, replaced by ONNX model |
-| ❌ NodeTemplateEditor | atharva/NodeTemplateEditor.jsx | Mock in-memory list |
-| ❌ Recommendations | atharva/Recommendations.jsx | Mock hardcoded recommendations |
-| ❌ RiskMonitor | atharva/RiskMonitor.jsx | Mock time-series |
-| ❌ PoolDetailsModal | atharva/PoolDetailsModal.jsx | Mock pool details |
-| ❌ SwitchConfirmationModal | atharva/SwitchConfirmationModal.jsx | Mock safety checks |
-| ❌ Header | atharva/Header.jsx | Mock stats |
-| ❌ InstanceRankings | atharva/InstanceRankings.jsx | Mock pool data |
-| ❌ NodeConfiguration | atharva/NodeConfiguration.jsx | Hardcoded config |
-
-**Note:** All mock `/api/v1/atharva/*` endpoints have been removed. Current system uses `/api/v1/atharvaai/*` with real ML pipeline.
-
----
 
 ## 7. Tagging Policies
 
@@ -1212,7 +1190,6 @@ All legacy hibernation components have been removed. The current implementation 
 **Component Directories:** admin(9), approvals(3), atharvaai(4), audit(1), auth(3), cleanup(10), clusters(10), dashboard(15 incl. widgets), governance(4), hibernation(27 incl. index.js), layout(1), onboarding(4), policies(3), rds(2), ri(2), right-sizing(1), s3(2), settings(11), shared(10 + index.js), teams(3 NEW), templates(2), transfer(2)
 **Pages:** AccountAnalytics, Approvals, AtharvaAiPage, Onboarding, Roles, TeamDetails, Teams (7 total)
 **Recent Changes (2026-02-22):** Added 3 dedicated team components (`MembersTab.jsx`, `TeamsTab.jsx`, `RolesPoliciesTopTab.jsx`). `settings/TeamManagement.jsx` now legacy.
-**Components Previously Removed:** Legacy hibernation (HibernationScheduleV2, HibernationGrid, HibernationDashboard, HibernationSchedule), 10 mock AtharvaAI components, 3 unused admin components, ExperimentLab, 11 right-sizing components (consolidated into single file)
 **Duplicate Patterns Identified:** 10 components (HealthCard pattern × 6, Analysis page pattern × 4)
 
 
@@ -1367,20 +1344,6 @@ These components follow IDENTICAL patterns and should be consolidated into gener
 | **TagPoliciesList** | `settings/TagPoliciesList.jsx` (28KB) | ⚠️ VERIFY | Large component — verify if it duplicates `TagPoliciesManager.jsx` functionality | **VERIFY** — May be the internal list component used by Manager |
 | **CleanupPolicies** | `policies/CleanupPolicies.jsx` (17.8KB) | ⚠️ VERIFY | Not imported in `App.js` routes — may only be used as child of `PolicyConfig.jsx` | **VERIFY** — Confirm imported by PolicyConfig |
 
-### Previously Removed Components (Confirmed Deleted)
-
-| Component Name | Status | Removal Date | Former Purpose |
-|---|---|---|---|
-| HibernationScheduleV2 | ✅ REMOVED | 2026-02-18 | Legacy hibernation scheduler |
-| HibernationGrid | ✅ REMOVED | 2026-02-18 | Legacy grid view |
-| HibernationDashboard (old) | ✅ REMOVED | 2026-02-20 | Wrapper component |
-| HibernationSchedule | ✅ REMOVED | 2026-02-20 | Legacy v1 scheduler |
-| HibernationPage | ✅ REMOVED | 2026-02-20 | Page wrapper |
-| AdminAgentFleet | ✅ REMOVED | 2026-02-18 | Unused admin component |
-| AdminImpersonation | ✅ REMOVED | 2026-02-18 | Unused admin component |
-| AdminTenantDrilldown | ✅ REMOVED | 2026-02-18 | Unused admin component |
-| ExperimentLab | ✅ REMOVED | 2026-02-17 | Lab experiments page |
-| RightSizing.jsx + 10 files | ✅ CONSOLIDATED | 2026-02-20 | Merged into RightSizingDashboard.jsx |
 
 ---
 
