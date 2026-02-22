@@ -44,7 +44,7 @@ const FleetComposition = ({ data: externalData }) => {
 
         const fetchData = async () => {
             try {
-                const response = await api.get('/metrics/instances');
+                const response = await api.get('/api/v1/metrics/instances');
                 const data = response.data;
 
                 // Transform for Pie Chart

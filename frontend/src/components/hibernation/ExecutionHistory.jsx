@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { hibernationApi } from '../../services/hibernationApi';
+import { auditAPI } from '../../services/api';
 
 /**
  * Execution History & Logs - Shows timeline of hibernation actions
@@ -21,86 +21,35 @@ const ExecutionHistory = ({ scheduleId = null, limit = 50 }) => {
     try {
       setLoading(true);
 
-      // Mock data for now - replace with actual API call
-      // const response = await hibernationApi.getExecutionHistory(scheduleId, { time_range: timeRange, limit });
+      // Fetch real audit logs for hibernation events
+      const response = await auditAPI.list({
+        resource_type: 'HIBERNATION',
+        limit: limit,
+        event: scheduleId ? undefined : undefined // Can filter by specific events if needed
+      });
 
-      // Simulated history data
-      const mockHistory = [
-        {
-          id: 1,
-          schedule_id: 'sched-1',
-          schedule_name: 'Production Weekend Shutdown',
-          cluster_name: 'prod-cluster-1',
-          action: 'SLEEP',
-          status: 'SUCCESS',
-          started_at: new Date(Date.now() - 3600000).toISOString(),
-          completed_at: new Date(Date.now() - 3580000).toISOString(),
-          duration_seconds: 20,
-          resources_affected: { deployments: 15, statefulsets: 3, nodes: 0 },
-          cost_saved: 12.50,
-          error_message: null
-        },
-        {
-          id: 2,
-          schedule_id: 'sched-1',
-          schedule_name: 'Production Weekend Shutdown',
-          cluster_name: 'prod-cluster-2',
-          action: 'SLEEP',
-          status: 'SUCCESS',
-          started_at: new Date(Date.now() - 7200000).toISOString(),
-          completed_at: new Date(Date.now() - 7180000).toISOString(),
-          duration_seconds: 20,
-          resources_affected: { deployments: 8, statefulsets: 2, nodes: 0 },
-          cost_saved: 8.75,
-          error_message: null
-        },
-        {
-          id: 3,
-          schedule_id: 'sched-2',
-          schedule_name: 'Dev Nightly Shutdown',
-          cluster_name: 'dev-cluster-1',
-          action: 'WAKE',
-          status: 'SUCCESS',
-          started_at: new Date(Date.now() - 28800000).toISOString(),
-          completed_at: new Date(Date.now() - 28740000).toISOString(),
-          duration_seconds: 60,
-          resources_affected: { deployments: 12, statefulsets: 1, nodes: 0 },
-          cost_saved: 0,
-          error_message: null
-        },
-        {
-          id: 4,
-          schedule_id: 'sched-2',
-          schedule_name: 'Dev Nightly Shutdown',
-          cluster_name: 'dev-cluster-1',
-          action: 'SLEEP',
-          status: 'ERROR',
-          started_at: new Date(Date.now() - 86400000).toISOString(),
-          completed_at: new Date(Date.now() - 86380000).toISOString(),
-          duration_seconds: 20,
-          resources_affected: { deployments: 0, statefulsets: 0, nodes: 0 },
-          cost_saved: 0,
-          error_message: 'Failed to scale deployment nginx: context deadline exceeded'
-        },
-        {
-          id: 5,
-          schedule_id: 'sched-1',
-          schedule_name: 'Production Weekend Shutdown',
-          cluster_name: 'prod-cluster-1',
-          action: 'PREWARM',
-          status: 'SUCCESS',
-          started_at: new Date(Date.now() - 172800000).toISOString(),
-          completed_at: new Date(Date.now() - 172740000).toISOString(),
-          duration_seconds: 60,
-          resources_affected: { deployments: 0, statefulsets: 0, nodes: 3 },
-          cost_saved: 0,
-          error_message: null
-        }
-      ];
+      // Transform audit logs to history format
+      const logs = response.data || [];
+      const transformedHistory = logs.map(log => ({
+        id: log.id,
+        schedule_id: log.resource || 'manual',
+        schedule_name: log.metadata?.schedule_name || log.resource || 'Manual Action',
+        cluster_name: log.metadata?.cluster_name || 'Unknown',
+        action: log.event.includes('sleep') ? 'SLEEP' : log.event.includes('wake') ? 'WAKE' : 'PREWARM',
+        status: log.outcome === 'success' ? 'SUCCESS' : log.outcome === 'failure' ? 'ERROR' : 'IN_PROGRESS',
+        started_at: log.timestamp,
+        completed_at: log.metadata?.completed_at || log.timestamp,
+        duration_seconds: log.metadata?.duration_seconds || 0,
+        resources_affected: log.metadata?.resources_affected || { deployments: 0, statefulsets: 0, nodes: 0 },
+        cost_saved: log.metadata?.cost_saved || 0,
+        error_message: log.metadata?.error_message || null
+      }));
 
-      setHistory(mockHistory);
+      setHistory(transformedHistory);
     } catch (error) {
       console.error('Failed to load execution history:', error);
+      // Fallback to empty array on error
+      setHistory([]);
     } finally {
       setLoading(false);
     }

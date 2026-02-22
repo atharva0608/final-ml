@@ -1,12 +1,12 @@
 import React, { useEffect, useState } from 'react';
 import { Card } from '../shared';
-import { FiSliders, FiCheckCircle, FiAlertTriangle, FiArrowUpRight, FiDollarSign } from 'react-icons/fi';
+import { FiSliders, FiCheckCircle, FiAlertTriangle, FiArrowUpRight, FiActivity, FiInbox } from 'react-icons/fi';
 import api from '../../services/api';
 
 const AutoRebalanceAuditCard = () => {
     const [decisions, setDecisions] = useState([]);
     const [loading, setLoading] = useState(true);
-    const [isEnabled, setIsEnabled] = useState(true); // Toggle state
+    const [isEnabled, setIsEnabled] = useState(true);
 
     useEffect(() => {
         fetchAuditLog();
@@ -14,58 +14,69 @@ const AutoRebalanceAuditCard = () => {
 
     const fetchAuditLog = async () => {
         try {
-            // Reusing rebalancing status endpoint but displaying differently
-            // In a real app, this might be a dedicated audit log endpoint with "decision reasoning"
             const response = await api.get('/api/v1/atharvaai/rebalancing/status?limit=3');
-            if (response.data && response.data.length > 0) {
-                // Add mock "reasoning" for demo purposes since backend doesn't store plain text reasoning yet
-                const enriched = response.data.map(d => ({
-                    ...d,
-                    reason: d.trigger === 'emergency'
-                        ? 'Termination notice received (2m warning)'
-                        : 'Cost savings opportunity detected (>15%)',
-                    savings: d.trigger === 'graceful' ? '18%' : null
-                }));
-                setDecisions(enriched);
+            if (response.data && Array.isArray(response.data)) {
+                setDecisions(response.data);
             } else {
-                setDecisions(mockDecisions);
+                setDecisions([]);
             }
         } catch (error) {
             console.error("Failed to fetch audit log:", error);
-            setDecisions(mockDecisions);
+            setDecisions([]);
         } finally {
             setLoading(false);
         }
     };
 
-    const mockDecisions = [
-        {
-            id: 101,
-            target_pool: 'c6g.xlarge:us-east-1a',
-            reason: 'Cost dropped 18% vs current pool',
-            timestamp: new Date(Date.now() - 1000 * 60 * 45).toISOString(), // 45m ago
-            override: false,
-            outcome: 'success'
-        },
-        {
-            id: 102,
-            target_pool: 'm5.large:us-east-1b',
-            reason: 'Spot capacity risk increased to HIGH',
-            timestamp: new Date(Date.now() - 1000 * 60 * 60 * 4).toISOString(), // 4h ago
-            override: true, // Manual override example
-            outcome: 'success'
-        },
-        {
-            id: 103,
-            target_pool: 'r5.2xlarge:us-east-1c',
-            reason: 'Rebalancing for fragmentation cleanup',
-            timestamp: new Date(Date.now() - 1000 * 60 * 60 * 24).toISOString(), // 1d ago
-            override: false,
-            outcome: 'success'
+    const getReasonText = (action) => {
+        if (action.trigger === 'emergency') {
+            return 'Termination notice received — emergency rebalancing';
         }
-    ];
+        return 'Proactive optimization to safer pool';
+    };
+
+    const getStatusBadge = (status) => {
+        switch (status) {
+            case 'completed':
+                return (
+                    <span className="px-1.5 py-0.5 bg-green-50 text-green-600 text-[10px] rounded border border-green-100 flex items-center gap-1">
+                        <FiCheckCircle className="w-2 h-2" /> Completed
+                    </span>
+                );
+            case 'failed':
+                return (
+                    <span className="px-1.5 py-0.5 bg-red-50 text-red-600 text-[10px] rounded border border-red-100 flex items-center gap-1">
+                        <FiAlertTriangle className="w-2 h-2" /> Failed
+                    </span>
+                );
+            case 'in_progress':
+                return (
+                    <span className="px-1.5 py-0.5 bg-blue-50 text-blue-600 text-[10px] rounded border border-blue-100 flex items-center gap-1">
+                        <FiActivity className="w-2 h-2 animate-pulse" /> In Progress
+                    </span>
+                );
+            default:
+                return null;
+        }
+    };
+
+    const getTriggerBadge = (trigger) => {
+        if (trigger === 'emergency') {
+            return (
+                <span className="px-1.5 py-0.5 bg-red-50 text-red-700 text-[10px] rounded border border-red-200 flex items-center gap-1">
+                    <FiAlertTriangle className="w-2 h-2" /> Emergency
+                </span>
+            );
+        }
+        return (
+            <span className="px-1.5 py-0.5 bg-blue-50 text-blue-600 text-[10px] rounded border border-blue-100 flex items-center gap-1">
+                <FiSliders className="w-2 h-2" /> Graceful
+            </span>
+        );
+    };
 
     const timeAgo = (isoString) => {
+        if (!isoString) return '';
         const seconds = Math.floor((new Date() - new Date(isoString)) / 1000);
         if (seconds < 60) return `${seconds}s ago`;
         if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
@@ -95,43 +106,43 @@ const AutoRebalanceAuditCard = () => {
             </div>
 
             <div className="space-y-3 flex-1">
-                {decisions.map((decision, idx) => (
-                    <div key={idx} className="bg-white p-3 rounded-lg border border-gray-100 shadow-sm hover:shadow-md transition-shadow">
-                        <div className="flex justify-between items-start mb-1">
-                            <span className="text-xs font-bold text-gray-700 font-mono">
-                                {decision.target_pool.split(':')[0]}
-                            </span>
-                            <span className="text-[10px] text-gray-400">
-                                {timeAgo(decision.timestamp)}
-                            </span>
-                        </div>
+                {decisions.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center py-8 text-gray-400">
+                        <FiInbox className="w-8 h-8 mb-2 text-gray-300" />
+                        <p className="text-sm font-medium">No rebalancing events yet</p>
+                        <p className="text-xs mt-1">Events will appear here when auto-rebalancing triggers</p>
+                    </div>
+                ) : (
+                    decisions.map((action, idx) => (
+                        <div key={action.id || idx} className="bg-white p-3 rounded-lg border border-gray-100 shadow-sm hover:shadow-md transition-shadow">
+                            <div className="flex justify-between items-start mb-1">
+                                <span className="text-xs font-bold text-gray-700 font-mono">
+                                    {action.target_pool ? action.target_pool.split(':')[0] : 'Unknown'}
+                                </span>
+                                <span className="text-[10px] text-gray-400">
+                                    {timeAgo(action.started_at)}
+                                </span>
+                            </div>
 
-                        <p className="text-xs text-gray-600 leading-snug mb-2">
-                            {decision.reason}
-                        </p>
+                            <p className="text-xs text-gray-600 leading-snug mb-2">
+                                {getReasonText(action)}
+                            </p>
 
-                        <div className="flex items-center justify-between">
-                            <div className="flex items-center gap-1.5">
-                                {decision.override ? (
-                                    <span className="px-1.5 py-0.5 bg-yellow-100 text-yellow-700 text-[10px] rounded border border-yellow-200 flex items-center gap-1">
-                                        <FiSliders className="w-2 h-2" /> Manual
-                                    </span>
-                                ) : (
-                                    <span className="px-1.5 py-0.5 bg-blue-50 text-blue-600 text-[10px] rounded border border-blue-100 flex items-center gap-1">
-                                        <FiCheckCircle className="w-2 h-2" /> Auto
+                            <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-1.5">
+                                    {getTriggerBadge(action.trigger)}
+                                    {getStatusBadge(action.status)}
+                                </div>
+
+                                {action.nodes_affected > 0 && (
+                                    <span className="text-[10px] font-medium text-gray-500">
+                                        {action.nodes_affected} node{action.nodes_affected !== 1 ? 's' : ''}
                                     </span>
                                 )}
                             </div>
-
-                            {decision.savings && (
-                                <span className="text-[10px] font-medium text-green-600 flex items-center">
-                                    <FiArrowUpRight className="w-2.5 h-2.5 mr-0.5" />
-                                    {decision.savings} saved
-                                </span>
-                            )}
                         </div>
-                    </div>
-                ))}
+                    ))
+                )}
             </div>
 
             <div className="mt-3 pt-2 border-t border-gray-200 text-center">

@@ -424,15 +424,36 @@ class TemplateService:
     def _invalidate_atharva_cache(self, user_id: str):
         """Invalidate AtharvaAI Redis cache when template changes"""
         try:
-            import redis
-            from backend.core.config import settings
-            r = redis.Redis.from_url(settings.REDIS_URL, decode_responses=True)
-            # Delete cached rankings for this user
-            cache_pattern = f"atharva_rankings:{user_id}:*"
-            keys = r.keys(cache_pattern)
-            if keys:
-                r.delete(*keys)
-                logger.info(f"Invalidated {len(keys)} AtharvaAI cache entries for user {user_id}")
+            from backend.core.redis_client import get_redis_client
+            r = get_redis_client()
+
+            # Delete cached pool rankings (global cache)
+            # Template changes affect all pool rankings, so clear global cache
+            global_cache_key = "atharvaai:pool_rankings"
+            deleted = r.delete(global_cache_key)
+
+            # Also delete user-specific rankings cache if it exists
+            user_cache_pattern = f"atharva_rankings:{user_id}:*"
+            user_keys = r.keys(user_cache_pattern)
+            if user_keys:
+                r.delete(*user_keys)
+
+            logger.info(
+                f"Invalidated AtharvaAI cache: global={deleted > 0}, "
+                f"user_specific={len(user_keys) if user_keys else 0} keys for user {user_id}"
+            )
+
+            # Also log audit trail
+            from backend.services.audit_service import AuditService
+            audit = AuditService(self.db)
+            audit.create_audit_log(
+                actor_id=user_id,
+                event="TEMPLATE_UPDATED_CACHE_INVALIDATED",
+                resource_type="NodeTemplate",
+                resource_id=None,
+                diff_before=None,
+                diff_after={"cache_keys_cleared": deleted + (len(user_keys) if user_keys else 0)}
+            )
         except Exception as e:
             logger.warning(f"Failed to invalidate AtharvaAI cache: {e}")
 

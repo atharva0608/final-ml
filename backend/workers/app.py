@@ -85,8 +85,9 @@ app.conf.beat_schedule = {
         'schedule': 30.0,  # 30 seconds
     },
     # Spot Price Collection (Every 10 minutes) - Collects historical spot prices for ML features
+    # FIXED: Now uses real AWS pricing scraper instead of mock data
     'spot-price-collection-every-10-mins': {
-        'task': 'workers.atharvaai.collect_spot_prices',
+        'task': 'backend.workers.tasks.pricing.fetch_aws_pricing',
         'schedule': 600.0,  # 10 minutes
     },
     # Termination Monitor (Every 30 seconds) - Monitors spot termination notices and updates blacklist

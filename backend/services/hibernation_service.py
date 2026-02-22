@@ -330,6 +330,114 @@ class HibernationService:
             return 0
         return sum(1 for i in range(min(len(m1), len(m2))) if m1[i] == "1" and m2[i] == "1")
 
+    def get_savings_history(self, months: int, organization_id: str) -> List[Dict[str, Any]]:
+        """
+        Get historical hibernation savings for last N months.
+        Aggregates data from audit_logs table where event IN ('hibernation_sleep', 'hibernation_wake').
+        """
+        from backend.models.audit_log import AuditLog
+        from sqlalchemy import func, extract
+        from datetime import datetime, timedelta
+        import calendar
+
+        cutoff_date = datetime.utcnow() - timedelta(days=months * 30)
+
+        # Query audit logs for hibernation events
+        logs = self.db.query(AuditLog).filter(
+            and_(
+                AuditLog.resource_type == 'HIBERNATION',
+                AuditLog.event.in_(['hibernation_sleep', 'hibernation_wake']),
+                AuditLog.timestamp >= cutoff_date
+            )
+        ).all()
+
+        # Aggregate savings by month
+        monthly_savings = {}
+        for log in logs:
+            if log.metadata and 'estimated_savings' in log.metadata:
+                month_key = log.timestamp.strftime('%Y-%m')
+                month_name = log.timestamp.strftime('%b')
+                if month_key not in monthly_savings:
+                    monthly_savings[month_key] = {
+                        'month': month_name,
+                        'savings': 0,
+                        'sleep_hours': 0
+                    }
+                monthly_savings[month_key]['savings'] += float(log.metadata.get('estimated_savings', 0))
+                monthly_savings[month_key]['sleep_hours'] += int(log.metadata.get('sleep_hours', 0))
+
+        # Fill missing months with zeros
+        result = []
+        for i in range(months):
+            date = datetime.utcnow() - timedelta(days=(months - i - 1) * 30)
+            month_key = date.strftime('%Y-%m')
+            month_name = date.strftime('%b')
+
+            if month_key in monthly_savings:
+                result.append(monthly_savings[month_key])
+            else:
+                result.append({
+                    'month': month_name,
+                    'savings': 0,
+                    'sleep_hours': 0
+                })
+
+        return result
+
+    def get_active_hibernation_status(self, organization_id: str) -> Dict[str, Any]:
+        """
+        Get status of currently active hibernation operation (if any).
+        Checks cluster.is_hibernating flag and hibernation_state JSON for progress.
+        """
+        # Find clusters currently hibernating
+        active_cluster = self.db.query(Cluster).filter(
+            and_(
+                Cluster.is_hibernating == True,
+                Cluster.hibernation_lock.isnot(None)
+            )
+        ).first()
+
+        if not active_cluster or not active_cluster.hibernation_state:
+            return {
+                'in_progress': False,
+                'schedule_name': None,
+                'strategy': None,
+                'progress_pct': 0,
+                'nodes_processed': 0,
+                'total_nodes': 0,
+                'elapsed_seconds': 0,
+                'estimated_remaining': 0
+            }
+
+        # Extract progress from hibernation_state JSON
+        state = active_cluster.hibernation_state or {}
+        started_at = active_cluster.hibernation_lock_acquired_at
+        elapsed = 0
+        if started_at:
+            elapsed = int((datetime.utcnow() - started_at).total_seconds())
+
+        nodes_processed = state.get('nodes_processed', 0)
+        total_nodes = state.get('total_nodes', 1)
+        progress_pct = int((nodes_processed / total_nodes) * 100) if total_nodes > 0 else 0
+
+        # Estimate remaining time (assume linear progress)
+        estimated_remaining = 0
+        if progress_pct > 0 and progress_pct < 100:
+            estimated_remaining = int((elapsed / progress_pct) * (100 - progress_pct))
+
+        return {
+            'in_progress': True,
+            'cluster_id': active_cluster.id,
+            'cluster_name': active_cluster.name,
+            'schedule_name': state.get('schedule_name', 'Manual Operation'),
+            'strategy': state.get('strategy', 'NAMESPACE_SLEEP'),
+            'progress_pct': progress_pct,
+            'nodes_processed': nodes_processed,
+            'total_nodes': total_nodes,
+            'elapsed_seconds': elapsed,
+            'estimated_remaining': estimated_remaining
+        }
+
 
 def get_hibernation_service(db: Session) -> HibernationService:
     """Get hibernation service instance"""

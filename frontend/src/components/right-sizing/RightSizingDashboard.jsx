@@ -468,8 +468,13 @@ export default function RightSizingDashboard() {
     const [detail, setDetail] = useState(null);
     const [applying, setApplying] = useState(null);
     const [toastMsg, setToastMsg] = useState(null);
+    const [toastType, setToastType] = useState('success'); // 'success' or 'error'
 
-    const showToast = (msg) => { setToastMsg(msg); setTimeout(() => setToastMsg(null), 2800); };
+    const showToast = (msg, type = 'success') => {
+        setToastMsg(msg);
+        setToastType(type);
+        setTimeout(() => setToastMsg(null), 4000); // Increased to 4s for error readability
+    };
 
     useEffect(() => {
         fetchData();
@@ -479,6 +484,14 @@ export default function RightSizingDashboard() {
         try {
             setLoading(true);
             const clusterId = selectedCluster?.id;
+
+            // Don't fetch if no cluster selected
+            if (!clusterId) {
+                setLoading(false);
+                setRecs([]);
+                return;
+            }
+
             const res = await optimizationAPI.getEnrichedRightsizing(clusterId, { analysis_window_hours: 336 });
 
             const apiRecs = Array.isArray(res.data?.recommendations) ? res.data.recommendations : (Array.isArray(res.data) ? res.data : []);
@@ -520,12 +533,50 @@ export default function RightSizingDashboard() {
         try {
             await karpenterAPI.applyRecommendation(applying.id, { recommended_type: applying.recType });
             setRecs(prev => prev.map(r => r.id === applying.id ? { ...r, status: "applied" } : r));
-            showToast(`Applied: ${applying.name} → ${applying.recType}`);
+            showToast(`✓ Applied: ${applying.name} → ${applying.recType}`, 'success');
         } catch (err) {
-            setRecs(prev => prev.map(r => r.id === applying.id ? { ...r, status: "applied" } : r));
-            showToast(`Successfully queued apply for ${applying.name}`);
+            console.error('Apply recommendation failed:', err);
+
+            // Extract error message from response
+            const errorMsg = err.response?.data?.detail || err.message || 'Unknown error';
+
+            // Show error toast with details
+            showToast(`✗ Failed to apply ${applying.name}: ${errorMsg}`, 'error');
+
+            // Log additional context for debugging
+            if (err.response) {
+                console.error('Error response:', {
+                    status: err.response.status,
+                    data: err.response.data,
+                    headers: err.response.headers
+                });
+            }
         } finally {
             setApplying(null);
+        }
+    };
+
+    const handleModeSwitch = async (newMode) => {
+        if (!selectedCluster?.id) {
+            showToast('Please select a cluster first', 'error');
+            return;
+        }
+
+        try {
+            if (newMode === 'auto') {
+                // Switch to auto mode via API
+                await karpenterAPI.switchMode(selectedCluster.id, { mode: 'auto' });
+                showToast('✓ Switched to Auto mode - Karpenter will now make changes automatically', 'success');
+                // Refresh cluster data
+                setTimeout(() => window.location.reload(), 2000);
+            } else {
+                // Just switch UI mode for insights/auto-sizing views
+                setMode(newMode);
+            }
+        } catch (err) {
+            console.error('Mode switch failed:', err);
+            const errorMsg = err.response?.data?.detail || err.message || 'Failed to switch mode';
+            showToast(`✗ ${errorMsg}`, 'error');
         }
     };
 
@@ -551,8 +602,16 @@ export default function RightSizingDashboard() {
 
             {/* Toast */}
             {toastMsg && (
-                <div style={{ position: "fixed", top: 20, right: 20, zIndex: 600, padding: "10px 16px", borderRadius: 10, background: C.greenBg, border: `1px solid ${C.greenMid}`, color: C.green, fontSize: 13, fontWeight: 600, boxShadow: "0 4px 20px rgba(0,0,0,0.1)", animation: "fadeIn 0.2s", display: "flex", alignItems: "center", gap: 8 }}>
-                    <CheckI s={14} />{toastMsg}
+                <div style={{
+                    position: "fixed", top: 20, right: 20, zIndex: 600, padding: "10px 16px", borderRadius: 10,
+                    background: toastType === 'error' ? '#fee2e2' : C.greenBg,
+                    border: `1px solid ${toastType === 'error' ? '#f87171' : C.greenMid}`,
+                    color: toastType === 'error' ? '#991b1b' : C.green,
+                    fontSize: 13, fontWeight: 600, boxShadow: "0 4px 20px rgba(0,0,0,0.1)", animation: "fadeIn 0.2s",
+                    display: "flex", alignItems: "center", gap: 8, maxWidth: "400px"
+                }}>
+                    {toastType === 'success' && <CheckI s={14} />}
+                    {toastMsg}
                 </div>
             )}
 
@@ -563,8 +622,30 @@ export default function RightSizingDashboard() {
                     <div style={{ fontSize: 13, color: C.textSec, marginTop: 2 }}>Optimize instance types and reduce infrastructure costs</div>
                 </div>
                 <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
-                    <Btn variant="outline" sx={{ background: C.indigoBg, border: `1px solid ${C.indigoMid}`, color: C.indigo, padding: "8px 16px" }}><EyeI s={14} /> Karpenter Insights</Btn>
-                    <Btn variant="ghost" sx={{ background: C.surface, border: `1px solid ${C.border}`, color: C.textSec, padding: "8px 16px" }}><ZapI s={14} /> Auto-Sizing</Btn>
+                    <Btn
+                        onClick={() => handleModeSwitch('karpenter_insights')}
+                        variant="outline"
+                        sx={{
+                            background: mode === 'karpenter_insights' ? C.indigoBg : 'transparent',
+                            border: `1px solid ${C.indigoMid}`,
+                            color: C.indigo,
+                            padding: "8px 16px"
+                        }}
+                    >
+                        <EyeI s={14} /> Karpenter Insights
+                    </Btn>
+                    <Btn
+                        onClick={() => handleModeSwitch('auto_sizing')}
+                        variant="ghost"
+                        sx={{
+                            background: mode === 'auto_sizing' ? C.surfaceAlt : C.surface,
+                            border: `1px solid ${C.border}`,
+                            color: C.textSec,
+                            padding: "8px 16px"
+                        }}
+                    >
+                        <ZapI s={14} /> Auto-Sizing
+                    </Btn>
                     <div style={{ width: 1, height: 24, background: C.border, margin: "0 4px" }} />
                     <button style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, width: 36, height: 36, display: "flex", alignItems: "center", justifyContent: "center", color: C.textSec, cursor: "pointer", transition: "all 0.2s" }}><SettI s={16} /></button>
                 </div>
@@ -588,16 +669,29 @@ export default function RightSizingDashboard() {
                                 <Badge color={C.indigo} border="transparent" bg="transparent" sx={{ padding: "4px 8px" }}><CheckI s={12} /> Live spot</Badge>
                                 <Badge color={C.purple} border="transparent" bg="transparent" sx={{ padding: "4px 8px" }}><CheckI s={12} /> Dry-run</Badge>
                             </div>
-                            <Btn variant="outline" sx={{ background: "transparent", border: `1px solid ${C.indigo}`, color: C.indigo, padding: "8px 16px" }}><PlayI s={14} /> Switch to Auto</Btn>
+                            <Btn
+                                onClick={() => handleModeSwitch('auto')}
+                                variant="outline"
+                                sx={{ background: "transparent", border: `1px solid ${C.indigo}`, color: C.indigo, padding: "8px 16px" }}
+                            >
+                                <PlayI s={14} /> Switch to Auto
+                            </Btn>
                         </div>
 
                         {/* KPIs */}
                         <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 14 }}>
-                            {[
-                                { label: "Potential Savings", value: `$${totalSavings.toFixed(0)}/mo`, sub: "Karpenter-verified", color: "#111827", accent: C.green },
-                                { label: "Recommendations", value: `${recs.length} instances`, sub: `${recs.filter(r => r.confidence === "HIGH").length} high confidence`, color: "#111827", accent: C.indigo },
-                                { label: "Avg Karpenter Score", value: `8.5/10`, sub: "pod-constraint aware", color: "#111827", accent: C.purple },
-                            ].map((k, i) => (
+                            {(() => {
+                                // Calculate avg Karpenter score from real recommendations
+                                const avgKarpScore = recs.length > 0
+                                    ? (recs.reduce((sum, r) => sum + (r.karpScore || 0), 0) / recs.length).toFixed(1)
+                                    : '0.0';
+
+                                return [
+                                    { label: "Potential Savings", value: `$${totalSavings.toFixed(0)}/mo`, sub: "Karpenter-verified", color: "#111827", accent: C.green },
+                                    { label: "Recommendations", value: `${recs.length} instances`, sub: `${recs.filter(r => r.confidence === "HIGH").length} high confidence`, color: "#111827", accent: C.indigo },
+                                    { label: "Avg Karpenter Score", value: `${avgKarpScore}/10`, sub: "pod-constraint aware", color: "#111827", accent: C.purple },
+                                ];
+                            })().map((k, i) => (
                                 <div key={i} style={{ background: C.surface, border: `1px solid ${C.border}`, borderTop: `3px solid ${k.accent}`, borderRadius: 12, padding: "20px" }}>
                                     <div style={{ fontSize: 12, fontWeight: 600, color: C.textMuted, letterSpacing: "0.05em", textTransform: "uppercase", marginBottom: 8 }}>{k.label}</div>
                                     <div style={{ fontSize: 30, fontWeight: 800, color: k.color, letterSpacing: "-0.025em", marginBottom: 4 }}>{k.value}</div>

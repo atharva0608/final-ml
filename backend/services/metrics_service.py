@@ -641,12 +641,92 @@ class MetricsService:
         else:
             savings_percentage = 0.0
 
+        # Calculate hibernation savings from schedules
+        hibernation_savings = self._calculate_hibernation_savings(user_id, cluster_id, team_id)
+
         return SavingsBreakdown(
-            total_savings=total_savings,
-            spot_savings=total_savings,  # All savings from spot
-            hibernation_savings=0.0,  # TODO: Calculate from hibernation
+            total_savings=total_savings + hibernation_savings,
+            spot_savings=total_savings,  # Savings from spot instances
+            hibernation_savings=hibernation_savings,  # Savings from hibernation schedules
             savings_percentage=savings_percentage
         )
+
+    def _calculate_hibernation_savings(
+        self,
+        user_id: str,
+        cluster_id: Optional[str] = None,
+        team_id: Optional[str] = None
+    ) -> float:
+        """
+        Calculate savings from active hibernation schedules.
+
+        Args:
+            user_id: User UUID
+            cluster_id: Optional cluster filter
+            team_id: Optional team filter
+
+        Returns:
+            Monthly hibernation savings in USD
+        """
+        try:
+            from backend.models.hibernation_schedule import HibernationSchedule, HibernationStrategy
+
+            # Query active hibernation schedules
+            query = self.db.query(HibernationSchedule).filter(
+                HibernationSchedule.is_active == "Y"
+            )
+
+            # Get accessible clusters for filtering
+            accessible_clusters = self._get_accessible_clusters(user_id, cluster_id, team_id)
+            cluster_ids = [c.id for c in accessible_clusters]
+
+            if not cluster_ids:
+                return 0.0
+
+            # Calculate savings for each schedule
+            total_savings = 0.0
+
+            schedules = query.all()
+            for schedule in schedules:
+                # Check if any of the schedule's clusters are accessible
+                schedule_cluster_ids = [c.id for c in schedule.clusters]
+                accessible_schedule_clusters = set(schedule_cluster_ids) & set(cluster_ids)
+
+                if not accessible_schedule_clusters:
+                    continue
+
+                # Calculate sleep hours per week from schedule matrix
+                sleep_hours = schedule.schedule_matrix.count("1") if schedule.schedule_matrix else 0
+                if sleep_hours == 0:
+                    continue
+
+                # Calculate sleep fraction
+                sleep_fraction = sleep_hours / 168.0  # 168 hours in a week
+
+                # Get total cost of accessible clusters in this schedule
+                schedule_cost = 0.0
+                for cluster in schedule.clusters:
+                    if cluster.id in accessible_schedule_clusters:
+                        schedule_cost += float(cluster.monthly_cost or 0.0)
+
+                # Calculate savings based on strategy efficiency
+                strategy_efficiency = {
+                    HibernationStrategy.NAMESPACE_SLEEP.value: 0.80,
+                    HibernationStrategy.NUCLEAR.value: 0.99,
+                    HibernationStrategy.SNAPSHOT_RESTORE.value: 0.90
+                }
+                efficiency = strategy_efficiency.get(schedule.strategy, 0.80)
+
+                # Monthly savings = sleep_fraction * cluster_cost * efficiency
+                schedule_savings = sleep_fraction * schedule_cost * efficiency
+                total_savings += schedule_savings
+
+            logger.debug(f"Calculated hibernation savings: ${total_savings:.2f}/month")
+            return total_savings
+
+        except Exception as e:
+            logger.error(f"Failed to calculate hibernation savings: {e}")
+            return 0.0
 
     def _calculate_daily_cost(
         self,

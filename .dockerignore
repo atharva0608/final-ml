@@ -1,0 +1,22 @@
+# Node modules - must not be copied into Docker containers
+# (they are installed fresh inside the container for the correct architecture)
+frontend/node_modules
+frontend/.env.local
+frontend/.env.development.local
+
+# Python
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+
+# Git
+.git
+.gitignore
+
+# IDE
+.vscode
+.idea
+**/.DS_Store
+
+# Docker
+docker-compose*.yml

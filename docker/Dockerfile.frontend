@@ -9,11 +9,13 @@ ARG VITE_WS_URL=ws://localhost:8000
 # Set working directory
 WORKDIR /app
 
-# Copy package files
-COPY frontend/package.json ./
+# Copy package files (including lock file for deterministic builds)
+COPY frontend/package.json frontend/package-lock.json ./
 
 # Install dependencies
 # Configure npm for better network reliability
+# Using npm install instead of npm ci to handle lock file version mismatches
+# between local and Docker node/npm versions
 RUN npm config set registry https://registry.npmjs.org/ && \
     npm config set fetch-retries 5 && \
     npm config set fetch-retry-mintimeout 20000 && \

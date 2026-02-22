@@ -15,52 +15,13 @@ const InterruptionHeatmap = () => {
     const fetchHeatmap = async () => {
         try {
             const response = await api.get('/api/v1/atharvaai/interruption-heatmap?days=30');
-            // If empty (no history yet), use mock data for demo
-            if (!response.data || response.data.length === 0) {
-                setHeatmapData(generateMockData());
-            } else {
-                setHeatmapData(response.data);
-            }
+            setHeatmapData(response.data || []);
         } catch (error) {
             console.error("Failed to fetch heatmap:", error);
-            setHeatmapData(generateMockData());
+            setHeatmapData([]);
         } finally {
             setLoading(false);
         }
-    };
-
-    const generateMockData = () => {
-        // Generate realistic-looking mock data for demo
-        const families = ['m5', 'c5', 'r5', 'g4dn'];
-        return families.map(family => {
-            const cells = [];
-            // Add some "hot spots"
-            const hotHour = Math.floor(Math.random() * 24);
-            const hotDay = Math.floor(Math.random() * 7);
-
-            for (let d = 0; d < 7; d++) {
-                for (let h = 0; h < 24; h++) {
-                    let probability = 0.05; // 5% base chance
-                    if (d === hotDay) probability += 0.2;
-                    if (h >= 14 && h <= 18) probability += 0.15; // Peak hours
-
-                    if (Math.random() < probability) {
-                        const count = Math.floor(Math.random() * 5) + 1;
-                        let risk = "LOW";
-                        if (count >= 5) risk = "HIGH";
-                        else if (count >= 2) risk = "MEDIUM";
-
-                        cells.push({
-                            day: d,
-                            hour: h,
-                            interruption_count: count,
-                            risk_level: risk
-                        });
-                    }
-                }
-            }
-            return { family, heatmap: cells };
-        });
     };
 
     const getRiskColor = (count) => {
@@ -96,6 +57,24 @@ const InterruptionHeatmap = () => {
     };
 
     if (loading) return <div className="p-4 text-center text-gray-400">Loading risk heatmap...</div>;
+
+    if (!heatmapData || heatmapData.length === 0) {
+        return (
+            <Card className="h-full">
+                <div className="flex items-center gap-2 mb-4">
+                    <FiGrid className="text-purple-600" />
+                    <h3 className="font-semibold text-gray-800">Interruption Heatmap (30d)</h3>
+                </div>
+                <div className="flex flex-col items-center justify-center py-12 text-gray-400">
+                    <FiAlertCircle size={48} className="mb-4" />
+                    <p className="text-sm font-medium">No interruption data available</p>
+                    <p className="text-xs mt-2 text-center max-w-xs">
+                        This heatmap will populate once spot interruptions are detected in your AWS account
+                    </p>
+                </div>
+            </Card>
+        );
+    }
 
     return (
         <Card className="h-full">

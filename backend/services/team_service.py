@@ -152,18 +152,38 @@ class TeamService:
                 raise ForbiddenError("Not authorized to view stats for this team")
 
         member_count = self.db.query(User).filter(User.team_id == team_id).count()
-        
-        # Placeholder for Resources/Cost until resource tagging is implemented
-        # In future: Query Instances/Volumes tagged with this team
-        resource_count = 0 
-        total_cost = 0.0
-        
+
+        # Calculate real resource count and cost from team members' clusters
+        # Get all users in this team
+        from backend.models.cluster import Cluster
+        from backend.models.instance import Instance
+
+        team_users = self.db.query(User).filter(User.team_id == team_id).all()
+        team_user_ids = [u.id for u in team_users]
+
+        # Count clusters accessible by team members
+        # For now, we'll count all clusters in the same organization
+        # In future: Can use resource tagging or ownership model
+        resource_count = self.db.query(Cluster).filter(
+            Cluster.account_id.in_(
+                self.db.query(User.id).filter(User.team_id == team_id)
+            )
+        ).count()
+
+        # Calculate total cost from clusters
+        # Sum monthly_cost from all clusters accessible to team
+        clusters = self.db.query(Cluster).filter(
+            Cluster.account_id.in_(team_user_ids)
+        ).all()
+
+        total_cost = sum(float(c.monthly_cost or 0.0) for c in clusters)
+
         return {
             "id": team.id,
             "name": team.name,
             "member_count": member_count,
-            "resource_count": resource_count, # Mocked for now
-            "total_cost": total_cost,         # Mocked for now
+            "resource_count": resource_count,
+            "total_cost": total_cost,
             "currency": "USD"
         }
 

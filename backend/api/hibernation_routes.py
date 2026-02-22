@@ -146,3 +146,30 @@ def estimate_savings(
     service = HibernationService(db)
     schedule = service.get_schedule(schedule_id)
     return service.calculate_weekly_savings(schedule)
+
+
+@router.get("/savings/history")
+def get_savings_history(
+    months: int = Query(6, ge=1, le=24, description="Number of months of history"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Get historical savings trend for last N months.
+    Aggregates hibernation execution logs from audit_logs table.
+    """
+    service = HibernationService(db)
+    return service.get_savings_history(months, current_user.organization_id)
+
+
+@router.get("/status/active")
+def get_active_status(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Get status of currently active hibernation operation (if any).
+    Returns progress, elapsed time, and estimated completion.
+    """
+    service = HibernationService(db)
+    return service.get_active_hibernation_status(current_user.organization_id)

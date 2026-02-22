@@ -1,314 +1,125 @@
-Looking at the full picture across all three documents — the implementation plan, all components, and all files — here's what needs to change to make this enterprise-grade. I'll be specific and direct rather than generic.
+Looking at the verified update document against everything discussed, here's the precise delta — what's actually needed now versus what's already done.
 
 ---
 
-## The Core Problems
+## What's Confirmed Done (Don't Revisit)
 
-The current system is built like a **single-tenant SaaS demo** that happens to support organizations. Enterprise grade means it survives at scale, fails safely, and gives enterprise buyers the controls they need to trust it with production infrastructure.
+The verified update confirms these are genuinely implemented, not just planned:
 
----
+**Hibernation worker with Redis locking** — fully done, enterprise-grade. The race condition fix from the enterprise analysis is already in `hibernation_worker.py` with UUID-based locks.
 
-## 1. Multi-Region & Cross-Account Coordination
+**Hibernation savings calculation** — done. Uses real `cluster.monthly_cost`, strategy-specific efficiency multipliers. The $1,500 mock is gone.
 
-**What's wrong:** Every service call assumes a single AWS region. The Karpenter service, pricing collector, spot advisor scraper, and right-sizing service all use `region_name=self.region` as if there's one. But enterprise customers have workloads in 6+ regions across 10+ AWS accounts.
+**AtharvaAI circuit breaker** — done. ML degradation detection is in `pool_ranking_service.py:439-447`.
 
-**What needs to change:**
+**Region-namespaced blacklist** — done. `risky_pools:{region}` is already implemented.
 
-`pool_ranking_service.py` currently runs the 8-step pipeline for one region. It needs to run it **per-region per-account** and aggregate. The blacklist in Redis (`risky_pools`) is currently flat — it needs to be namespaced: `risky_pools:{account_id}:{region}` so a pool blacklisted in `us-east-1` doesn't poison rankings in `ap-south-1`.
-
-The `pricing_collector.py` scraper needs to be parameterized by account+region and scheduled per-combination, not just once globally. Right now if you have 3 accounts × 4 regions = 12 combinations, you're missing 11 of them.
-
-The **`clusters` table** needs `region` already (it has it), but `karpenter_mode` is cluster-level which is fine. The issue is `is_hibernating` and `hibernation_state` need to be atomic — you can't have two Celery workers waking the same cluster simultaneously. Add a `hibernation_lock` column with a timestamp and worker ID, checked before any strategy execution.
+**Karpenter sync, termination monitor, auto-rebalancer** — all scheduled and running.
 
 ---
 
-## 2. AtharvaAI Pipeline — Real Failure Modes
+## What's Actually Still Needed
 
-**What's wrong:** The 8-step pipeline fails silently. Step 5 (capacity check via `RunInstances --dry-run`) can take 2-3 seconds per instance type × AZ combination. If you're checking 50 pools, that's 100-150 seconds — your 5-minute Redis cache TTL will expire before the pipeline even finishes.
+Cross-referencing the verified update's confirmed gaps against the 13 enterprise issues:
 
-**What needs to change:**
+### Tier 1 — Will Break in Production Right Now
 
-Step 5 needs **parallel execution** with `asyncio.gather` or `ThreadPoolExecutor`. You should be checking all pools concurrently, not serially.
+**Hibernation DB columns (30 minutes)**
+This is the only thing that will cause an immediate runtime crash. The worker code references `cluster.is_hibernating` and `cluster.hibernation_state` but the columns don't exist. Everything else degrades gracefully; this fails hard.
 
-```python
-# Current (implicit serial)
-for pool in pools:
-    pool.has_capacity = self._check_capacity(pool)
-
-# Enterprise: parallel with timeout
-with ThreadPoolExecutor(max_workers=20) as executor:
-    futures = {executor.submit(self._check_capacity, pool): pool for pool in pools}
-    for future in as_completed(futures, timeout=30):
-        pool = futures[future]
-        try:
-            pool.has_capacity = future.result()
-        except TimeoutError:
-            pool.has_capacity = True  # Assume capacity, don't block ranking
-            pool.capacity_uncertain = True
+```sql
+-- 20260220_add_hibernation_columns.py
+ALTER TABLE clusters ADD COLUMN is_hibernating BOOLEAN DEFAULT FALSE;
+ALTER TABLE clusters ADD COLUMN hibernation_state JSONB DEFAULT NULL;
+ALTER TABLE clusters ADD COLUMN hibernation_lock VARCHAR(255) DEFAULT NULL;
+ALTER TABLE clusters ADD COLUMN hibernation_lock_acquired_at TIMESTAMP DEFAULT NULL;
 ```
 
-The ONNX model load (`classifier_6.onnx`, `regressor_6.onnx`) happens inside the request path according to the current code. It needs to load **once at startup** and be cached as a module-level singleton. If it fails to load, the system currently falls back to heuristic scoring — but there's no alerting or circuit breaker to tell you the ML pipeline has been degraded for 3 days.
+Also update `backend/models/cluster.py` to add the SQLAlchemy column definitions, then `alembic upgrade head`. Nothing else works until this is done.
 
-**Add a circuit breaker to the ML scoring step:** if the ONNX models fail more than 5 times in 10 minutes, flip a Redis flag `atharvaai:ml_degraded=true`, serve fallback scores but expose `GET /api/v1/atharvaai/health` returning `{"ml_status": "degraded", "fallback_active": true}` so operators know.
-
----
-
-## 3. Hibernation — The Critical Race Condition
-
-**What's wrong:** The Celery beat task runs every 60 seconds and checks all active schedules. If two workers start simultaneously (which happens with Celery when beat_max_loop_interval isn't tuned), you get two goroutines both deciding `should_sleep = True` and both calling `NamespaceSleepStrategy.execute_sleep()` on the same cluster. The second call will error because workloads are already at 0 replicas, but the `hibernation_state` JSON in the DB may be written twice with different values — meaning your `wake()` call restores to the **wrong replica count**.
-
-**What needs to change:**
-
-Use Redis distributed locking, not just a DB column:
-
-```python
-from redis import Redis
-import uuid
-
-def check_hibernation_schedules():
-    lock_key = f"hibernation:lock:{schedule.id}:{cluster.id}"
-    lock_value = str(uuid.uuid4())
-    
-    # SET NX EX — atomic lock acquisition
-    acquired = redis.set(lock_key, lock_value, nx=True, ex=120)
-    if not acquired:
-        return  # Another worker is handling this
-    
-    try:
-        # Execute sleep/wake
-        strategy.execute_sleep()
-    finally:
-        # Only release if we own the lock
-        if redis.get(lock_key) == lock_value:
-            redis.delete(lock_key)
-```
-
-The `hibernation_state` JSON (saved replica counts) also needs **versioning**. Currently if a deployment is scaled manually during hibernation, the wake operation will restore the pre-hibernation replicas — potentially overscaling a service that was intentionally scaled down. Add `state_captured_at` timestamp and warn operators if the wake state is more than 24h old.
+**Spot price Celery schedule pointing to mock (15 minutes)**
+`backend/workers/app.py:88-91` calls `workers.atharvaai.collect_spot_prices` (mock). Change it to `backend.workers.tasks.pricing.fetch_aws_pricing`. This is literally a one-line change that unlocks real ML feature computation. The real scraper already exists and works — it's just not being called.
 
 ---
 
-## 4. Right-Sizing — The `boto3 modify_instance_attribute` Problem
+### Tier 2 — Financially Consequential (Wrong Numbers Shown to Users)
 
-**What's wrong:** `OptimizationService.apply_recommendation` uses `modify_instance_attribute` to change instance type. This requires the instance to be **stopped first** (`StopInstances` → wait → `ModifyInstanceAttribute` → `StartInstances`). If the instance has a public IP (not an EIP), stopping it will **release the IP**. If it's in an auto-scaling group, stopping it will trigger ASG health checks and the ASG will terminate and replace it before you can resize — your resize never happens and you've caused an outage.
+**Right-sizing cost constants (2-3 hours)**
+`rightsizing_service.py` still uses `CPU_COST_PER_CORE_HOUR = 0.04` and `MEMORY_COST_PER_GB_HOUR = 0.005`. The `resource_pricing_worker` already runs daily and populates pricing data — it just isn't being queried by the right-sizing service. The fix is to replace the constant lookups with Redis reads, falling back to constants only on cache miss.
 
-**What needs to change:**
-
-Before applying any recommendation, the service needs to:
-1. Check if instance is in an ASG (`describe_auto_scaling_instances`) — if yes, use the Karpenter path, not `modify_instance_attribute`
-2. Check if the instance has a non-EIP public IP — if yes, warn the user that IP will change
-3. Check if the instance has instance-store volumes — these can't survive stop/start and will lose data
-
-Add these checks to `POST /api/v1/optimization/apply/{instance_id}` and return them as pre-flight warnings in the response before executing:
-
-```json
-{
-  "pre_flight_checks": {
-    "in_asg": false,
-    "has_instance_store": false,
-    "public_ip_will_change": true,
-    "estimated_downtime_seconds": 90,
-    "warnings": ["Public IP 52.x.x.x will be released during resize"]
-  },
-  "requires_confirmation": true
-}
-```
+The verified update correctly identifies this: wire `_calculate_monthly_cost` to query Redis keys that `resource_pricing_worker` already populates. Check what key format that worker uses and match it in the service.
 
 ---
 
-## 5. The Approval System Doesn't Cover Hibernation
+### Tier 3 — Enterprise Issues Still Unaddressed (10 of 13)
 
-**What's wrong:** The approval system (`ApprovalService`, `RequireAccess("EXECUTION")`) is applied to right-sizing and optimization apply endpoints. But hibernation sleep/wake — which **scales entire clusters to zero** — has no approval workflow. The `POST /api/v1/hibernation/emergency/sleep` endpoint exists and can kill a production cluster immediately with no second pair of eyes.
+Of the 13 issues from the enterprise analysis, the verified update confirms only 3 are done (race condition, hibernation savings, partial AtharvaAI). The remaining 10 need prioritization. Here's the honest ordering based on what blocks enterprise sales vs. what's nice to have:
 
-**What needs to change:**
+**Blocks enterprise deals immediately:**
 
-Emergency controls and manual overrides for hibernation need to go through the approval system. Specifically:
-- `POST /api/v1/hibernation/emergency/sleep` → require `EXECUTION` permission + create an approval record with `auto_approve=True` but log it visibly
-- `POST /api/v1/hibernation/emergency/wake` → same
-- For scheduled hibernation on clusters tagged `environment=production`, require advance approval (created when the schedule is saved, approved by org admin, then scheduled execution uses the pre-approved ticket)
+Right-sizing pre-flight checks (#4) — the ASG detection and IP-change warning. This is a correctness issue. An enterprise customer applying right-sizing to an ASG node causes an outage. This needs to be before any production deployment. Estimate: 4-5 hours including the `describe_auto_scaling_instances` call, instance-store check, and the pre-flight response schema.
 
-Add a `requires_approval` boolean to the `hibernation_schedules` table, defaulting to `True` for clusters where the cluster's environment tag is `production`.
+Cluster delete preconditions (#11) — orphaned Karpenter controllers are a real operational hazard. Estimate: 2 hours.
 
----
+Approval gates for emergency hibernation (#5) — the emergency sleep endpoint can kill a production cluster with no oversight. Estimate: 3-4 hours to wire through the existing approval system.
 
-## 6. Savings Estimates Are Currently Lies
+Karpenter budget guards (#9) — the NodePool CRD limits are a 20-minute config change. The budget guard Celery task that auto-pauses is 3-4 hours. Do the CRD limits now, task later.
 
-**What's wrong:** `hibernation_service.py` uses `$1,500/schedule/month` flat. This is the figure shown in the dashboard KPI "Monthly Savings" and in the `SavingsReport` line chart. Enterprise customers will catch this immediately when they reconcile against AWS Cost Explorer and the numbers don't match.
+**Will come up in security review:**
 
-**What needs to change:**
+Audit log tamper evidence (#8) — SHA256 checksum on `audit_logs` rows plus the periodic verification task. The S3 append-only sink for critical actions is genuinely important for SOC2. Estimate: 4-6 hours including the Celery verification task.
 
-The savings calculation needs to be: `(sleep_hours_per_week / 168) × cluster_monthly_cost × 4.33`. The `cluster.monthly_cost` column already exists. Wire it:
+Multi-region Redis namespacing (#1) — the blacklist is region-namespaced already (confirmed done). What's still missing is the pricing collector being parameterized by account+region. For a customer with 3 accounts × 4 regions, 11 out of 12 region combinations are getting no pricing data. Estimate: 4-6 hours to restructure the pricing collector beat schedule.
 
-```python
-def calculate_schedule_savings(schedule, cluster):
-    sleep_hours = sum(1 for c in schedule.schedule_matrix if c == '1')
-    sleep_fraction = sleep_hours / 168
-    
-    # Get real cluster cost
-    cluster_cost = cluster.monthly_cost or self._estimate_cluster_cost(cluster)
-    
-    # Namespace sleep saves ~80% (nodes still exist, just empty)
-    # Nuclear saves ~99%
-    strategy_efficiency = {
-        'NAMESPACE_SLEEP': 0.80,
-        'NUCLEAR': 0.99,
-        'SNAPSHOT_RESTORE': 0.90
-    }
-    efficiency = strategy_efficiency.get(schedule.strategy, 0.80)
-    
-    return sleep_fraction * cluster_cost * efficiency
-```
+**Can defer but shouldn't forget:**
 
-For right-sizing, the mock cost constants (`$0.04/core-hour`, `$0.005/GB-hour`) need to be replaced with real AWS Pricing API data — this is already identified in the implementation plan as a gap, but the priority needs to be elevated. Every savings figure shown to an enterprise customer is currently wrong.
+AtharvaAI capacity check parallelization (#2) — the serial execution is a performance problem, not a correctness problem. Rankings still work, they're just slow and might expire. Estimate: 2 hours.
+
+Cache invalidation on template update (#7) — 1 hour. The Redis delete call in `template_service.py` after save/update. Low effort, real UX improvement.
+
+ML model versioning (#12) — the `ml_models` table already exists in the models layer. Wiring it and implementing shadow mode is 8-10 hours. Genuinely important for production ML but can follow the first enterprise deployment.
+
+AWS API rate limiting (#13) — 4-6 hours for the Redis-based limiter. Important at scale, not day-one critical.
+
+User preferences to DB (#10) — 1 hour. Frontend change in `Settings.jsx` + wire the existing endpoint. Lowest risk item on the list.
 
 ---
 
-## 7. The Redis Cache Has No Invalidation Strategy
+## Revised Timeline
 
-**What's wrong:** Pool rankings are cached for 5 minutes (`SETEX 300`). Node template changes (which fundamentally change which pools appear) invalidate this cache via `POST /api/v1/atharvaai/cache/invalidate` — but this is a **planned feature**, not yet implemented per the integration doc. So right now: user changes node template to exclude `t3` family → AtharvaAI still shows `t3.medium` in rankings for up to 5 minutes → user applies it → policy violation.
+Given what's verified done vs. what remains, the actual remaining work is less than the 38-hour estimate in the verified update:
 
-Similarly, the blacklist cache TTL is 12 hours. But a pool can be interrupted and re-available within minutes. The 12h TTL means you're unnecessarily excluding good pools.
+**This week (must-do before any enterprise demo):**
+- Hibernation DB columns migration: 30 min
+- Celery schedule fix (spot prices): 15 min
+- Right-sizing cost constants → real pricing: 2-3h
+- Right-sizing pre-flight checks (ASG, IP, instance-store): 4-5h
+- Cluster delete preconditions: 2h
+- Karpenter NodePool CRD limits (the config part): 30 min
+- Cache invalidation on template update: 1h
 
-**What needs to change:**
+Total: ~12 hours
 
-Template save/update endpoints (`POST /api/v1/templates`, `PUT /api/v1/templates/{id}`) need to synchronously call Redis `DEL` on the affected org's ranking cache before returning:
+**Next week (before first enterprise customer onboards):**
+- Approval gates for emergency hibernation: 3-4h
+- Audit log tamper evidence (checksum + S3 sink): 4-6h
+- AtharvaAI capacity check parallelization: 2h
+- AWS API rate limiting: 4-6h
+- User preferences to DB: 1h
 
-```python
-# In template_service.py, after saving template
-redis_client.delete(f"rankings:{org_id}:*")  # Wildcard delete for org
-audit_service.log("TEMPLATE_UPDATED_CACHE_INVALIDATED", ...)
-```
+Total: ~16 hours
 
-The blacklist TTL logic needs to be dynamic: pools with 3+ interruption events in 1 hour get 12h TTL; pools with 1 event get 2h TTL; pools manually blacklisted by an operator get permanent TTL with manual removal only.
+**Within a month (for scale and compliance certification):**
+- Multi-region pricing collector parameterization: 4-6h
+- Karpenter budget guard Celery task: 3-4h
+- ML model versioning + shadow mode: 8-10h
 
----
+Total: ~18 hours
 
-## 8. Audit Log Has No Tamper Evidence
-
-**What's wrong:** The `audit_logs` table stores all actions, but there's nothing preventing a DB admin from modifying records. Enterprise customers — especially in fintech, healthcare, and regulated industries — will ask "how do I know this audit trail hasn't been manipulated?" during security reviews.
-
-**What needs to change:**
-
-Add a `checksum` column to `audit_logs`. On insert, compute `SHA256(actor_id + event + resource + timestamp + diff_before + diff_after)` and store it. Add a periodic Celery task that re-verifies checksums and alerts if any don't match. This doesn't prevent a sophisticated attacker with DB access, but it satisfies most compliance auditors who need demonstrable tamper detection.
-
-Additionally, critical actions (apply optimization, emergency hibernate, delete cluster) should be written to a **separate append-only audit sink** — at minimum an S3 bucket with Object Lock enabled, written to directly from the service, not through the normal `audit_service.log()` path that writes to Postgres. This way even if the Postgres DB is compromised, the S3 trail is intact.
-
----
-
-## 9. Karpenter Dry-Run Mode Needs Budget Guards
-
-**What's wrong:** In Auto mode, Karpenter provisions nodes without limit beyond the configured strategy bounds. If there's a pathological workload (a runaway deployment that keeps spawning pods), Karpenter will keep provisioning nodes and your AWS bill will explode. The current `KarpenterSettings` has an "Alerts" tab with cost threshold alerts, but there's no hard stop — it's notification only.
-
-**What needs to change:**
-
-The Karpenter NodePool CRD (deployed by `KarpenterService.deploy`) needs `limits` configured with hard caps:
-
-```yaml
-spec:
-  limits:
-    cpu: "1000"      # Max 1000 vCPU across all Karpenter-managed nodes
-    memory: "4000Gi" # Max 4TB RAM
-```
-
-And on the application side, add a budget guard Celery task that runs every 5 minutes: if the projected monthly cost of current Karpenter-provisioned nodes exceeds the configured budget threshold, automatically pause Karpenter (`POST /api/v1/karpenter/toggle/{cluster_id}` with `action=pause`) and send an alert. This is a hard stop, not just a notification.
+**Actual total remaining: ~46 hours**, down from the 38-hour estimate in the verified update (which was understated because it didn't account for the full scope of the 10 unaddressed enterprise issues).
 
 ---
 
-## 10. User Preferences Are Stored in localStorage
+## One Thing the Verified Update Gets Wrong
 
-**What's wrong:** The preferences system (notification toggles, timezone, widget layout) saves to `localStorage` only. The endpoint `PATCH /api/v1/users/me/preferences` exists but is marked `🔴` — never called. This means preferences are lost when users clear browser data, don't sync across devices, and can't be managed by org admins or audited.
-
-**What needs to change:** Wire the existing endpoint. `users.preferences` column already exists in the DB. This is a one-line frontend change in `Settings.jsx` and a simple service call in `auth_service.py`. The fact that it's been left on `localStorage` suggests it was deferred — it needs to be completed before any enterprise deployment because an org admin can't manage employee preferences or enforce default notification settings org-wide.
-
----
-
-## 11. The `DELETE /api/v1/clusters/{id}` Has No Protection
-
-**What's wrong:** `ClusterService.delete_cluster` validates that there are no active instances, then cascade-deletes everything. But it doesn't check: is there an active Karpenter deployment on this cluster? Is there a Hibernation schedule with this cluster in its `cluster_ids` array? Is there an active right-sizing approval in flight for an instance in this cluster?
-
-If you delete a cluster while Karpenter is managing it, the Karpenter controller keeps running in the K8s cluster even though the DB record is gone — nodes are being provisioned by an orphaned controller with no way to manage or stop it through the platform.
-
-**What needs to change:**
-
-Pre-deletion checks:
-```python
-def delete_cluster(self, cluster_id):
-    # Check 1: Karpenter active?
-    if cluster.karpenter_mode in ('auto', 'dry_run'):
-        raise PreconditionFailed("Disable Karpenter before deleting cluster")
-    
-    # Check 2: Active hibernation schedules?
-    schedules = db.query(HibernationSchedule).filter(
-        HibernationSchedule.cluster_ids.contains([cluster_id]),
-        HibernationSchedule.is_active == True
-    ).count()
-    if schedules > 0:
-        raise PreconditionFailed(f"{schedules} active hibernation schedules use this cluster")
-    
-    # Check 3: Pending approvals?
-    pending = db.query(Approval).filter(
-        Approval.cluster_id == cluster_id,
-        Approval.status == 'PENDING'
-    ).count()
-    if pending > 0:
-        raise PreconditionFailed(f"{pending} pending approvals for this cluster")
-```
-
----
-
-## 12. The ML Models Have No Versioning or Rollback
-
-**What's wrong:** `classifier_6.onnx` and `regressor_6.onnx` are hardcoded filenames. If you retrain and deploy `classifier_7.onnx`, you'd have to update the config and redeploy. There's no A/B testing between model versions, no shadow mode (run new model, compare outputs to old, don't change ranking until validated), and no rollback if the new model starts producing bad rankings.
-
-For an enterprise product where pool selection decisions affect production workloads, this is a liability.
-
-**What needs to change:**
-
-Add a `ml_models` table (already defined in `backend/models/ml_model.py` — wire it) with columns: `version`, `model_type` (classifier/regressor), `file_path`, `is_active`, `is_shadow`, `deployed_at`, `accuracy_score`, `deployed_by`.
-
-Pool ranking service should load the active model by querying this table, not by hardcoded path. When a new model is deployed, it runs in **shadow mode** first — both models score every pool but only the active model's scores are used for ranking. The shadow model's scores are logged to a comparison table. After 48h with <5% divergence, promote the shadow model to active automatically (or require manual promotion for conservative orgs).
-
----
-
-## 13. Missing Rate Limiting on AWS API Calls
-
-**What's wrong:** If 20 users all open AtharvaAI simultaneously and all trigger pool rankings (cold cache), you get 20 concurrent calls to `ec2:DescribeSpotPriceHistory` and 20 concurrent calls to `ec2:RunInstances --dry-run`. AWS has API rate limits — `DescribeSpotPriceHistory` is throttled at ~100 requests per second per account, but `RunInstances` (even dry-run) counts against your EC2 API rate limit. Under load, you'll start getting `RequestLimitExceeded` errors, and your rankings will degrade silently (falling back to empty pricing data).
-
-**What needs to change:**
-
-Add a Redis-based rate limiter for AWS API calls, per account:
-
-```python
-class AWSAPIRateLimiter:
-    def __init__(self, account_id, api_name, calls_per_second):
-        self.key = f"aws_rate:{account_id}:{api_name}"
-        self.limit = calls_per_second
-    
-    def acquire(self):
-        current = redis.incr(self.key)
-        if current == 1:
-            redis.expire(self.key, 1)  # 1-second window
-        if current > self.limit:
-            raise RateLimitExceeded(f"AWS API {self.api_name} rate limit hit")
-```
-
-And for the dry-run capacity checks specifically — cache the results aggressively. A `RunInstances --dry-run` result for `c5.large` in `us-east-1a` is valid for at least 15 minutes. Cache it: `capacity:{instance_type}:{az}` with 15-minute TTL.
-
----
-
-## Summary — Priority Order
-
-**Must fix before any enterprise deal:**
-
-Hibernation race condition locking, `modify_instance_attribute` pre-flight checks (ASG detection), approval gates on emergency hibernation, savings calculation accuracy, cluster delete preconditions.
-
-**Must fix before enterprise security review:**
-
-Audit log tamper evidence, preferences in DB not localStorage, multi-region Redis namespacing.
-
-**Must fix at scale:**
-
-AtharvaAI parallel capacity checks, AWS API rate limiting, Karpenter budget hard stops, cache invalidation on template update.
-
-**Must fix before ML is trusted in production:**
-
-ONNX model versioning, shadow mode deployment, circuit breaker with degraded-mode alerting.
+The verified update lists multi-region Redis namespacing as "not yet addressed" for issue #1. But the code inspection shows `risky_pools:{region}` is already in the pool ranking service — that part is done. What's genuinely missing from issue #1 is the **pricing collector parameterization by account+region** and **per-region beat scheduling**. Don't re-implement the blacklist namespacing; that's already there. Focus the multi-region work exclusively on the pricing data pipeline.

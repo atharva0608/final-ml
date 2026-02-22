@@ -315,17 +315,33 @@ class MLFeatureService:
 
     def _get_pool_risk(self, instance_type: str, az: str) -> float:
         """
-        Get historical pool risk score.
+        Get historical pool risk score from Spot Advisor data.
 
-        Requires: pool_risk_scores table with historical interruption rates.
+        Calculates risk based on interruption frequency ratings.
         """
         try:
-            # Query pool_risk_scores table
-            # risk_score = self.db.query(PoolRiskScore.historical_zero_rate)\
-            #     .filter_by(instance_type=instance_type, az=az)\
-            #     .scalar()
-            # return float(risk_score) if risk_score else 0.05
-            return 0.05  # Default 5% risk until table is populated
+            from backend.models.pricing import SpotAdvisorData
+
+            # Query spot advisor data for this instance type
+            advisor_data = self.db.query(SpotAdvisorData).filter(
+                SpotAdvisorData.instance_type == instance_type
+            ).first()
+
+            if advisor_data:
+                # Convert interruption index (0-4) to risk percentage
+                # 0: <5% = 0.025, 1: 5-10% = 0.075, 2: 10-15% = 0.125, 3: 15-20% = 0.175, 4: >20% = 0.25
+                risk_map = {
+                    0: 0.025,  # <5% interruption
+                    1: 0.075,  # 5-10% interruption
+                    2: 0.125,  # 10-15% interruption
+                    3: 0.175,  # 15-20% interruption
+                    4: 0.250,  # >20% interruption
+                }
+                return risk_map.get(advisor_data.interruption_index, 0.05)
+
+            # Default to 5% risk if no data available
+            return 0.05
+
         except Exception as e:
             logger.warning(f"Pool risk unavailable for {instance_type}/{az}: {e}")
             return 0.05
@@ -405,15 +421,62 @@ class MLFeatureService:
 
     def _get_savings_history(self, instance_type: str, az: str, hours: int) -> List[float]:
         """Get historical savings values from database."""
-        # TODO: Query spot_price_history table
-        # For now, return empty list
-        return []
+        try:
+            from backend.models.pricing import SpotPriceHistory
+            from datetime import datetime, timedelta
+
+            # Query spot price history for the last N hours
+            cutoff_time = datetime.utcnow() - timedelta(hours=hours)
+
+            prices = self.db.query(SpotPriceHistory).filter(
+                SpotPriceHistory.instance_type == instance_type,
+                SpotPriceHistory.availability_zone == az,
+                SpotPriceHistory.timestamp >= cutoff_time
+            ).order_by(SpotPriceHistory.timestamp.desc()).limit(hours * 6).all()  # 10-min intervals = 6 per hour
+
+            if not prices:
+                return []
+
+            # Calculate savings as (on_demand - spot) / on_demand
+            savings = []
+            for price_record in prices:
+                if hasattr(price_record, 'ondemand_price') and price_record.ondemand_price:
+                    savings_pct = (float(price_record.ondemand_price) - float(price_record.price)) / float(price_record.ondemand_price)
+                    savings.append(savings_pct)
+                else:
+                    # Estimate savings if on-demand price not available (spot is typically 30% of on-demand)
+                    savings.append(0.70)
+
+            return savings
+
+        except Exception as e:
+            logger.warning(f"Failed to get savings history for {instance_type}/{az}: {e}")
+            return []
 
     def _get_price_history(self, instance_type: str, az: str, hours: int) -> List[float]:
         """Get historical spot prices from database."""
-        # TODO: Query spot_price_history table
-        # For now, return empty list
-        return []
+        try:
+            from backend.models.pricing import SpotPriceHistory
+            from datetime import datetime, timedelta
+
+            # Query spot price history for the last N hours
+            cutoff_time = datetime.utcnow() - timedelta(hours=hours)
+
+            prices = self.db.query(SpotPriceHistory).filter(
+                SpotPriceHistory.instance_type == instance_type,
+                SpotPriceHistory.availability_zone == az,
+                SpotPriceHistory.timestamp >= cutoff_time
+            ).order_by(SpotPriceHistory.timestamp.desc()).limit(hours * 6).all()  # 10-min intervals = 6 per hour
+
+            if not prices:
+                return []
+
+            # Return spot prices as floats
+            return [float(p.price) for p in prices]
+
+        except Exception as e:
+            logger.warning(f"Failed to get price history for {instance_type}/{az}: {e}")
+            return []
 
     def _calculate_consecutive_stable_hours(self, price_history: List[float]) -> float:
         """Calculate consecutive hours of price stability (< 5% change)."""

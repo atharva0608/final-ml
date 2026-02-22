@@ -300,11 +300,10 @@ class PoolRankingService:
             cached = self.redis.get(cache_key)
             if cached is not None:
                 return cached == b"1" or cached == "1"
-            
-            # TODO: Replace with real AWS RunInstances --dry-run call 
-            # For now, assume capacity exists
-            has_capacity = True
-            
+
+            # Real AWS capacity check using RunInstances --dry-run
+            has_capacity = self._check_aws_capacity(pool.instance_type, pool.az, region)
+
             # Cache result for 15 minutes
             self.redis.setex(cache_key, 900, "1" if has_capacity else "0")
             return has_capacity
@@ -492,6 +491,83 @@ class PoolRankingService:
 
         return scored_pools
 
+    def _check_aws_capacity(self, instance_type: str, az: str, region: str) -> bool:
+        """
+        Check if AWS has capacity for this instance type in the given AZ.
+
+        Uses EC2 RunInstances --dry-run API call to verify capacity.
+
+        Args:
+            instance_type: EC2 instance type (e.g., 'm5.large')
+            az: Availability zone (e.g., 'aps1-az1')
+            region: AWS region (e.g., 'ap-south-1')
+
+        Returns:
+            True if capacity available, False otherwise
+        """
+        try:
+            import boto3
+            from backend.models.system_config import SystemConfig
+            from backend.core.aws_rate_limiter import AWSAPIRateLimiter
+
+            # Get AWS credentials from system config
+            access_key = self.db.query(SystemConfig).filter(
+                SystemConfig.key == "PLATFORM_AWS_ACCESS_KEY"
+            ).first()
+            secret_key = self.db.query(SystemConfig).filter(
+                SystemConfig.key == "PLATFORM_AWS_SECRET"
+            ).first()
+
+            if not access_key or not secret_key or not access_key.value or not secret_key.value:
+                logger.warning("AWS credentials not configured, assuming capacity exists")
+                return True
+
+            # Rate limit AWS API calls
+            rate_limiter = AWSAPIRateLimiter.for_capacity_check("default")
+            rate_limiter.acquire()
+
+            # Create EC2 client
+            ec2 = boto3.client(
+                'ec2',
+                region_name=region,
+                aws_access_key_id=access_key.value,
+                aws_secret_access_key=secret_key.value
+            )
+
+            # Try dry-run launch to check capacity
+            # Note: We're just checking if the call succeeds, not actually launching
+            response = ec2.run_instances(
+                InstanceType=instance_type,
+                MinCount=1,
+                MaxCount=1,
+                DryRun=True,
+                Placement={'AvailabilityZone': az}
+            )
+
+            # If we get here without exception, capacity exists
+            return True
+
+        except boto3.exceptions.Boto3Error as e:
+            error_code = e.response.get('Error', {}).get('Code', '') if hasattr(e, 'response') else ''
+
+            # DryRunOperation means the dry-run was successful (capacity exists)
+            if error_code == 'DryRunOperation':
+                return True
+
+            # InsufficientInstanceCapacity means no capacity
+            if error_code == 'InsufficientInstanceCapacity':
+                logger.info(f"No capacity for {instance_type} in {az}")
+                return False
+
+            # Unsupported instance type or other errors - assume capacity exists
+            logger.warning(f"Capacity check ambiguous for {instance_type}/{az}: {error_code}")
+            return True
+
+        except Exception as e:
+            logger.warning(f"Capacity check failed for {instance_type}/{az}: {e}")
+            # On error, assume capacity exists to not block rankings
+            return True
+
     def _cache_rankings(self, ranked_pools: List[ScoredPool]):
         """Cache ranked pools in Redis with 30-second TTL."""
         try:
@@ -529,24 +605,25 @@ class PoolRankingService:
 
     def _get_spot_advisor_data(self) -> Dict[str, int]:
         """
-        Get AWS Spot Advisor frequency rankings.
+        Get AWS Spot Advisor frequency rankings from database.
 
-        Returns: Dict mapping "instance_type:az" to rank (0-5)
+        Returns: Dict mapping "instance_type:az" to interruption_index (0-4)
         """
         try:
-            from decision_engine.webscraper import get_spot_advisor_scraper
+            from backend.models.pricing import SpotAdvisorData
 
-            scraper = get_spot_advisor_scraper(cache_ttl=300, enable_redis=True)
-            scraper.fetch_data()
+            # Query all spot advisor data from database
+            advisor_records = self.db.query(SpotAdvisorData).all()
 
             # Build lookup dict
             advisor_data = {}
-            for key, data in scraper._cache.items():
-                # key format: "region:instance_type:os_type"
-                advisor_key = f"{data.instance_type}:{data.region}"
-                advisor_data[advisor_key] = data.interruption_index
+            for record in advisor_records:
+                # Key format: "instance_type:region" (we'll match on instance_type for now)
+                # Since AZ-specific data may not be available, use region as proxy
+                advisor_key = f"{record.instance_type}:{record.region}"
+                advisor_data[advisor_key] = record.interruption_index
 
-            logger.info(f"Loaded {len(advisor_data)} Spot Advisor rankings")
+            logger.info(f"Loaded {len(advisor_data)} Spot Advisor rankings from database")
             return advisor_data
 
         except Exception as e:
@@ -555,14 +632,67 @@ class PoolRankingService:
 
     def _get_pricing_data(self, region: str) -> Dict[str, Dict[str, float]]:
         """
-        Get current spot and on-demand prices from AWS Pricing API.
+        Get current spot and on-demand prices from database and AWS Pricing API.
 
         Returns: Dict mapping "instance_type:az" to {"spot": float, "ondemand": float}
         """
-        # TODO: Implement AWS Pricing API integration
-        # For now, return mock data
-        return {
-            "m5.xlarge:aps1-az1": {"spot": 0.045, "ondemand": 0.096},
-            "c5.large:aps1-az2": {"spot": 0.028, "ondemand": 0.085},
-            "r5.2xlarge:aps1-az3": {"spot": 0.120, "ondemand": 0.504},
-        }
+        try:
+            from backend.models.pricing import SpotPriceHistory, OnDemandPricing
+            from backend.services.resource_pricing_service import ResourcePricingService
+            from datetime import datetime, timedelta
+
+            pricing_data = {}
+
+            # Get recent spot prices from database (within last hour)
+            one_hour_ago = datetime.utcnow() - timedelta(hours=1)
+            spot_prices = self.db.query(SpotPriceHistory).filter(
+                SpotPriceHistory.region == region,
+                SpotPriceHistory.timestamp >= one_hour_ago
+            ).all()
+
+            # Build spot price lookup
+            spot_lookup = {}
+            for record in spot_prices:
+                key = f"{record.instance_type}:{record.availability_zone}"
+                spot_lookup[key] = float(record.price)
+
+            # Get on-demand prices
+            pricing_service = ResourcePricingService(self.db)
+            ondemand_prices = self.db.query(OnDemandPricing).filter(
+                OnDemandPricing.region == region
+            ).all()
+
+            # Build combined pricing data
+            for spot_record in spot_prices:
+                key = f"{spot_record.instance_type}:{spot_record.availability_zone}"
+
+                # Get on-demand price from database or API
+                ondemand = None
+                for od_record in ondemand_prices:
+                    if od_record.instance_type == spot_record.instance_type:
+                        ondemand = float(od_record.price)
+                        break
+
+                # Fallback to API if not in database
+                if ondemand is None:
+                    try:
+                        ondemand_cost = pricing_service.calculate_instance_cost(
+                            spot_record.instance_type, region, hours=1
+                        )
+                        ondemand = float(ondemand_cost)
+                    except Exception as e:
+                        logger.warning(f"Failed to get on-demand price for {spot_record.instance_type}: {e}")
+                        ondemand = spot_lookup.get(key, 0.0) * 3.0  # Estimate: spot is ~33% of on-demand
+
+                pricing_data[key] = {
+                    "spot": spot_lookup.get(key, 0.0),
+                    "ondemand": ondemand
+                }
+
+            logger.info(f"Loaded pricing data for {len(pricing_data)} instance/AZ combinations")
+            return pricing_data
+
+        except Exception as e:
+            logger.error(f"Failed to load pricing data: {e}")
+            # Fallback to empty dict (will use fallback pricing in ML features)
+            return {}

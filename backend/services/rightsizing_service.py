@@ -50,6 +50,13 @@ class RightSizingService:
 
     def __init__(self, db: Session):
         self.db = db
+        # Initialize Redis client for pricing lookups
+        try:
+            from backend.core.redis_client import get_redis_client
+            self.redis = get_redis_client()
+        except Exception as e:
+            logger.warning(f"Failed to initialize Redis client: {e}")
+            self.redis = None
 
     def generate_recommendations(
         self,
@@ -327,7 +334,8 @@ class RightSizingService:
         """
         Estimate monthly cost based on resource requests and replica count.
 
-        Simplified cost model - can be enhanced with actual instance pricing.
+        Uses Redis pricing cache if available, falls back to instance family costs,
+        then to default rates.
 
         Args:
             cpu_millicores: CPU request in millicores
@@ -340,9 +348,68 @@ class RightSizingService:
         cpu_cores = cpu_millicores / 1000.0
         memory_gb = memory_mb / 1024.0
 
+        # Try to get pricing from Redis cache (populated by resource_pricing_worker)
+        cpu_rate = None
+        mem_rate = None
+
+        if self.redis:
+            try:
+                # Try to get pricing for common instance family based on cpu:mem ratio
+                ratio = cpu_cores / memory_gb if memory_gb > 0 else 0
+
+                # Determine likely instance family based on ratio
+                # c-family: ~1:2 ratio, m-family: ~1:4 ratio, r-family: ~1:8 ratio
+                if ratio >= 0.4:  # High CPU ratio
+                    family = "c5"
+                elif ratio >= 0.2:  # Balanced
+                    family = "m5"
+                else:  # High memory ratio
+                    family = "r5"
+
+                # Try to get rates from Redis
+                cpu_key = f"pricing:ec2:{family}:cpu_per_core_hour"
+                mem_key = f"pricing:ec2:{family}:mem_per_gb_hour"
+
+                cpu_cached = self.redis.get(cpu_key)
+                mem_cached = self.redis.get(mem_key)
+
+                if cpu_cached:
+                    cpu_rate = float(cpu_cached)
+                if mem_cached:
+                    mem_rate = float(mem_cached)
+
+                if cpu_rate and mem_rate:
+                    logger.debug(f"Using Redis pricing for {family}: CPU=${cpu_rate}/core/hr, MEM=${mem_rate}/GB/hr")
+            except Exception as e:
+                logger.warning(f"Failed to get pricing from Redis: {e}")
+
+        # Fallback to instance family costs if Redis lookup failed
+        if cpu_rate is None or mem_rate is None:
+            # Determine family based on CPU:memory ratio
+            ratio = cpu_cores / memory_gb if memory_gb > 0 else 0
+
+            if ratio >= 0.4:
+                family_key = "c5"
+            elif ratio >= 0.2:
+                family_key = "m5"
+            else:
+                family_key = "r5"
+
+            family_rates = self.INSTANCE_FAMILY_COSTS.get(family_key)
+            if family_rates:
+                cpu_rate = family_rates[0]
+                mem_rate = family_rates[1]
+                logger.debug(f"Using family pricing for {family_key}: CPU=${cpu_rate}/core/hr, MEM=${mem_rate}/GB/hr")
+
+        # Final fallback to default rates
+        if cpu_rate is None:
+            cpu_rate = self.CPU_COST_PER_CORE_HOUR
+        if mem_rate is None:
+            mem_rate = self.MEMORY_COST_PER_GB_HOUR
+
         # Cost per hour
-        cpu_cost_hour = cpu_cores * self.CPU_COST_PER_CORE_HOUR
-        memory_cost_hour = memory_gb * self.MEMORY_COST_PER_GB_HOUR
+        cpu_cost_hour = cpu_cores * cpu_rate
+        memory_cost_hour = memory_gb * mem_rate
         total_cost_hour = (cpu_cost_hour + memory_cost_hour) * replica_count
 
         # Monthly cost (730 hours/month)

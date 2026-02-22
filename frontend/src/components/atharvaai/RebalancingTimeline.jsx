@@ -15,45 +15,10 @@ const RebalancingTimeline = () => {
         try {
             // Fetch rebalancing status from the new endpoint
             const response = await api.get('/api/v1/atharvaai/rebalancing/status?limit=20');
-            setEvents(response.data);
+            setEvents(response.data || []);
         } catch (error) {
             console.error("Failed to fetch rebalancing history:", error);
-            // Fallback to mock data if backend not ready or empty
-            setEvents([
-                {
-                    id: 1,
-                    trigger: 'emergency',
-                    source_pool: 'c5.2xlarge:us-east-1a',
-                    target_pool: 'm5.2xlarge:us-east-1b',
-                    status: 'completed',
-                    started_at: new Date(Date.now() - 1000 * 60 * 5).toISOString(),
-                    duration_seconds: 45,
-                    nodes_affected: 3,
-                    outcome: 'success'
-                },
-                {
-                    id: 2,
-                    trigger: 'graceful',
-                    source_pool: 'r5.large:us-east-1c',
-                    target_pool: 'r5.large:us-east-1a',
-                    status: 'in_progress',
-                    started_at: new Date(Date.now() - 1000 * 60 * 30).toISOString(),
-                    nodes_affected: 5,
-                    outcome: 'pending'
-                },
-                {
-                    id: 3,
-                    trigger: 'emergency',
-                    source_pool: 'g4dn.xlarge:us-east-1b',
-                    target_pool: 'p3.2xlarge:us-east-1a',
-                    status: 'failed',
-                    started_at: new Date(Date.now() - 1000 * 60 * 60 * 2).toISOString(),
-                    duration_seconds: 12,
-                    nodes_affected: 1,
-                    outcome: 'CapacityError',
-                    error_message: 'Target pool capacity insufficient'
-                }
-            ]);
+            setEvents([]);
         } finally {
             setLoading(false);
         }

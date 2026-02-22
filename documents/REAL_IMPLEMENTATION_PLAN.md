@@ -130,10 +130,16 @@ Files: `backend/models/cluster.py`, new migration file
 **2. Spot Price Celery Schedule → Mock (15 minutes)**
 `backend/workers/app.py:88-91` calls `workers.atharvaai.collect_spot_prices` (mock). Change to `backend.workers.tasks.pricing.fetch_aws_pricing`. Real scraper already exists.
 
+**3. Spot Advisor Import Path — BROKEN (15 minutes)**
+`pool_ranking_service.py:537` imports from `decision_engine.webscraper` which doesn't exist. The real scraper is at `backend.scrapers.spot_advisor_scraper`. Fix: replace `from decision_engine.webscraper import get_spot_advisor_scraper` with `from backend.scrapers.spot_advisor_scraper import get_spot_advisor_rating` and refactor `_get_spot_advisor_data()` to use the correct API.
+
 ### Tier 2 — Financially Consequential
 
-**3. Right-Sizing Cost Constants → Live Pricing (2-3 hours)**
+**4. Right-Sizing Cost Constants → Live Pricing (2-3 hours)**
 Family-tiered rates are an improvement over flat $0.04, but still hardcoded. Wire `resource_pricing_worker` (already runs daily) → Redis cache → `rightsizing_service._estimate_cost()`.
+
+**5. AtharvaAI Ranking Service — Mock Pricing (2 hours)**
+`pool_ranking_service.py:556-568` (`_get_pricing_data()`) returns a hardcoded 3-entry dict. The real `ResourcePricingService.calculate_instance_cost()` already exists in `backend/services/resource_pricing_service.py` with live AWS Pricing API support and Redis caching. Wire `_step6_price_fetch` to call `ResourcePricingService.calculate_instance_cost(instance_type, region)` for on-demand prices and query `spot_price_history` table for spot prices.
 
 ### Tier 3 — Enterprise Deal Blockers
 
@@ -146,34 +152,36 @@ Emergency sleep/wake needs approval workflow. Auto-require for `environment=prod
 **6. Karpenter Budget Guards — Issue #9 (4 hours)**
 NodePool CRD limits (20 min) + budget-guard Celery task (3-4h). Prevents runaway costs.
 
-**7. Cache Invalidation — Issue #7 (1 hour)**
+**8. Cache Invalidation — Issue #7 (1 hour)**
 Add `redis.delete(f"rankings:{org_id}:*")` after template save/update in `template_service.py`.
 
 ### Tier 4 — Important but Deferrable
 
-**8. Multi-Region Pricing — Issue #1 (4-6 hours)**
+**9. Multi-Region Pricing — Issue #1 (4-6 hours)**
 Parameterize pricing collector by account+region. Run beat schedule per-region.
 
-**9. Audit S3 Sink — Issue #8 remainder (3 hours)**
+**10. Audit S3 Sink — Issue #8 remainder (3 hours)**
 Write critical audit actions to S3 append-only bucket. Add periodic Celery verification task for checksums.
 
-**10. ML Model Versioning — Issue #12 (8-10 hours)**
+**11. ML Model Versioning — Issue #12 (8-10 hours)**
 Wire `ml_models` table, shadow mode, auto-promote.
 
-**11. User Preferences to DB — Issue #10 (1 hour)**
-Wire `PATCH /api/v1/users/me/preferences`, update `Settings.jsx`.
+**12. User Preferences to DB — Issue #10 (1 hour)**
+Frontend file is `AccountSettings.jsx` (not `Settings.jsx`). Line 104-105 already caches preferences to `localStorage` as offline fallback, but primary save should use `PATCH /api/v1/users/me/preferences` (endpoint exists). Fix: replace `localStorage.getItem('user_preferences')` reads with a `useAuth` hook call to `GET /api/v1/users/me/preferences`, keep `localStorage` as write-through cache only.
 
 ---
 
 ## 📋 Updated Implementation Checklist
 
-### Phase 1: Must-Fix Before Demo (Est. ~10h)
+### Phase 1: Must-Fix Before Demo (Est. ~13h)
 
 - [ ] **TASK 1.1:** Add hibernation columns migration (30 min)
 - [ ] **TASK 1.2:** Wire real spot price collection in Celery beat (15 min)
 - [ ] **TASK 1.3:** Wire rightsizing to Redis pricing cache (2-3h)
 - [ ] **TASK 1.4:** Right-sizing pre-flight checks — ASG, IP, instance-store (4-5h)
 - [ ] **TASK 1.5:** Cache invalidation on template updates (1h)
+- [ ] **TASK 1.6:** Fix spot advisor import path in `pool_ranking_service.py` — change `decision_engine.webscraper` → `backend.scrapers.spot_advisor_scraper` (15 min)
+- [ ] **TASK 1.7:** Wire `_step6_price_fetch` in `pool_ranking_service.py` to `ResourcePricingService.calculate_instance_cost()` instead of hardcoded 3-entry dict (2h)
 
 ### Phase 2: Before Enterprise Onboarding (Est. ~12h)
 
@@ -181,7 +189,7 @@ Wire `PATCH /api/v1/users/me/preferences`, update `Settings.jsx`.
 - [ ] **TASK 2.2:** Karpenter NodePool CRD limits (30 min)
 - [ ] **TASK 2.3:** Karpenter budget guard Celery task (3-4h)
 - [ ] **TASK 2.4:** Audit log S3 append-only sink + Celery verifier (3h)
-- [ ] **TASK 2.5:** User preferences to DB (1h)
+- [ ] **TASK 2.5:** User preferences to DB — modify `AccountSettings.jsx` to replace `localStorage.getItem('user_preferences')` with API call to `GET /api/v1/users/me/preferences`, keep `localStorage` as write-through offline cache only (1h)
 
 ### Phase 3: Scale & Compliance (Est. ~18h)
 

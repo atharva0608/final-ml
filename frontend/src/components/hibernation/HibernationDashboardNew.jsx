@@ -85,19 +85,30 @@ const calculateStats = (schedules) => {
 
 // Live Progress Banner
 const LiveProgressBanner = ({ onDismiss }) => {
-  const [progress, setProgress] = useState(65);
-  const [elapsed, setElapsed] = useState(134);
-  const [step, setStep] = useState(18);
-  const total = 23;
+  const [status, setStatus] = useState(null);
 
   useEffect(() => {
-    const interval = setInterval(() => {
-      setProgress(p => Math.min(p + 0.35, 99));
-      setElapsed(e => e + 1);
-      setStep(s => Math.min(s + 0.04, total - 0.01));
-    }, 1000);
+    fetchStatus(); // Fetch immediately
+    const interval = setInterval(fetchStatus, 2000); // Poll every 2 seconds
     return () => clearInterval(interval);
   }, []);
+
+  const fetchStatus = async () => {
+    try {
+      const response = await api.get('/api/v1/hibernation/status/active');
+      setStatus(response.data);
+      // Auto-dismiss if not in progress
+      if (!response.data.in_progress) {
+        onDismiss();
+      }
+    } catch (error) {
+      console.error('Failed to fetch hibernation status:', error);
+    }
+  };
+
+  if (!status || !status.in_progress) {
+    return null; // Don't show banner if no active hibernation
+  }
 
   const formatTime = (seconds) => {
     const mins = Math.floor(seconds / 60);
@@ -105,8 +116,7 @@ const LiveProgressBanner = ({ onDismiss }) => {
     return `${mins}m ${secs}s`;
   };
 
-  const remaining = Math.max(0, Math.round(((100 - progress) / progress) * elapsed));
-  const pct = Math.round(progress);
+  const pct = status.progress_pct;
 
   return (
     <div className="bg-gradient-to-r from-indigo-900 to-purple-900 border-b border-indigo-700 px-8 py-3 flex items-center gap-4">
@@ -118,8 +128,8 @@ const LiveProgressBanner = ({ onDismiss }) => {
       </div>
       <div className="w-px h-4 bg-indigo-600"></div>
       <div className="text-sm text-indigo-200">
-        <span className="font-bold text-white">Weekend Shutdown</span>
-        {' · '}Scaling deployments to 0 replicas ({Math.floor(step)}/{total})
+        <span className="font-bold text-white">{status.schedule_name}</span>
+        {' · '}{status.strategy.replace('_', ' ')} ({status.nodes_processed}/{status.total_nodes} nodes)
       </div>
       <div className="flex-1 bg-indigo-800/40 rounded-full h-1.5 min-w-[100px]">
         <div
@@ -129,7 +139,7 @@ const LiveProgressBanner = ({ onDismiss }) => {
       </div>
       <span className="text-sm font-bold text-white flex-shrink-0">{pct}%</span>
       <span className="text-xs text-indigo-300 flex-shrink-0">
-        {formatTime(elapsed)} · ~{formatTime(remaining)} left
+        {formatTime(status.elapsed_seconds)} · ~{formatTime(status.estimated_remaining)} left
       </span>
       <button className="px-3 py-1 bg-indigo-700/50 hover:bg-indigo-700 border border-indigo-600 rounded-md text-xs font-medium text-indigo-200 transition-colors">
         View Logs
@@ -147,21 +157,47 @@ const LiveProgressBanner = ({ onDismiss }) => {
 
 // Savings Report
 const SavingsReport = ({ schedules }) => {
-  const activeSchedules = schedules.filter(s => s.is_active === 'Y');
-  const totalSaved = activeSchedules.length * 1500; // Estimate per schedule
+  const [trendData, setTrendData] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  // Filter active schedules
+  const activeSchedules = schedules ? schedules.filter(s => s.is_active === 'Y' || s.is_active === true) : [];
+
+  useEffect(() => {
+    fetchSavingsHistory();
+  }, []);
+
+  const fetchSavingsHistory = async () => {
+    try {
+      const response = await api.get('/api/v1/hibernation/savings/history?months=6');
+      const history = response.data || [];
+      // Map to chart format: { month, value }
+      const chartData = history.map(h => ({
+        month: h.month,
+        value: h.savings
+      }));
+      // Ensure at least one data point for chart rendering
+      if (chartData.length === 0) {
+        const currentMonth = new Date().toLocaleDateString('en-US', { month: 'short' });
+        setTrendData([{ month: currentMonth, value: 0 }]);
+      } else {
+        setTrendData(chartData);
+      }
+    } catch (error) {
+      console.error('Failed to fetch savings history:', error);
+      // Fallback to empty array with current month only
+      const currentMonth = new Date().toLocaleDateString('en-US', { month: 'short' });
+      setTrendData([{ month: currentMonth, value: 0 }]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Calculate totals from real data
+  const totalSaved = trendData.length > 0 ? trendData[trendData.length - 1].value : 0;
   const projectedAnnual = totalSaved * 12;
 
-  // Mock trend data (last 6 months)
-  const trendData = [
-    { month: 'Sep', value: 2100 },
-    { month: 'Oct', value: 2800 },
-    { month: 'Nov', value: 3200 },
-    { month: 'Dec', value: 3900 },
-    { month: 'Jan', value: 4400 },
-    { month: 'Feb', value: totalSaved }
-  ];
-
-  const maxValue = Math.max(...trendData.map(d => d.value));
+  const maxValue = Math.max(...trendData.map(d => d.value), 1);
 
   return (
     <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
@@ -204,68 +240,78 @@ const SavingsReport = ({ schedules }) => {
         <div className="text-sm font-semibold text-gray-700 mb-4">
           Savings Trend — Last 6 Months
         </div>
-        <div className="relative h-32">
-          {/* Chart area */}
-          <svg className="w-full h-full" viewBox="0 0 600 120" preserveAspectRatio="none">
-            {/* Filled area gradient */}
-            <defs>
-              <linearGradient id="savingsGradient" x1="0%" y1="0%" x2="0%" y2="100%">
-                <stop offset="0%" style={{ stopColor: '#22c55e', stopOpacity: 0.3 }} />
-                <stop offset="100%" style={{ stopColor: '#22c55e', stopOpacity: 0.05 }} />
-              </linearGradient>
-            </defs>
+        {loading ? (
+          <div className="relative h-32 flex items-center justify-center text-gray-400">
+            Loading chart...
+          </div>
+        ) : trendData.length === 0 ? (
+          <div className="relative h-32 flex items-center justify-center text-gray-400">
+            No savings data available yet
+          </div>
+        ) : (
+          <div className="relative h-32">
+            {/* Chart area */}
+            <svg className="w-full h-full" viewBox="0 0 600 120" preserveAspectRatio="none">
+              {/* Filled area gradient */}
+              <defs>
+                <linearGradient id="savingsGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+                  <stop offset="0%" style={{ stopColor: '#22c55e', stopOpacity: 0.3 }} />
+                  <stop offset="100%" style={{ stopColor: '#22c55e', stopOpacity: 0.05 }} />
+                </linearGradient>
+              </defs>
 
-            {/* Generate path for filled area */}
-            <path
-              d={`M 0,${120 - (trendData[0].value / maxValue) * 110} ${trendData.map((d, i) => {
-                const x = (i / (trendData.length - 1)) * 600;
-                const y = 120 - (d.value / maxValue) * 110;
-                return `L ${x},${y}`;
-              }).join(' ')} L 600,120 L 0,120 Z`}
-              fill="url(#savingsGradient)"
-            />
+              {/* Generate path for filled area */}
+              <path
+                d={`M 0,${120 - ((trendData[0]?.value || 0) / maxValue) * 110} ${trendData.map((d, i) => {
+                  const x = (i / Math.max(trendData.length - 1, 1)) * 600;
+                  const y = 120 - (d.value / maxValue) * 110;
+                  return `L ${x},${y}`;
+                }).join(' ')} L 600,120 L 0,120 Z`}
+                fill="url(#savingsGradient)"
+              />
 
-            {/* Green line */}
-            <polyline
-              points={trendData.map((d, i) => {
-                const x = (i / (trendData.length - 1)) * 600;
-                const y = 120 - (d.value / maxValue) * 110;
-                return `${x},${y}`;
-              }).join(' ')}
-              fill="none"
-              stroke="#22c55e"
-              strokeWidth="3"
+              {/* Green line */}
+              <polyline
+                points={trendData.map((d, i) => {
+                  const x = (i / Math.max(trendData.length - 1, 1)) * 600;
+                  const y = 120 - (d.value / maxValue) * 110;
+                  return `${x},${y}`;
+                }).join(' ')}
+                fill="none"
+                stroke="#22c55e"
+                strokeWidth="3"
               strokeLinecap="round"
               strokeLinejoin="round"
             />
 
-            {/* Data points (dots) */}
-            {trendData.map((d, i) => {
-              const x = (i / (trendData.length - 1)) * 600;
-              const y = 120 - (d.value / maxValue) * 110;
-              return (
-                <circle
-                  key={i}
-                  cx={x}
-                  cy={y}
-                  r="5"
-                  fill="#22c55e"
-                  stroke="white"
-                  strokeWidth="2"
-                />
-              );
-            })}
-          </svg>
+              {/* Data points (dots) */}
+              {trendData.map((d, i) => {
+                const x = (i / Math.max(trendData.length - 1, 1)) * 600;
+                const y = 120 - (d.value / maxValue) * 110;
+                return (
+                  <circle
+                    key={i}
+                    cx={x}
+                    cy={y}
+                    r="5"
+                    fill="#22c55e"
+                    stroke="white"
+                    strokeWidth="2"
+                  />
+                );
+              })}
+            </svg>
 
-          {/* Month labels */}
-          <div className="absolute -bottom-6 left-0 right-0 flex justify-between px-1">
-            {trendData.map((d, i) => (
-              <span key={i} className="text-xs text-gray-500">
-                {d.month}
-              </span>
-            ))}
+            {/* Month labels */}
+            <div className="absolute -bottom-6 left-0 right-0 flex justify-between px-1">
+              {trendData.map((d, i) => (
+                <span key={i} className="text-xs text-gray-500">
+                  {d.month}
+                </span>
+              ))}
+            </div>
           </div>
-        </div>
+        )}
       </div>
 
       {/* Per-schedule Breakdown */}

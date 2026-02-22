@@ -77,6 +77,12 @@ class Cluster(Base):
     # Karpenter operating mode: null = not installed, dry_run = insights only, auto = full management
     karpenter_mode = Column(Enum(KarpenterMode), nullable=True, default=None)
 
+    # Hibernation state tracking
+    is_hibernating = Column(Boolean, default=False)  # True when cluster is currently hibernated
+    hibernation_state = Column(JSON, nullable=True)  # Saved state (replica counts, etc.) for wake operation
+    hibernation_lock = Column(String(255), nullable=True)  # UUID of worker holding hibernation lock
+    hibernation_lock_acquired_at = Column(DateTime, nullable=True)  # When lock was acquired
+
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
