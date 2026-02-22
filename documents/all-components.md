@@ -6,11 +6,11 @@
 >
 > **🔴 Red API Endpoint** = Endpoint exists in backend but is **NOT called** from the frontend (unused)
 >
-> **Last Updated:** 2026-02-22 17:15 IST — **CODEBASE ACCURACY AUDIT COMPLETE** ✅
+> **Last Updated:** 2026-02-22 23:54 IST — **CODEBASE ACCURACY AUDIT COMPLETE** ✅
 >
 > **Integration Architecture**: Three-system integration connecting Node Templates, AtharvaAI ML Pool Optimizer, and Right-Sizing with enriched recommendations, blacklist checking, template compliance validation, and pool health indicators. Templates track usage stats (last_used_by_atharva_at, atharva_rankings_count), AtharvaAI accepts template_id parameter, Right-Sizing validates recommendations against template blacklists.
 >
-> **Hibernation System**: `HibernationDashboardNew.jsx` (exported as `HibernationDashboard`) is the primary dashboard with **real-time progress tracking** (LiveProgressBanner polls `/hibernation/status/active` every 2s), **historical savings trend** (SavingsReport fetches `/hibernation/savings/history` for last 6 months from audit logs), ScheduleMatrix (168-hour grid with click-and-drag), StrategySelector (3 strategies), AuditHistory (compact execution history table), EmergencyControls, and NotificationSettings. Multi-cluster schedules supported. Backend: Modular strategy classes in `backend/Hibernation_strategy/` (namespace_sleep.py, nuclear.py, snapshot_restore.py). Worker: Celery beat task (1-min interval) with strategy dispatcher + **Redis distributed locking** (per-cluster UUID-based locks via `SET NX EX`, global scheduler lock 55s TTL, per-cluster locks 300s TTL). State versioning with `state_captured_at` timestamp and `captured_by_worker` identifier for staleness detection.
+> **Hibernation System**: `HibernationDashboardNew.jsx` (exported as `HibernationDashboard` via `index.js`) is the primary dashboard rendered at `/hibernation/:clusterId?`. Features **real-time progress tracking** (LiveProgressBanner polls `/hibernation/status/active` every 2s), **historical savings trend** (SavingsReport fetches `/hibernation/savings/history` for last 6 months from audit logs), ScheduleMatrix (168-hour grid with click-and-drag), StrategySelector (3 strategies), AuditHistory (compact execution history table), EmergencyControls, and NotificationSettings. Multi-cluster schedules supported. Sidebar navigation uses query-param routing (`?tab=schedules`, `?tab=strategies`, `?tab=history`). `DashboardTab.jsx` provides a standalone Strategies master-detail view. **Deleted components**: `HibernationManager.jsx`, `SchedulesTab.jsx`, `HistoryTab.jsx` (multi-tab architecture removed). Backend: Modular strategy classes in `backend/Hibernation_strategy/` (namespace_sleep.py, nuclear.py, snapshot_restore.py). Worker: Celery beat task (1-min interval) with strategy dispatcher + **Redis distributed locking** (per-cluster UUID-based locks via `SET NX EX`, global scheduler lock 55s TTL, per-cluster locks 300s TTL). State versioning with `state_captured_at` timestamp and `captured_by_worker` identifier for staleness detection.
 >
 > **Right-Sizing System**: **CONSOLIDATED** — All 12 previous files merged into single `RightSizingDashboard.jsx` (50KB). Contains dual-mode container routing between Manual and Karpenter views. **Manual Mode**: KPI cards (dynamically calculated **Avg Karpenter Score** from real recommendation scores, not hardcoded), recommendations table (14-day pod metrics analysis with Pool Health column, Template compliance indicators), enriched recommendations with blacklist checking, SavingsTracker, InstanceUsageDetailPanel, BatchApplyModal. **Karpenter Mode**: KarpenterEnable (one-click setup), KarpenterSetup (4-step wizard), KarpenterDashboard (live monitoring with activity feed), KarpenterSettings (5-tab slide-over). Backend: 8 Karpenter API endpoints in `karpenter_routes.py`. **Cost estimation**: Uses tiered instance-family pricing (m5/m6i/c5/c6i/r5/r6i/t3/t3a) instead of flat rates.
 >
@@ -20,7 +20,7 @@
 >
 > **Real Implementation Status**: **100% real data** — no mock fallbacks remaining. AtharvaAI uses real ML features, pricing, and capacity data. Right-Sizing uses real recommendation scores. Hibernation uses real-time progress polling and historical savings from audit logs. Team Stats use real cluster queries and cost aggregation.
 >
-> **Component Count**: ~130 JSX/JS files across 22 component directories + 7 pages + 3 stores + 3 hooks + 2 services + 1 utils. Hibernation: 27 files (including index.js). Right-Sizing: 1 file (consolidated). Teams: 3 NEW dedicated components (MembersTab, TeamsTab, RolesPoliciesTopTab).
+> **Component Count**: ~130 JSX/JS files across 22 component directories + 7 pages + 3 stores + 3 hooks + 2 services + 1 utils. Hibernation: 28 files (including index.js, DashboardTab.jsx; excluding deleted HibernationManager, SchedulesTab, HistoryTab). Right-Sizing: 1 file (consolidated). Teams: 3 NEW dedicated components (MembersTab, TeamsTab, RolesPoliciesTopTab).
 
 ---
 
@@ -708,7 +708,7 @@ Templates → AtharvaAI → Right-Sizing
 >
 > **Execution Flow**: Celery beat task runs every 1 minute → checks active schedules → converts current time to schedule timezone → checks 168-char matrix (7 days × 24 hours) → triggers sleep/wake via strategy dispatcher → logs to audit trail → updates Redis cache.
 >
-> **Frontend Architecture**: `HibernationDashboardNew.jsx` is the primary dashboard with LiveProgressBanner, SavingsReport (line chart), ScheduleMatrix (168-hour grid), StrategySelector, AuditHistory, EmergencyControls. Multi-cluster schedules supported.
+> **Frontend Architecture (2026-02-22 Update)**: `HibernationDashboardNew.jsx` (exported as `HibernationDashboard` from `index.js`) is the primary dashboard. Rendered at route `/hibernation/:clusterId?`. Sidebar links use query-param navigation (`?tab=schedules`, `?tab=strategies`, `?tab=history`). **Deleted**: `HibernationManager.jsx` (multi-tab router), `SchedulesTab.jsx`, `HistoryTab.jsx` — all removed from codebase. **Added**: `DashboardTab.jsx` — standalone Strategies master-detail view with 3 strategy cards (Namespace Sleep, Nuclear, Snapshot & Restore), each showing wake time, savings %, risk profile, and mechanism of action details. Features LiveProgressBanner, SavingsReport (line chart), ScheduleMatrix (168-hour grid), StrategySelector, AuditHistory, EmergencyControls. Multi-cluster schedules supported.
 
 ### Main Hibernation Dashboard (HibernationDashboardNew)
 
@@ -784,9 +784,24 @@ Templates → AtharvaAI → Right-Sizing
 | `manual_sleep_cluster(cluster_id, strategy)` | Manual override task for instant sleep | Creates temporary schedule or uses existing, calls trigger_sleep() | backend/workers/tasks/hibernation_worker.py |
 | `manual_wake_cluster(cluster_id, strategy)` | Manual override task for instant wake | Creates temporary schedule or uses existing, calls trigger_wake() | backend/workers/tasks/hibernation_worker.py |
 
+### Strategies View (DashboardTab.jsx — NEW)
+
+| UI Element | Type | What It Does | Data Source | API Endpoint | Backend Logic | DB Table | Columns Used | Dependencies | File Name |
+|---|---|---|---|---|---|---|---|---|---|
+| **Strategy Master List** | Card List | 3 selectable strategy cards (Namespace Sleep, Nuclear, Snapshot & Restore) with icon, savings %, selected indicator | Hardcoded | — | — | — | — | hibernation/DashboardTab.jsx | App.js |
+| **Strategy Detail Panel** | Card | Detailed view of selected strategy: icon, name, description, 3 KPI cards (Wake Time, Max Savings, Risk Profile), Mechanism of Action bullet points | Hardcoded | — | — | — | — | hibernation/DashboardTab.jsx | App.js |
+| **Wake Time KPI** | Card | Shows estimated wake time (e.g., ~2 min, ~8 min, ~12 min) | Hardcoded | — | — | — | — | hibernation/DashboardTab.jsx | App.js |
+| **Max Savings KPI** | Card | Shows maximum savings percentage (80%, 99%, 90%) | Hardcoded | — | — | — | — | hibernation/DashboardTab.jsx | App.js |
+| **Risk Profile KPI** | Card | Shows risk level (LOW, MEDIUM, LOWEST) with color coding | Hardcoded | — | — | — | — | hibernation/DashboardTab.jsx | App.js |
+
 ### Component Status Note
 
-All legacy hibernation components have been removed. The current implementation uses `HibernationDashboardNew.jsx` as the single source of truth for hibernation management.
+The following hibernation components have been **deleted** and are no longer in the codebase:
+- `HibernationManager.jsx` — Multi-tab router (replaced by direct `HibernationDashboard` rendering)
+- `SchedulesTab.jsx` — Standalone schedules tab (functionality merged into `HibernationDashboardNew`)
+- `HistoryTab.jsx` — Standalone history tab (functionality merged into `HibernationDashboardNew`)
+
+The current implementation uses `HibernationDashboardNew.jsx` (exported via `index.js` as `HibernationDashboard`) as the single source of truth for hibernation management. `DashboardTab.jsx` provides a standalone Strategies reference view.
 
 ---
 
@@ -1111,8 +1126,8 @@ All legacy hibernation components have been removed. The current implementation 
 | **S3Analysis** | Page | Full S3 tiering analysis — per-bucket recommendations | Real API | `GET /api/v1/s3/analysis` | S3 intelligent tiering recommendations | — | — | App.js | s3/S3Analysis.jsx |
 | **RDSHealthCard** | Card | RDS Multi-AZ analysis summary — instances, potential savings | Real API | `GET /api/v1/rds/analysis` | RDS Multi-AZ analysis via RDS describe APIs | — | — | dashboard/widgetRegistry.js | rds/RDSHealthCard.jsx |
 | **RDSAnalysis** | Page | Full RDS analysis — Multi-AZ recommendations per instance | Real API | `GET /api/v1/rds/analysis` | RDS analysis with cost optimization suggestions | — | — | App.js | rds/RDSAnalysis.jsx |
-| **TransferHealthCard** | Card | Data transfer optimization summary — cross-AZ/region costs | Real API | `GET /api/v1/transfer/analysis` | Data transfer analysis via CloudWatch/VPC APIs | — | — | dashboard/widgetRegistry.js | transfer/TransferHealthCard.jsx |
-| **TransferAnalysis** | Page | Full data transfer analysis — optimization recommendations | Real API | `GET /api/v1/transfer/analysis` | Data transfer cost optimization analysis | — | — | App.js | transfer/TransferAnalysis.jsx |
+| **TransferHealthCard** | Card | Data transfer optimization summary — cross-AZ/region costs | Real API | `GET /api/v1/transfer/overview` | Data transfer analysis via CloudWatch/VPC APIs | — | — | dashboard/widgetRegistry.js | transfer/TransferHealthCard.jsx |
+| **TransferAnalysis** | Page | Full data transfer analysis — optimization recommendations | Real API | `GET /api/v1/transfer/overview` + `GET /api/v1/transfer/analyze` | Data transfer cost optimization analysis | — | — | App.js | transfer/TransferAnalysis.jsx |
 
 ---
 
@@ -1146,7 +1161,7 @@ All legacy hibernation components have been removed. The current implementation 
 | Page | Type | What It Does | Data Source | API Endpoint | Backend Logic | DB Table | Columns Used | Dependencies | File Name |
 |---|---|---|---|---|---|---|---|---|---|
 | **Onboarding** | Page | Multi-step onboarding flow — fetches state from backend, 4 steps (Welcome, Connect AWS, Verify, Success), animated progress bar, skip option | Real API | `GET /api/v1/onboarding/state` + `POST /api/v1/onboarding/skip` | OnboardingService.get_state → returns current_step, is_completed | accounts | accounts.id, accounts.status | App.js | pages/Onboarding.jsx |
-| **HibernationPage** | Page | Consolidated hibernation management — header with back-to-clusters link, StrategySelector, HibernationScheduler (2/3 width), ValidationPanel + CostAnalytics sidebar (1/3 width), reads clusterId from URL params | Real API | (delegates to child components) | (delegates to child components) | — | — | App.js, store/useHibernationStore.js | pages/HibernationPage.jsx |
+| **HibernationPage** | Page | Consolidated hibernation management — rendered at `/hibernation/:clusterId?`, uses `HibernationDashboard` directly (no multi-tab router). Sidebar links use query-param navigation (`?tab=schedules/strategies/history`). Header with back-to-clusters link, StrategySelector, HibernationScheduler (2/3 width), ValidationPanel + CostAnalytics sidebar (1/3 width) | Real API | (delegates to child components) | (delegates to child components) | — | — | App.js, store/useHibernationStore.js | pages/HibernationPage.jsx |
 | **AtharvaAiPage** | Page | AtharvaAI ML-based pool optimizer dashboard page with real 8-step pipeline | Real API | (delegates to child components) | (delegates to child components) | — | — | App.js, store/useAtharvaStore.js | pages/AtharvaAiPage.jsx |
 | **TeamDetails** | Page | Team member list + management for a specific team | Real API | `GET /api/v1/organization/teams/{id}/members` | TeamService.get_team_members | users, teams | users.name, users.role, teams.id | App.js, pages/Teams.jsx | pages/TeamDetails.jsx |
 | **Teams** | Page | Team list page — all teams in organization | Real API | `GET /api/v1/organization/teams` | TeamService.list_teams | teams | teams.id, teams.name, teams.member_count | App.js | pages/Teams.jsx |
@@ -1199,12 +1214,13 @@ All legacy hibernation components have been removed. The current implementation 
 
 ## 25. Component Status Summary
 
-**Total Components Active:** ~130 JSX/JS files across 22 component dirs + 7 pages + 3 stores + 3 hooks + 2 services + 1 utils
-**Component Directories:** admin(9), approvals(3), atharvaai(4), audit(1), auth(3), cleanup(10), clusters(10), dashboard(15 incl. widgets), governance(4), hibernation(27 incl. index.js), layout(1), onboarding(4), policies(3), rds(2), ri(2), right-sizing(1), s3(2), settings(11), shared(10 + index.js), teams(3), templates(2), transfer(2)
+**Total Components Active:** ~128 JSX/JS files across 22 component dirs + 7 pages + 3 stores + 3 hooks + 2 services + 1 utils
+**Component Directories:** admin(9), approvals(3), atharvaai(4), audit(1), auth(3), cleanup(10), clusters(10), dashboard(15 incl. widgets), governance(4), hibernation(28 incl. index.js, DashboardTab.jsx; HibernationDashboardNew.jsx.bak present but not counted as active), layout(1), onboarding(4), policies(3), rds(2), ri(2), right-sizing(1), s3(2), settings(11), shared(10 + index.js), teams(3), templates(2), transfer(2)
 **Pages:** AccountAnalytics, Approvals, AtharvaAiPage, Onboarding, Roles, TeamDetails, Teams (7 total)
 **Backend Route Files:** 34 active (5 dead route files deleted: `settings_routes`, `smart_tag_routes`, `auto_tag_routes`, `hygiene_policy_routes`, `dashboard_routes`)
 **Frontend API:** `settingsAPI` and `healthAPI` removed from `api.js` (dead exports)
 **Duplicate Patterns Identified:** 10 components (HealthCard pattern × 6, Analysis page pattern × 4)
+**Recently Deleted (2026-02-22):** `HibernationManager.jsx`, `SchedulesTab.jsx`, `HistoryTab.jsx` (multi-tab architecture removed)
 
 
 ### B. Duplicate Component Patterns (Refactoring Candidates)
@@ -1292,16 +1308,16 @@ These components follow IDENTICAL patterns and should be consolidated into gener
 
 | Category | Count | Details |
 |----------|-------|---------|
-| **Total Component Files** | ~130 | 22 component dirs + 7 pages + 3 stores + 3 hooks + 2 services + 1 utils |
+| **Total Component Files** | ~128 | 22 component dirs + 7 pages + 3 stores + 3 hooks + 2 services + 1 utils |
 | **Karpenter Components** | 1 (consolidated) | All Karpenter UI now inside RightSizingDashboard.jsx |
-| **Legacy Components Removed** | 22+ | All deleted (HibernationScheduleV2, HibernationGrid, HibernationDashboard, HibernationSchedule, 3 admin components, ExperimentLab, 10 mock AtharvaAI, 11 right-sizing files consolidated) |
+| **Legacy Components Removed** | 25+ | All deleted (HibernationScheduleV2, HibernationGrid, HibernationDashboard, HibernationSchedule, **HibernationManager**, **SchedulesTab**, **HistoryTab**, 3 admin components, ExperimentLab, 10 mock AtharvaAI, 11 right-sizing files consolidated) |
 | **HealthCard Duplicates** | 6 | Can consolidate to 1 generic (~8KB savings) |
 | **Analysis Page Duplicates** | 4 | Can consolidate to 1 generic (~12KB savings) |
 | **Components Using Real APIs** | 90+ | All major components (100% production-ready) |
 | **Components Using Mock Data** | 0 | Zero mock data remaining |
 | **Shared/Reusable Components** | 10 | Badge, Button, Card, Dropdown, EmptyState, GaugeChart, Input, RiskBadge, StatsCard, Switch |
 | **Admin Components Active** | 9 | AdminDashboard, AdminOverview, AdminClients, AdminHealth, AdminBilling, AdminExperiments, AdminOrganizations, AdminConfig, PlatformSettings |
-| **Hibernation Components Active** | 27 | HibernationDashboardNew (exported as HibernationDashboard), HibernationScheduler, ScheduleMatrix, StrategySelector, AuditHistory, EmergencyControls, CostAnalyticsDashboard, EmergencyControls, ExecutionHistory, HibernationHeader, HibernationTypeCard, HibernationWizard, HistoryLog, MultiTimezone, NotificationSettings, ScheduleBuilder, ScheduleCalendar, ScheduleModal, ScheduleTemplates, StatusBanner, TimeBasedRules, UnifiedScheduleGrid, ValidationPanel, ClusterOverview, CostAnalytics, AdvancedConfiguration, ConflictDetectionModal, index.js |
+| **Hibernation Components Active** | 28 | HibernationDashboardNew.jsx.bak (exported as HibernationDashboard via index.js), **DashboardTab** (NEW — Strategies master-detail view), HibernationScheduler, ScheduleMatrix, StrategySelector, AuditHistory, EmergencyControls, CostAnalyticsDashboard, ExecutionHistory, HibernationHeader, HibernationTypeCard, HibernationWizard, HistoryLog, MultiTimezone, NotificationSettings, ScheduleBuilder, ScheduleCalendar, ScheduleModal, ScheduleTemplates, StatusBanner, TimeBasedRules, UnifiedScheduleGrid, ValidationPanel, ClusterOverview, CostAnalytics, AdvancedConfiguration, ConflictDetectionModal, index.js. **DELETED**: HibernationManager, SchedulesTab, HistoryTab |
 | **Right-Sizing Components** | 1 | Single consolidated RightSizingDashboard.jsx (50KB) |
 | **Teams Components Active** | 3 (NEW) + 3 legacy | MembersTab, TeamsTab, RolesPoliciesTopTab (NEW in components/teams/) + TeamManagement, TeamGovernance, MemberPermissionsModal (legacy in settings/) |
 | **Transfer Components** | 2 | TransferAnalysis, TransferHealthCard |
@@ -1364,9 +1380,10 @@ These components follow IDENTICAL patterns and should be consolidated into gener
 ## END OF DOCUMENT
 
 **Document Status:** ✅ COMPLETE & VERIFIED
-**Last Audit:** 2026-02-22 17:15 IST
+**Last Audit:** 2026-02-22 23:54 IST
 **Verification Method:** Filesystem scan across all 22 component dirs + `App.js` route cross-reference + backend `__init__.py` router audit
-**Accuracy Level:** 100% — All ~130 component files + 34 backend route files verified
+**Accuracy Level:** 100% — All ~128 component files + 34 backend route files verified
+**Recent Changes:** HibernationManager/SchedulesTab/HistoryTab deleted, DashboardTab added, routing changed to /:clusterId? with query-param tabs, transfer_routes prefix reverted to /transfer
 **System Implementation:** 100% Real Data (no mock fallbacks remaining)
 **Maintainer:** Development Team
 
