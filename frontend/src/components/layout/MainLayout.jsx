@@ -65,8 +65,9 @@ const routeMap = {
   "atharvaai-heatmap": "/atharva-ai?tab=heatmap",
   "atharvaai-rebalancing": "/atharva-ai?tab=rebalancing",
   "rightsizing": "/right-sizing",
-  "rs-manual": "/right-sizing?tab=manual",
   "rs-karpenter": "/right-sizing?tab=karpenter",
+  "rs-config": "/right-sizing?tab=config",
+  "rs-history": "/right-sizing?tab=history",
   "rs-savings": "/right-sizing?tab=savings",
   "resource-hygiene": "/hygiene",
   "hibernation": "/hibernation",
@@ -130,10 +131,10 @@ const NAV_STRUCTURE = [
         badge: null,
         description: "Manual & Karpenter auto-optimization",
         sub: [
-          { id: "karpenter", label: "Karpenter" },
-          { id: "configuration", label: "Configuration" },
-          { id: "history", label: "Optimization History" },
-          { id: "savings", label: "Savings Tracker" }
+          { id: "rs-karpenter", label: "Karpenter" },
+          { id: "rs-config", label: "Configuration" },
+          { id: "rs-history", label: "Optimization History" },
+          { id: "rs-savings", label: "Savings Tracker" }
         ]
       },
       {

@@ -1,26 +1,27 @@
 import React, { useState, useEffect, useRef } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import { useClusterStore } from '../../store/useStore';
 import { api, optimizationAPI, karpenterAPI } from '../../services/api';
 import toast from 'react-hot-toast';
 
 // ─── PALETTE ─────────────────────────────────────────────────────────────────
 const C = {
-  bg:           "#f5f6f8",
-  surface:      "#ffffff",
+  bg: "#f5f6f8",
+  surface: "#ffffff",
   surfaceHover: "#fafafa",
-  border:       "#e4e6ea",
-  borderHover:  "#c8cdd6",
-  text:         "#111318",
-  muted:        "#5a6272",
-  subtle:       "#98a1b0",
-  accent:       "#2563eb",
-  accentLight:  "#eff6ff",
-  green:  "#16a34a", greenBg:  "#f0fdf4", greenBorder:  "#bbf7d0",
-  amber:  "#b45309", amberBg:  "#fffbeb", amberBorder:  "#fde68a",
-  red:    "#dc2626", redBg:    "#fef2f2", redBorder:    "#fecaca",
+  border: "#e4e6ea",
+  borderHover: "#c8cdd6",
+  text: "#111318",
+  muted: "#5a6272",
+  subtle: "#98a1b0",
+  accent: "#2563eb",
+  accentLight: "#eff6ff",
+  green: "#16a34a", greenBg: "#f0fdf4", greenBorder: "#bbf7d0",
+  amber: "#b45309", amberBg: "#fffbeb", amberBorder: "#fde68a",
+  red: "#dc2626", redBg: "#fef2f2", redBorder: "#fecaca",
   purple: "#6d28d9", purpleBg: "#f5f3ff", purpleBorder: "#ddd6fe",
-  teal:   "#0f766e", tealBg:   "#f0fdfa", tealBorder:   "#99f6e4",
-  blue:   "#2563eb", blueBg:   "#eff6ff", blueBorder:   "#bfdbfe",
+  teal: "#0f766e", tealBg: "#f0fdfa", tealBorder: "#99f6e4",
+  blue: "#2563eb", blueBg: "#eff6ff", blueBorder: "#bfdbfe",
 };
 
 const utilColor = (p) => p >= 85 ? C.red : p >= 65 ? C.amber : p >= 30 ? C.green : C.accent;
@@ -34,25 +35,25 @@ const Svg = ({ s = 14, stroke = C.muted, children, style = {} }) => (
   </svg>
 );
 const Icons = {
-  Eye:      (p) => <Svg {...p}><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></Svg>,
-  Zap:      (p) => <Svg {...p}><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></Svg>,
-  Bar:      (p) => <Svg {...p}><path d="M18 20V10M12 20V4M6 20v-6"/></Svg>,
-  Refresh:  (p) => <Svg {...p}><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></Svg>,
-  Settings: (p) => <Svg {...p}><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></Svg>,
-  Check:    (p) => <Svg {...p}><path d="M20 6L9 17l-5-5"/></Svg>,
-  X:        (p) => <Svg {...p}><path d="M18 6L6 18M6 6l12 12"/></Svg>,
-  Alert:    (p) => <Svg {...p}><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><path d="M12 9v4M12 17h.01"/></Svg>,
-  Arrow:    (p) => <Svg {...p}><path d="M5 12h14M12 5l7 7-7 7"/></Svg>,
-  Download: (p) => <Svg {...p}><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><path d="M7 10l5 5 5-5M12 15V3"/></Svg>,
-  Pause:    (p) => <Svg {...p}><path d="M6 4h4v16H6zM14 4h4v16h-4z"/></Svg>,
-  ChevD:    (p) => <Svg {...p}><path d="M6 9l6 6 6-6"/></Svg>,
-  ChevR:    (p) => <Svg {...p}><path d="M9 18l6-6-6-6"/></Svg>,
-  History:  (p) => <Svg {...p}><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></Svg>,
-  Server:   (p) => <Svg {...p}><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></Svg>,
-  Layers:   (p) => <Svg {...p}><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></Svg>,
-  TrendUp:  (p) => <Svg {...p}><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></Svg>,
-  Box:      (p) => <Svg {...p}><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/></Svg>,
-  Cpu:      (p) => <Svg {...p}><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></Svg>,
+  Eye: (p) => <Svg {...p}><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></Svg>,
+  Zap: (p) => <Svg {...p}><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" /></Svg>,
+  Bar: (p) => <Svg {...p}><path d="M18 20V10M12 20V4M6 20v-6" /></Svg>,
+  Refresh: (p) => <Svg {...p}><path d="M23 4v6h-6" /><path d="M1 20v-6h6" /><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15" /></Svg>,
+  Settings: (p) => <Svg {...p}><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z" /></Svg>,
+  Check: (p) => <Svg {...p}><path d="M20 6L9 17l-5-5" /></Svg>,
+  X: (p) => <Svg {...p}><path d="M18 6L6 18M6 6l12 12" /></Svg>,
+  Alert: (p) => <Svg {...p}><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" /><path d="M12 9v4M12 17h.01" /></Svg>,
+  Arrow: (p) => <Svg {...p}><path d="M5 12h14M12 5l7 7-7 7" /></Svg>,
+  Download: (p) => <Svg {...p}><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" /><path d="M7 10l5 5 5-5M12 15V3" /></Svg>,
+  Pause: (p) => <Svg {...p}><path d="M6 4h4v16H6zM14 4h4v16h-4z" /></Svg>,
+  ChevD: (p) => <Svg {...p}><path d="M6 9l6 6 6-6" /></Svg>,
+  ChevR: (p) => <Svg {...p}><path d="M9 18l6-6-6-6" /></Svg>,
+  History: (p) => <Svg {...p}><circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" /></Svg>,
+  Server: (p) => <Svg {...p}><rect x="2" y="2" width="20" height="8" rx="2" /><rect x="2" y="14" width="20" height="8" rx="2" /><line x1="6" y1="6" x2="6.01" y2="6" /><line x1="6" y1="18" x2="6.01" y2="18" /></Svg>,
+  Layers: (p) => <Svg {...p}><polygon points="12 2 2 7 12 12 22 7 12 2" /><polyline points="2 17 12 22 22 17" /><polyline points="2 12 12 17 22 12" /></Svg>,
+  TrendUp: (p) => <Svg {...p}><polyline points="23 6 13.5 15.5 8.5 10.5 1 18" /><polyline points="17 6 23 6 23 12" /></Svg>,
+  Box: (p) => <Svg {...p}><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z" /></Svg>,
+  Cpu: (p) => <Svg {...p}><rect x="4" y="4" width="16" height="16" rx="2" /><rect x="9" y="9" width="6" height="6" /><line x1="9" y1="1" x2="9" y2="4" /><line x1="15" y1="1" x2="15" y2="4" /><line x1="9" y1="20" x2="9" y2="23" /><line x1="15" y1="20" x2="15" y2="23" /><line x1="20" y1="9" x2="23" y2="9" /><line x1="20" y1="14" x2="23" y2="14" /><line x1="1" y1="9" x2="4" y2="9" /><line x1="1" y1="14" x2="4" y2="14" /></Svg>,
 };
 
 // ─── PRIMITIVES ───────────────────────────────────────────────────────────────
@@ -115,12 +116,12 @@ const ScoreRing = ({ score, size = 60, max = 10 }) => {
   const color = score >= 7 ? C.green : score >= 5 ? C.amber : C.red;
   return (
     <svg width={size} height={size} style={{ display: "block", flexShrink: 0 }}>
-      <circle cx={size/2} cy={size/2} r={r} fill="none" stroke="#f0f0f0" strokeWidth={6} />
-      <circle cx={size/2} cy={size/2} r={r} fill="none" stroke={color} strokeWidth={6}
+      <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="#f0f0f0" strokeWidth={6} />
+      <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={color} strokeWidth={6}
         strokeDasharray={`${dash} ${circ}`} strokeLinecap="round"
-        transform={`rotate(-90 ${size/2} ${size/2})`}
+        transform={`rotate(-90 ${size / 2} ${size / 2})`}
         style={{ transition: "stroke-dasharray 0.6s cubic-bezier(.4,0,.2,1)" }} />
-      <text x={size/2} y={size/2 + 5} textAnchor="middle"
+      <text x={size / 2} y={size / 2 + 5} textAnchor="middle"
         style={{ fontSize: 13, fontWeight: 800, fill: C.text, fontFamily: "inherit" }}>
         {score.toFixed(1)}
       </text>
@@ -158,12 +159,12 @@ const Chip = ({ children, active, onClick }) => (
 const Btn = ({ children, onClick, variant = "default", size = "md", disabled = false }) => {
   const vs = {
     default: { background: C.surface, border: `1px solid ${C.border}`, color: C.muted },
-    accent:  { background: C.accent, border: `1px solid ${C.accent}`, color: "#fff" },
-    purple:  { background: C.purple, border: `1px solid ${C.purple}`, color: "#fff" },
-    dark:    { background: "#0f1117", border: "1px solid #0f1117", color: "#fff" },
-    ghost:   { background: "transparent", border: `1px solid ${C.border}`, color: C.muted },
-    green:   { background: C.green, border: `1px solid ${C.green}`, color: "#fff" },
-    danger:  { background: C.red, border: `1px solid ${C.red}`, color: "#fff" },
+    accent: { background: C.accent, border: `1px solid ${C.accent}`, color: "#fff" },
+    purple: { background: C.purple, border: `1px solid ${C.purple}`, color: "#fff" },
+    dark: { background: "#0f1117", border: "1px solid #0f1117", color: "#fff" },
+    ghost: { background: "transparent", border: `1px solid ${C.border}`, color: C.muted },
+    green: { background: C.green, border: `1px solid ${C.green}`, color: "#fff" },
+    danger: { background: C.red, border: `1px solid ${C.red}`, color: "#fff" },
   };
   const ss = {
     sm: { padding: "5px 11px", fontSize: 11 },
@@ -198,41 +199,52 @@ const Toggle = ({ on, onChange, color = C.purple }) => (
   </button>
 );
 
-const TH = { padding: "8px 12px", textAlign: "left", fontSize: 10, fontWeight: 700,
-  color: C.subtle, letterSpacing: "0.08em", textTransform: "uppercase", whiteSpace: "nowrap" };
+const TH = {
+  padding: "8px 12px", textAlign: "left", fontSize: 10, fontWeight: 700,
+  color: C.subtle, letterSpacing: "0.08em", textTransform: "uppercase", whiteSpace: "nowrap"
+};
 const TD = { padding: "10px 12px", verticalAlign: "middle" };
 
 // ─── DATA ─────────────────────────────────────────────────────────────────────
 const CLUSTERS = [
-  { id: "prod-cluster",    name: "prod-cluster",    region: "us-east-1", nodes: 24, agentVersion: "v0.36.0", status: "healthy", score: 8.2, spot: 72,  savings: 1840 },
-  { id: "data-cluster",   name: "data-cluster",    region: "us-west-2", nodes: 12, agentVersion: "v0.36.0", status: "healthy", score: 7.1, spot: 58,  savings: 340  },
-  { id: "staging-cluster",name: "staging-cluster", region: "eu-west-1", nodes: 8,  agentVersion: "v0.35.2", status: "warning", score: 6.8, spot: 85,  savings: 160  },
+  { id: "prod-cluster", name: "prod-cluster", region: "us-east-1", nodes: 24, agentVersion: "v0.36.0", status: "healthy", score: 8.2, spot: 72, savings: 1840 },
+  { id: "data-cluster", name: "data-cluster", region: "us-west-2", nodes: 12, agentVersion: "v0.36.0", status: "healthy", score: 7.1, spot: 58, savings: 340 },
+  { id: "staging-cluster", name: "staging-cluster", region: "eu-west-1", nodes: 8, agentVersion: "v0.35.2", status: "warning", score: 6.8, spot: 85, savings: 160 },
 ];
 
 const NODES = [
-  { id:"i-0a1b2c3d", name:"web-prod-01",    cluster:"prod-cluster",    cur:"m5.xlarge",  rec:"m5.large",    curCpu:2,  recCpu:1,  curMem:16, recMem:8,  cpuAvg:34, cpuPeak:61, memAvg:28, memPeak:52, savings:92,  conf:"High",   pool:"Healthy", autoMode:false, pods:[{name:"nginx",cpu:0.4,mem:1.2},{name:"app-svc",cpu:0.8,mem:3.1},{name:"cache",cpu:0.2,mem:0.9}] },
-  { id:"i-0e4f5g6h", name:"worker-03",      cluster:"prod-cluster",    cur:"c5.2xlarge", rec:"c5.xlarge",   curCpu:4,  recCpu:2,  curMem:8,  recMem:4,  cpuAvg:22, cpuPeak:48, memAvg:18, memPeak:41, savings:137, conf:"High",   pool:"Healthy", autoMode:false, pods:[{name:"worker-a",cpu:1.1,mem:1.8},{name:"worker-b",cpu:0.9,mem:1.4},{name:"queue",cpu:0.3,mem:0.5}] },
-  { id:"i-0i7j8k9l", name:"batch-proc-02",  cluster:"staging-cluster", cur:"r5.2xlarge", rec:"r5.xlarge",   curCpu:4,  recCpu:2,  curMem:64, recMem:32, cpuAvg:41, cpuPeak:72, memAvg:54, memPeak:78, savings:215, conf:"Medium", pool:"Risky",   autoMode:false, pods:[{name:"spark-drv",cpu:1.8,mem:22},{name:"spark-ex",cpu:1.2,mem:18},{name:"monitor",cpu:0.1,mem:0.8}] },
-  { id:"i-0m1n2o3p", name:"api-gateway-01", cluster:"prod-cluster",    cur:"t3.xlarge",  rec:"t3.medium",   curCpu:2,  recCpu:1,  curMem:8,  recMem:4,  cpuAvg:18, cpuPeak:39, memAvg:22, memPeak:44, savings:48,  conf:"High",   pool:"Healthy", autoMode:false, pods:[{name:"gateway",cpu:0.5,mem:1.4},{name:"ratelimit",cpu:0.2,mem:0.6}] },
-  { id:"i-0q4r5s6t", name:"data-ingress",   cluster:"data-cluster",    cur:"m5.4xlarge", rec:"m5.2xlarge",  curCpu:8,  recCpu:4,  curMem:32, recMem:16, cpuAvg:29, cpuPeak:55, memAvg:31, memPeak:57, savings:384, conf:"High",   pool:"Healthy", autoMode:false, pods:[{name:"kafka-c",cpu:1.2,mem:4.2},{name:"etl",cpu:0.8,mem:3.1},{name:"s3-sync",cpu:0.4,mem:1.8}] },
-  { id:"i-0u7v8w9x", name:"ml-trainer",     cluster:"data-cluster",    cur:"c5.9xlarge", rec:"c5.4xlarge",  curCpu:18, recCpu:8,  curMem:72, recMem:32, cpuAvg:61, cpuPeak:82, memAvg:44, memPeak:69, savings:520, conf:"Low",    pool:"Unknown", autoMode:false, pods:[{name:"trainer",cpu:7.2,mem:28},{name:"eval",cpu:2.1,mem:9},{name:"data-ld",cpu:0.8,mem:3}] },
+  { id: "i-0a1b2c3d", name: "web-prod-01", cluster: "prod-cluster", cur: "m5.xlarge", rec: "m5.large", curCpu: 2, recCpu: 1, curMem: 16, recMem: 8, cpuAvg: 34, cpuPeak: 61, memAvg: 28, memPeak: 52, savings: 92, conf: "High", pool: "Healthy", autoMode: false, pods: [{ name: "nginx", cpu: 0.4, mem: 1.2 }, { name: "app-svc", cpu: 0.8, mem: 3.1 }, { name: "cache", cpu: 0.2, mem: 0.9 }] },
+  { id: "i-0e4f5g6h", name: "worker-03", cluster: "prod-cluster", cur: "c5.2xlarge", rec: "c5.xlarge", curCpu: 4, recCpu: 2, curMem: 8, recMem: 4, cpuAvg: 22, cpuPeak: 48, memAvg: 18, memPeak: 41, savings: 137, conf: "High", pool: "Healthy", autoMode: false, pods: [{ name: "worker-a", cpu: 1.1, mem: 1.8 }, { name: "worker-b", cpu: 0.9, mem: 1.4 }, { name: "queue", cpu: 0.3, mem: 0.5 }] },
+  { id: "i-0i7j8k9l", name: "batch-proc-02", cluster: "staging-cluster", cur: "r5.2xlarge", rec: "r5.xlarge", curCpu: 4, recCpu: 2, curMem: 64, recMem: 32, cpuAvg: 41, cpuPeak: 72, memAvg: 54, memPeak: 78, savings: 215, conf: "Medium", pool: "Risky", autoMode: false, pods: [{ name: "spark-drv", cpu: 1.8, mem: 22 }, { name: "spark-ex", cpu: 1.2, mem: 18 }, { name: "monitor", cpu: 0.1, mem: 0.8 }] },
+  { id: "i-0m1n2o3p", name: "api-gateway-01", cluster: "prod-cluster", cur: "t3.xlarge", rec: "t3.medium", curCpu: 2, recCpu: 1, curMem: 8, recMem: 4, cpuAvg: 18, cpuPeak: 39, memAvg: 22, memPeak: 44, savings: 48, conf: "High", pool: "Healthy", autoMode: false, pods: [{ name: "gateway", cpu: 0.5, mem: 1.4 }, { name: "ratelimit", cpu: 0.2, mem: 0.6 }] },
+  { id: "i-0q4r5s6t", name: "data-ingress", cluster: "data-cluster", cur: "m5.4xlarge", rec: "m5.2xlarge", curCpu: 8, recCpu: 4, curMem: 32, recMem: 16, cpuAvg: 29, cpuPeak: 55, memAvg: 31, memPeak: 57, savings: 384, conf: "High", pool: "Healthy", autoMode: false, pods: [{ name: "kafka-c", cpu: 1.2, mem: 4.2 }, { name: "etl", cpu: 0.8, mem: 3.1 }, { name: "s3-sync", cpu: 0.4, mem: 1.8 }] },
+  { id: "i-0u7v8w9x", name: "ml-trainer", cluster: "data-cluster", cur: "c5.9xlarge", rec: "c5.4xlarge", curCpu: 18, recCpu: 8, curMem: 72, recMem: 32, cpuAvg: 61, cpuPeak: 82, memAvg: 44, memPeak: 69, savings: 520, conf: "Low", pool: "Unknown", autoMode: false, pods: [{ name: "trainer", cpu: 7.2, mem: 28 }, { name: "eval", cpu: 2.1, mem: 9 }, { name: "data-ld", cpu: 0.8, mem: 3 }] },
 ];
 
 const HISTORY = [
-  { id:1, date:"Feb 20, 2026", node:"web-prod-01",    cluster:"prod-cluster",    from:"m5.xlarge",  to:"m5.large",    mode:"Manual", savings:92,  cpuBefore:34, cpuAfter:51, memBefore:28, memAfter:42, ok:true,  binBefore:[{name:"nginx",pct:20},{name:"app-svc",pct:40},{name:"cache",pct:10},{name:"free",pct:30}], binAfter:[{name:"nginx",pct:40},{name:"app-svc",pct:80},{name:"cache",pct:20}] },
-  { id:2, date:"Feb 18, 2026", node:"worker-04",      cluster:"prod-cluster",    from:"c5.2xlarge", to:"c5.xlarge",   mode:"Auto",   savings:137, cpuBefore:22, cpuAfter:44, memBefore:18, memAfter:36, ok:true,  binBefore:[{name:"worker-a",pct:28},{name:"worker-b",pct:23},{name:"queue",pct:8},{name:"free",pct:41}], binAfter:[{name:"worker-a",pct:56},{name:"worker-b",pct:46},{name:"queue",pct:16}] },
-  { id:3, date:"Feb 15, 2026", node:"api-gateway-02", cluster:"prod-cluster",    from:"t3.xlarge",  to:"t3.medium",   mode:"Manual", savings:48,  cpuBefore:18, cpuAfter:36, memBefore:22, memAfter:44, ok:true,  binBefore:[{name:"gateway",pct:25},{name:"ratelimit",pct:10},{name:"free",pct:65}], binAfter:[{name:"gateway",pct:50},{name:"ratelimit",pct:20}] },
-  { id:4, date:"Feb 12, 2026", node:"data-ingress",   cluster:"data-cluster",    from:"m5.4xlarge", to:"m5.2xlarge",  mode:"Auto",   savings:384, cpuBefore:29, cpuAfter:58, memBefore:31, memAfter:62, ok:true,  binBefore:[{name:"kafka-c",pct:15},{name:"etl",pct:10},{name:"s3-sync",pct:5},{name:"free",pct:70}], binAfter:[{name:"kafka-c",pct:30},{name:"etl",pct:20},{name:"s3-sync",pct:10}] },
-  { id:5, date:"Feb 10, 2026", node:"cache-01",       cluster:"staging-cluster", from:"r5.xlarge",  to:"r5.large",    mode:"Auto",   savings:110, cpuBefore:41, cpuAfter:68, memBefore:54, memAfter:78, ok:false, binBefore:[{name:"redis",pct:41},{name:"monitor",pct:5},{name:"free",pct:54}], binAfter:[{name:"redis",pct:68},{name:"monitor",pct:10}] },
+  { id: 1, date: "Feb 20, 2026", node: "web-prod-01", cluster: "prod-cluster", from: "m5.xlarge", to: "m5.large", mode: "Manual", savings: 92, cpuBefore: 34, cpuAfter: 51, memBefore: 28, memAfter: 42, ok: true, binBefore: [{ name: "nginx", pct: 20 }, { name: "app-svc", pct: 40 }, { name: "cache", pct: 10 }, { name: "free", pct: 30 }], binAfter: [{ name: "nginx", pct: 40 }, { name: "app-svc", pct: 80 }, { name: "cache", pct: 20 }] },
+  { id: 2, date: "Feb 18, 2026", node: "worker-04", cluster: "prod-cluster", from: "c5.2xlarge", to: "c5.xlarge", mode: "Auto", savings: 137, cpuBefore: 22, cpuAfter: 44, memBefore: 18, memAfter: 36, ok: true, binBefore: [{ name: "worker-a", pct: 28 }, { name: "worker-b", pct: 23 }, { name: "queue", pct: 8 }, { name: "free", pct: 41 }], binAfter: [{ name: "worker-a", pct: 56 }, { name: "worker-b", pct: 46 }, { name: "queue", pct: 16 }] },
+  { id: 3, date: "Feb 15, 2026", node: "api-gateway-02", cluster: "prod-cluster", from: "t3.xlarge", to: "t3.medium", mode: "Manual", savings: 48, cpuBefore: 18, cpuAfter: 36, memBefore: 22, memAfter: 44, ok: true, binBefore: [{ name: "gateway", pct: 25 }, { name: "ratelimit", pct: 10 }, { name: "free", pct: 65 }], binAfter: [{ name: "gateway", pct: 50 }, { name: "ratelimit", pct: 20 }] },
+  { id: 4, date: "Feb 12, 2026", node: "data-ingress", cluster: "data-cluster", from: "m5.4xlarge", to: "m5.2xlarge", mode: "Auto", savings: 384, cpuBefore: 29, cpuAfter: 58, memBefore: 31, memAfter: 62, ok: true, binBefore: [{ name: "kafka-c", pct: 15 }, { name: "etl", pct: 10 }, { name: "s3-sync", pct: 5 }, { name: "free", pct: 70 }], binAfter: [{ name: "kafka-c", pct: 30 }, { name: "etl", pct: 20 }, { name: "s3-sync", pct: 10 }] },
+  { id: 5, date: "Feb 10, 2026", node: "cache-01", cluster: "staging-cluster", from: "r5.xlarge", to: "r5.large", mode: "Auto", savings: 110, cpuBefore: 41, cpuAfter: 68, memBefore: 54, memAfter: 78, ok: false, binBefore: [{ name: "redis", pct: 41 }, { name: "monitor", pct: 5 }, { name: "free", pct: 54 }], binAfter: [{ name: "redis", pct: 68 }, { name: "monitor", pct: 10 }] },
 ];
 
-const POD_COLORS = ["#3b82f6","#8b5cf6","#10b981","#f59e0b","#ef4444","#06b6d4","#84cc16"];
+const POD_COLORS = ["#3b82f6", "#8b5cf6", "#10b981", "#f59e0b", "#ef4444", "#06b6d4", "#84cc16"];
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ROOT
 // ═══════════════════════════════════════════════════════════════════════════════
 export default function RightSizingDashboard() {
-  const [nav, setNav] = useState("karpenter");
+  const location = useLocation();
+  const navigate = useNavigate();
+  const queryParams = new URLSearchParams(location.search);
+  const tabFromUrl = queryParams.get("tab") || "karpenter";
+
+  const [nav, setNav] = useState(tabFromUrl);
+
+  useEffect(() => {
+    if (tabFromUrl !== nav) setNav(tabFromUrl);
+  }, [tabFromUrl]);
 
   // ── Real API Data ──
   const { selectedCluster } = useClusterStore();
@@ -250,13 +262,6 @@ export default function RightSizingDashboard() {
       .catch(err => { console.error('Failed to load recommendations', err); setApiRecs([]); })
       .finally(() => setApiLoading(false));
   }, [selectedCluster]);
-
-  const navItems = [
-    { id: "karpenter",   label: "Karpenter",         Icon: Icons.Zap     },
-    { id: "config",      label: "Configuration",      Icon: Icons.Settings },
-    { id: "history",     label: "Optimization History", Icon: Icons.History },
-    { id: "savings",     label: "Savings Tracker",    Icon: Icons.Bar     },
-  ];
 
   return (
     <div style={{ minHeight: "100vh", background: C.bg, fontFamily: "'DM Sans', system-ui, sans-serif", color: C.text }}>
@@ -277,26 +282,10 @@ export default function RightSizingDashboard() {
             <div style={{ fontSize: 9, color: C.subtle, marginTop: -1 }}>Right-Sizing Platform</div>
           </div>
         </div>
-        {/* Nav tabs */}
-        <div style={{ display: "flex", flex: 1 }}>
-          {navItems.map(({ id, label, Icon }) => {
-            const active = nav === id;
-            return (
-              <button key={id} onClick={() => setNav(id)} style={{
-                display: "flex", alignItems: "center", gap: 7,
-                padding: "0 18px", fontSize: 12,
-                fontWeight: active ? 600 : 400,
-                color: active ? C.text : C.muted,
-                background: "transparent", border: "none",
-                borderBottom: `2px solid ${active ? C.accent : "transparent"}`,
-                cursor: "pointer", fontFamily: "inherit", transition: "all 0.13s",
-              }}>
-                <Icon s={13} stroke={active ? C.accent : C.subtle} />
-                {label}
-              </button>
-            );
-          })}
-        </div>
+
+        {/* Spacer */}
+        <div style={{ display: "flex", flex: 1 }} />
+
         {/* Right actions */}
         <div style={{ display: "flex", alignItems: "center", gap: 8, paddingLeft: 16, borderLeft: `1px solid ${C.border}` }}>
           <Btn size="sm"><Icons.Refresh s={12} stroke={C.muted} /> Refresh</Btn>
@@ -310,9 +299,9 @@ export default function RightSizingDashboard() {
       {/* ── Content ── */}
       <div style={{ padding: "22px 24px", maxWidth: 1340, margin: "0 auto" }}>
         {nav === "karpenter" && <KarpenterSection />}
-        {nav === "config"    && <ConfigSection />}
-        {nav === "history"   && <HistorySection />}
-        {nav === "savings"   && <SavingsTracker />}
+        {nav === "config" && <ConfigSection />}
+        {nav === "history" && <HistorySection />}
+        {nav === "savings" && <SavingsTracker />}
       </div>
     </div>
   );
@@ -418,13 +407,13 @@ function KarpenterSection() {
             <span style={{ fontSize: 10, fontWeight: 500, color: C.muted }}>{filteredNodes.length} nodes</span>
           </div>
           <div style={{ flex: 1 }} />
-          {[["all","All"],["high","High Conf"],["risky","Risky / Unknown"]].map(([id, label]) => (
+          {[["all", "All"], ["high", "High Conf"], ["risky", "Risky / Unknown"]].map(([id, label]) => (
             <Chip key={id} active={filter === id} onClick={() => setFilter(id)}>{label}</Chip>
           ))}
           <div style={{ display: "flex", alignItems: "center", gap: 6, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: "5px 10px" }}>
             <svg width={11} height={11} viewBox="0 0 16 16" fill="none">
-              <circle cx="6.5" cy="6.5" r="5" stroke={C.subtle} strokeWidth="1.5"/>
-              <path d="M10.5 10.5L14 14" stroke={C.subtle} strokeWidth="1.5" strokeLinecap="round"/>
+              <circle cx="6.5" cy="6.5" r="5" stroke={C.subtle} strokeWidth="1.5" />
+              <path d="M10.5 10.5L14 14" stroke={C.subtle} strokeWidth="1.5" strokeLinecap="round" />
             </svg>
             <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search nodes..."
               style={{ border: "none", outline: "none", background: "transparent", fontSize: 12, color: C.text, width: 130, fontFamily: "inherit" }} />
@@ -437,7 +426,7 @@ function KarpenterSection() {
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
               <tr style={{ background: "#fafafa", borderBottom: `1px solid ${C.border}` }}>
-                {["Node","Cluster","Current → Recommended","vCPU","Memory","CPU Avg","Mem Avg","Conf","Pool","Savings/mo","Auto",""].map((h, i) => (
+                {["Node", "Cluster", "Current → Recommended", "vCPU", "Memory", "CPU Avg", "Mem Avg", "Conf", "Pool", "Savings/mo", "Auto", ""].map((h, i) => (
                   <th key={i} style={TH}>{h}</th>
                 ))}
               </tr>
@@ -549,16 +538,16 @@ function KarpenterSection() {
 
 // ─── NODE DETAIL PANEL ────────────────────────────────────────────────────────
 function NodeDetail({ node }) {
-  const cpu14d  = [28,32,35,29,31,34,33,38,36,34,32,30,34, node.cpuAvg];
-  const mem14d  = [24,26,28,25,27,29,28,31,30,27,26,25,28, node.memAvg];
+  const cpu14d = [28, 32, 35, 29, 31, 34, 33, 38, 36, 34, 32, 30, 34, node.cpuAvg];
+  const mem14d = [24, 26, 28, 25, 27, 29, 28, 31, 30, 27, 26, 25, 28, node.memAvg];
   const totalPodCpu = node.pods.reduce((s, p) => s + p.cpu, 0);
   const totalPodMem = node.pods.reduce((s, p) => s + p.mem, 0);
 
   // Bin packing: how pods fill current vs recommended node
-  const curCpuPct  = (totalPodCpu / node.curCpu)  * 100;
-  const recCpuPct  = (totalPodCpu / node.recCpu)  * 100;
-  const curMemPct  = (totalPodMem / node.curMem)  * 100;
-  const recMemPct  = (totalPodMem / node.recMem)  * 100;
+  const curCpuPct = (totalPodCpu / node.curCpu) * 100;
+  const recCpuPct = (totalPodCpu / node.recCpu) * 100;
+  const curMemPct = (totalPodMem / node.curMem) * 100;
+  const recMemPct = (totalPodMem / node.recMem) * 100;
 
   return (
     <div style={{ marginTop: 8, background: "#fafafa", border: `1px solid ${C.border}`, borderRadius: 10, padding: "16px 18px" }}>
@@ -697,7 +686,7 @@ function NodeDetail({ node }) {
                 </div>
               </div>
               <div style={{ fontSize: 9, color: C.muted, marginTop: 3 }}>
-                ↓ {((1 - item.rec/item.cur)*100).toFixed(0)}% reduction
+                ↓ {((1 - item.rec / item.cur) * 100).toFixed(0)}% reduction
               </div>
             </div>
           ))}
@@ -751,8 +740,8 @@ function ConfigSection() {
   const setCfg = (key, val) => setClusterConfigs(p => ({ ...p, [sel]: { ...p[sel], [key]: val } }));
 
   const strategies = [
-    { id: "balanced",    label: "Balanced",       desc: "Even spread across AZs & families" },
-    { id: "cost-first",  label: "Cost-First",     desc: "Maximize spot usage, bin-pack tightly" },
+    { id: "balanced", label: "Balanced", desc: "Even spread across AZs & families" },
+    { id: "cost-first", label: "Cost-First", desc: "Maximize spot usage, bin-pack tightly" },
     { id: "reliability", label: "Reliability-First", desc: "Prefer on-demand, conservative changes" },
   ];
 
@@ -849,10 +838,10 @@ function ConfigSection() {
             </div>
             <div style={{ padding: "14px 16px", display: "flex", flexDirection: "column", gap: 0 }}>
               {[
-                { key: "autoApply",           label: "Auto-Apply Recommendations",         desc: "Changes are applied without manual approval" },
+                { key: "autoApply", label: "Auto-Apply Recommendations", desc: "Changes are applied without manual approval" },
                 { key: "onlyTemplateFamilies", label: "Restrict to Template Instance Families", desc: "Only recommend instances in approved families" },
-                { key: "dryRunFirst",         label: "Dry-Run Before Applying",             desc: "Simulate change for 30 min before committing" },
-                { key: "alertOnRevert",       label: "Alert on Auto-Revert",                desc: "Notify when an applied change is rolled back" },
+                { key: "dryRunFirst", label: "Dry-Run Before Applying", desc: "Simulate change for 30 min before committing" },
+                { key: "alertOnRevert", label: "Alert on Auto-Revert", desc: "Notify when an applied change is rolled back" },
               ].map((f, i, arr) => (
                 <div key={f.key} style={{
                   display: "flex", alignItems: "flex-start", justifyContent: "space-between",
@@ -875,7 +864,7 @@ function ConfigSection() {
             </div>
             <div style={{ padding: "14px 16px" }}>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                {["m5","m6i","c5","c6i","r5","r6i","t3","t3a","x2i","inf2"].map(fam => {
+                {["m5", "m6i", "c5", "c6i", "r5", "r6i", "t3", "t3a", "x2i", "inf2"].map(fam => {
                   const active = cfg.instanceFamilies.includes(fam);
                   return (
                     <button key={fam} onClick={() => setCfg("instanceFamilies", active
@@ -913,14 +902,14 @@ function ConfigSection() {
 // OPTIMIZATION HISTORY SECTION
 // ═══════════════════════════════════════════════════════════════════════════════
 function HistorySection() {
-  const [filter, setFilter]     = useState("all");
+  const [filter, setFilter] = useState("all");
   const [expanded, setExpanded] = useState(null);
 
   const filtered = HISTORY.filter(h => {
     if (filter === "manual" && h.mode !== "Manual") return false;
-    if (filter === "auto"   && h.mode !== "Auto")   return false;
-    if (filter === "ok"     && !h.ok)               return false;
-    if (filter === "failed" && h.ok)                return false;
+    if (filter === "auto" && h.mode !== "Auto") return false;
+    if (filter === "ok" && !h.ok) return false;
+    if (filter === "failed" && h.ok) return false;
     return true;
   });
 
@@ -935,15 +924,15 @@ function HistorySection() {
 
       {/* KPI */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10, marginBottom: 16 }}>
-        <MetricBox label="Total Realized"  value={`$${totalSaved.toLocaleString()}`} sub="All time" accentBorder={C.green} />
-        <MetricBox label="Changes Applied" value={`${HISTORY.filter(h=>h.ok).length}`} sub="Successful" accentBorder={C.accent} />
-        <MetricBox label="Reverted"        value={`${HISTORY.filter(h=>!h.ok).length}`} sub="Auto-rolled back" accentBorder={C.red} />
-        <MetricBox label="Auto-Applied"    value={`${HISTORY.filter(h=>h.mode==="Auto").length}`} sub="By Karpenter" accentBorder={C.purple} />
+        <MetricBox label="Total Realized" value={`$${totalSaved.toLocaleString()}`} sub="All time" accentBorder={C.green} />
+        <MetricBox label="Changes Applied" value={`${HISTORY.filter(h => h.ok).length}`} sub="Successful" accentBorder={C.accent} />
+        <MetricBox label="Reverted" value={`${HISTORY.filter(h => !h.ok).length}`} sub="Auto-rolled back" accentBorder={C.red} />
+        <MetricBox label="Auto-Applied" value={`${HISTORY.filter(h => h.mode === "Auto").length}`} sub="By Karpenter" accentBorder={C.purple} />
       </div>
 
       {/* Filter bar */}
       <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-        {[["all","All"],["manual","Manual"],["auto","Auto"],["ok","Successful"],["failed","Reverted"]].map(([id, label]) => (
+        {[["all", "All"], ["manual", "Manual"], ["auto", "Auto"], ["ok", "Successful"], ["failed", "Reverted"]].map(([id, label]) => (
           <Chip key={id} active={filter === id} onClick={() => setFilter(id)}>{label}</Chip>
         ))}
       </div>
@@ -1044,7 +1033,7 @@ function HistorySection() {
                               ))}
                             </div>
                             <div style={{ fontSize: 9, color: C.muted }}>
-                              {(100 - (data.find(d=>d.name==="free")?.pct || 0))}% used
+                              {(100 - (data.find(d => d.name === "free")?.pct || 0))}% used
                             </div>
                           </div>
                         ))}
@@ -1112,10 +1101,10 @@ function SavingsTracker() {
 
       {/* KPI strip */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10, marginBottom: 16 }}>
-        <MetricBox label="Total Realized"    value="$13,500"  sub="Last 6 months"     accentBorder={C.green}  />
-        <MetricBox label="This Month"        value="$3,150"   sub="February 2026"     accentBorder={C.green}  />
-        <MetricBox label="Pending Potential" value="$4,820"   sub="Awaiting approval" accentBorder={C.amber}  />
-        <MetricBox label="Optimizations Run" value="47"       sub="Instances resized" accentBorder={C.accent} />
+        <MetricBox label="Total Realized" value="$13,500" sub="Last 6 months" accentBorder={C.green} />
+        <MetricBox label="This Month" value="$3,150" sub="February 2026" accentBorder={C.green} />
+        <MetricBox label="Pending Potential" value="$4,820" sub="Awaiting approval" accentBorder={C.amber} />
+        <MetricBox label="Optimizations Run" value="47" sub="Instances resized" accentBorder={C.accent} />
       </div>
 
       {/* Bar chart */}
@@ -1126,7 +1115,7 @@ function SavingsTracker() {
             <div style={{ fontSize: 11, color: C.subtle, marginTop: 2 }}>Monthly cost reduction from applied recommendations</div>
           </div>
           <div style={{ display: "flex", gap: 6 }}>
-            {[["1m","1M"],["3m","3M"],["6m","6M"]].map(([id, label]) => (
+            {[["1m", "1M"], ["3m", "3M"], ["6m", "6M"]].map(([id, label]) => (
               <Chip key={id} active={period === id} onClick={() => setPeriod(id)}>{label}</Chip>
             ))}
             <Btn size="sm"><Icons.Download s={12} stroke={C.muted} /></Btn>
@@ -1135,20 +1124,20 @@ function SavingsTracker() {
 
         <div style={{ position: "relative" }}>
           <div style={{ position: "absolute", left: 0, top: 0, bottom: 28, display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
-            {["$6k","$4k","$2k","$0"].map(l => (
+            {["$6k", "$4k", "$2k", "$0"].map(l => (
               <span key={l} style={{ fontSize: 9, color: C.subtle }}>{l}</span>
             ))}
           </div>
           <div style={{ marginLeft: 28, position: "relative" }}>
-            {[0,1,2,3].map(i => (
-              <div key={i} style={{ position: "absolute", left: 0, right: 0, top: `${(i/3)*100}%`, borderTop: `1px solid ${C.border}` }} />
+            {[0, 1, 2, 3].map(i => (
+              <div key={i} style={{ position: "absolute", left: 0, right: 0, top: `${(i / 3) * 100}%`, borderTop: `1px solid ${C.border}` }} />
             ))}
             <div style={{ display: "flex", alignItems: "flex-end", gap: 14, height: 180, paddingBottom: 28 }}>
               {display.map((d, i) => (
                 <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", height: "100%", justifyContent: "flex-end" }}>
                   <div style={{ width: "100%", display: "flex", gap: 3, alignItems: "flex-end", height: "calc(100% - 20px)" }}>
-                    <div style={{ flex: 1, borderRadius: "3px 3px 0 0", minHeight: 4, height: `${(d.pot/maxV)*100}%`, background: "#eef0f3", transition: "height 0.6s cubic-bezier(.4,0,.2,1)" }} title={`$${d.pot.toLocaleString()} potential`} />
-                    <div style={{ flex: 1, borderRadius: "3px 3px 0 0", minHeight: 4, height: `${(d.real/maxV)*100}%`, background: C.green, transition: "height 0.6s cubic-bezier(.4,0,.2,1)" }} title={`$${d.real.toLocaleString()} realized`} />
+                    <div style={{ flex: 1, borderRadius: "3px 3px 0 0", minHeight: 4, height: `${(d.pot / maxV) * 100}%`, background: "#eef0f3", transition: "height 0.6s cubic-bezier(.4,0,.2,1)" }} title={`$${d.pot.toLocaleString()} potential`} />
+                    <div style={{ flex: 1, borderRadius: "3px 3px 0 0", minHeight: 4, height: `${(d.real / maxV) * 100}%`, background: C.green, transition: "height 0.6s cubic-bezier(.4,0,.2,1)" }} title={`$${d.real.toLocaleString()} realized`} />
                   </div>
                   <span style={{ fontSize: 10, color: C.subtle, marginTop: 6 }}>{d.m}</span>
                 </div>
@@ -1158,7 +1147,7 @@ function SavingsTracker() {
         </div>
 
         <div style={{ display: "flex", gap: 18, marginTop: 8 }}>
-          {[["Realized savings", C.green, null],["Remaining potential", "#eef0f3", C.border]].map(([l, bg, border]) => (
+          {[["Realized savings", C.green, null], ["Remaining potential", "#eef0f3", C.border]].map(([l, bg, border]) => (
             <div key={l} style={{ display: "flex", alignItems: "center", gap: 6 }}>
               <div style={{ width: 12, height: 12, borderRadius: 3, background: bg, border: border ? `1px solid ${border}` : "none" }} />
               <span style={{ fontSize: 11, color: C.muted }}>{l}</span>
@@ -1175,13 +1164,13 @@ function SavingsTracker() {
             <span style={{ fontSize: 13, fontWeight: 600, color: C.text }}>Applied Optimizations</span>
             <div style={{ display: "flex", alignItems: "center", gap: 4, padding: "2px 8px", borderRadius: 20, background: C.greenBg, border: `1px solid ${C.greenBorder}` }}>
               <Dot color={C.green} />
-              <span style={{ fontSize: 10, fontWeight: 500, color: C.muted }}>{HISTORY.filter(h=>h.ok).length} successful</span>
+              <span style={{ fontSize: 10, fontWeight: 500, color: C.muted }}>{HISTORY.filter(h => h.ok).length} successful</span>
             </div>
           </div>
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
               <tr style={{ background: "#fafafa", borderBottom: `1px solid ${C.border}` }}>
-                {["Date","Node","Change","Monthly Saving","Mode","Status"].map(h => (
+                {["Date", "Node", "Change", "Monthly Saving", "Mode", "Status"].map(h => (
                   <th key={h} style={TH}>{h}</th>
                 ))}
               </tr>
@@ -1192,7 +1181,7 @@ function SavingsTracker() {
                   style={{ borderBottom: i < HISTORY.length - 1 ? `1px solid ${C.border}` : "none", transition: "background 0.1s" }}
                   onMouseEnter={e => e.currentTarget.style.background = C.surfaceHover}
                   onMouseLeave={e => e.currentTarget.style.background = C.surface}>
-                  <td style={TD}><span style={{ fontSize: 11, color: C.subtle }}>{h.date.replace(", 2026","")}</span></td>
+                  <td style={TD}><span style={{ fontSize: 11, color: C.subtle }}>{h.date.replace(", 2026", "")}</span></td>
                   <td style={TD}><span style={{ fontSize: 12, fontWeight: 600, color: C.text }}>{h.node}</span></td>
                   <td style={TD}>
                     <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
@@ -1223,7 +1212,7 @@ function SavingsTracker() {
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: "14px 16px" }}>
             <SectionHeader>Savings by Cluster</SectionHeader>
-            {[{name:"prod-cluster",val:2100,pct:67},{name:"data-cluster",val:720,pct:23},{name:"staging-cluster",val:330,pct:10}].map(c => (
+            {[{ name: "prod-cluster", val: 2100, pct: 67 }, { name: "data-cluster", val: 720, pct: 23 }, { name: "staging-cluster", val: 330, pct: 10 }].map(c => (
               <div key={c.name} style={{ marginBottom: 10 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
                   <span style={{ fontSize: 11, fontWeight: 500, color: C.text }}>{c.name}</span>
@@ -1236,7 +1225,7 @@ function SavingsTracker() {
 
           <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: "14px 16px" }}>
             <SectionHeader>By Instance Family</SectionHeader>
-            {[{fam:"m5",n:18,v:"$1,240"},{fam:"c5",n:12,v:"$980"},{fam:"t3",n:9,v:"$420"},{fam:"r5",n:5,v:"$510"}].map((f,i) => (
+            {[{ fam: "m5", n: 18, v: "$1,240" }, { fam: "c5", n: 12, v: "$980" }, { fam: "t3", n: 9, v: "$420" }, { fam: "r5", n: 5, v: "$510" }].map((f, i) => (
               <div key={f.fam} style={{
                 display: "flex", alignItems: "center", justifyContent: "space-between",
                 padding: "8px 0", borderBottom: i < 3 ? `1px solid ${C.border}` : "none",
