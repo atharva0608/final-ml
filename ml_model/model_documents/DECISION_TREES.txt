@@ -1,0 +1,514 @@
+================================================================================
+                    BINARY DECISION TREES - VISUAL REFERENCE
+================================================================================
+
+Document: Visual ASCII representation of all decision trees
+Purpose: Quick reference for understanding decision logic flow
+Last Updated: 2026-02-23
+
+================================================================================
+                          DECISION TREE 1: FILTERING
+================================================================================
+
+Purpose: Remove pools that don't meet minimum requirements
+Input: List of pool candidates
+Output: Filtered pools (is_recommended = True) OR rejected pools with reason
+
+                          ┌─────────────────┐
+                          │  Pool Candidate │
+                          └────────┬────────┘
+                                   │
+                                   ▼
+                  ┌────────────────────────────────────┐
+                  │ Q1: interruption_index > 1?        │
+                  │ (Is interruption rate > 10%?)      │
+                  └────────┬────────────────────┬──────┘
+                          YES                  NO
+                           │                    │
+                           ▼                    ▼
+                    ┌──────────────┐      ┌──────────────┐
+                    │   REJECT     │      │  Continue    │
+                    │ Reason:      │      │  to Q2       │
+                    │ "high_       │      └──────┬───────┘
+                    │ interruption"│             │
+                    └──────────────┘             ▼
+                                    ┌──────────────────────────────────┐
+                                    │ Q2: advisor_savings_pct < 50?    │
+                                    │ (Is savings potential < 50%?)    │
+                                    └────────┬─────────────────┬───────┘
+                                            YES               NO
+                                             │                 │
+                                             ▼                 ▼
+                                      ┌──────────────┐   ┌──────────────┐
+                                      │   REJECT     │   │  Continue    │
+                                      │ Reason:      │   │  to Q3       │
+                                      │ "low_savings"│   └──────┬───────┘
+                                      └──────────────┘          │
+                                                                ▼
+                                              ┌──────────────────────────────────┐
+                                              │ Q3: is_blacklisted == True AND   │
+                                              │     blacklist_score >= 3?        │
+                                              │ (Recently terminated?)           │
+                                              └────────┬─────────────────┬───────┘
+                                                      YES               NO
+                                                       │                 │
+                                                       ▼                 ▼
+                                                ┌──────────────┐   ┌──────────────┐
+                                                │   REJECT     │   │  Continue    │
+                                                │ Reason:      │   │  to Q4       │
+                                                │ "blacklisted"│   └──────┬───────┘
+                                                └──────────────┘          │
+                                                                          ▼
+                                                        ┌──────────────────────────────────┐
+                                                        │ Q4: ml_cost_estimate > $100?     │
+                                                        │ (Exceeds budget?)                │
+                                                        └────────┬─────────────────┬───────┘
+                                                                YES               NO
+                                                                 │                 │
+                                                                 ▼                 ▼
+                                                          ┌──────────────┐   ┌──────────────┐
+                                                          │   REJECT     │   │  Continue    │
+                                                          │ Reason:      │   │  to Q5       │
+                                                          │ "high_cost"  │   └──────┬───────┘
+                                                          └──────────────┘          │
+                                                                                    ▼
+                                                                  ┌──────────────────────────────────┐
+                                                                  │ Q5: historical_risk > 0.15?      │
+                                                                  │ (Poor past performance?)         │
+                                                                  └────────┬─────────────────┬───────┘
+                                                                          YES               NO
+                                                                           │                 │
+                                                                           ▼                 ▼
+                                                                    ┌──────────────┐   ┌──────────────┐
+                                                                    │   REJECT     │   │     PASS     │
+                                                                    │ Reason:      │   │ recommended: │
+                                                                    │ "poor_       │   │     True     │
+                                                                    │ history"     │   └──────────────┘
+                                                                    └──────────────┘
+
+Configuration:
+  max_interruption_index: 1          # Q1 threshold
+  min_savings_percentage: 50         # Q2 threshold
+  blacklist_threshold: 3             # Q3 threshold
+  max_cost_usd: 100                  # Q4 threshold
+  max_historical_risk: 0.15          # Q5 threshold
+
+Example:
+  Pool: m5.xlarge, us-east-1a
+  interruption_index = 1 (5-10%)     → Q1: NO (pass)
+  advisor_savings = 70%              → Q2: NO (pass)
+  is_blacklisted = False             → Q3: NO (pass)
+  cost_estimate = 14.07              → Q4: NO (pass)
+  historical_risk = 0.05             → Q5: NO (pass)
+  Result: PASS (is_recommended = True)
+
+
+================================================================================
+                       DECISION TREE 2: ML SCORING
+================================================================================
+
+Purpose: Calculate scores using ML models and apply penalties
+Input: Filtered pool
+Output: Scored pool with final_score
+
+                          ┌─────────────────┐
+                          │  Filtered Pool  │
+                          └────────┬────────┘
+                                   │
+                                   ▼
+                  ┌──────────────────────────────────────┐
+                  │ STEP 1: ML Inference                 │
+                  │ - Run classifier_6.onnx              │
+                  │   → ml_savings_pct (0.0-1.0)         │
+                  │ - Run regressor_6.onnx               │
+                  │   → ml_cost_estimate (USD)           │
+                  └────────────────┬─────────────────────┘
+                                   │
+                                   ▼
+                  ┌──────────────────────────────────────┐
+                  │ STEP 2: Blacklist Penalty            │
+                  │ Q1: is_blacklisted == True?          │
+                  └────────┬────────────────────┬────────┘
+                          YES                  NO
+                           │                    │
+                           ▼                    ▼
+              ┌──────────────────────┐   ┌──────────────────┐
+              │ adjusted_savings =   │   │ adjusted_savings │
+              │ ml_savings_pct - 0.50│   │ = ml_savings_pct │
+              └──────────┬───────────┘   └──────────┬───────┘
+                         │                          │
+                         └──────────┬───────────────┘
+                                    │
+                                    ▼
+                  ┌──────────────────────────────────────┐
+                  │ STEP 3: Historical Risk Adjustment   │
+                  │ Q2: historical_risk > 0.10?          │
+                  └────────┬────────────────────┬────────┘
+                          YES                  NO
+                           │                    │
+                           ▼                    ▼
+              ┌──────────────────────┐   ┌──────────────────┐
+              │ adjusted_savings -=  │   │ No adjustment    │
+              │ (risk × 0.5)         │   │                  │
+              └──────────┬───────────┘   └──────────┬───────┘
+                         │                          │
+                         └──────────┬───────────────┘
+                                    │
+                                    ▼
+                  ┌──────────────────────────────────────┐
+                  │ STEP 4: Calculate Final Score        │
+                  │ final_score =                        │
+                  │   (adjusted_savings × 100) -         │
+                  │   (ml_cost_estimate × 0.1)           │
+                  └──────────────────┬───────────────────┘
+                                     │
+                                     ▼
+                          ┌─────────────────┐
+                          │  Scored Pool    │
+                          │ - ml_savings_pct│
+                          │ - ml_cost_est   │
+                          │ - adjusted_sav  │
+                          │ - final_score   │
+                          └─────────────────┘
+
+Configuration:
+  savings_weight: 100                # Multiplier for savings
+  cost_weight: 0.1                   # Multiplier for cost (inverse)
+  blacklist_penalty: 0.50            # -50% penalty if blacklisted
+  historical_risk_threshold: 0.10    # Trigger for risk adjustment
+  risk_penalty_factor: 0.5           # Penalty multiplier
+
+Example Calculation:
+
+  Pool A (Not Blacklisted):
+  ─────────────────────────
+  ml_savings_pct = 0.93 (from classifier)
+  ml_cost_estimate = 14.07 (from regressor)
+  is_blacklisted = False
+  historical_risk = 0.05 (below threshold)
+
+  Step 2: adjusted_savings = 0.93 (no penalty)
+  Step 3: No adjustment (risk < 0.10)
+  Step 4: final_score = (0.93 × 100) - (14.07 × 0.1)
+                       = 93.0 - 1.407
+                       = 91.593
+
+  Pool B (Blacklisted):
+  ─────────────────────
+  ml_savings_pct = 0.85
+  ml_cost_estimate = 10.50
+  is_blacklisted = True
+  historical_risk = 0.12 (above threshold)
+
+  Step 2: adjusted_savings = 0.85 - 0.50 = 0.35
+  Step 3: adjusted_savings -= (0.12 × 0.5) = 0.35 - 0.06 = 0.29
+  Step 4: final_score = (0.29 × 100) - (10.50 × 0.1)
+                       = 29.0 - 1.05
+                       = 27.95
+
+  Ranking: Pool A (91.6) ranks higher than Pool B (28.0)
+
+
+================================================================================
+                  DECISION TREE 3: RISK CATEGORIZATION
+================================================================================
+
+Purpose: Assign human-readable risk categories
+Input: Scored pool
+Output: Categorized pool with risk_category and risk_score
+
+                          ┌─────────────────┐
+                          │  Scored Pool    │
+                          │ (with adjusted  │
+                          │  savings)       │
+                          └────────┬────────┘
+                                   │
+                                   ▼
+                  ┌──────────────────────────────────────┐
+                  │ Q1: adjusted_savings >= 0.90?        │
+                  │ (High savings threshold)             │
+                  └────────┬────────────────────┬────────┘
+                          YES                  NO
+                           │                    │
+                           ▼                    ▼
+                  ┌──────────────────┐    ┌────────────────┐
+                  │ Q2: is_blacklisted│   │  Continue      │
+                  │     == False?     │   │  to Q3         │
+                  └────┬────────┬─────┘   └────────┬───────┘
+                      YES      NO                  │
+                       │        │                  ▼
+                       ▼        ▼         ┌──────────────────────────┐
+              ┌──────────┐  ┌──────────┐  │ Q3: adjusted_savings     │
+              │ CATEGORY │  │ CATEGORY │  │     >= 0.70?             │
+              │  "SAFE"  │  │"MODERATE"│  │ (Moderate threshold)     │
+              │ risk=0.07│  │ risk=0.08│  └────────┬────────────┬────┘
+              └──────────┘  └──────────┘          YES           NO
+                                                   │             │
+                                                   ▼             ▼
+                                          ┌──────────────┐  ┌──────────────┐
+                                          │   CATEGORY   │  │   CATEGORY   │
+                                          │  "MODERATE"  │  │   "RISKY"    │
+                                          │  risk=0.25   │  │  risk=0.40   │
+                                          └──────────────┘  └──────────────┘
+                                                   │             │
+                                                   └──────┬──────┘
+                                                          │
+                                                          ▼
+                                              ┌────────────────────────┐
+                                              │ STEP 2: Calculate      │
+                                              │ risk_score =           │
+                                              │ 1.0 - adjusted_savings │
+                                              └────────────────────────┘
+                                                          │
+                                                          ▼
+                                              ┌────────────────────────┐
+                                              │  Categorized Pool      │
+                                              │  - risk_category       │
+                                              │  - risk_score          │
+                                              └────────────────────────┘
+
+Configuration:
+  safe_min_threshold: 0.90           # 90%+ savings = SAFE
+  moderate_min_threshold: 0.70       # 70-90% savings = MODERATE
+  # Below 70% = RISKY
+
+Risk Score Calculation:
+  risk_score = 1.0 - adjusted_savings
+  (Lower is better: 0.0 = no risk, 1.0 = maximum risk)
+
+Example Categorizations:
+
+  ┌──────────────────┬────────────────┬────────────┬────────────┐
+  │ Adjusted Savings │ Is Blacklisted │  Category  │ Risk Score │
+  ├──────────────────┼────────────────┼────────────┼────────────┤
+  │ 0.95             │ False          │ SAFE       │ 0.05       │
+  │ 0.92             │ True           │ MODERATE   │ 0.08       │
+  │ 0.75             │ False          │ MODERATE   │ 0.25       │
+  │ 0.65             │ False          │ RISKY      │ 0.35       │
+  │ 0.40             │ True           │ RISKY      │ 0.60       │
+  └──────────────────┴────────────────┴────────────┴────────────┘
+
+Category Meanings:
+
+  SAFE (adjusted_savings >= 0.90, not blacklisted):
+    - High savings potential (90%+ cheaper than on-demand)
+    - No recent interruptions
+    - Recommended for production workloads
+    - Risk Score: 0.00-0.10
+
+  MODERATE (adjusted_savings 0.70-0.90 OR blacklisted):
+    - Good savings potential (70-90%)
+    - May have had recent interruptions
+    - Suitable for fault-tolerant workloads
+    - Risk Score: 0.10-0.30
+
+  RISKY (adjusted_savings < 0.70):
+    - Lower savings potential (<70%)
+    - Higher interruption risk
+    - Use only for non-critical workloads
+    - Risk Score: 0.30-1.00
+
+
+================================================================================
+                          COMPLETE DECISION FLOW
+================================================================================
+
+High-level overview of all three decision trees in sequence:
+
+    Pool Candidates (50-200 pools)
+            │
+            ▼
+    ┌────────────────────────────────────┐
+    │ TREE 1: FILTERING                  │
+    │ - Q1: Interruption check           │
+    │ - Q2: Savings check                │
+    │ - Q3: Blacklist check              │
+    │ - Q4: Cost check                   │
+    │ - Q5: Historical risk check        │
+    └────────────┬───────────────────────┘
+                 │
+                 ▼
+    Filtered Pools (30-150 pools)
+            │
+            ▼
+    ┌────────────────────────────────────┐
+    │ TREE 2: ML SCORING                 │
+    │ - Step 1: ML Inference             │
+    │ - Step 2: Blacklist penalty        │
+    │ - Step 3: Historical risk adj      │
+    │ - Step 4: Calculate final_score    │
+    └────────────┬───────────────────────┘
+                 │
+                 ▼
+    Scored Pools (30-150 pools with scores)
+            │
+            ▼
+    ┌────────────────────────────────────┐
+    │ TREE 3: RISK CATEGORIZATION        │
+    │ - Q1: High savings check           │
+    │ - Q2: Blacklist check              │
+    │ - Q3: Moderate savings check       │
+    │ - Calculate risk_score             │
+    └────────────┬───────────────────────┘
+                 │
+                 ▼
+    Categorized Pools (SAFE/MODERATE/RISKY)
+            │
+            ▼
+    ┌────────────────────────────────────┐
+    │ SORTING                            │
+    │ Sort by final_score (descending)   │
+    └────────────┬───────────────────────┘
+                 │
+                 ▼
+    Ranked Pool List (Top 50 pools)
+            │
+            ▼
+    API Response (JSON)
+
+
+================================================================================
+                           CONFIGURATION REFERENCE
+================================================================================
+
+Complete YAML configuration for all decision trees:
+
+# ml_model/decision_engine/config.yaml
+
+version: "v1.0.0"
+model_version: "classifier_6, regressor_6"
+
+models:
+  classifier_path: "ml_model/model/classifier_6.onnx"
+  regressor_path: "ml_model/model/regressor_6.onnx"
+  category_mapping_path: "ml_model/model/category_mapping.json"
+
+# TREE 1: Filtering Rules
+filtering:
+  max_interruption_index: 1          # 0-1 = <10% interruption
+  min_savings_percentage: 50         # Minimum 50% savings
+  blacklist_threshold: 3             # Allow up to 2 recent interruptions
+  max_cost_usd: 100                  # Budget constraint
+  max_historical_risk: 0.15          # Max 15% historical failure rate
+
+# TREE 2: Scoring Weights
+scoring:
+  savings_weight: 100                # Weight for savings percentage
+  cost_weight: 0.1                   # Weight for cost (inverse)
+  blacklist_penalty: 0.50            # -50% penalty for blacklisted pools
+  historical_risk_threshold: 0.10    # 10% risk triggers adjustment
+  risk_penalty_factor: 0.5           # Penalty = risk × 0.5
+
+# TREE 3: Risk Categorization
+risk_categorization:
+  safe_min_threshold: 0.90           # 90%+ savings = SAFE
+  moderate_min_threshold: 0.70       # 70-90% savings = MODERATE
+  # Below 70% = RISKY
+
+
+================================================================================
+                              TESTING EXAMPLES
+================================================================================
+
+Test Case 1: SAFE Pool (Best Case)
+───────────────────────────────────
+Input:
+  instance_type: m5.xlarge
+  availability_zone: us-east-1a
+  interruption_index: 0 (<5%)
+  advisor_savings_pct: 70%
+  is_blacklisted: False
+  historical_risk: 0.05
+  ml_savings_pct: 0.93
+  ml_cost_estimate: 14.07
+
+Decision Flow:
+  Tree 1: PASS all filters
+  Tree 2: adjusted_savings = 0.93 (no penalties)
+          final_score = 91.593
+  Tree 3: CATEGORY = SAFE, risk_score = 0.07
+
+Output:
+  rank: 1
+  risk_category: SAFE
+  is_recommended: True
+
+
+Test Case 2: MODERATE Pool (Blacklisted)
+─────────────────────────────────────────
+Input:
+  instance_type: c5.large
+  availability_zone: us-east-1b
+  interruption_index: 1 (5-10%)
+  advisor_savings_pct: 65%
+  is_blacklisted: True
+  blacklist_score: 3
+  historical_risk: 0.08
+  ml_savings_pct: 0.85
+  ml_cost_estimate: 10.50
+
+Decision Flow:
+  Tree 1: REJECT at Q3 (blacklisted, score >= 3)
+
+Output:
+  is_recommended: False
+  rejection_reason: "globally_blacklisted"
+
+
+Test Case 3: RISKY Pool (Low Savings)
+──────────────────────────────────────
+Input:
+  instance_type: t3.medium
+  availability_zone: us-east-1c
+  interruption_index: 2 (10-15%)
+  advisor_savings_pct: 45%
+  is_blacklisted: False
+  historical_risk: 0.20
+  ml_savings_pct: 0.60
+  ml_cost_estimate: 8.50
+
+Decision Flow:
+  Tree 1: REJECT at Q1 (interruption_index > 1)
+
+Output:
+  is_recommended: False
+  rejection_reason: "high_interruption_rate"
+
+
+================================================================================
+                              QUICK REFERENCE
+================================================================================
+
+Binary Questions Summary:
+
+TREE 1 (Filtering):
+  Q1: interruption_index > max_interruption_index?
+  Q2: advisor_savings_pct < min_savings_percentage?
+  Q3: is_blacklisted AND blacklist_score >= threshold?
+  Q4: ml_cost_estimate > max_cost_usd?
+  Q5: pool_historical_risk > max_historical_risk?
+
+TREE 2 (Scoring):
+  Q1: is_blacklisted?
+  Q2: pool_historical_risk > historical_risk_threshold?
+
+TREE 3 (Categorization):
+  Q1: adjusted_savings >= safe_min_threshold?
+  Q2: is_blacklisted?
+  Q3: adjusted_savings >= moderate_min_threshold?
+
+Key Formulas:
+
+  adjusted_savings = ml_savings_pct
+                     - (blacklist_penalty IF blacklisted)
+                     - (historical_risk × risk_penalty_factor IF risk > threshold)
+
+  final_score = (adjusted_savings × savings_weight)
+                - (ml_cost_estimate × cost_weight)
+
+  risk_score = 1.0 - adjusted_savings
+
+
+================================================================================
+End of Document
+================================================================================

@@ -272,7 +272,7 @@ export default function Dashboard() {
         } catch (e) { }
 
         try {
-          const transfer = await api.get('/api/v1/data-transfer/overview');
+          const transfer = await api.get('/api/v1/transfer/overview');
           setTransferHealth({ status: transfer.data.health_status || "no_data", cost: transfer.data.total_transfer_cost || 0, detail: `Total transfer cost: $${transfer.data.total_transfer_cost || 0}` });
         } catch (e) { }
 
@@ -291,8 +291,14 @@ export default function Dashboard() {
       onClick: refreshDashboard,
       loading: dashboardLoading || dataLoading,
     });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dashboardLoading, dataLoading]);
+
+  // Cleanup header on unmount only
+  useEffect(() => {
     return () => headerStore.clearHeader();
-  }, [refreshDashboard, dashboardLoading, dataLoading]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const hasNoData = !dashboardLoading && !dataLoading && accounts.length === 0 && user?.role !== 'SUPER_ADMIN';
 
