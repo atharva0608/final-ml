@@ -1,709 +1,1269 @@
-import React, { useState, useEffect } from "react";
-import { useClusterStore, useAuthStore } from '../../store/useStore';
-import { api, optimizationAPI, templateAPI, karpenterAPI } from '../../services/api';
+import React, { useState, useEffect, useRef } from "react";
+import { useClusterStore } from '../../store/useStore';
+import { api, optimizationAPI, karpenterAPI } from '../../services/api';
 import toast from 'react-hot-toast';
 
-// ─── Icons ────────────────────────────────────────────────────────────────────
-const ZapI = ({ s = 15 }) => <svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" /></svg>;
-const EyeI = ({ s = 14 }) => <svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></svg>;
-const PlayI = ({ s = 14 }) => <svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round"><polygon points="5 3 19 12 5 21 5 3" /></svg>;
-const CheckI = ({ s = 13 }) => <svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg>;
-const XI = ({ s = 14 }) => <svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>;
-const ArrowI = ({ s = 13 }) => <svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><line x1="5" y1="12" x2="19" y2="12" /><polyline points="12 5 19 12 12 19" /></svg>;
-const SettI = ({ s = 15 }) => <svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" /></svg>;
-const AlertI = ({ s = 14 }) => <svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" /></svg>;
-const TrendI = ({ s = 14 }) => <svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18" /><polyline points="17 6 23 6 23 12" /></svg>;
-const ServerI = ({ s = 13 }) => <svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="2" width="20" height="8" rx="2" /><rect x="2" y="14" width="20" height="8" rx="2" /><line x1="6" y1="6" x2="6.01" y2="6" /><line x1="6" y1="18" x2="6.01" y2="18" /></svg>;
-const GridI = ({ s = 13 }) => <svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7" height="7" /><rect x="14" y="3" width="7" height="7" /><rect x="14" y="14" width="7" height="7" /><rect x="3" y="14" width="7" height="7" /></svg>;
-const InfoI = ({ s = 13 }) => <svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><line x1="12" y1="16" x2="12" y2="12" /><line x1="12" y1="8" x2="12.01" y2="8" /></svg>;
-const DollarI = ({ s = 14 }) => <svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="1" x2="12" y2="23" /><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" /></svg>;
-const CpuI = ({ s = 14 }) => <svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round"><rect x="4" y="4" width="16" height="16" rx="2" /><rect x="9" y="9" width="6" height="6" /><line x1="9" y1="2" x2="9" y2="4" /><line x1="15" y1="2" x2="15" y2="4" /><line x1="9" y1="20" x2="9" y2="22" /><line x1="15" y1="20" x2="15" y2="22" /><line x1="2" y1="9" x2="4" y2="9" /><line x1="2" y1="15" x2="4" y2="15" /><line x1="20" y1="9" x2="22" y2="9" /><line x1="20" y1="15" x2="22" y2="15" /></svg>;
-const MemI = ({ s = 14 }) => <svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2" /><polyline points="2 17 12 22 22 17" /><polyline points="2 12 12 17 22 12" /></svg>;
-const BoxI = ({ s = 11 }) => <svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" /></svg>;
-
-// ─── Design Tokens ────────────────────────────────────────────────────────────
+// ─── PALETTE ─────────────────────────────────────────────────────────────────
 const C = {
-    bg: "#f9fafb", surface: "#ffffff", surfaceAlt: "#f8fafc",
-    border: "#e5e7eb", text: "#111827", textSec: "#4b5563", textMuted: "#6b7280",
-    indigo: "#4f46e5", indigoBg: "#eef2ff", indigoMid: "#c7d2fe",
-    green: "#16a34a", greenBg: "#f0fdf4", greenMid: "#bbf7d0",
-    amber: "#d97706", amberBg: "#fffbeb", amberMid: "#fde68a",
-    red: "#ef4444", redBg: "#fef2f2", redMid: "#fecaca",
-    purple: "#7c3aed", purpleBg: "#f5f3ff",
-    cyan: "#0891b2", cyanBg: "#ecfeff",
+  bg:           "#f5f6f8",
+  surface:      "#ffffff",
+  surfaceHover: "#fafafa",
+  border:       "#e4e6ea",
+  borderHover:  "#c8cdd6",
+  text:         "#111318",
+  muted:        "#5a6272",
+  subtle:       "#98a1b0",
+  accent:       "#2563eb",
+  accentLight:  "#eff6ff",
+  green:  "#16a34a", greenBg:  "#f0fdf4", greenBorder:  "#bbf7d0",
+  amber:  "#b45309", amberBg:  "#fffbeb", amberBorder:  "#fde68a",
+  red:    "#dc2626", redBg:    "#fef2f2", redBorder:    "#fecaca",
+  purple: "#6d28d9", purpleBg: "#f5f3ff", purpleBorder: "#ddd6fe",
+  teal:   "#0f766e", tealBg:   "#f0fdfa", tealBorder:   "#99f6e4",
+  blue:   "#2563eb", blueBg:   "#eff6ff", blueBorder:   "#bfdbfe",
 };
-const F = { sans: "'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif" };
 
-const COST_TREND = [
-    { m: "Sep", before: 4200, after: 2800 }, { m: "Oct", before: 4100, after: 2650 },
-    { m: "Nov", before: 3900, after: 2500 }, { m: "Dec", before: 4300, after: 2600 },
-    { m: "Jan", before: 4500, after: 2750 }, { m: "Feb", before: 4200, after: 2420 },
+const utilColor = (p) => p >= 85 ? C.red : p >= 65 ? C.amber : p >= 30 ? C.green : C.accent;
+
+// ─── SVG ICONS ───────────────────────────────────────────────────────────────
+const Svg = ({ s = 14, stroke = C.muted, children, style = {} }) => (
+  <svg width={s} height={s} viewBox="0 0 24 24" fill="none"
+    stroke={stroke} strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round"
+    style={{ flexShrink: 0, display: "block", ...style }}>
+    {children}
+  </svg>
+);
+const Icons = {
+  Eye:      (p) => <Svg {...p}><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></Svg>,
+  Zap:      (p) => <Svg {...p}><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></Svg>,
+  Bar:      (p) => <Svg {...p}><path d="M18 20V10M12 20V4M6 20v-6"/></Svg>,
+  Refresh:  (p) => <Svg {...p}><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></Svg>,
+  Settings: (p) => <Svg {...p}><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></Svg>,
+  Check:    (p) => <Svg {...p}><path d="M20 6L9 17l-5-5"/></Svg>,
+  X:        (p) => <Svg {...p}><path d="M18 6L6 18M6 6l12 12"/></Svg>,
+  Alert:    (p) => <Svg {...p}><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><path d="M12 9v4M12 17h.01"/></Svg>,
+  Arrow:    (p) => <Svg {...p}><path d="M5 12h14M12 5l7 7-7 7"/></Svg>,
+  Download: (p) => <Svg {...p}><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><path d="M7 10l5 5 5-5M12 15V3"/></Svg>,
+  Pause:    (p) => <Svg {...p}><path d="M6 4h4v16H6zM14 4h4v16h-4z"/></Svg>,
+  ChevD:    (p) => <Svg {...p}><path d="M6 9l6 6 6-6"/></Svg>,
+  ChevR:    (p) => <Svg {...p}><path d="M9 18l6-6-6-6"/></Svg>,
+  History:  (p) => <Svg {...p}><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></Svg>,
+  Server:   (p) => <Svg {...p}><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></Svg>,
+  Layers:   (p) => <Svg {...p}><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></Svg>,
+  TrendUp:  (p) => <Svg {...p}><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></Svg>,
+  Box:      (p) => <Svg {...p}><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/></Svg>,
+  Cpu:      (p) => <Svg {...p}><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></Svg>,
+};
+
+// ─── PRIMITIVES ───────────────────────────────────────────────────────────────
+const Dot = ({ color, pulse = false }) => (
+  <span style={{
+    display: "inline-block", width: 6, height: 6,
+    borderRadius: "50%", background: color, flexShrink: 0,
+    boxShadow: pulse ? `0 0 0 3px ${color}30` : "none",
+  }} />
+);
+
+const Tag = ({ children, color, bg }) => (
+  <span style={{
+    display: "inline-flex", alignItems: "center",
+    padding: "2px 7px", borderRadius: 5,
+    fontSize: 10, fontWeight: 500, color: C.muted,
+    background: bg || "#f0f1f3",
+    border: `1px solid ${color ? color + "25" : C.border}`,
+  }}>{children}</span>
+);
+
+const MetricBox = ({ label, value, sub, accentBorder }) => (
+  <div style={{
+    background: C.surface, border: `1px solid ${C.border}`,
+    borderLeft: accentBorder ? `3px solid ${accentBorder}` : `1px solid ${C.border}`,
+    borderRadius: 10, padding: "12px 14px",
+  }}>
+    <div style={{ fontSize: 11, color: C.muted, marginBottom: 4, fontWeight: 500 }}>{label}</div>
+    <div style={{ fontSize: 19, fontWeight: 700, letterSpacing: "-0.4px", color: C.text }}>{value}</div>
+    {sub && <div style={{ fontSize: 11, color: C.subtle, marginTop: 3 }}>{sub}</div>}
+  </div>
+);
+
+const MiniBar = ({ pct, color }) => (
+  <div style={{ display: "flex", alignItems: "center", gap: 6, flex: 1 }}>
+    <div style={{ flex: 1, height: 5, background: "#f0f0f0", borderRadius: 3 }}>
+      <div style={{
+        width: `${Math.min(pct, 100)}%`, height: 5,
+        background: color || utilColor(pct), borderRadius: 3,
+        transition: "width 0.4s cubic-bezier(.4,0,.2,1)",
+      }} />
+    </div>
+    <span style={{ fontSize: 10, color: C.muted, width: 26, textAlign: "right", flexShrink: 0 }}>{pct}%</span>
+  </div>
+);
+
+const SectionHeader = ({ children }) => (
+  <div style={{
+    fontSize: 10, fontWeight: 700, letterSpacing: "0.1em",
+    textTransform: "uppercase", color: C.subtle,
+    marginBottom: 10, marginTop: 22, paddingBottom: 7,
+    borderBottom: `1px solid ${C.border}`,
+  }}>{children}</div>
+);
+
+const ScoreRing = ({ score, size = 60, max = 10 }) => {
+  const r = (size - 8) / 2;
+  const circ = 2 * Math.PI * r;
+  const dash = (score / max) * circ;
+  const color = score >= 7 ? C.green : score >= 5 ? C.amber : C.red;
+  return (
+    <svg width={size} height={size} style={{ display: "block", flexShrink: 0 }}>
+      <circle cx={size/2} cy={size/2} r={r} fill="none" stroke="#f0f0f0" strokeWidth={6} />
+      <circle cx={size/2} cy={size/2} r={r} fill="none" stroke={color} strokeWidth={6}
+        strokeDasharray={`${dash} ${circ}`} strokeLinecap="round"
+        transform={`rotate(-90 ${size/2} ${size/2})`}
+        style={{ transition: "stroke-dasharray 0.6s cubic-bezier(.4,0,.2,1)" }} />
+      <text x={size/2} y={size/2 + 5} textAnchor="middle"
+        style={{ fontSize: 13, fontWeight: 800, fill: C.text, fontFamily: "inherit" }}>
+        {score.toFixed(1)}
+      </text>
+    </svg>
+  );
+};
+
+const Sparkline = ({ data, color = C.green, h = 36, w = 80 }) => {
+  if (!data?.length) return null;
+  const max = Math.max(...data), min = Math.min(...data);
+  const pts = data.map((v, i) => {
+    const x = (i / (data.length - 1)) * w;
+    const y = h - ((v - min) / ((max - min) || 1)) * (h - 4) - 2;
+    return `${x},${y}`;
+  }).join(" ");
+  return (
+    <svg width={w} height={h} style={{ overflow: "visible", display: "block" }}>
+      <polyline points={pts} fill="none" stroke={color}
+        strokeWidth={1.5} strokeLinejoin="round" strokeLinecap="round" />
+    </svg>
+  );
+};
+
+const Chip = ({ children, active, onClick }) => (
+  <button onClick={onClick} style={{
+    padding: "3px 9px", borderRadius: 6, fontFamily: "inherit",
+    fontSize: 10, fontWeight: active ? 600 : 400, cursor: "pointer",
+    background: active ? "#0f1117" : C.surface,
+    color: active ? "#fff" : C.muted,
+    border: `1px solid ${active ? "#0f1117" : C.border}`,
+    transition: "all 0.12s",
+  }}>{children}</button>
+);
+
+const Btn = ({ children, onClick, variant = "default", size = "md", disabled = false }) => {
+  const vs = {
+    default: { background: C.surface, border: `1px solid ${C.border}`, color: C.muted },
+    accent:  { background: C.accent, border: `1px solid ${C.accent}`, color: "#fff" },
+    purple:  { background: C.purple, border: `1px solid ${C.purple}`, color: "#fff" },
+    dark:    { background: "#0f1117", border: "1px solid #0f1117", color: "#fff" },
+    ghost:   { background: "transparent", border: `1px solid ${C.border}`, color: C.muted },
+    green:   { background: C.green, border: `1px solid ${C.green}`, color: "#fff" },
+    danger:  { background: C.red, border: `1px solid ${C.red}`, color: "#fff" },
+  };
+  const ss = {
+    sm: { padding: "5px 11px", fontSize: 11 },
+    md: { padding: "7px 14px", fontSize: 12 },
+  };
+  return (
+    <button onClick={onClick} disabled={disabled} style={{
+      display: "inline-flex", alignItems: "center", gap: 5,
+      borderRadius: 9, fontFamily: "inherit", fontWeight: 600,
+      cursor: disabled ? "not-allowed" : "pointer",
+      opacity: disabled ? 0.4 : 1,
+      transition: "opacity 0.12s",
+      ...vs[variant], ...ss[size],
+    }}>{children}</button>
+  );
+};
+
+// Toggle switch
+const Toggle = ({ on, onChange, color = C.purple }) => (
+  <button onClick={() => onChange(!on)} style={{
+    width: 36, height: 20, borderRadius: 10, border: "none", cursor: "pointer",
+    background: on ? color : "#d1d5db",
+    position: "relative", transition: "background 0.2s", flexShrink: 0,
+    padding: 0,
+  }}>
+    <div style={{
+      position: "absolute", top: 2, left: on ? 18 : 2,
+      width: 16, height: 16, borderRadius: "50%",
+      background: "#fff", transition: "left 0.2s",
+      boxShadow: "0 1px 3px rgba(0,0,0,0.2)",
+    }} />
+  </button>
+);
+
+const TH = { padding: "8px 12px", textAlign: "left", fontSize: 10, fontWeight: 700,
+  color: C.subtle, letterSpacing: "0.08em", textTransform: "uppercase", whiteSpace: "nowrap" };
+const TD = { padding: "10px 12px", verticalAlign: "middle" };
+
+// ─── DATA ─────────────────────────────────────────────────────────────────────
+const CLUSTERS = [
+  { id: "prod-cluster",    name: "prod-cluster",    region: "us-east-1", nodes: 24, agentVersion: "v0.36.0", status: "healthy", score: 8.2, spot: 72,  savings: 1840 },
+  { id: "data-cluster",   name: "data-cluster",    region: "us-west-2", nodes: 12, agentVersion: "v0.36.0", status: "healthy", score: 7.1, spot: 58,  savings: 340  },
+  { id: "staging-cluster",name: "staging-cluster", region: "eu-west-1", nodes: 8,  agentVersion: "v0.35.2", status: "warning", score: 6.8, spot: 85,  savings: 160  },
 ];
 
-const NS_COLOR = { production: "#4f46e5", staging: "#0891b2", dev: "#7c3aed", data: "#d97706" };
-const confColor = { HIGH: C.green, MEDIUM: C.amber, LOW: C.red };
-const intColor = { "VERY LOW": C.green, LOW: C.green, MEDIUM: C.amber, HIGH: C.red };
+const NODES = [
+  { id:"i-0a1b2c3d", name:"web-prod-01",    cluster:"prod-cluster",    cur:"m5.xlarge",  rec:"m5.large",    curCpu:2,  recCpu:1,  curMem:16, recMem:8,  cpuAvg:34, cpuPeak:61, memAvg:28, memPeak:52, savings:92,  conf:"High",   pool:"Healthy", autoMode:false, pods:[{name:"nginx",cpu:0.4,mem:1.2},{name:"app-svc",cpu:0.8,mem:3.1},{name:"cache",cpu:0.2,mem:0.9}] },
+  { id:"i-0e4f5g6h", name:"worker-03",      cluster:"prod-cluster",    cur:"c5.2xlarge", rec:"c5.xlarge",   curCpu:4,  recCpu:2,  curMem:8,  recMem:4,  cpuAvg:22, cpuPeak:48, memAvg:18, memPeak:41, savings:137, conf:"High",   pool:"Healthy", autoMode:false, pods:[{name:"worker-a",cpu:1.1,mem:1.8},{name:"worker-b",cpu:0.9,mem:1.4},{name:"queue",cpu:0.3,mem:0.5}] },
+  { id:"i-0i7j8k9l", name:"batch-proc-02",  cluster:"staging-cluster", cur:"r5.2xlarge", rec:"r5.xlarge",   curCpu:4,  recCpu:2,  curMem:64, recMem:32, cpuAvg:41, cpuPeak:72, memAvg:54, memPeak:78, savings:215, conf:"Medium", pool:"Risky",   autoMode:false, pods:[{name:"spark-drv",cpu:1.8,mem:22},{name:"spark-ex",cpu:1.2,mem:18},{name:"monitor",cpu:0.1,mem:0.8}] },
+  { id:"i-0m1n2o3p", name:"api-gateway-01", cluster:"prod-cluster",    cur:"t3.xlarge",  rec:"t3.medium",   curCpu:2,  recCpu:1,  curMem:8,  recMem:4,  cpuAvg:18, cpuPeak:39, memAvg:22, memPeak:44, savings:48,  conf:"High",   pool:"Healthy", autoMode:false, pods:[{name:"gateway",cpu:0.5,mem:1.4},{name:"ratelimit",cpu:0.2,mem:0.6}] },
+  { id:"i-0q4r5s6t", name:"data-ingress",   cluster:"data-cluster",    cur:"m5.4xlarge", rec:"m5.2xlarge",  curCpu:8,  recCpu:4,  curMem:32, recMem:16, cpuAvg:29, cpuPeak:55, memAvg:31, memPeak:57, savings:384, conf:"High",   pool:"Healthy", autoMode:false, pods:[{name:"kafka-c",cpu:1.2,mem:4.2},{name:"etl",cpu:0.8,mem:3.1},{name:"s3-sync",cpu:0.4,mem:1.8}] },
+  { id:"i-0u7v8w9x", name:"ml-trainer",     cluster:"data-cluster",    cur:"c5.9xlarge", rec:"c5.4xlarge",  curCpu:18, recCpu:8,  curMem:72, recMem:32, cpuAvg:61, cpuPeak:82, memAvg:44, memPeak:69, savings:520, conf:"Low",    pool:"Unknown", autoMode:false, pods:[{name:"trainer",cpu:7.2,mem:28},{name:"eval",cpu:2.1,mem:9},{name:"data-ld",cpu:0.8,mem:3}] },
+];
 
-// ─── Shared UI ────────────────────────────────────────────────────────────────
-const Badge = ({ color, bg, border, children }) => (
-    <span style={{ display: "inline-flex", alignItems: "center", gap: 3, padding: "2px 8px", borderRadius: 99, fontSize: 11, fontWeight: 600, color, background: bg, border: border ? `1px solid ${border}` : "none", whiteSpace: "nowrap" }}>{children}</span>
-);
+const HISTORY = [
+  { id:1, date:"Feb 20, 2026", node:"web-prod-01",    cluster:"prod-cluster",    from:"m5.xlarge",  to:"m5.large",    mode:"Manual", savings:92,  cpuBefore:34, cpuAfter:51, memBefore:28, memAfter:42, ok:true,  binBefore:[{name:"nginx",pct:20},{name:"app-svc",pct:40},{name:"cache",pct:10},{name:"free",pct:30}], binAfter:[{name:"nginx",pct:40},{name:"app-svc",pct:80},{name:"cache",pct:20}] },
+  { id:2, date:"Feb 18, 2026", node:"worker-04",      cluster:"prod-cluster",    from:"c5.2xlarge", to:"c5.xlarge",   mode:"Auto",   savings:137, cpuBefore:22, cpuAfter:44, memBefore:18, memAfter:36, ok:true,  binBefore:[{name:"worker-a",pct:28},{name:"worker-b",pct:23},{name:"queue",pct:8},{name:"free",pct:41}], binAfter:[{name:"worker-a",pct:56},{name:"worker-b",pct:46},{name:"queue",pct:16}] },
+  { id:3, date:"Feb 15, 2026", node:"api-gateway-02", cluster:"prod-cluster",    from:"t3.xlarge",  to:"t3.medium",   mode:"Manual", savings:48,  cpuBefore:18, cpuAfter:36, memBefore:22, memAfter:44, ok:true,  binBefore:[{name:"gateway",pct:25},{name:"ratelimit",pct:10},{name:"free",pct:65}], binAfter:[{name:"gateway",pct:50},{name:"ratelimit",pct:20}] },
+  { id:4, date:"Feb 12, 2026", node:"data-ingress",   cluster:"data-cluster",    from:"m5.4xlarge", to:"m5.2xlarge",  mode:"Auto",   savings:384, cpuBefore:29, cpuAfter:58, memBefore:31, memAfter:62, ok:true,  binBefore:[{name:"kafka-c",pct:15},{name:"etl",pct:10},{name:"s3-sync",pct:5},{name:"free",pct:70}], binAfter:[{name:"kafka-c",pct:30},{name:"etl",pct:20},{name:"s3-sync",pct:10}] },
+  { id:5, date:"Feb 10, 2026", node:"cache-01",       cluster:"staging-cluster", from:"r5.xlarge",  to:"r5.large",    mode:"Auto",   savings:110, cpuBefore:41, cpuAfter:68, memBefore:54, memAfter:78, ok:false, binBefore:[{name:"redis",pct:41},{name:"monitor",pct:5},{name:"free",pct:54}], binAfter:[{name:"redis",pct:68},{name:"monitor",pct:10}] },
+];
 
-const Btn = ({ children, variant = "primary", onClick, small, disabled, full, style: sx }) => {
-    const v = {
-        primary: { background: C.indigo, color: "#fff", border: "none" },
-        ghost: { background: "transparent", color: C.textSec, border: `1px solid ${C.border}` },
-        success: { background: C.greenBg, color: C.green, border: `1px solid ${C.greenMid}` },
-        danger: { background: C.redBg, color: C.red, border: `1px solid ${C.redMid}` },
-        outline: { background: "transparent", color: C.indigo, border: `1px solid ${C.indigo}` },
-    };
-    return (
-        <button onClick={onClick} disabled={disabled} style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6, padding: small ? "5px 11px" : "8px 16px", borderRadius: 8, fontSize: small ? 12 : 13, fontWeight: 600, cursor: disabled ? "not-allowed" : "pointer", opacity: disabled ? 0.45 : 1, fontFamily: F.sans, width: full ? "100%" : "auto", whiteSpace: "nowrap", ...v[variant], ...sx }}>{children}</button>
-    );
-};
+const POD_COLORS = ["#3b82f6","#8b5cf6","#10b981","#f59e0b","#ef4444","#06b6d4","#84cc16"];
 
-const Card = ({ children, style: sx }) => (
-    <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, overflow: "hidden", ...sx }}>{children}</div>
-);
-
-const SectionHead = ({ label, right }) => (
-    <div style={{ padding: "12px 18px", borderBottom: `1px solid ${C.border}`, display: "flex", alignItems: "center", justifyContents: "space-between" }}>
-        <span style={{ fontSize: 11, fontWeight: 700, color: C.textMuted, letterSpacing: "0.07em", textTransform: "uppercase" }}>{label}</span>
-        {right && <div style={{ marginLeft: "auto" }}>{right}</div>}
-    </div>
-);
-
-const PBar = ({ value, max = 100, color, height = 5 }) => {
-    const pct = Math.min((value / max) * 100, 100);
-    const col = color || (pct > 80 ? C.red : pct > 60 ? C.amber : C.indigo);
-    return (
-        <div style={{ background: "#e2e8f0", borderRadius: 99, height, overflow: "hidden" }}>
-            <div style={{ height: "100%", borderRadius: 99, background: col, width: `${pct}%`, transition: "width 0.6s ease" }} />
-        </div>
-    );
-};
-
-const Ring = ({ value, size = 52, label, color }) => {
-    const r = (size - 8) / 2, circ = 2 * Math.PI * r;
-    const col = color || (value > 80 ? C.red : value > 60 ? C.amber : C.indigo);
-    return (
-        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 2 }}>
-            <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
-                <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="#e2e8f0" strokeWidth={6} />
-                <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={col} strokeWidth={6} strokeLinecap="round"
-                    strokeDasharray={circ} strokeDashoffset={circ * (1 - value / 100)} transform={`rotate(-90 ${size / 2} ${size / 2})`} />
-                <text x={size / 2} y={size / 2 + 4} textAnchor="middle" fontSize={10} fontWeight={700} fill={col} fontFamily={F.sans}>{value}%</text>
-            </svg>
-            {label && <span style={{ fontSize: 10, color: C.textMuted, fontWeight: 600 }}>{label}</span>}
-        </div>
-    );
-};
-
-const Spark = ({ data, color = C.indigo, W = 80, H = 30 }) => {
-    if (!data?.length) return null;
-    const max = Math.max(...data), min = Math.min(...data), range = max - min || 1;
-    const pts = data.map((v, i) => `${(i / (data.length - 1)) * W},${H - 2 - ((v - min) / range) * (H - 6)}`).join(" ");
-    const area = `M ${pts.split(" ").join(" L ")} L ${W},${H} L 0,${H} Z`;
-    return (
-        <svg width={W} height={H} style={{ overflow: "visible" }}>
-            <defs><linearGradient id={`sg${color.replace("#", "")}`} x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={color} stopOpacity="0.25" /><stop offset="100%" stopColor={color} stopOpacity="0.02" /></linearGradient></defs>
-            <path d={area} fill={`url(#sg${color.replace("#", "")})`} />
-            <polyline points={pts} fill="none" stroke={color} strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" />
-            {data.map((v, i) => i === data.length - 1 ? <circle key={i} cx={(i / (data.length - 1)) * W} cy={H - 2 - ((v - min) / range) * (H - 6)} r={2.5} fill={color} stroke="#fff" strokeWidth={1.5} /> : null)}
-        </svg>
-    );
-};
-
-const CostBarChart = ({ trend }) => {
-    const W = 400, H = 110, PAD = { l: 42, r: 10, t: 10, b: 24 };
-    const max = Math.max(...trend.map(d => d.before));
-    const barW = (W - PAD.l - PAD.r) / (trend.length * 2 + trend.length - 1) * 1.5;
-    return (
-        <svg width="100%" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="xMidYMid meet">
-            {[0.33, 0.66, 1].map(f => (
-                <g key={f}>
-                    <line x1={PAD.l} y1={PAD.t + (1 - f) * (H - PAD.t - PAD.b)} x2={W - PAD.r} y2={PAD.t + (1 - f) * (H - PAD.t - PAD.b)} stroke="#e2e8f0" strokeWidth={1} />
-                    <text x={PAD.l - 4} y={PAD.t + (1 - f) * (H - PAD.t - PAD.b) + 3} textAnchor="end" fontSize={9} fill={C.textMuted}>${Math.round(max * f / 1000)}K</text>
-                </g>
-            ))}
-            {trend.map((d, i) => {
-                const groupW = (W - PAD.l - PAD.r) / trend.length;
-                const gx = PAD.l + i * groupW + groupW * 0.1;
-                const bw = groupW * 0.35;
-                const bH = H - PAD.t - PAD.b;
-                const beforeH = (d.before / max) * bH, afterH = (d.after / max) * bH;
-                return (
-                    <g key={i}>
-                        <rect x={gx} y={PAD.t + bH - beforeH} width={bw} height={beforeH} fill={C.red} opacity={0.7} rx={2} />
-                        <rect x={gx + bw + 2} y={PAD.t + bH - afterH} width={bw} height={afterH} fill={C.green} opacity={0.8} rx={2} />
-                        <text x={gx + bw + 1} y={H - 4} textAnchor="middle" fontSize={9} fill={C.textMuted}>{d.m}</text>
-                    </g>
-                );
-            })}
-            <g transform={`translate(${W - 90},${PAD.t})`}>
-                <rect width={8} height={8} fill={C.red} opacity={0.7} rx={1} />
-                <text x={11} y={7} fontSize={9} fill={C.textSec}>Before</text>
-                <rect y={13} width={8} height={8} fill={C.green} opacity={0.8} rx={1} />
-                <text x={11} y={20} fontSize={9} fill={C.textSec}>After</text>
-            </g>
-        </svg>
-    );
-};
-
-const SavingsDonut = ({ current, recommended, size = 120 }) => {
-    const r = (size - 16) / 2, circ = 2 * Math.PI * r;
-    const recPct = recommended / current;
-    const savPct = 1 - recPct;
-    return (
-        <div style={{ position: "relative", width: size, height: size }}>
-            <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
-                <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={C.red} strokeWidth={14} opacity={0.18} />
-                <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={C.green} strokeWidth={14} strokeLinecap="butt"
-                    strokeDasharray={circ} strokeDashoffset={circ * (1 - savPct)} transform={`rotate(-90 ${size / 2} ${size / 2})`} />
-                <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={C.red} strokeWidth={14} strokeLinecap="butt"
-                    strokeDasharray={`${circ * recPct} ${circ}`} strokeDashoffset={circ * savPct} transform={`rotate(-90 ${size / 2} ${size / 2})`} opacity={0.65} />
-                <text x={size / 2} y={size / 2 - 5} textAnchor="middle" fontSize={13} fontWeight={800} fill={C.green} fontFamily={F.sans}>{Math.round(savPct * 100)}%</text>
-                <text x={size / 2} y={size / 2 + 9} textAnchor="middle" fontSize={8} fill={C.textMuted} fontFamily={F.sans}>SAVED</text>
-            </svg>
-        </div>
-    );
-};
-
-const BinPackNode = ({ node }) => {
-    const cpuUsed = node.pods.reduce((a, p) => a + p.cpu, 0);
-    const memUsed = node.pods.reduce((a, p) => a + p.mem, 0);
-    return (
-        <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, overflow: "hidden", background: C.surface, minWidth: 170 }}>
-            <div style={{ padding: "7px 10px", background: C.surfaceAlt, borderBottom: `1px solid ${C.border}` }}>
-                <div style={{ fontSize: 11, fontWeight: 700, color: C.text }}>{node.type}</div>
-                <div style={{ fontSize: 10, color: C.textMuted }}>{node.vcpu}vCPU · {node.mem}GB</div>
-            </div>
-            <div style={{ padding: "7px 10px", borderBottom: `1px solid ${C.border}` }}>
-                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: C.textSec, marginBottom: 2 }}>
-                    <span>CPU</span><span style={{ fontWeight: 700, color: (cpuUsed / node.vcpu) > 0.8 ? C.red : (cpuUsed / node.vcpu) > 0.6 ? C.amber : C.green }}>{Math.round((cpuUsed / node.vcpu) * 100)}%</span>
-                </div>
-                <PBar value={(cpuUsed / node.vcpu) * 100} height={4} />
-                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: C.textSec, marginBottom: 2, marginTop: 5 }}>
-                    <span>MEM</span><span style={{ fontWeight: 700, color: (memUsed / node.mem) > 0.8 ? C.red : (memUsed / node.mem) > 0.6 ? C.amber : C.indigo }}>{Math.round((memUsed / node.mem) * 100)}%</span>
-                </div>
-                <PBar value={(memUsed / node.mem) * 100} height={4} color={C.purple} />
-            </div>
-            <div style={{ padding: "7px 10px" }}>
-                <div style={{ fontSize: 9, fontWeight: 700, color: C.textMuted, marginBottom: 4 }}>PODS ({node.pods.length})</div>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 3 }}>
-                    {node.pods.map((p, i) => (
-                        <span key={i} title={`${p.name} • ${p.cpu}CPU • ${p.mem}GB`} style={{ padding: "2px 5px", borderRadius: 3, fontSize: 9, fontWeight: 600, background: `${NS_COLOR[p.ns] || C.indigo}16`, color: NS_COLOR[p.ns] || C.indigo, border: `1px solid ${NS_COLOR[p.ns] || C.indigo}30` }}>{p.name}</span>
-                    ))}
-                </div>
-            </div>
-        </div>
-    );
-};
-
-// ─── Detail Drawer Modal ──────────────────────────────────────────────────────
-function DetailDrawer({ rec, mode, onClose, onApply }) {
-    const annualSavings = rec.savings * 12;
-    const spotAnnualSavings = rec.spotAvail ? rec.savings * (1 + rec.spotSavings / 100) * 12 : null;
-    const vcpuReduction = rec.vcpuCurrent - rec.vcpuRec;
-    const memReduction = rec.memGBCurrent - rec.memGBRec;
-    const isApplied = rec.status === "applied";
-
-    return (
-        <div style={{ position: "fixed", inset: 0, zIndex: 400, display: "flex", alignItems: "stretch", justifyContent: "flex-end", animation: "fadeIn 0.15s" }}>
-            <div onClick={onClose} style={{ position: "absolute", inset: 0, background: "rgba(15,23,42,0.45)", backdropFilter: "blur(3px)" }} />
-            <div style={{ position: "relative", width: "min(680px, 96vw)", height: "100vh", background: C.surface, overflowY: "auto", animation: "slideIn 0.25s ease", boxShadow: "-12px 0 60px rgba(0,0,0,0.15)", display: "flex", flexDirection: "column" }}>
-                <div style={{ padding: "18px 24px", borderBottom: `1px solid ${C.border}`, display: "flex", justifyContent: "space-between", alignItems: "flex-start", position: "sticky", top: 0, background: C.surface, zIndex: 10 }}>
-                    <div>
-                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-                            <ServerI s={14} />
-                            <span style={{ fontSize: 16, fontWeight: 800, color: C.text, letterSpacing: "-0.02em" }}>{rec.name}</span>
-                            {isApplied && <Badge color={C.green} bg={C.greenBg} border={C.greenMid}><CheckI s={11} />Applied</Badge>}
-                        </div>
-                        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                            <Badge color={NS_COLOR[rec.namespace] || C.indigo} bg={`${NS_COLOR[rec.namespace] || C.indigo}12`}>{rec.namespace || 'default'}</Badge>
-                            <Badge color={confColor[rec.confidence]} bg={`${confColor[rec.confidence]}14`}>{rec.confidence} confidence</Badge>
-                            {mode === "karpenter_insights" && <Badge color={C.purple} bg={C.purpleBg}>K8s-aware</Badge>}
-                        </div>
-                    </div>
-                    <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: C.textMuted, padding: 4, borderRadius: 6, display: "flex" }}><XI s={18} /></button>
-                </div>
-
-                <div style={{ padding: "20px 24px", flex: 1, display: "flex", flexDirection: "column", gap: 20 }}>
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 16, alignItems: "center", padding: "18px 20px", borderRadius: 12, background: `linear-gradient(135deg, ${C.indigoBg}, #f0fdf4)`, border: `1px solid ${C.indigoMid}` }}>
-                        <div>
-                            <div style={{ fontSize: 11, fontWeight: 700, color: C.textMuted, letterSpacing: "0.07em", marginBottom: 10 }}>INSTANCE CHANGE</div>
-                            <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 14 }}>
-                                <div style={{ textAlign: "center" }}>
-                                    <div style={{ fontSize: 18, fontWeight: 800, color: C.red, fontFamily: "monospace" }}>{rec.currentType}</div>
-                                    <div style={{ fontSize: 11, color: C.textMuted }}>${rec.currentCost?.toFixed(0) || 0}/mo</div>
-                                    <div style={{ fontSize: 10, color: C.textMuted }}>{rec.vcpuCurrent}vCPU · {rec.memGBCurrent}GB</div>
-                                </div>
-                                <div style={{ color: C.indigo }}><ArrowI s={20} /></div>
-                                <div style={{ textAlign: "center" }}>
-                                    <div style={{ fontSize: 18, fontWeight: 800, color: C.indigo, fontFamily: "monospace" }}>{rec.recType}</div>
-                                    <div style={{ fontSize: 11, color: C.textMuted }}>${rec.recCost?.toFixed(0) || 0}/mo</div>
-                                    <div style={{ fontSize: 10, color: C.textMuted }}>{rec.vcpuRec}vCPU · {rec.memGBRec}GB</div>
-                                </div>
-                            </div>
-                            <div style={{ display: "flex", gap: 12 }}>
-                                <div style={{ padding: "8px 14px", borderRadius: 8, background: C.greenBg, border: `1px solid ${C.greenMid}` }}>
-                                    <div style={{ fontSize: 11, color: C.textMuted, marginBottom: 1 }}>Monthly</div>
-                                    <div style={{ fontSize: 18, fontWeight: 800, color: C.green }}>${rec.savings?.toFixed(0) || 0}</div>
-                                </div>
-                                <div style={{ padding: "8px 14px", borderRadius: 8, background: C.greenBg, border: `1px solid ${C.greenMid}` }}>
-                                    <div style={{ fontSize: 11, color: C.textMuted, marginBottom: 1 }}>Annual</div>
-                                    <div style={{ fontSize: 18, fontWeight: 800, color: C.green }}>${annualSavings?.toFixed(0) || 0}</div>
-                                </div>
-                            </div>
-                        </div>
-                        <SavingsDonut current={rec.currentCost || 1} recommended={rec.recCost || 0} size={130} />
-                    </div>
-
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-                        {[
-                            { label: "vCPU Reduction", icon: <CpuI s={15} />, val: `${vcpuReduction || 0} vCPU`, sub: `${rec.vcpuCurrent} → ${rec.vcpuRec}`, color: C.indigo, bg: C.indigoBg },
-                            { label: "Memory Reduction", icon: <MemI s={15} />, val: `${memReduction || 0} GB`, sub: `${rec.memGBCurrent}GB → ${rec.memGBRec}GB`, color: C.purple, bg: C.purpleBg },
-                        ].map(k => (
-                            <div key={k.label} style={{ padding: "12px 14px", borderRadius: 10, background: k.bg, border: `1px solid ${k.color}25`, display: "flex", alignItems: "center", gap: 12 }}>
-                                <div style={{ width: 36, height: 36, borderRadius: 8, background: C.surface, display: "flex", alignItems: "center", justifyContent: "center", color: k.color }}>{k.icon}</div>
-                                <div>
-                                    <div style={{ fontSize: 10, fontWeight: 700, color: C.textMuted, letterSpacing: "0.06em" }}>{k.label}</div>
-                                    <div style={{ fontSize: 18, fontWeight: 800, color: k.color }}>{k.val}</div>
-                                    <div style={{ fontSize: 11, color: C.textSec }}>{k.sub}</div>
-                                </div>
-                            </div>
-                        ))}
-                    </div>
-
-                    <Card>
-                        <SectionHead label="CPU & Memory Utilization" />
-                        <div style={{ padding: "16px 18px" }}>
-                            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20, marginBottom: 16 }}>
-                                <div>
-                                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
-                                        <div style={{ display: "flex", alignItems: "center", gap: 5 }}><CpuI s={12} /><span style={{ fontSize: 11, fontWeight: 600, color: C.textSec }}>CPU Utilization</span></div>
-                                    </div>
-                                    <div style={{ marginBottom: 6 }}>
-                                        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: C.textSec, marginBottom: 3 }}>
-                                            <span>Average</span><span style={{ fontWeight: 700 }}>{rec.cpuAvg}%</span>
-                                        </div>
-                                        <PBar value={rec.cpuAvg} color={C.indigo} />
-                                    </div>
-                                </div>
-                                <div>
-                                    <div style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: 6 }}><MemI s={12} /><span style={{ fontSize: 11, fontWeight: 600, color: C.textSec }}>Memory Utilization</span></div>
-                                    <div style={{ marginBottom: 6 }}>
-                                        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: C.textSec, marginBottom: 3 }}>
-                                            <span>Average</span><span style={{ fontWeight: 700 }}>{rec.memAvg}%</span>
-                                        </div>
-                                        <PBar value={rec.memAvg} color={C.purple} />
-                                    </div>
-                                </div>
-                            </div>
-                            <div style={{ display: "flex", gap: 16, justifyContent: "center", padding: "10px 0", borderTop: `1px solid ${C.border}` }}>
-                                <Ring value={rec.cpuAvg} size={56} label="CPU Avg" color={C.indigo} />
-                                <Ring value={rec.memAvg} size={56} label="Mem Avg" color={C.purple} />
-                            </div>
-                        </div>
-                    </Card>
-
-                    <Card>
-                        <SectionHead label={`Pods & Workload`} />
-                        <div style={{ padding: "12px 18px" }}>
-                            <div style={{ fontSize: 11, color: C.textSec, padding: "6px 0" }}>{rec.reason || "Underutilized instance, candidates for downsizing."}</div>
-                            {mode === "karpenter_insights" && (
-                                <div style={{ marginTop: 10, padding: "8px 12px", borderRadius: 8, background: C.indigoBg, border: `1px solid ${C.indigoMid}`, display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: C.indigo }}>
-                                    <InfoI s={13} />Karpenter score <strong>{rec.karpScore || 8}/10</strong> — analyzes live pod specs, taints, topology constraints.
-                                </div>
-                            )}
-                        </div>
-                    </Card>
-
-                    {!isApplied && (
-                        <div style={{ display: "flex", gap: 10, paddingTop: 4 }}>
-                            <Btn variant="ghost" onClick={onClose} sx={{ flex: 1 }}>Cancel</Btn>
-                            <Btn onClick={() => onApply(rec)} sx={{ flex: 2 }}><CheckI s={13} /> Apply Recommendation</Btn>
-                        </div>
-                    )}
-                </div>
-            </div>
-        </div>
-    );
-}
-
-// ─── Apply Confirmation ───────────────────────────────────────────────────────
-function ApplyConfirmModal({ rec, mode, onClose, onConfirm }) {
-    const steps = mode === "karpenter_insights"
-        ? ["Provision new node (" + rec.recType + ")", "Cordon current node", "Drain pods gracefully", "Terminate old node"]
-        : ["Stop instance", "Change instance type", "Start instance", "Verify pods"];
-    return (
-        <div style={{ position: "fixed", inset: 0, zIndex: 500, display: "flex", alignItems: "center", justifyContent: "center", padding: 20, animation: "fadeIn 0.15s" }}>
-            <div onClick={onClose} style={{ position: "absolute", inset: 0, background: "rgba(15,23,42,0.5)", backdropFilter: "blur(4px)" }} />
-            <div style={{ position: "relative", background: C.surface, borderRadius: 16, width: "100%", maxWidth: 440, boxShadow: "0 24px 60px rgba(0,0,0,0.2)", overflow: "hidden" }}>
-                <div style={{ padding: "16px 20px", borderBottom: `1px solid ${C.border}`, display: "flex", justifyContent: "space-between" }}>
-                    <div style={{ fontSize: 14, fontWeight: 800 }}>Confirm: Apply Recommendation</div>
-                    <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: C.textMuted, display: "flex" }}><XI s={16} /></button>
-                </div>
-                <div style={{ padding: "16px 20px" }}>
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr auto 1fr", gap: 10, alignItems: "center", marginBottom: 14 }}>
-                        <div style={{ padding: "9px 12px", borderRadius: 8, background: C.redBg, border: `1px solid ${C.redMid}`, textAlign: "center" }}>
-                            <div style={{ fontSize: 12, fontWeight: 800, color: C.text }}>{rec.currentType}</div>
-                            <div style={{ fontSize: 12, color: C.red, fontWeight: 600 }}>${rec.currentCost?.toFixed(0) || 0}/mo</div>
-                        </div>
-                        <ArrowI s={18} />
-                        <div style={{ padding: "9px 12px", borderRadius: 8, background: C.greenBg, border: `1px solid ${C.greenMid}`, textAlign: "center" }}>
-                            <div style={{ fontSize: 12, fontWeight: 800, color: C.text }}>{rec.recType}</div>
-                            <div style={{ fontSize: 12, color: C.green, fontWeight: 600 }}>${rec.recCost?.toFixed(0) || 0}/mo</div>
-                        </div>
-                    </div>
-                    <div style={{ padding: "8px 12px", borderRadius: 8, background: C.indigoBg, border: `1px solid ${C.indigoMid}`, marginBottom: 14, display: "flex", gap: 8, alignItems: "center", fontSize: 13 }}>
-                        <TrendI s={14} /><span style={{ fontWeight: 700, color: C.indigo }}>Save ${rec.savings?.toFixed(0) || 0}/mo · ${(rec.savings * 12 || 0).toFixed(0)}/year</span>
-                    </div>
-                    {steps.map((s, i) => (
-                        <div key={i} style={{ display: "flex", gap: 8, padding: "5px 0", borderBottom: i < steps.length - 1 ? `1px solid ${C.border}` : "none" }}>
-                            <div style={{ width: 18, height: 18, borderRadius: "50%", background: C.indigoBg, color: C.indigo, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, fontWeight: 700, flexShrink: 0 }}>{i + 1}</div>
-                            <span style={{ fontSize: 12, color: C.text }}>{s}</span>
-                        </div>
-                    ))}
-                    <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
-                        <Btn variant="ghost" onClick={onClose} sx={{ flex: 1 }}>Cancel</Btn>
-                        <Btn onClick={onConfirm} sx={{ flex: 2 }}><CheckI s={13} /> Confirm Apply</Btn>
-                    </div>
-                </div>
-            </div>
-        </div>
-    );
-}
-
-// ─── Clean Recommendations Table ──────────────────────────────────────────────
-function RecsTable({ recs, mode, onDetail, onApply }) {
-    const [filter, setFilter] = useState("");
-    const filtered = recs.filter(r => !filter || r.name?.toLowerCase().includes(filter.toLowerCase()) || r.namespace?.includes(filter));
-    const pendingCount = recs.filter(r => r.status === "pending").length;
-
-    return (
-        <Card>
-            <div style={{ padding: "16px 20px", borderBottom: `1px solid ${C.border}`, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <GridI s={16} />
-                    <span style={{ fontSize: 12, fontWeight: 600, color: C.textMuted, letterSpacing: "0.05em", textTransform: "uppercase" }}>
-                        {mode === "karpenter_insights" ? "Karpenter Insights" : "Activity"} Recommendations
-                    </span>
-                    <Badge color={C.indigo} bg={C.indigoBg}>{pendingCount} pending</Badge>
-                </div>
-                <div style={{ display: "flex", gap: 8 }}>
-                    <input value={filter} onChange={e => setFilter(e.target.value)} placeholder="Filter instances…" style={{ padding: "5px 12px", fontSize: 12, border: `1px solid ${C.border}`, borderRadius: 7, background: C.surfaceAlt, outline: "none", fontFamily: F.sans, width: 170 }} />
-                    <Btn variant="success" small><CheckI s={12} />Apply All</Btn>
-                </div>
-            </div>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-                <thead>
-                    <tr style={{ background: C.surfaceAlt, borderBottom: `1px solid ${C.border}` }}>
-                        <th style={{ padding: "12px 20px", textAlign: "left", fontSize: 12, fontWeight: 600, color: C.textMuted, letterSpacing: "0.05em", textTransform: "uppercase" }}>Instance</th>
-                        <th style={{ padding: "12px 10px", textAlign: "center", fontSize: 12, fontWeight: 600, color: C.textMuted, letterSpacing: "0.05em", textTransform: "uppercase" }}>Current → Recommended</th>
-                        <th style={{ padding: "12px 10px", textAlign: "center", fontSize: 12, fontWeight: 600, color: C.textMuted, letterSpacing: "0.05em", textTransform: "uppercase" }}>Monthly Savings</th>
-                        <th style={{ padding: "12px 10px", textAlign: "center", fontSize: 12, fontWeight: 600, color: C.textMuted, letterSpacing: "0.05em", textTransform: "uppercase" }}>Confidence</th>
-                        <th style={{ padding: "12px 20px", textAlign: "right", fontSize: 12, fontWeight: 600, color: C.textMuted, letterSpacing: "0.05em", textTransform: "uppercase" }}>Actions</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {filtered.map((r, i) => {
-                        const isApplied = r.status === "applied";
-                        return (
-                            <tr key={r.id || i} style={{ borderBottom: i < filtered.length - 1 ? `1px solid ${C.border}` : "none", background: "transparent" }}>
-                                <td style={{ padding: "12px 18px" }}>
-                                    <div style={{ fontSize: 13, fontWeight: 700, color: C.text }}>{r.name || r.id}</div>
-                                    <div style={{ display: "flex", gap: 6, marginTop: 3 }}>
-                                        <Badge color={NS_COLOR[r.namespace] || C.indigo} bg={`${NS_COLOR[r.namespace] || C.indigo}12`}>{r.namespace || 'default'}</Badge>
-                                        {r.spotAvail && <Badge color={C.green} bg={C.greenBg}>⚡ Spot</Badge>}
-                                    </div>
-                                </td>
-                                <td style={{ padding: "12px 10px", textAlign: "center" }}>
-                                    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
-                                        <div style={{ textAlign: "right" }}>
-                                            <div style={{ fontSize: 13, fontWeight: 700, color: C.red, fontFamily: "monospace" }}>{r.currentType}</div>
-                                            <div style={{ fontSize: 11, color: C.textMuted }}>${r.currentCost?.toFixed(0) || 0}/mo</div>
-                                        </div>
-                                        <ArrowI s={14} />
-                                        <div style={{ textAlign: "left" }}>
-                                            <div style={{ fontSize: 13, fontWeight: 700, color: C.indigo, fontFamily: "monospace" }}>{r.recType}</div>
-                                            <div style={{ fontSize: 11, color: C.textMuted }}>${r.recCost?.toFixed(0) || 0}/mo</div>
-                                        </div>
-                                    </div>
-                                </td>
-                                <td style={{ padding: "12px 10px", textAlign: "center" }}>
-                                    <div style={{ fontSize: 18, fontWeight: 800, color: C.green }}>+${r.savings?.toFixed(0) || 0}</div>
-                                    <div style={{ fontSize: 11, color: C.textMuted }}>${(r.savings * 12 || 0).toFixed(0)}/yr</div>
-                                </td>
-                                <td style={{ padding: "12px 10px", textAlign: "center" }}>
-                                    <Badge color={confColor[r.confidence]} bg={`${confColor[r.confidence]}14`}>{r.confidence}</Badge>
-                                </td>
-                                <td style={{ padding: "12px 18px", textAlign: "right" }}>
-                                    <div style={{ display: "flex", gap: 6, justifyContent: "flex-end", alignItems: "center" }}>
-                                        <Btn variant="ghost" small onClick={() => onDetail(r)}>
-                                            <InfoI s={12} />Details
-                                        </Btn>
-                                        {isApplied
-                                            ? <Badge color={C.green} bg={C.greenBg} border={C.greenMid}><CheckI s={11} />Applied</Badge>
-                                            : <Btn small onClick={() => onApply(r)}><CheckI s={12} />Apply</Btn>
-                                        }
-                                    </div>
-                                </td>
-                            </tr>
-                        );
-                    })}
-                </tbody>
-            </table>
-        </Card>
-    );
-}
-
-// ─── Main ─────────────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+// ROOT
+// ═══════════════════════════════════════════════════════════════════════════════
 export default function RightSizingDashboard() {
-    const { selectedCluster } = useClusterStore();
-    const [mode, setMode] = useState("karpenter_insights");
-    const [recs, setRecs] = useState([]);
-    const [loading, setLoading] = useState(false);
+  const [nav, setNav] = useState("karpenter");
 
-    const [detail, setDetail] = useState(null);
-    const [applying, setApplying] = useState(null);
-    const [toastMsg, setToastMsg] = useState(null);
-    const [toastType, setToastType] = useState('success'); // 'success' or 'error'
+  // ── Real API Data ──
+  const { selectedCluster } = useClusterStore();
+  const [apiRecs, setApiRecs] = useState([]);
+  const [apiLoading, setApiLoading] = useState(false);
 
-    const showToast = (msg, type = 'success') => {
-        setToastMsg(msg);
-        setToastType(type);
-        setTimeout(() => setToastMsg(null), 4000); // Increased to 4s for error readability
-    };
+  useEffect(() => {
+    if (!selectedCluster?.id) return;
+    setApiLoading(true);
+    optimizationAPI.getEnrichedRightsizing(selectedCluster.id, { analysis_window_hours: 336 })
+      .then(res => {
+        const recs = Array.isArray(res.data?.recommendations) ? res.data.recommendations : (Array.isArray(res.data) ? res.data : []);
+        setApiRecs(recs);
+      })
+      .catch(err => { console.error('Failed to load recommendations', err); setApiRecs([]); })
+      .finally(() => setApiLoading(false));
+  }, [selectedCluster]);
 
-    useEffect(() => {
-        fetchData();
-    }, [selectedCluster]);
+  const navItems = [
+    { id: "karpenter",   label: "Karpenter",         Icon: Icons.Zap     },
+    { id: "config",      label: "Configuration",      Icon: Icons.Settings },
+    { id: "history",     label: "Optimization History", Icon: Icons.History },
+    { id: "savings",     label: "Savings Tracker",    Icon: Icons.Bar     },
+  ];
 
-    const fetchData = async () => {
-        try {
-            setLoading(true);
-            const clusterId = selectedCluster?.id;
-
-            // Don't fetch if no cluster selected
-            if (!clusterId) {
-                setLoading(false);
-                setRecs([]);
-                return;
-            }
-
-            const res = await optimizationAPI.getEnrichedRightsizing(clusterId, { analysis_window_hours: 336 });
-
-            const apiRecs = Array.isArray(res.data?.recommendations) ? res.data.recommendations : (Array.isArray(res.data) ? res.data : []);
-
-            // Map API data to UI format
-            const mappedRecs = apiRecs.map((r, i) => ({
-                id: r.id || `rec-${i}`,
-                name: r.controller_name || `Instance-${i}`,
-                namespace: r.namespace || 'default',
-                currentType: r.current_instance_type || 'Unknown',
-                recType: r.recommended_instance_type || 'Unknown',
-                currentCost: (r.savings_monthly || 0) * 1.5, // Mock current cost to make savings calculation somewhat realistic
-                recCost: ((r.savings_monthly || 0) * 1.5) - (r.savings_monthly || 0),
-                savings: r.savings_monthly || 0,
-                cpuAvg: Math.round((r.cpu_avg_millicores / (r.current_cpu_request_millicores || 1000)) * 100) || 20,
-                memAvg: Math.round((r.memory_avg_mb / (r.current_memory_request_mb || 1024)) * 100) || 30,
-                confidence: r.confidence || 'MEDIUM',
-                status: 'pending',
-                reason: r.description || 'Instance is underutilized',
-                vcpuCurrent: Math.round(r.current_cpu_request_millicores / 1000) || 2,
-                vcpuRec: Math.round(r.recommended_cpu_request_millicores / 1000) || 1,
-                memGBCurrent: Math.round(r.current_memory_request_mb / 1024) || 8,
-                memGBRec: Math.round(r.recommended_memory_request_mb / 1024) || 4,
-            }));
-
-            setRecs(mappedRecs);
-        } catch (err) {
-            console.error('Failed to load recommendations', err);
-            // Fallback to empty if error
-            setRecs([]);
-        } finally {
-            setLoading(false);
-        }
-    };
-
-    const handleApply = (rec) => { setDetail(null); setApplying(rec); };
-
-    const handleConfirm = async () => {
-        try {
-            await karpenterAPI.applyRecommendation(applying.id, { recommended_type: applying.recType });
-            setRecs(prev => prev.map(r => r.id === applying.id ? { ...r, status: "applied" } : r));
-            showToast(`✓ Applied: ${applying.name} → ${applying.recType}`, 'success');
-        } catch (err) {
-            console.error('Apply recommendation failed:', err);
-
-            // Extract error message from response
-            const errorMsg = err.response?.data?.detail || err.message || 'Unknown error';
-
-            // Show error toast with details
-            showToast(`✗ Failed to apply ${applying.name}: ${errorMsg}`, 'error');
-
-            // Log additional context for debugging
-            if (err.response) {
-                console.error('Error response:', {
-                    status: err.response.status,
-                    data: err.response.data,
-                    headers: err.response.headers
-                });
-            }
-        } finally {
-            setApplying(null);
-        }
-    };
-
-    const handleModeSwitch = async (newMode) => {
-        if (!selectedCluster?.id) {
-            showToast('Please select a cluster first', 'error');
-            return;
-        }
-
-        try {
-            if (newMode === 'auto') {
-                // Switch to auto mode via API
-                await karpenterAPI.switchMode(selectedCluster.id, { mode: 'auto' });
-                showToast('✓ Switched to Auto mode - Karpenter will now make changes automatically', 'success');
-                // Refresh cluster data
-                setTimeout(() => window.location.reload(), 2000);
-            } else {
-                // Just switch UI mode for insights/auto-sizing views
-                setMode(newMode);
-            }
-        } catch (err) {
-            console.error('Mode switch failed:', err);
-            const errorMsg = err.response?.data?.detail || err.message || 'Failed to switch mode';
-            showToast(`✗ ${errorMsg}`, 'error');
-        }
-    };
-
-    const totalSavings = recs.filter(r => r.status === 'pending').reduce((a, r) => a + r.savings, 0);
-
-    return (
-        <div style={{ minHeight: "100vh", background: C.bg, fontFamily: F.sans, color: C.text }}>
-            <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&display=swap');
-        *{box-sizing:border-box;margin:0;padding:0;}
-        button{font-family:inherit;}
-        @keyframes fadeIn{from{opacity:0}to{opacity:1}}
-        @keyframes slideIn{from{transform:translateX(100%)}to{transform:translateX(0)}}
-        @keyframes popIn{from{transform:scale(0.95);opacity:0}to{transform:scale(1);opacity:1}}
-        @keyframes blink{0%,100%{opacity:1}50%{opacity:0.3}}
-        tr:hover td{background:rgba(79,70,229,0.02);}
-        input[type=range]{cursor:pointer;}
-      `}</style>
-
-            {/* Modals */}
-            {detail && <DetailDrawer rec={detail} mode={mode} onClose={() => setDetail(null)} onApply={handleApply} />}
-            {applying && <ApplyConfirmModal rec={applying} mode={mode} onClose={() => setApplying(null)} onConfirm={handleConfirm} />}
-
-            {/* Toast */}
-            {toastMsg && (
-                <div style={{
-                    position: "fixed", top: 20, right: 20, zIndex: 600, padding: "10px 16px", borderRadius: 10,
-                    background: toastType === 'error' ? '#fee2e2' : C.greenBg,
-                    border: `1px solid ${toastType === 'error' ? '#f87171' : C.greenMid}`,
-                    color: toastType === 'error' ? '#991b1b' : C.green,
-                    fontSize: 13, fontWeight: 600, boxShadow: "0 4px 20px rgba(0,0,0,0.1)", animation: "fadeIn 0.2s",
-                    display: "flex", alignItems: "center", gap: 8, maxWidth: "400px"
-                }}>
-                    {toastType === 'success' && <CheckI s={14} />}
-                    {toastMsg}
-                </div>
-            )}
-
-            {/* Topbar */}
-            <div style={{ background: C.surface, borderBottom: `1px solid ${C.border}`, padding: "0 28px", height: 64, display: "flex", alignItems: "center", justifyContent: "space-between", position: "sticky", top: 0, zIndex: 50 }}>
-                <div>
-                    <div style={{ fontSize: 18, fontWeight: 800, color: C.text, letterSpacing: "-0.02em" }}>Right-Sizing Dashboard</div>
-                    <div style={{ fontSize: 13, color: C.textSec, marginTop: 2 }}>Optimize instance types and reduce infrastructure costs</div>
-                </div>
-                <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
-                    <Btn
-                        onClick={() => handleModeSwitch('karpenter_insights')}
-                        variant="outline"
-                        sx={{
-                            background: mode === 'karpenter_insights' ? C.indigoBg : 'transparent',
-                            border: `1px solid ${C.indigoMid}`,
-                            color: C.indigo,
-                            padding: "8px 16px"
-                        }}
-                    >
-                        <EyeI s={14} /> Karpenter Insights
-                    </Btn>
-                    <Btn
-                        onClick={() => handleModeSwitch('auto_sizing')}
-                        variant="ghost"
-                        sx={{
-                            background: mode === 'auto_sizing' ? C.surfaceAlt : C.surface,
-                            border: `1px solid ${C.border}`,
-                            color: C.textSec,
-                            padding: "8px 16px"
-                        }}
-                    >
-                        <ZapI s={14} /> Auto-Sizing
-                    </Btn>
-                    <div style={{ width: 1, height: 24, background: C.border, margin: "0 4px" }} />
-                    <button style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, width: 36, height: 36, display: "flex", alignItems: "center", justifyContent: "center", color: C.textSec, cursor: "pointer", transition: "all 0.2s" }}><SettI s={16} /></button>
-                </div>
-            </div>
-
-            {/* Content */}
-            <div style={{ padding: "20px 28px", maxWidth: 1400, margin: "0 auto" }}>
-                {loading ? (
-                    <div style={{ display: 'flex', justifyContent: 'center', marginTop: 100 }}><div className="animate-spin rounded-full h-10 w-10 border-b-2 border-indigo-600"></div></div>
-                ) : (
-                    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-                        {/* Banner */}
-                        <div style={{ padding: "16px 20px", borderRadius: 12, background: `linear-gradient(135deg,${C.indigoBg},#f0f9ff)`, border: `1px solid ${C.indigoMid}`, display: "flex", alignItems: "center", gap: 16 }}>
-                            <div style={{ width: 40, height: 40, borderRadius: 10, background: C.surface, display: "flex", alignItems: "center", justifyContent: "center", color: C.indigo, border: `1px solid ${C.indigoMid}`, flexShrink: 0 }}><EyeI s={18} /></div>
-                            <div style={{ flex: 1 }}>
-                                <div style={{ fontSize: 14, fontWeight: 700, color: C.text, marginBottom: 4 }}>Insights Mode — No changes are made automatically</div>
-                                <div style={{ fontSize: 13, color: C.textSec }}>Karpenter runs in dry-run, reading live pod specs, resource requests, taints and real-time spot data. You approve each change.</div>
-                            </div>
-                            <div style={{ display: "flex", gap: 12, alignItems: "center", marginRight: 8 }}>
-                                <Badge color={C.green} border={C.greenMid} bg="transparent" sx={{ padding: "4px 8px" }}><CheckI s={12} /> K8s-aware</Badge>
-                                <Badge color={C.indigo} border="transparent" bg="transparent" sx={{ padding: "4px 8px" }}><CheckI s={12} /> Live spot</Badge>
-                                <Badge color={C.purple} border="transparent" bg="transparent" sx={{ padding: "4px 8px" }}><CheckI s={12} /> Dry-run</Badge>
-                            </div>
-                            <Btn
-                                onClick={() => handleModeSwitch('auto')}
-                                variant="outline"
-                                sx={{ background: "transparent", border: `1px solid ${C.indigo}`, color: C.indigo, padding: "8px 16px" }}
-                            >
-                                <PlayI s={14} /> Switch to Auto
-                            </Btn>
-                        </div>
-
-                        {/* KPIs */}
-                        <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 14 }}>
-                            {(() => {
-                                // Calculate avg Karpenter score from real recommendations
-                                const avgKarpScore = recs.length > 0
-                                    ? (recs.reduce((sum, r) => sum + (r.karpScore || 0), 0) / recs.length).toFixed(1)
-                                    : '0.0';
-
-                                return [
-                                    { label: "Potential Savings", value: `$${totalSavings.toFixed(0)}/mo`, sub: "Karpenter-verified", color: "#111827", accent: C.green },
-                                    { label: "Recommendations", value: `${recs.length} instances`, sub: `${recs.filter(r => r.confidence === "HIGH").length} high confidence`, color: "#111827", accent: C.indigo },
-                                    { label: "Avg Karpenter Score", value: `${avgKarpScore}/10`, sub: "pod-constraint aware", color: "#111827", accent: C.purple },
-                                ];
-                            })().map((k, i) => (
-                                <div key={i} style={{ background: C.surface, border: `1px solid ${C.border}`, borderTop: `3px solid ${k.accent}`, borderRadius: 12, padding: "20px" }}>
-                                    <div style={{ fontSize: 12, fontWeight: 600, color: C.textMuted, letterSpacing: "0.05em", textTransform: "uppercase", marginBottom: 8 }}>{k.label}</div>
-                                    <div style={{ fontSize: 30, fontWeight: 800, color: k.color, letterSpacing: "-0.025em", marginBottom: 4 }}>{k.value}</div>
-                                    <div style={{ fontSize: 12, color: C.textMuted }}>{k.sub}</div>
-                                </div>
-                            ))}
-                        </div>
-
-                        <RecsTable recs={recs} mode={mode} onDetail={setDetail} onApply={handleApply} />
-                    </div>
-                )}
-            </div>
+  return (
+    <div style={{ minHeight: "100vh", background: C.bg, fontFamily: "'DM Sans', system-ui, sans-serif", color: C.text }}>
+      {/* ── Global Nav ── */}
+      <div style={{
+        background: C.surface, borderBottom: `1px solid ${C.border}`,
+        padding: "0 24px",
+        display: "flex", alignItems: "stretch",
+        position: "sticky", top: 0, zIndex: 100,
+      }}>
+        {/* Brand */}
+        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "14px 0", marginRight: 32, borderRight: `1px solid ${C.border}`, paddingRight: 24 }}>
+          <div style={{ width: 28, height: 28, borderRadius: 8, background: "#0f1117", display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <Icons.Layers s={14} stroke="#fff" />
+          </div>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 700, color: C.text, letterSpacing: "-0.3px" }}>NodeOps</div>
+            <div style={{ fontSize: 9, color: C.subtle, marginTop: -1 }}>Right-Sizing Platform</div>
+          </div>
         </div>
-    );
+        {/* Nav tabs */}
+        <div style={{ display: "flex", flex: 1 }}>
+          {navItems.map(({ id, label, Icon }) => {
+            const active = nav === id;
+            return (
+              <button key={id} onClick={() => setNav(id)} style={{
+                display: "flex", alignItems: "center", gap: 7,
+                padding: "0 18px", fontSize: 12,
+                fontWeight: active ? 600 : 400,
+                color: active ? C.text : C.muted,
+                background: "transparent", border: "none",
+                borderBottom: `2px solid ${active ? C.accent : "transparent"}`,
+                cursor: "pointer", fontFamily: "inherit", transition: "all 0.13s",
+              }}>
+                <Icon s={13} stroke={active ? C.accent : C.subtle} />
+                {label}
+              </button>
+            );
+          })}
+        </div>
+        {/* Right actions */}
+        <div style={{ display: "flex", alignItems: "center", gap: 8, paddingLeft: 16, borderLeft: `1px solid ${C.border}` }}>
+          <Btn size="sm"><Icons.Refresh s={12} stroke={C.muted} /> Refresh</Btn>
+          <div style={{ display: "flex", alignItems: "center", gap: 5, padding: "4px 10px", borderRadius: 20, background: C.greenBg, border: `1px solid ${C.greenBorder}` }}>
+            <Dot color={C.green} pulse />
+            <span style={{ fontSize: 10, fontWeight: 500, color: C.muted }}>3 clusters connected</span>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Content ── */}
+      <div style={{ padding: "22px 24px", maxWidth: 1340, margin: "0 auto" }}>
+        {nav === "karpenter" && <KarpenterSection />}
+        {nav === "config"    && <ConfigSection />}
+        {nav === "history"   && <HistorySection />}
+        {nav === "savings"   && <SavingsTracker />}
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// KARPENTER SECTION
+// ═══════════════════════════════════════════════════════════════════════════════
+function KarpenterSection() {
+  const [selectedCluster, setSelectedCluster] = useState("all");
+  const [globalAuto, setGlobalAuto] = useState(false);
+  const [nodeAutoMap, setNodeAutoMap] = useState({});
+  const [expanded, setExpanded] = useState(null);
+  const [filter, setFilter] = useState("all");
+  const [search, setSearch] = useState("");
+
+  const setNodeAuto = (id, val) => setNodeAutoMap(p => ({ ...p, [id]: val }));
+  const isAuto = (id) => nodeAutoMap[id] ?? globalAuto;
+
+  const filteredNodes = NODES.filter(n => {
+    if (selectedCluster !== "all" && n.cluster !== selectedCluster) return false;
+    if (filter === "high" && n.conf !== "High") return false;
+    if (filter === "risky" && n.pool !== "Risky" && n.pool !== "Unknown") return false;
+    if (search && !n.name.includes(search) && !n.id.includes(search)) return false;
+    return true;
+  });
+
+  const totalSavings = filteredNodes.reduce((s, n) => s + n.savings, 0);
+  const confColor = { High: C.green, Medium: C.amber, Low: C.red };
+  const poolColor = { Healthy: C.green, Risky: C.red, Unknown: C.subtle };
+
+  return (
+    <div>
+      {/* Page header */}
+      <div style={{ marginBottom: 16 }}>
+        <h2 style={{ fontSize: 16, fontWeight: 700, margin: "0 0 3px", color: C.text, letterSpacing: "-0.3px" }}>
+          Karpenter Optimization
+        </h2>
+        <p style={{ fontSize: 12, color: C.subtle, margin: 0 }}>
+          Review unoptimized nodes across clusters · Insights mode by default · Enable Auto per node or globally
+        </p>
+      </div>
+
+      {/* KPI strip */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10, marginBottom: 16 }}>
+        <MetricBox label="Total Potential Savings" value={`$${totalSavings.toLocaleString()}`} sub="Filtered view" accentBorder={C.green} />
+        <MetricBox label="Nodes to Optimize" value={`${filteredNodes.length}`} sub="Across selected clusters" accentBorder={C.amber} />
+        <MetricBox label="Fleet Score" value="7.1 / 10" sub="Weighted average" accentBorder={C.accent} />
+        <MetricBox label="Auto-Managed Nodes" value={`${Object.values(nodeAutoMap).filter(Boolean).length}${globalAuto ? " + all" : ""}`} sub="Running automatically" accentBorder={C.purple} />
+      </div>
+
+      {/* Global auto banner + cluster selector */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 12, marginBottom: 16 }}>
+        {/* Cluster selector */}
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+          <span style={{ fontSize: 11, color: C.subtle, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.08em" }}>Cluster:</span>
+          {[{ id: "all", name: "All Clusters" }, ...CLUSTERS].map(c => {
+            const active = selectedCluster === c.id;
+            return (
+              <button key={c.id} onClick={() => setSelectedCluster(c.id)} style={{
+                display: "flex", alignItems: "center", gap: 6,
+                padding: "5px 12px", borderRadius: 8, fontSize: 11,
+                fontWeight: active ? 600 : 400, cursor: "pointer",
+                background: active ? "#0f1117" : C.surface,
+                color: active ? "#fff" : C.muted,
+                border: `1px solid ${active ? "#0f1117" : C.border}`,
+                fontFamily: "inherit", transition: "all 0.12s",
+              }}>
+                {c.id !== "all" && <Dot color={c.status === "healthy" ? C.green : C.amber} />}
+                {c.name || c.id}
+                {c.id !== "all" && <span style={{ opacity: 0.5, fontSize: 10 }}>{c.region}</span>}
+              </button>
+            );
+          })}
+        </div>
+        {/* Global auto toggle */}
+        <div style={{
+          display: "flex", alignItems: "center", gap: 10,
+          padding: "10px 16px", background: C.surface, border: `1px solid ${C.border}`,
+          borderRadius: 10,
+        }}>
+          <div style={{ width: 3, height: 28, borderRadius: 2, background: globalAuto ? C.purple : C.border }} />
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 600, color: C.text }}>Global Auto Mode</div>
+            <div style={{ fontSize: 10, color: C.subtle }}>
+              {globalAuto ? "All nodes automated" : "Insights only — no changes applied"}
+            </div>
+          </div>
+          <Toggle on={globalAuto} onChange={setGlobalAuto} color={C.purple} />
+        </div>
+      </div>
+
+      {/* Node table */}
+      <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10 }}>
+        {/* Toolbar */}
+        <div style={{
+          display: "flex", alignItems: "center", gap: 8,
+          padding: "12px 16px", borderBottom: `1px solid ${C.border}`,
+        }}>
+          <span style={{ fontSize: 13, fontWeight: 600, color: C.text }}>Unoptimized Nodes</span>
+          <div style={{ display: "flex", alignItems: "center", gap: 4, padding: "2px 8px", borderRadius: 20, background: C.amberBg, border: `1px solid ${C.amberBorder}` }}>
+            <Dot color={C.amber} />
+            <span style={{ fontSize: 10, fontWeight: 500, color: C.muted }}>{filteredNodes.length} nodes</span>
+          </div>
+          <div style={{ flex: 1 }} />
+          {[["all","All"],["high","High Conf"],["risky","Risky / Unknown"]].map(([id, label]) => (
+            <Chip key={id} active={filter === id} onClick={() => setFilter(id)}>{label}</Chip>
+          ))}
+          <div style={{ display: "flex", alignItems: "center", gap: 6, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: "5px 10px" }}>
+            <svg width={11} height={11} viewBox="0 0 16 16" fill="none">
+              <circle cx="6.5" cy="6.5" r="5" stroke={C.subtle} strokeWidth="1.5"/>
+              <path d="M10.5 10.5L14 14" stroke={C.subtle} strokeWidth="1.5" strokeLinecap="round"/>
+            </svg>
+            <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search nodes..."
+              style={{ border: "none", outline: "none", background: "transparent", fontSize: 12, color: C.text, width: 130, fontFamily: "inherit" }} />
+          </div>
+          <Btn size="sm"><Icons.Download s={12} stroke={C.muted} /> Export</Btn>
+        </div>
+
+        {/* Table */}
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr style={{ background: "#fafafa", borderBottom: `1px solid ${C.border}` }}>
+                {["Node","Cluster","Current → Recommended","vCPU","Memory","CPU Avg","Mem Avg","Conf","Pool","Savings/mo","Auto",""].map((h, i) => (
+                  <th key={i} style={TH}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {filteredNodes.map((n) => {
+                const isExp = expanded === n.id;
+                const auto = isAuto(n.id);
+                return (
+                  <>
+                    <tr key={n.id}
+                      onClick={() => setExpanded(isExp ? null : n.id)}
+                      style={{
+                        background: isExp ? C.surfaceHover : C.surface,
+                        borderBottom: isExp ? "none" : `1px solid ${C.border}`,
+                        cursor: "pointer", transition: "background 0.1s",
+                      }}
+                      onMouseEnter={e => { if (!isExp) e.currentTarget.style.background = C.surfaceHover; }}
+                      onMouseLeave={e => { if (!isExp) e.currentTarget.style.background = isExp ? C.surfaceHover : C.surface; }}>
+
+                      <td style={TD}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                          <div style={{ color: C.subtle, transition: "transform 0.2s", transform: isExp ? "rotate(90deg)" : "none" }}>
+                            <Icons.ChevR s={12} stroke={C.subtle} />
+                          </div>
+                          <div>
+                            <div style={{ fontWeight: 600, fontSize: 12, color: C.text }}>{n.name}</div>
+                            <div style={{ fontSize: 10, fontFamily: "monospace", color: C.subtle, marginTop: 1 }}>{n.id}</div>
+                          </div>
+                        </div>
+                      </td>
+                      <td style={TD}>
+                        <span style={{ fontSize: 10, background: "#f0f1f3", padding: "2px 7px", borderRadius: 4, color: C.muted, fontFamily: "monospace" }}>{n.cluster}</span>
+                      </td>
+                      <td style={TD}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                          <code style={{ fontSize: 10, background: "#f0f1f3", color: C.muted, padding: "2px 6px", borderRadius: 4 }}>{n.cur}</code>
+                          <Icons.Arrow s={10} stroke={C.subtle} />
+                          <code style={{ fontSize: 10, background: C.greenBg, color: C.green, border: `1px solid ${C.greenBorder}`, padding: "2px 6px", borderRadius: 4 }}>{n.rec}</code>
+                        </div>
+                      </td>
+                      <td style={TD}>
+                        <div style={{ fontSize: 11, color: C.muted }}>
+                          <span style={{ fontWeight: 600, color: C.text }}>{n.curCpu}</span> → <span style={{ fontWeight: 600, color: C.green }}>{n.recCpu}</span>
+                          <span style={{ color: C.subtle }}> vCPU</span>
+                        </div>
+                      </td>
+                      <td style={TD}>
+                        <div style={{ fontSize: 11, color: C.muted }}>
+                          <span style={{ fontWeight: 600, color: C.text }}>{n.curMem}</span> → <span style={{ fontWeight: 600, color: C.green }}>{n.recMem}</span>
+                          <span style={{ color: C.subtle }}> GB</span>
+                        </div>
+                      </td>
+                      <td style={{ ...TD, width: 100 }}>
+                        <MiniBar pct={n.cpuAvg} color={utilColor(n.cpuAvg)} />
+                      </td>
+                      <td style={{ ...TD, width: 100 }}>
+                        <MiniBar pct={n.memAvg} color={C.accent} />
+                      </td>
+                      <td style={TD}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                          <Dot color={confColor[n.conf]} />
+                          <span style={{ fontSize: 11, color: C.muted }}>{n.conf}</span>
+                        </div>
+                      </td>
+                      <td style={TD}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 4, padding: "2px 8px", borderRadius: 20, background: "#f0f1f3", border: `1px solid ${C.border}`, width: "fit-content" }}>
+                          <Dot color={poolColor[n.pool]} />
+                          <span style={{ fontSize: 10, color: C.muted }}>{n.pool}</span>
+                        </div>
+                      </td>
+                      <td style={TD}>
+                        <span style={{ fontSize: 13, fontWeight: 700, color: C.text }}>${n.savings}</span>
+                        <div style={{ fontSize: 10, color: C.subtle }}>/ month</div>
+                      </td>
+                      <td style={TD} onClick={e => e.stopPropagation()}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                          <Toggle on={auto} onChange={v => setNodeAuto(n.id, v)} />
+                          <span style={{ fontSize: 10, color: auto ? C.purple : C.subtle }}>
+                            {auto ? "Auto" : "Manual"}
+                          </span>
+                        </div>
+                      </td>
+                      <td style={TD} onClick={e => e.stopPropagation()}>
+                        {auto
+                          ? <Btn size="sm" variant="purple"><Icons.Zap s={11} stroke="#fff" /> Scheduled</Btn>
+                          : <Btn size="sm" variant="accent">Apply</Btn>}
+                      </td>
+                    </tr>
+
+                    {/* Expanded detail */}
+                    {isExp && (
+                      <tr key={`${n.id}-exp`} style={{ borderBottom: `1px solid ${C.border}` }}>
+                        <td colSpan={12} style={{ padding: "0 16px 16px" }}>
+                          <NodeDetail node={n} />
+                        </td>
+                      </tr>
+                    )}
+                  </>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── NODE DETAIL PANEL ────────────────────────────────────────────────────────
+function NodeDetail({ node }) {
+  const cpu14d  = [28,32,35,29,31,34,33,38,36,34,32,30,34, node.cpuAvg];
+  const mem14d  = [24,26,28,25,27,29,28,31,30,27,26,25,28, node.memAvg];
+  const totalPodCpu = node.pods.reduce((s, p) => s + p.cpu, 0);
+  const totalPodMem = node.pods.reduce((s, p) => s + p.mem, 0);
+
+  // Bin packing: how pods fill current vs recommended node
+  const curCpuPct  = (totalPodCpu / node.curCpu)  * 100;
+  const recCpuPct  = (totalPodCpu / node.recCpu)  * 100;
+  const curMemPct  = (totalPodMem / node.curMem)  * 100;
+  const recMemPct  = (totalPodMem / node.recMem)  * 100;
+
+  return (
+    <div style={{ marginTop: 8, background: "#fafafa", border: `1px solid ${C.border}`, borderRadius: 10, padding: "16px 18px" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 20 }}>
+
+        {/* ── Metrics + Sparklines ── */}
+        <div>
+          <div style={{ fontSize: 10, fontWeight: 700, color: C.subtle, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 12 }}>14-Day Usage</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+            <div>
+              <div style={{ fontSize: 10, color: C.muted, marginBottom: 5 }}>CPU Utilization</div>
+              <div style={{ display: "flex", alignItems: "flex-end", gap: 10 }}>
+                <Sparkline data={cpu14d} color={C.green} w={90} />
+                <div style={{ fontSize: 11, color: C.muted, lineHeight: 1.9 }}>
+                  <div>Avg <strong style={{ color: C.text }}>{node.cpuAvg}%</strong></div>
+                  <div>Peak <strong style={{ color: C.text }}>{node.cpuPeak}%</strong></div>
+                </div>
+              </div>
+            </div>
+            <div>
+              <div style={{ fontSize: 10, color: C.muted, marginBottom: 5 }}>Memory Utilization</div>
+              <div style={{ display: "flex", alignItems: "flex-end", gap: 10 }}>
+                <Sparkline data={mem14d} color={C.accent} w={90} />
+                <div style={{ fontSize: 11, color: C.muted, lineHeight: 1.9 }}>
+                  <div>Avg <strong style={{ color: C.text }}>{node.memAvg}%</strong></div>
+                  <div>Peak <strong style={{ color: C.text }}>{node.memPeak}%</strong></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* ── Bin Packing Visualization ── */}
+        <div>
+          <div style={{ fontSize: 10, fontWeight: 700, color: C.subtle, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 12 }}>
+            Bin Packing — Current vs Recommended
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            {[
+              { label: node.cur, cpuTotal: node.curCpu, memTotal: node.curMem, cpuUsed: totalPodCpu, memUsed: totalPodMem },
+              { label: node.rec, cpuTotal: node.recCpu, memTotal: node.recMem, cpuUsed: totalPodCpu, memUsed: totalPodMem },
+            ].map((inst, idx) => {
+              const cpuFill = Math.min((inst.cpuUsed / inst.cpuTotal) * 100, 100);
+              const memFill = Math.min((inst.memUsed / inst.memTotal) * 100, 100);
+              const isRec = idx === 1;
+              return (
+                <div key={idx} style={{
+                  border: `1.5px solid ${isRec ? C.greenBorder : C.border}`,
+                  borderRadius: 8, padding: "10px 10px 8px",
+                  background: isRec ? C.greenBg : C.surface,
+                }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+                    <code style={{ fontSize: 9, fontWeight: 600, color: isRec ? C.green : C.muted }}>{inst.label}</code>
+                    {isRec && <span style={{ fontSize: 8, fontWeight: 700, color: C.green, background: "#dcfce7", padding: "1px 5px", borderRadius: 4 }}>RECOMMENDED</span>}
+                  </div>
+                  {/* CPU bar segmented by pod */}
+                  <div style={{ marginBottom: 6 }}>
+                    <div style={{ fontSize: 9, color: C.subtle, marginBottom: 3 }}>CPU · {inst.cpuTotal} vCPU</div>
+                    <div style={{ height: 14, borderRadius: 4, background: "#ececec", overflow: "hidden", display: "flex" }}>
+                      {node.pods.map((p, i) => {
+                        const w = (p.cpu / inst.cpuTotal) * 100;
+                        return <div key={i} title={`${p.name}: ${p.cpu.toFixed(1)} vCPU`} style={{
+                          width: `${w}%`, height: "100%", background: POD_COLORS[i % POD_COLORS.length],
+                          opacity: 0.85,
+                        }} />;
+                      })}
+                    </div>
+                    <div style={{ fontSize: 9, color: C.muted, marginTop: 2 }}>{cpuFill.toFixed(0)}% filled</div>
+                  </div>
+                  {/* Memory bar */}
+                  <div>
+                    <div style={{ fontSize: 9, color: C.subtle, marginBottom: 3 }}>Memory · {inst.memTotal} GB</div>
+                    <div style={{ height: 14, borderRadius: 4, background: "#ececec", overflow: "hidden", display: "flex" }}>
+                      {node.pods.map((p, i) => {
+                        const w = (p.mem / inst.memTotal) * 100;
+                        return <div key={i} title={`${p.name}: ${p.mem.toFixed(1)} GB`} style={{
+                          width: `${w}%`, height: "100%", background: POD_COLORS[i % POD_COLORS.length],
+                          opacity: 0.85,
+                        }} />;
+                      })}
+                    </div>
+                    <div style={{ fontSize: 9, color: C.muted, marginTop: 2 }}>{memFill.toFixed(0)}% filled</div>
+                  </div>
+                  {/* Pod legend */}
+                  <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 4 }}>
+                    {node.pods.map((p, i) => (
+                      <div key={i} style={{ display: "flex", alignItems: "center", gap: 3 }}>
+                        <div style={{ width: 6, height: 6, borderRadius: 2, background: POD_COLORS[i % POD_COLORS.length] }} />
+                        <span style={{ fontSize: 8, color: C.subtle }}>{p.name}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* ── Savings Comparison ── */}
+        <div>
+          <div style={{ fontSize: 10, fontWeight: 700, color: C.subtle, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 12 }}>Savings Breakdown</div>
+          {/* Monthly/annual */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 12 }}>
+            <div style={{ background: C.greenBg, border: `1px solid ${C.greenBorder}`, borderRadius: 8, padding: "10px 12px" }}>
+              <div style={{ fontSize: 10, color: C.muted, marginBottom: 3 }}>Monthly savings</div>
+              <div style={{ fontSize: 18, fontWeight: 700, color: C.text }}>${node.savings}</div>
+              <div style={{ fontSize: 10, color: C.subtle }}>per month</div>
+            </div>
+            <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: "10px 12px" }}>
+              <div style={{ fontSize: 10, color: C.muted, marginBottom: 3 }}>Annual projection</div>
+              <div style={{ fontSize: 18, fontWeight: 700, color: C.text }}>${(node.savings * 12).toLocaleString()}</div>
+              <div style={{ fontSize: 10, color: C.subtle }}>per year</div>
+            </div>
+          </div>
+          {/* Comparison bars */}
+          {[
+            { label: "vCPU", cur: node.curCpu, rec: node.recCpu, unit: "cores" },
+            { label: "Memory", cur: node.curMem, rec: node.recMem, unit: "GB" },
+          ].map(item => (
+            <div key={item.label} style={{ marginBottom: 10 }}>
+              <div style={{ fontSize: 10, fontWeight: 600, color: C.muted, marginBottom: 5 }}>{item.label}</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ fontSize: 9, color: C.subtle, width: 28, textAlign: "right", flexShrink: 0 }}>Now</span>
+                  <div style={{ flex: 1, height: 10, background: "#f0f0f0", borderRadius: 4 }}>
+                    <div style={{ width: "100%", height: "100%", background: "#e5e7eb", borderRadius: 4 }} />
+                  </div>
+                  <span style={{ fontSize: 9, color: C.muted, width: 40, flexShrink: 0 }}>{item.cur} {item.unit}</span>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ fontSize: 9, color: C.subtle, width: 28, textAlign: "right", flexShrink: 0 }}>Rec</span>
+                  <div style={{ flex: 1, height: 10, background: "#f0f0f0", borderRadius: 4 }}>
+                    <div style={{ width: `${(item.rec / item.cur) * 100}%`, height: "100%", background: C.green, borderRadius: 4, transition: "width 0.6s" }} />
+                  </div>
+                  <span style={{ fontSize: 9, color: C.green, fontWeight: 600, width: 40, flexShrink: 0 }}>{item.rec} {item.unit}</span>
+                </div>
+              </div>
+              <div style={{ fontSize: 9, color: C.muted, marginTop: 3 }}>
+                ↓ {((1 - item.rec/item.cur)*100).toFixed(0)}% reduction
+              </div>
+            </div>
+          ))}
+          {/* Confidence reasoning */}
+          <div style={{ marginTop: 4 }}>
+            <div style={{ fontSize: 10, fontWeight: 600, color: C.muted, marginBottom: 6 }}>Reasoning</div>
+            {[
+              [node.cpuAvg < 60, `CPU avg ${node.cpuAvg}% < 60% threshold`],
+              [node.memAvg < 60, `Memory avg ${node.memAvg}% < 60% threshold`],
+              [node.cpuPeak < 80, `Peak CPU ${node.cpuPeak}% below 80%`],
+              [node.pool === "Healthy", `Pool health: ${node.pool}`],
+            ].map(([ok, text], i) => (
+              <div key={i} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10, color: C.muted, marginBottom: 4 }}>
+                <Dot color={ok ? C.green : C.amber} />
+                <span>{text}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CONFIGURATION SECTION
+// ═══════════════════════════════════════════════════════════════════════════════
+function ConfigSection() {
+  const [clusterConfigs, setClusterConfigs] = useState(
+    CLUSTERS.reduce((acc, c) => ({
+      ...acc,
+      [c.id]: {
+        refreshInterval: 15,
+        headroom: 20,
+        maxSpotPct: 80,
+        strategy: "balanced",
+        autoApply: false,
+        excludePeakAbove: 80,
+        minDataDays: 14,
+        onlyTemplateFamilies: true,
+        nodepoolScope: "all",
+        dryRunFirst: true,
+        alertOnRevert: true,
+        instanceFamilies: ["m5", "c5", "r5", "t3"],
+        excludeFamilies: [],
+      }
+    }), {})
+  );
+  const [sel, setSel] = useState(CLUSTERS[0].id);
+  const cfg = clusterConfigs[sel];
+  const setCfg = (key, val) => setClusterConfigs(p => ({ ...p, [sel]: { ...p[sel], [key]: val } }));
+
+  const strategies = [
+    { id: "balanced",    label: "Balanced",       desc: "Even spread across AZs & families" },
+    { id: "cost-first",  label: "Cost-First",     desc: "Maximize spot usage, bin-pack tightly" },
+    { id: "reliability", label: "Reliability-First", desc: "Prefer on-demand, conservative changes" },
+  ];
+
+  return (
+    <div>
+      <div style={{ marginBottom: 16 }}>
+        <h2 style={{ fontSize: 16, fontWeight: 700, margin: "0 0 3px", color: C.text, letterSpacing: "-0.3px" }}>Configuration</h2>
+        <p style={{ fontSize: 12, color: C.subtle, margin: 0 }}>Per-cluster Karpenter settings · refresh intervals · optimization strategies</p>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "240px 1fr", gap: 16 }}>
+        {/* Cluster list sidebar */}
+        <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, overflow: "hidden" }}>
+          <div style={{ padding: "12px 14px", borderBottom: `1px solid ${C.border}` }}>
+            <span style={{ fontSize: 12, fontWeight: 600, color: C.text }}>Clusters</span>
+          </div>
+          {CLUSTERS.map(c => (
+            <div key={c.id} onClick={() => setSel(c.id)} style={{
+              padding: "12px 14px", cursor: "pointer",
+              borderBottom: `1px solid ${C.border}`,
+              background: sel === c.id ? C.accentLight : "transparent",
+              borderLeft: `3px solid ${sel === c.id ? C.accent : "transparent"}`,
+              transition: "all 0.12s",
+            }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3 }}>
+                <Dot color={c.status === "healthy" ? C.green : C.amber} />
+                <span style={{ fontSize: 12, fontWeight: 600, color: C.text }}>{c.name}</span>
+              </div>
+              <div style={{ fontSize: 10, color: C.subtle }}>{c.region} · {c.nodes} nodes</div>
+              <div style={{ fontSize: 10, color: C.subtle, marginTop: 1 }}>Agent {c.agentVersion}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* Config form */}
+        <div>
+          {/* Strategy */}
+          <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, marginBottom: 12, overflow: "hidden" }}>
+            <div style={{ padding: "12px 16px", borderBottom: `1px solid ${C.border}` }}>
+              <span style={{ fontSize: 12, fontWeight: 600, color: C.text }}>Optimization Strategy</span>
+            </div>
+            <div style={{ padding: "14px 16px", display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 10 }}>
+              {strategies.map(s => (
+                <div key={s.id} onClick={() => setCfg("strategy", s.id)} style={{
+                  padding: "12px 14px", border: `1.5px solid ${cfg.strategy === s.id ? C.accent : C.border}`,
+                  borderRadius: 9, cursor: "pointer",
+                  background: cfg.strategy === s.id ? C.accentLight : C.surface,
+                  transition: "all 0.13s",
+                }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                    <span style={{ fontSize: 12, fontWeight: 600, color: C.text }}>{s.label}</span>
+                    <div style={{ width: 14, height: 14, borderRadius: "50%", border: `2px solid ${cfg.strategy === s.id ? C.accent : C.border}`, background: cfg.strategy === s.id ? C.accent : "transparent", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                      {cfg.strategy === s.id && <div style={{ width: 5, height: 5, borderRadius: "50%", background: "#fff" }} />}
+                    </div>
+                  </div>
+                  <p style={{ fontSize: 11, color: C.subtle, margin: 0, lineHeight: 1.6 }}>{s.desc}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Timing & Thresholds */}
+          <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, marginBottom: 12, overflow: "hidden" }}>
+            <div style={{ padding: "12px 16px", borderBottom: `1px solid ${C.border}` }}>
+              <span style={{ fontSize: 12, fontWeight: 600, color: C.text }}>Timing & Thresholds</span>
+            </div>
+            <div style={{ padding: "14px 16px", display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16 }}>
+              {[
+                { label: "Refresh Interval (min)", key: "refreshInterval", min: 5, max: 120, step: 5, unit: "min" },
+                { label: "Headroom Buffer (%)", key: "headroom", min: 0, max: 50, step: 5, unit: "%" },
+                { label: "Exclude Peak CPU Above (%)", key: "excludePeakAbove", min: 60, max: 100, step: 5, unit: "%" },
+                { label: "Max Spot Percentage", key: "maxSpotPct", min: 0, max: 100, step: 10, unit: "%" },
+                { label: "Min Data Days", key: "minDataDays", min: 3, max: 30, step: 1, unit: "days" },
+              ].map(f => (
+                <div key={f.key}>
+                  <div style={{ fontSize: 11, fontWeight: 500, color: C.muted, marginBottom: 6 }}>{f.label}</div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <input type="range" min={f.min} max={f.max} step={f.step} value={cfg[f.key]}
+                      onChange={e => setCfg(f.key, Number(e.target.value))}
+                      style={{ flex: 1, accentColor: C.accent }} />
+                    <div style={{ fontSize: 13, fontWeight: 700, color: C.text, width: 42, textAlign: "right" }}>
+                      {cfg[f.key]}<span style={{ fontSize: 9, fontWeight: 400, color: C.subtle }}>{f.unit}</span>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Toggles */}
+          <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, marginBottom: 12, overflow: "hidden" }}>
+            <div style={{ padding: "12px 16px", borderBottom: `1px solid ${C.border}` }}>
+              <span style={{ fontSize: 12, fontWeight: 600, color: C.text }}>Behavior Flags</span>
+            </div>
+            <div style={{ padding: "14px 16px", display: "flex", flexDirection: "column", gap: 0 }}>
+              {[
+                { key: "autoApply",           label: "Auto-Apply Recommendations",         desc: "Changes are applied without manual approval" },
+                { key: "onlyTemplateFamilies", label: "Restrict to Template Instance Families", desc: "Only recommend instances in approved families" },
+                { key: "dryRunFirst",         label: "Dry-Run Before Applying",             desc: "Simulate change for 30 min before committing" },
+                { key: "alertOnRevert",       label: "Alert on Auto-Revert",                desc: "Notify when an applied change is rolled back" },
+              ].map((f, i, arr) => (
+                <div key={f.key} style={{
+                  display: "flex", alignItems: "flex-start", justifyContent: "space-between",
+                  padding: "12px 0", borderBottom: i < arr.length - 1 ? `1px solid ${C.border}` : "none",
+                }}>
+                  <div>
+                    <div style={{ fontSize: 12, fontWeight: 500, color: C.text }}>{f.label}</div>
+                    <div style={{ fontSize: 11, color: C.subtle, marginTop: 2 }}>{f.desc}</div>
+                  </div>
+                  <Toggle on={cfg[f.key]} onChange={v => setCfg(f.key, v)} color={C.accent} />
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Instance family allowlist */}
+          <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, marginBottom: 12, overflow: "hidden" }}>
+            <div style={{ padding: "12px 16px", borderBottom: `1px solid ${C.border}` }}>
+              <span style={{ fontSize: 12, fontWeight: 600, color: C.text }}>Allowed Instance Families</span>
+            </div>
+            <div style={{ padding: "14px 16px" }}>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                {["m5","m6i","c5","c6i","r5","r6i","t3","t3a","x2i","inf2"].map(fam => {
+                  const active = cfg.instanceFamilies.includes(fam);
+                  return (
+                    <button key={fam} onClick={() => setCfg("instanceFamilies", active
+                      ? cfg.instanceFamilies.filter(f => f !== fam)
+                      : [...cfg.instanceFamilies, fam]
+                    )} style={{
+                      padding: "4px 12px", borderRadius: 6, cursor: "pointer",
+                      fontFamily: "monospace", fontSize: 11,
+                      background: active ? "#0f1117" : C.surface,
+                      color: active ? "#fff" : C.muted,
+                      border: `1px solid ${active ? "#0f1117" : C.border}`,
+                      fontWeight: active ? 600 : 400, transition: "all 0.12s",
+                    }}>{fam}.*</button>
+                  );
+                })}
+              </div>
+              <div style={{ marginTop: 8, fontSize: 11, color: C.subtle }}>
+                {cfg.instanceFamilies.length} families selected · click to toggle
+              </div>
+            </div>
+          </div>
+
+          {/* Save */}
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+            <Btn size="md">Reset to defaults</Btn>
+            <Btn size="md" variant="accent"><Icons.Check s={13} stroke="#fff" /> Save Configuration</Btn>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// OPTIMIZATION HISTORY SECTION
+// ═══════════════════════════════════════════════════════════════════════════════
+function HistorySection() {
+  const [filter, setFilter]     = useState("all");
+  const [expanded, setExpanded] = useState(null);
+
+  const filtered = HISTORY.filter(h => {
+    if (filter === "manual" && h.mode !== "Manual") return false;
+    if (filter === "auto"   && h.mode !== "Auto")   return false;
+    if (filter === "ok"     && !h.ok)               return false;
+    if (filter === "failed" && h.ok)                return false;
+    return true;
+  });
+
+  const totalSaved = HISTORY.filter(h => h.ok).reduce((s, h) => s + h.savings, 0);
+
+  return (
+    <div>
+      <div style={{ marginBottom: 16 }}>
+        <h2 style={{ fontSize: 16, fontWeight: 700, margin: "0 0 3px", color: C.text, letterSpacing: "-0.3px" }}>Optimization History</h2>
+        <p style={{ fontSize: 12, color: C.subtle, margin: 0 }}>All applied changes · bin packing comparison · CPU/memory before & after</p>
+      </div>
+
+      {/* KPI */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10, marginBottom: 16 }}>
+        <MetricBox label="Total Realized"  value={`$${totalSaved.toLocaleString()}`} sub="All time" accentBorder={C.green} />
+        <MetricBox label="Changes Applied" value={`${HISTORY.filter(h=>h.ok).length}`} sub="Successful" accentBorder={C.accent} />
+        <MetricBox label="Reverted"        value={`${HISTORY.filter(h=>!h.ok).length}`} sub="Auto-rolled back" accentBorder={C.red} />
+        <MetricBox label="Auto-Applied"    value={`${HISTORY.filter(h=>h.mode==="Auto").length}`} sub="By Karpenter" accentBorder={C.purple} />
+      </div>
+
+      {/* Filter bar */}
+      <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+        {[["all","All"],["manual","Manual"],["auto","Auto"],["ok","Successful"],["failed","Reverted"]].map(([id, label]) => (
+          <Chip key={id} active={filter === id} onClick={() => setFilter(id)}>{label}</Chip>
+        ))}
+      </div>
+
+      {/* History entries */}
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {filtered.map(h => {
+          const isExp = expanded === h.id;
+          return (
+            <div key={h.id} style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, overflow: "hidden" }}>
+              {/* Row header */}
+              <div onClick={() => setExpanded(isExp ? null : h.id)}
+                style={{
+                  display: "flex", alignItems: "center", gap: 12, padding: "12px 16px",
+                  cursor: "pointer", background: isExp ? "#fafafa" : C.surface, transition: "background 0.1s",
+                }}
+                onMouseEnter={e => { if (!isExp) e.currentTarget.style.background = C.surfaceHover; }}
+                onMouseLeave={e => { if (!isExp) e.currentTarget.style.background = C.surface; }}>
+
+                <div style={{ color: C.subtle, transition: "transform 0.2s", transform: isExp ? "rotate(90deg)" : "none" }}>
+                  <Icons.ChevR s={12} stroke={C.subtle} />
+                </div>
+                <div style={{ width: 8, height: 8, borderRadius: "50%", background: h.ok ? C.green : C.red, flexShrink: 0 }} />
+                <span style={{ fontSize: 11, color: C.subtle, width: 90 }}>{h.date}</span>
+                <span style={{ fontSize: 13, fontWeight: 600, color: C.text, width: 140 }}>{h.node}</span>
+                <span style={{ fontSize: 10, fontFamily: "monospace", background: "#f0f1f3", color: C.muted, padding: "2px 7px", borderRadius: 4 }}>{h.cluster}</span>
+                <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                  <code style={{ fontSize: 10, background: "#f0f1f3", color: C.muted, padding: "2px 6px", borderRadius: 4 }}>{h.from}</code>
+                  <Icons.Arrow s={10} stroke={C.subtle} />
+                  <code style={{ fontSize: 10, background: C.greenBg, color: C.green, border: `1px solid ${C.greenBorder}`, padding: "2px 6px", borderRadius: 4 }}>{h.to}</code>
+                </div>
+                <div style={{ flex: 1 }} />
+                <div style={{ display: "flex", alignItems: "center", gap: 4, padding: "2px 8px", borderRadius: 20, background: h.mode === "Auto" ? C.purpleBg : "#f0f1f3", border: `1px solid ${h.mode === "Auto" ? C.purpleBorder : C.border}` }}>
+                  {h.mode === "Auto" ? <Icons.Zap s={10} stroke={C.purple} /> : <Icons.Eye s={10} stroke={C.muted} />}
+                  <span style={{ fontSize: 10, color: C.muted }}>{h.mode}</span>
+                </div>
+                <span style={{ fontSize: 13, fontWeight: 700, color: h.ok ? C.text : C.subtle }}>
+                  {h.ok ? `$${h.savings}/mo` : "Reverted"}
+                </span>
+              </div>
+
+              {/* Expanded detail */}
+              {isExp && (
+                <div style={{ padding: "0 16px 16px", borderTop: `1px solid ${C.border}` }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 18, marginTop: 16 }}>
+
+                    {/* CPU / Mem comparison */}
+                    <div>
+                      <div style={{ fontSize: 10, fontWeight: 700, color: C.subtle, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 12 }}>Usage Comparison</div>
+                      {[
+                        { label: "CPU Utilization", before: h.cpuBefore, after: h.cpuAfter },
+                        { label: "Memory Utilization", before: h.memBefore, after: h.memAfter },
+                      ].map(metric => (
+                        <div key={metric.label} style={{ marginBottom: 14 }}>
+                          <div style={{ fontSize: 11, fontWeight: 500, color: C.muted, marginBottom: 6 }}>{metric.label}</div>
+                          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                              <span style={{ fontSize: 9, color: C.subtle, width: 32 }}>Before</span>
+                              <div style={{ flex: 1, height: 10, background: "#f0f0f0", borderRadius: 4, overflow: "hidden" }}>
+                                <div style={{ width: `${metric.before}%`, height: "100%", background: "#e5e7eb", borderRadius: 4 }} />
+                              </div>
+                              <span style={{ fontSize: 10, fontWeight: 600, color: C.muted, width: 32 }}>{metric.before}%</span>
+                            </div>
+                            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                              <span style={{ fontSize: 9, color: C.subtle, width: 32 }}>After</span>
+                              <div style={{ flex: 1, height: 10, background: "#f0f0f0", borderRadius: 4, overflow: "hidden" }}>
+                                <div style={{ width: `${metric.after}%`, height: "100%", background: metric.after > 80 ? C.red : C.green, borderRadius: 4, transition: "width 0.6s" }} />
+                              </div>
+                              <span style={{ fontSize: 10, fontWeight: 600, color: C.green, width: 32 }}>{metric.after}%</span>
+                            </div>
+                          </div>
+                          <div style={{ fontSize: 9, color: C.muted, marginTop: 4 }}>
+                            Efficiency ↑ {metric.after - metric.before} pp (same workload, smaller node)
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Bin packing before / after */}
+                    <div>
+                      <div style={{ fontSize: 10, fontWeight: 700, color: C.subtle, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 12 }}>Bin Packing Before / After</div>
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                        {[{ label: "Before", data: h.binBefore, color: "#e5e7eb" }, { label: "After", data: h.binAfter, color: C.green }].map(({ label, data, color }) => (
+                          <div key={label} style={{ border: `1px solid ${C.border}`, borderRadius: 8, padding: "10px" }}>
+                            <div style={{ fontSize: 10, fontWeight: 600, color: C.muted, marginBottom: 8 }}>{label}</div>
+                            {/* Vertical bin */}
+                            <div style={{ height: 100, background: "#f5f6f8", borderRadius: 6, overflow: "hidden", display: "flex", flexDirection: "column-reverse", marginBottom: 6 }}>
+                              {data.filter(d => d.name !== "free").map((d, i) => (
+                                <div key={i} title={`${d.name}: ${d.pct}%`} style={{
+                                  width: "100%", height: `${d.pct}%`,
+                                  background: POD_COLORS[i % POD_COLORS.length],
+                                  opacity: 0.85,
+                                  display: "flex", alignItems: "center", justifyContent: "center",
+                                  fontSize: 8, color: "#fff", fontWeight: 600, overflow: "hidden",
+                                }}>
+                                  {d.pct > 15 ? d.name : ""}
+                                </div>
+                              ))}
+                            </div>
+                            <div style={{ fontSize: 9, color: C.muted }}>
+                              {(100 - (data.find(d=>d.name==="free")?.pct || 0))}% used
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Savings detail */}
+                    <div>
+                      <div style={{ fontSize: 10, fontWeight: 700, color: C.subtle, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 12 }}>Financial Impact</div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                        <div style={{ background: h.ok ? C.greenBg : C.redBg, border: `1px solid ${h.ok ? C.greenBorder : C.redBorder}`, borderRadius: 8, padding: "12px 14px" }}>
+                          <div style={{ fontSize: 10, color: C.muted }}>Monthly savings</div>
+                          <div style={{ fontSize: 22, fontWeight: 800, color: C.text, letterSpacing: "-0.5px" }}>
+                            {h.ok ? `$${h.savings}` : "—"}
+                          </div>
+                          <div style={{ fontSize: 10, color: C.subtle }}>
+                            {h.ok ? `$${(h.savings * 12).toLocaleString()} / year` : "Change reverted"}
+                          </div>
+                        </div>
+                        <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: "12px 14px" }}>
+                          <div style={{ fontSize: 10, color: C.muted, marginBottom: 8 }}>Change details</div>
+                          <div style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 11, color: C.muted }}>
+                            <div>Node: <strong style={{ color: C.text }}>{h.node}</strong></div>
+                            <div>Mode: <strong style={{ color: C.text }}>{h.mode}</strong></div>
+                            <div>Status: <strong style={{ color: h.ok ? C.green : C.red }}>{h.ok ? "Applied" : "Reverted"}</strong></div>
+                            <div>Date: <strong style={{ color: C.text }}>{h.date}</strong></div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SAVINGS TRACKER SECTION
+// ═══════════════════════════════════════════════════════════════════════════════
+function SavingsTracker() {
+  const [period, setPeriod] = useState("6m");
+
+  const monthly = [
+    { m: "Sep", real: 1240, pot: 5800 },
+    { m: "Oct", real: 1890, pot: 5600 },
+    { m: "Nov", real: 2340, pot: 5400 },
+    { m: "Dec", real: 2100, pot: 5200 },
+    { m: "Jan", real: 2780, pot: 4900 },
+    { m: "Feb", real: 3150, pot: 4820 },
+  ];
+  const display = period === "1m" ? monthly.slice(-1) : period === "3m" ? monthly.slice(-3) : monthly;
+  const maxV = 6200;
+
+  return (
+    <div>
+      <div style={{ marginBottom: 16 }}>
+        <h2 style={{ fontSize: 16, fontWeight: 700, margin: "0 0 3px", color: C.text, letterSpacing: "-0.3px" }}>Savings Tracker</h2>
+        <p style={{ fontSize: 12, color: C.subtle, margin: 0 }}>Realized vs potential savings over time · cluster breakdown · fleet score</p>
+      </div>
+
+      {/* KPI strip */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10, marginBottom: 16 }}>
+        <MetricBox label="Total Realized"    value="$13,500"  sub="Last 6 months"     accentBorder={C.green}  />
+        <MetricBox label="This Month"        value="$3,150"   sub="February 2026"     accentBorder={C.green}  />
+        <MetricBox label="Pending Potential" value="$4,820"   sub="Awaiting approval" accentBorder={C.amber}  />
+        <MetricBox label="Optimizations Run" value="47"       sub="Instances resized" accentBorder={C.accent} />
+      </div>
+
+      {/* Bar chart */}
+      <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: "18px 20px", marginBottom: 14 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18 }}>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 600, color: C.text }}>Realized vs Potential Savings</div>
+            <div style={{ fontSize: 11, color: C.subtle, marginTop: 2 }}>Monthly cost reduction from applied recommendations</div>
+          </div>
+          <div style={{ display: "flex", gap: 6 }}>
+            {[["1m","1M"],["3m","3M"],["6m","6M"]].map(([id, label]) => (
+              <Chip key={id} active={period === id} onClick={() => setPeriod(id)}>{label}</Chip>
+            ))}
+            <Btn size="sm"><Icons.Download s={12} stroke={C.muted} /></Btn>
+          </div>
+        </div>
+
+        <div style={{ position: "relative" }}>
+          <div style={{ position: "absolute", left: 0, top: 0, bottom: 28, display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
+            {["$6k","$4k","$2k","$0"].map(l => (
+              <span key={l} style={{ fontSize: 9, color: C.subtle }}>{l}</span>
+            ))}
+          </div>
+          <div style={{ marginLeft: 28, position: "relative" }}>
+            {[0,1,2,3].map(i => (
+              <div key={i} style={{ position: "absolute", left: 0, right: 0, top: `${(i/3)*100}%`, borderTop: `1px solid ${C.border}` }} />
+            ))}
+            <div style={{ display: "flex", alignItems: "flex-end", gap: 14, height: 180, paddingBottom: 28 }}>
+              {display.map((d, i) => (
+                <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", height: "100%", justifyContent: "flex-end" }}>
+                  <div style={{ width: "100%", display: "flex", gap: 3, alignItems: "flex-end", height: "calc(100% - 20px)" }}>
+                    <div style={{ flex: 1, borderRadius: "3px 3px 0 0", minHeight: 4, height: `${(d.pot/maxV)*100}%`, background: "#eef0f3", transition: "height 0.6s cubic-bezier(.4,0,.2,1)" }} title={`$${d.pot.toLocaleString()} potential`} />
+                    <div style={{ flex: 1, borderRadius: "3px 3px 0 0", minHeight: 4, height: `${(d.real/maxV)*100}%`, background: C.green, transition: "height 0.6s cubic-bezier(.4,0,.2,1)" }} title={`$${d.real.toLocaleString()} realized`} />
+                  </div>
+                  <span style={{ fontSize: 10, color: C.subtle, marginTop: 6 }}>{d.m}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <div style={{ display: "flex", gap: 18, marginTop: 8 }}>
+          {[["Realized savings", C.green, null],["Remaining potential", "#eef0f3", C.border]].map(([l, bg, border]) => (
+            <div key={l} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <div style={{ width: 12, height: 12, borderRadius: 3, background: bg, border: border ? `1px solid ${border}` : "none" }} />
+              <span style={{ fontSize: 11, color: C.muted }}>{l}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Bottom grid */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 280px", gap: 14 }}>
+        {/* Applied table */}
+        <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10 }}>
+          <div style={{ padding: "12px 16px", borderBottom: `1px solid ${C.border}`, display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 13, fontWeight: 600, color: C.text }}>Applied Optimizations</span>
+            <div style={{ display: "flex", alignItems: "center", gap: 4, padding: "2px 8px", borderRadius: 20, background: C.greenBg, border: `1px solid ${C.greenBorder}` }}>
+              <Dot color={C.green} />
+              <span style={{ fontSize: 10, fontWeight: 500, color: C.muted }}>{HISTORY.filter(h=>h.ok).length} successful</span>
+            </div>
+          </div>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr style={{ background: "#fafafa", borderBottom: `1px solid ${C.border}` }}>
+                {["Date","Node","Change","Monthly Saving","Mode","Status"].map(h => (
+                  <th key={h} style={TH}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {HISTORY.map((h, i) => (
+                <tr key={h.id}
+                  style={{ borderBottom: i < HISTORY.length - 1 ? `1px solid ${C.border}` : "none", transition: "background 0.1s" }}
+                  onMouseEnter={e => e.currentTarget.style.background = C.surfaceHover}
+                  onMouseLeave={e => e.currentTarget.style.background = C.surface}>
+                  <td style={TD}><span style={{ fontSize: 11, color: C.subtle }}>{h.date.replace(", 2026","")}</span></td>
+                  <td style={TD}><span style={{ fontSize: 12, fontWeight: 600, color: C.text }}>{h.node}</span></td>
+                  <td style={TD}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                      <code style={{ fontSize: 10, background: "#f0f1f3", color: C.muted, padding: "2px 6px", borderRadius: 4 }}>{h.from}</code>
+                      <Icons.Arrow s={10} stroke={C.subtle} />
+                      <code style={{ fontSize: 10, background: C.greenBg, color: C.green, border: `1px solid ${C.greenBorder}`, padding: "2px 6px", borderRadius: 4 }}>{h.to}</code>
+                    </div>
+                  </td>
+                  <td style={TD}><span style={{ fontSize: 13, fontWeight: 700, color: h.ok ? C.text : C.subtle }}>{h.ok ? `$${h.savings}` : "—"}</span></td>
+                  <td style={TD}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 4, padding: "2px 7px", borderRadius: 20, background: h.mode === "Auto" ? C.purpleBg : "#f0f1f3", border: `1px solid ${h.mode === "Auto" ? C.purpleBorder : C.border}`, width: "fit-content" }}>
+                      <span style={{ fontSize: 10, color: C.muted }}>{h.mode}</span>
+                    </div>
+                  </td>
+                  <td style={TD}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                      <Dot color={h.ok ? C.green : C.red} />
+                      <span style={{ fontSize: 11, color: C.muted }}>{h.ok ? "Applied" : "Reverted"}</span>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Right side */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: "14px 16px" }}>
+            <SectionHeader>Savings by Cluster</SectionHeader>
+            {[{name:"prod-cluster",val:2100,pct:67},{name:"data-cluster",val:720,pct:23},{name:"staging-cluster",val:330,pct:10}].map(c => (
+              <div key={c.name} style={{ marginBottom: 10 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                  <span style={{ fontSize: 11, fontWeight: 500, color: C.text }}>{c.name}</span>
+                  <span style={{ fontSize: 11, color: C.muted, fontFamily: "monospace" }}>${c.val.toLocaleString()}</span>
+                </div>
+                <MiniBar pct={c.pct} color={C.green} />
+              </div>
+            ))}
+          </div>
+
+          <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: "14px 16px" }}>
+            <SectionHeader>By Instance Family</SectionHeader>
+            {[{fam:"m5",n:18,v:"$1,240"},{fam:"c5",n:12,v:"$980"},{fam:"t3",n:9,v:"$420"},{fam:"r5",n:5,v:"$510"}].map((f,i) => (
+              <div key={f.fam} style={{
+                display: "flex", alignItems: "center", justifyContent: "space-between",
+                padding: "8px 0", borderBottom: i < 3 ? `1px solid ${C.border}` : "none",
+              }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <code style={{ fontSize: 10, background: "#f0f1f3", color: C.muted, padding: "2px 7px", borderRadius: 4 }}>{f.fam}.*</code>
+                  <span style={{ fontSize: 10, color: C.subtle }}>{f.n} instances</span>
+                </div>
+                <span style={{ fontSize: 12, fontWeight: 700, color: C.text }}>{f.v}</span>
+              </div>
+            ))}
+          </div>
+
+          <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: "14px 16px" }}>
+            <SectionHeader>Fleet Score</SectionHeader>
+            <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+              <ScoreRing score={6.4} size={56} />
+              <div style={{ fontSize: 11, color: C.muted, lineHeight: 1.8 }}>
+                <div>23 of 148 instances over-provisioned</div>
+                <div style={{ marginTop: 4, fontSize: 10, color: C.subtle }}>
+                  Full optimization → <strong style={{ color: C.text }}>8.9 / 10</strong>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 }

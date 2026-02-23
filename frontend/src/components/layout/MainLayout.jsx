@@ -130,9 +130,10 @@ const NAV_STRUCTURE = [
         badge: null,
         description: "Manual & Karpenter auto-optimization",
         sub: [
-          { id: "rs-manual", label: "Manual Mode" },
-          { id: "rs-karpenter", label: "Karpenter Auto" },
-          { id: "rs-savings", label: "Savings Tracker" }
+          { id: "karpenter", label: "Karpenter" },
+          { id: "configuration", label: "Configuration" },
+          { id: "history", label: "Optimization History" },
+          { id: "savings", label: "Savings Tracker" }
         ]
       },
       {
