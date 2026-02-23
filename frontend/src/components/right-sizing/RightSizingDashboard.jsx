@@ -1,4 +1,5 @@
-import { useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useEffect } from "react";
+import { useSearchParams } from 'react-router-dom';
 import { clusterAPI, karpenterAPI } from "../../services/api";
 import { toast } from "react-hot-toast";
 
@@ -1106,7 +1107,11 @@ const TABS = [
 ];
 
 export default function RightSizingDashboard() {
-  const [activeTab, setActiveTab] = useState("savings");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const activeTab = searchParams.get("tab") || "savings";
+  const setActiveTab = (tab) => {
+    setSearchParams({ tab });
+  };
   const [clusters, setClusters] = useState([]);
   const [loadingClusters, setLoadingClusters] = useState(true);
 
@@ -1146,7 +1151,7 @@ export default function RightSizingDashboard() {
   const handleModeChange = (clusterId, mode) => setClusterModes(prev => ({ ...prev, [clusterId]: mode }));
 
   return (
-    <div style={{ minHeight: "100vh", background: T.bg, fontFamily: "'Inter', 'Segoe UI', system-ui, sans-serif", color: T.text }}>
+    <div style={{ fontFamily: "'Inter', 'Segoe UI', system-ui, sans-serif", color: T.text }}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
         * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -1161,32 +1166,6 @@ export default function RightSizingDashboard() {
         button:focus { outline: none; }
         table { table-layout: auto; }
       `}</style>
-
-      <div style={{ background: T.surface, borderBottom: `1px solid ${T.border}`, padding: "0 28px", display: "flex", alignItems: "stretch", boxShadow: "0 1px 2px rgba(0,0,0,.04)" }}>
-        <div style={{ display: "flex", alignItems: "center", paddingRight: 24, marginRight: 4, borderRight: `1px solid ${T.border}`, height: 52 }}>
-          <span style={{ fontSize: 15, fontWeight: 800, color: T.text }}>Right-Sizing</span>
-        </div>
-        <div style={{ display: "flex" }}>
-          {TABS.map(t => (
-            <button key={t.id} onClick={() => setActiveTab(t.id)} style={{
-              padding: "0 18px", background: "none", border: "none",
-              borderBottom: activeTab === t.id ? `2px solid ${T.primary}` : "2px solid transparent",
-              cursor: "pointer", height: 52, display: "flex", alignItems: "center", gap: 7, transition: "border-color .15s",
-            }}>
-              <div>
-                <div style={{ fontSize: 13, fontWeight: 600, color: activeTab === t.id ? T.primary : T.textMid, lineHeight: 1.3 }}>{t.label}</div>
-                <div style={{ fontSize: 10, color: T.textFaint }}>{t.sub}</div>
-              </div>
-            </button>
-          ))}
-        </div>
-        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10 }}>
-          <span style={{ fontSize: 11, color: T.textFaint }}>Last scan: <span style={{ color: T.primary, fontWeight: 600 }}>2 min ago</span></span>
-          <button style={{ padding: "7px 14px", background: T.primary, border: "none", borderRadius: 7, color: "#fff", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
-            Rescan
-          </button>
-        </div>
-      </div>
 
       <div style={{ padding: "24px 28px", maxWidth: 1440, margin: "0 auto" }}>
         {activeTab === "savings" && <SavingsSection clusters={allClusters} clusterModes={clusterModes} />}
