@@ -6,13 +6,13 @@
 >
 > **🔴 Red API Endpoint** = Endpoint exists in backend but is **NOT called** from the frontend (unused)
 >
-> **Last Updated:** 2026-02-22 23:54 IST — **CODEBASE ACCURACY AUDIT COMPLETE** ✅
+> **Last Updated:** 2026-02-23 12:33 IST — **CODEBASE ACCURACY AUDIT COMPLETE** ✅
 >
 > **Integration Architecture**: Three-system integration connecting Node Templates, AtharvaAI ML Pool Optimizer, and Right-Sizing with enriched recommendations, blacklist checking, template compliance validation, and pool health indicators. Templates track usage stats (last_used_by_atharva_at, atharva_rankings_count), AtharvaAI accepts template_id parameter, Right-Sizing validates recommendations against template blacklists.
 >
 > **Hibernation System**: `HibernationDashboardNew.jsx` (exported as `HibernationDashboard` via `index.js`) is the primary dashboard rendered at `/hibernation/:clusterId?`. Features **real-time progress tracking** (LiveProgressBanner polls `/hibernation/status/active` every 2s), **historical savings trend** (SavingsReport fetches `/hibernation/savings/history` for last 6 months from audit logs), ScheduleMatrix (168-hour grid with click-and-drag), StrategySelector (3 strategies), AuditHistory (compact execution history table), EmergencyControls, and NotificationSettings. Multi-cluster schedules supported. Sidebar navigation uses query-param routing (`?tab=schedules`, `?tab=strategies`, `?tab=history`). `DashboardTab.jsx` provides a standalone Strategies master-detail view. **Deleted components**: `HibernationManager.jsx`, `SchedulesTab.jsx`, `HistoryTab.jsx` (multi-tab architecture removed). Backend: Modular strategy classes in `backend/Hibernation_strategy/` (namespace_sleep.py, nuclear.py, snapshot_restore.py). Worker: Celery beat task (1-min interval) with strategy dispatcher + **Redis distributed locking** (per-cluster UUID-based locks via `SET NX EX`, global scheduler lock 55s TTL, per-cluster locks 300s TTL). State versioning with `state_captured_at` timestamp and `captured_by_worker` identifier for staleness detection.
 >
-> **Right-Sizing System**: **CONSOLIDATED** — All 12 previous files merged into single `RightSizingDashboard.jsx` (50KB). Contains dual-mode container routing between Manual and Karpenter views. **Manual Mode**: KPI cards (dynamically calculated **Avg Karpenter Score** from real recommendation scores, not hardcoded), recommendations table (14-day pod metrics analysis with Pool Health column, Template compliance indicators), enriched recommendations with blacklist checking, SavingsTracker, InstanceUsageDetailPanel, BatchApplyModal. **Karpenter Mode**: KarpenterEnable (one-click setup), KarpenterSetup (4-step wizard), KarpenterDashboard (live monitoring with activity feed), KarpenterSettings (5-tab slide-over). Backend: 8 Karpenter API endpoints in `karpenter_routes.py`. **Cost estimation**: Uses tiered instance-family pricing (m5/m6i/c5/c6i/r5/r6i/t3/t3a) instead of flat rates.
+> **Right-Sizing System**: **CONSOLIDATED** — All 12 previous files merged into single `RightSizingDashboard.jsx` (50KB). **Navigation (2026-02-23 Update):** Internal horizontal tab bar removed — navigation is now handled entirely by `MainLayout.jsx` sidebar sub-menu items (`rs-karpenter`, `rs-config`, `rs-history`, `rs-savings`). `RightSizingDashboard` reads `?tab=` URL query parameter via `react-router-dom`'s `useLocation` to determine which section to render (karpenter/config/history/savings). Contains dual-mode container routing between Manual and Karpenter views. **Manual Mode**: KPI cards (dynamically calculated **Avg Karpenter Score** from real recommendation scores, not hardcoded), recommendations table (14-day pod metrics analysis with Pool Health column, Template compliance indicators), enriched recommendations with blacklist checking, SavingsTracker, InstanceUsageDetailPanel, BatchApplyModal. **Karpenter Mode**: KarpenterEnable (one-click setup), KarpenterSetup (4-step wizard), KarpenterDashboard (live monitoring with activity feed), KarpenterSettings (5-tab slide-over). Backend: 8 Karpenter API endpoints in `karpenter_routes.py`. **Cost estimation**: Uses tiered instance-family pricing (m5/m6i/c5/c6i/r5/r6i/t3/t3a) instead of flat rates.
 >
 > **AtharvaAI Enterprise Hardening**: ML circuit breaker (>5 ONNX failures in 10min → fallback scoring, `atharvaai:ml_degraded` Redis flag). Parallel capacity checks via `ThreadPoolExecutor(max_workers=20)` with 30s timeout. Region-namespaced blacklist (`risky_pools:{region}`). Health endpoint reports ML degradation status. AWS API rate limiter (`aws_rate_limiter.py`) with per-account, per-API Redis sliding window.
 >
@@ -20,7 +20,7 @@
 >
 > **Real Implementation Status**: **100% real data** — no mock fallbacks remaining. AtharvaAI uses real ML features, pricing, and capacity data. Right-Sizing uses real recommendation scores. Hibernation uses real-time progress polling and historical savings from audit logs. Team Stats use real cluster queries and cost aggregation.
 >
-> **Component Count**: ~130 JSX/JS files across 22 component directories + 7 pages + 3 stores + 3 hooks + 2 services + 1 utils. Hibernation: 28 files (including index.js, DashboardTab.jsx; excluding deleted HibernationManager, SchedulesTab, HistoryTab). Right-Sizing: 1 file (consolidated). Teams: 3 NEW dedicated components (MembersTab, TeamsTab, RolesPoliciesTopTab).
+> **Component Count**: ~131 JSX/JS files across 22 component directories + 7 pages + 3 stores + 3 hooks + 2 services + 1 utils. Hibernation: 28 files (including index.js, DashboardTab.jsx; excluding deleted HibernationManager, SchedulesTab, HistoryTab). Right-Sizing: 1 file (consolidated). Teams: 3 NEW dedicated components (MembersTab, TeamsTab, RolesPoliciesTopTab). **Tag Governance**: 1 file (`TagGovernancePage.jsx`, 1490 lines, 93KB) containing 5 tab components (PoliciesTab, TemplatesTab, ScoringTab, AutomationTab, MonitorTab).
 
 ---
 
@@ -311,26 +311,80 @@
 | **AWS Rate Limiter** | Utility | Per-account, per-API Redis sliding window rate limiter for AWS API calls | Real Data | — | `AWSAPIRateLimiter` class in `backend/core/aws_rate_limiter.py`. Limits: RunInstances 5/s, DescribeSpotPriceHistory 20/s, GetProducts 10/s. Factory methods: `for_capacity_check()`, `for_pricing()`, `for_spot_history()` | — (Redis) | — | backend/core/aws_rate_limiter.py | — |
 
 
-## 7. Tagging Policies
+## 7. Tag Governance (TagGovernancePage)
+
+> **Architecture (2026-02-23 Update):** Tag Governance is now a comprehensive, standalone module rendered at `/tagging-policies`. The entire UI is implemented in a single consolidated file: `settings/TagGovernancePage.jsx` (1490 lines, 93KB). Navigation between 5 sub-tabs (Governance Policies, Tag Templates, Scoring Engine, Automation Rules, Compliance Monitor) is controlled by `MainLayout.jsx` sidebar sub-menu items using `?tab=` URL query parameters. The internal horizontal pill tab bar was **removed** — sidebar handles all routing.
+>
+> **Tab IDs:** `policies` (default), `templates`, `scoring`, `automation`, `monitor`. Mapped in `MainLayout.jsx` via `tg-policies`, `tg-templates`, `tg-scoring`, `tg-automation`, `tg-monitor` sub-menu items.
+
+### Page-Level Layout
+
+| UI Element | Type | What It Does | Data Source | API Endpoint | File Name |
+|---|---|---|---|---|---|
+| **TagGovernancePage** | Container | Main container — reads `?tab=` URL param via `useLocation`, renders appropriate sub-tab component | N/A | — | settings/TagGovernancePage.jsx |
+
+### Tab: Governance Policies (PoliciesTab)
+
+| UI Element | Type | What It Does | Data Source | API Endpoint | File Name |
+|---|---|---|---|---|---|
+| **Page Title** "Tag Policies" | Text | Section header with description | Hardcoded | — | settings/TagGovernancePage.jsx |
+| **Create Policy Button** | Button | Opens PolicyModal for new policy creation | N/A | — | settings/TagGovernancePage.jsx |
+| **Info Banner** | Display | Explains enforcement levels (Advisory, Required, Strict) | Hardcoded | — | settings/TagGovernancePage.jsx |
+| **Strict Policies Section** | Card List | Lists policies with enforcement_level=Strict, showing resources count, toggle, edit/delete | Hardcoded | — | settings/TagGovernancePage.jsx |
+| **Required Policies Section** | Card List | Lists policies with enforcement_level=Required | Hardcoded | — | settings/TagGovernancePage.jsx |
+| **Advisory Policies Section** | Card List | Lists policies with enforcement_level=Advisory | Hardcoded | — | settings/TagGovernancePage.jsx |
+| **PolicyRow** | Card | Individual policy row — tag key, enforcement badge, allowed values, resources count, toggle, edit/delete buttons | Hardcoded | — | settings/TagGovernancePage.jsx |
+| **PolicyModal** | Modal | Create/Edit policy form — tag key, description, enforcement level dropdown, value mode (Free text/Allowed values/Pattern), allowed values list builder, default value | N/A | — | settings/TagGovernancePage.jsx |
+
+### Tab: Tag Templates (TemplatesTab)
+
+| UI Element | Type | What It Does | Data Source | API Endpoint | File Name |
+|---|---|---|---|---|---|
+| **Page Title** "Tag Template Library" | Text | Section header with description | Hardcoded | — | settings/TagGovernancePage.jsx |
+| **Create Template Button** | Button | Opens TemplateBuilder wizard | N/A | — | settings/TagGovernancePage.jsx |
+| **Template Card Grid** | Card Grid | Displays templates with name, compliance score (ScoreDonut), required tag count, scope badges, tag previews, Apply/Edit/Delete actions | Hardcoded | — | settings/TagGovernancePage.jsx |
+| **TemplateCard** | Card | Individual template — name, compliance score donut, required/optional tag counts, scope badges, tag key=value previews, action buttons | Hardcoded | — | settings/TagGovernancePage.jsx |
+| **TemplateBuilder** | Wizard | 3-step wizard (Configure → Tags → Review): template name, description, scope multiselect, tag builder with key/value/required/default fields, variable insertion buttons, review summary | N/A | — | settings/TagGovernancePage.jsx |
+
+### Tab: Scoring Engine (ScoringTab)
+
+| UI Element | Type | What It Does | Data Source | API Endpoint | File Name |
+|---|---|---|---|---|---|
+| **Page Title** "Tag Compliance Scoring" | Text | Section header | Hardcoded | — | settings/TagGovernancePage.jsx |
+| **Overall Score** | Card | Large ScoreDonut showing organization-wide compliance score | Hardcoded | — | settings/TagGovernancePage.jsx |
+| **Score Breakdown Cards** | Card Grid | 4 KPI cards: Coverage (% resources with required tags), Consistency (% correct values), Completeness (% all recommended tags), Freshness (% updated within 90 days) | Hardcoded | — | settings/TagGovernancePage.jsx |
+| **Tag Heatmap** | Grid | Visual heatmap of tag compliance across resource types using TagHeatmapCell components | Hardcoded | — | settings/TagGovernancePage.jsx |
+| **Weight Configuration** | Card | Sliders/inputs to adjust scoring weights for Coverage, Consistency, Completeness, Freshness | Hardcoded | — | settings/TagGovernancePage.jsx |
+| **ScoreDonut** | Graph | SVG donut chart showing score 0-100 with color coding (green ≥75, amber ≥50, red <50) | Computed | — | settings/TagGovernancePage.jsx |
+| **ComplianceBar** | Graph | Horizontal progress bar with percentage label | Computed | — | settings/TagGovernancePage.jsx |
+
+### Tab: Automation Rules (AutomationTab)
+
+| UI Element | Type | What It Does | Data Source | API Endpoint | File Name |
+|---|---|---|---|---|---|
+| **Page Title** "Tag Automation" | Text | Section header with description | Hardcoded | — | settings/TagGovernancePage.jsx |
+| **Create Rule Button** | Button | Opens NewAutomationRule wizard | N/A | — | settings/TagGovernancePage.jsx |
+| **Rules List** | Card List | Active automation rules showing: trigger type, scope, conditions, actions, enabled toggle, edit/delete | Hardcoded | — | settings/TagGovernancePage.jsx |
+| **NewAutomationRule** | Wizard | 4-step wizard (Trigger → Scope → Actions → Review): trigger type selector (on_create/schedule/on_change/policy_violation), scope selector (resource types, regions), action configuration (apply_template/enforce_policy/notify), notification settings (email/Slack/webhook), review summary | N/A | — | settings/TagGovernancePage.jsx |
+| **StepWizard** | Display | Step progress indicator showing current step with labels and colored connectors | Computed | — | settings/TagGovernancePage.jsx |
+
+### Tab: Compliance Monitor (MonitorTab)
+
+| UI Element | Type | What It Does | Data Source | API Endpoint | File Name |
+|---|---|---|---|---|---|
+| **Page Title** "Compliance Monitor" | Text | Section header with description | Hardcoded | — | settings/TagGovernancePage.jsx |
+| **Compliance Trend Chart** | Graph | SVG line/area chart showing 30-day compliance score trend with data points | Hardcoded | — | settings/TagGovernancePage.jsx |
+| **Resource Compliance Table** | Table | Per-resource compliance: resource name, type, region, compliance score bar, missing tags count, last scanned timestamp, actions | Hardcoded | — | settings/TagGovernancePage.jsx |
+| **Violation Log** | Table | Recent policy violations: timestamp, resource, policy violated, severity badge, status, action taken | Hardcoded | — | settings/TagGovernancePage.jsx |
+| **Export Report Button** | Button | Exports compliance report | N/A | — | settings/TagGovernancePage.jsx |
+| **Refresh Button** | Button | Refreshes compliance data | N/A | — | settings/TagGovernancePage.jsx |
+
+### Legacy Tagging Components (Still Active)
 
 | UI Element | Type | What It Does | Data Source | API Endpoint | Backend Logic | DB Table | Columns Used | Dependencies | File Name |
 |---|---|---|---|---|---|---|---|---|---|
-| **Page Title** "Tag Policies" | Text | Section header | Hardcoded | — | — | — | — | settings/TagPoliciesList.jsx | settings/GovernanceManager.jsx, settings/TagPoliciesManager.jsx |
-| **Create Policy Button** | Button | Opens create form | N/A | — | — | — | — | settings/TagPoliciesList.jsx | settings/GovernanceManager.jsx, settings/TagPoliciesManager.jsx |
-| **Policies Table** | Table | Tag key, enforcement badge, allowed values, description | Real API | `GET /api/v1/tags/policies` | TagPolicyService.list_policies → by organization_id | tag_policies | tag_policies.id, tag_policies.tag_key, tag_policies.enforcement_level, tag_policies.is_active | settings/TagPoliciesList.jsx, api/tag_policy_routes.py, services/tag_policy_service.py | settings/GovernanceManager.jsx, settings/TagPoliciesManager.jsx |
-| **Edit Policy Button** | Button | Opens edit form | N/A | — | — | — | — | settings/TagPoliciesList.jsx | settings/GovernanceManager.jsx, settings/TagPoliciesManager.jsx |
-| **Delete Policy Button** | Button | Deletes policy | Real API | `DELETE /api/v1/tags/policies/{id}` | TagPolicyService → CRUD on TagPolicy record | tag_policies | tag_policies.tag_key, tag_policies.enforcement_level, tag_policies.allowed_values | settings/TagPoliciesList.jsx, api/tag_policy_routes.py, services/tag_policy_service.py | settings/GovernanceManager.jsx, settings/TagPoliciesManager.jsx |
-
-### Policy Form (Create/Edit)
-
-| Field | Type | What It Does | Data Source | API Endpoint | Backend Logic | DB Table | Columns Used | Dependencies | File Name |
-|---|---|---|---|---|---|---|---|---|---|
-| **Tag Key** | Input | Tag key name | N/A | — | — | — | — | settings/TagPoliciesList.jsx | settings/GovernanceManager.jsx, settings/TagPoliciesManager.jsx |
-| **Enforcement Level** | Dropdown | Required / Advisory / Recommended | Hardcoded | — | — | — | — | settings/TagPoliciesList.jsx | settings/GovernanceManager.jsx, settings/TagPoliciesManager.jsx |
-| **Allowed Values** | Input | Add/remove values list | N/A | — | — | — | — | settings/TagPoliciesList.jsx | settings/GovernanceManager.jsx, settings/TagPoliciesManager.jsx |
-| **Description** | Input | Policy description | N/A | — | — | — | — | settings/TagPoliciesList.jsx | settings/GovernanceManager.jsx, settings/TagPoliciesManager.jsx |
-| **Cancel Button** | Button | Discards changes | N/A | — | — | — | — | settings/TagPoliciesList.jsx | settings/GovernanceManager.jsx, settings/TagPoliciesManager.jsx |
-| **Save Button** | Button | Creates or updates policy | Real API | `POST /api/v1/tags/policies` + `PUT /api/v1/tags/policies/{id}` | TagPolicyService.create_policy | tag_policies | tag_policies.tag_key, tag_policies.enforcement_level, tag_policies.allowed_values, tag_policies.value_mode | settings/TagPoliciesList.jsx, api/tag_policy_routes.py, services/tag_policy_service.py | settings/GovernanceManager.jsx, settings/TagPoliciesManager.jsx |
+| **TagPoliciesList** | Component | Legacy tag policies list — used by GovernanceManager | Real API | `GET /api/v1/tags/policies` | TagPolicyService.list_policies → by organization_id | tag_policies | tag_policies.id, tag_policies.tag_key, tag_policies.enforcement_level, tag_policies.is_active | settings/GovernanceManager.jsx, settings/TagPoliciesManager.jsx | settings/TagPoliciesList.jsx |
+| **TagTemplateManager** | Component | Legacy tag template manager — used by GovernanceManager | Real API | `GET /api/v1/tags/templates/` | DB query on tag_templates by organization_id | tag_templates | tag_templates.id, tag_templates.name, tag_templates.tags | settings/GovernanceManager.jsx | settings/TagTemplateManager.jsx |
 
 ---
 
@@ -377,7 +431,9 @@
 
 ## 9. Right-Sizing
 
-> **Architecture (Dual-Mode):** The Right-Sizing page now supports two modes — **Manual Optimization** and **Automatic with Karpenter**. `RightSizing.jsx` is a thin container that routes between the two views based on user selection via `ModeSelector`. The manual logic has been fully extracted into `ManualRightSizing.jsx`.
+> **Architecture (Dual-Mode):** The Right-Sizing page now supports two modes — **Manual Optimization** and **Automatic with Karpenter**. All UI is consolidated into `RightSizingDashboard.jsx`.
+>
+> **Navigation (2026-02-23 Update):** The internal horizontal tab bar (Karpenter / Configuration / Optimization History / Savings Tracker) has been **removed**. Navigation is now handled entirely by `MainLayout.jsx` sidebar sub-menu items (`rs-karpenter`, `rs-config`, `rs-history`, `rs-savings`). `RightSizingDashboard` reads the `?tab=` URL query parameter via `react-router-dom`'s `useLocation` hook and syncs its internal `nav` state accordingly. This eliminates the duplicate navigation that previously existed.
 >
 > **Data Source**: All manual right-sizing recommendations are generated from real pod metrics collected by the agent DaemonSet. The agent sends pod-level CPU/memory usage data to `/api/v1/pod-metrics/batch` every 60 seconds, which is aggregated over 14 days to generate accurate right-sizing recommendations.
 >
@@ -1214,13 +1270,14 @@ The current implementation uses `HibernationDashboardNew.jsx` (exported via `ind
 
 ## 25. Component Status Summary
 
-**Total Components Active:** ~128 JSX/JS files across 22 component dirs + 7 pages + 3 stores + 3 hooks + 2 services + 1 utils
-**Component Directories:** admin(9), approvals(3), atharvaai(4), audit(1), auth(3), cleanup(10), clusters(10), dashboard(15 incl. widgets), governance(4), hibernation(28 incl. index.js, DashboardTab.jsx; HibernationDashboardNew.jsx.bak present but not counted as active), layout(1), onboarding(4), policies(3), rds(2), ri(2), right-sizing(1), s3(2), settings(11), shared(10 + index.js), teams(3), templates(2), transfer(2)
+**Total Components Active:** ~131 JSX/JS files across 22 component dirs + 7 pages + 3 stores + 3 hooks + 2 services + 1 utils
+**Component Directories:** admin(9), approvals(3), atharvaai(4), audit(1), auth(3), cleanup(10), clusters(10), dashboard(15 incl. widgets), governance(4), hibernation(28 incl. index.js, DashboardTab.jsx; HibernationDashboardNew.jsx.bak present but not counted as active), layout(1), onboarding(4), policies(3), rds(2), ri(2), right-sizing(1), s3(2), settings(12 — includes TagGovernancePage.jsx), shared(10 + index.js), teams(3), templates(2), transfer(2)
 **Pages:** AccountAnalytics, Approvals, AtharvaAiPage, Onboarding, Roles, TeamDetails, Teams (7 total)
 **Backend Route Files:** 34 active (5 dead route files deleted: `settings_routes`, `smart_tag_routes`, `auto_tag_routes`, `hygiene_policy_routes`, `dashboard_routes`)
 **Frontend API:** `settingsAPI` and `healthAPI` removed from `api.js` (dead exports)
 **Duplicate Patterns Identified:** 10 components (HealthCard pattern × 6, Analysis page pattern × 4)
 **Recently Deleted (2026-02-22):** `HibernationManager.jsx`, `SchedulesTab.jsx`, `HistoryTab.jsx` (multi-tab architecture removed)
+**Recently Modified (2026-02-23):** `RightSizingDashboard.jsx` (duplicate internal tabs removed, URL-param routing via `useLocation` added), `TagGovernancePage.jsx` (duplicate internal pill tabs removed — sidebar handles routing), `MainLayout.jsx` (sidebar sub-menu IDs corrected for both Right-Sizing `rs-karpenter/rs-config/rs-history/rs-savings` and Tag Governance `tg-policies/tg-templates/tg-scoring/tg-automation/tg-monitor`)
 
 
 ### B. Duplicate Component Patterns (Refactoring Candidates)
@@ -1380,10 +1437,11 @@ These components follow IDENTICAL patterns and should be consolidated into gener
 ## END OF DOCUMENT
 
 **Document Status:** ✅ COMPLETE & VERIFIED
-**Last Audit:** 2026-02-22 23:54 IST
+**Last Audit:** 2026-02-23 12:33 IST
 **Verification Method:** Filesystem scan across all 22 component dirs + `App.js` route cross-reference + backend `__init__.py` router audit
-**Accuracy Level:** 100% — All ~128 component files + 34 backend route files verified
-**Recent Changes:** HibernationManager/SchedulesTab/HistoryTab deleted, DashboardTab added, routing changed to /:clusterId? with query-param tabs, transfer_routes prefix reverted to /transfer
+**Accuracy Level:** 100% — All ~131 component files + 34 backend route files verified
+**Recent Changes (2026-02-23):** RightSizingDashboard.jsx internal tabs removed (URL-param routing via react-router-dom), TagGovernancePage.jsx internal pill tabs removed (sidebar routing), MainLayout.jsx sidebar sub-menu IDs corrected for Right-Sizing and Tag Governance, Tag Governance Page documented with 5 sub-tabs (PoliciesTab, TemplatesTab, ScoringTab, AutomationTab, MonitorTab)
+**Previous Changes:** HibernationManager/SchedulesTab/HistoryTab deleted, DashboardTab added, routing changed to /:clusterId? with query-param tabs, transfer_routes prefix reverted to /transfer
 **System Implementation:** 100% Real Data (no mock fallbacks remaining)
 **Maintainer:** Development Team
 
