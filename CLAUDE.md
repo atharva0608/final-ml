@@ -142,7 +142,7 @@ backend/
 │   ├── pod_metrics_routes.py    # Agent pod metric ingestion & analysis
 │   ├── hibernation_routes.py    # Hibernation schedule CRUD
 │   ├── hygiene_routes.py        # Resource cleanup scanning
-│   ├── atharvaai_routes.py      # ML pool rankings, blacklist checking (17KB)
+│   ├── atharvaai_routes.py      # ML pool rankings, decision engine telemetry, blacklist (17KB)
 │   ├── billing_routes.py        # Billing & usage tracking (17KB)
 │   ├── metrics_routes.py        # Instance metrics, cost metrics (19KB)
 │   ├── admin_routes.py          # Super admin operations (12KB)
@@ -361,10 +361,21 @@ Pool health (Healthy/Risky) displayed in recommendations table
 **Key files:**
 - `frontend/src/components/templates/TemplateList.jsx` — Template management
 - `frontend/src/components/atharvaai/PoolRankings.jsx` — ML pool rankings
+- `frontend/src/components/atharvaai/DecisionEngine.jsx` — Execution Timeline UI
 - `frontend/src/components/right-sizing/RightSizingDashboard.jsx` — Consolidated recommendations dashboard
 - `backend/api/template_routes.py` — Template CRUD
-- `backend/api/atharvaai_routes.py` — ML rankings + blacklist checking
+- `backend/api/atharvaai_routes.py` — ML rankings + blacklist checking + Execution Status
 - `backend/api/pod_metrics_routes.py` — Enriched recommendations endpoint
+- `backend/core/decision_engine.py` — 15-step execution Rules Layer
+
+### Zero-Downtime Decision Engine v3 (Substitute Engine)
+
+The pipeline controls how Spot pool replacements actually happen without impacting running workloads:
+
+**1. Workload Classification:** Differentiates `STATEFUL`, `STATELESS_ELIGIBLE`, and `SYSTEM` pods.
+**2. Substitute Prewarming:** Launches an identical backup node (`PREWARMING` state).
+**3. Safe Swap:** Waits for the substitute to reach `READY` in Kubernetes, then Cordons and Drains the target node.
+**4. Execution Tracking:** Frontend visualizes all 15 steps via `GET /api/v1/atharvaai/decision-engine/{cluster_id}`.
 
 ### Dual-Mode Architecture (Karpenter)
 
