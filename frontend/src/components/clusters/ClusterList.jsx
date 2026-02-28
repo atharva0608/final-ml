@@ -1,8 +1,10 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
+import { createPortal } from 'react-dom';
 import { clusterAPI } from '../../services/api';
 import { useClusterStore, useHeaderStore } from '../../store/useStore';
 import { formatCurrency } from '../../utils/formatters';
 import toast from 'react-hot-toast';
+import NodeTemplateTab from './NodeTemplateTab';
 
 // ─── PALETTE ─────────────────────────────────────────────────────────────────
 // Philosophy: near-monochrome UI chrome. Color ONLY for data/status indicators.
@@ -30,12 +32,11 @@ const C = {
   purple: "#6d28d9", purpleBg: "#f5f3ff", purpleBorder: "#ddd6fe",
   teal: "#0f766e", tealBg: "#f0fdfa", tealBorder: "#99f6e4",
 
-  // Aliases used below
+  // Aliases
   blue: "#2563eb", blueLight: "#eff6ff",
   greenLight: "#f0fdf4", amberLight: "#fffbeb", redLight: "#fef2f2",
   purpleLight: "#f5f3ff", indigo: "#4f46e5",
 
-  // Node type (dots/bars only)
   spotColor: "#16a34a", spotBg: "#f0fdf4",
   fallbackColor: "#b45309", fallbackBg: "#fffbeb",
   onDemandColor: "#2563eb", onDemandBg: "#eff6ff",
@@ -43,10 +44,9 @@ const C = {
 
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
 const utilColor = (pct) => {
-  if (pct >= 85) return C.red;
-  if (pct >= 65) return C.amber;
-  if (pct >= 30) return C.green;
-  return C.accent;
+  if (pct < 60) return C.green;
+  if (pct < 85) return C.amber;
+  return C.fallbackColor;
 };
 
 const utilBg = (pct) => {
@@ -75,14 +75,180 @@ const statusConfig = {
 };
 
 // ─── MINI COMPONENTS ─────────────────────────────────────────────────────────
-const MiniBar = ({ used, total, color }) => {
-  const pct = total > 0 ? Math.round((used / total) * 100) : 0;
+
+const ToggleSwitch = ({ checked, onChange, disabled }) => (
+  <div
+    onClick={() => !disabled && onChange(!checked)}
+    style={{
+      width: 36, height: 20,
+      background: checked ? C.green : C.border,
+      borderRadius: 10, position: "relative",
+      cursor: disabled ? "not-allowed" : "pointer",
+      opacity: disabled ? 0.6 : 1,
+      transition: "background 0.2s"
+    }}
+  >
+    <div style={{
+      width: 16, height: 16, background: "#fff", borderRadius: "50%",
+      position: "absolute", top: 2,
+      left: checked ? "calc(100% - 18px)" : 2,
+      boxShadow: "0 1px 2px rgba(0,0,0,0.1)",
+      transition: "left 0.2s cubic-bezier(0.4, 0, 0.2, 1)"
+    }} />
+  </div>
+);
+
+const OptimizationSettingsTab = ({ cluster }) => {
+  const [loading, setLoading] = useState(true);
+  const [settings, setSettings] = useState({
+    auto_rebalance_enabled: false,
+    auto_rightsizing_enabled: false,
+    cooldown_override_minutes: 300,
+    conservative_mode_enabled: true,
+    manual_approval_required: false
+  });
+
+  useEffect(() => {
+    let mounted = true;
+    const fetchSettings = async () => {
+      try {
+        const res = await clusterAPI.getOptimizationSettings(cluster.id);
+        if (mounted && res.data) {
+          setSettings(prev => ({
+            ...prev,
+            auto_rebalance_enabled: res.data.automation_controls?.auto_rebalance_enabled ?? false,
+            auto_rightsizing_enabled: res.data.automation_controls?.auto_rightsizing_enabled ?? false,
+            conservative_mode_enabled: res.data.automation_controls?.conservative_mode_enabled ?? true,
+            manual_approval_required: res.data.automation_controls?.manual_approval_required ?? false,
+            cooldown_override_minutes: res.data.automation_controls?.cooldown_override_minutes ?? 300,
+          }));
+        }
+      } catch (err) {
+        console.error('Failed to load settings:', err);
+      } finally {
+        if (mounted) setLoading(false);
+      }
+    };
+    fetchSettings();
+    return () => mounted = false;
+  }, [cluster.id]);
+
+  const updateSetting = async (key, value) => {
+    const prev = { ...settings };
+    setSettings(s => ({ ...s, [key]: value }));
+
+    try {
+      const payload = {
+        automation_controls: {
+          ...settings,
+          [key]: value
+        }
+      };
+      await clusterAPI.updateOptimizationSettings(cluster.id, payload);
+      toast.success('Optimization settings updated');
+    } catch (error) {
+      console.error('Update failed:', error);
+      toast.error('Failed to save settings');
+      setSettings(prev);
+    }
+  };
+
+  if (loading) {
+    return <div style={{ padding: 20, textAlign: 'center', color: C.muted, fontSize: 13 }}>Loading settings...</div>;
+  }
+
+  return (
+    <div style={{ marginTop: 20, display: "flex", flexDirection: "column", gap: 16 }}>
+      <div style={{ fontSize: 13, fontWeight: 600, color: C.text, marginBottom: 8 }}>Optimization Engine Settings</div>
+
+      <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: 20 }}>
+
+        {/* Auto Rebalance */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18 }}>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 600, color: C.text }}>Auto Rebalance (ML Spot Optimization)</div>
+            <div style={{ fontSize: 11, color: C.subtle, marginTop: 4 }}>Automatically replace expensive on-demand nodes with ML-predicted stable spot instances</div>
+          </div>
+          <ToggleSwitch
+            checked={settings.auto_rebalance_enabled}
+            onChange={(val) => updateSetting('auto_rebalance_enabled', val)}
+          />
+        </div>
+
+        <div style={{ height: 1, background: C.border, margin: "18px 0" }} />
+
+        {/* Right-Sizing */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18 }}>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 600, color: C.text }}>Auto Right-Sizing</div>
+            <div style={{ fontSize: 11, color: C.subtle, marginTop: 4 }}>Automatically scale down over-provisioned pods based on historical metrics</div>
+          </div>
+          <ToggleSwitch
+            checked={settings.auto_rightsizing_enabled}
+            onChange={(val) => updateSetting('auto_rightsizing_enabled', val)}
+          />
+        </div>
+
+        <div style={{ height: 1, background: C.border, margin: "18px 0" }} />
+
+        {/* Cooldown */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18 }}>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: C.text }}>Cooldown Duration Override</div>
+            <div style={{ fontSize: 11, color: C.subtle, marginTop: 4 }}>Minimum time to wait between optimization actions (Advanced)</div>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <input
+              type="number"
+              value={settings.cooldown_override_minutes}
+              onChange={(e) => updateSetting('cooldown_override_minutes', parseInt(e.target.value) || 300)}
+              style={{ width: 60, padding: "6px 8px", borderRadius: 6, border: `1px solid ${C.border}`, background: C.surface, color: C.text, fontSize: 12, outline: "none" }}
+            />
+            <span style={{ fontSize: 11, color: C.muted }}>seconds</span>
+          </div>
+        </div>
+
+        <div style={{ height: 1, background: C.border, margin: "18px 0" }} />
+
+        {/* Conservative Mode */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18 }}>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 600, color: C.text }}>Conservative Mode (Fresh Cluster Protection)</div>
+            <div style={{ fontSize: 11, color: C.subtle, marginTop: 4 }}>Limit aggressive spot replacements during the first 24 hours of cluster lifecycle</div>
+          </div>
+          <ToggleSwitch
+            checked={settings.conservative_mode_enabled}
+            onChange={(val) => updateSetting('conservative_mode_enabled', val)}
+          />
+        </div>
+
+        <div style={{ height: 1, background: C.border, margin: "18px 0" }} />
+
+        {/* Manual Approval */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <div style={{ paddingRight: 32 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: C.text }}>Manual Approval Required (RBAC)</div>
+            <div style={{ fontSize: 11, color: C.subtle, marginTop: 4 }}>If the AtharvaAI decision engine proposes infrastructure changes, route to Team Lead / Org Admin for manual approval before execution.</div>
+          </div>
+          <ToggleSwitch
+            checked={settings.manual_approval_required}
+            onChange={(val) => updateSetting('manual_approval_required', val)}
+          />
+        </div>
+
+      </div>
+    </div>
+  );
+};
+
+const MiniBar = ({ used, total, color, pct }) => {
+  const displayPct = pct !== undefined ? Math.round(pct) : (total > 0 ? Math.round((used / total) * 100) : 0);
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
       <div style={{ flex: 1, height: 5, background: "#f0f0f0", borderRadius: 3 }}>
-        <div style={{ width: `${pct}%`, height: 5, background: color, borderRadius: 3, transition: "width 0.4s" }} />
+        <div style={{ width: `${displayPct}%`, height: 5, background: color, borderRadius: 3, transition: "width 0.4s" }} />
       </div>
-      <span style={{ fontSize: 10, color: C.muted, width: 28, textAlign: "right", flexShrink: 0 }}>{pct}%</span>
+      <span style={{ fontSize: 10, color: C.muted, width: 28, textAlign: "right", flexShrink: 0 }}>{displayPct}%</span>
     </div>
   );
 };
@@ -119,6 +285,7 @@ const NODE_PER_PAGE = 20;
 const NodeTreemap = ({ nodes }) => {
   const [page, setPage] = useState(0);
   const [hoveredNode, setHoveredNode] = useState(null);
+  const [hoverPos, setHoverPos] = useState({ top: 0, left: 0 });
 
   const totalPages = Math.ceil(nodes.length / NODE_PER_PAGE);
   const pageNodes = nodes.slice(page * NODE_PER_PAGE, (page + 1) * NODE_PER_PAGE);
@@ -167,114 +334,156 @@ const NodeTreemap = ({ nodes }) => {
         background: "#fafafa",
         borderRadius: 12,
         border: `1px solid ${C.border}`,
-        minHeight: 200,
+        minHeight: 120,
         alignContent: "flex-start",
+        position: "relative",
+        overflow: "visible",
       }}>
-        {sorted.map((node) => {
-          const size = sizeMap[getSize(node)];
-          const color = utilColor(node.utilization);
-          const bg = utilBg(node.utilization);
-          const isHovered = hoveredNode?.id === node.id;
+        {nodes.length === 0 ? (
+          <div style={{
+            position: "absolute",
+            top: "50%",
+            left: "50%",
+            transform: "translate(-50%, -50%)",
+            textAlign: "center",
+            color: C.muted,
+          }}>
+            <div style={{ fontSize: 32, marginBottom: 8, opacity: 0.3 }}>📊</div>
+            <div style={{ fontSize: 13, fontWeight: 500 }}>No node data available</div>
+            <div style={{ fontSize: 11, marginTop: 4 }}>Agent must be installed and sending metrics</div>
+          </div>
+        ) : (
+          sorted.map((node, nodeIdx) => {
+            const size = sizeMap[getSize(node)];
+            const color = utilColor(node.utilization);
+            const bg = utilBg(node.utilization);
+            const isHovered = hoveredNode?.id === node.id;
+            const nodeNum = nodeIdx + 1;
+            const cpuPct = node.cpuPct !== undefined ? Math.round(node.cpuPct) : (node.cpu.total > 0 ? Math.round((node.cpu.used / node.cpu.total) * 100) : node.utilization);
+            const memPct = node.memPct !== undefined ? Math.round(node.memPct) : (node.memory.total > 0 ? Math.round((node.memory.used / node.memory.total) * 100) : node.utilization);
 
-          return (
-            <div
-              key={node.id}
-              onMouseEnter={() => setHoveredNode(node)}
-              onMouseLeave={() => setHoveredNode(null)}
-              style={{
-                width: size,
-                height: size,
-                borderRadius: 12,
-                background: isHovered ? bg : bg,
-                border: `2px solid ${isHovered ? color : color + "55"}`,
-                padding: 10,
-                cursor: "pointer",
-                transition: "all 0.15s cubic-bezier(.4,0,.2,1)",
-                transform: isHovered ? "scale(1.06)" : "scale(1)",
-                boxShadow: isHovered ? `0 4px 16px ${color}30` : "none",
-                position: "relative",
-                display: "flex",
-                flexDirection: "column",
-                justifyContent: "space-between",
-                zIndex: isHovered ? 10 : 1,
-              }}
-            >
-              {/* Type pill */}
-              <div style={{
-                display: "flex", justifyContent: "space-between", alignItems: "flex-start"
-              }}>
+            return (
+              <div
+                key={node.id}
+                onMouseEnter={(e) => {
+                  const rect = e.currentTarget.getBoundingClientRect();
+                  setHoverPos({ top: rect.top, left: rect.left + rect.width / 2 });
+                  setHoveredNode(node);
+                }}
+                onMouseLeave={() => setHoveredNode(null)}
+                style={{
+                  width: size,
+                  height: size,
+                  borderRadius: 12,
+                  background: isHovered ? bg : bg,
+                  border: `2px solid ${isHovered ? color : color + "55"}`,
+                  padding: 10,
+                  cursor: "pointer",
+                  transition: "all 0.15s cubic-bezier(.4,0,.2,1)",
+                  transform: isHovered ? "scale(1.06)" : "scale(1)",
+                  boxShadow: isHovered ? `0 4px 16px ${color}30` : "none",
+                  position: "relative",
+                  display: "flex",
+                  flexDirection: "column",
+                  justifyContent: "space-between",
+                  zIndex: isHovered ? 50 : 1,
+                }}
+              >
+                {/* Top row: node number + type dot */}
                 <div style={{
-                  width: 6, height: 6, borderRadius: "50%",
-                  background: typeColor[node.type], flexShrink: 0, marginTop: 1,
-                }} />
-                {!node.ready && (
-                  <div style={{ width: 6, height: 6, borderRadius: "50%", background: C.red }} title="Not ready" />
-                )}
-              </div>
-
-              {/* Utilization % big */}
-              <div style={{ textAlign: "center" }}>
-                <div style={{
-                  fontSize: size === 140 ? 26 : size === 110 ? 20 : 16,
-                  fontWeight: 800, color,
-                  letterSpacing: "-1px", lineHeight: 1,
-                }}>{node.utilization}%</div>
-                {size >= 110 && (
-                  <div style={{ fontSize: 9, color: C.muted, marginTop: 2, letterSpacing: "0.03em" }}>
-                    {node.instanceType}
-                  </div>
-                )}
-              </div>
-
-              {/* Bottom: pods */}
-              {size >= 110 && (
-                <div style={{ fontSize: 9, color: C.muted, textAlign: "center" }}>
-                  {node.pods}/{node.maxPods} pods
-                </div>
-              )}
-
-              {/* Tooltip on hover */}
-              {isHovered && (
-                <div style={{
-                  position: "absolute",
-                  bottom: "calc(100% + 8px)",
-                  left: "50%",
-                  transform: "translateX(-50%)",
-                  background: "#0f1117",
-                  color: "#fff",
-                  borderRadius: 8,
-                  padding: "10px 12px",
-                  fontSize: 11,
-                  whiteSpace: "nowrap",
-                  zIndex: 100,
-                  boxShadow: "0 4px 16px rgba(0,0,0,0.2)",
-                  pointerEvents: "none",
+                  display: "flex", justifyContent: "space-between", alignItems: "flex-start"
                 }}>
-                  <div style={{ fontWeight: 700, marginBottom: 6, color: "#e5e7eb" }}>{node.name}</div>
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "3px 12px" }}>
-                    <span style={{ color: "#9ca3af" }}>Type</span><span style={{ color: typeColor[node.type] }}>{node.type}</span>
-                    <span style={{ color: "#9ca3af" }}>Instance</span><span>{node.instanceType}</span>
-                    <span style={{ color: "#9ca3af" }}>CPU</span><span>{node.cpu.used}/{node.cpu.total} cores</span>
-                    <span style={{ color: "#9ca3af" }}>Memory</span><span>{node.memory.used}/{node.memory.total} GiB</span>
-                    <span style={{ color: "#9ca3af" }}>Pods</span><span>{node.pods}/{node.maxPods}</span>
-                    <span style={{ color: "#9ca3af" }}>Age</span><span>{node.age}</span>
-                    <span style={{ color: "#9ca3af" }}>Ready</span>
-                    <span style={{ color: node.ready ? "#10b981" : C.red }}>{node.ready ? "Yes" : "No"}</span>
+                  <span style={{
+                    fontSize: 9, fontWeight: 700, color: color,
+                    background: bg, borderRadius: 3, padding: "0px 4px",
+                    lineHeight: "14px",
+                  }}>N{nodeNum}</span>
+                  <div style={{ display: "flex", gap: 3 }}>
+                    <div style={{
+                      width: 6, height: 6, borderRadius: "50%",
+                      background: typeColor[node.type], flexShrink: 0, marginTop: 1,
+                    }} />
+                    {!node.ready && (
+                      <div style={{ width: 6, height: 6, borderRadius: "50%", background: C.red }} title="Not ready" />
+                    )}
                   </div>
-                  {/* Arrow */}
-                  <div style={{
-                    position: "absolute", top: "100%", left: "50%",
-                    transform: "translateX(-50%)",
-                    width: 0, height: 0,
-                    borderLeft: "5px solid transparent",
-                    borderRight: "5px solid transparent",
-                    borderTop: "5px solid #0f1117",
-                  }} />
                 </div>
-              )}
-            </div>
-          );
-        })}
+
+                {/* Real CPU and Memory Usage */}
+                <div style={{ textAlign: "center", display: "flex", flexDirection: "column", gap: 4, marginTop: 4 }}>
+                  <div style={{
+                    fontSize: size === 140 ? 15 : size === 110 ? 13 : 11,
+                    fontWeight: 800, color: C.text,
+                    letterSpacing: "-0.5px", lineHeight: 1,
+                  }}>CPU: {cpuPct}%</div>
+                  <div style={{
+                    fontSize: size === 140 ? 15 : size === 110 ? 13 : 11,
+                    fontWeight: 800, color: C.text,
+                    letterSpacing: "-0.5px", lineHeight: 1,
+                  }}>MEM: {memPct}%</div>
+                </div>
+
+                {/* Bottom: Diagnostics (Pods, Type, Liveness) */}
+                <div style={{ fontSize: 8, color: C.muted, textAlign: "center", lineHeight: 1.4, marginTop: 'auto' }}>
+                  {size >= 110 && <div>
+                    <span style={{ color: node.ready ? C.green : C.red, fontWeight: 700 }}>{node.ready ? 'Live' : 'Dead'}</span>
+                  </div>}
+                  {size >= 110 && <div>
+                    <span style={{ color: node.classification === 'STATELESS' ? '#10b981' : node.classification === 'STATEFUL' ? '#f59e0b' : node.classification === 'MIXED' ? '#6366f1' : '#9ca3af', fontWeight: 600 }}>
+                      {node.classification === 'STATELESS' ? 'Stateless' : node.classification === 'STATEFUL' ? 'Stateful' : node.classification === 'MIXED' ? 'Mixed' : node.classification === 'EMPTY' ? 'Empty' : 'Unknown'}
+                    </span>
+                  </div>}
+                  {size >= 110 && <div style={{ fontWeight: 600 }}>{node.pods} pods</div>}
+                </div>
+
+                {/* Tooltip on hover rendered as Portal to escape stacking context */}
+                {isHovered && typeof document !== 'undefined' && createPortal(
+                  <div style={{
+                    position: "fixed",
+                    top: hoverPos.top - 8,
+                    left: hoverPos.left,
+                    transform: "translate(-50%, -100%)",
+                    background: "#0f1117",
+                    color: "#fff",
+                    borderRadius: 8,
+                    padding: "10px 12px",
+                    fontSize: 11,
+                    whiteSpace: "nowrap",
+                    zIndex: 999999,
+                    boxShadow: "0 4px 20px rgba(0,0,0,0.35)",
+                    pointerEvents: "none",
+                  }}>
+                    <div style={{ fontWeight: 700, marginBottom: 6, color: "#e5e7eb" }}>{node.name}</div>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "3px 12px" }}>
+                      <span style={{ color: "#9ca3af" }}>Type</span><span style={{ color: typeColor[node.type] }}>{node.type}</span>
+                      <span style={{ color: "#9ca3af" }}>Instance</span><span>{node.instanceType}</span>
+                      <span style={{ color: "#9ca3af" }}>Workload</span>
+                      <span style={{ color: node.classification === 'STATELESS' ? '#10b981' : node.classification === 'STATEFUL' ? '#f59e0b' : node.classification === 'MIXED' ? '#6366f1' : '#9ca3af' }}>
+                        {node.classification === 'STATELESS' ? 'Stateless' : node.classification === 'STATEFUL' ? 'Stateful' : node.classification === 'MIXED' ? 'Mixed' : node.classification === 'EMPTY' ? 'Empty' : 'Unknown'}
+                      </span>
+                      <span style={{ color: "#9ca3af" }}>CPU</span><span>{node.cpu.used}/{node.cpu.total} cores</span>
+                      <span style={{ color: "#9ca3af" }}>Memory</span><span>{node.memory.used}/{node.memory.total} GiB</span>
+                      <span style={{ color: "#9ca3af" }}>Pods</span><span>{node.pods}/{node.maxPods}</span>
+                      <span style={{ color: "#9ca3af" }}>Age</span><span>{node.age}</span>
+                      <span style={{ color: "#9ca3af" }}>Ready</span>
+                      <span style={{ color: node.ready ? "#10b981" : C.red }}>{node.ready ? "Yes" : "No"}</span>
+                    </div>
+                    {/* Arrow */}
+                    <div style={{
+                      position: "absolute", top: "100%", left: "50%",
+                      transform: "translateX(-50%)",
+                      width: 0, height: 0,
+                      borderLeft: "5px solid transparent",
+                      borderRight: "5px solid transparent",
+                      borderTop: "5px solid #0f1117",
+                    }} />
+                  </div>,
+                  document.body
+                )}
+              </div>
+            );
+          })
+        )}
       </div>
 
       {/* Pagination */}
@@ -469,8 +678,11 @@ const SectionHeader = ({ children }) => (
 );
 
 const ClusterDetail = ({ cluster }) => {
-  const cpuPct = Math.round((cluster.cpu.used / cluster.cpu.total) * 100);
-  const memPct = Math.round((cluster.memory.used / cluster.memory.total) * 100);
+  const [activeTab, setActiveTab] = useState('Overview');
+  // Top-level cluster cards should always mathematically reflect exactly what the used/total capacity displays
+  const cpuPct = cluster.cpu.total > 0 ? Math.round((cluster.cpu.used / cluster.cpu.total) * 100) : 0;
+  const memPct = cluster.memory.total > 0 ? Math.round((cluster.memory.used / cluster.memory.total) * 100) : 0;
+  const hasAgentData = cluster.agentInstalled && (cluster.cpu.total > 0 || cluster.memory.total > 0);
   const sc = statusConfig[cluster.status];
 
   return (
@@ -494,294 +706,429 @@ const ClusterDetail = ({ cluster }) => {
           {/* Meta tags — all neutral */}
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
             {[cluster.provider, cluster.region, `K8s ${cluster.k8sVersion}`, `${cluster.nodeGroups} Node Groups`,
-            cluster.uptime !== "—" ? `${cluster.uptime} uptime` : null
+            cluster.workloadType ? `${cluster.workloadType === 'stateless' ? '🔄' : '💾'} ${cluster.workloadType.charAt(0).toUpperCase() + cluster.workloadType.slice(1)}` : null
             ].filter(Boolean).map(t => (
               <Tag key={t}>{t}</Tag>
             ))}
           </div>
         </div>
         <div style={{ display: "flex", gap: 6 }}>
-          {!cluster.agentInstalled && cluster.status === "no-agent" && (
+          {(cluster.agent_installed === 'N' || cluster.agent_installed === false || !cluster.agent_installed) &&
+            cluster.is_agentless !== 'Y' &&
+            (cluster.status === "no-agent" || cluster.status === "DISCOVERED") && (
+              <button
+                onClick={() => {
+                  console.log('Install Agent button clicked!', cluster.id);
+                  toast.loading(`Installing agent on ${cluster.name}...`, { id: 'inject' });
+
+                  clusterAPI.autoInstallAgent(cluster.id)
+                    .then((result) => {
+                      console.log('API response:', result);
+                      toast.success(`Agent installation queued for ${cluster.name}. It will be active in ~30s.`, { id: 'inject', duration: 5000 });
+                      setTimeout(() => window.dispatchEvent(new Event('refresh-clusters')), 8000);
+                    })
+                    .catch((error) => {
+                      console.error('Agent installation error:', error);
+                      toast.error('Failed to install agent: ' + (error.response?.data?.detail || error.message), { id: 'inject' });
+                    });
+                }}
+                style={{
+                  padding: "7px 14px",
+                  borderRadius: 9,
+                  background: "linear-gradient(135deg, #2563eb, #4f46e5)",
+                  border: "none",
+                  color: "#fff",
+                  fontSize: 12,
+                  fontWeight: 600,
+                  cursor: "pointer",
+                  fontFamily: "inherit",
+                  boxShadow: "0 2px 8px rgba(37,99,235,0.3)",
+                  position: "relative",
+                  zIndex: 9999,
+                }}
+                type="button"
+              >Install Agent</button>
+            )}
+          <button
+            onClick={() => {
+              toast.loading('Refreshing cluster data...', { id: 'refresh' });
+              window.dispatchEvent(new Event('refresh-clusters'));
+              setTimeout(() => toast.success('Data refreshed', { id: 'refresh' }), 1000);
+            }}
+            style={{
+              padding: "7px 14px", borderRadius: 9,
+              background: C.surface, border: `1px solid ${C.border}`,
+              color: C.muted, fontSize: 12, fontWeight: 500,
+              cursor: "pointer", fontFamily: "inherit",
+              marginRight: "12px",
+            }}>Refresh</button>
+
+          <div style={{ display: "flex", gap: 6, borderLeft: `1px solid ${C.border}`, paddingLeft: "12px" }}>
+            {cluster.agent_installed === 'Y' && (
+              <button
+                onClick={() => {
+                  if (window.confirm(`Are you sure you want to disconnect the agent from ${cluster.name}? This will stop data collection but preserve history.`)) {
+                    toast.promise(clusterAPI.disconnectAgent(cluster.id), {
+                      loading: 'Disconnecting agent...',
+                      success: () => {
+                        window.dispatchEvent(new Event('refresh-clusters'));
+                        return 'Agent disconnected';
+                      },
+                      error: (err) => `Failed: ${err.response?.data?.detail || err.message}`
+                    });
+                  }
+                }}
+                style={{
+                  padding: "7px 14px", borderRadius: 9,
+                  background: "#fffbeb", border: "1px solid #fcd34d",
+                  color: "#b45309", fontSize: 12, fontWeight: 500,
+                  cursor: "pointer", fontFamily: "inherit",
+                }}
+              >Disconnect</button>
+            )}
             <button
-              onClick={async () => {
-                try {
-                  toast.loading(`Injecting agent into ${cluster.name}...`, { id: 'inject' });
-                  await clusterAPI.autoInstallAgent(cluster.id);
-                  toast.success(`Agent injected into ${cluster.name}!`, { id: 'inject' });
-                  window.dispatchEvent(new Event('refresh-clusters'));
-                } catch (error) {
-                  toast.error('Failed to inject agent: ' + (error.response?.data?.detail || error.message), { id: 'inject' });
+              onClick={() => {
+                if (window.confirm(`Are you sure you want to completely remove ${cluster.name}? This will delete all history and uninstall the agent if present.`)) {
+                  toast.promise(clusterAPI.deleteCluster(cluster.id), {
+                    loading: 'Removing cluster...',
+                    success: () => {
+                      window.dispatchEvent(new Event('refresh-clusters'));
+                      return 'Cluster removed completely';
+                    },
+                    error: (err) => `Failed: ${err.response?.data?.detail || err.message}`
+                  });
                 }
               }}
               style={{
                 padding: "7px 14px", borderRadius: 9,
-                background: "linear-gradient(135deg, #2563eb, #4f46e5)",
-                border: "none", color: "#fff", fontSize: 12, fontWeight: 600,
+                background: "#fef2f2", border: "1px solid #fecaca",
+                color: "#dc2626", fontSize: 12, fontWeight: 500,
                 cursor: "pointer", fontFamily: "inherit",
-                boxShadow: "0 2px 8px rgba(37,99,235,0.3)",
-              }}>Install Agent</button>
-          )}
-          <button style={{
-            padding: "7px 14px", borderRadius: 9,
-            background: C.surface, border: `1px solid ${C.border}`,
-            color: C.muted, fontSize: 12, fontWeight: 500,
-            cursor: "pointer", fontFamily: "inherit",
-          }}>Refresh</button>
+              }}
+            >Remove</button>
+          </div>
         </div>
       </div>
 
-      {/* ── Agent Status Banner ── */}
-      {cluster.agentInstalled ? (
-        <div style={{
-          display: "flex", alignItems: "center", gap: 12,
-          padding: "10px 16px", borderRadius: 10, marginBottom: 18,
-          background: C.surface,
-          border: `1px solid ${cluster.agentHealthy ? C.greenBorder : C.amberBorder}`,
-        }}>
-          {/* Color accent only on the left border strip */}
-          <div style={{
-            width: 3, height: 36, borderRadius: 2, flexShrink: 0,
-            background: cluster.agentHealthy ? C.green : C.amber,
-          }} />
-          <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 12, fontWeight: 600, color: C.text }}>
-              Agent {cluster.agentHealthy ? "Healthy" : "Degraded"}
-              <span style={{
-                marginLeft: 8, fontSize: 10, fontWeight: 500,
-                color: C.subtle, background: "#f0f1f3",
-                padding: "1px 6px", borderRadius: 4,
-              }}>{cluster.agentVersion}</span>
-            </div>
-            <div style={{ fontSize: 11, color: C.subtle, marginTop: 1 }}>
-              Last heartbeat: {cluster.lastSeen} · Metrics collection active
-            </div>
-          </div>
-          <div style={{
-            width: 8, height: 8, borderRadius: "50%",
-            background: cluster.agentHealthy ? C.green : C.amber,
-            boxShadow: `0 0 6px ${cluster.agentHealthy ? C.green : C.amber}80`,
-          }} />
-        </div>
-      ) : (
-        <div style={{
-          display: "flex", alignItems: "center", gap: 14,
-          padding: "14px 18px", borderRadius: 10, marginBottom: 18,
-          background: C.surface, border: `1px dashed ${C.border}`,
-        }}>
-          <div style={{ fontSize: 20, opacity: 0.4 }}>📡</div>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 12, fontWeight: 600, color: C.text }}>Agent Not Installed</div>
-            <div style={{ fontSize: 11, color: C.subtle, marginTop: 2 }}>
-              Install the agent to unlock real-time metrics, AtharvaAI, and savings optimization.
-            </div>
-          </div>
-          <button style={{
-            padding: "6px 14px", borderRadius: 8, flexShrink: 0,
-            background: C.accent, border: "none",
-            color: "#fff", fontSize: 11, fontWeight: 600,
-            cursor: "pointer", fontFamily: "inherit",
-          }}>Install →</button>
-        </div>
-      )}
-
-      {/* ── Cost & Savings ── */}
-      <SectionHeader>Cost &amp; Savings</SectionHeader>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10, marginBottom: 4 }}>
-        <MetricBox label="Monthly Cost" value={`$${cluster.cost.monthly.toLocaleString()}`} sub="compute only" />
-        <MetricBox
-          label="Realized Savings"
-          value={`$${cluster.cost.savings.toLocaleString()}`}
-          sub="vs full on-demand"
-          style={{ borderLeft: `3px solid ${C.green}` }}
-        />
-        <MetricBox
-          label="Additional Potential"
-          value={`$${cluster.cost.potential.toLocaleString()}`}
-          sub="if fully optimized"
-          style={{ borderLeft: `3px solid ${C.amber}` }}
-        />
-      </div>
-
-      {/* ── Node Composition ── */}
-      <SectionHeader>Node Composition</SectionHeader>
-      <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: 12, alignItems: "stretch", marginBottom: 4 }}>
-        {/* Spot Ring */}
-        <div style={{
-          background: C.surface, border: `1px solid ${C.border}`,
-          borderRadius: 10, padding: "14px 18px",
-          display: "flex", alignItems: "center", gap: 14,
-        }}>
-          <SpotRing pct={cluster.spotRatio} />
-          <div>
-            <div style={{ fontSize: 11, color: C.muted, fontWeight: 500, marginBottom: 2 }}>Spot Ratio</div>
-            <div style={{ fontSize: 13, fontWeight: 700, color: C.text }}>
-              {cluster.spotRatio >= 60 ? "Excellent" : cluster.spotRatio >= 30 ? "Moderate" : "Low"}
-            </div>
-            <div style={{ fontSize: 11, color: C.subtle, marginTop: 3 }}>{cluster.nodes.spot} of {cluster.nodes.total} nodes spot</div>
-          </div>
-        </div>
-
-        {/* Node breakdown — dots carry color, text is neutral */}
-        <div style={{
-          background: C.surface, border: `1px solid ${C.border}`,
-          borderRadius: 10, padding: "14px 18px",
-          display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10,
-          alignItems: "center",
-        }}>
-          {[
-            { label: "Spot", count: cluster.nodes.spot, color: C.spotColor },
-            { label: "Fallback", count: cluster.nodes.fallback, color: C.fallbackColor },
-            { label: "On-Demand", count: cluster.nodes.onDemand, color: C.onDemandColor },
-          ].map(nt => (
-            <div key={nt.label} style={{ textAlign: "center" }}>
-              <div style={{ fontSize: 26, fontWeight: 800, color: C.text, letterSpacing: "-1px" }}>{nt.count}</div>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 5, marginTop: 2 }}>
-                <div style={{ width: 6, height: 6, borderRadius: "50%", background: nt.color }} />
-                <span style={{ fontSize: 11, color: C.muted }}>{nt.label}</span>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* ── Resource Utilization ── */}
-      <SectionHeader>Resource Utilization</SectionHeader>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 4 }}>
-        {[
-          { label: "CPU", used: cluster.cpu.used, total: cluster.cpu.total, unit: "cores", pct: cpuPct },
-          { label: "Memory", used: cluster.memory.used, total: cluster.memory.total, unit: "GiB", pct: memPct },
-        ].map(r => (
-          <div key={r.label} style={{
-            background: C.surface, border: `1px solid ${C.border}`,
-            borderRadius: 10, padding: "14px 16px",
-          }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: 10 }}>
-              <div>
-                <div style={{ fontSize: 11, color: C.muted, fontWeight: 500, marginBottom: 3 }}>{r.label} Usage</div>
-                <div style={{ fontSize: 18, fontWeight: 700, color: C.text, letterSpacing: "-0.3px" }}>
-                  {r.used} <span style={{ fontSize: 12, fontWeight: 400, color: C.subtle }}>/ {r.total} {r.unit}</span>
-                </div>
-              </div>
-              {/* Pct badge — neutral bg, colored only the dot beside it */}
-              <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
-                <div style={{ width: 6, height: 6, borderRadius: "50%", background: utilColor(r.pct) }} />
-                <span style={{ fontSize: 13, fontWeight: 700, color: C.text }}>{r.pct}%</span>
-              </div>
-            </div>
-            <div style={{ height: 7, background: "#eef0f3", borderRadius: 4, overflow: "hidden" }}>
-              <div style={{
-                width: `${r.pct}%`, height: 7,
-                background: `linear-gradient(90deg, ${utilColor(r.pct)}bb, ${utilColor(r.pct)})`,
-                borderRadius: 4, transition: "width 0.5s cubic-bezier(.4,0,.2,1)",
-              }} />
-            </div>
-          </div>
+      {/* Tabs Navigation */}
+      <div style={{ display: "flex", borderBottom: `1px solid ${C.border}`, marginBottom: 20 }}>
+        {['Overview', 'Optimization Settings', 'Node Template', 'Activity Log'].map(tab => (
+          <button
+            key={tab}
+            onClick={() => setActiveTab(tab)}
+            style={{
+              padding: "10px 16px",
+              background: "transparent",
+              border: "none",
+              borderBottom: activeTab === tab ? `2px solid ${C.accent}` : "2px solid transparent",
+              color: activeTab === tab ? C.accent : C.muted,
+              fontWeight: activeTab === tab ? 600 : 500,
+              fontSize: 13,
+              cursor: "pointer",
+              transition: "all 0.2s"
+            }}
+          >
+            {tab}
+          </button>
         ))}
       </div>
 
-      {/* ── Optimization Stack ── */}
-      <SectionHeader>Optimization</SectionHeader>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10, marginBottom: 10 }}>
-        {/* AtharvaAI */}
-        <div style={{
-          background: C.surface,
-          border: `1px solid ${C.border}`,
-          borderLeft: `3px solid ${cluster.atharva.active ? C.purple : C.border}`,
-          borderRadius: 10, padding: "12px 14px",
-        }}>
-          <div style={{ fontSize: 11, fontWeight: 600, color: C.muted, marginBottom: 8 }}>AtharvaAI</div>
-          <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
-            <div style={{ width: 6, height: 6, borderRadius: "50%", background: cluster.atharva.active ? C.purple : C.subtle }} />
-            <span style={{ fontSize: 11, color: C.muted }}>{cluster.atharva.active ? "Active" : "Inactive"}</span>
+      <div style={{ display: activeTab === 'Overview' ? 'block' : 'none' }}>
+        {/* ── Agent Status Banner ── */}
+        {(cluster.agent_installed === 'Y' || cluster.agent_installed === true) ? (
+          <div style={{
+            display: "flex", alignItems: "center", gap: 12,
+            padding: "10px 16px", borderRadius: 10, marginBottom: 18,
+            background: C.surface,
+            border: `1px solid ${cluster.agentHealthy ? C.greenBorder : C.amberBorder}`,
+          }}>
+            {/* Color accent only on the left border strip */}
+            <div style={{
+              width: 3, height: 36, borderRadius: 2, flexShrink: 0,
+              background: cluster.agentHealthy ? C.green : C.amber,
+            }} />
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: C.text }}>
+                Agent {cluster.agentHealthy ? "Healthy" : "Degraded"}
+                <span style={{
+                  marginLeft: 8, fontSize: 10, fontWeight: 500,
+                  color: C.subtle, background: "#f0f1f3",
+                  padding: "1px 6px", borderRadius: 4,
+                }}>{cluster.agentVersion}</span>
+              </div>
+              <div style={{ fontSize: 11, color: C.subtle, marginTop: 1 }}>
+                Last heartbeat: {cluster.lastSeen} · Metrics collection active
+              </div>
+            </div>
+            <div style={{
+              width: 8, height: 8, borderRadius: "50%",
+              background: cluster.agentHealthy ? C.green : C.amber,
+              boxShadow: `0 0 6px ${cluster.agentHealthy ? C.green : C.amber}80`,
+            }} />
           </div>
-          {cluster.atharva.active ? (
-            <>
-              <div style={{ fontSize: 22, fontWeight: 800, color: C.text, letterSpacing: "-0.5px" }}>{cluster.atharva.poolsRanked}</div>
-              <div style={{ fontSize: 11, color: C.subtle }}>pools ranked · top {cluster.atharva.topSavingsPct}% savings</div>
-            </>
-          ) : (
-            <div style={{ fontSize: 11, color: C.subtle }}>Install agent to enable</div>
-          )}
+        ) : (
+          <div style={{
+            display: "flex", alignItems: "center", gap: 14,
+            padding: "14px 18px", borderRadius: 10, marginBottom: 18,
+            background: C.surface, border: `1px dashed ${C.border}`,
+          }}>
+            <div style={{ fontSize: 20, opacity: 0.4 }}>📡</div>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: C.text }}>Agent Not Installed</div>
+              <div style={{ fontSize: 11, color: C.subtle, marginTop: 2 }}>
+                Install the agent to unlock real-time metrics, AtharvaAI, and savings optimization.
+              </div>
+            </div>
+            <button
+              onClick={() => {
+                console.log('Install Agent button clicked from banner!', cluster.id);
+                toast.loading(`Installing agent on ${cluster.name}...`, { id: 'inject' });
+
+                clusterAPI.autoInstallAgent(cluster.id)
+                  .then((result) => {
+                    console.log('API response:', result);
+                    toast.success(`Agent installation queued for ${cluster.name}. It will be active in ~30s.`, { id: 'inject', duration: 5000 });
+                    setTimeout(() => window.dispatchEvent(new Event('refresh-clusters')), 8000);
+                  })
+                  .catch((error) => {
+                    console.error('Agent installation error:', error);
+                    toast.error('Failed to install agent: ' + (error.response?.data?.detail || error.message), { id: 'inject' });
+                  });
+              }}
+              style={{
+                padding: "6px 14px", borderRadius: 8, flexShrink: 0,
+                background: C.accent, border: "none",
+                color: "#fff", fontSize: 11, fontWeight: 600,
+                cursor: "pointer", fontFamily: "inherit",
+                position: "relative",
+                zIndex: 9999,
+              }}
+              type="button"
+            >Install →</button>
+          </div>
+        )}
+
+        {/* ── Cost & Savings ── */}
+        <SectionHeader>Cost &amp; Savings</SectionHeader>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10, marginBottom: 4 }}>
+          <MetricBox label="Monthly Cost" value={`$${cluster.cost.monthly.toLocaleString()}`} sub="compute only" />
+          <MetricBox
+            label="Realized Savings"
+            value={`$${cluster.cost.savings.toLocaleString()}`}
+            sub="vs full on-demand"
+            style={{ borderLeft: `3px solid ${C.green}` }}
+          />
+          <MetricBox
+            label="Additional Potential"
+            value={`$${cluster.cost.potential.toLocaleString()}`}
+            sub="if fully optimized"
+            style={{ borderLeft: `3px solid ${C.amber}` }}
+          />
         </div>
 
-        {/* Right-Sizing */}
-        <div style={{
-          background: C.surface,
-          border: `1px solid ${C.border}`,
-          borderLeft: `3px solid ${cluster.rightsizing.overProvisioned > 0 ? C.amber : C.border}`,
-          borderRadius: 10, padding: "12px 14px",
-        }}>
-          <div style={{ fontSize: 11, fontWeight: 600, color: C.muted, marginBottom: 8 }}>Right-Sizing</div>
-          {cluster.rightsizing.overProvisioned > 0 ? (
-            <>
-              <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
-                <div style={{ width: 6, height: 6, borderRadius: "50%", background: C.amber }} />
-                <span style={{ fontSize: 11, color: C.muted }}>Over-provisioned</span>
+        {/* ── Node Composition ── */}
+        <SectionHeader>Node Composition</SectionHeader>
+        <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: 12, alignItems: "stretch", marginBottom: 4 }}>
+          {/* Spot Ring */}
+          <div style={{
+            background: C.surface, border: `1px solid ${C.border}`,
+            borderRadius: 10, padding: "14px 18px",
+            display: "flex", alignItems: "center", gap: 14,
+          }}>
+            <SpotRing pct={cluster.spotRatio} />
+            <div>
+              <div style={{ fontSize: 11, color: C.muted, fontWeight: 500, marginBottom: 2 }}>Spot Ratio</div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: C.text }}>
+                {cluster.spotRatio >= 60 ? "Excellent" : cluster.spotRatio >= 30 ? "Moderate" : "Low"}
               </div>
-              <div style={{ fontSize: 22, fontWeight: 800, color: C.text, letterSpacing: "-0.5px" }}>{cluster.rightsizing.overProvisioned}</div>
-              <div style={{ fontSize: 11, color: C.subtle }}>${cluster.rightsizing.savingsPotential}/mo potential</div>
-            </>
-          ) : (
-            <>
-              <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
-                <div style={{ width: 6, height: 6, borderRadius: "50%", background: C.subtle }} />
-                <span style={{ fontSize: 11, color: C.muted }}>No issues</span>
+              <div style={{ fontSize: 11, color: C.subtle, marginTop: 3 }}>{cluster.nodes.spot} of {cluster.nodes.total} nodes spot</div>
+            </div>
+          </div>
+
+          {/* Node breakdown — dots carry color, text is neutral */}
+          <div style={{
+            background: C.surface, border: `1px solid ${C.border}`,
+            borderRadius: 10, padding: "14px 18px",
+            display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10,
+            alignItems: "center",
+          }}>
+            {[
+              { label: "Spot", count: cluster.nodes.spot, color: C.spotColor },
+              { label: "Fallback", count: cluster.nodes.fallback, color: C.fallbackColor },
+              { label: "On-Demand", count: cluster.nodes.onDemand, color: C.onDemandColor },
+            ].map(nt => (
+              <div key={nt.label} style={{ textAlign: "center" }}>
+                <div style={{ fontSize: 26, fontWeight: 800, color: C.text, letterSpacing: "-1px" }}>{nt.count}</div>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 5, marginTop: 2 }}>
+                  <div style={{ width: 6, height: 6, borderRadius: "50%", background: nt.color }} />
+                  <span style={{ fontSize: 11, color: C.muted }}>{nt.label}</span>
+                </div>
               </div>
-              <div style={{ fontSize: 11, color: C.subtle }}>No recommendations yet</div>
-            </>
-          )}
+            ))}
+          </div>
         </div>
 
-        {/* Hibernation */}
-        <div style={{
-          background: C.surface,
-          border: `1px solid ${C.border}`,
-          borderLeft: `3px solid ${cluster.hibernation.schedules > 0 ? C.teal : C.border}`,
-          borderRadius: 10, padding: "12px 14px",
-        }}>
-          <div style={{ fontSize: 11, fontWeight: 600, color: C.muted, marginBottom: 8 }}>Hibernation</div>
-          {cluster.hibernation.schedules > 0 ? (
-            <>
-              <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
-                <div style={{ width: 6, height: 6, borderRadius: "50%", background: C.teal }} />
-                <span style={{ fontSize: 11, color: C.muted }}>Active</span>
+        {/* ── Resource Utilization ── */}
+        <SectionHeader>Resource Utilization</SectionHeader>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 4 }}>
+          {[
+            { label: "CPU", used: cluster.cpu.used, total: cluster.cpu.total, unit: "cores", pct: cpuPct },
+            { label: "Memory", used: cluster.memory.used, total: cluster.memory.total, unit: "GiB", pct: memPct },
+          ].map(r => (
+            <div key={r.label} style={{
+              background: C.surface, border: `1px solid ${C.border}`,
+              borderRadius: 10, padding: "14px 16px",
+            }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: 10 }}>
+                <div>
+                  <div style={{ fontSize: 11, color: C.muted, fontWeight: 500, marginBottom: 3 }}>{r.label} Usage</div>
+                  <div style={{ fontSize: 18, fontWeight: 700, color: hasAgentData ? C.text : C.subtle, letterSpacing: "-0.3px" }}>
+                    {hasAgentData ? `${r.used} / ${r.total} ${r.unit}` : 'No data'}
+                  </div>
+                </div>
+                {/* Pct badge — neutral bg, colored only the dot beside it */}
+                {hasAgentData ? (
+                  <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                    <div style={{ width: 6, height: 6, borderRadius: "50%", background: utilColor(r.pct) }} />
+                    <span style={{ fontSize: 13, fontWeight: 700, color: C.text }}>{r.pct}%</span>
+                  </div>
+                ) : (
+                  <span style={{ fontSize: 13, fontWeight: 600, color: C.subtle }}>—</span>
+                )}
               </div>
-              <div style={{ fontSize: 22, fontWeight: 800, color: C.text, letterSpacing: "-0.5px" }}>{cluster.hibernation.schedules}</div>
-              <div style={{ fontSize: 11, color: C.subtle }}>{cluster.hibernation.savedHrs}h/week saved</div>
-            </>
-          ) : (
-            <>
-              <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
-                <div style={{ width: 6, height: 6, borderRadius: "50%", background: C.subtle }} />
-                <span style={{ fontSize: 11, color: C.muted }}>No schedules</span>
-              </div>
-              <div style={{ fontSize: 11, color: C.subtle }}>Configure to save on dev environments</div>
-            </>
-          )}
+              {hasAgentData && (
+                <div style={{ height: 7, background: "#eef0f3", borderRadius: 4, overflow: "hidden" }}>
+                  <div style={{
+                    width: `${r.pct}%`, height: 7,
+                    background: `linear-gradient(90deg, ${utilColor(r.pct)}bb, ${utilColor(r.pct)})`,
+                    borderRadius: 4, transition: "width 0.5s cubic-bezier(.4,0,.2,1)",
+                  }} />
+                </div>
+              )}
+            </div>
+          ))}
         </div>
+
+        {/* ── Optimization Stack ── */}
+        <SectionHeader>Optimization</SectionHeader>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10, marginBottom: 10 }}>
+          {/* AtharvaAI */}
+          <div style={{
+            background: C.surface,
+            border: `1px solid ${C.border}`,
+            borderLeft: `3px solid ${cluster.atharva.active ? C.purple : C.border}`,
+            borderRadius: 10, padding: "12px 14px",
+          }}>
+            <div style={{ fontSize: 11, fontWeight: 600, color: C.muted, marginBottom: 8 }}>AtharvaAI</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
+              <div style={{ width: 6, height: 6, borderRadius: "50%", background: cluster.atharva.active ? C.purple : C.subtle }} />
+              <span style={{ fontSize: 11, color: C.muted }}>{cluster.atharva.active ? "Active" : "Inactive"}</span>
+            </div>
+            {cluster.atharva.active ? (
+              <>
+                <div style={{ fontSize: 22, fontWeight: 800, color: C.text, letterSpacing: "-0.5px" }}>${cluster.atharva.potential}</div>
+                <div style={{ fontSize: 11, color: C.subtle }}>potential savings · ${cluster.atharva.realized} realized/mo</div>
+              </>
+            ) : (
+              <div style={{ fontSize: 11, color: C.subtle }}>Install agent to enable</div>
+            )}
+          </div>
+
+          {/* Right-Sizing */}
+          <div style={{
+            background: C.surface,
+            border: `1px solid ${C.border}`,
+            borderLeft: `3px solid ${cluster.rightsizing.overProvisioned > 0 ? C.amber : C.border}`,
+            borderRadius: 10, padding: "12px 14px",
+          }}>
+            <div style={{ fontSize: 11, fontWeight: 600, color: C.muted, marginBottom: 8 }}>Right-Sizing</div>
+            {cluster.rightsizing.overProvisioned > 0 ? (
+              <>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
+                  <div style={{ width: 6, height: 6, borderRadius: "50%", background: C.amber }} />
+                  <span style={{ fontSize: 11, color: C.muted }}>Over-provisioned</span>
+                </div>
+                <div style={{ fontSize: 22, fontWeight: 800, color: C.text, letterSpacing: "-0.5px" }}>{cluster.rightsizing.overProvisioned}</div>
+                <div style={{ fontSize: 11, color: C.subtle }}>${cluster.rightsizing.savingsPotential}/mo potential</div>
+              </>
+            ) : (
+              <>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
+                  <div style={{ width: 6, height: 6, borderRadius: "50%", background: C.subtle }} />
+                  <span style={{ fontSize: 11, color: C.muted }}>No issues</span>
+                </div>
+                <div style={{ fontSize: 11, color: C.subtle }}>No recommendations yet</div>
+              </>
+            )}
+          </div>
+
+          {/* Hibernation */}
+          <div style={{
+            background: C.surface,
+            border: `1px solid ${C.border}`,
+            borderLeft: `3px solid ${cluster.hibernation.schedules > 0 ? C.teal : C.border}`,
+            borderRadius: 10, padding: "12px 14px",
+          }}>
+            <div style={{ fontSize: 11, fontWeight: 600, color: C.muted, marginBottom: 8 }}>Hibernation</div>
+            {cluster.hibernation.schedules > 0 ? (
+              <>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
+                  <div style={{ width: 6, height: 6, borderRadius: "50%", background: C.teal }} />
+                  <span style={{ fontSize: 11, color: C.muted }}>Active</span>
+                </div>
+                <div style={{ fontSize: 22, fontWeight: 800, color: C.text, letterSpacing: "-0.5px" }}>{cluster.hibernation.schedules}</div>
+                <div style={{ fontSize: 11, color: C.subtle }}>{cluster.hibernation.savedHrs}h/week saved</div>
+              </>
+            ) : (
+              <>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
+                  <div style={{ width: 6, height: 6, borderRadius: "50%", background: C.subtle }} />
+                  <span style={{ fontSize: 11, color: C.muted }}>No schedules</span>
+                </div>
+                <div style={{ fontSize: 11, color: C.subtle }}>Configure to save on dev environments</div>
+              </>
+            )}
+          </div>
+        </div>
+
+        {/* Policies row */}
+        <div style={{
+          padding: "10px 14px", borderRadius: 10,
+          background: C.surface, border: `1px solid ${C.border}`,
+          display: "flex", alignItems: "center", gap: 10,
+        }}>
+          <span style={{ fontSize: 11, fontWeight: 600, color: C.text }}>Policies</span>
+          <span style={{ fontSize: 11, color: C.subtle }}>
+            {cluster.policies.active} active / {cluster.policies.total} configured
+          </span>
+          <div style={{ flex: 1 }} />
+          <button style={{
+            padding: "4px 10px", borderRadius: 6,
+            border: `1px solid ${C.border}`, background: C.surface,
+            fontSize: 11, color: C.accent, cursor: "pointer", fontFamily: "inherit", fontWeight: 500,
+          }}>Manage Policies →</button>
+        </div>
+
+        {/* ── Node Visualization ── */}
+        <NodeTreemap nodes={cluster.nodeList} />
+
       </div>
 
-      {/* Policies row */}
-      <div style={{
-        padding: "10px 14px", borderRadius: 10,
-        background: C.surface, border: `1px solid ${C.border}`,
-        display: "flex", alignItems: "center", gap: 10,
-      }}>
-        <span style={{ fontSize: 11, fontWeight: 600, color: C.text }}>Policies</span>
-        <span style={{ fontSize: 11, color: C.subtle }}>
-          {cluster.policies.active} active / {cluster.policies.total} configured
-        </span>
-        <div style={{ flex: 1 }} />
-        <button style={{
-          padding: "4px 10px", borderRadius: 6,
-          border: `1px solid ${C.border}`, background: C.surface,
-          fontSize: 11, color: C.accent, cursor: "pointer", fontFamily: "inherit", fontWeight: 500,
-        }}>Manage Policies →</button>
-      </div>
+      {activeTab === 'Node Template' && cluster && (
+        <div style={{ marginTop: 10 }}>
+          <NodeTemplateTab clusterId={cluster.id} />
+        </div>
+      )}
 
-      {/* ── Node Visualization ── */}
-      <SectionHeader>Node Utilization</SectionHeader>
-      <NodeTreemap nodes={cluster.nodeList} />
+      {['Activity Log'].includes(activeTab) && (
+        <div style={{ padding: "40px 20px", textAlign: "center", color: C.muted, fontSize: 13 }}>
+          {activeTab} module is initializing...
+        </div>
+      )}
+
+      {activeTab === 'Optimization Settings' && cluster && (
+        <OptimizationSettingsTab cluster={cluster} />
+      )}
 
     </div>
   );
@@ -795,23 +1142,68 @@ const NoAgentDetail = ({ cluster }) => (
       This cluster doesn't have the Spot Optimizer agent installed. Install it to unlock real-time metrics, AtharvaAI ML optimization, and savings tracking.
     </div>
     <div style={{ display: "flex", gap: 8 }}>
-      <button style={{
-        padding: "9px 20px", borderRadius: 10,
-        background: "linear-gradient(135deg, #2563eb, #4f46e5)",
-        border: "none", color: "#fff", fontSize: 13, fontWeight: 600,
-        cursor: "pointer", fontFamily: "inherit",
-        boxShadow: "0 2px 10px rgba(37,99,235,0.3)",
-      }}>Install Agent</button>
+      <button
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          console.log('🔘 Install Agent button clicked from NoAgentDetail!', cluster.id);
+
+          toast.loading(`Installing agent on ${cluster.name}...`, { id: 'inject' });
+
+          clusterAPI.autoInstallAgent(cluster.id)
+            .then((result) => {
+              console.log('✅ API response:', result);
+              toast.success(`Agent installation queued for ${cluster.name}. It will be active in ~30s.`, { id: 'inject', duration: 5000 });
+              setTimeout(() => window.dispatchEvent(new Event('refresh-clusters')), 8000);
+            })
+            .catch((error) => {
+              console.error('❌ Agent installation error:', error);
+              toast.error('Failed to install agent: ' + (error.response?.data?.detail || error.message), { id: 'inject' });
+            });
+        }}
+        style={{
+          padding: "9px 20px", borderRadius: 10,
+          background: "linear-gradient(135deg, #2563eb, #4f46e5)",
+          border: "none", color: "#fff", fontSize: 13, fontWeight: 600,
+          cursor: "pointer", fontFamily: "inherit",
+          boxShadow: "0 2px 10px rgba(37,99,235,0.3)",
+          position: "relative",
+          zIndex: 9999,
+        }}
+        type="button"
+      >Install Agent</button>
       <button style={{
         padding: "9px 20px", borderRadius: 10,
         border: `1px solid ${C.border}`, background: C.surface,
         color: C.muted, fontSize: 13, cursor: "pointer", fontFamily: "inherit",
       }}>View Docs</button>
+      <button
+        onClick={() => {
+          if (window.confirm(`Are you sure you want to completely remove ${cluster.name}? This will delete all history.`)) {
+            toast.promise(clusterAPI.deleteCluster(cluster.id), {
+              loading: 'Removing cluster...',
+              success: () => {
+                window.dispatchEvent(new Event('refresh-clusters'));
+                return 'Cluster removed completely';
+              },
+              error: (err) => `Failed: ${err.response?.data?.detail || err.message}`
+            });
+          }
+        }}
+        style={{
+          padding: "9px 20px", borderRadius: 10,
+          background: "#fef2f2", border: "1px solid #fecaca",
+          color: "#dc2626", fontSize: 13, fontWeight: 600,
+          cursor: "pointer", fontFamily: "inherit",
+        }}
+      >Remove Cluster</button>
     </div>
-    <div style={{ marginTop: 32, display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10, width: "100%", maxWidth: 420 }}>
+    <div style={{ marginTop: 32, display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 10, width: "100%", maxWidth: 640 }}>
       <MetricBox label="Region" value={cluster.region} />
       <MetricBox label="K8s Version" value={cluster.k8sVersion} />
+      <MetricBox label="Total Nodes" value={cluster.nodes.total} />
       <MetricBox label="Est. Cost" value={`$${cluster.cost.monthly}/mo`} sub="on-demand pricing" />
+      <MetricBox label="Est. Savings" value={`$${cluster.cost.potential || 0}/mo`} sub="potential" />
     </div>
   </div>
 );
@@ -825,36 +1217,44 @@ export default function ClustersPage() {
   const [statusFilter, setStatusFilter] = useState("All");
 
   const [refreshing, setRefreshing] = useState(false);
+  const [nodeDetails, setNodeDetails] = useState({});
 
-  const fetchData = async () => {
+  const fetchData = useCallback(async () => {
     setLoading(true);
     try {
       const clusterRes = await clusterAPI.list({});
-      setClusters(clusterRes.data.clusters || []);
+      const newClusters = clusterRes.data.clusters || [];
+      setClusters(newClusters);
+      // Clear selected panel if the selected cluster was deleted
+      setSelected(prev => (prev && !newClusters.find(c => c.id === prev) ? null : prev));
     } catch (error) {
       toast.error('Failed to load clusters');
     } finally {
       setLoading(false);
     }
-  };
+  }, [setClusters, setLoading]);
+
+  const handleRefresh = useCallback(() => {
+    setNodeDetails({}); // Force node details to re-fetch to resolve stale detail pane
+    fetchData();
+  }, [fetchData]);
 
   useEffect(() => {
     fetchData();
-    const handleRefresh = () => fetchData();
     window.addEventListener('refresh-clusters', handleRefresh);
     return () => window.removeEventListener('refresh-clusters', handleRefresh);
-  }, []);
+  }, [fetchData, handleRefresh]);
 
   // Map API clusters to UI expected format
   const mappedClusters = useMemo(() => {
     return clusters.map(c => {
       // Determine precise health status
-      let mappedStatus = "no-agent"; // DISCOVERED default
-      let agentInstalled = false;
+      // Check agent_installed field directly (Y/N string or boolean)
+      let agentInstalled = (c.agent_installed === 'Y' || c.agent_installed === true);
       let agentHealthy = false;
+      let mappedStatus = "no-agent";
 
-      if (c.status === 'ACTIVE') {
-        agentInstalled = true;
+      if (agentInstalled) {
         // Check heartbeat freshness (last 2 mins)
         if (c.last_heartbeat) {
           const lastHB = new Date(c.last_heartbeat);
@@ -864,9 +1264,8 @@ export default function ClustersPage() {
         } else {
           mappedStatus = "warning";
         }
-      } else if (c.status === 'INACTIVE') {
-        agentInstalled = true;
-        mappedStatus = "warning";
+      } else if (c.status === 'DISCOVERED') {
+        mappedStatus = "no-agent";
       }
 
       const totalNodes = c.node_count || 0;
@@ -878,6 +1277,51 @@ export default function ClustersPage() {
         const diffMs = Date.now() - new Date(c.last_heartbeat).getTime();
         const diffMins = Math.floor(diffMs / 60000);
         lastSeenText = diffMins < 1 ? "Just now" : `${diffMins} min ago`;
+      }
+
+      // Get node details if available
+      const clusterNodeDetails = nodeDetails[c.id];
+      let nodeList = [];
+
+      if (clusterNodeDetails && clusterNodeDetails.nodes) {
+        // Transform detailed nodes to NodeTreemap format
+        nodeList = clusterNodeDetails.nodes.map((node, idx) => {
+          // Calculate overall utilization (use the max of CPU and memory bottlenecks)
+          const util = Math.round(Math.max(node.cpu_utilization_pct, node.memory_utilization_pct));
+          // Determine node type
+          let nodeType = "spot";
+          if (node.lifecycle === "on-demand" || node.lifecycle === "on_demand") {
+            nodeType = "on-demand";
+          }
+
+          // Calculate age
+          const ageText = "N/A"; // Could calculate from node timestamp if available
+
+          const cpuCores = node.cpu_capacity_cores || 2;
+          const memGib = node.memory_capacity_gb || 16;
+          return {
+            id: node.instance_id || `node-${idx}`,
+            name: node.node_name || node.instance_id || `node-${idx}`,
+            instanceType: node.instance_type || "unknown",
+            type: nodeType,
+            utilization: util,
+            cpuPct: node.cpu_utilization_pct,
+            memPct: node.memory_utilization_pct,
+            classification: node.classification || 'UNKNOWN',
+            cpu: {
+              used: Math.round((node.cpu_utilization_pct / 100) * cpuCores * 10) / 10,
+              total: cpuCores,
+            },
+            memory: {
+              used: Math.round((node.memory_utilization_pct / 100) * memGib * 10) / 10,
+              total: memGib,
+            },
+            pods: node.pod_count || 0,
+            maxPods: 110, // Default K8s limit
+            ready: node.status === 'ready' || true,
+            age: ageText,
+          };
+        });
       }
 
       return {
@@ -897,25 +1341,48 @@ export default function ClustersPage() {
           fallback: 0,
           onDemand: onDemandNodes,
         },
-        // Base API doesn't send node-level resources without detail fetch, fake some reasonable numbers based on nodes
-        cpu: { used: Math.floor(totalNodes * 3.2), total: totalNodes * 8, unit: "cores" },
-        memory: { used: Math.floor(totalNodes * 14.5), total: totalNodes * 32, unit: "GiB" },
+        // Use real data from API if available, calculate actual usage from percentages
+        cpu: { used: Math.round((c.cpu_total * Math.round(c.cpu_usage_pct))) / 100, total: c.cpu_total },
+        memory: { used: Math.round((c.mem_total * Math.round(c.mem_usage_pct))) / 100, total: c.mem_total },
+        cpuUsagePct: c.cpu_usage_pct || 0,
+        memUsagePct: c.mem_usage_pct || 0,
+        workloadType: c.workload_type || null, // 'stateless' | 'stateful' | null
         cost: {
           monthly: c.monthly_cost || 0,
           savings: c.realized_savings_monthly || 0,
           potential: c.potential_savings_monthly || 0
         },
-        atharva: { active: agentHealthy, poolsRanked: agentHealthy ? Math.floor(Math.random() * 200) : 0, topSavingsPct: 34 },
+        atharva: { active: agentHealthy, realized: c.realized_savings_monthly || 0, potential: c.potential_savings_monthly || 0 },
         policies: { active: c.policy_count || 0, total: 5 },
         hibernation: { schedules: c.hibernation_schedules || 0, savedHrs: 0 },
-        rightsizing: { overProvisioned: 0, savingsPotential: 0 }, // Right-sizing comes from full detail map
-        uptime: agentHealthy ? "99.98%" : "—",
+        rightsizing: { overProvisioned: 0, savingsPotential: 0 },
         k8sVersion: c.version || "1.28",
         nodeGroups: c.node_pool_count || 2,
-        nodeList: [] // Leave empty, mock treemap logic will still safely render or we just hide the Treemap
+        nodeList,
+        agent_installed: c.agent_installed // Pass through for banner check
       };
     });
-  }, [clusters]);
+  }, [clusters, nodeDetails]);
+
+  // Fetch detailed nodes when a cluster is selected
+  useEffect(() => {
+    if (selected && !nodeDetails[selected]) {
+      const selectedCluster = mappedClusters.find(c => c.id === selected);
+      if (selectedCluster && selectedCluster.agentInstalled) {
+        // Only fetch if agent is installed
+        clusterAPI.getNodesDetailed(selected)
+          .then((res) => {
+            setNodeDetails(prev => ({
+              ...prev,
+              [selected]: res.data
+            }));
+          })
+          .catch((err) => {
+            console.error('Failed to fetch node details:', err);
+          });
+      }
+    }
+  }, [selected, mappedClusters]);
 
   const filtered = useMemo(() =>
     mappedClusters.filter(c => {
@@ -945,9 +1412,32 @@ export default function ClustersPage() {
     toast.loading('Starting discovery scan...', { id: 'discovery' });
     try {
       await clusterAPI.discover();
-      toast.success('Discovery scan started!', { id: 'discovery' });
-      // Short delay and refetch
-      setTimeout(fetchData, 1500);
+      toast.loading('Scanning AWS accounts for clusters...', { id: 'discovery' });
+
+      // Poll for up to 15 seconds to see if the table count increases
+      let foundNew = false;
+      const initialCount = clusters.length;
+
+      for (let i = 0; i < 15; i++) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        try {
+          const pollRes = await clusterAPI.list();
+          if (pollRes.data && pollRes.data.length > initialCount) {
+            foundNew = true;
+            break;
+          }
+        } catch (e) {
+          // ignore polling errors
+        }
+      }
+
+      await fetchData(); // Final sync
+
+      if (foundNew) {
+        toast.success('New clusters discovered!', { id: 'discovery' });
+      } else {
+        toast.success('Discovery scan completed (No new clusters)', { id: 'discovery' });
+      }
     } catch (error) {
       toast.error('Failed to start discovery', { id: 'discovery' });
     } finally {
@@ -1078,18 +1568,6 @@ export default function ClustersPage() {
             {filtered.length === 0 && (
               <div style={{ textAlign: "center", color: C.subtle, fontSize: 12, paddingTop: 24 }}>No clusters match</div>
             )}
-          </div>
-
-          {/* Bottom: connect new */}
-          <div style={{ padding: "10px 12px", borderTop: `1px solid ${C.border}`, background: "#fafafa" }}>
-            <button style={{
-              width: "100%", padding: "8px 0", borderRadius: 9,
-              border: `1px dashed ${C.border}`, background: "transparent",
-              color: C.muted, fontSize: 12, cursor: "pointer", fontFamily: "inherit",
-              display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
-            }}>
-              + Connect New Cluster
-            </button>
           </div>
         </div>
 

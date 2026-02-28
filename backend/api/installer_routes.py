@@ -66,7 +66,7 @@ async def get_linux_installer(
     # Note: The template uses ${VAR} syntax which works with string.Template
     manifest_k8s = manifest_template.safe_substitute(
         NAMESPACE="spot-optimizer",
-        AGENT_IMAGE=f"atharva0608/spot-optimizer-agent:{'v1.0.0'}", # Static for now
+        AGENT_IMAGE=f"atharva608/spot-optimizer-agent:{'latest'}", # Static for now
         # Other env vars are handled by envFrom/ConfigMap in the manifest structure
         # Wait, the manifest itself relies on ConfigMap values which are set in the script below.
         # The manifest template I wrote uses ${NAMESPACE} and ${AGENT_IMAGE}.
@@ -84,8 +84,8 @@ set -e
 
 # --- Static Configuration ---
 NAMESPACE="spot-optimizer"
-AGENT_VERSION="v1.0.0"
-AGENT_IMAGE="atharva0608/spot-optimizer-agent:${{AGENT_VERSION}}"
+AGENT_VERSION="latest"
+AGENT_IMAGE="atharva608/spot-optimizer-agent:${{AGENT_VERSION}}"
 
 # --- Dynamic Configuration (Auto-generated) ---
 CLUSTER_ID="{cluster_id}"
@@ -140,9 +140,9 @@ kubectl create configmap spot-agent-config \\
 # --- 3. Deploy Agent ---
 echo "🤖 Deploying Spot Optimizer Agent..."
 # We inject the manifest content here, but we need to substitute SHELL variables first
-# The python template substitution handled ${NAMESPACE} and ${AGENT_IMAGE}
+# The python template substitution handled ${{NAMESPACE}} and ${{AGENT_IMAGE}}
 # But the manifest in Python had $NAMESPACE (shell var) usage.
-# My manifest template used ${NAMESPACE}.
+# My manifest template used ${{NAMESPACE}}.
 # If I inject it directly, I should ensure the shell treats it correctly.
 # Ideally, I substituted NAMESPACE="spot-optimizer" in Python.
 # So the manifest_k8s string now has "namespace: spot-optimizer".

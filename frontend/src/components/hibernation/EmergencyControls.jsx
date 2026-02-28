@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { hibernationApi } from '../../services/hibernationApi';
+import { hibernationAPI, clusterAPI } from '../../services/api';
 
 /**
  * Emergency Controls - Panic button and manual overrides for hibernation
@@ -20,40 +20,19 @@ const EmergencyControls = () => {
   const loadData = async () => {
     try {
       setLoading(true);
-      // const [schedulesRes, clustersRes] = await Promise.all([
-      //   hibernationApi.listSchedules(),
-      //   clusterApi.listClusters()
-      // ]);
-      // setSchedules(schedulesRes.data.schedules || []);
-      // setClusters(clustersRes.data || []);
-
-      // Mock data
-      setSchedules([
-        {
-          id: 1,
-          name: 'Production Weekend Shutdown',
-          is_active: 'Y',
-          clusters: [
-            { id: 1, name: 'prod-cluster-1', status: 'SLEEPING' },
-            { id: 2, name: 'prod-cluster-2', status: 'AWAKE' }
-          ]
-        },
-        {
-          id: 2,
-          name: 'Dev Nightly Shutdown',
-          is_active: 'Y',
-          clusters: [{ id: 3, name: 'dev-cluster-1', status: 'SLEEPING' }]
-        }
+      const [schedulesRes, clustersRes] = await Promise.all([
+        hibernationAPI.list(),
+        clusterAPI.listClusters()
       ]);
+      const scheduleData = schedulesRes.data?.schedules || schedulesRes.data || [];
+      setSchedules(Array.isArray(scheduleData) ? scheduleData : []);
 
-      setClusters([
-        { id: 1, name: 'prod-cluster-1', region: 'us-east-1', status: 'SLEEPING' },
-        { id: 2, name: 'prod-cluster-2', region: 'us-west-2', status: 'AWAKE' },
-        { id: 3, name: 'dev-cluster-1', region: 'eu-west-1', status: 'SLEEPING' },
-        { id: 4, name: 'staging-cluster-1', region: 'ap-south-1', status: 'AWAKE' }
-      ]);
+      const clusterData = clustersRes.data?.items || clustersRes.data?.clusters || clustersRes.data || [];
+      setClusters(Array.isArray(clusterData) ? clusterData : []);
     } catch (error) {
       console.error('Failed to load data:', error);
+      setSchedules([]);
+      setClusters([]);
     } finally {
       setLoading(false);
     }
@@ -228,9 +207,8 @@ const EmergencyControls = () => {
           <button
             onClick={handlePanicButton}
             disabled={actionInProgress === 'panic'}
-            className={`px-8 py-6 bg-white text-red-600 rounded-lg font-bold text-xl shadow-lg hover:shadow-xl transition-all ${
-              actionInProgress === 'panic' ? 'opacity-50 cursor-not-allowed' : 'hover:scale-105'
-            }`}
+            className={`px-8 py-6 bg-white text-red-600 rounded-lg font-bold text-xl shadow-lg hover:shadow-xl transition-all ${actionInProgress === 'panic' ? 'opacity-50 cursor-not-allowed' : 'hover:scale-105'
+              }`}
           >
             {actionInProgress === 'panic' ? (
               <div className="flex items-center space-x-3">
@@ -259,20 +237,18 @@ const EmergencyControls = () => {
             >
               <div className="flex items-center space-x-4">
                 <div
-                  className={`w-3 h-3 rounded-full ${
-                    cluster.status === 'SLEEPING' ? 'bg-purple-500' : 'bg-green-500'
-                  } animate-pulse`}
+                  className={`w-3 h-3 rounded-full ${cluster.status === 'SLEEPING' ? 'bg-purple-500' : 'bg-green-500'
+                    } animate-pulse`}
                 />
                 <div>
                   <h3 className="font-bold">{cluster.name}</h3>
                   <p className="text-sm text-gray-600">{cluster.region}</p>
                 </div>
                 <span
-                  className={`px-3 py-1 rounded-full text-sm font-medium ${
-                    cluster.status === 'SLEEPING'
-                      ? 'bg-purple-100 text-purple-800'
-                      : 'bg-green-100 text-green-800'
-                  }`}
+                  className={`px-3 py-1 rounded-full text-sm font-medium ${cluster.status === 'SLEEPING'
+                    ? 'bg-purple-100 text-purple-800'
+                    : 'bg-green-100 text-green-800'
+                    }`}
                 >
                   {cluster.status}
                 </span>

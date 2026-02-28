@@ -127,25 +127,19 @@ const ConnectStep = ({ onNext }) => {
                             >
                                 <FiExternalLink /> Launch Console
                             </a>
-                            <button
-                                onClick={async () => {
-                                    try {
-                                        const response = await onboardingAPI.getTemplate('FULL_ACCESS');
-                                        const url = window.URL.createObjectURL(new Blob([response.data]));
-                                        const link = document.createElement('a');
-                                        link.href = url;
-                                        link.setAttribute('download', 'spot-optimizer-role.yaml');
-                                        document.body.appendChild(link);
-                                        link.click();
-                                        link.parentNode.removeChild(link);
-                                    } catch (e) {
-                                        toast.error("Failed to download template");
+                            <a
+                                href={externalId ? `/api/v1/onboarding/template?mode=FULL_ACCESS&external_id=${externalId}` : '#'}
+                                download="spot-optimizer-role.yaml"
+                                onClick={(e) => {
+                                    if (!externalId) {
+                                        e.preventDefault();
+                                        toast.error("Wait for External ID to load");
                                     }
                                 }}
                                 className="inline-flex items-center gap-2 px-4 py-2 border border-gray-300 text-gray-700 bg-white rounded-lg hover:bg-gray-50 transition-colors font-medium text-sm"
                             >
                                 <FiDownload /> Download YAML
-                            </button>
+                            </a>
                         </div>
                     </div>
                 </div>

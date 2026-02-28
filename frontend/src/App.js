@@ -19,7 +19,6 @@ import Signup from './components/auth/Signup';
 import Dashboard from './components/dashboard/Dashboard';
 import Onboarding from './pages/Onboarding';
 import ClusterList from './components/clusters/ClusterList';
-import TemplateList from './components/templates/TemplateList';
 import PolicyConfig from './components/policies/PolicyConfig';
 import { HibernationDashboard } from './components/hibernation';
 import AtharvaAiPage from './pages/AtharvaAiPage';
@@ -36,7 +35,6 @@ import RightSizingDashboard from './components/right-sizing/RightSizingDashboard
 import CleanupDashboard from './components/cleanup/CleanupDashboard';
 import GovernanceSettings from './components/settings/GovernanceSettings';
 import TagPoliciesManager from './components/settings/TagPoliciesManager';
-import TagTemplateManager from './components/settings/TagTemplateManager';
 
 import Teams from './pages/Teams';
 import TeamDetails from './pages/TeamDetails';
@@ -50,6 +48,7 @@ import AccountAnalytics from './pages/AccountAnalytics';
 import Approvals from './pages/Approvals';
 import TicketRequestModal from './components/approvals/TicketRequestModal';
 import PermissionGate from './components/governance/PermissionGate';
+import NodeTemplates from './pages/NodeTemplates';
 
 // Protected Route Component
 const ProtectedRoute = ({ children }) => {
@@ -251,15 +250,7 @@ function App() {
                 <PolicyConfig />
               </PermissionGate>
             } />
-            <Route path="templates" element={
-              <PermissionGate
-                featureId="template:view"
-                sectionName="Templates"
-                sectionDescription="View and use configuration templates"
-              >
-                <TemplateList />
-              </PermissionGate>
-            } />
+
             <Route path="right-sizing" element={
               <PermissionGate
                 featureId="compute:view"
@@ -316,13 +307,14 @@ function App() {
                 <TagPoliciesManager />
               </PermissionGate>
             } />
-            <Route path="tag-templates" element={
+
+            <Route path="node-templates" element={
               <PermissionGate
-                featureId="template:view"
-                sectionName="Tag Templates"
-                sectionDescription="Manage tag templates"
+                featureId="compute:view"
+                sectionName="Node Templates"
+                sectionDescription="Define instance type criteria for optimization"
               >
-                <TagTemplateManager />
+                <NodeTemplates />
               </PermissionGate>
             } />
 

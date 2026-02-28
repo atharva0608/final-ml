@@ -293,7 +293,82 @@ def execute_rebalancing():
     db = next(get_db())
 
     try:
-        # Query for in_progress rebalancing actions
+        # Step 1: Check clusters with auto-rebalancing enabled and create actions for on-demand instances
+        from backend.models.instance import Instance
+        from backend.models.cluster import ClusterOptimizationSettings, StatelessRuntimeRules
+
+        # Find clusters with unified auto-rebalance enabled
+        active_settings = db.query(ClusterOptimizationSettings).filter(
+            ClusterOptimizationSettings.auto_rebalance_enabled == True
+        ).all()
+        
+        cluster_ids = [s.cluster_id for s in active_settings]
+        auto_rebalance_clusters = db.query(Cluster).filter(Cluster.id.in_(cluster_ids)).all()
+
+        for cluster in auto_rebalance_clusters:
+            # Enforce stateless runtime limits (max rebalances per 24h)
+            stateless_rules = db.query(StatelessRuntimeRules).filter(StatelessRuntimeRules.cluster_id == cluster.id).first()
+            max_rebalances = stateless_rules.max_rebalances_per_24h if stateless_rules else 5
+            
+            recent_rebalances = db.query(RebalancingAction).filter(
+                RebalancingAction.cluster_id == cluster.id,
+                RebalancingAction.trigger == 'auto_rebalance',
+                RebalancingAction.started_at >= datetime.utcnow() - timedelta(hours=24)
+            ).count()
+            
+            if recent_rebalances >= max_rebalances:
+                logger.info(f"Skipping auto-rebalance for cluster {cluster.name}: hit daily limit of {max_rebalances}")
+                continue
+
+            # Find on-demand instances that should be migrated to spot
+            on_demand_instances = db.query(Instance).filter(
+                Instance.cluster_id == cluster.id,
+                Instance.lifecycle == "on_demand"
+            ).all()
+
+            actions_created = 0
+            for instance in on_demand_instances:
+                # Check if we hit the limit during this loop
+                if (recent_rebalances + actions_created) >= max_rebalances:
+                    logger.info(f"Hit daily limit while creating rebalancing actions for cluster {cluster.name}")
+                    break
+
+                # Check if there's already a pending/in_progress action for this instance
+                existing_action = db.query(RebalancingAction).filter(
+                    RebalancingAction.cluster_id == cluster.id,
+                    RebalancingAction.source_pool.contains(instance.instance_type),
+                    RebalancingAction.status.in_(['pending', 'in_progress'])
+                ).first()
+
+                if existing_action:
+                    logger.debug(f"Action already exists for {instance.instance_id}")
+                    continue
+
+                # Create new rebalancing action: on-demand → spot
+                source_pool = f"{instance.instance_type}:{instance.availability_zone}"
+                target_pool = f"{instance.instance_type}:{instance.availability_zone}"  # Same type, different lifecycle
+
+                rebalancing_action = RebalancingAction(
+                    cluster_id=cluster.id,
+                    trigger='auto_rebalance',
+                    source_pool=source_pool,
+                    target_pool=target_pool,
+                    status='in_progress',
+                    started_at=datetime.utcnow(),
+                    action_metadata={
+                        'reason': 'automatic_on_demand_to_spot_migration',
+                        'initiated_by': 'auto_rebalancer',
+                        'instance_id': instance.instance_id
+                    }
+                )
+
+                db.add(rebalancing_action)
+                actions_created += 1
+                logger.info(f"Created auto-rebalance action for {instance.instance_id} in cluster {cluster.name}")
+
+        db.commit()
+
+        # Step 2: Execute pending rebalancing actions
         pending_actions = db.query(RebalancingAction).filter(
             RebalancingAction.status == 'in_progress'
         ).all()

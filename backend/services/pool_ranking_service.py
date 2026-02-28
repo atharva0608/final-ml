@@ -1,19 +1,20 @@
 """
 Pool Ranking Service - AtharvaAi System A: Pool Selection Pipeline
 
-8-step filtering and ranking pipeline that runs every 30 seconds:
+8-step filtering and ranking pipeline:
 1. Node Template Filtering - User-defined requirements (arch, vCPU, memory, families, sizes, AZs)
 2. AZ Filtering - User AZ preferences
 3. Spot Advisor Filter - AWS Spot Advisor frequency rank filtering
 4. Global Blacklist Check - Redis-based risky pool flags from System B
 5. Capacity Check - AWS API real-time capacity validation
 6. Price Fetch - AWS Pricing API for spot/on-demand prices
-7. ML Model Scoring - ONNX model inference (classifier + regressor)
-8. Final Ranking & Caching - Sort by score, cache in Redis
+7. ML Model Scoring - ONNX model inference (classifier → risk, regressor → savings)
+8. Final Ranking & Caching - Deduplicate by instance type, sort by composite score, cache in Redis
 
-Outputs: Ranked list of instance pools with savings %, cost estimates, and final scores.
+Outputs: Ranked list of diverse instance pools with predicted savings, risk probability, and composite scores.
 """
 
+import os
 try:
     import onnxruntime as ort
 except ImportError:
@@ -29,6 +30,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from backend.services.ml_feature_service import MLFeatureService
 from backend.core.logger import logger
+
+# ── Two-tier global cache constants ──────────────────────────────────────────
+GLOBAL_CACHE_TTL = 65 * 60    # 65 minutes — balances freshness vs compute cost
+GLOBAL_CACHE_LIMIT = 100      # Top 100 safest pools cached per region (no template filter)
 
 
 @dataclass
@@ -62,12 +67,22 @@ class InstancePool:
 class ScoredPool:
     """Instance pool with ML scores and final ranking."""
     pool: InstancePool
-    savings_pct: float  # From classifier_6.onnx (0-1 scale)
-    cost_estimate: float  # From regressor_6.onnx (USD)
-    ml_score: float  # Final combined score
-    is_flagged: bool  # Flagged by System B
+    predicted_savings: float  # From regressor_6.onnx (0-1 scale, higher = more savings vs on-demand)
+    risk_probability: float  # From classifier_6.onnx (0-1 scale, lower = safer)
+    ml_score: float  # Final composite score: (savings × 0.4) - (risk × 0.6)
+    is_flagged: bool  # Flagged by System B (global blacklist)
     rank: int  # Final ranking position
     timestamp: datetime
+    capacity_status: Optional[str] = None  # "validated", "unavailable", "unvalidated"
+    capacity_validated_at: Optional[str] = None  # ISO timestamp
+    requesting_cluster_id: Optional[str] = None  # Cluster that requested this ranking
+    # Legacy aliases for backward compatibility
+    @property
+    def savings_pct(self):
+        return self.predicted_savings
+    @property
+    def cost_estimate(self):
+        return self.risk_probability
 
 
 class PoolRankingService:
@@ -81,6 +96,9 @@ class PoolRankingService:
         self.db = db
         self.redis = redis
         self.feature_service = MLFeatureService(db)
+
+        # Load risk threshold config
+        self.risk_threshold = self._load_risk_config()
 
         # Load ONNX models
         try:
@@ -101,27 +119,115 @@ class PoolRankingService:
         # Load instance catalog (AWS instance type specs)
         self.instance_catalog = self._load_instance_catalog()
 
+    def _load_risk_config(self):
+        """
+        Load ML risk threshold from config file.
+
+        Config file: ml_model/risk_threshold.json
+        - optimal_threshold: F1-optimized classifier threshold (default 0.35)
+        """
+        config_path = os.path.join("ml_model", "risk_threshold.json")
+        try:
+            with open(config_path) as f:
+                config = json.load(f)
+            threshold = config.get("optimal_threshold", 0.35)
+            logger.info(f"Risk config loaded: threshold={threshold}")
+            return threshold
+        except FileNotFoundError:
+            logger.warning(f"Risk config not found at {config_path}, using defaults")
+            return 0.35
+        except Exception as e:
+            logger.error(f"Failed to load risk config: {e}, using defaults")
+            return 0.35
+
     def _load_instance_catalog(self) -> Dict[str, Dict]:
         """
         Load AWS instance catalog with specs (vCPU, memory, architecture).
 
-        This would ideally come from a database or external service.
-        For now, using a minimal static catalog.
+        Covers: t3/t3a (burstable x86), t4g (burstable Graviton), m5/m6i/m6a (general x86),
+        m6g (general Graviton), c5/c6i/c6a (compute x86), c6g (compute Graviton),
+        r5/r6i (memory x86), r6g (memory Graviton).
         """
         return {
-            "m5.large": {"vcpu": 2, "memory_gb": 8, "architecture": "amd64"},
-            "m5.xlarge": {"vcpu": 4, "memory_gb": 16, "architecture": "amd64"},
-            "m5.2xlarge": {"vcpu": 8, "memory_gb": 32, "architecture": "amd64"},
-            "m5.4xlarge": {"vcpu": 16, "memory_gb": 64, "architecture": "amd64"},
-            "c5.large": {"vcpu": 2, "memory_gb": 4, "architecture": "amd64"},
-            "c5.xlarge": {"vcpu": 4, "memory_gb": 8, "architecture": "amd64"},
-            "c5.2xlarge": {"vcpu": 8, "memory_gb": 16, "architecture": "amd64"},
-            "r5.large": {"vcpu": 2, "memory_gb": 16, "architecture": "amd64"},
-            "r5.xlarge": {"vcpu": 4, "memory_gb": 32, "architecture": "amd64"},
-            "r5.2xlarge": {"vcpu": 8, "memory_gb": 64, "architecture": "amd64"},
-            "t3.medium": {"vcpu": 2, "memory_gb": 4, "architecture": "amd64"},
-            "t3.large": {"vcpu": 2, "memory_gb": 8, "architecture": "amd64"},
-            # TODO: Load full catalog from AWS EC2 describe-instance-types API
+            # ── t3 burstable (x86) ──────────────────────────────────────
+            "t3.nano":    {"vcpu": 2, "memory_gb": 0.5,  "architecture": "amd64"},
+            "t3.micro":   {"vcpu": 2, "memory_gb": 1,    "architecture": "amd64"},
+            "t3.small":   {"vcpu": 2, "memory_gb": 2,    "architecture": "amd64"},
+            "t3.medium":  {"vcpu": 2, "memory_gb": 4,    "architecture": "amd64"},
+            "t3.large":   {"vcpu": 2, "memory_gb": 8,    "architecture": "amd64"},
+            "t3.xlarge":  {"vcpu": 4, "memory_gb": 16,   "architecture": "amd64"},
+            "t3.2xlarge": {"vcpu": 8, "memory_gb": 32,   "architecture": "amd64"},
+            # ── t3a burstable AMD (x86) ─────────────────────────────────
+            "t3a.nano":    {"vcpu": 2, "memory_gb": 0.5, "architecture": "amd64"},
+            "t3a.micro":   {"vcpu": 2, "memory_gb": 1,   "architecture": "amd64"},
+            "t3a.small":   {"vcpu": 2, "memory_gb": 2,   "architecture": "amd64"},
+            "t3a.medium":  {"vcpu": 2, "memory_gb": 4,   "architecture": "amd64"},
+            "t3a.large":   {"vcpu": 2, "memory_gb": 8,   "architecture": "amd64"},
+            "t3a.xlarge":  {"vcpu": 4, "memory_gb": 16,  "architecture": "amd64"},
+            "t3a.2xlarge": {"vcpu": 8, "memory_gb": 32,  "architecture": "amd64"},
+            # ── t4g burstable Graviton (arm64) ──────────────────────────
+            "t4g.nano":    {"vcpu": 2, "memory_gb": 0.5, "architecture": "arm64"},
+            "t4g.micro":   {"vcpu": 2, "memory_gb": 1,   "architecture": "arm64"},
+            "t4g.small":   {"vcpu": 2, "memory_gb": 2,   "architecture": "arm64"},
+            "t4g.medium":  {"vcpu": 2, "memory_gb": 4,   "architecture": "arm64"},
+            "t4g.large":   {"vcpu": 2, "memory_gb": 8,   "architecture": "arm64"},
+            "t4g.xlarge":  {"vcpu": 4, "memory_gb": 16,  "architecture": "arm64"},
+            "t4g.2xlarge": {"vcpu": 8, "memory_gb": 32,  "architecture": "arm64"},
+            # ── m5 general (x86) ────────────────────────────────────────
+            "m5.large":   {"vcpu": 2,  "memory_gb": 8,   "architecture": "amd64"},
+            "m5.xlarge":  {"vcpu": 4,  "memory_gb": 16,  "architecture": "amd64"},
+            "m5.2xlarge": {"vcpu": 8,  "memory_gb": 32,  "architecture": "amd64"},
+            "m5.4xlarge": {"vcpu": 16, "memory_gb": 64,  "architecture": "amd64"},
+            "m5.8xlarge": {"vcpu": 32, "memory_gb": 128, "architecture": "amd64"},
+            # ── m6i general Intel (x86) ──────────────────────────────────
+            "m6i.large":   {"vcpu": 2,  "memory_gb": 8,   "architecture": "amd64"},
+            "m6i.xlarge":  {"vcpu": 4,  "memory_gb": 16,  "architecture": "amd64"},
+            "m6i.2xlarge": {"vcpu": 8,  "memory_gb": 32,  "architecture": "amd64"},
+            "m6i.4xlarge": {"vcpu": 16, "memory_gb": 64,  "architecture": "amd64"},
+            # ── m6a general AMD (x86) ────────────────────────────────────
+            "m6a.large":   {"vcpu": 2,  "memory_gb": 8,   "architecture": "amd64"},
+            "m6a.xlarge":  {"vcpu": 4,  "memory_gb": 16,  "architecture": "amd64"},
+            "m6a.2xlarge": {"vcpu": 8,  "memory_gb": 32,  "architecture": "amd64"},
+            # ── m6g general Graviton (arm64) ────────────────────────────
+            "m6g.medium":  {"vcpu": 1,  "memory_gb": 4,   "architecture": "arm64"},
+            "m6g.large":   {"vcpu": 2,  "memory_gb": 8,   "architecture": "arm64"},
+            "m6g.xlarge":  {"vcpu": 4,  "memory_gb": 16,  "architecture": "arm64"},
+            "m6g.2xlarge": {"vcpu": 8,  "memory_gb": 32,  "architecture": "arm64"},
+            "m6g.4xlarge": {"vcpu": 16, "memory_gb": 64,  "architecture": "arm64"},
+            # ── c5 compute (x86) ────────────────────────────────────────
+            "c5.large":   {"vcpu": 2,  "memory_gb": 4,   "architecture": "amd64"},
+            "c5.xlarge":  {"vcpu": 4,  "memory_gb": 8,   "architecture": "amd64"},
+            "c5.2xlarge": {"vcpu": 8,  "memory_gb": 16,  "architecture": "amd64"},
+            "c5.4xlarge": {"vcpu": 16, "memory_gb": 32,  "architecture": "amd64"},
+            # ── c6i compute Intel (x86) ──────────────────────────────────
+            "c6i.large":   {"vcpu": 2,  "memory_gb": 4,   "architecture": "amd64"},
+            "c6i.xlarge":  {"vcpu": 4,  "memory_gb": 8,   "architecture": "amd64"},
+            "c6i.2xlarge": {"vcpu": 8,  "memory_gb": 16,  "architecture": "amd64"},
+            "c6i.4xlarge": {"vcpu": 16, "memory_gb": 32,  "architecture": "amd64"},
+            # ── c6a compute AMD (x86) ────────────────────────────────────
+            "c6a.large":   {"vcpu": 2,  "memory_gb": 4,   "architecture": "amd64"},
+            "c6a.xlarge":  {"vcpu": 4,  "memory_gb": 8,   "architecture": "amd64"},
+            "c6a.2xlarge": {"vcpu": 8,  "memory_gb": 16,  "architecture": "amd64"},
+            # ── c6g compute Graviton (arm64) ────────────────────────────
+            "c6g.medium":  {"vcpu": 1,  "memory_gb": 2,   "architecture": "arm64"},
+            "c6g.large":   {"vcpu": 2,  "memory_gb": 4,   "architecture": "arm64"},
+            "c6g.xlarge":  {"vcpu": 4,  "memory_gb": 8,   "architecture": "arm64"},
+            "c6g.2xlarge": {"vcpu": 8,  "memory_gb": 16,  "architecture": "arm64"},
+            "c6g.4xlarge": {"vcpu": 16, "memory_gb": 32,  "architecture": "arm64"},
+            # ── r5 memory (x86) ─────────────────────────────────────────
+            "r5.large":   {"vcpu": 2,  "memory_gb": 16,  "architecture": "amd64"},
+            "r5.xlarge":  {"vcpu": 4,  "memory_gb": 32,  "architecture": "amd64"},
+            "r5.2xlarge": {"vcpu": 8,  "memory_gb": 64,  "architecture": "amd64"},
+            "r5.4xlarge": {"vcpu": 16, "memory_gb": 128, "architecture": "amd64"},
+            # ── r6i memory Intel (x86) ───────────────────────────────────
+            "r6i.large":   {"vcpu": 2,  "memory_gb": 16,  "architecture": "amd64"},
+            "r6i.xlarge":  {"vcpu": 4,  "memory_gb": 32,  "architecture": "amd64"},
+            "r6i.2xlarge": {"vcpu": 8,  "memory_gb": 64,  "architecture": "amd64"},
+            # ── r6g memory Graviton (arm64) ──────────────────────────────
+            "r6g.medium":  {"vcpu": 1,  "memory_gb": 8,   "architecture": "arm64"},
+            "r6g.large":   {"vcpu": 2,  "memory_gb": 16,  "architecture": "arm64"},
+            "r6g.xlarge":  {"vcpu": 4,  "memory_gb": 32,  "architecture": "arm64"},
+            "r6g.2xlarge": {"vcpu": 8,  "memory_gb": 64,  "architecture": "arm64"},
         }
 
     def rank_pools(
@@ -131,7 +237,18 @@ class PoolRankingService:
         limit: int = 10
     ) -> List[ScoredPool]:
         """
-        Execute 8-step pool selection pipeline.
+        Two-tier pool selection pipeline.
+
+        Tier 1 (global, Redis-cached, 65 min TTL):
+            Run full ML pipeline on ALL catalog instances with no template filter.
+            Cache top GLOBAL_CACHE_LIMIT pools per region sorted by ML score.
+
+        Tier 2 (per-request, in-memory, fast):
+            Apply node template + client-specific filters to the cached pools.
+            Return top `limit` matching pools.
+
+        When a pool is blacklisted via update_global_cache_on_blacklist(),
+        n=n replacement finds new pools without a full recompute.
 
         Args:
             node_template: User-defined filtering requirements
@@ -141,48 +258,403 @@ class PoolRankingService:
         Returns:
             List of scored and ranked instance pools
         """
-        logger.info(f"Starting pool ranking pipeline for region {region}")
+        logger.info(f"Starting two-tier pool ranking for region={region}, limit={limit}")
 
-        # Step 1: Node Template Filtering
-        candidate_pools = self._step1_node_template_filter(node_template, region)
-        logger.info(f"Step 1: {len(candidate_pools)} pools after node template filtering")
+        # ── Tier 1: Get/compute global top-N (cached in Redis) ────────────────
+        global_pools = self._get_or_compute_global_rankings(region, GLOBAL_CACHE_LIMIT)
 
-        if not candidate_pools:
-            logger.warning("No pools passed Step 1 (node template filtering)")
+        if not global_pools:
+            logger.warning(f"Global pipeline returned no pools for region {region}")
             return []
 
-        # Step 2: AZ Filtering
-        candidate_pools = self._step2_az_filter(candidate_pools, node_template.allowed_azs)
-        logger.info(f"Step 2: {len(candidate_pools)} pools after AZ filtering")
+        # ── Tier 2: Apply client template + per-client blacklist filter ────────
+        filtered_pools = self._apply_client_filters(global_pools, node_template, region, limit)
 
-        # Step 3: Spot Advisor Filter
-        candidate_pools = self._step3_spot_advisor_filter(candidate_pools)
-        logger.info(f"Step 3: {len(candidate_pools)} pools after Spot Advisor filtering")
+        if not filtered_pools:
+            logger.warning("No pools matched client template filters — global cache may need expansion")
+            return []
 
-        # Step 4: Global Blacklist Check
-        candidate_pools = self._step4_blacklist_check(candidate_pools)
-        logger.info(f"Step 4: {len(candidate_pools)} pools after blacklist filtering")
+        # ── Step 9: Post-score capacity check on client-filtered results ───────
+        ranked_pools = self._step9_post_score_capacity_check(filtered_pools, region)
+        logger.info(f"Two-tier pipeline complete: returning {len(ranked_pools)} pools")
 
-        # Step 5: Capacity Check
-        candidate_pools = self._step5_capacity_check(candidate_pools, region)
-        logger.info(f"Step 5: {len(candidate_pools)} pools with capacity validated")
-
-        # Step 6: Price Fetch
-        candidate_pools = self._step6_price_fetch(candidate_pools, region)
-        logger.info(f"Step 6: {len(candidate_pools)} pools with prices fetched")
-
-        # Step 7: ML Model Scoring
-        scored_pools = self._step7_ml_scoring(candidate_pools)
-        logger.info(f"Step 7: {len(scored_pools)} pools scored with ML models")
-
-        # Step 8: Final Ranking & Caching
-        ranked_pools = self._step8_final_ranking(scored_pools, limit)
-        logger.info(f"Step 8: Returning top {len(ranked_pools)} ranked pools")
-
-        # Cache results in Redis
+        # Cache final results (legacy key for backward compat)
         self._cache_rankings(ranked_pools)
 
         return ranked_pools
+
+    # =========================================================================
+    # TWO-TIER GLOBAL CACHE HELPERS
+    # =========================================================================
+
+    def _pool_to_dict(self, pool: "ScoredPool") -> dict:
+        """Serialize ScoredPool to a plain dict for Redis JSON storage."""
+        return {
+            "instance_type": pool.pool.instance_type,
+            "az": pool.pool.az,
+            "architecture": pool.pool.architecture,
+            "vcpu": pool.pool.vcpu,
+            "memory_gb": pool.pool.memory_gb,
+            "spot_price": pool.pool.spot_price,
+            "ondemand_price": pool.pool.ondemand_price,
+            "spot_advisor_rank": pool.pool.spot_advisor_rank,
+            "has_capacity": pool.pool.has_capacity,
+            "capacity_uncertain": pool.pool.capacity_uncertain,
+            "predicted_savings": pool.predicted_savings,
+            "risk_probability": pool.risk_probability,
+            "ml_score": pool.ml_score,
+            "is_flagged": pool.is_flagged,
+            "rank": pool.rank,
+            "timestamp": pool.timestamp.isoformat(),
+            "capacity_status": pool.capacity_status,
+            "capacity_validated_at": pool.capacity_validated_at,
+        }
+
+    def _pool_from_dict(self, d: dict) -> "ScoredPool":
+        """Deserialize a ScoredPool from a Redis JSON dict."""
+        inner_pool = InstancePool(
+            instance_type=d["instance_type"],
+            az=d["az"],
+            architecture=d["architecture"],
+            vcpu=d["vcpu"],
+            memory_gb=d["memory_gb"],
+            spot_price=d["spot_price"],
+            ondemand_price=d["ondemand_price"],
+            spot_advisor_rank=d["spot_advisor_rank"],
+            has_capacity=d.get("has_capacity", True),
+            capacity_uncertain=d.get("capacity_uncertain", False),
+        )
+        return ScoredPool(
+            pool=inner_pool,
+            predicted_savings=d["predicted_savings"],
+            risk_probability=d["risk_probability"],
+            ml_score=d["ml_score"],
+            is_flagged=d["is_flagged"],
+            rank=d["rank"],
+            timestamp=datetime.fromisoformat(d["timestamp"]),
+            capacity_status=d.get("capacity_status"),
+            capacity_validated_at=d.get("capacity_validated_at"),
+        )
+
+    def _build_all_candidate_pools(self, region: str) -> List[InstancePool]:
+        """
+        Build candidate pools from ALL catalog entries × region AZs.
+        No node-template filtering — used for the global cache pipeline.
+        """
+        azs = self._get_region_azs(region)
+        candidate_pools = []
+        for instance_type, specs in self.instance_catalog.items():
+            for az in azs:
+                candidate_pools.append(InstancePool(
+                    instance_type=instance_type,
+                    az=az,
+                    architecture=specs["architecture"],
+                    vcpu=specs["vcpu"],
+                    memory_gb=specs["memory_gb"],
+                    spot_price=0.0,
+                    ondemand_price=0.0,
+                    spot_advisor_rank=0,
+                ))
+        return candidate_pools
+
+    def _run_global_pipeline(
+        self, region: str, global_limit: int = GLOBAL_CACHE_LIMIT
+    ) -> List["ScoredPool"]:
+        """
+        Run the full ML pipeline on ALL catalog instances (no template filter).
+        Returns top `global_limit` pools sorted by ML score.
+        Called by _get_or_compute_global_rankings on a cache miss.
+        """
+        logger.info(f"Global pipeline START for region={region} (no template filter)")
+
+        candidate_pools = self._build_all_candidate_pools(region)
+        logger.info(f"Global pipeline: {len(candidate_pools)} raw candidates")
+
+        # Step 3: Spot Advisor interruption-rate filter
+        candidate_pools = self._step3_spot_advisor_filter(candidate_pools, region)
+        logger.info(f"Global Step 3: {len(candidate_pools)} after Spot Advisor filter")
+
+        # Step 4: Hard-reject repeat blacklist offenders (failure_count >= 3)
+        candidate_pools = self._step4_blacklist_check(candidate_pools, region)
+        logger.info(f"Global Step 4: {len(candidate_pools)} after blacklist filter")
+
+        # Step 6: Fetch spot + on-demand prices
+        candidate_pools = self._step6_price_fetch(candidate_pools, region)
+        logger.info(f"Global Step 6: prices fetched for {len(candidate_pools)} pools")
+
+        # Step 7: ML scoring
+        scored_pools = self._step7_ml_scoring(candidate_pools, region)
+        logger.info(f"Global Step 7: {len(scored_pools)} pools scored")
+
+        # Intelligence risk cutoff
+        scored_pools = [p for p in scored_pools if p.risk_probability <= 0.50]
+        logger.info(f"Global Step 7b: {len(scored_pools)} after risk cutoff")
+
+        if not scored_pools:
+            return []
+
+        # Sort descending by ML score; dedup by instance type
+        scored_pools.sort(
+            key=lambda p: (p.ml_score, p.predicted_savings, -p.pool.spot_price),
+            reverse=True,
+        )
+        seen_types: set = set()
+        diverse: List["ScoredPool"] = []
+        for pool in scored_pools:
+            if pool.pool.instance_type not in seen_types:
+                diverse.append(pool)
+                seen_types.add(pool.pool.instance_type)
+
+        result = diverse[:global_limit]
+        for i, pool in enumerate(result, start=1):
+            pool.rank = i
+
+        logger.info(f"Global pipeline DONE: {len(result)} pools cached for region={region}")
+        return result
+
+    def _get_or_compute_global_rankings(
+        self, region: str, global_limit: int = GLOBAL_CACHE_LIMIT
+    ) -> List["ScoredPool"]:
+        """
+        Tier 1: Return global top-N pools from Redis cache; compute if missing.
+
+        Cache key : global_pool_rankings:{region}
+        TTL       : GLOBAL_CACHE_TTL (65 minutes)
+        """
+        cache_key = f"global_pool_rankings:{region}"
+
+        # Cache hit
+        try:
+            cached = self.redis.get(cache_key)
+            if cached:
+                pool_dicts = json.loads(cached)
+                pools = [self._pool_from_dict(d) for d in pool_dicts]
+                logger.info(f"Global cache HIT for {region}: {len(pools)} pools")
+                return pools
+        except Exception as e:
+            logger.warning(f"Global cache read failed for {region}: {e}")
+
+        # Cache miss — run full global pipeline
+        logger.info(f"Global cache MISS for {region} — running full pipeline")
+        global_pools = self._run_global_pipeline(region, global_limit)
+
+        try:
+            cache_data = [self._pool_to_dict(p) for p in global_pools]
+            self.redis.setex(cache_key, GLOBAL_CACHE_TTL, json.dumps(cache_data))
+            logger.info(
+                f"Global cache STORED for {region}: {len(global_pools)} pools "
+                f"(TTL={GLOBAL_CACHE_TTL}s)"
+            )
+        except Exception as e:
+            logger.error(f"Global cache write failed for {region}: {e}")
+
+        return global_pools
+
+    def _apply_client_filters(
+        self,
+        global_pools: List["ScoredPool"],
+        template: NodeTemplate,
+        region: str,
+        limit: int,
+    ) -> List["ScoredPool"]:
+        """
+        Tier 2: Apply node-template + per-client blacklist filters to the cached
+        global pool list.  Runs entirely in-memory — no DB or AWS calls.
+
+        Filters applied (in order):
+          • Architecture
+          • vCPU range
+          • Memory range
+          • Allowed families (template.allowed_families)
+          • Allowed sizes   (template.allowed_sizes)
+          • Allowed AZs     (template.allowed_azs)
+          • Excluded instance types
+          • Hard blacklist: failure_count >= 3 (client-side defense)
+
+        Re-ranks filtered pools 1 → N.
+        """
+        blacklist_failures_prefix = "blacklist_failures:"
+        filtered: List["ScoredPool"] = []
+
+        # Normalize architecture names: treat x86_64 and amd64 as equivalent
+        # (frontend sends "x86_64", catalog stores "amd64")
+        _ARCH_ALIASES = {"x86_64": "amd64", "amd64": "x86_64"}
+        normalized_archs = set(template.architecture)
+        for arch in list(template.architecture):
+            if arch in _ARCH_ALIASES:
+                normalized_archs.add(_ARCH_ALIASES[arch])
+
+        for pool in global_pools:
+            p = pool.pool
+
+            # Architecture (normalized: x86_64 == amd64)
+            if p.architecture not in normalized_archs:
+                continue
+
+            # vCPU range
+            if not (template.vcpu_range[0] <= p.vcpu <= template.vcpu_range[1]):
+                continue
+
+            # Memory range
+            if not (template.memory_range[0] <= p.memory_gb <= template.memory_range[1]):
+                continue
+
+            # Allowed families
+            family = p.instance_type.split(".")[0]
+            if template.allowed_families and family not in template.allowed_families:
+                continue
+
+            # Allowed sizes
+            size = p.instance_type.split(".")[1]
+            if template.allowed_sizes and size not in template.allowed_sizes:
+                continue
+
+            # Allowed AZs
+            if template.allowed_azs and p.az not in template.allowed_azs:
+                continue
+
+            # Excluded instance types
+            if (
+                template.excluded_instance_types
+                and p.instance_type in template.excluded_instance_types
+            ):
+                continue
+
+            # Hard blacklist re-check (client-specific defense)
+            pool_key = f"{p.instance_type}:{p.az}"
+            try:
+                failure_count = int(
+                    self.redis.get(f"{blacklist_failures_prefix}{pool_key}") or 0
+                )
+                if failure_count >= 3:
+                    continue
+            except Exception:
+                pass
+
+            filtered.append(pool)
+            if len(filtered) >= limit:
+                break
+
+        # Re-rank 1 → N relative to client view
+        for i, pool in enumerate(filtered, start=1):
+            pool.rank = i
+
+        logger.info(
+            f"Client filter: {len(global_pools)} global → {len(filtered)} matching "
+            f"(limit={limit})"
+        )
+        return filtered
+
+    def update_global_cache_on_blacklist(
+        self, instance_type: str, az: str, region: str
+    ) -> None:
+        """
+        n=n blacklist replacement: remove the newly blacklisted pool from the
+        global Redis cache and add an equal number of next-best replacement pools.
+
+        Called by BlacklistService after a pool is blacklisted.
+        Does NOT trigger a full global recompute — only scores uncached candidates.
+        """
+        cache_key = f"global_pool_rankings:{region}"
+
+        try:
+            cached = self.redis.get(cache_key)
+            if not cached:
+                logger.info(
+                    f"No global cache for {region} — blacklist update will apply "
+                    "on next compute"
+                )
+                return
+
+            pool_dicts: List[dict] = json.loads(cached)
+            pool_key = f"{instance_type}:{az}"
+
+            # Remove the blacklisted pool(s)
+            before_count = len(pool_dicts)
+            pool_dicts = [
+                d for d in pool_dicts
+                if f"{d['instance_type']}:{d['az']}" != pool_key
+            ]
+            removed = before_count - len(pool_dicts)
+
+            if removed == 0:
+                logger.info(
+                    f"Pool {pool_key} not found in global cache for {region} — no update needed"
+                )
+                return
+
+            logger.info(
+                f"Removed {removed} blacklisted pool(s) from global cache "
+                f"({region}): {pool_key}"
+            )
+
+            # Find n replacement pools not already in cache
+            cached_keys = {f"{d['instance_type']}:{d['az']}" for d in pool_dicts}
+            replacements = self._find_replacement_pools(region, cached_keys, n=removed)
+
+            if replacements:
+                pool_dicts.extend([self._pool_to_dict(r) for r in replacements])
+                # Re-sort descending by ml_score and re-rank
+                pool_dicts.sort(key=lambda d: d["ml_score"], reverse=True)
+                for i, d in enumerate(pool_dicts, start=1):
+                    d["rank"] = i
+                logger.info(
+                    f"Added {len(replacements)} replacement pool(s) to global cache "
+                    f"({region})"
+                )
+
+            # Write updated cache, preserving remaining TTL where possible
+            remaining_ttl = self.redis.ttl(cache_key)
+            ttl = remaining_ttl if remaining_ttl and remaining_ttl > 0 else GLOBAL_CACHE_TTL
+            self.redis.setex(cache_key, ttl, json.dumps(pool_dicts))
+
+        except Exception as e:
+            logger.error(
+                f"Failed to update global cache on blacklist for {region}: {e}"
+            )
+
+    def _find_replacement_pools(
+        self, region: str, exclude_keys: set, n: int = 1
+    ) -> List["ScoredPool"]:
+        """
+        Score uncached candidate pools to find n next-best replacements.
+        Only runs the pipeline on instance×AZ combos NOT already in the cache.
+        """
+        azs = self._get_region_azs(region)
+        uncached: List[InstancePool] = []
+
+        for instance_type, specs in self.instance_catalog.items():
+            for az in azs:
+                if f"{instance_type}:{az}" not in exclude_keys:
+                    uncached.append(InstancePool(
+                        instance_type=instance_type,
+                        az=az,
+                        architecture=specs["architecture"],
+                        vcpu=specs["vcpu"],
+                        memory_gb=specs["memory_gb"],
+                        spot_price=0.0,
+                        ondemand_price=0.0,
+                        spot_advisor_rank=0,
+                    ))
+
+        if not uncached:
+            return []
+
+        uncached = self._step3_spot_advisor_filter(uncached, region)
+        uncached = self._step4_blacklist_check(uncached, region)
+        uncached = self._step6_price_fetch(uncached, region)
+        scored = self._step7_ml_scoring(uncached, region)
+        scored = [p for p in scored if p.risk_probability <= 0.50]
+
+        if not scored:
+            return []
+
+        scored.sort(key=lambda p: p.ml_score, reverse=True)
+        logger.info(
+            f"Replacement search: {len(uncached)} uncached candidates → "
+            f"{len(scored)} scored → returning top {n}"
+        )
+        return scored[:n]
 
     def _step1_node_template_filter(
         self,
@@ -250,7 +722,7 @@ class PoolRankingService:
 
         return [pool for pool in pools if pool.az in allowed_azs]
 
-    def _step3_spot_advisor_filter(self, pools: List[InstancePool]) -> List[InstancePool]:
+    def _step3_spot_advisor_filter(self, pools: List[InstancePool], region: str = "ap-south-1") -> List[InstancePool]:
         """
         Step 3: Filter pools using AWS Spot Advisor frequency rank.
 
@@ -260,25 +732,68 @@ class PoolRankingService:
 
         filtered_pools = []
         for pool in pools:
-            rank = spot_advisor_data.get(f"{pool.instance_type}:{pool.az}", 2)  # Default rank 2
+            # Check AZ-specific first, then fall back to Region-wide rank, default 2 (10-15%)
+            rank = spot_advisor_data.get(f"{pool.instance_type}:{pool.az}")
+            if rank is None:
+                rank = spot_advisor_data.get(f"{pool.instance_type}:{region}", 2)
+            
             pool.spot_advisor_rank = rank
 
-            # Filter: Keep only ranks 0-3 (0-10% interruption rate)
+            # Filter: Keep only ranks 0-3 (0-20% interruption rate)
             if rank <= 3:
                 filtered_pools.append(pool)
 
         return filtered_pools
 
-    def _step4_blacklist_check(self, pools: List[InstancePool]) -> List[InstancePool]:
+    def _step4_blacklist_check(self, pools: List[InstancePool], region: str = "ap-south-1") -> List[InstancePool]:
         """
         Step 4: Check global blacklist (risky pools flagged by System B).
 
-        Pools flagged within last 12 hours are still included but will receive
-        a penalty in Step 7 (ML scoring).
+        - Repeat offenders (failure_count >= 3): HARD REJECT (removed from pipeline)
+        - First/second offenders (failure_count 1-2): Kept but flagged for penalty in Step 7
+        - Non-blacklisted pools: Pass through unchanged
+
+        TTL: 24 hours base, exponential backoff for repeat offenders.
         """
-        # All pools pass this step, but we mark flagged ones
-        # Penalty applied in Step 7
-        return pools
+        blacklist_set_key = f"risky_pools:{region}"
+        passed = []
+        rejected = 0
+
+        for pool in pools:
+            pool_key = f"{pool.instance_type}:{pool.az}"
+
+            # Check if pool is in blacklist set
+            is_flagged = self.redis.sismember(blacklist_set_key, pool_key)
+
+            if not is_flagged:
+                # Also check legacy/global key for backward compat
+                is_flagged = self.redis.sismember("risky_pools", pool_key)
+
+            if is_flagged:
+                # Check failure count to decide hard-reject vs soft-flag
+                failure_count = int(self.redis.get(f"blacklist_failures:{pool_key}") or 1)
+
+                if failure_count >= 3:
+                    # Hard reject repeat offenders
+                    rejected += 1
+                    logger.debug(
+                        f"BLACKLIST REJECTED {pool_key}: "
+                        f"failure_count={failure_count} (>= 3 threshold)"
+                    )
+                    continue
+                else:
+                    # Keep but flag for penalty in Step 7
+                    logger.debug(
+                        f"BLACKLIST FLAGGED {pool_key}: "
+                        f"failure_count={failure_count} (will be penalized in ML scoring)"
+                    )
+
+            passed.append(pool)
+
+        if rejected > 0:
+            logger.info(f"Step 4: Blacklist rejected {rejected} repeat-offender pools")
+
+        return passed
 
     def _step5_capacity_check(
         self,
@@ -343,8 +858,25 @@ class PoolRankingService:
             pricing_key = f"{pool.instance_type}:{pool.az}"
             prices = pricing_data.get(pricing_key, {})
 
-            pool.spot_price = prices.get('spot', 0.05)  # Default if not found
-            pool.ondemand_price = prices.get('ondemand', 0.10)  # Default if not found
+            # Get prices with realistic defaults (spot is ~30% of on-demand)
+            spot_price = prices.get('spot', None)
+            ondemand_price = prices.get('ondemand', None)
+
+            # If both missing, use instance-type-based estimates
+            if spot_price is None or ondemand_price is None:
+                # Estimate based on instance size/family
+                base_price = self._estimate_instance_price(pool.instance_type)
+                pool.spot_price = spot_price if spot_price is not None else base_price * 0.30
+                pool.ondemand_price = ondemand_price if ondemand_price is not None else base_price
+            else:
+                pool.spot_price = spot_price
+                pool.ondemand_price = ondemand_price
+
+            # Safety check: ensure spot is never 0.0 or >= ondemand
+            if pool.spot_price <= 0.0:
+                pool.spot_price = pool.ondemand_price * 0.30
+            if pool.spot_price >= pool.ondemand_price:
+                pool.spot_price = pool.ondemand_price * 0.70
 
         return pools
 
@@ -357,10 +889,11 @@ class PoolRankingService:
 
         For each pool:
         1. Engineer 45 features
-        2. Run classifier_6.onnx → savings_pct
-        3. Run regressor_6.onnx → cost_estimate
-        4. Check System B flags → apply penalty if risky
-        5. Calculate final_score = (savings_pct × 100) - (cost × 0.1)
+        2. Run classifier_6.onnx → risk_probability (volatile zone chance, 0-1)
+        3. Run regressor_6.onnx → predicted_savings (savings vs on-demand, 0-1)
+        4. Hard filter: REJECT pools where risk_probability > optimal_threshold
+        5. Check System B blacklist flags → apply savings penalty if risky
+        6. Calculate composite score = (savings × savings_weight) - (risk × risk_weight)
         """
         # ── Circuit Breaker Check ──────────────────────────────────
         ml_fail_count = int(self.redis.get("atharvaai:ml_fail_count") or 0)
@@ -378,7 +911,24 @@ class PoolRankingService:
             pipe.execute()
             return self._fallback_scoring(pools)
 
+        # ── Load Spot Advisor savings percentages for savings differentiation ──
+        # When ONNX regressor saturates (gives identical output for all pools in a
+        # region), use real AWS Spot Advisor savings% which varies per instance type.
+        # e.g. t3.micro=79%, m5.large=73%, c5.large=68%, r5.large=81%
+        sa_savings_map: Dict[str, float] = {}
+        try:
+            from backend.models.pricing import SpotAdvisorData
+            sa_records = self.db.query(SpotAdvisorData).filter(
+                SpotAdvisorData.os_type == 'Linux'
+            ).all()
+            for r in sa_records:
+                sa_savings_map[r.instance_type] = float(r.savings_percentage)
+            logger.info(f"Loaded {len(sa_savings_map)} SA savings% for scoring differentiation")
+        except Exception as _e:
+            logger.warning(f"Could not load SA savings data for scoring: {_e}")
+
         scored_pools = []
+        rejected_risky = 0
         timestamp = datetime.utcnow()
 
         for pool in pools:
@@ -393,19 +943,54 @@ class PoolRankingService:
                     use_minimum=False  # Use full features if available
                 )
 
-                # Run ONNX inference
-                classifier_output = self.classifier_session.run(
+                # Run ONNX inference — CORRECT assignment:
+                # classifier_6.onnx → risk_probability (is_unstable probability)
+                # regressor_6.onnx → predicted_savings (future savings %)
+                risk_probability = float(self.classifier_session.run(
                     None,
                     {"input": features}
-                )[0][0][0]
+                )[0][0][0])
 
-                regressor_output = self.regressor_session.run(
+                predicted_savings = float(self.regressor_session.run(
                     None,
                     {"input": features}
-                )[0][0][0]
+                )[0][0][0])
 
-                savings_pct = float(classifier_output)
-                cost_estimate = float(regressor_output)
+                # Clamp values to valid range
+                risk_probability = max(0.0, min(1.0, risk_probability))
+                predicted_savings = max(0.0, min(1.0, predicted_savings))
+
+                # ── Use Spot Advisor savings when ONNX regressor over-saturates ─
+                # ONNX regressor outputs identical values for all pools in a region
+                # when features are similar (estimated prices all use same ratio).
+                # AWS Spot Advisor savings% is measured real-world data that varies
+                # meaningfully per instance type (e.g. t3.micro=79%, m5.large=73%).
+                if predicted_savings >= 0.99:
+                    sa_savings = sa_savings_map.get(pool.instance_type)
+                    if sa_savings and sa_savings > 0:
+                        # Convert percentage (e.g. 79) → fraction (0.79)
+                        predicted_savings = max(0.30, min(0.95, sa_savings / 100.0))
+                    elif pool.ondemand_price > 0:
+                        # Secondary fallback: real price headroom
+                        price_headroom = (pool.ondemand_price - pool.spot_price) / pool.ondemand_price
+                        predicted_savings = max(0.0, min(0.95, price_headroom))
+
+                # ── Differentiated risk: weighted blend of ONNX + Spot Advisor ─
+                # 50/50 blend gives all 4 SA rank buckets distinct, meaningful risk scores
+                # while keeping sa_rank=2 (10-15% interruption) pools available:
+                #   sa_rank=0 (< 5%): risk ≈ 0.14   sa_rank=2 (10-15%): risk ≈ 0.34
+                #   sa_rank=1 (5-10%): risk ≈ 0.24  sa_rank=3 (15-20%): risk ≈ 0.44
+                sa_risk = pool.spot_advisor_rank / 5.0  # 0.0 (safest) → 0.8 (riskiest)
+                risk_probability = min(1.0, 0.5 * risk_probability + 0.5 * sa_risk)
+
+                # ── Hard filter: REJECT pools above risk threshold ──
+                if risk_probability > self.risk_threshold:
+                    rejected_risky += 1
+                    logger.debug(
+                        f"REJECTED {pool.instance_type}/{pool.az}: "
+                        f"risk={risk_probability:.3f} > threshold={self.risk_threshold}"
+                    )
+                    continue
 
                 # Check System B blacklist flag — namespaced by region
                 blacklist_key = f"risky_pools:{region}"
@@ -414,18 +999,19 @@ class PoolRankingService:
                     f"{pool.instance_type}:{pool.az}"
                 )
 
-                # Apply penalty if flagged
+                # Apply savings penalty if blacklisted (reduce attractiveness)
+                effective_savings = predicted_savings
                 if is_flagged:
-                    savings_pct = max(0.0, savings_pct - 0.50)  # -0.50 penalty
+                    effective_savings = max(0.0, predicted_savings - 0.20)  # -20% savings penalty
 
-                # Calculate final score
-                # Higher savings % is better (×100), lower cost is better (-×0.1)
-                final_score = (savings_pct * 100) - (cost_estimate * 0.1)
+                # ── Expected Value scoring (Decision Engine v3) ──
+                from backend.core.scoring import compute_expected_value
+                final_score = compute_expected_value(effective_savings, risk_probability)
 
                 scored_pools.append(ScoredPool(
                     pool=pool,
-                    savings_pct=savings_pct,
-                    cost_estimate=cost_estimate,
+                    predicted_savings=predicted_savings,
+                    risk_probability=risk_probability,
                     ml_score=final_score,
                     is_flagged=bool(is_flagged),
                     rank=0,  # Will be set in Step 8
@@ -445,6 +1031,10 @@ class PoolRankingService:
         if scored_pools:
             self.redis.delete("atharvaai:ml_degraded")
 
+        logger.info(
+            f"Step 7 complete: {len(scored_pools)} safe pools, "
+            f"{rejected_risky} rejected (risk > {self.risk_threshold})"
+        )
         return scored_pools
 
     def _step8_final_ranking(
@@ -453,36 +1043,240 @@ class PoolRankingService:
         limit: int
     ) -> List[ScoredPool]:
         """
-        Step 8: Sort by score and assign ranks.
+        Step 8: Sort by composite score, deduplicate by instance type, and assign ranks.
 
-        Returns top N pools (limit).
+        Deduplication ensures each node on the cluster uses a DIFFERENT instance type
+        to avoid risk concentration (e.g., all nodes on m5.xlarge).
+
+        Sorting priority:
+        1. ML composite score (primary)
+        2. Predicted savings (tie-breaker when scores are equal)
+
+        Returns top N diverse pools (limit).
         """
-        # Sort by ML score (descending)
-        sorted_pools = sorted(scored_pools, key=lambda p: p.ml_score, reverse=True)
+        # Sort by ML composite score (primary), then predicted savings, then lowest spot price
+        # When ML scores are tied, cheapest absolute spot price = most savings vs any on-demand baseline
+        # e.g. c5.large ($0.0255) ranks above m5.large ($0.0288), m5.2xlarge ($0.1152) ranks last
+        def _sort_key(p):
+            return (p.ml_score, p.predicted_savings, -p.pool.spot_price)
 
-        # Assign ranks
-        for i, pool in enumerate(sorted_pools[:limit], start=1):
+        sorted_pools = sorted(scored_pools, key=_sort_key, reverse=True)
+
+        # Deduplicate: keep only the highest-scored pool per unique instance type
+        seen_types = set()
+        diverse_pools = []
+        for pool in sorted_pools:
+            if pool.pool.instance_type not in seen_types:
+                diverse_pools.append(pool)
+                seen_types.add(pool.pool.instance_type)
+
+        # Assign ranks to top N diverse pools
+        result = diverse_pools[:limit]
+        for i, pool in enumerate(result, start=1):
             pool.rank = i
 
-        return sorted_pools[:limit]
+        logger.info(
+            f"Step 8: {len(sorted_pools)} scored → {len(diverse_pools)} unique types → top {len(result)}"
+        )
+        return result
+
+    def _step9_post_score_capacity_check(
+        self, scored_pools: List[ScoredPool], region: str
+    ) -> List[ScoredPool]:
+        """Post-scoring DryRun: validate top 10 candidates only."""
+        from botocore.exceptions import ClientError
+
+        active_clusters = int(self.redis.get("spot:active_cluster_count") or 1)
+        MAX_DRYRUN_PER_HOUR = min(200, max(25, active_clusters * 2))
+        PER_CLUSTER_CAP = 5
+        TARGET_VALID = 10
+
+        dryrun_key = f"spot:dryrun_count:{region}"
+        current_count = int(self.redis.get(dryrun_key) or 0)
+        remaining_budget = MAX_DRYRUN_PER_HOUR - current_count
+
+        if remaining_budget <= 0:
+            logger.warning(f"DryRun budget exhausted for {region} (used {current_count}/{MAX_DRYRUN_PER_HOUR})")
+            for p in scored_pools[:TARGET_VALID]:
+                p.capacity_status = "unvalidated"
+                p.capacity_validated_at = None
+            if self.redis:
+                self.redis.incr("spot:metrics:dryrun_starvation_ratio")
+            return scored_pools[:TARGET_VALID]
+
+        validated = []
+        now = datetime.utcnow()
+
+        for pool in scored_pools:
+            if len(validated) >= TARGET_VALID or remaining_budget <= 0:
+                break
+
+            # Per-cluster fairness cap check
+            cluster_id = pool.requesting_cluster_id if hasattr(pool, 'requesting_cluster_id') and pool.requesting_cluster_id else "default"
+            cluster_dryrun_key = f"spot:dryrun_count:{region}:{cluster_id}"
+            cluster_count = int(self.redis.get(cluster_dryrun_key) or 0)
+            if cluster_count >= PER_CLUSTER_CAP:
+                logger.debug(f"Skipping {pool.pool.instance_type}:{pool.pool.az} — cluster {cluster_id} at cap ({cluster_count}/{PER_CLUSTER_CAP})")
+                continue
+
+            try:
+                ec2 = self._get_ec2_client(region)
+                ec2.run_instances(
+                    InstanceType=pool.pool.instance_type,
+                    DryRun=True,
+                    MinCount=1,
+                    MaxCount=1,
+                    Placement={'AvailabilityZone': pool.pool.az}
+                )
+            except ClientError as e:
+                error_code = e.response.get('Error', {}).get('Code', '') if hasattr(e, 'response') else ''
+
+                if error_code == "DryRunOperation":
+                    # Capacity available
+                    pool.capacity_status = "validated"
+                    pool.capacity_validated_at = now.isoformat()
+                    validated.append(pool)
+                    logger.debug(f"DryRun PASS: {pool.pool.instance_type}:{pool.pool.az}")
+                else:
+                    # Capacity unavailable or other error
+                    pool.capacity_status = "unavailable"
+                    pool_id = f"{pool.pool.instance_type}:{pool.pool.az}"
+
+                    # Track failures over 24h
+                    fail_key = f"spot:dryrun_failures_24h:{pool_id}"
+                    fail_count = self.redis.incr(fail_key)
+                    if fail_count == 1:
+                        self.redis.expire(fail_key, 86400)  # 24 hours
+
+                    # Tiered blacklisting
+                    ttl = 12 if fail_count >= 3 else 6
+                    try:
+                        from backend.services.blacklist_service import BlacklistService
+                        blacklist_svc = BlacklistService(self.redis)
+                        blacklist_svc.blacklist_pool_tiered(
+                            pool.pool.instance_type, pool.pool.az, region,
+                            reason=f"dryrun_failure_x{fail_count}", ttl_hours=ttl
+                        )
+                        # n=n replacement: remove from global cache, add next-best
+                        self.update_global_cache_on_blacklist(
+                            pool.pool.instance_type, pool.pool.az, region
+                        )
+                    except Exception as bl_err:
+                        logger.warning(f"Blacklist update failed: {bl_err}")
+
+                    logger.warning(f"DryRun FAIL ({error_code}): {pool_id} — failure #{fail_count}, blacklisted {ttl}h")
+            except Exception as e:
+                logger.error(f"DryRun exception for {pool.pool.instance_type}:{pool.pool.az}: {e}")
+                if hasattr(self, 'db') and self.db:
+                    try:
+                        self.db.rollback()
+                    except Exception:
+                        pass
+                pool.capacity_status = "unvalidated"
+                continue
+
+            # Increment budget counters
+            remaining_budget -= 1
+            count = self.redis.incr(dryrun_key)
+            if count == 1:
+                self.redis.expire(dryrun_key, 3600)  # 1 hour
+
+            if cluster_id:
+                ck_count = self.redis.incr(cluster_dryrun_key)
+                if ck_count == 1:
+                    self.redis.expire(cluster_dryrun_key, 3600)
+
+        logger.info(f"DryRun validated {len(validated)}/{TARGET_VALID} pools (budget: {MAX_DRYRUN_PER_HOUR - current_count - len(validated)}/{MAX_DRYRUN_PER_HOUR} remaining)")
+
+        # FALLBACK: If no pools validated (e.g., all DryRun failed due to missing params),
+        # return top pools anyway marked as "unvalidated" so UI can still show rankings
+        if len(validated) == 0 and len(scored_pools) > 0:
+            logger.warning(f"No pools validated via DryRun - returning top {TARGET_VALID} as unvalidated")
+            for pool in scored_pools[:TARGET_VALID]:
+                pool.capacity_status = "unvalidated"
+                pool.capacity_validated_at = None
+            return scored_pools[:TARGET_VALID]
+
+        return validated
+
+    def _get_ec2_client(self, region: str):
+        """Get boto3 EC2 client for given region."""
+        import boto3
+        from backend.models.system_config import SystemConfig
+
+        # Get AWS credentials from system config
+        access_key = self.db.query(SystemConfig).filter(
+            SystemConfig.key == "PLATFORM_AWS_ACCESS_KEY"
+        ).first()
+        secret_key = self.db.query(SystemConfig).filter(
+            SystemConfig.key == "PLATFORM_AWS_SECRET"
+        ).first()
+
+        if not access_key or not secret_key or not access_key.value or not secret_key.value:
+            raise ValueError("AWS credentials not configured in system_config")
+
+        return boto3.client(
+            'ec2',
+            region_name=region,
+            aws_access_key_id=access_key.value,
+            aws_secret_access_key=secret_key.value
+        )
+
+    def _estimate_instance_price(self, instance_type: str) -> float:
+        """
+        Estimate on-demand hourly price based on instance type.
+        Used as fallback when pricing data is unavailable.
+        """
+        # Parse instance family and size
+        parts = instance_type.split('.')
+        if len(parts) != 2:
+            return 0.10  # Default fallback
+
+        family, size = parts
+
+        # Size multipliers (relative to base)
+        size_multipliers = {
+            'nano': 0.25, 'micro': 0.5, 'small': 1.0, 'medium': 2.0,
+            'large': 4.0, 'xlarge': 8.0, '2xlarge': 16.0, '3xlarge': 24.0,
+            '4xlarge': 32.0, '6xlarge': 48.0, '8xlarge': 64.0,
+            '9xlarge': 72.0, '12xlarge': 96.0, '16xlarge': 128.0,
+            '18xlarge': 144.0, '24xlarge': 192.0, '32xlarge': 256.0
+        }
+
+        # Family base prices ($ per hour for .large equivalent) — accurate AWS ap-south-1 pricing
+        family_base_prices = {
+            't2': 0.023, 't3': 0.0832, 't3a': 0.0752, 't4g': 0.0672,
+            'm5': 0.096, 'm5a': 0.086, 'm5n': 0.119, 'm6i': 0.096, 'm6a': 0.086, 'm6g': 0.077,
+            'c5': 0.085, 'c5a': 0.077, 'c5n': 0.108, 'c6i': 0.085, 'c6a': 0.077, 'c6g': 0.068,
+            'r5': 0.126, 'r5a': 0.113, 'r5n': 0.149, 'r6i': 0.126, 'r6a': 0.113, 'r6g': 0.101,
+            'i3': 0.156, 'i3en': 0.226, 'i4i': 0.182,
+            'g4dn': 0.526, 'g5': 1.006, 'p3': 3.060, 'p4d': 32.77
+        }
+
+        base_price = family_base_prices.get(family, 0.10)
+        multiplier = size_multipliers.get(size, 4.0)  # Default to large
+
+        return base_price * (multiplier / 4.0)  # Normalize to large=1.0
 
     def _fallback_scoring(self, pools: List[InstancePool]) -> List[ScoredPool]:
         """Fallback scoring when ONNX models are unavailable."""
+        from backend.core.scoring import compute_expected_value
         scored_pools = []
         timestamp = datetime.utcnow()
 
         for pool in pools:
-            # Simple heuristic: Higher headroom = better score
+            # Simple heuristic: Higher headroom = better savings
             headroom = (pool.ondemand_price - pool.spot_price) / pool.ondemand_price if pool.ondemand_price > 0 else 0.5
-            savings_pct = headroom
-            cost_estimate = pool.spot_price * 24 * 30  # Monthly estimate
+            predicted_savings = headroom
+            # Low risk estimate based on spot advisor rank (lower rank = safer)
+            risk_probability = pool.spot_advisor_rank / 5.0 if pool.spot_advisor_rank <= 5 else 0.5
 
-            final_score = (savings_pct * 100) - (cost_estimate * 0.1)
+            final_score = compute_expected_value(predicted_savings, risk_probability)
 
             scored_pools.append(ScoredPool(
                 pool=pool,
-                savings_pct=savings_pct,
-                cost_estimate=cost_estimate,
+                predicted_savings=predicted_savings,
+                risk_probability=risk_probability,
                 ml_score=final_score,
                 is_flagged=False,
                 rank=0,
@@ -569,15 +1363,15 @@ class PoolRankingService:
             return True
 
     def _cache_rankings(self, ranked_pools: List[ScoredPool]):
-        """Cache ranked pools in Redis with 30-second TTL."""
+        """Cache ranked pools in Redis with 1-hour TTL (matches model prediction horizon)."""
         try:
             cache_key = "atharvaai:pool_rankings"
             cache_data = [
                 {
                     "instance_type": p.pool.instance_type,
                     "az": p.pool.az,
-                    "savings_pct": p.savings_pct,
-                    "cost_estimate": p.cost_estimate,
+                    "predicted_savings": p.predicted_savings,
+                    "risk_probability": p.risk_probability,
                     "ml_score": p.ml_score,
                     "rank": p.rank,
                     "is_flagged": p.is_flagged
@@ -587,7 +1381,7 @@ class PoolRankingService:
 
             self.redis.setex(
                 cache_key,
-                30,  # 30-second TTL
+                3600,  # 1-hour TTL (matches model prediction horizon)
                 json.dumps(cache_data)
             )
         except Exception as e:
@@ -596,12 +1390,9 @@ class PoolRankingService:
     # Helper methods for data retrieval
 
     def _get_region_azs(self, region: str) -> List[str]:
-        """Get availability zones for a region."""
-        # Hardcoded for ap-south-1
-        if region == "ap-south-1":
-            return ["aps1-az1", "aps1-az2", "aps1-az3"]
-        else:
-            return [f"{region}a", f"{region}b", f"{region}c"]
+        """Get availability zones for a region (human-readable AZ names matching spot_price_history)."""
+        # Return human-readable AZ names (e.g. ap-south-1a) to match SpotPriceHistory keys
+        return [f"{region}a", f"{region}b", f"{region}c"]
 
     def _get_spot_advisor_data(self) -> Dict[str, int]:
         """
@@ -612,14 +1403,14 @@ class PoolRankingService:
         try:
             from backend.models.pricing import SpotAdvisorData
 
-            # Query all spot advisor data from database
-            advisor_records = self.db.query(SpotAdvisorData).all()
+            # Query only Linux spot advisor data (filter out Windows platform data)
+            advisor_records = self.db.query(SpotAdvisorData).filter(
+                SpotAdvisorData.os_type == 'Linux'
+            ).all()
 
-            # Build lookup dict
+            # Build lookup dict keyed as "instance_type:region"
             advisor_data = {}
             for record in advisor_records:
-                # Key format: "instance_type:region" (we'll match on instance_type for now)
-                # Since AZ-specific data may not be available, use region as proxy
                 advisor_key = f"{record.instance_type}:{record.region}"
                 advisor_data[advisor_key] = record.interruption_index
 
@@ -628,7 +1419,40 @@ class PoolRankingService:
 
         except Exception as e:
             logger.warning(f"Failed to load Spot Advisor data: {e}")
+            if hasattr(self, 'db') and self.db:
+                try:
+                    self.db.rollback()
+                except Exception:
+                    pass
             return {}
+
+    # Hardcoded accurate on-demand hourly prices (ap-south-1, USD/hr).
+    # Used as final fallback when OnDemandPricing table is empty and API call fails.
+    # Prevents `ondemand = spot * 3.0` which creates constant 67% headroom for all pools.
+    _ONDEMAND_FALLBACK: Dict[str, float] = {
+        't3.nano': 0.0058, 't3.micro': 0.0116, 't3.small': 0.0232, 't3.medium': 0.0464,
+        't3.large': 0.0928, 't3.xlarge': 0.1856, 't3.2xlarge': 0.3712,
+        't3a.nano': 0.0052, 't3a.micro': 0.0104, 't3a.small': 0.0209, 't3a.medium': 0.0418,
+        't3a.large': 0.0836, 't3a.xlarge': 0.1672, 't3a.2xlarge': 0.3344,
+        't4g.nano': 0.0046, 't4g.micro': 0.0092, 't4g.small': 0.0184, 't4g.medium': 0.0368,
+        't4g.large': 0.0736, 't4g.xlarge': 0.1472, 't4g.2xlarge': 0.2944,
+        'm5.large': 0.096, 'm5.xlarge': 0.192, 'm5.2xlarge': 0.384, 'm5.4xlarge': 0.768,
+        'm5a.large': 0.0864, 'm5a.xlarge': 0.1728, 'm5a.2xlarge': 0.3456,
+        'm6i.large': 0.096, 'm6i.xlarge': 0.192, 'm6i.2xlarge': 0.384, 'm6i.4xlarge': 0.768,
+        'm6a.large': 0.0864, 'm6a.xlarge': 0.1728, 'm6a.2xlarge': 0.3456,
+        'm7i.large': 0.1008, 'm7i.xlarge': 0.2016, 'm7i.2xlarge': 0.4032,
+        'm7a.large': 0.096, 'm7a.xlarge': 0.192, 'm7a.2xlarge': 0.384,
+        'c5.large': 0.085, 'c5.xlarge': 0.170, 'c5.2xlarge': 0.340, 'c5.4xlarge': 0.680,
+        'c6i.large': 0.085, 'c6i.xlarge': 0.170, 'c6i.2xlarge': 0.340,
+        'c6a.large': 0.0765, 'c6a.xlarge': 0.153, 'c6a.2xlarge': 0.306,
+        'c7i.large': 0.08925, 'c7i.xlarge': 0.1785, 'c7i.2xlarge': 0.357,
+        'r5.large': 0.126, 'r5.xlarge': 0.252, 'r5.2xlarge': 0.504, 'r5.4xlarge': 1.008,
+        'r6i.large': 0.126, 'r6i.xlarge': 0.252, 'r6i.2xlarge': 0.504,
+        'r7i.large': 0.1323, 'r7i.xlarge': 0.2646, 'r7i.2xlarge': 0.5292,
+        'i3.large': 0.156, 'i3.xlarge': 0.312, 'i3.2xlarge': 0.624, 'i3.4xlarge': 1.248,
+        'g4dn.xlarge': 0.526, 'g4dn.2xlarge': 0.752, 'g4dn.4xlarge': 1.204,
+        'p3.2xlarge': 3.06, 'p3.8xlarge': 12.24,
+    }
 
     def _get_pricing_data(self, region: str) -> Dict[str, Dict[str, float]]:
         """
@@ -673,7 +1497,7 @@ class PoolRankingService:
                         ondemand = float(od_record.price)
                         break
 
-                # Fallback to API if not in database
+                # Fallback chain: ResourcePricingService API → hardcoded table → spot * 3.0
                 if ondemand is None:
                     try:
                         ondemand_cost = pricing_service.calculate_instance_cost(
@@ -682,7 +1506,12 @@ class PoolRankingService:
                         ondemand = float(ondemand_cost)
                     except Exception as e:
                         logger.warning(f"Failed to get on-demand price for {spot_record.instance_type}: {e}")
-                        ondemand = spot_lookup.get(key, 0.0) * 3.0  # Estimate: spot is ~33% of on-demand
+                        # Use hardcoded accurate OD prices instead of spot * 3.0 (which
+                        # gives constant 67% headroom for ALL instance types).
+                        ondemand = self._ONDEMAND_FALLBACK.get(
+                            spot_record.instance_type,
+                            spot_lookup.get(key, 0.0) * 3.0  # Last resort
+                        )
 
                 pricing_data[key] = {
                     "spot": spot_lookup.get(key, 0.0),
@@ -694,5 +1523,136 @@ class PoolRankingService:
 
         except Exception as e:
             logger.error(f"Failed to load pricing data: {e}")
+            if hasattr(self, 'db') and self.db:
+                try:
+                    self.db.rollback()
+                except Exception:
+                    pass
             # Fallback to empty dict (will use fallback pricing in ML features)
             return {}
+
+    # ========================================================================
+    # SIZE-CONSTRAINED RANKING (Unified Optimizer Coordination)
+    # ========================================================================
+
+    def rank_pools_for_size(
+        self,
+        vcpu: int,
+        memory_gb: float,
+        region: str = "ap-south-1",
+        allowed_families: Optional[List[str]] = None,
+        architecture: Optional[List[str]] = None,
+        limit: int = 10
+    ) -> List[ScoredPool]:
+        """
+        Rank pools constrained to a specific instance size.
+
+        Used by the Unified Optimizer Coordinator to re-evaluate Spot ML
+        within the size envelope proposed by rightsizing.
+
+        This implements the coordination pattern from problems.md:
+        - Rightsizing proposes new size (e.g., 2 vCPU / 4 GB)
+        - Coordinator calls this method to get best pools for that size
+        - Combined EV calculation compares options
+
+        Args:
+            vcpu: Exact vCPU count (or use range vcpu ± 1 for flexibility)
+            memory_gb: Exact memory in GB (or use range memory ± 2 for flexibility)
+            region: AWS region
+            allowed_families: Optional instance family filter (e.g., ["m5", "m6i"])
+            architecture: Optional architecture filter (default: ["amd64", "arm64"])
+            limit: Maximum number of pools to return
+
+        Returns:
+            List of scored pools matching the size constraint
+
+        Example:
+            # Rightsizing proposes 2 vCPU / 4 GB
+            pools = service.rank_pools_for_size(
+                vcpu=2,
+                memory_gb=4,
+                region="us-east-1",
+                allowed_families=["m5", "m6i"],
+                limit=5
+            )
+            # Returns: m5.large, m6i.large, etc. (all 2 vCPU / 4 GB)
+        """
+        # Create size-constrained template with flexible range (±1 vCPU, ±2 GB)
+        # This allows near-matches in case exact size isn't available
+        vcpu_min = max(1, vcpu - 1)
+        vcpu_max = vcpu + 1
+        memory_min = max(1, int(memory_gb - 2))
+        memory_max = int(memory_gb + 2)
+
+        template = NodeTemplate(
+            architecture=architecture or ["amd64", "arm64"],
+            vcpu_range=(vcpu_min, vcpu_max),
+            memory_range=(memory_min, memory_max),
+            allowed_families=allowed_families,
+            allowed_sizes=None,  # Allow all sizes within the vCPU/memory range
+            allowed_azs=None,  # Allow all AZs
+            excluded_instance_types=None
+        )
+
+        # Use existing rank_pools pipeline
+        ranked_pools = self.rank_pools(
+            node_template=template,
+            region=region,
+            limit=limit
+        )
+
+        # Filter to exact or near-exact matches (prefer exact size)
+        # Sort by how close to target size (exact matches first)
+        def size_distance(pool: ScoredPool) -> Tuple[int, int]:
+            vcpu_diff = abs(pool.pool.vcpu - vcpu)
+            memory_diff = abs(pool.pool.memory_gb - memory_gb)
+            return (vcpu_diff, memory_diff)
+
+        ranked_pools_sorted = sorted(ranked_pools, key=size_distance)
+
+        logger.info(
+            f"Size-constrained ranking: {len(ranked_pools_sorted)} pools for "
+            f"{vcpu} vCPU / {memory_gb} GB in region {region}"
+        )
+
+        return ranked_pools_sorted[:limit]
+
+    def get_best_pool_for_size(
+        self,
+        vcpu: int,
+        memory_gb: float,
+        region: str = "ap-south-1",
+        allowed_families: Optional[List[str]] = None
+    ) -> Optional[Dict]:
+        """
+        Get single best pool for a specific size.
+
+        Convenience method for coordinator to get the top recommendation.
+
+        Returns:
+            Dict with pool info or None if no pools found
+        """
+        pools = self.rank_pools_for_size(
+            vcpu=vcpu,
+            memory_gb=memory_gb,
+            region=region,
+            allowed_families=allowed_families,
+            limit=1
+        )
+
+        if not pools:
+            return None
+
+        best = pools[0]
+        return {
+            "instance_type": best.pool.instance_type,
+            "az": best.pool.az,
+            "vcpu": best.pool.vcpu,
+            "memory_gb": best.pool.memory_gb,
+            "spot_price": best.pool.spot_price,
+            "ondemand_price": best.pool.ondemand_price,
+            "predicted_savings": best.predicted_savings,
+            "risk_probability": best.risk_probability,
+            "ml_score": best.ml_score,
+            "pool_key": f"{best.pool.instance_type}:{best.pool.az}"
+        }

@@ -5,7 +5,6 @@ from backend.api.account_routes import router as account_router
 from backend.api.onboarding_routes import router as onboarding_router
 from backend.api.health_routes import router as health_router
 from backend.api.optimization_routes import router as optimization_router
-from backend.api.template_routes import router as template_router
 from backend.api.audit_routes import router as audit_router
 from backend.api.policy_routes import router as policy_router
 from backend.api.hibernation_routes import router as hibernation_router
@@ -27,11 +26,13 @@ from backend.api.rds_routes import router as rds_router
 from backend.api.transfer_routes import router as transfer_router
 from backend.api.agent_routes import router as agent_router
 from backend.api.karpenter_routes import router as karpenter_router
+from backend.api.node_template_routes import router as node_template_router
+from backend.api.optimizer_coordinator_routes import router as optimizer_coordinator_router
+from backend.api.pool_rotation_routes import router as pool_rotation_router
 
 # Tag Management Routes
 from backend.api.tag_policy_routes import router as tag_policy_router
 from backend.api.tag_management_routes import router as tag_management_router
-from backend.api.tag_template_routes import router as tag_template_router
 
 api_router = APIRouter()
 
@@ -41,7 +42,6 @@ api_router.include_router(account_router)
 api_router.include_router(onboarding_router)
 api_router.include_router(health_router)
 api_router.include_router(optimization_router)
-api_router.include_router(template_router)
 api_router.include_router(audit_router)
 api_router.include_router(policy_router)
 api_router.include_router(hibernation_router)
@@ -62,8 +62,10 @@ api_router.include_router(rds_router)
 api_router.include_router(transfer_router)
 api_router.include_router(agent_router)
 api_router.include_router(karpenter_router)
+api_router.include_router(node_template_router)
+api_router.include_router(optimizer_coordinator_router)
+api_router.include_router(pool_rotation_router)
 
 # Tag Management
 api_router.include_router(tag_policy_router)
 api_router.include_router(tag_management_router)
-api_router.include_router(tag_template_router)

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { hibernationApi } from '../../services/hibernationApi';
+import { hibernationAPI } from '../../services/api';
 
 const StrategySelector = ({ selected, onSelect }) => {
   const [strategies, setStrategies] = useState([]);
@@ -11,37 +11,11 @@ const StrategySelector = ({ selected, onSelect }) => {
 
   const loadStrategies = async () => {
     try {
-      const response = await hibernationApi.compareStrategies();
-      setStrategies(response.data || []);
+      const response = await hibernationAPI.compareStrategies?.();
+      setStrategies(response?.data || []);
     } catch (error) {
       console.error('Failed to load strategies:', error);
-      // Fallback to hardcoded strategies
-      setStrategies([
-        {
-          strategy: 'NAMESPACE_SLEEP',
-          name: 'Namespace Sleep',
-          description: 'Scales all workload replicas to 0',
-          savings_percentage: 80,
-          wake_time_minutes: 2,
-          risk_level: 'low'
-        },
-        {
-          strategy: 'NUCLEAR',
-          name: 'Node Scale-Down',
-          description: 'Terminates worker nodes',
-          savings_percentage: 70,
-          wake_time_minutes: 5,
-          risk_level: 'medium'
-        },
-        {
-          strategy: 'SNAPSHOT_RESTORE',
-          name: 'Full Hibernation',
-          description: 'Stops entire cluster',
-          savings_percentage: 95,
-          wake_time_minutes: 15,
-          risk_level: 'high'
-        }
-      ]);
+      setStrategies([]);
     } finally {
       setLoading(false);
     }
@@ -72,7 +46,7 @@ const StrategySelector = ({ selected, onSelect }) => {
   return (
     <div className="space-y-4">
       <h3 className="text-lg font-bold">SELECT HIBERNATION STRATEGY</h3>
-      
+
       {strategies.map(strategy => {
         const icon = getStrategyIcon(strategy.strategy);
         const riskBadge = getRiskBadge(strategy.risk_level);
@@ -85,8 +59,8 @@ const StrategySelector = ({ selected, onSelect }) => {
             onClick={() => onSelect(strategy.strategy)}
             className={`
               border-2 rounded-lg p-6 cursor-pointer transition-all
-              ${isSelected 
-                ? 'border-blue-500 bg-blue-50' 
+              ${isSelected
+                ? 'border-blue-500 bg-blue-50'
                 : 'border-gray-200 hover:border-blue-300'
               }
             `}

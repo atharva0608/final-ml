@@ -8,6 +8,8 @@ app = Celery(
     include=[
         'backend.workers.tasks.discovery',
         'backend.workers.tasks.pricing_task',
+        'backend.workers.tasks.pricing_worker',  # NEW: Phase 1 enterprise pricing
+        'backend.workers.tasks.instance_catalog_worker',  # NEW: Phase 1 instance catalog
         'backend.workers.tasks.agent_tasks',
         'backend.workers.tasks.health',
         'backend.workers.tasks.cost_calculator',
@@ -19,7 +21,11 @@ app = Celery(
         'backend.workers.tasks.atharvaai_worker',
         'backend.workers.tasks.termination_monitor',
         'backend.workers.tasks.auto_rebalancer',
-        'backend.workers.tasks.pod_metrics_cleanup'
+        'backend.workers.tasks.pod_metrics_cleanup',
+        'backend.workers.tasks.optimizer_coordinator_worker',  # NEW: Unified optimizer coordination
+        'backend.workers.tasks.resize_guard_worker',  # NEW: Post-resize guard (Enhancement 4 & 9)
+        'backend.workers.tasks.pool_rotation_worker',  # NEW: Pool auto-rotation & fresh cache
+        'backend.workers.tasks.control_plane_loop',  # NEW: 8-step control plane
     ]
 )
 
@@ -76,13 +82,32 @@ app.conf.beat_schedule = {
     },
     # Hibernation Scheduler (Every 1 minute) - Checks schedules and triggers sleep/wake actions
     'hibernation-scheduler-every-1-min': {
-        'task': 'workers.hibernation.check_schedules',
+        'task': 'execute_hibernation_scheduler',
         'schedule': 60.0,  # 1 minute
     },
-    # AtharvaAi Pool Ranking (Every 30 seconds) - ML-driven pool selection pipeline
-    'atharvaai-pool-ranking-every-30-secs': {
-        'task': 'workers.atharvaai.execute_pool_ranking_pipeline',
-        'schedule': 30.0,  # 30 seconds
+    # UNIFIED OPTIMIZER: Pool Optimization (Every 30 minutes) - Coordinator-aware Spot ML
+    # Per problems.md: Frequent pool optimization is safe (only changes pool, not size)
+    'unified-pool-optimization-every-30-mins': {
+        'task': 'workers.optimizer.pool_optimization',
+        'schedule': 1800.0,  # 30 minutes (was 30 seconds - FIXED!)
+    },
+    # UNIFIED OPTIMIZER: Rightsizing Evaluation (Every 24 hours) - Proposes size changes
+    # Per problems.md: Requires ≥24h stability window, only proposes (does not execute)
+    'unified-rightsizing-evaluation-daily': {
+        'task': 'workers.optimizer.rightsizing_evaluation',
+        'schedule': 86400.0,  # 24 hours
+    },
+    # POST-RESIZE GUARD: Monitors clusters for 2h after resize (Enhancement 4 & 9)
+    # Checks CPU stress, pod restarts, memory pressure → triggers rollback if needed
+    'resize-guard-every-5-mins': {
+        'task': 'workers.optimizer.resize_guard',
+        'schedule': 300.0,  # 5 minutes
+    },
+    # POD RESTART BASELINE: Updates baseline restart rate every hour (Enhancement 9)
+    # Used by resize guard to detect anomalous restart spikes
+    'update-restart-baseline-hourly': {
+        'task': 'workers.optimizer.update_pod_restart_baseline',
+        'schedule': 3600.0,  # 1 hour
     },
     # Spot Price Collection (Every 10 minutes) - Collects historical spot prices for ML features
     # FIXED: Now uses real AWS pricing scraper instead of mock data
@@ -109,5 +134,30 @@ app.conf.beat_schedule = {
     'pod-metrics-cleanup-daily': {
         'task': 'workers.pod_metrics.cleanup_old_metrics',
         'schedule': 86400.0,  # 24 hours
+    },
+    # PHASE 1 REMEDIATION: Regional Pricing Refresh (Every 10 minutes) - Enterprise pricing freshness guarantee
+    'regional-pricing-refresh-every-10-mins': {
+        'task': 'workers.pricing.refresh_regional_pricing',
+        'schedule': 600.0,  # 10 minutes (15-min freshness threshold)
+    },
+    # PHASE 1 REMEDIATION: Instance Catalog Refresh (Nightly at 3 AM UTC) - Live AWS instance specifications
+    'instance-catalog-refresh-nightly': {
+        'task': 'workers.instance_catalog.refresh_catalog',
+        'schedule': 86400.0,  # 24 hours
+    },
+    # POOL AUTO-ROTATION: Check rotation status for all clusters (Every 5 minutes) - Maintains fresh pool availability
+    'pool-rotation-check-every-5-mins': {
+        'task': 'pool_rotation.check_all_clusters',
+        'schedule': 300.0,  # 5 minutes
+    },
+    # POOL AUTO-ROTATION: Refresh fresh pool caches (Every 15 minutes) - Proactive cache warming
+    'pool-cache-refresh-every-15-mins': {
+        'task': 'pool_rotation.refresh_all_caches',
+        'schedule': 900.0,  # 15 minutes
+    },
+    # CONTROL PLANE: Full 8-step decision cycle (every 5 minutes)
+    'control-plane-all-clusters-every-5-mins': {
+        'task': 'workers.control_plane.run_all_clusters_decision_cycle',
+        'schedule': 300.0,  # 5 minutes
     },
 }

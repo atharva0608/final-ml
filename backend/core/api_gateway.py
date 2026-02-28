@@ -13,7 +13,6 @@ from backend.core.exceptions import SpotOptimizerException
 from backend.core.logger import StructuredLogger, log_request
 from backend.api import (
     auth_router,
-    template_router,
     audit_router,
     cluster_router,
     policy_router,
@@ -29,6 +28,7 @@ from backend.api import (
     team_router,
     user_router,
     governance_router,
+    karpenter_router,
 )
 
 # Additional Analysis Routes
@@ -40,10 +40,15 @@ from backend.api.transfer_routes import router as transfer_router
 # AtharvaAi Pool Selection & Termination Monitoring
 from backend.api.atharvaai_routes import router as atharvaai_router
 
+# Optimizer Coordinator (Decision Engine v3)
+from backend.api.optimizer_coordinator_routes import router as optimizer_coordinator_router
+
 # Tag Management Routes
 from backend.api.tag_policy_routes import router as tag_policy_router
 from backend.api.tag_management_routes import router as tag_management_router
-from backend.api.tag_template_routes import router as tag_template_router
+from backend.api.tag_automation_routes import router as tag_automation_router
+from backend.api.tag_compliance_routes import router as tag_compliance_router
+from backend.api.tag_scoring_routes import router as tag_scoring_router
 
 # Agent Communication Routes
 from backend.routers.actions import router as actions_router
@@ -52,7 +57,6 @@ from backend.routers.agents import router as agents_router
 
 __all__ = [
     "auth_router",
-    "template_router",
     "audit_router",
     "cluster_router",
     "policy_router",
@@ -67,6 +71,7 @@ __all__ = [
     "hygiene_router",
     "team_router",
     "user_router",
+    "karpenter_router",
 ]
 
 from backend.api import account_routes
@@ -350,13 +355,17 @@ async def root() -> dict:
 app.include_router(auth_router, prefix="/api/v1")
 
 # Template routes
-app.include_router(template_router, prefix="/api/v1")
+# app.include_router(template_router, prefix="/api/v1")  # TODO: Create template_routes.py
 
 # Audit routes
 app.include_router(audit_router, prefix="/api/v1")
 
 # Cluster routes
 app.include_router(cluster_router, prefix="/api/v1")
+
+# Node Template routes
+from backend.api.node_template_routes import router as node_template_router
+app.include_router(node_template_router, prefix="/api/v1")
 
 # Policy routes
 app.include_router(policy_router, prefix="/api/v1")
@@ -388,6 +397,9 @@ app.include_router(health_router, prefix="/api/v1")
 
 # Optimization routes
 app.include_router(optimization_router, prefix="/api/v1")
+
+# Karpenter routes
+app.include_router(karpenter_router, prefix="/api/v1")
 
 # Hygiene routes
 app.include_router(hygiene_router, prefix="/api/v1")
@@ -423,6 +435,13 @@ app.include_router(transfer_router, prefix="/api/v1")
 # AtharvaAi Pool Selection & Termination Monitoring routes
 app.include_router(atharvaai_router, prefix="/api/v1")
 
+# Optimizer Coordinator routes (Decision Engine v3)
+app.include_router(optimizer_coordinator_router, prefix="/api/v1")
+
+# Pool Rotation routes
+from backend.api.pool_rotation_routes import router as pool_rotation_router
+app.include_router(pool_rotation_router, prefix="/api/v1")
+
 # Pod Metrics & Right-Sizing routes
 from backend.api.pod_metrics_routes import router as pod_metrics_router
 app.include_router(pod_metrics_router, prefix="/api/v1")
@@ -430,7 +449,10 @@ app.include_router(pod_metrics_router, prefix="/api/v1")
 # Tag Management routes
 app.include_router(tag_policy_router, prefix="/api/v1")
 app.include_router(tag_management_router, prefix="/api/v1")
-app.include_router(tag_template_router, prefix="/api/v1")
+app.include_router(tag_automation_router, prefix="/api/v1")
+app.include_router(tag_compliance_router, prefix="/api/v1")
+app.include_router(tag_scoring_router, prefix="/api/v1")
+# app.include_router(tag_template_router, prefix="/api/v1")  # TODO: Create tag_template_routes.py
 
 # Agent Communication routes (used by Kubernetes agents)
 app.include_router(agents_router)  # Prefix already defined in router
@@ -486,6 +508,7 @@ async def startup_event():
     Application startup tasks
     """
     from backend.models.base import create_tables, seed_demo_data
+    from backend.scheduler import start_scheduler
 
     logger.info(
         "Application starting",
@@ -524,6 +547,12 @@ async def startup_event():
     except Exception as e:
         logger.error(f"❌ Failed to initialize database: {e}")
 
+    try:
+        logger.info("Starting background scheduler...")
+        start_scheduler()
+    except Exception as e:
+        logger.error(f"❌ Failed to start background scheduler: {e}")
+
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -534,6 +563,12 @@ async def shutdown_event():
         "Application shutting down",
         service=settings.APP_NAME
     )
+    
+    try:
+        from backend.scheduler import stop_scheduler
+        stop_scheduler()
+    except Exception as e:
+        logger.error(f"Failed to stop background scheduler: {e}")
 
 
 # Export app

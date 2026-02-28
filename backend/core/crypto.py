@@ -2,13 +2,25 @@
 Cryptography Utilities
 
 Encryption, decryption, hashing, and token generation utilities
+
+Phase 6 Enhancement: AES-256-GCM encryption for AWS STS credentials
+Enterprise Guardrails:
+- AES-256-GCM authenticated encryption
+- Unique nonce per encryption operation
+- NEVER log decrypted credentials
+- Auto-generate encryption key from JWT_SECRET_KEY if not configured
 """
 import hashlib
 import secrets
+import base64
+import os
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from passlib.context import CryptContext
 from jose import jwt, JWTError
 from datetime import datetime, timedelta
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple
 from backend.core.config import settings
 
 
@@ -282,3 +294,159 @@ def constant_time_compare(a: str, b: str) -> bool:
         True if strings are equal, False otherwise
     """
     return secrets.compare_digest(a, b)
+
+
+# ============================================================================
+# Phase 6: AES-256-GCM Encryption for STS Credentials
+# ============================================================================
+
+# Derive encryption key from JWT secret (or use dedicated key in production)
+_ENCRYPTION_KEY = None
+
+def _get_encryption_key() -> bytes:
+    """
+    Get or derive the AES-256 encryption key
+
+    In production, use a dedicated CREDENTIAL_ENCRYPTION_KEY environment variable.
+    For development, derive from JWT_SECRET_KEY.
+
+    Returns:
+        32-byte AES-256 key
+    """
+    global _ENCRYPTION_KEY
+    if _ENCRYPTION_KEY is None:
+        # Try to get dedicated encryption key from environment
+        dedicated_key = os.getenv('CREDENTIAL_ENCRYPTION_KEY')
+
+        if dedicated_key:
+            # Use dedicated key (must be 32 bytes base64-encoded)
+            try:
+                _ENCRYPTION_KEY = base64.b64decode(dedicated_key)
+                if len(_ENCRYPTION_KEY) != 32:
+                    raise ValueError("CREDENTIAL_ENCRYPTION_KEY must be 32 bytes")
+            except Exception as e:
+                raise ValueError(f"Invalid CREDENTIAL_ENCRYPTION_KEY: {e}")
+        else:
+            # Derive from JWT_SECRET_KEY using PBKDF2
+            kdf = PBKDF2HMAC(
+                algorithm=hashes.SHA256(),
+                length=32,
+                salt=b'spot-optimizer-credential-salt',  # Fixed salt for deterministic key
+                iterations=100000,
+            )
+            _ENCRYPTION_KEY = kdf.derive(settings.JWT_SECRET_KEY.encode())
+
+    return _ENCRYPTION_KEY
+
+
+def encrypt_credential(plaintext: str) -> str:
+    """
+    Encrypt a credential string using AES-256-GCM
+
+    Enterprise Guardrails:
+    - AES-256-GCM authenticated encryption
+    - Unique 12-byte nonce per encryption
+    - Returns base64-encoded: nonce + ciphertext + tag
+
+    Args:
+        plaintext: Credential to encrypt (access key, secret key, session token)
+
+    Returns:
+        Base64-encoded encrypted credential (safe to store in database)
+
+    Raises:
+        ValueError: If encryption fails
+    """
+    try:
+        # Get encryption key
+        key = _get_encryption_key()
+
+        # Create AESGCM cipher
+        aesgcm = AESGCM(key)
+
+        # Generate random 12-byte nonce (NEVER reuse!)
+        nonce = os.urandom(12)
+
+        # Encrypt with authentication
+        ciphertext = aesgcm.encrypt(nonce, plaintext.encode('utf-8'), None)
+
+        # Combine nonce + ciphertext and base64 encode
+        encrypted_data = nonce + ciphertext
+        return base64.b64encode(encrypted_data).decode('ascii')
+
+    except Exception as e:
+        # NEVER log the plaintext in error messages!
+        raise ValueError(f"Credential encryption failed: {type(e).__name__}")
+
+
+def decrypt_credential(encrypted_credential: str) -> str:
+    """
+    Decrypt an AES-256-GCM encrypted credential
+
+    Enterprise Guardrails:
+    - NEVER log the decrypted result
+    - Verify authentication tag
+    - Constant-time comparison for tag verification
+
+    Args:
+        encrypted_credential: Base64-encoded encrypted credential
+
+    Returns:
+        Decrypted plaintext credential
+
+    Raises:
+        ValueError: If decryption or authentication fails
+    """
+    try:
+        # Get encryption key
+        key = _get_encryption_key()
+
+        # Create AESGCM cipher
+        aesgcm = AESGCM(key)
+
+        # Decode from base64
+        encrypted_data = base64.b64decode(encrypted_credential)
+
+        # Extract nonce (first 12 bytes) and ciphertext (rest)
+        nonce = encrypted_data[:12]
+        ciphertext = encrypted_data[12:]
+
+        # Decrypt and verify authentication tag
+        plaintext = aesgcm.decrypt(nonce, ciphertext, None)
+
+        return plaintext.decode('utf-8')
+
+    except Exception as e:
+        # NEVER log the encrypted data or decrypted result!
+        raise ValueError(f"Credential decryption failed: {type(e).__name__}")
+
+
+def generate_credential_encryption_key() -> str:
+    """
+    Generate a new random 32-byte AES-256 key for production use
+
+    Usage:
+        export CREDENTIAL_ENCRYPTION_KEY=$(python -c "from backend.core.crypto import generate_credential_encryption_key; print(generate_credential_encryption_key())")
+
+    Returns:
+        Base64-encoded 32-byte key
+    """
+    key = os.urandom(32)
+    return base64.b64encode(key).decode('ascii')
+
+
+def redact_credential(credential: str, show_chars: int = 4) -> str:
+    """
+    Redact a credential for safe logging
+
+    Args:
+        credential: Credential to redact
+        show_chars: Number of characters to show at the end
+
+    Returns:
+        Redacted credential (e.g., "****xyz123")
+    """
+    if not credential or len(credential) <= show_chars:
+        return "****"
+
+    return "*" * (len(credential) - show_chars) + credential[-show_chars:]

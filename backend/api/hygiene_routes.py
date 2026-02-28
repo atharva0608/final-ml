@@ -1,4 +1,5 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from typing import List, Optional
 
@@ -70,10 +71,11 @@ def execute_hygiene_action(
     try:
         result = service.execute_action(account_id, action, user=current_user)
         # Return 202 Accepted if pending approval
-        if result.get("status") == "pending_approval":
-            return Response(status_code=202, content=result, media_type="application/json")
+        if result and result.get("status") == "pending_approval":
+            return JSONResponse(status_code=202, content=result)
         return result
     except Exception as e:
+        logger.exception(f"Hygiene action failed: {action.action_type}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

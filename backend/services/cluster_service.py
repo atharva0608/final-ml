@@ -404,10 +404,16 @@ class ClusterService:
         except Exception as e:
             logger.debug(f"Redis cache miss or error: {e}")
 
-        query = self.db.query(Cluster).join(Account).filter(
-            Account.organization_id == user.organization_id,
-            Cluster.status != ClusterStatus.PENDING  # Exclude PENDING (unverified) clusters
-        )
+        # SUPER_ADMIN can see all clusters across all organizations
+        if user.role == "SUPER_ADMIN":
+            query = self.db.query(Cluster).join(Account).filter(
+                Cluster.status != ClusterStatus.PENDING
+            )
+        else:
+            query = self.db.query(Cluster).join(Account).filter(
+                Account.organization_id == user.organization_id,
+                Cluster.status != ClusterStatus.PENDING  # Exclude PENDING (unverified) clusters
+            )
 
         # Apply filters
         if filters.account_id:
@@ -587,14 +593,16 @@ class ClusterService:
                     f"Cannot delete cluster: {active_schedules} active hibernation schedule(s) "
                     f"reference this cluster. Remove them first."
                 )
-        except ImportError:
-            pass  # Model not available — skip check
-        
+        except ValidationError:
+            raise
+        except Exception:
+            pass  # Model not available or query error — skip check
+
         # Check 3: Pending approvals? Would become orphaned
         try:
             from backend.models.approval import Approval
             pending_approvals = self.db.query(Approval).filter(
-                Approval.resource == cluster_id,
+                Approval.resource_id == cluster_id,
                 Approval.status == 'PENDING'
             ).count()
             if pending_approvals > 0:
@@ -602,8 +610,10 @@ class ClusterService:
                     f"Cannot delete cluster: {pending_approvals} pending approval(s) exist. "
                     f"Resolve them first."
                 )
-        except ImportError:
-            pass  # Model not available — skip check
+        except ValidationError:
+            raise
+        except Exception:
+            pass  # Model not available or query error — skip check
 
 
         # Remove active instances check - allow forced deletion
@@ -620,14 +630,27 @@ class ClusterService:
             
         # Explicitly delete instances to ensure cleanup (even if DB cascade exists)
         self.db.query(Instance).filter(Instance.cluster_id == cluster_id).delete(synchronize_session=False)
-    
+
         # Also delete cluster_metrics to avoid IntegrityError (NOT NULL on cluster_id)
         from backend.models.cluster_metric import ClusterMetric
         self.db.query(ClusterMetric).filter(ClusterMetric.cluster_id == cluster_id).delete(synchronize_session=False)
 
+        # Explicitly delete optimizer_state to prevent FK nullification error
+        # (optimizer_state.cluster_id is nullable=False, so SQLAlchemy nullify cascade would fail)
+        try:
+            from backend.models.optimizer_state import OptimizerState
+            opt_state = self.db.query(OptimizerState).filter(
+                OptimizerState.cluster_id == cluster_id
+            ).first()
+            if opt_state:
+                self.db.delete(opt_state)
+        except Exception:
+            pass
+
 
         # Uninstall Agent if installed
-        if cluster.agent_installed == 'Y' and cluster.account.role_arn:
+        account = getattr(cluster, 'account', None)
+        if cluster.agent_installed == 'Y' and account and account.role_arn:
             try:
                 from backend.services.agent_injector import AgentInjectorService
                 injector = AgentInjectorService(self.db)
@@ -637,8 +660,8 @@ class ClusterService:
                     cluster_name=cluster.name,
                     cluster_endpoint=cluster.endpoint,
                     cluster_ca_data=cluster.ca_data,
-                    role_arn=cluster.account.role_arn,
-                    external_id=cluster.aws_external_id or cluster.account.external_id,
+                    role_arn=account.role_arn,
+                    external_id=cluster.aws_external_id or account.external_id,
                     region=cluster.region
                 )
             except Exception as e:
@@ -882,6 +905,16 @@ echo "✅ Agent successfully deployed!"
 
         self.db.commit()
 
+        # ── COORDINATOR INIT (GAP 2 FIX) ──────────────────────────────
+        try:
+            from backend.services.optimizer_coordinator import OptimizerCoordinator
+            from backend.core.redis_client import get_redis_client
+            coordinator = OptimizerCoordinator(self.db, get_redis_client())
+            coordinator.initialize_cluster_state(cluster_id)
+            logger.info(f"Initialized optimizer state for cluster {cluster_id}")
+        except Exception as e:
+            logger.error(f"Failed to init optimizer state: {e}")
+
         logger.debug(
             f"Cluster heartbeat updated: id={cluster_id} name={cluster.name}"
         )
@@ -934,7 +967,8 @@ echo "✅ Agent successfully deployed!"
             last_heartbeat=cluster.last_heartbeat,
             tags=cluster.tags,
             created_at=cluster.created_at,
-            updated_at=cluster.updated_at
+            updated_at=cluster.updated_at,
+            auto_rebalance_enabled=cluster.auto_rebalance_enabled or False
         )
 
     def get_cluster_nodes(self, cluster_id: str, user_id: str) -> dict:
@@ -942,12 +976,12 @@ echo "✅ Agent successfully deployed!"
         Get nodes/instances for a cluster
         """
         cluster = self._get_cluster_with_access(cluster_id, user_id)
-        
+
         # Query instances for this cluster
         instances = self.db.query(Instance).filter(
             Instance.cluster_id == cluster_id
         ).all()
-        
+
         nodes = []
         for inst in instances:
             nodes.append({
@@ -959,8 +993,418 @@ echo "✅ Agent successfully deployed!"
                 "az": inst.az,
                 "state": inst.state if hasattr(inst, 'state') else "running"
             })
-        
+
         return {"nodes": nodes, "total": len(nodes)}
+
+    def get_cluster_utilization(self, cluster_id: str, user_id: str) -> dict:
+        """
+        Get cluster utilization metrics
+
+        Returns:
+            dict with CPU %, Memory %, Pod count, Node count, and average usage
+        """
+        from backend.models.pod_metric import PodMetric
+        from sqlalchemy import func
+
+        cluster = self._get_cluster_with_access(cluster_id, user_id)
+
+        # Get node count from instances table
+        node_count = self.db.query(Instance).filter(
+            Instance.cluster_id == cluster_id,
+            Instance.state.in_(['running', 'pending'])
+        ).count()
+
+        # Get latest pod metrics for this cluster (last 5 minutes)
+        five_minutes_ago = datetime.utcnow() - timedelta(minutes=5)
+
+        # Get unique pod count
+        pod_count = self.db.query(func.count(func.distinct(PodMetric.pod_name))).filter(
+            PodMetric.cluster_id == cluster_id,
+            PodMetric.timestamp >= five_minutes_ago
+        ).scalar() or 0
+
+        # Calculate average utilization from pod metrics
+        pod_stats = self.db.query(
+            func.avg(PodMetric.cpu_utilization_pct).label('avg_cpu'),
+            func.avg(PodMetric.memory_utilization_pct).label('avg_mem'),
+            func.sum(PodMetric.cpu_usage_millicores).label('total_cpu_millicores'),
+            func.sum(PodMetric.memory_usage_bytes).label('total_mem_bytes'),
+            func.sum(PodMetric.cpu_request_millicores).label('total_cpu_request'),
+            func.sum(PodMetric.memory_request_bytes).label('total_mem_request')
+        ).filter(
+            PodMetric.cluster_id == cluster_id,
+            PodMetric.timestamp >= five_minutes_ago
+        ).first()
+
+        # Calculate cluster-level utilization percentage
+        cpu_utilization_pct = 0.0
+        memory_utilization_pct = 0.0
+
+        if pod_stats:
+            # If we have request data, calculate utilization as usage/request
+            if pod_stats.total_cpu_request and pod_stats.total_cpu_request > 0:
+                cpu_utilization_pct = (pod_stats.total_cpu_millicores / pod_stats.total_cpu_request) * 100
+            elif pod_stats.avg_cpu:
+                cpu_utilization_pct = pod_stats.avg_cpu
+
+            if pod_stats.total_mem_request and pod_stats.total_mem_request > 0:
+                memory_utilization_pct = (pod_stats.total_mem_bytes / pod_stats.total_mem_request) * 100
+            elif pod_stats.avg_mem:
+                memory_utilization_pct = pod_stats.avg_mem
+
+        # Fallback to cluster table values if no recent pod metrics
+        if cpu_utilization_pct == 0.0 and cluster.cpu_usage_pct:
+            cpu_utilization_pct = float(cluster.cpu_usage_pct)
+        if memory_utilization_pct == 0.0 and cluster.mem_usage_pct:
+            memory_utilization_pct = float(cluster.mem_usage_pct)
+
+        # Calculate average resource usage (cores and GB)
+        avg_cpu_cores = (pod_stats.total_cpu_millicores / 1000.0 / pod_count) if pod_count > 0 and pod_stats.total_cpu_millicores else 0
+        avg_memory_gb = (pod_stats.total_mem_bytes / (1024**3) / pod_count) if pod_count > 0 and pod_stats.total_mem_bytes else 0
+
+        return {
+            "cpu_utilization_pct": round(cpu_utilization_pct, 2),
+            "memory_utilization_pct": round(memory_utilization_pct, 2),
+            "pod_count": pod_count,
+            "node_count": node_count,
+            "avg_cpu_cores": round(avg_cpu_cores, 3),
+            "avg_memory_gb": round(avg_memory_gb, 3),
+            "total_cpu_millicores": pod_stats.total_cpu_millicores if pod_stats else 0,
+            "total_memory_bytes": pod_stats.total_mem_bytes if pod_stats else 0
+        }
+
+    def get_cluster_workload_type(self, cluster_id: str, user_id: str) -> dict:
+        """
+        Detect cluster workload type based on PVC usage
+
+        Detection logic:
+        - Checks pod_metrics for pods with PVCs (via pod_metadata)
+        - STATELESS: No PVCs found
+        - STATEFUL: One or more pods have PVCs
+        - MIXED: Some pods with PVCs, some without
+        - UNKNOWN: Unable to determine (no pod data)
+
+        Returns:
+            dict with workload_type, pvc_count, total_pod_count, and details
+        """
+        from backend.models.pod_metric import PodMetric
+        from sqlalchemy import func
+        import os
+        import redis as redis_lib
+        import json
+
+        cluster = self._get_cluster_with_access(cluster_id, user_id)
+
+        # Check Redis cache first (10-minute TTL from workload_inspector)
+        try:
+            redis_url = os.getenv("REDIS_URL", "redis://redis:6379/0")
+            r = redis_lib.from_url(redis_url)
+
+            # Check for cached workload classification
+            workload_cache_key = f"spot:workload_type:{cluster_id}"
+            cached_type = r.get(workload_cache_key)
+            if cached_type:
+                cached_type = cached_type.decode('utf-8') if isinstance(cached_type, bytes) else cached_type
+                logger.info(f"Using cached workload type for cluster {cluster_id}: {cached_type}")
+                return {
+                    "workload_type": cached_type,
+                    "cached": True,
+                    "description": self._get_workload_description(cached_type)
+                }
+        except Exception as e:
+            logger.debug(f"Redis cache check failed: {e}")
+
+        # Fallback: Analyze pod metrics for PVC detection
+        # Get recent pod metrics (last 10 minutes)
+        ten_minutes_ago = datetime.utcnow() - timedelta(minutes=10)
+
+        # Get unique pods with their metadata
+        recent_pods = self.db.query(
+            PodMetric.pod_name,
+            PodMetric.namespace,
+            PodMetric.pod_metadata
+        ).filter(
+            PodMetric.cluster_id == cluster_id,
+            PodMetric.timestamp >= ten_minutes_ago
+        ).distinct(PodMetric.pod_name, PodMetric.namespace).all()
+
+        total_pod_count = len(recent_pods)
+        pvc_pod_count = 0
+        statefulset_pod_count = 0
+
+        # Analyze each pod's metadata for PVCs
+        for pod in recent_pods:
+            pod_metadata = pod.pod_metadata or {}
+
+            # Check for PVC volumes in metadata
+            volumes = pod_metadata.get('volumes', [])
+            has_pvc = any('persistentVolumeClaim' in vol for vol in volumes) if isinstance(volumes, list) else False
+
+            if has_pvc:
+                pvc_pod_count += 1
+
+            # Check if pod is part of StatefulSet
+            owner_kind = pod_metadata.get('owner_kind', '')
+            if owner_kind == 'StatefulSet':
+                statefulset_pod_count += 1
+
+        # Determine workload type
+        if total_pod_count == 0:
+            workload_type = "UNKNOWN"
+        elif pvc_pod_count == 0 and statefulset_pod_count == 0:
+            workload_type = "STATELESS"
+        elif pvc_pod_count == total_pod_count or statefulset_pod_count == total_pod_count:
+            workload_type = "STATEFUL"
+        else:
+            workload_type = "MIXED"
+
+        logger.info(
+            f"Workload detection for cluster {cluster_id}: {workload_type} "
+            f"(PVCs: {pvc_pod_count}/{total_pod_count}, StatefulSets: {statefulset_pod_count}/{total_pod_count})"
+        )
+
+        return {
+            "workload_type": workload_type,
+            "total_pod_count": total_pod_count,
+            "pvc_pod_count": pvc_pod_count,
+            "statefulset_pod_count": statefulset_pod_count,
+            "cached": False,
+            "description": self._get_workload_description(workload_type),
+            "can_optimize_spot": workload_type in ["STATELESS", "MIXED"]
+        }
+
+    def get_cluster_nodes_detailed(self, cluster_id: str, user_id: str) -> dict:
+        """
+        Get detailed node information with pod-level details and PVC detection.
+        Returns node-by-node breakdown with pods, utilization, and classification.
+
+        Prioritizes the `instances` table to guarantee we return all nodes even if they
+        don't have user workloads/pods running on them. Pod metrics are attached to matching nodes.
+        """
+        from backend.models.instance import Instance
+        from backend.models.pod_metric import PodMetric
+        from sqlalchemy import func
+        from datetime import datetime, timedelta
+
+        cluster = self.db.query(Cluster).filter(Cluster.id == cluster_id).first()
+        if not cluster:
+            raise ResourceNotFoundError("Cluster", cluster_id)
+
+        instances = self.db.query(Instance).filter(
+            Instance.cluster_id == cluster_id
+        ).all()
+
+        cutoff_time = datetime.utcnow() - timedelta(hours=2)
+
+        latest_subq = self.db.query(
+            PodMetric.pod_name,
+            PodMetric.node_name,
+            func.max(PodMetric.timestamp).label('max_ts')
+        ).filter(
+            PodMetric.cluster_id == cluster_id,
+            PodMetric.timestamp >= cutoff_time
+        ).group_by(PodMetric.pod_name, PodMetric.node_name).subquery()
+
+        recent_pods = self.db.query(PodMetric).join(
+            latest_subq,
+            (PodMetric.pod_name == latest_subq.c.pod_name) &
+            (PodMetric.node_name == latest_subq.c.node_name) &
+            (PodMetric.timestamp == latest_subq.c.max_ts)
+        ).all()
+
+        if not recent_pods:
+            latest_subq2 = self.db.query(
+                PodMetric.pod_name,
+                PodMetric.node_name,
+                func.max(PodMetric.timestamp).label('max_ts')
+            ).filter(
+                PodMetric.cluster_id == cluster_id
+            ).group_by(PodMetric.pod_name, PodMetric.node_name).subquery()
+
+            recent_pods = self.db.query(PodMetric).join(
+                latest_subq2,
+                (PodMetric.pod_name == latest_subq2.c.pod_name) &
+                (PodMetric.node_name == latest_subq2.c.node_name) &
+                (PodMetric.timestamp == latest_subq2.c.max_ts)
+            ).all()
+
+        pods_by_node: dict = {}
+        for pod in recent_pods:
+            node_name = pod.node_name
+            if node_name not in pods_by_node:
+                pods_by_node[node_name] = []
+
+            pod_metadata = pod.pod_metadata or {}
+            volumes = pod_metadata.get('volumes', [])
+            has_pvc = (
+                any('persistentVolumeClaim' in vol for vol in volumes)
+                if isinstance(volumes, list) else False
+            )
+            owner_kind = pod_metadata.get('owner_kind', 'Pod')
+
+            pods_by_node[node_name].append({
+                "pod_name": pod.pod_name,
+                "namespace": pod.namespace,
+                "cpu_usage_millicores": pod.cpu_usage_millicores,
+                "memory_usage_bytes": pod.memory_usage_bytes,
+                "memory_usage_mb": round(
+                    pod.memory_usage_bytes / (1024 * 1024), 2
+                ) if pod.memory_usage_bytes else 0,
+                "has_pvc": has_pvc,
+                "controller_type": owner_kind,
+                "is_stateful": has_pvc or owner_kind == 'StatefulSet',
+                "status": pod_metadata.get('status', 'Unknown')
+            })
+
+        _VCPU_MAP = {
+            "t3.nano": 2, "t3.micro": 2, "t3.small": 2, "t3.medium": 2, "t3.large": 2, "t3.xlarge": 4, "t3.2xlarge": 8,
+            "t3a.nano": 2, "t3a.micro": 2, "t3a.small": 2, "t3a.medium": 2, "t3a.large": 2, "t3a.xlarge": 4, "t3a.2xlarge": 8,
+            "m5.large": 2, "m5.xlarge": 4, "m5.2xlarge": 8, "m5.4xlarge": 16, "m5.8xlarge": 32, "m5.12xlarge": 48, "m5.16xlarge": 64, "m5.24xlarge": 96,
+            "m6i.large": 2, "m6i.xlarge": 4, "m6i.2xlarge": 8, "m6i.4xlarge": 16, "m6i.8xlarge": 32, "m6i.12xlarge": 48, "m6i.16xlarge": 64, "m6i.24xlarge": 96,
+            "c5.large": 2, "c5.xlarge": 4, "c5.2xlarge": 8, "c5.4xlarge": 16, "c5.9xlarge": 36, "c5.12xlarge": 48, "c5.18xlarge": 72, "c5.24xlarge": 96,
+            "c6i.large": 2, "c6i.xlarge": 4, "c6i.2xlarge": 8, "c6i.4xlarge": 16, "c6i.8xlarge": 32, "c6i.12xlarge": 48, "c6i.16xlarge": 64, "c6i.24xlarge": 96,
+            "r5.large": 2, "r5.xlarge": 4, "r5.2xlarge": 8, "r5.4xlarge": 16, "r5.8xlarge": 32, "r5.12xlarge": 48, "r5.16xlarge": 64, "r5.24xlarge": 96,
+            "r6i.large": 2, "r6i.xlarge": 4, "r6i.2xlarge": 8, "r6i.4xlarge": 16,
+        }
+        _MEM_MAP = {
+            "t3.nano": 0.5, "t3.micro": 1, "t3.small": 2, "t3.medium": 4, "t3.large": 8, "t3.xlarge": 16, "t3.2xlarge": 32,
+            "t3a.nano": 0.5, "t3a.micro": 1, "t3a.small": 2, "t3a.medium": 4, "t3a.large": 8, "t3a.xlarge": 16, "t3a.2xlarge": 32,
+            "m5.large": 8, "m5.xlarge": 16, "m5.2xlarge": 32, "m5.4xlarge": 64, "m5.8xlarge": 128, "m5.12xlarge": 192, "m5.16xlarge": 256, "m5.24xlarge": 384,
+            "m6i.large": 8, "m6i.xlarge": 16, "m6i.2xlarge": 32, "m6i.4xlarge": 64,
+            "c5.large": 4, "c5.xlarge": 8, "c5.2xlarge": 16, "c5.4xlarge": 32,
+            "c6i.large": 4, "c6i.xlarge": 8, "c6i.2xlarge": 16, "c6i.4xlarge": 32,
+            "r5.large": 16, "r5.xlarge": 32, "r5.2xlarge": 64, "r5.4xlarge": 128,
+            "r6i.large": 16, "r6i.xlarge": 32, "r6i.2xlarge": 64, "r6i.4xlarge": 128,
+        }
+
+        nodes_detailed = []
+        pod_nodes_items = list(pods_by_node.items())
+
+        if instances:
+            for idx, inst in enumerate(instances):
+                instance_type = inst.instance_type or "Unknown"
+                lc_raw = inst.lifecycle
+                lifecycle = (lc_raw.value if hasattr(lc_raw, 'value') else str(lc_raw)).lower()
+                availability_zone = inst.az or "unknown"
+                node_cpu_capacity_cores = _VCPU_MAP.get(instance_type, 4)
+                node_memory_capacity_gb = _MEM_MAP.get(instance_type, 16)
+
+                node_cpu_util_pct = float(inst.cpu_util) if inst.cpu_util is not None and inst.cpu_util > 0 else 0
+                node_mem_util_pct = float(inst.memory_util) if inst.memory_util is not None and inst.memory_util > 0 else 0
+
+                node_name = f"node-{idx}"
+                node_pods = []
+                if idx < len(pod_nodes_items):
+                    node_name, node_pods = pod_nodes_items[idx]
+
+                if node_cpu_util_pct == 0 and node_pods:
+                    total_cpu_millicores = sum(p['cpu_usage_millicores'] for p in node_pods if p['cpu_usage_millicores'])
+                    node_cpu_util_pct = ((total_cpu_millicores / (node_cpu_capacity_cores * 1000)) * 100) if total_cpu_millicores else 0
+                
+                if node_mem_util_pct == 0 and node_pods:
+                    total_memory_mb = sum(p['memory_usage_mb'] for p in node_pods)
+                    node_mem_util_pct = ((total_memory_mb / (node_memory_capacity_gb * 1024)) * 100) if total_memory_mb else 0
+
+                stateful_pods = [p for p in node_pods if p['is_stateful']]
+                if not node_pods:
+                    node_classification = "EMPTY"
+                elif not stateful_pods:
+                    node_classification = "STATELESS"
+                elif len(stateful_pods) == len(node_pods):
+                    node_classification = "STATEFUL"
+                else:
+                    node_classification = "MIXED"
+
+                nodes_detailed.append({
+                    "node_name": node_name,
+                    "instance_type": instance_type,
+                    "lifecycle": lifecycle,
+                    "availability_zone": availability_zone,
+                    "status": "running",
+                    "classification": node_classification,
+                    "cpu_utilization_pct": round(node_cpu_util_pct, 2),
+                    "memory_utilization_pct": round(node_mem_util_pct, 2),
+                    "cpu_capacity_cores": node_cpu_capacity_cores,
+                    "memory_capacity_gb": node_memory_capacity_gb,
+                    "total_cpu_usage_millicores": sum(p['cpu_usage_millicores'] for p in node_pods if p['cpu_usage_millicores']) if node_pods else 0,
+                    "total_memory_usage_mb": round(sum(p['memory_usage_mb'] for p in node_pods), 2) if node_pods else 0,
+                    "pod_count": len(node_pods),
+                    "stateful_pod_count": len(stateful_pods),
+                    "pods": node_pods
+                })
+        else:
+            for idx, (node_name, node_pods) in enumerate(pods_by_node.items()):
+                total_cpu_millicores = sum(p['cpu_usage_millicores'] for p in node_pods if p['cpu_usage_millicores'])
+                total_memory_mb = sum(p['memory_usage_mb'] for p in node_pods)
+
+                stateful_pods = [p for p in node_pods if p['is_stateful']]
+                if not node_pods:
+                    node_classification = "EMPTY"
+                elif not stateful_pods:
+                    node_classification = "STATELESS"
+                elif len(stateful_pods) == len(node_pods):
+                    node_classification = "STATEFUL"
+                else:
+                    node_classification = "MIXED"
+                
+                node_cpu_capacity_cores = 4
+                node_memory_capacity_gb = 16
+
+                node_cpu_util_pct = ((total_cpu_millicores / (node_cpu_capacity_cores * 1000)) * 100) if total_cpu_millicores else 0
+                node_mem_util_pct = ((total_memory_mb / (node_memory_capacity_gb * 1024)) * 100) if total_memory_mb else 0
+
+                nodes_detailed.append({
+                    "node_name": node_name,
+                    "instance_type": "Unknown",
+                    "lifecycle": "unknown",
+                    "availability_zone": "unknown",
+                    "status": "running",
+                    "classification": node_classification,
+                    "cpu_utilization_pct": round(node_cpu_util_pct, 2),
+                    "memory_utilization_pct": round(node_mem_util_pct, 2),
+                    "cpu_capacity_cores": node_cpu_capacity_cores,
+                    "memory_capacity_gb": node_memory_capacity_gb,
+                    "total_cpu_usage_millicores": total_cpu_millicores,
+                    "total_memory_usage_mb": round(total_memory_mb, 2),
+                    "pod_count": len(node_pods),
+                    "stateful_pod_count": len(stateful_pods),
+                    "pods": node_pods
+                })
+
+        if not nodes_detailed:
+            return {
+                "cluster_id": cluster_id,
+                "cluster_name": cluster.name,
+                "total_nodes": 0,
+                "nodes": [],
+                "timestamp": datetime.utcnow().isoformat(),
+                "warning": "No node data available. Please ensure the agent is installed and running on your cluster."
+            }
+
+        logger.info(
+            f"Nodes detailed for cluster {cluster_id}: {len(nodes_detailed)} nodes "
+            f"from pod_metrics ({'enriched with instances' if instances else 'pod_metrics_only'})"
+        )
+
+        return {
+            "cluster_id": cluster_id,
+            "cluster_name": cluster.name,
+            "total_nodes": len(nodes_detailed),
+            "nodes": nodes_detailed,
+            "timestamp": datetime.utcnow().isoformat(),
+            "data_source": "instances_primary" if instances else "pod_metrics_only"
+        }
+
+    def _get_workload_description(self, workload_type: str) -> str:
+        """Get human-readable description for workload type"""
+        descriptions = {
+            "STATELESS": "All workloads are stateless - safe for aggressive spot optimization",
+            "STATEFUL": "Cluster has stateful workloads (PVCs/StatefulSets) - use caution with spot instances",
+            "MIXED": "Cluster has both stateful and stateless workloads - selective optimization recommended",
+            "UNKNOWN": "Unable to determine workload type - no pod data available",
+            "SYSTEM_PROTECTED": "System/control plane nodes - protected from optimization"
+        }
+        return descriptions.get(workload_type, "Unknown workload type")
 
 
 def get_cluster_service(db: Session) -> ClusterService:

@@ -1,567 +1,780 @@
 """
-Decision Engine (CORE-DECIDE)
-Central decision-making and conflict resolution system
+Decision Engine v3 - Modular Policy Layer for Pool Selection
+=============================================================
 
-The Decision Engine is the brain of the Spot Optimizer platform. It receives
-optimization opportunities from various modules and resolves conflicts to
-generate a safe, coherent action plan.
+COMPLETE REWRITE - This file replaces the legacy conflict resolver architecture.
 
-Key Responsibilities:
-- Conflict detection and resolution
-- Policy enforcement
-- Risk assessment
-- Action prioritization
-- Safety validation
-- Approval workflow integration
+Responsibilities:
+1. Evaluate action plans (pool switches) against policy constraints
+2. Enforce cooldowns, diversity, workload classification, and risk ceilings
+3. Re-score pools using current expected value
+4. Apply delta threshold to prevent micro-switches
+5. Handle cascade fallback when no valid candidate exists
 
-Dependencies:
-- Cluster policies for constraints
-- ML Model Server for risk predictions
-- Global Risk Tracker for pool safety
+Architecture:
+- Step-based pipeline with early exits
+- Integrates with CooldownController, DiversityEnforcer, WorkloadInspector, BlacklistService
+- Uses compute_expected_value from backend.core.scoring for all EV calculations
+- Supports three optimization profiles: COST_FIRST, BALANCED, NO_DOWNTIME_FIRST
+
+Usage:
+    engine = DecisionEngine(redis, db)
+    result = engine.evaluate_action_plan(
+        cluster_id="prod-cluster",
+        current_pool={"instance_type": "m5.large", "az": "us-east-1a"},
+        candidate_pools=[...],
+        action_type="POOL_SWITCH"
+    )
+
+    if result["approved"]:
+        # Execute recommendation
+        action_executor.execute(result["recommendation"])
+    else:
+        # Log rejection reason
+        logger.info(f"Action blocked: {result['reason']}")
 """
 
-import logging
-from datetime import datetime
-from typing import Dict, Any, List, Optional, Tuple
-from enum import Enum
-from decimal import Decimal
-
+import json
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional, Tuple
+from redis import Redis
 from sqlalchemy.orm import Session
 
-from app.database.models import (
-    Cluster,
-    ClusterPolicy,
-    OptimizationJob,
-    ActionLog
-)
-from app.modules.ml_model_server import get_ml_model_server
-from app.modules.risk_tracker import get_risk_tracker
-from app.core.redis_client import get_redis_client
-
-logger = logging.getLogger(__name__)
+from backend.core.logger import logger
+from backend.core.scoring import compute_expected_value
+from backend.core.ev_model import evaluate_candidate_ev, get_dynamic_capacity_failure_probability
+from backend.services.cooldown_controller import CooldownController
+from backend.services.diversity_enforcer import DiversityEnforcer
+from backend.services.workload_inspector import WorkloadInspector, NodeStatus
+from backend.services.blacklist_service import BlacklistService
 
 
-class ActionType(Enum):
-    """Types of optimization actions"""
-    SPOT_REPLACEMENT = "spot_replacement"
-    RIGHT_SIZE = "right_size"
-    CONSOLIDATE = "consolidate"
-    HIBERNATE = "hibernate"
-    SCALE_DOWN = "scale_down"
-    SCALE_UP = "scale_up"
+# ============================================================================
+# OPTIMIZATION PROFILES
+# ============================================================================
+
+OPTIMIZATION_PROFILES = {
+    "COST_FIRST": {
+        "risk_ceiling": 0.25,              # Accept up to 25% risk
+        "delta_threshold": 0.03,           # 3% EV improvement required
+        "max_family_ratio": 0.4,           # Max 40% in single family
+        "max_az_ratio": 0.5,               # Max 50% in single AZ
+        "capacity_freshness_min": 80,      # Capacity data must be <80 min old
+        "staleness_penalty": 0.95,         # 5% penalty for stale data
+        "volatility_ceiling_adjustment": -0.05  # Lower ceiling by 5% in volatile markets
+    },
+    "BALANCED": {
+        "risk_ceiling": 0.20,              # Accept up to 20% risk
+        "delta_threshold": 0.05,           # 5% EV improvement required
+        "max_family_ratio": 0.4,
+        "max_az_ratio": 0.5,
+        "capacity_freshness_min": 80,
+        "staleness_penalty": 0.95,
+        "volatility_ceiling_adjustment": -0.05
+    },
+    "NO_DOWNTIME_FIRST": {
+        "risk_ceiling": 0.10,              # Accept up to 10% risk
+        "delta_threshold": 0.08,           # 8% EV improvement required
+        "max_family_ratio": 0.3,           # Max 30% in single family
+        "max_az_ratio": 0.4,               # Max 40% in single AZ
+        "capacity_freshness_min": 80,
+        "staleness_penalty": 0.95,
+        "volatility_ceiling_adjustment": -0.05
+    }
+}
+
+DEFAULT_PROFILE = "BALANCED"
+
+# ============================================================================
+# MODEL VERSION CONSTANTS
+# ============================================================================
+
+CURRENT_MODEL_VERSION = "6"  # Must match regressor_6.onnx
+ITN_BYPASS_ENABLED = True    # Allow ITN (interruption termination notice) cascade
 
 
-class ActionPriority(Enum):
-    """Action priority levels"""
-    CRITICAL = 1  # Must execute immediately
-    HIGH = 2      # Should execute soon
-    MEDIUM = 3    # Can wait
-    LOW = 4       # Nice to have
-
-
-class ConflictType(Enum):
-    """Types of action conflicts"""
-    SAME_RESOURCE = "same_resource"  # Two actions target same resource
-    POLICY_VIOLATION = "policy_violation"  # Action violates policy
-    DEPENDENCY = "dependency"  # Action depends on another
-    RISK_TOO_HIGH = "risk_too_high"  # Risk exceeds threshold
-
+# ============================================================================
+# DECISION ENGINE CLASS
+# ============================================================================
 
 class DecisionEngine:
     """
-    Central decision-making and conflict resolution engine
+    Policy-based decision engine for spot pool optimization.
+
+    Evaluates action plans through a 15-step pipeline:
+    1. Check cluster cooldown
+    2. Check pool cooldown
+    2b. Fetch node classification
+    2c. Filter STATELESS_ELIGIBLE nodes
+    3. Validate model version
+    4. Load optimization mode
+    5. Load global rankings
+    6. Apply risk ceiling
+    7. Apply capacity freshness validation
+    8. Apply volatility guard
+    9. Re-score all pools
+    10. Score current pool
+    11. Apply template + Karpenter filters
+    12. Apply diversity check
+    13. Apply delta threshold
+    14. Select best candidate
+    15. Check cascade fallback
     """
 
-    def __init__(self, db: Session, redis_client=None):
-        """
-        Initialize Decision Engine
-
-        Args:
-            db: Database session
-            redis_client: Optional Redis client
-        """
+    def __init__(self, redis: Redis, db: Session):
+        self.redis = redis
         self.db = db
-        self.redis_client = redis_client or get_redis_client()
-        self.ml_model_server = get_ml_model_server(db, self.redis_client)
-        self.risk_tracker = get_risk_tracker(db, self.redis_client)
+
+        # Initialize sub-services
+        self.cooldown = CooldownController(redis)
+        self.diversity = DiversityEnforcer(redis)
+        self.workload = WorkloadInspector(redis)
+        self.blacklist = BlacklistService(redis)
 
     def evaluate_action_plan(
         self,
         cluster_id: str,
-        proposed_actions: List[Dict[str, Any]],
-        job_id: Optional[str] = None
-    ) -> Dict[str, Any]:
+        current_pool: Dict,
+        candidate_pools: List[Dict],
+        action_type: str = "POOL_SWITCH",
+        optimization_mode: Optional[str] = None,
+        template_id: Optional[str] = None,
+        karpenter_filters: Optional[Dict] = None,
+        cluster_node_distribution: Optional[Dict] = None,
+        total_nodes: int = 0,
+        is_emergency: bool = False
+    ) -> Dict:
         """
-        Evaluate proposed action plan and resolve conflicts
-
-        This is the main entry point for the Decision Engine.
+        Evaluate an action plan (pool switch) against policy constraints.
 
         Args:
-            cluster_id: UUID of cluster
-            proposed_actions: List of proposed optimization actions
-            job_id: Optional optimization job ID
+            cluster_id: Cluster identifier
+            current_pool: Current pool dict with keys: instance_type, az, predicted_savings, risk_probability
+            candidate_pools: List of candidate pool dicts
+            action_type: Type of action (POOL_SWITCH, SCALE_OUT, etc.)
+            optimization_mode: Override optimization mode (COST_FIRST, BALANCED, NO_DOWNTIME_FIRST)
+            template_id: Node template ID for filtering
+            karpenter_filters: Karpenter constraints
+            cluster_node_distribution: Current node distribution for diversity checks
+            total_nodes: Current total node count
+            is_emergency: Emergency override (e.g., spot termination notice)
 
         Returns:
-            Dict with approved actions and metadata
+            {
+                "approved": bool,
+                "reason": str,
+                "recommendation": Dict or None,
+                "current_pool_ev": float,
+                "best_candidate_ev": float,
+                "delta": float,
+                "step_completed": str
+            }
         """
-        logger.info(
-            f"[CORE-DECIDE] Evaluating {len(proposed_actions)} proposed actions "
-            f"for cluster {cluster_id}"
-        )
 
-        # Get cluster and policy
-        cluster = self.db.query(Cluster).filter(Cluster.id == cluster_id).first()
-        if not cluster:
-            raise ValueError(f"Cluster {cluster_id} not found")
+        start_time = datetime.utcnow()
 
-        policy = self.db.query(ClusterPolicy).filter(
-            ClusterPolicy.cluster_id == cluster_id
-        ).first()
+        # ====================================================================
+        # STEP 1: Check cluster cooldown
+        # ====================================================================
 
-        # Step 1: Validate each action against policy
-        validated_actions = []
-        rejected_actions = []
+        if not is_emergency:
+            can_switch, remaining_seconds = self.cooldown.can_switch(cluster_id)
 
-        for action in proposed_actions:
-            is_valid, reason = self._validate_action(action, cluster, policy)
+            if not can_switch:
+                self._emit_metric("decision.rejected.cooldown", cluster_id)
+                return {
+                    "approved": False,
+                    "reason": f"Cluster cooldown active ({remaining_seconds}s remaining)",
+                    "recommendation": None,
+                    "current_pool_ev": 0.0,
+                    "best_candidate_ev": 0.0,
+                    "delta": 0.0,
+                    "step_completed": "1_cluster_cooldown"
+                }
 
-            if is_valid:
-                validated_actions.append(action)
-            else:
-                logger.warning(f"[CORE-DECIDE] Rejected action: {reason}")
-                action["rejection_reason"] = reason
-                rejected_actions.append(action)
+        # ====================================================================
+        # STEP 1b: Check pricing freshness (FIX 5)
+        # ====================================================================
 
-        logger.info(
-            f"[CORE-DECIDE] Validated: {len(validated_actions)} actions, "
-            f"Rejected: {len(rejected_actions)}"
-        )
+        if not is_emergency:
+            region = current_pool.get("region", "us-east-1")
+            pricing_key = f"pricing:last_updated:{region}"
+            try:
+                last_updated_raw = self.redis.get(pricing_key)
+                if last_updated_raw:
+                    last_updated = datetime.fromisoformat(last_updated_raw.decode('utf-8'))
+                    staleness_minutes = (datetime.utcnow() - last_updated).total_seconds() / 60
 
-        # Step 2: Detect conflicts
-        conflicts = self._detect_conflicts(validated_actions, cluster, policy)
-
-        logger.info(f"[CORE-DECIDE] Detected {len(conflicts)} conflicts")
-
-        # Step 3: Resolve conflicts
-        resolved_actions = self._resolve_conflicts(
-            validated_actions, conflicts, cluster, policy
-        )
-
-        logger.info(f"[CORE-DECIDE] Resolved to {len(resolved_actions)} actions")
-
-        # Step 4: Prioritize actions
-        prioritized_actions = self._prioritize_actions(resolved_actions, cluster, policy)
-
-        # Step 5: Check approval requirements
-        requires_approval = self._check_approval_required(prioritized_actions, policy)
-
-        # Step 6: Generate execution plan
-        execution_plan = self._generate_execution_plan(
-            prioritized_actions, cluster, policy
-        )
-
-        result = {
-            "cluster_id": cluster_id,
-            "job_id": job_id,
-            "timestamp": datetime.utcnow().isoformat(),
-            "summary": {
-                "proposed": len(proposed_actions),
-                "validated": len(validated_actions),
-                "rejected": len(rejected_actions),
-                "conflicts_detected": len(conflicts),
-                "approved": len(prioritized_actions)
-            },
-            "requires_approval": requires_approval,
-            "approved_actions": prioritized_actions,
-            "rejected_actions": rejected_actions,
-            "execution_plan": execution_plan
-        }
-
-        return result
-
-    def _validate_action(
-        self,
-        action: Dict[str, Any],
-        cluster: Cluster,
-        policy: Optional[ClusterPolicy]
-    ) -> Tuple[bool, Optional[str]]:
-        """
-        Validate single action against cluster policy
-
-        Args:
-            action: Proposed action
-            cluster: Cluster record
-            policy: Cluster policy (may be None)
-
-        Returns:
-            Tuple of (is_valid, rejection_reason)
-        """
-        action_type = action.get("type", "")
-
-        # If no policy, allow all actions
-        if not policy:
-            return True, None
-
-        # Check if action type is enabled
-        if action_type == ActionType.SPOT_REPLACEMENT.value:
-            if not policy.allow_spot_replacement:
-                return False, "Spot replacement disabled by policy"
-
-        elif action_type == ActionType.RIGHT_SIZE.value:
-            if not policy.allow_rightsizing:
-                return False, "Right-sizing disabled by policy"
-
-        elif action_type == ActionType.CONSOLIDATE.value:
-            if not policy.allow_consolidation:
-                return False, "Consolidation disabled by policy"
-
-        elif action_type == ActionType.HIBERNATE.value:
-            if not policy.allow_hibernation:
-                return False, "Hibernation disabled by policy"
-
-        # Check risk threshold
-        action_risk = action.get("risk_score", 0.0)
-        if action_risk > policy.max_risk_threshold:
-            return False, f"Risk score {action_risk} exceeds threshold {policy.max_risk_threshold}"
-
-        # Check min nodes constraint
-        if action_type in [ActionType.CONSOLIDATE.value, ActionType.SCALE_DOWN.value]:
-            projected_nodes = action.get("projected_node_count", 0)
-            if projected_nodes < policy.min_nodes:
-                return False, f"Would violate min nodes constraint ({policy.min_nodes})"
-
-        # Check max nodes constraint
-        if action_type == ActionType.SCALE_UP.value:
-            projected_nodes = action.get("projected_node_count", 0)
-            if policy.max_nodes and projected_nodes > policy.max_nodes:
-                return False, f"Would exceed max nodes constraint ({policy.max_nodes})"
-
-        return True, None
-
-    def _detect_conflicts(
-        self,
-        actions: List[Dict[str, Any]],
-        cluster: Cluster,
-        policy: Optional[ClusterPolicy]
-    ) -> List[Dict[str, Any]]:
-        """
-        Detect conflicts between actions
-
-        Args:
-            actions: List of validated actions
-            cluster: Cluster record
-            policy: Cluster policy
-
-        Returns:
-            List of detected conflicts
-        """
-        conflicts = []
-
-        # Check for same-resource conflicts
-        for i, action1 in enumerate(actions):
-            for j, action2 in enumerate(actions):
-                if i >= j:
-                    continue
-
-                # Check if actions target same resource
-                if self._targets_same_resource(action1, action2):
-                    conflicts.append({
-                        "type": ConflictType.SAME_RESOURCE.value,
-                        "action1_index": i,
-                        "action2_index": j,
-                        "resource": action1.get("target_resource")
-                    })
-
-        # Check for dependency conflicts
-        for i, action in enumerate(actions):
-            dependencies = action.get("depends_on", [])
-            for dep in dependencies:
-                # Check if dependency action exists
-                dep_exists = any(
-                    a.get("id") == dep for a in actions
-                )
-                if not dep_exists:
-                    conflicts.append({
-                        "type": ConflictType.DEPENDENCY.value,
-                        "action_index": i,
-                        "missing_dependency": dep
-                    })
-
-        return conflicts
-
-    def _targets_same_resource(
-        self,
-        action1: Dict[str, Any],
-        action2: Dict[str, Any]
-    ) -> bool:
-        """
-        Check if two actions target the same resource
-
-        Args:
-            action1: First action
-            action2: Second action
-
-        Returns:
-            True if same resource targeted
-        """
-        resource1 = action1.get("target_resource")
-        resource2 = action2.get("target_resource")
-
-        if not resource1 or not resource2:
-            return False
-
-        # Same instance, node, or workload
-        return resource1 == resource2
-
-    def _resolve_conflicts(
-        self,
-        actions: List[Dict[str, Any]],
-        conflicts: List[Dict[str, Any]],
-        cluster: Cluster,
-        policy: Optional[ClusterPolicy]
-    ) -> List[Dict[str, Any]]:
-        """
-        Resolve conflicts by choosing best action
-
-        Args:
-            actions: List of actions
-            conflicts: List of conflicts
-            cluster: Cluster record
-            policy: Cluster policy
-
-        Returns:
-            List of conflict-resolved actions
-        """
-        if not conflicts:
-            return actions
-
-        # Track actions to remove
-        removed_indices = set()
-
-        for conflict in conflicts:
-            conflict_type = conflict.get("type")
-
-            if conflict_type == ConflictType.SAME_RESOURCE.value:
-                # Choose action with higher priority
-                idx1 = conflict["action1_index"]
-                idx2 = conflict["action2_index"]
-
-                action1 = actions[idx1]
-                action2 = actions[idx2]
-
-                # Compare estimated savings
-                savings1 = action1.get("estimated_savings", 0)
-                savings2 = action2.get("estimated_savings", 0)
-
-                # Remove action with lower savings
-                if savings1 >= savings2:
-                    removed_indices.add(idx2)
-                    logger.info(
-                        f"[CORE-DECIDE] Conflict resolved: Chose action {idx1} "
-                        f"over {idx2} (higher savings)"
-                    )
+                    if staleness_minutes > 15:
+                        self._emit_metric("decision.rejected.pricing_stale", cluster_id)
+                        return {
+                            "approved": False,
+                            "reason": f"Pricing data stale ({staleness_minutes:.0f} min old, max 15 min)",
+                            "recommendation": None,
+                            "current_pool_ev": 0.0,
+                            "best_candidate_ev": 0.0,
+                            "delta": 0.0,
+                            "step_completed": "1b_pricing_freshness"
+                        }
                 else:
-                    removed_indices.add(idx1)
-                    logger.info(
-                        f"[CORE-DECIDE] Conflict resolved: Chose action {idx2} "
-                        f"over {idx1} (higher savings)"
-                    )
+                    logger.warning(f"No pricing timestamp found for region {region}")
+                    # Fail-open: allow execution if no timestamp exists
+            except Exception as e:
+                logger.error(f"Error checking pricing freshness: {e}")
+                # Fail-open: allow execution if check fails
 
-            elif conflict_type == ConflictType.DEPENDENCY.value:
-                # Remove action with missing dependency
-                idx = conflict["action_index"]
-                removed_indices.add(idx)
-                logger.info(
-                    f"[CORE-DECIDE] Conflict resolved: Removed action {idx} "
-                    f"(missing dependency)"
-                )
+        # ====================================================================
+        # STEP 2: Check pool cooldown (remove cooled pools from candidates)
+        # ====================================================================
 
-        # Filter out removed actions
-        resolved = [
-            action for i, action in enumerate(actions)
-            if i not in removed_indices
+        valid_candidates = []
+        for pool in candidate_pools:
+            pool_key = f"{pool['instance_type']}:{pool['az']}"
+            can_reuse, remaining = self.cooldown.can_reuse_pool(pool_key)
+
+            if can_reuse or (is_emergency and ITN_BYPASS_ENABLED):
+                valid_candidates.append(pool)
+            else:
+                logger.debug(f"Pool {pool_key} in cooldown, skipping ({remaining}s remaining)")
+
+        if not valid_candidates:
+            self._emit_metric("decision.rejected.all_pools_cooled", cluster_id)
+            return {
+                "approved": False,
+                "reason": "All candidate pools in cooldown",
+                "recommendation": None,
+                "current_pool_ev": 0.0,
+                "best_candidate_ev": 0.0,
+                "delta": 0.0,
+                "step_completed": "2_pool_cooldown"
+            }
+
+        # ====================================================================
+        # STEP 2b: Fetch node classification
+        # ====================================================================
+
+        classification = self.workload.get_cached_classification(cluster_id)
+
+        if not classification:
+            logger.warning(f"No node classification found for cluster {cluster_id}")
+            self._emit_metric("decision.rejected.no_classification", cluster_id)
+            return {
+                "approved": False,
+                "reason": "Node classification unavailable (WorkloadInspector scan required)",
+                "recommendation": None,
+                "current_pool_ev": 0.0,
+                "best_candidate_ev": 0.0,
+                "delta": 0.0,
+                "step_completed": "2b_node_classification"
+            }
+
+        # ====================================================================
+        # STEP 2c: Filter STATELESS_ELIGIBLE nodes
+        # ====================================================================
+
+        stateless_nodes = [
+            node_name for node_name, status in classification.items()
+            if status == NodeStatus.STATELESS_ELIGIBLE
         ]
 
-        return resolved
+        if not stateless_nodes:
+            self._emit_metric("decision.rejected.no_stateless_nodes", cluster_id)
+            return {
+                "approved": False,
+                "reason": "No STATELESS_ELIGIBLE nodes found (all nodes protected)",
+                "recommendation": None,
+                "current_pool_ev": 0.0,
+                "best_candidate_ev": 0.0,
+                "delta": 0.0,
+                "step_completed": "2c_stateless_filter"
+            }
 
-    def _prioritize_actions(
-        self,
-        actions: List[Dict[str, Any]],
-        cluster: Cluster,
-        policy: Optional[ClusterPolicy]
-    ) -> List[Dict[str, Any]]:
-        """
-        Prioritize actions by urgency and impact
+        logger.info(
+            f"Cluster {cluster_id}: {len(stateless_nodes)}/{len(classification)} nodes eligible"
+        )
 
-        Args:
-            actions: List of actions
-            cluster: Cluster record
-            policy: Cluster policy
+        # ====================================================================
+        # STEP 3: Validate model version
+        # ====================================================================
 
-        Returns:
-            List of prioritized actions (sorted)
-        """
-        # Assign priority to each action
-        for action in actions:
-            # Priority based on:
-            # 1. Action type urgency
-            # 2. Estimated savings
-            # 3. Risk level
+        for pool in valid_candidates:
+            model_version = pool.get("model_version", "unknown")
 
-            action_type = action.get("type")
-            savings = action.get("estimated_savings", 0)
-            risk = action.get("risk_score", 0.5)
+            if model_version != CURRENT_MODEL_VERSION:
+                if not ITN_BYPASS_ENABLED:
+                    logger.warning(
+                        f"Pool {pool['instance_type']}:{pool['az']} uses model v{model_version}, "
+                        f"expected v{CURRENT_MODEL_VERSION}"
+                    )
+                    self._emit_metric("decision.model_version_mismatch", cluster_id)
 
-            if action_type == ActionType.SPOT_REPLACEMENT.value:
-                # High savings, medium urgency
-                base_priority = ActionPriority.HIGH.value
-            elif action_type == ActionType.CONSOLIDATE.value:
-                # Medium savings, low urgency
-                base_priority = ActionPriority.MEDIUM.value
-            elif action_type == ActionType.RIGHT_SIZE.value:
-                # Varied savings, medium urgency
-                base_priority = ActionPriority.MEDIUM.value
-            else:
-                base_priority = ActionPriority.LOW.value
+        # ====================================================================
+        # STEP 4: Load optimization mode
+        # ====================================================================
 
-            # Adjust by savings (higher savings = higher priority)
-            if savings > 100:
-                priority = base_priority - 1
-            elif savings < 20:
-                priority = base_priority + 1
-            else:
-                priority = base_priority
+        if not optimization_mode:
+            # Fetch from cluster settings
+            optimization_mode = self._get_cluster_optimization_mode(cluster_id)
 
-            # Adjust by risk (higher risk = lower priority)
-            if risk > 0.7:
-                priority += 1
+        profile = OPTIMIZATION_PROFILES.get(optimization_mode, OPTIMIZATION_PROFILES[DEFAULT_PROFILE])
 
-            # Clamp to valid range
-            priority = max(1, min(4, priority))
+        logger.info(f"Using optimization profile: {optimization_mode}")
 
-            action["priority"] = priority
-            action["priority_label"] = ActionPriority(priority).name
+        # ====================================================================
+        # STEP 5: Load global rankings from Redis
+        # ====================================================================
 
-        # Sort by priority (ascending = higher priority first)
-        sorted_actions = sorted(actions, key=lambda a: a["priority"])
+        region = current_pool.get("region", "us-east-1")  # Default region
+        global_rankings = self._load_global_rankings(region)
 
-        return sorted_actions
+        if not global_rankings:
+            logger.warning(f"No global rankings found for region {region}")
+            self._emit_metric("decision.rejected.no_rankings", cluster_id)
+            return {
+                "approved": False,
+                "reason": "Global rankings unavailable (Intelligence Layer required)",
+                "recommendation": None,
+                "current_pool_ev": 0.0,
+                "best_candidate_ev": 0.0,
+                "delta": 0.0,
+                "step_completed": "5_global_rankings"
+            }
 
-    def _check_approval_required(
-        self,
-        actions: List[Dict[str, Any]],
-        policy: Optional[ClusterPolicy]
-    ) -> bool:
-        """
-        Check if manual approval is required
+        # ====================================================================
+        # STEP 6: Apply THREE-LAYER RISK CEILING (Task 5.1)
+        # Layer 1: Profile ceiling (from optimization mode)
+        # Layer 2: Volatility ceiling adjustment
+        # Layer 3: Trust-phase override (progressive trust)
+        # ====================================================================
 
-        Args:
-            actions: List of actions
-            policy: Cluster policy
+        # Layer 1: Profile ceiling
+        risk_ceiling = profile["risk_ceiling"]
 
-        Returns:
-            True if approval required
-        """
-        if not policy:
-            return False
+        # Layer 2: Volatility ceiling adjustment
+        is_volatile = self._check_volatility_regime(region)
 
-        # Check policy requirement
-        if policy.require_approval:
-            return True
+        if is_volatile:
+            adjustment = profile["volatility_ceiling_adjustment"]
+            risk_ceiling += adjustment
+            logger.warning(
+                f"Volatile market detected, adjusting risk ceiling to {risk_ceiling:.2f}"
+            )
 
-        # Check if any high-risk action
-        for action in actions:
-            if action.get("risk_score", 0) > 0.8:
-                return True
+        # Layer 3: Trust-phase override (use most restrictive)
+        try:
+            from backend.services.optimizer_coordinator import OptimizerCoordinator
+            coordinator = OptimizerCoordinator(self.db, self.redis)
+            trust = coordinator.get_cluster_trust_phase(cluster_id)
+            trust_ceiling = trust.get("risk_ceiling_override")
+            if trust_ceiling is not None:
+                risk_ceiling = min(risk_ceiling, trust_ceiling)
+                logger.info(
+                    f"Trust phase {trust['phase']} ceiling: {trust_ceiling:.2f}, "
+                    f"effective ceiling: {risk_ceiling:.2f}"
+                )
+        except Exception as e:
+            logger.warning(f"Trust-phase ceiling check failed: {e}")
 
-            # Check for destructive actions
-            if action.get("type") in [
-                ActionType.CONSOLIDATE.value,
-                ActionType.HIBERNATE.value
-            ]:
-                return True
+        valid_candidates = [
+            pool for pool in valid_candidates
+            if pool.get("risk_probability", 1.0) <= risk_ceiling
+        ]
 
-        return False
+        if not valid_candidates:
+            self._emit_metric("decision.rejected.risk_ceiling", cluster_id)
+            return {
+                "approved": False,
+                "reason": f"All candidates exceed risk ceiling ({risk_ceiling:.2%})",
+                "recommendation": None,
+                "current_pool_ev": 0.0,
+                "best_candidate_ev": 0.0,
+                "delta": 0.0,
+                "step_completed": "6_risk_ceiling"
+            }
 
-    def _generate_execution_plan(
-        self,
-        actions: List[Dict[str, Any]],
-        cluster: Cluster,
-        policy: Optional[ClusterPolicy]
-    ) -> Dict[str, Any]:
-        """
-        Generate phased execution plan
+        # ====================================================================
+        # STEP 7: Apply capacity freshness validation
+        # ====================================================================
 
-        Args:
-            actions: List of prioritized actions
-            cluster: Cluster record
-            policy: Cluster policy
+        freshness_threshold_min = profile["capacity_freshness_min"]
+        staleness_penalty = profile["staleness_penalty"]
 
-        Returns:
-            Dict with execution plan
-        """
-        # Group actions into phases
-        phases = []
+        for pool in valid_candidates:
+            capacity_age_min = pool.get("capacity_age_minutes", 0)
 
-        # Phase 1: Critical actions (execute immediately)
-        critical = [a for a in actions if a["priority"] == ActionPriority.CRITICAL.value]
-        if critical:
-            phases.append({
-                "phase": 1,
-                "name": "Critical Actions",
-                "actions": critical,
-                "delay_seconds": 0
-            })
+            if capacity_age_min > freshness_threshold_min:
+                # Apply staleness penalty to predicted_savings
+                original_savings = pool.get("predicted_savings", 0.0)
+                pool["predicted_savings"] = original_savings * staleness_penalty
+                pool["staleness_penalty_applied"] = True
 
-        # Phase 2: High priority actions
-        high = [a for a in actions if a["priority"] == ActionPriority.HIGH.value]
-        if high:
-            phases.append({
-                "phase": 2,
-                "name": "High Priority Actions",
-                "actions": high,
-                "delay_seconds": 60  # 1 minute after Phase 1
-            })
+                logger.debug(
+                    f"Stale capacity data for {pool['instance_type']}:{pool['az']} "
+                    f"({capacity_age_min} min old), applying {staleness_penalty:.2%} penalty"
+                )
 
-        # Phase 3: Medium priority actions
-        medium = [a for a in actions if a["priority"] == ActionPriority.MEDIUM.value]
-        if medium:
-            phases.append({
-                "phase": 3,
-                "name": "Medium Priority Actions",
-                "actions": medium,
-                "delay_seconds": 300  # 5 minutes after Phase 1
-            })
+        # ====================================================================
+        # STEP 8: Apply volatility guard (already applied in Step 6)
+        # ====================================================================
 
-        # Phase 4: Low priority actions
-        low = [a for a in actions if a["priority"] == ActionPriority.LOW.value]
-        if low:
-            phases.append({
-                "phase": 4,
-                "name": "Low Priority Actions",
-                "actions": low,
-                "delay_seconds": 600  # 10 minutes after Phase 1
-            })
+        # Risk ceiling already adjusted in Step 6
+        pass
+
+        # ====================================================================
+        # STEP 9: Re-score all pools using evaluate_candidate_ev() (Task 3.2)
+        # Replaces simple savings × (1-risk) with full economic EV model
+        # ====================================================================
+
+        ev_eligible_candidates = []
+        for pool in valid_candidates:
+            predicted_savings = pool.get("predicted_savings", 0.0)
+            risk_probability = pool.get("risk_probability", 0.0)
+            normalized_volatility = pool.get("normalized_volatility", 0.0)
+            pool_id = f"{pool.get('instance_type', '')}:{pool.get('az', '')}"
+
+            try:
+                # Use dynamic capacity failure probability from Redis (Task 3.1)
+                cap_fail_prob = get_dynamic_capacity_failure_probability(
+                    self.redis, pool_id, region
+                )
+
+                ev_breakdown = evaluate_candidate_ev(
+                    savings=predicted_savings,
+                    final_risk=risk_probability,
+                    normalized_volatility=normalized_volatility,
+                    capacity_failure_probability=cap_fail_prob,
+                    downtime_cost_per_hour=100.0,
+                    risk_horizon_hours=2.0,
+                    recovery_time_hours=0.5,
+                )
+
+                if not ev_breakdown["is_eligible"]:
+                    # Task 7.1: rejection counter will be added later
+                    logger.debug(f"Pool {pool_id} rejected by EV model: ev={ev_breakdown['ev']:.4f}")
+                    continue
+
+                pool["expected_value"] = ev_breakdown["ev"]
+                pool["ev_breakdown"] = ev_breakdown
+                ev_eligible_candidates.append(pool)
+            except Exception as e:
+                logger.error(f"Error computing EV for pool {pool}: {e}")
+                pool["expected_value"] = 0.0
+
+        valid_candidates = ev_eligible_candidates
+
+        # ====================================================================
+        # STEP 10: Score current pool
+        # ====================================================================
+
+        current_savings = current_pool.get("predicted_savings", 0.0)
+        current_risk = current_pool.get("risk_probability", 0.0)
+
+        try:
+            current_pool_ev = compute_expected_value(
+                predicted_savings=current_savings,
+                risk_probability=current_risk
+            )
+        except ValueError as e:
+            logger.error(f"Error computing EV for current pool: {e}")
+            current_pool_ev = 0.0
+
+        logger.info(f"Current pool EV: {current_pool_ev:.4f}")
+
+        # ====================================================================
+        # STEP 11: Apply template + Karpenter filters
+        # ====================================================================
+
+        if template_id:
+            valid_candidates = self._apply_template_filters(valid_candidates, template_id)
+
+        if karpenter_filters:
+            valid_candidates = self._apply_karpenter_filters(valid_candidates, karpenter_filters)
+
+        if not valid_candidates:
+            self._emit_metric("decision.rejected.template_filters", cluster_id)
+            return {
+                "approved": False,
+                "reason": "No candidates pass template/Karpenter filters",
+                "recommendation": None,
+                "current_pool_ev": current_pool_ev,
+                "best_candidate_ev": 0.0,
+                "delta": 0.0,
+                "step_completed": "11_template_filters"
+            }
+
+        # ====================================================================
+        # STEP 12: Apply diversity check
+        # ====================================================================
+
+        if cluster_node_distribution and not (is_emergency and ITN_BYPASS_ENABLED):
+            diversity_passed_candidates = []
+
+            for pool in valid_candidates:
+                passes, reason = self.diversity.check_candidate(
+                    candidate_pool=pool,
+                    cluster_node_distribution=cluster_node_distribution,
+                    total_nodes=total_nodes,
+                    max_family_ratio=profile["max_family_ratio"],
+                    max_az_ratio=profile["max_az_ratio"]
+                )
+
+                if passes:
+                    diversity_passed_candidates.append(pool)
+                else:
+                    logger.debug(f"Diversity check failed for {pool['instance_type']}: {reason}")
+
+            valid_candidates = diversity_passed_candidates
+
+        if not valid_candidates:
+            # Deadlock protection: hold current pool if safe
+            if current_pool_ev >= 0.5:  # Arbitrary safety threshold
+                logger.warning("No diversity-compliant candidates, holding current pool")
+                self._emit_metric("decision.deadlock_hold", cluster_id)
+                return {
+                    "approved": False,
+                    "reason": "No diversity-compliant candidates (holding safe current pool)",
+                    "recommendation": None,
+                    "current_pool_ev": current_pool_ev,
+                    "best_candidate_ev": 0.0,
+                    "delta": 0.0,
+                    "step_completed": "12_diversity_deadlock"
+                }
+
+            self._emit_metric("decision.rejected.diversity", cluster_id)
+            return {
+                "approved": False,
+                "reason": "No candidates pass diversity constraints",
+                "recommendation": None,
+                "current_pool_ev": current_pool_ev,
+                "best_candidate_ev": 0.0,
+                "delta": 0.0,
+                "step_completed": "12_diversity"
+            }
+
+        # ====================================================================
+        # STEP 13: Apply delta threshold
+        # ====================================================================
+
+        # Sort by EV descending
+        valid_candidates.sort(key=lambda p: p.get("expected_value", 0.0), reverse=True)
+
+        best_candidate = valid_candidates[0] if valid_candidates else None
+
+        if not best_candidate:
+            self._emit_metric("decision.rejected.no_candidates", cluster_id)
+            return {
+                "approved": False,
+                "reason": "No valid candidates after all filters",
+                "recommendation": None,
+                "current_pool_ev": current_pool_ev,
+                "best_candidate_ev": 0.0,
+                "delta": 0.0,
+                "step_completed": "13_no_candidates"
+            }
+
+        best_candidate_ev = best_candidate.get("expected_value", 0.0)
+        delta = best_candidate_ev - current_pool_ev
+        delta_threshold = profile["delta_threshold"]
+
+        logger.info(
+            f"Best candidate: {best_candidate['instance_type']}:{best_candidate['az']} "
+            f"(EV: {best_candidate_ev:.4f}, delta: {delta:.4f})"
+        )
+
+        if delta < delta_threshold:
+            self._emit_metric("decision.rejected.delta_threshold", cluster_id)
+            return {
+                "approved": False,
+                "reason": f"Delta {delta:.4f} below threshold {delta_threshold:.4f}",
+                "recommendation": None,
+                "current_pool_ev": current_pool_ev,
+                "best_candidate_ev": best_candidate_ev,
+                "delta": delta,
+                "step_completed": "13_delta_threshold"
+            }
+
+        # ====================================================================
+        # STEP 14: Select best candidate
+        # ====================================================================
+
+        self._emit_metric("decision.approved", cluster_id)
+
+        duration_ms = (datetime.utcnow() - start_time).total_seconds() * 1000
+
+        logger.info(
+            f"DECISION APPROVED: Switch to {best_candidate['instance_type']}:{best_candidate['az']} "
+            f"(EV improvement: {delta:.4f}, duration: {duration_ms:.0f}ms)"
+        )
 
         return {
-            "total_phases": len(phases),
-            "total_actions": len(actions),
-            "estimated_duration_seconds": max(
-                (p["delay_seconds"] for p in phases), default=0
-            ) + 60,
-            "phases": phases
+            "approved": True,
+            "reason": "Action approved",
+            "recommendation": {
+                "pool": best_candidate,
+                "action_type": action_type,
+                "current_pool": current_pool,
+                "ev_improvement": delta,
+                "optimization_mode": optimization_mode,
+                "timestamp": datetime.utcnow().isoformat()
+            },
+            "current_pool_ev": current_pool_ev,
+            "best_candidate_ev": best_candidate_ev,
+            "delta": delta,
+            "step_completed": "14_approved",
+            "duration_ms": duration_ms
         }
 
+    # ========================================================================
+    # HELPER METHODS
+    # ========================================================================
 
-def get_decision_engine(db: Session, redis_client=None) -> DecisionEngine:
-    """
-    Factory function to create Decision Engine instance
+    def _get_cluster_optimization_mode(self, cluster_id: str) -> str:
+        """Fetch optimization mode from cluster settings (DB or Redis cache)."""
+        try:
+            cache_key = f"spot:cluster_mode:{cluster_id}"
+            cached_mode = self.redis.get(cache_key)
 
-    Args:
-        db: Database session
-        redis_client: Optional Redis client
+            if cached_mode:
+                return cached_mode.decode('utf-8')
 
-    Returns:
-        DecisionEngine instance
-    """
-    return DecisionEngine(db, redis_client)
+            # Fallback: query database
+            # cluster = self.db.query(Cluster).filter(Cluster.id == cluster_id).first()
+            # if cluster and cluster.optimization_mode:
+            #     self.redis.setex(cache_key, 300, cluster.optimization_mode)
+            #     return cluster.optimization_mode
+
+            return DEFAULT_PROFILE
+
+        except Exception as e:
+            logger.error(f"Error fetching optimization mode: {e}")
+            return DEFAULT_PROFILE
+
+    def _load_global_rankings(self, region: str) -> Optional[Dict]:
+        """Load global rankings from Redis (Intelligence Layer output)."""
+        try:
+            cache_key = f"spot:global_rankings:{region}"
+            data = self.redis.get(cache_key)
+
+            if data:
+                return json.loads(data)
+
+            return None
+
+        except Exception as e:
+            logger.error(f"Error loading global rankings: {e}")
+            return None
+
+    def _check_volatility_regime(self, region: str) -> bool:
+        """Check if region is in volatile market regime."""
+        try:
+            cache_key = f"spot:volatility_regime:{region}"
+            is_volatile = self.redis.get(cache_key)
+
+            return is_volatile == b"true" if is_volatile else False
+
+        except Exception as e:
+            logger.error(f"Error checking volatility regime: {e}")
+            return False
+
+    def _apply_template_filters(self, pools: List[Dict], template_id: str) -> List[Dict]:
+        """Apply node template filters (instance family whitelist/blacklist)."""
+        try:
+            # Fetch template from DB or cache
+            cache_key = f"spot:template:{template_id}"
+            template_data = self.redis.get(cache_key)
+
+            if not template_data:
+                logger.warning(f"Template {template_id} not found, skipping filter")
+                return pools
+
+            template = json.loads(template_data)
+
+            whitelist = template.get("instance_families", [])
+            blacklist = template.get("blacklisted_pools", [])
+
+            filtered = []
+
+            for pool in pools:
+                instance_type = pool["instance_type"]
+                family = instance_type.split('.')[0]
+                pool_key = f"{instance_type}:{pool['az']}"
+
+                # Check blacklist
+                if pool_key in blacklist:
+                    logger.debug(f"Pool {pool_key} in template blacklist")
+                    continue
+
+                # Check whitelist
+                if whitelist and family not in whitelist:
+                    logger.debug(f"Pool {pool_key} family not in whitelist")
+                    continue
+
+                filtered.append(pool)
+
+            return filtered
+
+        except Exception as e:
+            logger.error(f"Error applying template filters: {e}")
+            return pools
+
+    def _apply_karpenter_filters(self, pools: List[Dict], filters: Dict) -> List[Dict]:
+        """Apply Karpenter constraints (architecture, capacity type, etc.)."""
+        try:
+            filtered = []
+
+            for pool in pools:
+                # Architecture filter
+                required_arch = filters.get("architecture")
+                if required_arch and pool.get("architecture") != required_arch:
+                    continue
+
+                # Capacity type filter
+                required_capacity = filters.get("capacity_type")
+                if required_capacity and pool.get("capacity_type") != required_capacity:
+                    continue
+
+                filtered.append(pool)
+
+            return filtered
+
+        except Exception as e:
+            logger.error(f"Error applying Karpenter filters: {e}")
+            return pools
+
+    def _emit_metric(self, metric_name: str, cluster_id: str):
+        """Emit observability metric to Redis or monitoring system."""
+        try:
+            metric_key = f"spot:metrics:{metric_name}"
+            self.redis.incr(metric_key)
+            self.redis.expire(metric_key, 86400)  # 24-hour TTL
+
+            # ── Task 7.1: Per-cluster rejection counters ──────────
+            if "rejected" in metric_name:
+                # Extract rejection category from metric name
+                # e.g., "decision.rejected.cooldown" -> "cooldown"
+                parts = metric_name.split(".")
+                category = parts[-1] if len(parts) > 2 else "unknown"
+
+                counter_key = f"spot:rejection_counters:{cluster_id}"
+                self.redis.hincrby(counter_key, category, 1)
+                self.redis.hincrby(counter_key, "total", 1)
+                self.redis.expire(counter_key, 86400)  # 24-hour TTL
+
+            # Also log to structured logger
+            logger.debug(f"Metric emitted: {metric_name} (cluster: {cluster_id})")
+
+        except Exception as e:
+            logger.error(f"Error emitting metric: {e}")
+
+    def get_rejection_counters(self, cluster_id: str) -> dict:
+        """
+        Task 7.1: Get rejection counters for a cluster.
+        Returns breakdown of why decisions were rejected.
+        """
+        try:
+            counter_key = f"spot:rejection_counters:{cluster_id}"
+            raw = self.redis.hgetall(counter_key)
+            return {k.decode(): int(v) for k, v in raw.items()} if raw else {}
+        except Exception as e:
+            logger.error(f"Error getting rejection counters: {e}")
+            return {}

@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useDashboard } from '../../hooks/useDashboard';
-import { auditAPI, clusterAPI, accountsAPI } from '../../services/api';
+import { auditAPI, clusterAPI, accountsAPI, karpenterAPI, atharvaAiAPI, hibernationAPI, hygieneAPI, approvalsAPI, teamAPI, userAPI } from '../../services/api';
 import api from '../../services/api';
 import { useAuthStore, useHeaderStore } from '../../store/useStore';
 import toast from 'react-hot-toast';
@@ -235,6 +235,46 @@ export default function Dashboard() {
   const [rdsHealth, setRdsHealth] = useState({ status: "no_data", instances: 0, savings: 0 });
   const [transferHealth, setTransferHealth] = useState({ status: "no_data", cost: 0 });
 
+  // Feature Card States (Tasks 8.5, 8.6, 9.7)
+  const [rightsizingData, setRightsizingData] = useState({
+    count: 0,
+    topSavings: 0,
+    clusterCount: 0,
+    lastRecommendation: null
+  });
+  const [atharvaAioData, setAtharvaAioData] = useState({
+    poolsAnalyzed: 0,
+    topScore: 0,
+    regions: 0,
+    lastRun: null,
+    status: 'fetching' // 'fetching', 'healthy', 'degraded', 'error'
+  });
+  const [hibernationData, setHibernationData] = useState({
+    hoursSlept: 0,
+    totalSavings: 0,
+    activeSchedules: 0,
+    clustersOnSchedule: 0,
+    isHibernatingNow: false
+  });
+
+  // Governance & Hygiene Data States
+  const [hygieneData, setHygieneData] = useState({
+    safeToDelete: 0,
+    orphaned: 0,
+    potentialSavings: 0,
+    lastScan: null
+  });
+  const [approvalsData, setApprovalsData] = useState({
+    pending: 0,
+    active: 0,
+    awaitingConsent: 0
+  });
+  const [teamsData, setTeamsData] = useState({
+    members: 0,
+    teams: 0,
+    roles: 3 // System default
+  });
+
   useEffect(() => {
     const fetchData = async () => {
       setDataLoading(true);
@@ -275,6 +315,128 @@ export default function Dashboard() {
           const transfer = await api.get('/api/v1/transfer/overview');
           setTransferHealth({ status: transfer.data.health_status || "no_data", cost: transfer.data.total_transfer_cost || 0, detail: `Total transfer cost: $${transfer.data.total_transfer_cost || 0}` });
         } catch (e) { }
+
+        // Fetch Right-Sizing Data (Task 8.5)
+        try {
+          const rsRes = await karpenterAPI.getRecommendations();
+          const recs = rsRes.data.recommendations || [];
+          const topSavings = recs.reduce((max, r) => Math.max(max, r.estimated_savings_monthly || 0), 0);
+          const uniqueClusters = new Set(recs.map(r => r.cluster_id)).size;
+          const lastRec = recs.length > 0 ? new Date(Math.max(...recs.map(r => new Date(r.created_at || r.updated_at).getTime()))) : null;
+          setRightsizingData({
+            count: recs.length,
+            topSavings,
+            clusterCount: uniqueClusters,
+            lastRecommendation: lastRec
+          });
+        } catch (e) {
+          console.error("RightSizing fetch error", e);
+        }
+
+        // Fetch AtharvaAI Data (Task 8.6)
+        try {
+          // Fallback to /status/global if /rankings/global drops a 404
+          const globalRankingsRes = await api.get('/api/v1/atharvaai/status/global').catch(() => ({ data: {} }));
+          const hrRes = await atharvaAiAPI.getHealth();
+
+          const rankingsData = globalRankingsRes.data;
+          setAtharvaAioData({
+            poolsAnalyzed: rankingsData.pools_analyzed_count || 0,
+            topScore: rankingsData.top_ml_score || 0,
+            regions: (rankingsData.regions_covered || []).length,
+            lastRun: rankingsData.last_pipeline_run ? new Date(rankingsData.last_pipeline_run) : null,
+            status: hrRes.data.ml_degraded ? 'degraded' : 'healthy'
+          });
+        } catch (e) {
+          console.error("AtharvaAI fetch error", e);
+          setAtharvaAioData(prev => ({ ...prev, status: 'error' }));
+        }
+
+        // Fetch Hibernation Data (Task 9.7)
+        try {
+          const histRes = await api.get('/api/v1/hibernation/savings/history');
+          const schedRes = await hibernationAPI.list();
+          const activeSchedules = schedRes.data.schedules?.filter(s => s.is_active) || [];
+          const activeStatusRes = await api.get('/api/v1/hibernation/status/active');
+
+          const history = histRes.data.history || [];
+          const hoursSlept = history.reduce((sum, h) => sum + (h.sleep_hours || 0), 0);
+          const totalSavings = history.reduce((sum, h) => sum + (h.savings_realized || 0), 0);
+          const uniqueClusters = new Set(activeSchedules.map(s => s.cluster_id)).size;
+
+          setHibernationData({
+            hoursSlept,
+            totalSavings,
+            activeSchedules: activeSchedules.length,
+            clustersOnSchedule: uniqueClusters,
+            isHibernatingNow: (activeStatusRes.data.active_operations || []).length > 0
+          });
+        } catch (e) {
+          console.error("Hibernation fetch error", e);
+        }
+
+        // Fetch Hygiene Data
+        try {
+          if (accountsRes.data?.length > 0) {
+            const scanRes = await hygieneAPI.scan(accountsRes.data[0].id);
+            const resources = scanRes.data?.details?.resources || [];
+
+            setHygieneData({
+              safeToDelete: resources.filter(r => r.confidence_score >= 90).length,
+              orphaned: resources.filter(r => r.status === 'orphaned').length || resources.length,
+              potentialSavings: scanRes.data?.summary?.total_savings_amount || 0,
+              lastScan: new Date()
+            });
+          }
+        } catch (e) {
+          console.error("Hygiene fetch error", e);
+        }
+
+        // Fetch Approvals & Governance Data
+        try {
+          // Approvals
+          const pendingRes = await approvalsAPI.list('PENDING');
+          const activeRes = await approvalsAPI.getActiveWindow();
+          const pendingData = pendingRes.data?.data || pendingRes.data || [];
+
+          let awaitingConsent = 0;
+          try {
+            // See if I have invites
+            const invitesRes = await api.get('/api/v1/teams/invites').catch(() => ({ data: [] }));
+            awaitingConsent = (invitesRes.data?.data || invitesRes.data || []).length;
+          } catch (e) { }
+
+          setApprovalsData({
+            pending: Array.isArray(pendingData) ? pendingData.length : 0,
+            active: activeRes.data ? 1 : 0, // usually just one active session returned
+            awaitingConsent
+          });
+
+          // Teams
+          let membersCount = 0;
+          let teamsCount = 0;
+          try {
+            const tRes = await teamAPI.list();
+            const teamsList = tRes.data?.data || tRes.data || [];
+            teamsCount = teamsList.length;
+            membersCount = teamsList.reduce((acc, t) => acc + (t.members || []).length, 0);
+          } catch (e) { }
+
+          let rolesCount = 3;
+          try {
+            const roleRes = await api.get('/api/v1/roles');
+            rolesCount = (roleRes.data?.data || roleRes.data || []).length;
+          } catch (e) { }
+
+          setTeamsData({
+            members: membersCount,
+            teams: teamsCount,
+            roles: rolesCount
+          });
+
+        } catch (e) {
+          console.error("Approvals fetch error", e);
+        }
 
       } catch (error) {
         console.error('Failed to fetch dashboard data:', error);
@@ -416,15 +578,15 @@ export default function Dashboard() {
                   <div style={{ width: 32, height: 32, borderRadius: 8, background: C.blueLight, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16 }}>⇄</div>
                   <div>
                     <div style={{ fontWeight: 600, fontSize: 13 }}>Right-Sizing</div>
-                    <Badge color={C.muted} bg="#f3f4f6" style={{ marginTop: 2 }}>No data yet</Badge>
+                    <Badge color={C.muted} bg="#f3f4f6" style={{ marginTop: 2 }}>{rightsizingData.count > 0 ? `${rightsizingData.count} recommendations` : "No data yet"}</Badge>
                   </div>
                 </div>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 12 }}>
                   {[
-                    { label: "Overprov. instances", value: "0" },
-                    { label: "Potential savings", value: "$0/mo" },
-                    { label: "Optimization score", value: "—" },
-                    { label: "Instances analyzed", value: "0" },
+                    { label: "Overprov. instances", value: rightsizingData.count.toString() },
+                    { label: "Potential savings", value: `$${rightsizingData.topSavings}/mo` },
+                    { label: "Clusters analyzed", value: rightsizingData.clusterCount.toString() },
+                    { label: "Last recommendation", value: rightsizingData.lastRecommendation ? new Date(rightsizingData.lastRecommendation).toLocaleDateString() : "—" },
                   ].map(s => (
                     <div key={s.label} style={{ background: "#f9fafb", borderRadius: 8, padding: "8px 10px" }}>
                       <div style={{ fontSize: 10, color: C.subtle, marginBottom: 2 }}>{s.label}</div>
@@ -444,20 +606,25 @@ export default function Dashboard() {
                 <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
                   <div style={{ width: 32, height: 32, borderRadius: 8, background: C.indigoLight, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16 }}>◈</div>
                   <div>
-                    <div style={{ fontWeight: 600, fontSize: 13 }}>AtharvaAI</div>
+                    <div style={{ fontWeight: 600, fontSize: 13, display: "flex", alignItems: "center", gap: 6 }}>
+                      AtharvaAI
+                      {atharvaAioData.status === 'healthy' && <Dot color={C.green} />}
+                      {atharvaAioData.status === 'degraded' && <Dot color={C.amber} />}
+                      {atharvaAioData.status === 'error' && <Dot color={C.red} />}
+                    </div>
                     <Badge color={C.indigo} bg={C.indigoLight} style={{ marginTop: 2 }}>ML Scoring</Badge>
                   </div>
                 </div>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 12 }}>
                   {[
-                    { label: "ML status", value: "Healthy" },
-                    { label: "Pools ranked", value: "0" },
-                    { label: "Top savings", value: "—" },
-                    { label: "Blacklisted", value: "0" },
+                    { label: "ML status", value: atharvaAioData.status === 'healthy' ? "Healthy" : atharvaAioData.status === 'degraded' ? "Degraded" : "Error" },
+                    { label: "Pools ranked", value: atharvaAioData.poolsAnalyzed.toString() },
+                    { label: "Top score", value: atharvaAioData.topScore.toString() },
+                    { label: "Regions covered", value: atharvaAioData.regions.toString() },
                   ].map(s => (
                     <div key={s.label} style={{ background: "#f9fafb", borderRadius: 8, padding: "8px 10px" }}>
                       <div style={{ fontSize: 10, color: C.subtle, marginBottom: 2 }}>{s.label}</div>
-                      <div style={{ fontWeight: 700, fontSize: 15, color: s.value === "Healthy" ? C.green : C.text }}>{s.value}</div>
+                      <div style={{ fontWeight: 700, fontSize: 15, color: s.value === "Healthy" ? C.green : s.value === "Degraded" ? C.amber : s.value === "Error" ? C.red : C.text }}>{s.value}</div>
                     </div>
                   ))}
                 </div>
@@ -465,24 +632,28 @@ export default function Dashboard() {
                   width: "100%", padding: "7px 0", borderRadius: 8,
                   border: `1px solid ${C.indigo}`, background: "transparent",
                   color: C.indigo, fontWeight: 600, fontSize: 12, cursor: "pointer", fontFamily: "inherit"
-                }}>Run Pool Rankings →</button>
+                }}>View ML Rankings →</button>
               </Card>
 
               {/* Hibernation */}
-              <Card style={{ borderTop: `3px solid ${C.teal}` }}>
+              <Card style={{ borderTop: `3px solid ${C.purple}` }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
-                  <div style={{ width: 32, height: 32, borderRadius: 8, background: C.tealLight, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16 }}>◑</div>
+                  <div style={{ width: 32, height: 32, borderRadius: 8, background: C.purpleLight, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16 }}>☾</div>
                   <div>
                     <div style={{ fontWeight: 600, fontSize: 13 }}>Hibernation</div>
-                    <Badge color={C.muted} bg="#f3f4f6" style={{ marginTop: 2 }}>0 active schedules</Badge>
+                    {hibernationData.isHibernatingNow ? (
+                      <Badge color={C.purple} bg={C.purpleLight} style={{ marginTop: 2 }}>Hibernating Now</Badge>
+                    ) : (
+                      <Badge color={C.muted} bg="#f3f4f6" style={{ marginTop: 2 }}>{hibernationData.activeSchedules} active schedules</Badge>
+                    )}
                   </div>
                 </div>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 12 }}>
                   {[
-                    { label: "Sleep hrs/week", value: "0h" },
-                    { label: "Monthly savings", value: "$0" },
-                    { label: "Active schedules", value: "0" },
-                    { label: "Clusters covered", value: "0" },
+                    { label: "Hours slept", value: hibernationData.hoursSlept.toString() },
+                    { label: "Savings", value: `$${hibernationData.totalSavings}` },
+                    { label: "Active schedules", value: hibernationData.activeSchedules.toString() },
+                    { label: "Clusters", value: hibernationData.clustersOnSchedule.toString() },
                   ].map(s => (
                     <div key={s.label} style={{ background: "#f9fafb", borderRadius: 8, padding: "8px 10px" }}>
                       <div style={{ fontSize: 10, color: C.subtle, marginBottom: 2 }}>{s.label}</div>
@@ -504,10 +675,10 @@ export default function Dashboard() {
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
                 <div style={{ display: "flex", gap: 24 }}>
                   {[
-                    { label: "Safe to Delete", value: "0", color: C.red },
-                    { label: "Orphaned", value: "0", color: C.amber },
-                    { label: "Potential Savings", value: "$0/mo", color: C.green },
-                    { label: "Last Scan", value: "Never", color: C.muted },
+                    { label: "Safe to Delete", value: hygieneData.safeToDelete.toString(), color: C.red },
+                    { label: "Orphaned", value: hygieneData.orphaned.toString(), color: C.amber },
+                    { label: "Potential Savings", value: `$${hygieneData.potentialSavings.toFixed(2)}/mo`, color: C.green },
+                    { label: "Last Scan", value: hygieneData.lastScan ? hygieneData.lastScan.toLocaleDateString() : "Never", color: C.muted },
                   ].map(s => (
                     <div key={s.label}>
                       <div style={{ fontSize: 11, color: C.subtle, marginBottom: 2 }}>{s.label}</div>
@@ -589,12 +760,12 @@ export default function Dashboard() {
 
               <div>
                 <Card title="Node Templates" titleRight={
-                  <button onClick={() => navigate('/templates')} style={{ fontSize: 11, color: C.blue, background: "none", border: "none", cursor: "pointer" }}>Manage →</button>
+                  <button onClick={() => navigate('/atharva-ai?tab=rankings')} style={{ fontSize: 11, color: C.blue, background: "none", border: "none", cursor: "pointer" }}>Manage →</button>
                 }>
                   <div style={{ color: C.subtle, fontSize: 12, marginBottom: 12 }}>
                     Templates filter instance pools for AtharvaAI rankings.
                   </div>
-                  <button onClick={() => navigate('/templates')} style={{
+                  <button onClick={() => navigate('/atharva-ai?tab=rankings')} style={{
                     width: "100%", padding: "7px 0", borderRadius: 8,
                     border: `1px dashed ${C.border}`, background: "transparent",
                     color: C.muted, fontSize: 12, cursor: "pointer", fontFamily: "inherit"
@@ -613,9 +784,9 @@ export default function Dashboard() {
             <SectionLabel>Access & Approvals</SectionLabel>
             <div className="grid grid-cols-3 gap-3 mb-5">
               {[
-                { label: "Pending Requests", value: 0, color: C.amber, icon: "⏳", sub: "Require your approval" },
-                { label: "Active Grants", value: 0, color: C.green, icon: "✓", sub: "Currently active JIT sessions" },
-                { label: "Awaiting Consent", value: 0, color: C.purple, icon: "◌", sub: "Need your acceptance" },
+                { label: "Pending Requests", value: approvalsData.pending, color: C.amber, icon: "⏳", sub: "Require your approval" },
+                { label: "Active Grants", value: approvalsData.active, color: C.green, icon: "✓", sub: "Currently active JIT sessions" },
+                { label: "Awaiting Consent", value: approvalsData.awaitingConsent, color: C.purple, icon: "◌", sub: "Need your acceptance" },
               ].map(item => (
                 <KpiCard key={item.label} label={item.label} value={item.value} sub={item.sub} icon={item.icon} color={item.color} />
               ))}
@@ -639,9 +810,9 @@ export default function Dashboard() {
                   Manage team members, roles, and permissions.
                 </div>
                 {[
-                  { label: "Members", icon: "⊹", value: "0 active members", iconBg: "#f0fdf4" },
-                  { label: "Teams", icon: "◻", value: "0 teams created", iconBg: "#f5f3ff" },
-                  { label: "Roles & Policies", icon: "◎", value: "3 system roles", iconBg: "#eff6ff" },
+                  { label: "Members", icon: "⊹", value: `${teamsData.members} active members`, iconBg: "#f0fdf4" },
+                  { label: "Teams", icon: "◻", value: `${teamsData.teams} teams created`, iconBg: "#f5f3ff" },
+                  { label: "Roles & Policies", icon: "◎", value: `${teamsData.roles} system roles`, iconBg: "#eff6ff" },
                 ].map((r, i) => (
                   <FeatureRow key={i} icon={r.icon} iconBg={r.iconBg} label={r.label} value={r.value} cta="→" onClick={() => navigate('/teams')} />
                 ))}

@@ -130,7 +130,7 @@ const HibernationWizard = ({ schedule, clusters, onClose }) => {
             </div>
             <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">Select Target Clusters</label>
-                {clusters.length === 0 ? (
+                {!clusters?.length ? (
                     <div className="p-4 bg-yellow-50 text-yellow-700 rounded-md text-sm">
                         No clusters found. Please connect a cluster first.
                     </div>
@@ -141,8 +141,8 @@ const HibernationWizard = ({ schedule, clusters, onClose }) => {
                                 key={cluster.id}
                                 onClick={() => toggleCluster(cluster.id)}
                                 className={`flex items-center p-3 rounded-lg border cursor-pointer transition-colors ${formData.cluster_ids.includes(cluster.id)
-                                        ? 'bg-blue-50 border-blue-500'
-                                        : 'bg-white border-gray-200 hover:border-blue-300'
+                                    ? 'bg-blue-50 border-blue-500'
+                                    : 'bg-white border-gray-200 hover:border-blue-300'
                                     }`}
                             >
                                 <div className={`w-5 h-5 rounded border flex items-center justify-center mr-3 ${formData.cluster_ids.includes(cluster.id) ? 'bg-blue-600 border-blue-600' : 'border-gray-300'
@@ -170,8 +170,8 @@ const HibernationWizard = ({ schedule, clusters, onClose }) => {
                         key={type}
                         onClick={() => updateField('strategy', type)}
                         className={`p-4 rounded-lg border-2 cursor-pointer transition-all ${formData.strategy === type
-                                ? 'border-blue-600 bg-blue-50 transform scale-[1.02]'
-                                : 'border-gray-200 hover:border-gray-300'
+                            ? 'border-blue-600 bg-blue-50 transform scale-[1.02]'
+                            : 'border-gray-200 hover:border-gray-300'
                             }`}
                     >
                         <div className="flex items-center justify-between mb-3">
@@ -344,8 +344,8 @@ const HibernationWizard = ({ schedule, clusters, onClose }) => {
                             return (
                                 <div key={step.id} className="flex flex-col items-center bg-white px-2">
                                     <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold transition-colors ${isCompleted ? 'bg-green-500 text-white' :
-                                            isCurrent ? 'bg-blue-600 text-white shadow-lg shadow-blue-200' :
-                                                'bg-gray-100 text-gray-400 border border-gray-200'
+                                        isCurrent ? 'bg-blue-600 text-white shadow-lg shadow-blue-200' :
+                                            'bg-gray-100 text-gray-400 border border-gray-200'
                                         }`}>
                                         {isCompleted ? <FiCheck className="w-5 h-5" /> : step.id}
                                     </div>
@@ -372,8 +372,8 @@ const HibernationWizard = ({ schedule, clusters, onClose }) => {
                         onClick={prevStep}
                         disabled={currentStep === 1}
                         className={`flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-medium transition-colors ${currentStep === 1
-                                ? 'text-gray-300 cursor-not-allowed'
-                                : 'text-gray-700 bg-white border border-gray-300 hover:bg-gray-50 hover:shadow-sm'
+                            ? 'text-gray-300 cursor-not-allowed'
+                            : 'text-gray-700 bg-white border border-gray-300 hover:bg-gray-50 hover:shadow-sm'
                             }`}
                     >
                         <FiArrowLeft className="w-4 h-4" /> Back

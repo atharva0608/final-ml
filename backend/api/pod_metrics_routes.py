@@ -337,28 +337,52 @@ async def get_enriched_rightsizing_recommendations(
             min_data_points=min_data_points
         )
 
-        # Step B: Load template if provided
+        # Step B: Load template if provided or fetch cluster default
         template = None
+        if not template_id:
+            from backend.models.cluster_template_mapping import ClusterTemplateMapping
+            mapping = db.query(ClusterTemplateMapping).filter(ClusterTemplateMapping.cluster_id == cluster_id).first()
+            if mapping:
+                template_id = mapping.template_id
+
         if template_id:
             from backend.services.template_service import get_template_service
             template_service = get_template_service(db)
             template = template_service.get_template(template_id, current_user.id)
 
         # Step C: Enrich each recommendation
+        # Map controller kinds to workload classification
+        _STATEFUL_KINDS = {"StatefulSet", "statefulset"}
+
         enriched = []
         for rec in base_recommendations:
             # Convert to dict for manipulation
             rec_dict = rec.model_dump() if hasattr(rec, 'model_dump') else rec.dict()
 
+            # Determine workload type from controller kind
+            kind = rec_dict.get("controller_kind") or ""
+            rec_dict["workload_type"] = "STATEFUL" if kind in _STATEFUL_KINDS else "STATELESS"
+
             # For pod-based recommendations, we don't have instance_type recommendations yet
             # This is a simplified version - in production you'd map pod resources to instance types
             # For now, we'll skip instance-specific validation and focus on the structure
 
-            # Template compliance check (simplified - would need instance type mapping)
+            # Template compliance check (Node Template Constraints)
             if template:
                 violations = []
-                # In a real implementation, you'd map pod resource requirements to instance types
-                # and validate those against the template
+                rec_cpu = rec_dict.get("recommended_cpu_request_millicores") or 0
+                rec_mem = rec_dict.get("recommended_memory_request_mb") or 0
+                
+                if template.constraints and template.constraints.get("vcpu_max"):
+                    max_millicores = template.constraints["vcpu_max"] * 1000
+                    if rec_cpu > max_millicores:
+                        violations.append(f"Requested CPU ({rec_cpu}m) exceeds max node vCPU ({max_millicores}m)")
+                
+                if template.constraints and template.constraints.get("memory_gb_max"):
+                    max_mb = template.constraints["memory_gb_max"] * 1024
+                    if rec_mem > max_mb:
+                        violations.append(f"Requested Memory ({rec_mem}Mi) exceeds max node memory ({max_mb}Mi)")
+                
                 rec_dict["template_compliance"] = {
                     "compliant": len(violations) == 0,
                     "violations": violations

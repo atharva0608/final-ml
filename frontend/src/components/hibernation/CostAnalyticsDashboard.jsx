@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { hibernationApi } from '../../services/hibernationApi';
+import { karpenterAPI, optimizationAPI } from '../../services/api';
 
 /**
  * Cost Analytics Dashboard - Shows detailed hibernation cost savings
@@ -18,93 +18,37 @@ const CostAnalyticsDashboard = () => {
   const loadAnalytics = async () => {
     try {
       setLoading(true);
+      const [statsRes, savingsRes] = await Promise.all([
+        karpenterAPI.getStats(timeRange === '7d' ? 'week' : timeRange === '90d' ? 'all' : 'month'),
+        optimizationAPI.getSavingsRealized()
+      ]);
 
-      // Mock data - replace with actual API call
-      // const response = await hibernationApi.getCostAnalytics({ time_range: timeRange });
+      const stats = statsRes.data || {};
+      const savings = savingsRes.data || {};
 
-      const mockAnalytics = {
+      setAnalytics({
         summary: {
-          total_saved: 2847.50,
-          potential_savings: 4200.00,
-          savings_percentage: 67.8,
-          total_sleep_hours: 1248,
-          active_schedules: 8,
-          roi_percentage: 342
+          total_saved: savings.total_realized || stats.total_savings || 0,
+          potential_savings: savings.potential_savings || stats.potential_savings || 0,
+          savings_percentage: savings.savings_percentage || (stats.total_savings && stats.potential_savings ? Math.round((stats.total_savings / stats.potential_savings) * 100) : 0),
+          total_sleep_hours: stats.total_sleep_hours || 0,
+          active_schedules: stats.active_schedules || 0,
+          roi_percentage: stats.roi_percentage || 0
         },
-        by_schedule: [
-          {
-            schedule_name: 'Production Weekend Shutdown',
-            clusters: 3,
-            sleep_hours: 336,
-            actual_saved: 1250.00,
-            potential_saved: 1400.00,
-            efficiency: 89.3
-          },
-          {
-            schedule_name: 'Dev Nightly Shutdown',
-            clusters: 5,
-            sleep_hours: 560,
-            actual_saved: 875.50,
-            potential_saved: 1200.00,
-            efficiency: 73.0
-          },
-          {
-            schedule_name: 'Staging Business Hours',
-            clusters: 2,
-            sleep_hours: 352,
-            actual_saved: 722.00,
-            potential_saved: 1600.00,
-            efficiency: 45.1
-          }
-        ],
-        by_cluster: [
-          {
-            cluster_name: 'prod-cluster-1',
-            region: 'us-east-1',
-            monthly_cost: 1200.00,
-            saved: 850.00,
-            sleep_hours: 168,
-            savings_percentage: 70.8,
-            schedule_count: 2
-          },
-          {
-            cluster_name: 'dev-cluster-1',
-            region: 'us-west-2',
-            monthly_cost: 600.00,
-            saved: 420.50,
-            sleep_hours: 240,
-            savings_percentage: 70.1,
-            schedule_count: 1
-          },
-          {
-            cluster_name: 'staging-cluster-1',
-            region: 'eu-west-1',
-            monthly_cost: 800.00,
-            saved: 577.00,
-            sleep_hours: 352,
-            savings_percentage: 72.1,
-            schedule_count: 1
-          }
-        ],
+        by_schedule: stats.by_schedule || [],
+        by_cluster: stats.by_cluster || [],
         trends: {
-          daily_savings: [
-            { date: '2024-01-01', saved: 95.20 },
-            { date: '2024-01-02', saved: 98.50 },
-            { date: '2024-01-03', saved: 102.30 },
-            { date: '2024-01-04', saved: 89.70 },
-            { date: '2024-01-05', saved: 110.50 }
-          ]
+          daily_savings: stats.daily_breakdown || stats.daily_stats || []
         },
         projections: {
-          monthly_projection: 3500.00,
-          yearly_projection: 42000.00,
-          break_even_days: 0 // Already profitable
+          monthly_projection: savings.monthly_projection || stats.monthly_projection || 0,
+          yearly_projection: savings.yearly_projection || stats.yearly_projection || 0,
+          break_even_days: savings.break_even_days || 0
         }
-      };
-
-      setAnalytics(mockAnalytics);
+      });
     } catch (error) {
       console.error('Failed to load cost analytics:', error);
+      setAnalytics(null);
     } finally {
       setLoading(false);
     }
@@ -141,11 +85,10 @@ const CostAnalyticsDashboard = () => {
             <button
               key={range}
               onClick={() => setTimeRange(range)}
-              className={`px-4 py-2 rounded-lg ${
-                timeRange === range
+              className={`px-4 py-2 rounded-lg ${timeRange === range
                   ? 'bg-blue-600 text-white'
                   : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
-              }`}
+                }`}
             >
               {range === 'ytd' ? 'Year to Date' : `Last ${range}`}
             </button>
@@ -200,31 +143,28 @@ const CostAnalyticsDashboard = () => {
       <div className="flex space-x-2">
         <button
           onClick={() => setViewMode('savings')}
-          className={`px-4 py-2 rounded-lg ${
-            viewMode === 'savings'
+          className={`px-4 py-2 rounded-lg ${viewMode === 'savings'
               ? 'bg-green-100 text-green-800 font-medium'
               : 'bg-gray-100 text-gray-700'
-          }`}
+            }`}
         >
           💵 By Savings
         </button>
         <button
           onClick={() => setViewMode('schedules')}
-          className={`px-4 py-2 rounded-lg ${
-            viewMode === 'schedules'
+          className={`px-4 py-2 rounded-lg ${viewMode === 'schedules'
               ? 'bg-blue-100 text-blue-800 font-medium'
               : 'bg-gray-100 text-gray-700'
-          }`}
+            }`}
         >
-           By Schedule
+          By Schedule
         </button>
         <button
           onClick={() => setViewMode('clusters')}
-          className={`px-4 py-2 rounded-lg ${
-            viewMode === 'clusters'
+          className={`px-4 py-2 rounded-lg ${viewMode === 'clusters'
               ? 'bg-purple-100 text-purple-800 font-medium'
               : 'bg-gray-100 text-gray-700'
-          }`}
+            }`}
         >
           🖥️ By Cluster
         </button>
@@ -266,13 +206,12 @@ const CostAnalyticsDashboard = () => {
                       <div className="flex items-center space-x-2">
                         <div className="flex-1 bg-gray-200 rounded-full h-2 max-w-xs">
                           <div
-                            className={`h-2 rounded-full ${
-                              schedule.efficiency >= 80
+                            className={`h-2 rounded-full ${schedule.efficiency >= 80
                                 ? 'bg-green-500'
                                 : schedule.efficiency >= 60
-                                ? 'bg-yellow-500'
-                                : 'bg-red-500'
-                            }`}
+                                  ? 'bg-yellow-500'
+                                  : 'bg-red-500'
+                              }`}
                             style={{ width: `${schedule.efficiency}%` }}
                           />
                         </div>
@@ -385,7 +324,7 @@ const CostAnalyticsDashboard = () => {
                   </span>
                 </div>
                 <p className="text-xs text-gray-600 mt-1">
-                   Optimize schedules to capture remaining {100 - analytics.summary.savings_percentage}%
+                  Optimize schedules to capture remaining {100 - analytics.summary.savings_percentage}%
                 </p>
               </div>
             </div>

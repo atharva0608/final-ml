@@ -1,200 +1,204 @@
 """
-Template Schemas - Request/Response models for node template management
+Node Template Schemas
+
+Pydantic validation schemas for node template management.
 """
-from pydantic import BaseModel, Field, field_validator
-from typing import List, Optional
+from pydantic import BaseModel, Field, validator
+from typing import List, Optional, Dict, Any
 from datetime import datetime
 
 
+class FlaggingRulesConfig(BaseModel):
+    """
+    Configurable flagging rules for pool selection.
+
+    Controls how aggressive the system is in flagging/blacklisting pools.
+    """
+    # Risk thresholds
+    max_risk_threshold: float = Field(
+        default=0.50,
+        ge=0.0,
+        le=1.0,
+        description="Maximum ML risk probability (0.0-1.0). Pools above this are hard-rejected."
+    )
+    max_interruption_rate: int = Field(
+        default=15,
+        ge=0,
+        le=100,
+        description="Maximum acceptable interruption rate % (AWS Spot Advisor). 15 = <15%."
+    )
+    min_ml_score: float = Field(
+        default=0.30,
+        ge=0.0,
+        le=1.0,
+        description="Minimum composite ML score (Expected Value). Pools below this are rejected."
+    )
+
+    # Blacklist behavior
+    blacklist_respect: str = Field(
+        default="soft",
+        description="How to handle blacklisted pools: 'hard' (reject), 'soft' (penalty), 'ignore'"
+    )
+    blacklist_penalty_pct: float = Field(
+        default=20.0,
+        ge=0.0,
+        le=100.0,
+        description="Savings penalty % for soft-blacklisted pools (default 20%)"
+    )
+
+    # Diversity enforcement
+    diversity_enforcement: str = Field(
+        default="strict",
+        description="Diversity constraint strictness: 'strict', 'moderate', 'disabled'"
+    )
+    max_az_concentration: int = Field(
+        default=50,
+        ge=0,
+        le=100,
+        description="Max % of nodes in single AZ (strict=50%, moderate=70%, disabled=100%)"
+    )
+    max_family_concentration: int = Field(
+        default=40,
+        ge=0,
+        le=100,
+        description="Max % of nodes in single family (strict=40%, moderate=60%, disabled=100%)"
+    )
+
+    # Auto-rotation & backup
+    auto_rotation_enabled: bool = Field(
+        default=True,
+        description="Automatically rotate to backup AZs when primary AZ is fully blacklisted"
+    )
+    backup_az_count: int = Field(
+        default=2,
+        ge=0,
+        le=5,
+        description="Number of backup AZs to maintain in fresh pool cache (0-5)"
+    )
+    min_viable_pools: int = Field(
+        default=10,
+        ge=5,
+        le=50,
+        description="Minimum number of viable pools to maintain. Triggers auto-rotation if below."
+    )
+
+    # Cascade prevention
+    cascade_dampener_enabled: bool = Field(
+        default=True,
+        description="Enable cascade dampener when >70% of pools are blacklisted"
+    )
+    cascade_threshold_pct: float = Field(
+        default=70.0,
+        ge=50.0,
+        le=95.0,
+        description="Blacklist ratio % that triggers cascade dampener (default 70%)"
+    )
+
+    @validator("blacklist_respect")
+    def validate_blacklist_respect(cls, v):
+        if v not in ["hard", "soft", "ignore"]:
+            raise ValueError("blacklist_respect must be 'hard', 'soft', or 'ignore'")
+        return v
+
+    @validator("diversity_enforcement")
+    def validate_diversity_enforcement(cls, v):
+        if v not in ["strict", "moderate", "disabled"]:
+            raise ValueError("diversity_enforcement must be 'strict', 'moderate', or 'disabled'")
+        return v
+
+
 class NodeTemplateCreate(BaseModel):
-    """Create node template request"""
-    name: str = Field(..., min_length=1, max_length=255, description="Template name")
-    families: List[str] = Field(..., min_length=1, description="EC2 instance families (e.g., ['m5', 'm6i'])")
-    architecture: str = Field(default="x86_64", description="CPU architecture (x86_64 or arm64)")
-    strategy: str = Field(..., description="Selection strategy (CHEAPEST, BALANCED, PERFORMANCE)")
-    disk_type: str = Field(..., description="EBS disk type (GP3, GP2, IO1, IO2)")
-    disk_size: int = Field(..., ge=10, le=16000, description="Disk size in GB")
-    is_default: bool = Field(default=False, description="Set as default template")
+    """Schema for creating a new node template."""
+    name: str = Field(..., description="Template name")
+    description: Optional[str] = Field(None, description="Template description")
+    instance_families: List[str] = Field(default_factory=list, description="Allowed instance families")
+    instance_types: List[str] = Field(default_factory=list, description="Specific instance types")
+    architectures: List[str] = Field(default_factory=list, description="Allowed architectures (x86_64, arm64)")
+    min_vcpus: Optional[int] = Field(None, description="Minimum vCPUs")
+    max_vcpus: Optional[int] = Field(None, description="Maximum vCPUs")
+    min_memory_gb: Optional[float] = Field(None, description="Minimum memory in GB")
+    max_memory_gb: Optional[float] = Field(None, description="Maximum memory in GB")
+    blacklist: List[str] = Field(default_factory=list, description="Blacklisted instance types")
+    template_metadata: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Additional metadata")
 
-    @field_validator('architecture')
-    @classmethod
-    def validate_architecture(cls, v: str) -> str:
-        if v not in ['x86_64', 'arm64']:
-            raise ValueError('Architecture must be x86_64 or arm64')
-        return v
-
-    @field_validator('strategy')
-    @classmethod
-    def validate_strategy(cls, v: str) -> str:
-        if v not in ['CHEAPEST', 'BALANCED', 'PERFORMANCE']:
-            raise ValueError('Strategy must be CHEAPEST, BALANCED, or PERFORMANCE')
-        return v
-
-    @field_validator('disk_type')
-    @classmethod
-    def validate_disk_type(cls, v: str) -> str:
-        if v not in ['GP3', 'GP2', 'IO1', 'IO2']:
-            raise ValueError('Disk type must be GP3, GP2, IO1, or IO2')
-        return v
-
-    @field_validator('families')
-    @classmethod
-    def validate_families(cls, v: List[str]) -> List[str]:
-        """Validate instance families"""
-        valid_families = {
-            # General purpose
-            't2', 't3', 't3a', 't4g', 'm5', 'm5a', 'm5n', 'm6i', 'm6a', 'm6g', 'm7i', 'm7g',
-            # Compute optimized
-            'c5', 'c5a', 'c5n', 'c6i', 'c6a', 'c6g', 'c7i', 'c7g',
-            # Memory optimized
-            'r5', 'r5a', 'r5n', 'r6i', 'r6a', 'r6g', 'r7i', 'r7g', 'x1', 'x2gd',
-            # Storage optimized
-            'i3', 'i3en', 'i4i', 'd2', 'd3', 'h1',
-            # Accelerated computing
-            'p3', 'p4', 'g4dn', 'g5', 'inf1', 'inf2'
-        }
-        for family in v:
-            if family not in valid_families:
-                raise ValueError(f'Invalid instance family: {family}')
-        return v
-
-    model_config = {
-        "json_schema_extra": {
-            "example": {
-                "name": "Production General Purpose",
-                "families": ["m5", "m6i", "m7i"],
-                "architecture": "x86_64",
-                "strategy": "BALANCED",
-                "disk_type": "GP3",
-                "disk_size": 100,
-                "is_default": True
-            }
-        }
-    }
+    # NEW: Flagging rules configuration
+    flagging_rules: Optional[FlaggingRulesConfig] = Field(
+        default_factory=FlaggingRulesConfig,
+        description="Configurable flagging and rotation rules"
+    )
 
 
 class NodeTemplateUpdate(BaseModel):
-    """Update node template request"""
-    name: Optional[str] = Field(None, min_length=1, max_length=255, description="Template name")
-    families: Optional[List[str]] = Field(None, min_length=1, description="EC2 instance families")
-    architecture: Optional[str] = Field(None, description="CPU architecture")
-    strategy: Optional[str] = Field(None, description="Selection strategy")
-    disk_type: Optional[str] = Field(None, description="EBS disk type")
-    disk_size: Optional[int] = Field(None, ge=10, le=16000, description="Disk size in GB")
-    is_default: Optional[bool] = Field(None, description="Set as default template")
+    """Schema for updating an existing node template."""
+    name: Optional[str] = Field(None, description="Template name")
+    description: Optional[str] = Field(None, description="Template description")
+    instance_families: Optional[List[str]] = Field(None, description="Allowed instance families")
+    instance_types: Optional[List[str]] = Field(None, description="Specific instance types")
+    architectures: Optional[List[str]] = Field(None, description="Allowed architectures")
+    min_vcpus: Optional[int] = Field(None, description="Minimum vCPUs")
+    max_vcpus: Optional[int] = Field(None, description="Maximum vCPUs")
+    min_memory_gb: Optional[float] = Field(None, description="Minimum memory in GB")
+    max_memory_gb: Optional[float] = Field(None, description="Maximum memory in GB")
+    blacklist: Optional[List[str]] = Field(None, description="Blacklisted instance types")
+    template_metadata: Optional[Dict[str, Any]] = Field(None, description="Additional metadata")
 
-    @field_validator('architecture')
-    @classmethod
-    def validate_architecture(cls, v: Optional[str]) -> Optional[str]:
-        if v is not None and v not in ['x86_64', 'arm64']:
-            raise ValueError('Architecture must be x86_64 or arm64')
-        return v
-
-    @field_validator('strategy')
-    @classmethod
-    def validate_strategy(cls, v: Optional[str]) -> Optional[str]:
-        if v is not None and v not in ['CHEAPEST', 'BALANCED', 'PERFORMANCE']:
-            raise ValueError('Strategy must be CHEAPEST, BALANCED, or PERFORMANCE')
-        return v
-
-    @field_validator('disk_type')
-    @classmethod
-    def validate_disk_type(cls, v: Optional[str]) -> Optional[str]:
-        if v is not None and v not in ['GP3', 'GP2', 'IO1', 'IO2']:
-            raise ValueError('Disk type must be GP3, GP2, IO1, or IO2')
-        return v
-
-    model_config = {
-        "json_schema_extra": {
-            "example": {
-                "name": "Updated Production Template",
-                "disk_size": 150
-            }
-        }
-    }
+    # NEW: Flagging rules configuration
+    flagging_rules: Optional[FlaggingRulesConfig] = Field(
+        None,
+        description="Configurable flagging and rotation rules"
+    )
 
 
 class NodeTemplateResponse(BaseModel):
-    """Node template response"""
-    id: str = Field(..., description="Template UUID")
-    user_id: str = Field(..., description="Owner user UUID")
-    name: str = Field(..., description="Template name")
-    families: List[str] = Field(..., description="EC2 instance families")
-    architecture: str = Field(..., description="CPU architecture")
-    strategy: str = Field(..., description="Selection strategy")
-    disk_type: str = Field(..., description="EBS disk type")
-    disk_size: int = Field(..., description="Disk size in GB")
-    is_default: bool = Field(..., description="Is default template")
-    last_used_by_atharva_at: Optional[datetime] = Field(None, description="Last used by AtharvaAI timestamp")
-    atharva_rankings_count: int = Field(default=0, description="Number of times used by AtharvaAI")
-    created_at: datetime = Field(..., description="Creation timestamp")
-    updated_at: datetime = Field(..., description="Last update timestamp")
+    """Schema for node template response."""
+    id: str
+    name: str
+    description: Optional[str]
+    instance_families: List[str]
+    instance_types: List[str]
+    architectures: List[str]
+    min_vcpus: Optional[int]
+    max_vcpus: Optional[int]
+    min_memory_gb: Optional[float]
+    max_memory_gb: Optional[float]
+    blacklist: List[str]
+    template_metadata: Dict[str, Any]
+    flagging_rules: Optional[FlaggingRulesConfig]  # NEW
+    created_at: datetime
+    updated_at: datetime
 
-    model_config = {
-        "json_schema_extra": {
-            "example": {
-                "id": "990e8400-e29b-41d4-a716-446655440000",
-                "user_id": "550e8400-e29b-41d4-a716-446655440000",
-                "name": "Production General Purpose",
-                "families": ["m5", "m6i", "m7i"],
-                "architecture": "x86_64",
-                "strategy": "BALANCED",
-                "disk_type": "GP3",
-                "disk_size": 100,
-                "is_default": True,
-                "created_at": "2025-12-31T10:00:00Z",
-                "updated_at": "2025-12-31T10:00:00Z"
-            }
-        }
-    }
+    class Config:
+        from_attributes = True
 
 
 class NodeTemplateList(BaseModel):
-    """List of node templates"""
-    templates: List[NodeTemplateResponse] = Field(..., description="Array of templates")
-    total: int = Field(..., ge=0, description="Total number of templates")
-
-    model_config = {
-        "json_schema_extra": {
-            "example": {
-                "templates": [
-                    {
-                        "id": "990e8400-e29b-41d4-a716-446655440000",
-                        "user_id": "550e8400-e29b-41d4-a716-446655440000",
-                        "name": "Production General Purpose",
-                        "families": ["m5", "m6i", "m7i"],
-                        "architecture": "x86_64",
-                        "strategy": "BALANCED",
-                        "disk_type": "GP3",
-                        "disk_size": 100,
-                        "is_default": True,
-                        "created_at": "2025-12-31T10:00:00Z",
-                        "updated_at": "2025-12-31T10:00:00Z"
-                    }
-                ],
-                "total": 1
-            }
-        }
-    }
+    """Schema for list of node templates."""
+    templates: List[NodeTemplateResponse]
+    total: int
 
 
 class TemplateValidationResult(BaseModel):
-    """Template validation result"""
-    valid: bool = Field(..., description="Whether template is valid")
-    errors: List[str] = Field(default_factory=list, description="Validation errors")
-    warnings: List[str] = Field(default_factory=list, description="Validation warnings")
-    estimated_cost_range: Optional[dict] = Field(None, description="Estimated cost range (min/max per hour)")
+    """Schema for template validation result."""
+    valid: bool
+    errors: List[str] = Field(default_factory=list)
+    warnings: List[str] = Field(default_factory=list)
+    matched_instances: List[str] = Field(default_factory=list)
 
-    model_config = {
-        "json_schema_extra": {
-            "example": {
-                "valid": True,
-                "errors": [],
-                "warnings": ["Family m7i may have limited spot availability in some regions"],
-                "estimated_cost_range": {
-                    "min_hourly": 0.083,
-                    "max_hourly": 0.192
-                }
-            }
-        }
-    }
+
+class PoolRotationStatus(BaseModel):
+    """
+    Status of auto-rotation system for a cluster.
+    """
+    cluster_id: str
+    primary_az: str
+    backup_azs: List[str]
+    primary_az_blacklisted: bool
+    auto_rotation_active: bool
+    current_active_az: str
+    viable_pool_count: int
+    min_viable_threshold: int
+    last_rotation_at: Optional[datetime]
+    cascade_dampener_active: bool
+
+    class Config:
+        from_attributes = True

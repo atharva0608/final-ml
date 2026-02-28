@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
+import { tagPolicyAPI, tagTemplateAPI, tagAutomationAPI, tagScoringAPI, tagComplianceAPI } from "../../services/api";
 
 // ── Tailwind color tokens matching your app ──────────────────────────────────
 // Primary green: #059669 / emerald-600
@@ -272,12 +273,36 @@ const TabBtn = ({ id, active, onClick, icon, label, accent }) => {
 function PoliciesTab() {
   const [showCreate, setShowCreate] = useState(false);
   const [editItem, setEditItem] = useState(null);
-  const [policies, setPolicies] = useState([
-    { id: 1, key: "owner", enforcement: "required", valueMode: "free", pattern: "^[a-z]+@company\\.com$", description: "Team email address responsible for this resource", enabled: true, resources: 847 },
-    { id: 2, key: "environment", enforcement: "strict", valueMode: "allowed", allowedValues: ["production", "staging", "development", "sandbox"], description: "Deployment environment classification", enabled: true, resources: 1203 },
-    { id: 3, key: "cost-center", enforcement: "required", valueMode: "pattern", pattern: "^CC-[0-9]{4}$", description: "Finance department cost tracking code", enabled: true, resources: 612 },
-    { id: 4, key: "data-classification", enforcement: "advisory", valueMode: "allowed", allowedValues: ["public", "internal", "confidential", "restricted"], description: "Data sensitivity level for compliance", enabled: false, resources: 0 },
-  ]);
+  const [policies, setPolicies] = useState([]);
+  const [loadingPolicies, setLoadingPolicies] = useState(true);
+
+  useEffect(() => {
+    setLoadingPolicies(true);
+    tagPolicyAPI.list()
+      .then(res => {
+        const data = res.data?.policies || res.data?.items || res.data || [];
+        const grouped = res.data?.grouped;
+        if (grouped) {
+          const allPolicies = [...(grouped.strict || []), ...(grouped.required || []), ...(grouped.advisory || [])];
+          setPolicies(allPolicies.map(p => ({
+            id: p.id, key: p.tag_key || p.key, enforcement: p.enforcement,
+            valueMode: p.value_mode || p.valueMode || 'free',
+            pattern: p.pattern || '', allowedValues: p.allowed_values || p.allowedValues || [],
+            description: p.description || '', enabled: p.enabled !== false,
+            resources: p.resource_count || p.resources || 0
+          })));
+        } else {
+          setPolicies(Array.isArray(data) ? data.map(p => ({
+            id: p.id, key: p.tag_key || p.key, enforcement: p.enforcement,
+            valueMode: p.value_mode || 'free', pattern: p.pattern || '',
+            allowedValues: p.allowed_values || [], description: p.description || '',
+            enabled: p.enabled !== false, resources: p.resource_count || 0
+          })) : []);
+        }
+      })
+      .catch(err => { console.error('Failed to load tag policies', err); setPolicies([]); })
+      .finally(() => setLoadingPolicies(false));
+  }, []);
 
   const grouped = {
     strict: policies.filter(p => p.enforcement === "strict"),
@@ -493,31 +518,31 @@ function PolicyModal({ open, initial, onClose, onSave }) {
 function TemplatesTab() {
   const [showCreate, setShowCreate] = useState(false);
   const [editItem, setEditItem] = useState(null);
-  const [templates, setTemplates] = useState([
-    {
-      id: 1, name: "EC2 Workload Standard", description: "Standard tagging for production compute resources", scope: ["EC2", "EBS"], isDefault: true,
-      tags: [
-        { key: "environment", required: true, type: "enum", values: ["production", "staging", "development"], weight: 20, description: "Deployment environment" },
-        { key: "owner", required: true, type: "email", values: [], weight: 20, description: "Responsible team email" },
-        { key: "team", required: true, type: "enum", values: ["platform", "data", "backend", "frontend", "security"], weight: 15, description: "Owning team" },
-        { key: "cost-center", required: true, type: "pattern", values: [], pattern: "CC-[0-9]{4}", weight: 20, description: "Finance cost center" },
-        { key: "project", required: false, type: "free", values: [], weight: 10, description: "Project name" },
-        { key: "data-classification", required: false, type: "enum", values: ["public", "internal", "confidential", "restricted"], weight: 15, description: "Data sensitivity" },
-      ],
-      resources: 847, compliance: 91
-    },
-    {
-      id: 2, name: "Database Resources", description: "For RDS, DynamoDB, and caching layers", scope: ["RDS", "DynamoDB", "ElastiCache"],
-      tags: [
-        { key: "environment", required: true, type: "enum", values: ["production", "staging", "development"], weight: 15, description: "" },
-        { key: "owner", required: true, type: "email", values: [], weight: 20, description: "" },
-        { key: "cost-center", required: true, type: "pattern", values: [], weight: 20, description: "" },
-        { key: "backup-policy", required: true, type: "enum", values: ["daily", "weekly", "monthly", "none"], weight: 20, description: "Backup frequency requirement" },
-        { key: "data-classification", required: true, type: "enum", values: ["public", "internal", "confidential", "restricted"], weight: 25, description: "" },
-      ],
-      resources: 142, compliance: 78
-    },
-  ]);
+  const [templates, setTemplates] = useState([]);
+  const [loadingTemplates, setLoadingTemplates] = useState(true);
+
+  useEffect(() => {
+    setLoadingTemplates(true);
+    tagTemplateAPI.list()
+      .then(res => {
+        const data = res.data?.templates || res.data?.items || res.data || [];
+        setTemplates(Array.isArray(data) ? data.map(t => ({
+          id: t.id, name: t.name, description: t.description || '',
+          scope: t.scope || t.resource_types || [],
+          isDefault: t.is_default || false,
+          tags: (t.tags || t.tag_definitions || []).map(tag => ({
+            key: tag.key || tag.tag_key, required: tag.required !== false,
+            type: tag.type || tag.value_type || 'free',
+            values: tag.values || tag.allowed_values || [],
+            pattern: tag.pattern || '', weight: tag.weight || 10,
+            description: tag.description || ''
+          })),
+          resources: t.resource_count || 0, compliance: t.compliance_pct || 0
+        })) : []);
+      })
+      .catch(err => { console.error('Failed to load tag templates', err); setTemplates([]); })
+      .finally(() => setLoadingTemplates(false));
+  }, []);
 
   const handleSave = (template) => {
     if (editItem) { setTemplates(templates.map(t => t.id === editItem.id ? { ...t, ...template } : t)); setEditItem(null); }
@@ -967,11 +992,25 @@ function ScoringTab() {
     { range: "90–100", label: "Exemplary", variant: "green", action: "Compliant — no action" },
   ];
 
-  const preview = [
-    { name: "web-prod-01", id: "i-0abc123", tags: { environment: "production", owner: "alice@corp.com", "cost-center": "CC-1042", team: "platform" }, score: 91 },
-    { name: "worker-stg-03", id: "i-0def456", tags: { environment: "staging" }, score: 23 },
-    { name: "postgres-prod", id: "rds-prod", tags: { environment: "production", owner: "dba@corp.com", "cost-center": "CC-2017", "backup-policy": "daily", "data-classification": "confidential" }, score: 100 },
-  ];
+  const [preview, setPreview] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    loadPreview();
+  }, [mode, threshold]);
+
+  const loadPreview = async () => {
+    try {
+      setLoading(true);
+      const res = await tagScoringAPI.preview({ mode, threshold });
+      setPreview(res.data?.resources || []);
+    } catch (error) {
+      console.error('Failed to load score preview:', error);
+      setPreview([]);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
     <div className="space-y-6">
@@ -1090,11 +1129,27 @@ function ScoringTab() {
 // ═══════════════════════════════════════════════════════════════════════════════
 function AutomationTab() {
   const [showCreate, setShowCreate] = useState(false);
-  const [rules, setRules] = useState([
-    { id: 1, name: "Delete Untagged EC2 after 30 Days", trigger: "score < 20", resourceTypes: ["EC2"], graceDays: 30, action: "delete", notifs: ["email", "slack"], enabled: true, conditions: ["not_system_managed", "older_than_30d"] },
-    { id: 2, name: "Flag RDS Below Score Threshold", trigger: "score < 60", resourceTypes: ["RDS", "DynamoDB"], graceDays: 7, action: "flag", notifs: ["email"], enabled: true, conditions: [] },
-    { id: 3, name: "Auto-Tag from IAM Instance Profile", trigger: "missing:owner", resourceTypes: ["EC2"], graceDays: 0, action: "auto_tag", notifs: [], enabled: false, conditions: ["has_iam_profile"] },
-  ]);
+  const [rules, setRules] = useState([]);
+  const [loadingRules, setLoadingRules] = useState(true);
+
+  useEffect(() => {
+    setLoadingRules(true);
+    tagAutomationAPI.listRules()
+      .then(res => {
+        const data = res.data?.rules || res.data?.items || res.data || [];
+        setRules(Array.isArray(data) ? data.map(r => ({
+          id: r.id, name: r.name, trigger: r.trigger || r.condition || '',
+          resourceTypes: r.resource_types || r.resourceTypes || [],
+          graceDays: r.grace_days ?? r.graceDays ?? 0,
+          action: r.action || 'flag',
+          notifs: r.notifications || r.notifs || [],
+          enabled: r.enabled !== false,
+          conditions: r.conditions || []
+        })) : []);
+      })
+      .catch(err => { console.error('Failed to load automation rules', err); setRules([]); })
+      .finally(() => setLoadingRules(false));
+  }, []);
 
   const actionMeta = {
     delete: { label: "Delete Resource", variant: "red" },
@@ -1319,15 +1374,32 @@ function MonitorTab() {
   const [filter, setFilter] = useState("all");
   const [search, setSearch] = useState("");
 
-  const resources = [
-    { id: "i-0abc123", name: "web-prod-01", type: "EC2", score: 92, status: "compliant", cost: 184, tags: 6, daysLeft: null, team: "platform", env: "production" },
-    { id: "i-0def456", name: "worker-stg-03", type: "EC2", score: 58, status: "review", cost: 47, tags: 3, daysLeft: 23, team: "backend", env: "staging" },
-    { id: "vol-0xyz789", name: "data-volume-01", type: "EBS", score: 8, status: "critical", cost: 12, tags: 0, daysLeft: 7, team: "—", env: "—" },
-    { id: "rds-prod-db", name: "postgres-prod", type: "RDS", score: 100, status: "compliant", cost: 420, tags: 7, daysLeft: null, team: "data", env: "production" },
-    { id: "i-0ghi012", name: "old-batch-worker", type: "EC2", score: 0, status: "deletion", cost: 88, tags: 0, daysLeft: 3, team: "—", env: "—" },
-    { id: "elb-frontend", name: "prod-alb-01", type: "ELB", score: 75, status: "passing", cost: 23, tags: 4, daysLeft: null, team: "platform", env: "production" },
-    { id: "lambda-proc", name: "event-processor", type: "Lambda", score: 44, status: "review", cost: 8, tags: 2, daysLeft: 16, team: "backend", env: "staging" },
-  ];
+  const [resources, setResources] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    loadCompliance();
+  }, []);
+
+  const loadCompliance = async () => {
+    try {
+      setLoading(true);
+      const res = await tagComplianceAPI.listResources();
+      setResources(res.data?.resources || []);
+    } catch (error) {
+      console.error('Failed to load compliance resources:', error);
+      setResources([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const [auditLogs, setAuditLogs] = useState([]);
+  useEffect(() => {
+    tagAutomationAPI.getLog({ limit: 4 })
+      .then(res => setAuditLogs(res.data?.logs || []))
+      .catch(console.error);
+  }, []);
 
   const statusMeta = {
     compliant: { label: "Compliant", variant: "green" },
@@ -1339,7 +1411,7 @@ function MonitorTab() {
 
   const filtered = resources.filter(r => {
     if (filter !== "all" && r.status !== filter) return false;
-    if (search && !r.name.includes(search) && !r.id.includes(search) && !r.team.includes(search)) return false;
+    if (search && !(r.name || '').includes(search) && !(r.id || '').includes(search) && !(r.team || '').includes(search)) return false;
     return true;
   });
 
@@ -1347,7 +1419,7 @@ function MonitorTab() {
     { label: "Total Analyzed", value: resources.length, sub: "Resources", icon: <I.Package />, color: "gray" },
     { label: "Compliant", value: resources.filter(r => r.status === "compliant" || r.status === "passing").length, sub: "Above threshold", icon: <I.ShieldCheck />, color: "green" },
     { label: "Needs Remediation", value: resources.filter(r => r.status === "review" || r.status === "critical").length, sub: "Below threshold", icon: <I.AlertTriangle />, color: "amber" },
-    { label: "Monthly Cost at Risk", value: `$${resources.filter(r => ["review", "critical", "deletion"].includes(r.status)).reduce((s, r) => s + r.cost, 0).toLocaleString()}`, sub: "Non-compliant spend", icon: <I.TrendingUp />, color: "red" },
+    { label: "Monthly Cost at Risk", value: `$${resources.filter(r => ["review", "critical", "deletion"].includes(r.status)).reduce((s, r) => s + (r.cost || 0), 0).toLocaleString()}`, sub: "Non-compliant spend", icon: <I.TrendingUp />, color: "red" },
   ];
 
   const colorMap = { gray: "text-gray-500 bg-gray-50 border-gray-200", green: "text-emerald-600 bg-emerald-50 border-emerald-200", amber: "text-amber-600 bg-amber-50 border-amber-200", red: "text-red-600 bg-red-50 border-red-200" };
@@ -1466,23 +1538,22 @@ function MonitorTab() {
           <p className="text-xs text-gray-400 mt-0.5">Tamper-evident audit log with SHA-256 checksums</p>
         </div>
         <div className="divide-y divide-gray-50">
-          {[
-            { time: "Feb 22, 2026 14:32", action: "DELETED", resource: "vol-0abc123 (EBS)", reason: "Score 0 — 30+ day grace period expired", savings: "$8.40/mo recovered", outcome: "success" },
-            { time: "Feb 22, 2026 09:15", action: "FLAGGED", resource: "i-0xyz789 (EC2)", reason: "Score 18 — below threshold of 60", savings: "$47/mo at risk", outcome: "success" },
-            { time: "Feb 21, 2026 02:00", action: "NOTIFIED", resource: "rds-staging (RDS)", reason: "Missing: cost-center, data-classification", savings: "$120/mo", outcome: "success" },
-            { time: "Feb 20, 2026 18:44", action: "AUTO-TAGGED", resource: "i-0prod456 (EC2)", reason: "Owner inferred from IAM instance profile", savings: "—", outcome: "success" },
-          ].map((log, i) => (
-            <div key={i} className="px-5 py-3.5 flex items-center gap-4 hover:bg-gray-50/50 transition-colors">
-              <div className="text-xs text-gray-400 w-36 flex-shrink-0">{log.time}</div>
-              <Badge variant={log.action === "DELETED" ? "red" : log.action === "FLAGGED" ? "amber" : log.action === "NOTIFIED" ? "blue" : "teal"}>{log.action}</Badge>
-              <div className="flex-1 min-w-0">
-                <div className="text-sm text-gray-800 font-medium">{log.resource}</div>
-                <div className="text-xs text-gray-400">{log.reason}</div>
+          {auditLogs.length > 0 ? (
+            auditLogs.map((log, i) => (
+              <div key={i} className="px-5 py-3.5 flex items-center gap-4 hover:bg-gray-50/50 transition-colors">
+                <div className="text-xs text-gray-400 w-36 flex-shrink-0">{new Date(log.timestamp).toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</div>
+                <Badge variant={log.action === "DELETED" ? "red" : log.action === "FLAGGED" ? "amber" : log.action === "NOTIFIED" ? "blue" : "teal"}>{log.action}</Badge>
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm text-gray-800 font-medium">{log.resource_id}</div>
+                  <div className="text-xs text-gray-400">{log.reason || log.details}</div>
+                </div>
+                <div className="text-xs font-medium text-emerald-600 text-right w-36">{log.savings_impact ? `$${log.savings_impact}/mo` : "—"}</div>
+                <Badge variant={log.status === "failed" ? "red" : "green"}>{log.status === "failed" ? "Failed" : "Success"}</Badge>
               </div>
-              <div className="text-xs font-medium text-emerald-600 text-right w-36">{log.savings}</div>
-              <Badge variant="green">Success</Badge>
-            </div>
-          ))}
+            ))
+          ) : (
+            <div className="px-5 py-8 text-center text-sm text-gray-500">No recent automation actions to display.</div>
+          )}
         </div>
       </Card>
     </div>

@@ -1,68 +1,84 @@
-"""
-NodeTemplate model - Node configuration templates
-"""
-from sqlalchemy import Column, String, DateTime, ForeignKey, Integer, UniqueConstraint, ARRAY, Enum as SQLEnum
+from sqlalchemy import Column, String, Integer, Float, Boolean, ForeignKey, DateTime, Enum, JSON, UniqueConstraint
 from sqlalchemy.orm import relationship
 from datetime import datetime
 import enum
 from backend.models.base import Base, generate_uuid
 
+class TemplateScope(str, enum.Enum):
+    GLOBAL = "GLOBAL"
+    CLUSTER = "CLUSTER"
 
-class TemplateStrategy(enum.Enum):
-    """Template selection strategy"""
-    CHEAPEST = "cheapest"
-    BALANCED = "balanced"
-    PERFORMANCE = "performance"
+class TemplateStatus(str, enum.Enum):
+    DRAFT = "DRAFT"
+    ACTIVE = "ACTIVE"
+    ARCHIVED = "ARCHIVED"
 
+class WorkloadScope(str, enum.Enum):
+    STATELESS_ONLY = "STATELESS_ONLY"
+    MIXED = "MIXED"
 
-class DiskType(enum.Enum):
-    """EBS disk type"""
-    GP3 = "gp3"
-    GP2 = "gp2"
-    IO1 = "io1"
-    IO2 = "io2"
+class OptimizationPolicy(str, enum.Enum):
+    COST_FIRST = "COST_FIRST"
+    NO_DOWNTIME_FIRST = "NO_DOWNTIME_FIRST"
+    BALANCED = "BALANCED"
 
+class SubstituteStrategy(str, enum.Enum):
+    PREWARMED = "PREWARMED"
+    ON_DEMAND = "ON_DEMAND"
+    DISABLED = "DISABLED"
 
 class NodeTemplate(Base):
     """
-    Node Template model
-
-    User-defined templates for instance selection
+    Global or cluster-scoped template identity.
     """
     __tablename__ = "node_templates"
 
-    # Primary key
     id = Column(String(36), primary_key=True, default=generate_uuid, index=True)
-
-    # Foreign key to users
-    user_id = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-
-    # Template configuration
     name = Column(String(255), nullable=False)
-    families = Column(ARRAY(String), nullable=False)  # e.g., ['c5', 'c6i', 'm5']
-    architecture = Column(String(20), nullable=False, default="x86_64")  # x86_64 or arm64
-    strategy = Column(SQLEnum(TemplateStrategy), nullable=False, default=TemplateStrategy.BALANCED)
-    disk_type = Column(SQLEnum(DiskType), nullable=False, default=DiskType.GP3)
-    disk_size = Column(Integer, nullable=False, default=100)  # GB
+    scope = Column(Enum(TemplateScope), default=TemplateScope.GLOBAL, nullable=False)
+    created_by = Column(String(255))
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # Relations
+    versions = relationship("NodeTemplateVersion", back_populates="template", cascade="all, delete-orphan")
+    mappings = relationship("ClusterTemplateMapping", back_populates="template", cascade="all, delete-orphan")
 
-    # Default flag
-    is_default = Column(String(1), nullable=False, default="N")  # Y/N
+class NodeTemplateVersion(Base):
+    """
+    Immutable version of a template constraint envelope.
+    """
+    __tablename__ = "node_template_versions"
 
-    # AtharvaAI usage tracking
-    last_used_by_atharva_at = Column(DateTime, nullable=True)
-    atharva_rankings_count = Column(Integer, nullable=False, default=0)
+    id = Column(String(36), primary_key=True, default=generate_uuid, index=True)
+    template_id = Column(String(36), ForeignKey("node_templates.id", ondelete="CASCADE"), nullable=False, index=True)
+    version_number = Column(Integer, default=1, nullable=False)
+    status = Column(Enum(TemplateStatus), default=TemplateStatus.DRAFT, nullable=False)
+    
+    constraints_json = Column(JSON, nullable=False)
+    
+    # Relations
+    template = relationship("NodeTemplate", back_populates="versions")
+    mappings = relationship("ClusterTemplateMapping", back_populates="version")
+    
+class ClusterTemplateMapping(Base):
+    """
+    Mapping assigning exactly one active default template version to a cluster.
+    """
+    __tablename__ = "cluster_template_mappings"
 
-    # Timestamps
-    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
-    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
-
-    # Relationships
-    user = relationship("User", back_populates="node_templates")
-
-    # Unique constraint on (user_id, name)
+    id = Column(String(36), primary_key=True, default=generate_uuid, index=True)
+    cluster_id = Column(String(36), ForeignKey("clusters.id", ondelete="CASCADE"), nullable=False, index=True)
+    template_id = Column(String(36), ForeignKey("node_templates.id", ondelete="CASCADE"), nullable=False, index=True)
+    version_id = Column(String(36), ForeignKey("node_template_versions.id", ondelete="CASCADE"), nullable=False, index=True)
+    
+    is_default = Column(Boolean, default=True, nullable=False)
+    assigned_at = Column(DateTime, default=datetime.utcnow)
+    
     __table_args__ = (
-        UniqueConstraint("user_id", "name", name="uq_user_template_name"),
+        UniqueConstraint('cluster_id', 'is_default', name='uq_cluster_default_template'),
     )
 
-    def __repr__(self):
-        return f"<NodeTemplate(id={self.id}, name={self.name}, strategy={self.strategy.value}, is_default={self.is_default})>"
+    # Relations
+    cluster = relationship("Cluster", back_populates="template_mappings")
+    template = relationship("NodeTemplate", back_populates="mappings")
+    version = relationship("NodeTemplateVersion", back_populates="mappings")

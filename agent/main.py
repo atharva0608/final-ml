@@ -112,7 +112,8 @@ class Agent:
         url = f"{self.backend_url}/api/v1/agents/register"
         headers = {
             'Authorization': f'Bearer {self.api_key}',
-            'Content-Type': 'application/json'
+            'Content-Type': 'application/json',
+            'ngrok-skip-browser-warning': 'true'
         }
 
         # Get cluster metadata from environment or defaults
@@ -162,7 +163,8 @@ class Agent:
         url = f"{self.backend_url}/api/v1/agents/deregister"
         headers = {
             'Authorization': f'Bearer {self.api_key}',
-            'Content-Type': 'application/json'
+            'Content-Type': 'application/json',
+            'ngrok-skip-browser-warning': 'true'
         }
 
         payload = {

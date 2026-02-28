@@ -1,16 +1,32 @@
 import React, { useEffect, useState } from 'react';
 import { Card } from '../shared';
 import { FiSliders, FiCheckCircle, FiAlertTriangle, FiArrowUpRight, FiActivity, FiInbox } from 'react-icons/fi';
-import api from '../../services/api';
+import api, { clusterAPI } from '../../services/api';
 
-const AutoRebalanceAuditCard = () => {
+const AutoRebalanceAuditCard = ({ clusterId, initialEnabled = false }) => {
     const [decisions, setDecisions] = useState([]);
     const [loading, setLoading] = useState(true);
-    const [isEnabled, setIsEnabled] = useState(true);
+    const [isEnabled, setIsEnabled] = useState(initialEnabled);
+    const [toggling, setToggling] = useState(false);
 
     useEffect(() => {
         fetchAuditLog();
-    }, []);
+        // Fetch current cluster state
+        if (clusterId) {
+            fetchClusterState();
+        }
+    }, [clusterId]);
+
+    const fetchClusterState = async () => {
+        try {
+            const response = await clusterAPI.getCluster(clusterId);
+            if (response.data) {
+                setIsEnabled(response.data.auto_rebalance_enabled || false);
+            }
+        } catch (error) {
+            console.error("Failed to fetch cluster state:", error);
+        }
+    };
 
     const fetchAuditLog = async () => {
         try {
@@ -25,6 +41,25 @@ const AutoRebalanceAuditCard = () => {
             setDecisions([]);
         } finally {
             setLoading(false);
+        }
+    };
+
+    const handleToggle = async () => {
+        if (!clusterId || toggling) return;
+
+        setToggling(true);
+        const newState = !isEnabled;
+
+        try {
+            await clusterAPI.toggleAutoRebalance(clusterId, newState);
+            setIsEnabled(newState);
+            console.log(`Auto-rebalance ${newState ? 'enabled' : 'disabled'} for cluster ${clusterId}`);
+        } catch (error) {
+            console.error("Failed to toggle auto-rebalance:", error);
+            // Show error notification (you can add toast here)
+            alert(`Failed to ${newState ? 'enable' : 'disable'} auto-rebalance: ${error.message}`);
+        } finally {
+            setToggling(false);
         }
     };
 
@@ -96,12 +131,16 @@ const AutoRebalanceAuditCard = () => {
 
                 {/* Toggle Switch */}
                 <button
-                    onClick={() => setIsEnabled(!isEnabled)}
-                    className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none ${isEnabled ? 'bg-green-500' : 'bg-gray-200'
-                        }`}
+                    onClick={handleToggle}
+                    disabled={toggling || !clusterId}
+                    className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none ${
+                        toggling ? 'opacity-50 cursor-not-allowed' : ''
+                    } ${isEnabled ? 'bg-green-500' : 'bg-gray-200'}`}
+                    title={isEnabled ? 'Disable auto-rebalancing' : 'Enable auto-rebalancing'}
                 >
-                    <span className={`inline-block h-3 w-3 transform rounded-full bg-white transition-transform ${isEnabled ? 'translate-x-5' : 'translate-x-1'
-                        }`} />
+                    <span className={`inline-block h-3 w-3 transform rounded-full bg-white transition-transform ${
+                        isEnabled ? 'translate-x-5' : 'translate-x-1'
+                    }`} />
                 </button>
             </div>
 

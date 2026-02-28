@@ -17,7 +17,7 @@ class ClusterListItem(BaseModel):
     monthly_cost: float = Field(..., ge=0, description="Estimated monthly cost in USD")
     agent_installed: bool = Field(..., description="Whether Kubernetes Agent is installed")
     last_heartbeat: Optional[datetime] = Field(None, description="Last agent heartbeat timestamp")
-    
+
     # Teaser Fields
     potential_savings_monthly: float = Field(0.0, ge=0, description="Potential savings IF we switch ON_DEMAND to SPOT")
     realized_savings_monthly: float = Field(0.0, ge=0, description="Realized savings we're ALREADY getting from SPOT instances")
@@ -27,6 +27,10 @@ class ClusterListItem(BaseModel):
     mem_total: int = Field(0, ge=0, description="Total memory in GiB across all nodes")
     cpu_usage_pct: float = Field(0.0, ge=0, le=100, description="CPU usage percentage")
     mem_usage_pct: float = Field(0.0, ge=0, le=100, description="Memory usage percentage")
+
+    # Auto-rebalancing
+    auto_rebalance_enabled: bool = Field(False, description="Auto on-demand→spot rebalancing enabled")
+    rightsizing_enabled: bool = Field(False, description="Right-sizing enabled")
 
     @field_serializer('last_heartbeat')
     def serialize_heartbeat(self, dt: Optional[datetime], _info):
@@ -301,6 +305,8 @@ class ClusterUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=255, description="Cluster name")
     tags: Optional[Dict[str, str]] = Field(None, description="Resource tags")
     status: Optional[str] = Field(None, description="Cluster status")
+    auto_rebalance_enabled: Optional[bool] = Field(None, description="Auto-rebalance toggle")
+    rightsizing_enabled: Optional[bool] = Field(None, description="Right-sizing toggle")
 
 
 class ClusterResponse(BaseModel):
@@ -314,6 +320,8 @@ class ClusterResponse(BaseModel):
     version: Optional[str] = Field(None, description="Cluster version")
     endpoint: Optional[str] = Field(None, description="API endpoint")
     status: str = Field(..., description="Cluster status")
+    agent_installed: Optional[str] = Field(None, description="Agent installation status (Y/N)")
+    is_agentless: Optional[str] = Field(None, description="Agentless mode (Y/N)")
     last_heartbeat: Optional[datetime] = Field(None, description="Last heartbeat timestamp")
     tags: Optional[Dict[str, str]] = Field(default_factory=dict, description="Resource tags")
     created_at: datetime = Field(..., description="Creation timestamp")
@@ -323,6 +331,10 @@ class ClusterResponse(BaseModel):
     potential_savings_monthly: float = Field(0.0, description="Potential savings")
     on_demand_node_count: int = Field(0, description="OD Node Count")
     inventory_summary: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Inventory breakdown")
+
+    # Auto-rebalancing
+    auto_rebalance_enabled: bool = Field(False, description="Auto on-demand→spot rebalancing enabled")
+    rightsizing_enabled: bool = Field(False, description="Right-sizing enabled")
 
 
 class AgentInstallCommand(BaseModel):
@@ -343,3 +355,45 @@ class InstallScriptResponse(BaseModel):
     cluster_id: str = Field(..., description="Cluster UUID")
     script: str = Field(..., description="Installation script/command")
     api_key: Optional[str] = Field(None, description="Auto-generated API key for agent auth")
+
+# --- Unified Optimization Config Schemas ---
+
+class AutomationControlsSchema(BaseModel):
+    auto_rebalance_enabled: bool = False
+    auto_rightsizing_enabled: bool = False
+    cooldown_override_minutes: Optional[int] = None
+    conservative_mode_enabled: bool = True
+    manual_approval_required: bool = False
+    target_spot_exposure_pct: int = 100
+
+class OptimizationStrategySchema(BaseModel):
+    strategy_type: str = "BALANCED"
+    risk_ceiling_percent: int = 25
+    min_savings_percent: int = 15
+    volatility_tolerance_percent: int = 20
+    migration_penalty_multiplier: float = 1.5
+    diversity_strictness_level: str = "Medium"
+
+class StatelessRulesSchema(BaseModel):
+    instance_diversification_enabled: bool = True
+    respect_pdb_enabled: bool = True
+    prewarm_minutes: int = 0
+    substitute_strategy: str = "PREWARMED"
+    max_rebalances_per_24h: int = 5
+    resize_cooldown_minutes: int = 120
+    resize_headroom_multiplier: float = 1.2
+    volatility_safety_multiplier: float = 1.35
+    fresh_cluster_stabilization_minutes: int = 1440
+
+class StatefulRulesSchema(BaseModel):
+    manual_resize_allowed: bool = True
+    show_ondemand_only: bool = True
+    require_approval: bool = True
+    block_spot_for_stateful: bool = True
+    max_downscale_percent: int = 25
+
+class UnifiedOptimizationSettings(BaseModel):
+    automation_controls: AutomationControlsSchema
+    optimization_strategy: OptimizationStrategySchema
+    stateless_rules: StatelessRulesSchema
+    stateful_rules: StatefulRulesSchema

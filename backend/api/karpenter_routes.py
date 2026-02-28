@@ -356,7 +356,32 @@ def get_karpenter_activity(
             "reschedule_seconds": 12,
         },
     ]
-    return {"events": sample_events[:limit], "total": len(sample_events)}
+    # Query audit logs for real karpenter events from DB
+    from backend.models.audit_log import AuditLog
+
+    real_events = []
+    try:
+        logs = db.query(AuditLog).filter(
+            AuditLog.event.in_(["karpenter_consolidation", "karpenter_resize", "spot_replacement", "node_drain", "node_provision"])
+        ).order_by(AuditLog.timestamp.desc()).limit(20).all()
+
+        for log in logs:
+            real_events.append({
+                "id": str(log.id),
+                "timestamp": log.timestamp.isoformat() if log.timestamp else datetime.utcnow().isoformat(),
+                "cluster": log.resource or "unknown",
+                "type": log.event.replace("karpenter_", ""),
+                "mode": "auto",
+                "title": log.event.replace("_", " ").title(),
+                "details": [],
+                "savings_daily": 0,
+                "zero_downtime": True,
+            })
+    except Exception:
+        pass
+
+    events = real_events if real_events else sample_events
+    return {"events": events, "total": len(events)}
 
 
 @router.get(
@@ -370,68 +395,64 @@ def get_karpenter_stats(
     db: Session = Depends(get_db)
 ) -> Dict[str, Any]:
     """Performance KPIs for the live Karpenter dashboard."""
+    from backend.models.instance import Instance
+
+    # Get all clusters (for now, we'll get all clusters)
+    # In production, filter by user's organization
+    clusters = db.query(Cluster).all()
+
+    total_nodes = sum(c.node_count or 0 for c in clusters)
+    total_spot = sum(c.spot_count or 0 for c in clusters)
+    total_on_demand = sum(c.on_demand_node_count or 0 for c in clusters)
+
+    # Calculate spot coverage percentage
+    spot_coverage_pct = round((total_spot / total_nodes * 100) if total_nodes > 0 else 0, 1)
+
+    # Calculate potential savings (on-demand nodes that could be spot)
+    total_potential_savings = sum(c.potential_savings_monthly or 0 for c in clusters)
+
+    # Calculate realized savings (current spot instances)
+    total_realized_savings = sum(c.realized_savings_monthly or 0 for c in clusters)
+
+    # Calculate average CPU utilization from instances
+    instances = db.query(Instance).filter(
+        Instance.cluster_id.in_([c.id for c in clusters])
+    ).all() if clusters else []
+
+    avg_cpu = round(sum(i.cpu_util or 0 for i in instances) / len(instances) if instances else 0, 1)
+
+    # Calculate savings percentage
+    # If we have on-demand instances, show how much we could save
+    if total_on_demand > 0:
+        # Typical spot vs on-demand savings is ~70%
+        avg_reduction_pct = 70
+    else:
+        # If already all spot, we're saving maximum
+        avg_reduction_pct = 0
+
     return {
         "period": period,
-        "avg_utilization_pct": 78,
-        "prev_utilization_pct": 45,
-        "optimizations_count": 38,
-        "cost_saved": 1240,
-        "spot_coverage_pct": 82,
+        "avg_utilization_pct": avg_cpu,
+        "prev_utilization_pct": avg_cpu,  # Would need historical data
+        "optimizations_count": 0,  # Would track from rebalancing_actions
+        "cost_saved": round(total_realized_savings, 2),
+        "spot_coverage_pct": spot_coverage_pct,
         "clusters": [
             {
-                "cluster_id": "prod-web",
-                "name": "prod-web",
-                "region": "us-east-1",
-                "strategy": "balanced",
-                "nodes": 12,
-                "utilization_pct": 82,
-                "spot_pct": 83,
-                "cost_current": 520,
-                "cost_before": 720,
-                "optimizations_24h": 8,
-                "status": "active",
-            },
-            {
-                "cluster_id": "prod-api",
-                "name": "prod-api",
-                "region": "us-east-1",
-                "strategy": "balanced",
-                "nodes": 18,
-                "utilization_pct": 75,
-                "spot_pct": 78,
-                "cost_current": 780,
-                "cost_before": 1100,
-                "optimizations_24h": 12,
-                "status": "active",
-            },
-            {
-                "cluster_id": "staging",
-                "name": "staging-cluster",
-                "region": "us-west-2",
-                "strategy": "cost-first",
-                "nodes": 5,
-                "utilization_pct": 88,
-                "spot_pct": 100,
-                "cost_current": 195,
-                "cost_before": 320,
-                "optimizations_24h": 6,
-                "status": "active",
-            },
+                "id": c.id,
+                "name": c.name,
+                "potential_savings": round(c.potential_savings_monthly or 0, 2),
+                "spot_coverage": round((c.spot_count / c.node_count * 100) if c.node_count > 0 else 0, 1)
+            }
+            for c in clusters
         ],
-        "cost_trend": [
-            {"week": "Week 1", "before": 9200, "after": None},
-            {"week": "Week 2", "before": 9200, "after": None},
-            {"week": "Week 3", "before": 9200, "after": 7500},
-            {"week": "Week 4", "before": None, "after": 6800},
-            {"week": "Week 5", "before": None, "after": 6500},
-            {"week": "Week 6", "before": None, "after": 6440},
-        ],
+        "cost_trend": [],  # Would need historical cost data
         "instance_distribution": {
-            "before": {"m5": 75, "c5": 15, "r5": 10},
-            "after": {"m6i": 35, "c6i": 28, "m6a": 18, "r6g": 12, "other": 7},
+            "before": {"on_demand": total_on_demand + total_spot, "spot": 0},
+            "after": {"on_demand": total_on_demand, "spot": total_spot},
         },
-        "total_saved": 8640,
-        "avg_reduction_pct": 32,
+        "total_saved": round(total_realized_savings, 2),
+        "avg_reduction_pct": avg_reduction_pct,
     }
 
 
@@ -447,114 +468,128 @@ def get_karpenter_recommendations(
     db: Session = Depends(get_db)
 ) -> Dict[str, Any]:
     """
-    Get all pending Karpenter recommendations from clusters in dry_run mode.
-    These are optimization opportunities that require manual approval to apply.
+    Get rightsizing recommendations for cluster nodes.
+    When cluster_id is specified, returns ALL instances (spot and on-demand) for that cluster
+    regardless of karpenter_mode — giving the monitoring tab real node data.
+    Without cluster_id filter, only dry_run clusters are included.
     """
-    # Query clusters in dry_run mode
-    query = db.query(Cluster).filter(Cluster.karpenter_mode == KarpenterMode.DRY_RUN)
+    from backend.models.instance import Instance
+
+    # On-demand pricing lookup (approximate $/hour for common instance types)
+    ONDEMAND_HOURLY: Dict[str, float] = {
+        't3.micro': 0.0104, 't3.small': 0.0208, 't3.medium': 0.0416, 't3.large': 0.0832,
+        't3.xlarge': 0.1664, 't3.2xlarge': 0.3328,
+        't3a.medium': 0.0376, 't3a.large': 0.0752, 't3a.xlarge': 0.1504,
+        'm5.large': 0.096, 'm5.xlarge': 0.192, 'm5.2xlarge': 0.384, 'm5.4xlarge': 0.768,
+        'm6i.large': 0.096, 'm6i.xlarge': 0.192, 'm6i.2xlarge': 0.384, 'm6i.4xlarge': 0.768,
+        'm6a.large': 0.0864, 'm6a.xlarge': 0.1728, 'm6a.2xlarge': 0.3456,
+        'c5.large': 0.085, 'c5.xlarge': 0.17, 'c5.2xlarge': 0.34, 'c5.4xlarge': 0.68,
+        'c6i.large': 0.085, 'c6i.xlarge': 0.17, 'c6i.2xlarge': 0.34, 'c6i.4xlarge': 0.68,
+        'r5.large': 0.126, 'r5.xlarge': 0.252, 'r5.2xlarge': 0.504, 'r5.4xlarge': 1.008,
+        'r6i.large': 0.126, 'r6i.xlarge': 0.252, 'r6i.2xlarge': 0.504,
+        'i3.large': 0.156, 'i3.xlarge': 0.312, 'i3.2xlarge': 0.624,
+    }
+
+    # Build cluster query
     if cluster_id:
-        query = query.filter(Cluster.id == cluster_id)
+        # For a specific cluster: include it regardless of karpenter_mode
+        query = db.query(Cluster).filter(Cluster.id == cluster_id)
+    else:
+        # Global view: only dry_run clusters show pending recommendations
+        query = db.query(Cluster).filter(Cluster.karpenter_mode == KarpenterMode.DRY_RUN)
 
-    dry_run_clusters = query.all()
+    target_clusters = query.all()
 
-    # Stub recommendations data - in production, this would come from K8s events / database
-    recommendations = [
-        {
-            "id": str(uuid.uuid4()),
-            "cluster_id": "prod-web",
-            "cluster_name": "prod-web",
-            "type": "consolidation",
-            "status": "pending",
-            "created_at": (datetime.utcnow() - timedelta(hours=2)).isoformat(),
-            "title": "Consolidate 3 under-utilized nodes",
-            "description": "Current nodes running at 28-38% utilization. Can consolidate to 2 nodes with 65-70% utilization.",
-            "current_instances": ["i-0abc123", "i-0abc124", "i-0abc125"],
-            "recommended_instances": ["c6i.xlarge", "m6i.large"],
-            "potential_savings_monthly": 420,
-            "confidence": "high",
-            "risk_level": "low",
-            "details": {
-                "current_cost_monthly": 840,
-                "projected_cost_monthly": 420,
-                "current_utilization_avg": 34,
-                "projected_utilization_avg": 68,
-                "affected_pods": 12,
-                "estimated_disruption_seconds": 30,
-            }
-        },
-        {
-            "id": str(uuid.uuid4()),
-            "cluster_id": "prod-api",
-            "cluster_name": "prod-api",
-            "type": "right_sizing",
-            "status": "pending",
-            "created_at": (datetime.utcnow() - timedelta(hours=5)).isoformat(),
-            "title": "Right-size over-provisioned instance",
-            "description": "Instance i-0def456 (m5.4xlarge) running at 18% CPU, 22% memory. Can downsize to m5.xlarge.",
-            "current_instances": ["i-0def456"],
-            "recommended_instances": ["m5.xlarge"],
-            "potential_savings_monthly": 560,
-            "confidence": "high",
-            "risk_level": "low",
-            "details": {
-                "current_type": "m5.4xlarge",
-                "current_cost_monthly": 700,
-                "projected_type": "m5.xlarge",
-                "projected_cost_monthly": 140,
-                "cpu_utilization": 18,
-                "memory_utilization": 22,
-                "affected_pods": 3,
-                "pod_constraints_satisfied": True,
-            }
-        },
-        {
-            "id": str(uuid.uuid4()),
-            "cluster_id": "prod-web",
-            "cluster_name": "prod-web",
-            "type": "graviton_migration",
-            "status": "pending",
-            "created_at": (datetime.utcnow() - timedelta(hours=8)).isoformat(),
-            "title": "Migrate to Graviton (ARM64)",
-            "description": "Workload compatible with ARM64. Switch r5.2xlarge → r6g.2xlarge for 20% cost reduction.",
-            "current_instances": ["i-0ghi789"],
-            "recommended_instances": ["r6g.2xlarge"],
-            "potential_savings_monthly": 136,
-            "confidence": "medium",
-            "risk_level": "medium",
-            "details": {
-                "current_type": "r5.2xlarge",
-                "current_cost_monthly": 680,
-                "projected_type": "r6g.2xlarge",
-                "projected_cost_monthly": 544,
-                "architecture_change": "amd64 → arm64",
-                "compatibility_checked": True,
-                "affected_pods": 8,
-            }
-        },
-    ]
+    recommendations = []
+    total_potential_savings = 0
 
-    # Filter by status if provided
-    if status_filter:
-        recommendations = [r for r in recommendations if r["status"] == status_filter]
+    for cluster in target_clusters:
+        # Include ALL instances (both spot and on-demand) for real monitoring data
+        instances = db.query(Instance).filter(
+            Instance.cluster_id == cluster.id
+        ).all()
 
-    # Filter by cluster if provided
-    if cluster_id:
-        recommendations = [r for r in recommendations if r["cluster_id"] == cluster_id]
+        # Load WorkloadInspector classification for this cluster (node_name → status string)
+        _node_classification: Dict[str, str] = {}
+        try:
+            import json as _json
+            from backend.core.redis_client import get_redis_client as _get_redis
+            _redis = _get_redis()
+            _raw = _redis.get(f"spot:node_classification:{cluster.id}")
+            if _raw:
+                _node_classification = _json.loads(_raw)
+        except Exception:
+            pass  # No classification available — use default below
 
-    total_potential_savings = sum(r["potential_savings_monthly"] for r in recommendations)
+        for instance in instances:
+            instance_type = instance.instance_type or 'unknown'
+            # instance.lifecycle is an InstanceLifecycle enum — use .value to get the string
+            lifecycle_raw = instance.lifecycle
+            lifecycle = (lifecycle_raw.value if hasattr(lifecycle_raw, 'value') else str(lifecycle_raw or 'on-demand')).lower()
+            is_spot = lifecycle == 'spot'
+
+            # Calculate real monthly cost from pricing table
+            hourly_od = ONDEMAND_HOURLY.get(instance_type, 0.096)  # default ~m5.large
+            monthly_od = round(hourly_od * 720, 2)
+
+            # Determine node_type from WorkloadInspector first (K8s-aware classification)
+            # K8s node name often matches the EC2 instance_id (i-xxxxxxxxx)
+            _cached_status = _node_classification.get(instance.instance_id or "")
+            if _cached_status == "STATEFUL_PROTECTED" or _cached_status == "DRAIN_UNSAFE":
+                node_type = "stateful"
+            else:
+                # STATELESS_ELIGIBLE, SYSTEM_PROTECTED, or no cache → stateless
+                node_type = "stateless"
+
+            if is_spot:
+                # Already spot-optimized — current cost ≈ 30% of on-demand
+                monthly_current = round(monthly_od * 0.3, 2)
+                potential_savings = 0.0
+                savings_pct = 0
+                reason = "Already running on spot — lifecycle optimized"
+            else:
+                # On-demand — converting to spot saves ~70%
+                monthly_current = monthly_od
+                potential_savings = round(monthly_od * 0.7, 2)
+                savings_pct = 70
+                reason = "Convert on-demand to spot for 70% cost savings"
+
+            recommendations.append({
+                "id": f"rec-{instance.id}",
+                "cluster_id": cluster.id,
+                "cluster_name": cluster.name,
+                "instance_id": instance.instance_id,
+                "current_type": instance_type,
+                "recommended_type": instance_type,  # Same type, lifecycle change
+                "current_lifecycle": lifecycle,
+                "recommended_lifecycle": "spot",
+                "cpu": round(instance.cpu_util or 0.0, 1),
+                "mem": round(instance.memory_util or 0.0, 1),
+                "current_cost_monthly": monthly_current,
+                "recommended_cost_monthly": round(monthly_od * 0.3, 2),
+                "potential_savings": potential_savings,
+                "savings_pct": savings_pct,
+                "risk_prob": 15,
+                "status": "pending",
+                "node_type": node_type,
+                "created_at": datetime.utcnow().isoformat(),
+                "reason": reason,
+            })
+
+            total_potential_savings += potential_savings
 
     return {
         "recommendations": recommendations,
         "total_count": len(recommendations),
         "pending_count": len([r for r in recommendations if r["status"] == "pending"]),
-        "total_potential_savings_monthly": total_potential_savings,
+        "total_potential_savings_monthly": round(total_potential_savings, 2),
         "dry_run_clusters": [
             {
                 "cluster_id": c.id,
                 "name": c.name,
-                "mode": c.karpenter_mode.value if c.karpenter_mode else None
+                "mode": c.karpenter_mode.value if c.karpenter_mode else "standard",
             }
-            for c in dry_run_clusters
+            for c in target_clusters
         ],
     }
 
@@ -692,3 +727,289 @@ def update_karpenter_mode(
         "updated_by": current_user.email,
         "pending_recommendations_count": 0 if new_mode == "auto" else None,
     }
+
+
+# ============================================================================
+# Execution Plan & History Endpoints (used by RightSizingDashboard)
+# ============================================================================
+
+
+@router.get(
+    "/execution-plan",
+    summary="Get pending rightsizing execution plan",
+    description="Returns PENDING/APPROVED rightsizing proposals as the execution plan"
+)
+def get_execution_plan(
+    cluster_id: Optional[str] = Query(None, description="Filter by cluster"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+) -> Dict[str, Any]:
+    """
+    Returns pending and approved rightsizing proposals as the execution plan.
+    Used by the RightSizingDashboard Execution Plan tab.
+    """
+    try:
+        from backend.models.rightsizing_proposal import RightsizingProposal, ProposalStatus
+
+        query = db.query(RightsizingProposal).filter(
+            RightsizingProposal.status.in_([ProposalStatus.PENDING, ProposalStatus.APPROVED])
+        )
+        if cluster_id:
+            query = query.filter(RightsizingProposal.cluster_id == cluster_id)
+
+        proposals = query.order_by(RightsizingProposal.created_at.asc()).all()
+
+        plan_items = []
+        for i, p in enumerate(proposals, 1):
+            plan_items.append({
+                "order": i,
+                "node": p.current_pool or f"node-{str(p.id)[:8]}",
+                "action": f"{p.current_instance_type} → {p.proposed_instance_type}",
+                "est_duration": "~45s",
+                "rollback_plan": f"Re-provision {p.current_instance_type} via ASG",
+                "status": p.status.value,
+                "proposal_id": p.id,
+                "monthly_savings": round(p.estimated_monthly_savings, 2),
+                "confidence": f"{max(50, round((1.0 - (p.best_pool_risk_score or 0.3)) * 100))}%",
+            })
+
+        return {
+            "plan": plan_items,
+            "total": len(plan_items),
+            "generated_at": datetime.utcnow().isoformat(),
+        }
+    except Exception as e:
+        logger.error(f"Error fetching execution plan: {e}")
+        return {"plan": [], "total": 0, "generated_at": datetime.utcnow().isoformat()}
+
+
+@router.get(
+    "/history",
+    summary="Get rightsizing action history",
+    description="Returns EXECUTED/FAILED rightsizing proposals as the action history"
+)
+def get_rightsizing_history(
+    cluster_id: Optional[str] = Query(None, description="Filter by cluster"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+) -> Dict[str, Any]:
+    """
+    Returns executed and failed rightsizing proposals for the history tab.
+    Used by the RightSizingDashboard History tab.
+    """
+    try:
+        from backend.models.rightsizing_proposal import RightsizingProposal, ProposalStatus
+
+        query = db.query(RightsizingProposal).filter(
+            RightsizingProposal.status.in_([ProposalStatus.EXECUTED, ProposalStatus.FAILED])
+        )
+        if cluster_id:
+            query = query.filter(RightsizingProposal.cluster_id == cluster_id)
+
+        proposals = query.order_by(RightsizingProposal.executed_at.desc()).limit(50).all()
+
+        history_items = []
+        for p in proposals:
+            executed_at = p.executed_at or p.evaluated_at or p.created_at
+            history_items.append({
+                "executed_at": executed_at.strftime("%b %d, %I:%M %p") if executed_at else "Unknown",
+                "node": p.current_pool or f"node-{str(p.id)[:8]}",
+                "before": p.current_instance_type,
+                "after": p.proposed_instance_type,
+                "time_taken": "~45s",
+                "status": "Success" if p.status == ProposalStatus.EXECUTED else "Failed",
+                "monthly_savings": round(p.estimated_monthly_savings, 2),
+            })
+
+        # Aggregate KPIs
+        executed_count = sum(1 for p in proposals if p.status == ProposalStatus.EXECUTED)
+        total_count = len(proposals)
+        success_rate = round((executed_count / total_count * 100), 1) if total_count > 0 else 0
+        net_savings = sum(
+            p.estimated_monthly_savings for p in proposals
+            if p.status == ProposalStatus.EXECUTED
+        )
+
+        return {
+            "history": history_items,
+            "total": len(history_items),
+            "kpis": {
+                "resizes_this_month": total_count,
+                "net_savings_monthly": round(net_savings, 2),
+                "success_rate_pct": success_rate,
+            },
+            "generated_at": datetime.utcnow().isoformat(),
+        }
+    except Exception as e:
+        logger.error(f"Error fetching rightsizing history: {e}")
+        return {
+            "history": [],
+            "total": 0,
+            "kpis": {"resizes_this_month": 0, "net_savings_monthly": 0, "success_rate_pct": 0},
+            "generated_at": datetime.utcnow().isoformat(),
+        }
+
+
+# ============================================================================
+# Decision Engine v3 API Endpoints
+# ============================================================================
+
+
+@router.get("/v3/substitute/{cluster_id}/status")
+async def get_substitute_status(
+    cluster_id: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Get current substitute instance status for the cluster.
+
+    Returns: state (IDLE/PREWARMING/READY/ACTIVE/RELEASING),
+    deployed instance details, cost drift info, and prewarm timeout status.
+    """
+    try:
+        from backend.core.redis_client import get_redis_client
+        from backend.services.substitute_manager import SubstituteManager
+
+        redis = get_redis_client()
+        sub_mgr = SubstituteManager(db, redis)
+
+        state = sub_mgr.get_state(cluster_id)
+        metadata = sub_mgr._get_metadata(cluster_id)
+        cost_drift = sub_mgr.check_cost_drift(cluster_id)
+
+        # Check prewarm timeout
+        timeout_key = f"spot:substitute:prewarm_timeout:{cluster_id}"
+        timeout_ttl = redis.ttl(timeout_key)
+
+        return {
+            "cluster_id": cluster_id,
+            "state": state.value if hasattr(state, 'value') else str(state),
+            "metadata": metadata,
+            "cost_drift": cost_drift,
+            "prewarm_timeout_remaining": max(0, timeout_ttl) if timeout_ttl and timeout_ttl > 0 else None,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Failed to get substitute status for {cluster_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class SubstituteDeployRequest(BaseModel):
+    """Request to deploy a substitute instance."""
+    target_node_name: str
+
+
+@router.post("/v3/substitute/{cluster_id}/deploy")
+async def deploy_substitute(
+    cluster_id: str,
+    payload: SubstituteDeployRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Deploy substitute instance for target node.
+
+    Validates target node is STATELESS_ELIGIBLE before deploying.
+    Selects top 3 candidates based on optimization mode.
+    Each candidate validated via DryRun API before acceptance.
+    """
+    try:
+        from backend.core.redis_client import get_redis_client
+        from backend.services.substitute_manager import SubstituteManager
+
+        redis = get_redis_client()
+        sub_mgr = SubstituteManager(db, redis)
+
+        result = sub_mgr.deploy_substitute(
+            cluster_id=cluster_id,
+            target_node_name=payload.target_node_name
+        )
+
+        return result
+    except Exception as e:
+        logger.error(f"Failed to deploy substitute for {cluster_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/v3/cooldown/{cluster_id}")
+async def get_cooldown_status(cluster_id: str):
+    """
+    Get cluster cooldown status for UI display.
+
+    Returns: whether cooldown is active, remaining seconds/minutes,
+    and pool-level cooldowns if any exist.
+    """
+    try:
+        from backend.core.redis_client import get_redis_client
+        from backend.services.cooldown_controller import CooldownController
+
+        redis = get_redis_client()
+        cooldown = CooldownController(redis)
+
+        cluster_status = cooldown.get_cluster_cooldown_status(cluster_id)
+
+        # Check mode switch dwell cooldown
+        dwell_key = f"spot:cooldown:mode_switch:{cluster_id}"
+        dwell_ttl = redis.ttl(dwell_key)
+
+        return {
+            "cluster_id": cluster_id,
+            "cluster_cooldown": cluster_status,
+            "mode_switch_cooldown": {
+                "active": dwell_ttl is not None and dwell_ttl > 0,
+                "remaining_seconds": max(0, dwell_ttl) if dwell_ttl and dwell_ttl > 0 else 0
+            },
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Failed to get cooldown for {cluster_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/v3/workload-status/{cluster_id}")
+async def get_workload_status(cluster_id: str):
+    """
+    Get current node classification data for the cluster.
+
+    Returns node-by-node classification (STATELESS_ELIGIBLE, STATEFUL_PROTECTED,
+    DRAIN_UNSAFE, SYSTEM_PROTECTED) with aggregate counts.
+    """
+    try:
+        from backend.core.redis_client import get_redis_client
+        from backend.services.workload_inspector import WorkloadInspector, NodeStatus
+
+        redis = get_redis_client()
+        inspector = WorkloadInspector(redis)
+
+        classification = inspector.get_cached_classification(cluster_id)
+
+        if not classification:
+            return {
+                "cluster_id": cluster_id,
+                "classification_available": False,
+                "message": "No cached classification. Scan may not have run yet.",
+                "nodes": {},
+                "counts": {},
+                "timestamp": datetime.utcnow().isoformat()
+            }
+
+        # Count by status
+        counts = {}
+        for node_name, status in classification.items():
+            counts[status] = counts.get(status, 0) + 1
+
+        eligible_count = counts.get(NodeStatus.STATELESS_ELIGIBLE, 0)
+        total_nodes = len(classification)
+
+        return {
+            "cluster_id": cluster_id,
+            "classification_available": True,
+            "nodes": classification,
+            "counts": counts,
+            "total_nodes": total_nodes,
+            "eligible_count": eligible_count,
+            "eligible_pct": round(eligible_count / total_nodes * 100, 1) if total_nodes > 0 else 0,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Failed to get workload status for {cluster_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

@@ -23,7 +23,7 @@ from backend.schemas.metric_schemas import (
 )
 from backend.core.exceptions import ResourceNotFoundError
 from backend.core.logger import StructuredLogger
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 logger = StructuredLogger(__name__)
@@ -51,8 +51,8 @@ class MetricsService:
             DashboardKPIs with key performance indicators
         """
         # Apply time range
-        start_date = filters.start_date or (datetime.utcnow() - timedelta(days=30))
-        end_date = filters.end_date or datetime.utcnow()
+        start_date = filters.start_date or (datetime.now(timezone.utc) - timedelta(days=30))
+        end_date = filters.end_date or datetime.now(timezone.utc)
 
         # Base query for user's organization instances
         user = self.db.query(User).filter(User.id == user_id).first()
@@ -200,8 +200,8 @@ class MetricsService:
         Returns:
             CostMetrics with cost breakdown
         """
-        start_date = filters.start_date or (datetime.utcnow() - timedelta(days=30))
-        end_date = filters.end_date or datetime.utcnow()
+        start_date = filters.start_date or (datetime.now(timezone.utc) - timedelta(days=30))
+        end_date = filters.end_date or datetime.now(timezone.utc)
 
         return self._calculate_cost_metrics(
             user_id,
@@ -303,8 +303,8 @@ class MetricsService:
         Returns:
             TimeSeriesData with daily cost data
         """
-        start_date = filters.start_date or (datetime.utcnow() - timedelta(days=30))
-        end_date = filters.end_date or datetime.utcnow()
+        start_date = filters.start_date or (datetime.now(timezone.utc) - timedelta(days=30))
+        end_date = filters.end_date or datetime.now(timezone.utc)
 
         # Generate daily time series
         # This is a simplified version - in production, you'd query actual cost data
@@ -493,19 +493,8 @@ class MetricsService:
             # Project to monthly if we're looking at current month partial data
             mtd_cost = float(cost_explorer_total)
 
-            # Check if we're querying current month (need to project)
-            today = datetime.utcnow().date()
-            month_start = today.replace(day=1)
-
-            if start_date.date() >= month_start and end_date.date() >= today:
-                # Current month query - project MTD to full month
-                days_elapsed = (today - month_start).days + 1
-                projected_monthly_cost = (mtd_cost / days_elapsed) * 30
-                logger.info(f"Using Cost Explorer data: ${mtd_cost:.2f} MTD, projecting to ${projected_monthly_cost:.2f} monthly for user {user_id}")
-            else:
-                # Historical query - use actual cost
-                projected_monthly_cost = mtd_cost
-                logger.info(f"Using Cost Explorer data: ${mtd_cost:.2f} for user {user_id}")
+            projected_monthly_cost = mtd_cost
+            logger.info(f"Using Cost Explorer data: ${mtd_cost:.2f} for user {user_id}")
 
             # Get EC2-specific costs for spot/on-demand breakdown
             ec2_services = [
@@ -530,10 +519,7 @@ class MetricsService:
 
             ec2_cost = ec2_cost_query.scalar() or 0
 
-            # Apply same projection to EC2 costs if current month
-            if start_date.date() >= month_start and end_date.date() >= today:
-                days_elapsed = (today - month_start).days + 1
-                ec2_cost = (float(ec2_cost) / days_elapsed) * 30
+
 
             # Estimate spot vs on-demand split (roughly 30% of EC2 is typically spot)
             # This is approximate since Cost Explorer doesn't break down by lifecycle
@@ -574,9 +560,23 @@ class MetricsService:
             # Calculate hourly cost for instance
             hourly_cost = Decimal(str(instance.price)) if instance.price else Decimal('0.05')
 
-            # Calculate hours in time range
-            instance_start = max(instance.created_at, start_date) if instance.created_at else start_date
-            instance_end = min(datetime.utcnow(), end_date)
+            # Calculate hours in time range (ensure timezone-aware comparisons)
+            # Make all datetimes timezone-aware for comparison
+            tz_start_date = start_date.replace(tzinfo=timezone.utc) if start_date.tzinfo is None else start_date
+            tz_end_date = end_date.replace(tzinfo=timezone.utc) if end_date.tzinfo is None else end_date
+            tz_now = datetime.now(timezone.utc)
+
+            instance_created = instance.created_at
+            if instance_created and instance_created.tzinfo is None:
+                instance_created = instance_created.replace(tzinfo=timezone.utc)
+
+            instance_start = max(instance_created, tz_start_date) if instance_created else tz_start_date
+            instance_end = min(tz_now, tz_end_date)
+            
+            # Prevent negative hours if instance didn't exist in this time range
+            if instance_end <= instance_start:
+                continue
+                
             hours = (instance_end - instance_start).total_seconds() / 3600
 
             instance_cost = hourly_cost * Decimal(str(hours))
@@ -975,7 +975,7 @@ class MetricsService:
 
         # 8. Build monthly history for graph (last 4 weeks) using Cost Explorer
         history = []
-        current_date = datetime.utcnow()
+        current_date = datetime.now(timezone.utc)
 
         for week_offset in range(3, -1, -1):  # 3, 2, 1, 0 (4 weeks ago to current)
             week_start = current_date - timedelta(weeks=week_offset, days=current_date.weekday())
@@ -1151,7 +1151,7 @@ class MetricsService:
 
         # Build monthly history (last 4 weeks) using Cost Explorer
         history = []
-        current_date = datetime.utcnow()
+        current_date = datetime.now(timezone.utc)
 
         for week_offset in range(3, -1, -1):
             week_start = current_date - timedelta(weeks=week_offset, days=current_date.weekday())

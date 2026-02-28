@@ -2,6 +2,7 @@
     "name": "spot-optimizer-frontend",
     "version": "1.0.0",
     "private": true,
+    "proxy": "http://localhost:8000",
     "dependencies": {
         "@radix-ui/react-slot": "^1.0.2",
         "axios": "^1.6.2",

@@ -1,14 +1,19 @@
 import React from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams, useNavigate } from 'react-router-dom';
 import PoolRankings from '../components/atharvaai/PoolRankings';
 import InterruptionHeatmap from '../components/atharvaai/InterruptionHeatmap';
 import RebalancingTimeline from '../components/atharvaai/RebalancingTimeline';
 import AutoRebalanceAuditCard from '../components/atharvaai/AutoRebalanceAuditCard';
+// GlobalRankingsCard removed - using cluster-specific Pool Rankings only
+import BlacklistMonitorCard from '../components/atharvaai/BlacklistMonitorCard';
+import DecisionEngineV3Dashboard from '../components/atharvaai/DecisionEngineV3Dashboard';
 
 const AtharvaAiPage = () => {
     const [searchParams] = useSearchParams();
+    const navigate = useNavigate();
     const [selectedClusterId, setSelectedClusterId] = React.useState('');
     const [clusters, setClusters] = React.useState([]);
+    const currentTab = searchParams.get('tab') || 'dashboard';
 
     React.useEffect(() => {
         // Fetch clusters for dropdown
@@ -33,6 +38,10 @@ const AtharvaAiPage = () => {
         fetchClusters();
     }, []);
 
+
+
+    const selectedCluster = clusters.find(c => c.id === selectedClusterId);
+
     return (
         <div className="p-6 max-w-7xl mx-auto">
             {/* Page Header & Cluster Selector */}
@@ -40,7 +49,7 @@ const AtharvaAiPage = () => {
                 <div>
                     <h1 className="text-2xl font-bold text-gray-900">AtharvaAI - ML Pool Optimizer</h1>
                     <p className="text-sm text-gray-500 mt-1">
-                        8-Step ML pipeline for intelligent spot instance pool selection and termination monitoring
+                        Decision Engine v3: 15-step pipeline for intelligent spot instance optimization
                     </p>
                 </div>
                 <div className="w-full md:w-64">
@@ -58,24 +67,54 @@ const AtharvaAiPage = () => {
                 </div>
             </div>
 
-            {/* Two Column Layout - Audit & Heatmap (Moved to Top) */}
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
-                <AutoRebalanceAuditCard clusterId={selectedClusterId} />
-                <InterruptionHeatmap clusterId={selectedClusterId} />
-            </div>
 
-            {/* Rebalancing Timeline - Middle */}
-            <div className="mb-6">
-                <RebalancingTimeline clusterId={selectedClusterId} />
-            </div>
 
-            {/* Main Pool Rankings - Bottom */}
-            <div className="mb-6">
-                <PoolRankings
+            {/* Global ML Intelligence Headers (show on dashboard only) */}
+            {currentTab === 'dashboard' && <BlacklistMonitorCard />}
+
+            {(!searchParams.get('tab') || searchParams.get('tab') === 'dashboard') && (
+                <div className="space-y-6">
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                        <AutoRebalanceAuditCard
+                            clusterId={selectedClusterId}
+                            initialEnabled={selectedCluster?.auto_rebalance_enabled || false}
+                        />
+                        <InterruptionHeatmap clusterId={selectedClusterId} />
+                    </div>
+                    <RebalancingTimeline clusterId={selectedClusterId} />
+                    <PoolRankings clusterId={selectedClusterId} initialTemplateId={searchParams.get('template_id')} />
+                </div>
+            )}
+
+            {searchParams.get('tab') === 'rankings' && (
+                <div className="space-y-6">
+                    <PoolRankings clusterId={selectedClusterId} initialTemplateId={searchParams.get('template_id')} />
+                </div>
+            )}
+
+            {searchParams.get('tab') === 'heatmap' && (
+                <div className="space-y-6">
+                    <InterruptionHeatmap clusterId={selectedClusterId} />
+                </div>
+            )}
+
+            {searchParams.get('tab') === 'rebalancing' && (
+                <div className="space-y-6">
+                    <AutoRebalanceAuditCard
+                        clusterId={selectedClusterId}
+                        initialEnabled={selectedCluster?.auto_rebalance_enabled || false}
+                    />
+                    <RebalancingTimeline clusterId={selectedClusterId} />
+                </div>
+            )}
+
+            {currentTab === 'decision-engine-v3' && (
+                <DecisionEngineV3Dashboard
                     clusterId={selectedClusterId}
-                    initialTemplateId={searchParams.get('template_id')}
+                    clusterRegion={selectedCluster?.region || 'ap-south-1'}
+                    cluster={selectedCluster}
                 />
-            </div>
+            )}
         </div>
     );
 };

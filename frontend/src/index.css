@@ -108,3 +108,26 @@ code {
   ring-offset: 2px;
   ring-color: #3b82f6;
 }
+
+/* Notification Animations */
+@keyframes bell-shake {
+  0%,100% { transform:rotate(0)      }
+  18%     { transform:rotate(-13deg) }
+  36%     { transform:rotate(11deg)  }
+  54%     { transform:rotate(-8deg)  }
+  72%     { transform:rotate(5deg)   }
+  90%     { transform:rotate(-2deg)  }
+}
+@keyframes badge-in {
+  0%   { transform:scale(0) }
+  65%  { transform:scale(1.2) }
+  100% { transform:scale(1) }
+}
+@keyframes panel-slide {
+  from { opacity:0; transform:translateX(16px) }
+  to   { opacity:1; transform:translateX(0)    }
+}
+@keyframes pulse {
+  0%,100% { opacity:1; transform:scale(1)   }
+  50%     { opacity:.5; transform:scale(1.5) }
+}

@@ -293,7 +293,8 @@ class HeartbeatSender:
         url = f"{self.backend_url}/api/v1/agents/heartbeat"
         headers = {
             'Authorization': f'Bearer {self.api_key}',
-            'Content-Type': 'application/json'
+            'Content-Type': 'application/json',
+            'ngrok-skip-browser-warning': 'true'
         }
 
         # Collect metrics
@@ -356,7 +357,8 @@ class HeartbeatSender:
             url = f"{self.backend_url}/api/v1/agents/heartbeat"
             headers = {
                 'Authorization': f'Bearer {self.api_key}',
-                'Content-Type': 'application/json'
+                'Content-Type': 'application/json',
+                'ngrok-skip-browser-warning': 'true'
             }
             payload = {
                 'cluster_id': self.cluster_id,

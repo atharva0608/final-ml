@@ -18,6 +18,12 @@ from backend.models.pod_metric import PodMetric
 from backend.models.cluster import Cluster
 from backend.schemas.pod_metric_schemas import RightSizingRecommendation
 from backend.core.logger import logger
+from backend.services.cooldown_controller import CooldownController
+from backend.services.workload_inspector import WorkloadInspector, NodeStatus
+from backend.services.global_pool_cache_service import GlobalPoolCacheService
+from backend.services.blacklist_service import BlacklistService
+from backend.core.decision_engine import DecisionEngine
+from backend.core.scoring import compute_expected_value
 
 
 class RightSizingService:
@@ -82,6 +88,49 @@ class RightSizingService:
         if not cluster:
             raise ValueError(f"Cluster {cluster_id} not found")
 
+        # ── METRIC FRESHNESS (ENH 6) ─────────────────────────────────
+        # Reject rightsizing if latest metrics are stale (> 5 min lag)
+        try:
+            latest_metric = self.db.query(PodMetric).filter(
+                PodMetric.cluster_id == cluster_id
+            ).order_by(PodMetric.timestamp.desc()).first()
+            if latest_metric:
+                lag_minutes = (datetime.utcnow() - latest_metric.timestamp).total_seconds() / 60
+                if lag_minutes > 5:
+                    logger.warning(f"Metric lag {lag_minutes:.0f}m for cluster {cluster_id}, skipping rightsizing")
+                    return []
+            else:
+                logger.warning(f"No metrics found for cluster {cluster_id}")
+                return []
+        except Exception as e:
+            logger.warning(f"Metric freshness check failed: {e}")
+
+        # 1. CHECK CLUSTER COOLDOWN
+        cooldown = CooldownController(self.redis)
+        can_switch, remaining = cooldown.can_switch(cluster_id)
+        if not can_switch:
+            logger.info(f"Cluster {cluster_id} in cooldown ({remaining}s), no recommendations")
+            return []
+
+        # 2. CHECK NODE CLASSIFICATION
+        # Skip node-level classification check for now - we'll do pod-level analysis
+        # and filter recommendations based on workload type
+        inspector = WorkloadInspector(self.redis, k8s_client=None)
+        classification = inspector.get_cached_classification(cluster_id)
+
+        # If no cached classification, proceed anyway - we'll analyze all pods
+        if not classification:
+            logger.info(f"No cached node classification for {cluster_id} - proceeding with pod analysis")
+            eligible_nodes = None  # Analyze all nodes
+        else:
+            eligible_nodes = [
+                node for node, status in classification.items()
+                if status == NodeStatus.STATELESS_ELIGIBLE
+            ]
+            if not eligible_nodes:
+                logger.info(f"No stateless-eligible nodes in {cluster_id}")
+                return []
+
         # Calculate time range
         end_time = datetime.utcnow()
         start_time = end_time - timedelta(hours=analysis_window_hours)
@@ -111,7 +160,75 @@ class RightSizingService:
                 logger.error(f"Failed to analyze controller {controller_info['controller_name']}: {e}")
                 continue
 
-        logger.info(f"Generated {len(recommendations)} right-sizing recommendations for cluster {cluster_id}")
+        logger.info(f"Generated {len(recommendations)} initial right-sizing recommendations for cluster {cluster_id}")
+
+        # 3. INTERSECT WITH GLOBAL RANKINGS AND APPLY DELTA ALIGNMENT
+        # TODO: Re-enable when Decision Engine v3 is fully integrated
+        # For now, skip this advanced filtering and return base recommendations
+        # if recommendations:
+        #     # Get cluster optimization profile
+        #     mode = cluster.optimization_mode or "BALANCED"
+        #     profile = DecisionEngine.OPTIMIZATION_PROFILES.get(mode, DecisionEngine.OPTIMIZATION_PROFILES["BALANCED"])
+        #
+        #     # Determine region from cluster
+        #     region = getattr(cluster, 'region', 'us-east-1')
+        #
+        #     # Intersect with global rankings
+        #     cache = GlobalPoolCacheService(self.db, self.redis)
+        #     global_rankings = cache.get_or_compute_global_rankings(region)
+        #
+        #     # Filter by: in global rankings AND below mode risk ceiling AND not blacklisted AND capacity ok
+        #     blacklist_svc = BlacklistService(self.redis)
+        #     safe_pools = [
+        #         p for p in global_rankings
+        #         if p["risk_probability"] <= profile["risk_ceiling"]
+        #         and p.get("capacity_status") != "unavailable"
+        #         and not blacklist_svc.is_pool_blacklisted(p["instance_type"], p["az"], region)
+        #     ]
+        #     safe_types = {p["instance_type"] for p in safe_pools}
+        #
+        #     # Filter recommendations to only include safe instance types
+        #     # Note: For pod right-sizing, we don't have instance_type, so we skip this filter
+        #     # This logic is primarily for instance-level recommendations
+        #     logger.info(f"Found {len(safe_pools)} safe instance pools for cluster {cluster_id}")
+        #
+        #     # Re-score using shared scoring utility (if applicable)
+        #     # For pod right-sizing, we calculate expected value from savings
+        #     for rec in recommendations:
+        #         # Default risk probability for pod right-sizing (can be enhanced later)
+        #         risk_prob = 0.05 if rec.confidence == "HIGH" else 0.10 if rec.confidence == "MEDIUM" else 0.15
+        #         rec.expected_value = compute_expected_value(
+        #             rec.savings_monthly, risk_prob
+        #         )
+        #         rec.risk_prob = risk_prob
+        #         rec.capacity_status = "validated"
+        #
+        #     # Sort by expected value descending
+        #     recommendations.sort(key=lambda r: getattr(r, 'expected_value', 0), reverse=True)
+        #
+        #     # DELTA ALIGNMENT: Only show recommendations where delta >= threshold
+        #     # Get current pool savings and risk (if available)
+        #     current_pool_savings = 0.0
+        #     current_pool_risk = 0.0
+        #
+        #     # For pod right-sizing, we calculate current EV from current costs
+        #     if recommendations:
+        #         # Calculate baseline expected value (current state)
+        #         current_ev = compute_expected_value(current_pool_savings, current_pool_risk)
+        #
+        #         # Filter recommendations where improvement >= min_savings_threshold
+        #         min_delta = profile.get("min_savings_threshold", 0.0)
+        #         recommendations = [
+        #             r for r in recommendations
+        #             if getattr(r, 'expected_value', 0) - current_ev >= min_delta
+        #         ]
+        #
+        #         # Return top 3 recommendations
+        #         recommendations = recommendations[:3]
+        #
+        #         logger.info(f"After delta alignment: {len(recommendations)} recommendations (min_delta=${min_delta:.2f})")
+
+        logger.info(f"Final: {len(recommendations)} right-sizing recommendations for cluster {cluster_id}")
 
         return recommendations
 
@@ -209,9 +326,42 @@ class RightSizingService:
         current_memory_request_bytes = latest_metric.memory_request_bytes
         current_memory_request_mb = int(current_memory_request_bytes / (1024 * 1024)) if current_memory_request_bytes else None
 
-        # Calculate recommended requests (P95 + 20% buffer)
-        recommended_cpu = int(cpu_stats['p95'] * (1 + self.SAFETY_BUFFER_PCT / 100))
-        recommended_memory_bytes = int(memory_stats['p95'] * (1 + self.SAFETY_BUFFER_PCT / 100))
+        # ── PHASE-AWARE SAFETY BUFFER (ENH 1) ──────────────────────────
+        # Get phase-aware buffer (Phase 0=30%, Phase 1=25%, Phase 2=20%)
+        safety_buffer = self.SAFETY_BUFFER_PCT
+        try:
+            from backend.services.optimizer_coordinator import OptimizerCoordinator
+            coordinator = OptimizerCoordinator(self.db, self.redis)
+            trust = coordinator.get_cluster_trust_phase(cluster_id)
+            safety_buffer = trust["safety_buffer_pct"]
+            logger.info(f"Phase-aware buffer: {safety_buffer}% (Phase {trust['phase']})")
+        except Exception:
+            pass
+
+        # ── VOLATILITY-AWARE BUFFER (ENH 8) ────────────────────────────
+        # Further increase safety buffer in volatile markets
+        try:
+            if self.redis:
+                cluster_obj = self.db.query(Cluster).filter(Cluster.id == cluster_id).first()
+                region = cluster_obj.region if cluster_obj else "us-east-1"
+                is_volatile = self.redis.get(f"spot:volatility_regime:{region}")
+                if is_volatile == b"true":
+                    safety_buffer = max(safety_buffer, 35)  # Increase to at least 35% in volatile markets
+                    logger.info(f"Volatile market: safety buffer increased to {safety_buffer}%")
+        except Exception:
+            pass
+
+        # Calculate recommended requests (P95 + dynamic buffer)
+        recommended_cpu = int(cpu_stats['p95'] * (1 + safety_buffer / 100))
+        recommended_memory_bytes = int(memory_stats['p95'] * (1 + safety_buffer / 100))
+        recommended_memory_mb = int(recommended_memory_bytes / (1024 * 1024))
+
+        # ── P99 FALLBACK FLOOR (ENH 3) ───────────────────────────────
+        # Proposed size must exceed P99 * 1.3 to handle bursts safely
+        p99_cpu_floor = int(cpu_stats['p99'] * 1.3)
+        p99_memory_floor = int(memory_stats['p99'] * 1.3)
+        recommended_cpu = max(recommended_cpu, p99_cpu_floor)
+        recommended_memory_bytes = max(recommended_memory_bytes, p99_memory_floor)
         recommended_memory_mb = int(recommended_memory_bytes / (1024 * 1024))
 
         # Determine current replica count (approximate from distinct pods)
@@ -258,6 +408,19 @@ class RightSizingService:
             window_hours=analysis_window_hours,
             min_data_points=min_data_points
         )
+
+        # ── CONFIDENCE GATE (ENH 2) ──────────────────────────────────
+        # Block proposals from low-confidence evaluations
+        if confidence == "LOW":
+            logger.info(f"Skipping {controller_name}: LOW confidence ({len(metrics)} samples)")
+            return None
+
+        # Volatility check — skip only extreme spike workloads (P50 < 5% of P99)
+        if cpu_stats.get('p99', 0) > 0:
+            cpu_volatility = (cpu_stats['p99'] - cpu_stats['p50']) / cpu_stats['p99']
+            if cpu_volatility > 0.95:  # Only skip extreme spikes (P50 is near zero vs P99)
+                logger.warning(f"Skipping {controller_name}: extreme CPU spike workload ({cpu_volatility:.2f})")
+                return None
 
         return RightSizingRecommendation(
             cluster_id=cluster_id,
@@ -429,15 +592,244 @@ class RightSizingService:
         Returns:
             Confidence level: HIGH, MEDIUM, or LOW
         """
-        # Expected data points: 12 samples/hour (every 5 minutes)
-        expected_points = window_hours * 12
-
-        # Calculate coverage percentage
-        coverage_pct = (data_points / expected_points) * 100
-
-        if coverage_pct >= 80:
+        # Grade confidence based on actual data points collected, not window coverage.
+        # Window coverage can be low in new/demo clusters; what matters is enough data for statistics.
+        if data_points >= min_data_points * 5:
             return "HIGH"
-        elif coverage_pct >= 50:
+        elif data_points >= min_data_points:
             return "MEDIUM"
         else:
             return "LOW"
+
+    # ========================================================================
+    # PROPOSAL-ONLY MODE (Unified Optimizer Coordination)
+    # ========================================================================
+
+    def create_rightsizing_proposals(
+        self,
+        cluster_id: str,
+        min_savings_pct: float = 10.0,
+        stability_window_hours: int = 24
+    ) -> List[str]:
+        """
+        Create rightsizing proposals instead of immediate recommendations.
+
+        This method is used by the Unified Optimizer Coordinator to implement
+        the phased optimization approach from problems.md:
+
+        - Only proposes, never executes directly
+        - Requires ≥24 hour stability window
+        - Requires ≥10-15% minimum savings delta
+        - Coordinator evaluates proposals with combined EV calculation
+
+        Args:
+            cluster_id: Cluster to analyze
+            min_savings_pct: Minimum savings percentage required (default 10%)
+            stability_window_hours: Required stability window (default 24 hours)
+
+        Returns:
+            List of created proposal IDs
+        """
+        from backend.models.rightsizing_proposal import RightsizingProposal, ProposalStatus
+
+        # Generate recommendations using existing logic
+        recommendations = self.generate_recommendations(
+            cluster_id=cluster_id,
+            analysis_window_hours=stability_window_hours,  # Use stability window for analysis
+            min_data_points=100
+        )
+
+        # Filter by minimum savings percentage
+        filtered_recs = [
+            rec for rec in recommendations
+            if rec.savings_monthly_pct and rec.savings_monthly_pct >= min_savings_pct
+        ]
+
+        logger.info(
+            f"Filtered {len(recommendations)} recommendations to {len(filtered_recs)} "
+            f"meeting {min_savings_pct}% savings threshold"
+        )
+
+        # ── TEMPLATE ENFORCEMENT (FIX 1 — P0) ────────────────────────
+        # Load cluster's active template constraints and reject proposals
+        # that violate template bounds BEFORE storing them.
+        from backend.models.node_template import ClusterTemplateMapping, NodeTemplateVersion
+
+        template_constraints = None
+        active_mapping = self.db.query(ClusterTemplateMapping).filter(
+            ClusterTemplateMapping.cluster_id == cluster_id,
+            ClusterTemplateMapping.is_default == True
+        ).first()
+
+        if active_mapping and active_mapping.version_id:
+            version = self.db.query(NodeTemplateVersion).filter(
+                NodeTemplateVersion.id == active_mapping.version_id
+            ).first()
+            if version and version.constraints_json:
+                template_constraints = version.constraints_json
+                logger.info(f"Loaded template constraints for cluster {cluster_id}")
+
+        if template_constraints:
+            template_filtered = []
+            for rec in filtered_recs:
+                proposed_vcpu = max(1, int(rec.recommended_cpu_cores))
+                proposed_memory_gb = max(1, int(rec.recommended_memory_gb))
+                proposed_type = self._suggest_instance_type(proposed_vcpu, proposed_memory_gb)
+                proposed_family = proposed_type.split('.')[0] if proposed_type else ""
+
+                min_v = template_constraints.get("min_vcpu", 1)
+                max_v = template_constraints.get("max_vcpu", 256)
+                min_m = template_constraints.get("min_memory_gb", 1)
+                max_m = template_constraints.get("max_memory_gb", 1024)
+                allowed = template_constraints.get("allowed_families", [])
+                excluded = template_constraints.get("excluded_families", [])
+
+                if not (min_v <= proposed_vcpu <= max_v):
+                    logger.warning(f"Template rejected: {proposed_vcpu} vCPU outside [{min_v}, {max_v}]")
+                    continue
+                if not (min_m <= proposed_memory_gb <= max_m):
+                    logger.warning(f"Template rejected: {proposed_memory_gb} GB outside [{min_m}, {max_m}]")
+                    continue
+                if allowed and proposed_family not in allowed:
+                    logger.warning(f"Template rejected: family {proposed_family} not in allowed list")
+                    continue
+                if proposed_family in excluded:
+                    logger.warning(f"Template rejected: family {proposed_family} is excluded")
+                    continue
+
+                template_filtered.append(rec)
+
+            logger.info(f"Template enforcement: {len(filtered_recs)} → {len(template_filtered)}")
+            filtered_recs = template_filtered
+
+        # Get cluster for node info
+        cluster = self.db.query(Cluster).filter(Cluster.id == cluster_id).first()
+        if not cluster:
+            raise ValueError(f"Cluster {cluster_id} not found")
+
+        # Create proposals for each filtered recommendation
+        proposal_ids = []
+
+        for rec in filtered_recs:
+            try:
+                # Estimate current instance type and costs
+                # TODO: Get actual current node info from cluster
+                current_instance_type = "m5.large"  # Placeholder
+                current_vcpu = 2
+                current_memory_gb = 8
+                current_hourly_cost = 0.096  # Placeholder
+
+                # Calculate proposed instance type from resource requirements
+                proposed_vcpu = max(1, int(rec.recommended_cpu_cores))
+                proposed_memory_gb = max(1, int(rec.recommended_memory_gb))
+                proposed_instance_type = self._suggest_instance_type(proposed_vcpu, proposed_memory_gb)
+                proposed_hourly_cost = self._estimate_instance_cost(proposed_vcpu, proposed_memory_gb, "m5")
+
+                # Create proposal
+                proposal = RightsizingProposal(
+                    cluster_id=cluster_id,
+                    current_instance_type=current_instance_type,
+                    current_vcpu=current_vcpu,
+                    current_memory_gb=current_memory_gb,
+                    current_pool=f"{current_instance_type}:current-az",  # Placeholder
+                    current_hourly_cost=current_hourly_cost,
+                    proposed_instance_type=proposed_instance_type,
+                    proposed_vcpu=proposed_vcpu,
+                    proposed_memory_gb=proposed_memory_gb,
+                    proposed_hourly_cost=proposed_hourly_cost,
+                    estimated_hourly_savings=(current_hourly_cost - proposed_hourly_cost),
+                    estimated_monthly_savings=rec.savings_monthly,
+                    savings_percentage=rec.savings_monthly_pct,
+                    avg_cpu_utilization_pct=rec.current_avg_cpu_pct,
+                    p95_cpu_utilization_pct=rec.current_p95_cpu_pct or rec.current_avg_cpu_pct,
+                    avg_memory_utilization_pct=rec.current_avg_memory_pct,
+                    p95_memory_utilization_pct=rec.current_p95_memory_pct or rec.current_avg_memory_pct,
+                    metric_sample_count=rec.sample_size,
+                    metric_window_hours=float(stability_window_hours),
+                    status=ProposalStatus.PENDING
+                )
+
+                # ── Task 3.3: Inject EV breakdown into proposals ──────
+                # Compute full economic EV and store at creation time so
+                # the coordinator reads the same number downstream
+                try:
+                    from backend.core.ev_model import evaluate_candidate_ev, get_dynamic_capacity_failure_probability
+                    
+                    proposal_savings = current_hourly_cost - proposed_hourly_cost
+                    risk_score = 0.05 if rec.confidence == "HIGH" else 0.10 if rec.confidence == "MEDIUM" else 0.15
+                    current_volatility = 0.0  # Default — could be read from Redis
+                    pool_id = f"{proposed_instance_type}:{cluster.region or 'us-east-1'}"
+                    
+                    if self.redis:
+                        cap_fail_prob = get_dynamic_capacity_failure_probability(
+                            self.redis, pool_id, cluster.region or "us-east-1"
+                        )
+                    else:
+                        cap_fail_prob = 0.05
+                    
+                    ev_breakdown = evaluate_candidate_ev(
+                        savings=proposal_savings,
+                        final_risk=risk_score,
+                        normalized_volatility=current_volatility,
+                        capacity_failure_probability=cap_fail_prob,
+                        downtime_cost_per_hour=100.0,
+                        risk_horizon_hours=2.0,
+                        recovery_time_hours=0.5,
+                    )
+                    
+                    proposal.ev_breakdown = ev_breakdown  # JSONField — stores full dict
+                    proposal.net_ev = ev_breakdown["ev"]   # FloatField — for quick sorting
+                except Exception as ev_err:
+                    logger.warning(f"Failed to compute EV breakdown for proposal: {ev_err}")
+                    # Proposal still created without EV breakdown — fallback path
+
+                self.db.add(proposal)
+                self.db.commit()
+                self.db.refresh(proposal)
+
+                proposal_ids.append(proposal.id)
+                logger.info(f"Created rightsizing proposal {proposal.id} for cluster {cluster_id}")
+
+            except Exception as e:
+                logger.error(f"Failed to create proposal for recommendation: {e}")
+                continue
+
+        return proposal_ids
+
+    def _suggest_instance_type(self, vcpu: int, memory_gb: float) -> str:
+        """
+        Suggest an instance type based on vCPU and memory requirements.
+
+        TODO: Replace with actual AWS instance type selection logic.
+        """
+        # Simple heuristic: use m5 family (general purpose)
+        if vcpu <= 1:
+            return "m5.large" if memory_gb <= 8 else "m5.xlarge"
+        elif vcpu <= 2:
+            return "m5.large" if memory_gb <= 8 else "m5.xlarge"
+        elif vcpu <= 4:
+            return "m5.xlarge" if memory_gb <= 16 else "m5.2xlarge"
+        elif vcpu <= 8:
+            return "m5.2xlarge" if memory_gb <= 32 else "m5.4xlarge"
+        else:
+            return "m5.4xlarge"
+
+    def _estimate_instance_cost(self, vcpu: int, memory_gb: float, family: str) -> float:
+        """
+        Estimate hourly cost for given resources.
+
+        Args:
+            vcpu: Number of vCPUs
+            memory_gb: Memory in GB
+            family: Instance family (e.g., "m5")
+
+        Returns:
+            Estimated hourly cost in USD
+        """
+        # Get family-specific costs or use defaults
+        cpu_cost_per_core, mem_cost_per_gb = self.INSTANCE_FAMILY_COSTS.get(
+            family,
+            (self.CPU_COST_PER_CORE_HOUR, self.MEMORY_COST_PER_GB_HOUR)
+        )
+
+        return (vcpu * cpu_cost_per_core) + (memory_gb * mem_cost_per_gb)

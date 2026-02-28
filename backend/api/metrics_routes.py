@@ -257,11 +257,14 @@ def get_cluster_utilization(
     # Get 7-day history from cluster_metrics table
     seven_days_ago = datetime.utcnow() - timedelta(days=7)
 
+    from sqlalchemy.dialects.postgresql import JSONB
+    from sqlalchemy import cast, Float
+    
     # Query daily average metrics
     daily_metrics = db.query(
         func.date(ClusterMetric.timestamp).label('day'),
-        func.avg(ClusterMetric.cpu_usage_pct).label('avg_cpu'),
-        func.avg(ClusterMetric.memory_usage_pct).label('avg_mem')
+        func.avg(cast(ClusterMetric.metric_data['cpu_usage_pct'].astext, Float)).label('avg_cpu'),
+        func.avg(cast(ClusterMetric.metric_data['mem_usage_pct'].astext, Float)).label('avg_mem')
     ).filter(
         ClusterMetric.cluster_id == cluster_id,
         ClusterMetric.timestamp >= seven_days_ago
@@ -491,3 +494,46 @@ def get_account_summary(
     return service.get_account_consolidated_stats(account_id)
 
 
+# ── Task 7.6: Decision Engine Rejection Counters ─────────────────────
+
+@router.get(
+    "/rejections/{cluster_id}",
+    summary="Get rejection counters",
+    description="Get decision engine rejection counters from Redis (24h rolling window)"
+)
+def get_rejection_counters(
+    cluster_id: str,
+    current_user: User = Depends(get_current_user),
+):
+    """Fetch per-reason rejection counters for a cluster."""
+    from backend.core.redis_client import get_redis_client
+    from backend.core.logger import logger
+
+    try:
+        redis = get_redis_client()
+        counters_key = f"spot:rejection_counters:{cluster_id}"
+        raw = redis.hgetall(counters_key) or {}
+
+        counters = {}
+        for key, val in raw.items():
+            reason = key.decode() if isinstance(key, bytes) else key
+            counters[reason] = int(val)
+
+        ttl = redis.ttl(counters_key)
+
+        return {
+            "status": "success",
+            "cluster_id": cluster_id,
+            "counters": counters,
+            "ttl_seconds": ttl if ttl > 0 else None,
+            "resets_in_hours": round(ttl / 3600, 1) if ttl and ttl > 0 else None,
+        }
+    except Exception as e:
+        logger.error(f"Failed to fetch rejection counters for {cluster_id}: {e}")
+        return {
+            "status": "error",
+            "cluster_id": cluster_id,
+            "counters": {},
+            "ttl_seconds": None,
+            "resets_in_hours": None,
+        }

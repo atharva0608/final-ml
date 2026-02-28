@@ -343,27 +343,20 @@ const CloudIntegrations = () => {
               This is the fastest and most secure way to connect.
             </p>
             <div className="flex flex-wrap gap-3">
-              <button
-                onClick={async () => {
-                  try {
-                    const response = await import('../../services/api').then(m => m.onboardingAPI.getTemplate('READ_ONLY'));
-                    // Create blob link to download
-                    const url = window.URL.createObjectURL(new Blob([response.data]));
-                    const link = document.createElement('a');
-                    link.href = url;
-                    link.setAttribute('download', 'spot-optimizer-role.yaml');
-                    document.body.appendChild(link);
-                    link.click();
-                    link.parentNode.removeChild(link);
-                  } catch (e) {
-                    import('react-hot-toast').then(m => m.default.error("Failed to download template"));
+              <a
+                href={connectionInfo?.external_id ? `/api/v1/onboarding/template?mode=READ_ONLY&external_id=${connectionInfo.external_id}` : '#'}
+                download="spot-optimizer-role.yaml"
+                onClick={(e) => {
+                  if (!connectionInfo?.external_id) {
+                    e.preventDefault();
+                    import('react-hot-toast').then(m => m.default.error("Wait for External ID to load"));
                   }
                 }}
                 className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium cursor-pointer"
               >
                 <FiDownload className="w-4 h-4" />
                 Download CloudFormation Template
-              </button>
+              </a>
               <a
                 href={`https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?stackName=SpotOptimizer-Connection-${connectionInfo?.external_id?.substring(0, 8)}&templateURL=${encodeURIComponent(connectionInfo?.template_url)}&param_ExternalId=${connectionInfo?.external_id}&param_TrustedRoleARN=arn:aws:iam::${connectionInfo?.platform_account_id}:role/SpotOptimizerBackendRole`}
                 target="_blank"

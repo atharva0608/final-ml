@@ -77,6 +77,26 @@ class Cluster(Base):
     # Karpenter operating mode: null = not installed, dry_run = insights only, auto = full management
     karpenter_mode = Column(Enum(KarpenterMode), nullable=True, default=None)
 
+    # AtharvaAI v3 Decision Engine settings
+    optimization_mode = Column(
+        String(20), nullable=False, default="BALANCED", server_default="BALANCED"
+    )  # "COST_FIRST", "BALANCED", "NO_DOWNTIME_FIRST"
+
+    model_version = Column(
+        String(10), nullable=True, default="6"
+    )  # Pinned model version for this cluster
+
+    workload_type = Column(
+        String(10), nullable=False, default="STATELESS", server_default="STATELESS"
+    )  # INFORMATIONAL CACHE ONLY — real source of truth is WorkloadInspector.
+    # This column stores the LAST classification for audit/display.
+    # Decision Engine uses WorkloadInspector.get_cached_classification() at runtime.
+    # ⚠️ Do NOT use this column for safety decisions. Use live classification.
+
+    # Auto-rebalancing setting
+    auto_rebalance_enabled = Column(Boolean, default=False)  # Enable automatic on-demand → spot migration
+    rightsizing_enabled = Column(Boolean, default=False)     # Enable right-sizing feature
+
     # Hibernation state tracking
     is_hibernating = Column(Boolean, default=False)  # True when cluster is currently hibernated
     hibernation_state = Column(JSON, nullable=True)  # Saved state (replica counts, etc.) for wake operation
@@ -90,9 +110,72 @@ class Cluster(Base):
     account = relationship("Account", back_populates="clusters")
     instances = relationship("Instance", back_populates="cluster")
     cluster_policy = relationship("ClusterPolicy", back_populates="cluster", uselist=False)
+    template_mappings = relationship("ClusterTemplateMapping", back_populates="cluster", cascade="all, delete-orphan")
     optimization_jobs = relationship("OptimizationJob", back_populates="cluster")
     agent_actions = relationship("AgentAction", back_populates="cluster")
     metrics = relationship("ClusterMetric", back_populates="cluster")
     pod_metrics = relationship("PodMetric", back_populates="cluster", cascade="all, delete-orphan")
     # hibernation_schedules relationship is defined via backref in HibernationSchedule model (many-to-many)
     api_keys = relationship("APIKey", back_populates="cluster")
+    optimization_state = relationship("OptimizerState", back_populates="cluster", uselist=False, cascade="all, delete-orphan")
+    rightsizing_proposals = relationship("RightsizingProposal", back_populates="cluster", cascade="all, delete-orphan")
+
+    optimization_settings = relationship("ClusterOptimizationSettings", back_populates="cluster", uselist=False, cascade="all, delete-orphan")
+    optimization_strategy_profile = relationship("OptimizationStrategy", back_populates="cluster", uselist=False, cascade="all, delete-orphan")
+    stateless_rules = relationship("StatelessRuntimeRules", back_populates="cluster", uselist=False, cascade="all, delete-orphan")
+    stateful_rules = relationship("StatefulRules", back_populates="cluster", uselist=False, cascade="all, delete-orphan")
+
+
+class ClusterOptimizationSettings(Base):
+    __tablename__ = "cluster_optimization_settings"
+    cluster_id = Column(String, ForeignKey("clusters.id"), primary_key=True)
+    auto_rebalance_enabled = Column(Boolean, default=False)
+    auto_rightsizing_enabled = Column(Boolean, default=False)
+    cooldown_override_minutes = Column(Integer, nullable=True)
+    conservative_mode_enabled = Column(Boolean, default=True)
+    manual_approval_required = Column(Boolean, default=False)
+    target_spot_exposure_pct = Column(Integer, default=100)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    cluster = relationship("Cluster", back_populates="optimization_settings")
+
+class OptimizationStrategy(Base):
+    __tablename__ = "optimization_strategy"
+    cluster_id = Column(String, ForeignKey("clusters.id"), primary_key=True)
+    strategy_type = Column(String, default="BALANCED") # COST_FIRST, BALANCED, NO_DOWNTIME_FIRST, CUSTOM
+    risk_ceiling_percent = Column(Integer, default=25)
+    min_savings_percent = Column(Integer, default=15)
+    volatility_tolerance_percent = Column(Integer, default=20)
+    migration_penalty_multiplier = Column(Float, default=1.5)
+    diversity_strictness_level = Column(String, default="Medium")
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    cluster = relationship("Cluster", back_populates="optimization_strategy_profile")
+
+class StatelessRuntimeRules(Base):
+    __tablename__ = "stateless_runtime_rules"
+    cluster_id = Column(String, ForeignKey("clusters.id"), primary_key=True)
+    instance_diversification_enabled = Column(Boolean, default=True)
+    respect_pdb_enabled = Column(Boolean, default=True)
+    prewarm_minutes = Column(Integer, default=0)
+    substitute_strategy = Column(String, default="PREWARMED") # PREWARMED, ON_DEMAND
+    max_rebalances_per_24h = Column(Integer, default=5)
+    resize_cooldown_minutes = Column(Integer, default=120)
+    resize_headroom_multiplier = Column(Float, default=1.2)
+    volatility_safety_multiplier = Column(Float, default=1.35)
+    fresh_cluster_stabilization_minutes = Column(Integer, default=1440)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    cluster = relationship("Cluster", back_populates="stateless_rules")
+
+class StatefulRules(Base):
+    __tablename__ = "stateful_rules"
+    cluster_id = Column(String, ForeignKey("clusters.id"), primary_key=True)
+    manual_resize_allowed = Column(Boolean, default=True)
+    show_ondemand_only = Column(Boolean, default=True)
+    require_approval = Column(Boolean, default=True)
+    block_spot_for_stateful = Column(Boolean, default=True)
+    max_downscale_percent = Column(Integer, default=25)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    cluster = relationship("Cluster", back_populates="stateful_rules")

@@ -2,8 +2,10 @@ import React, { useState, useEffect } from 'react';
 import { Outlet, Link, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../../hooks/useAuth';
 import { useHeaderStore } from '../../store/useStore';
-import { clusterAPI } from '../../services/api';
+import { clusterAPI, atharvaAiAPI } from '../../services/api';
 import { FiHome, FiServer, FiFileText, FiSettings, FiTarget, FiClock, FiBarChart2, FiUsers, FiActivity, FiLogOut, FiClipboard, FiBriefcase, FiCheckSquare, FiShield, FiLock, FiTag, FiZap, FiCpu } from 'react-icons/fi';
+import { NotificationPanel, ICONS } from '../shared/NotificationPanel';
+import VolatilityMonitor from '../atharvaai/VolatilityMonitor';
 
 // Cluster Notification Badge Component
 const ClusterBadge = () => {
@@ -61,6 +63,8 @@ const routeMap = {
   "dashboard-infra": "/dashboard?tab=infra",
   "dashboard-gov": "/dashboard?tab=governance",
   "atharvaai": "/atharva-ai",
+  "atharvaai-dashboard": "/atharva-ai?tab=dashboard",
+  "atharvaai-decision-engine-v3": "/atharva-ai?tab=decision-engine-v3",
   "atharvaai-rankings": "/atharva-ai?tab=rankings",
   "atharvaai-heatmap": "/atharva-ai?tab=heatmap",
   "atharvaai-rebalancing": "/atharva-ai?tab=rebalancing",
@@ -75,7 +79,7 @@ const routeMap = {
   "hib-strategies": "/hibernation?tab=strategies",
   "hib-history": "/hibernation?tab=history",
   "clusters": "/clusters",
-  "templates": "/templates",
+  "node-templates": "/node-templates",
   "approvals": "/approvals",
   "tag-governance": "/tagging-policies",
   "tag-policies": "/tagging-policies?tab=policies",
@@ -119,9 +123,11 @@ const NAV_STRUCTURE = [
         badgeColor: "#6366f1",
         description: "ML pool rankings & interruption heatmap",
         sub: [
+          { id: "atharvaai-dashboard", label: "Dashboard" },
+          { id: "atharvaai-decision-engine-v3", label: "Decision Engine v3" },
           { id: "atharvaai-rankings", label: "Pool Rankings" },
           { id: "atharvaai-heatmap", label: "Interruption Heatmap" },
-          { id: "atharvaai-rebalancing", label: "Rebalancing Timeline" }
+          { id: "atharvaai-rebalancing", label: "Rebalancing" }
         ]
       },
       {
@@ -136,6 +142,13 @@ const NAV_STRUCTURE = [
           { id: "rs-history", label: "Optimization History" },
           { id: "rs-savings", label: "Savings Tracker" }
         ]
+      },
+      {
+        id: "node-templates",
+        label: "Node Templates",
+        icon: "◻",
+        badge: null,
+        description: "Cluster constraints & architecture templates"
       },
       {
         id: "resource-hygiene",
@@ -167,13 +180,6 @@ const NAV_STRUCTURE = [
         icon: "⬡",
         badge: null,
         description: "EKS clusters, nodes, policies"
-      },
-      {
-        id: "templates",
-        label: "Node Templates",
-        icon: "◻",
-        badge: null,
-        description: "Instance family & architecture templates"
       }
     ]
   },
@@ -250,7 +256,7 @@ const SEARCH_INDEX = [
   { id: "resource-hygiene", terms: ["zombie", "cleanup", "ebs", "ec2", "elastic ip", "s3", "snapshot", "stopped", "orphaned", "waste", "idle", "unused", "delete", "scan"] },
   { id: "hibernation", terms: ["sleep", "wake", "schedule", "namespace sleep", "nuclear", "snapshot restore", "cost schedule", "off hours", "weekends", "nights"] },
   { id: "clusters", terms: ["cluster", "eks", "node", "nodegroup", "heartbeat", "agent", "spot ratio"] },
-  { id: "templates", terms: ["template", "instance family", "architecture", "arm64", "amd64", "blacklist"] },
+  { id: "node-templates", terms: ["template", "instance family", "architecture", "arm64", "amd64", "blacklist"] },
   { id: "approvals", terms: ["approval", "jit", "access", "request", "grant", "permission", "revoke"] },
   { id: "tag-governance", terms: ["tag", "tagging", "policy", "compliance", "bulk tag", "enforcement", "template", "automation", "scoring"] },
   { id: "automation", terms: ["autopilot", "automation", "governance", "rule", "auto cleanup"] },
@@ -286,6 +292,25 @@ const MainLayout = () => {
   const location = useLocation();
   const navigate = useNavigate();
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const [isNotifOpen, setIsNotifOpen] = useState(false);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const [bellAnim, setBellAnim] = useState(false);
+
+  useEffect(() => {
+    if (unreadCount > 0) {
+      setBellAnim(true);
+      const timer = setTimeout(() => setBellAnim(false), 700);
+      return () => clearTimeout(timer);
+    }
+  }, [unreadCount]);
+
+  const [volatilityStatus, setVolatilityStatus] = useState({ regime: 'NORMAL' });
+  const [healthStatus, setHealthStatus] = useState('Green');
+
+  const isSuperAdmin = user?.role === 'SUPER_ADMIN' || user?.role === 'super_admin';
+
+  // Task 7.5: Volatility monitoring is now handled by VolatilityMonitor component
+  // The inline fetch was removed to prevent re-fetching on every route change
 
   // Navigation active state determined by current pathname and hash
   const currentPath = location.pathname;
@@ -317,8 +342,6 @@ const MainLayout = () => {
 
   const isHighlighted = (id) => search.trim() && searchResults.includes(id);
   const isVisible = (id) => !search.trim() || searchResults.includes(id);
-
-  const isSuperAdmin = user?.role === 'SUPER_ADMIN' || user?.role === 'super_admin';
 
   const adminNavigation = [
     { name: 'Command Center', path: '/admin', icon: FiActivity },
@@ -739,10 +762,12 @@ const MainLayout = () => {
       </nav>
 
       {/* Main Content */}
-      <div className="flex-1 flex flex-col min-w-0 transition-all duration-300">
+      <div className="flex-1 flex flex-col min-w-0 transition-all duration-300 relative">
+        {/* Task 7.5: Self-contained VolatilityMonitor — manages own fetch + state */}
+        <VolatilityMonitor />
 
         {/* Glass Pill Navbar */}
-        <div className="px-6 pt-5 pb-2 z-20 sticky top-0 bg-[#f0f2f5]/80 backdrop-blur-md">
+        <div className={`px-6 pt-5 pb-2 z-20 sticky top-0 bg-[#f0f2f5]/80 backdrop-blur-md`}>
           <div style={{
             display: "flex", alignItems: "center",
             background: "rgba(255,255,255,0.9)",
@@ -822,6 +847,42 @@ const MainLayout = () => {
 
             {/* Right Content */}
             <div style={{ display: "flex", gap: 6, paddingRight: 6, alignItems: "center", marginLeft: "auto" }}>
+              <button
+                onClick={() => setIsNotifOpen(o => !o)}
+                aria-label="Notifications"
+                style={{
+                  position: "relative", width: 34, height: 34, borderRadius: 8,
+                  border: `1.5px solid ${isNotifOpen ? "#d1d5db" : "#e4e6ea"}`,
+                  background: isNotifOpen ? "#f5f6f8" : "#ffffff",
+                  cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+                  transition: "all 0.14s", outline: "none",
+                  animation: bellAnim ? "bell-shake 0.65s ease" : "none",
+                  marginRight: 8
+                }}
+              >
+                <svg width={15} height={15} viewBox="0 0 24 24" fill="none"
+                  stroke={isNotifOpen ? "#111318" : "#5a6272"} strokeWidth={isNotifOpen ? 2.2 : 1.75} strokeLinecap="round" strokeLinejoin="round"
+                  style={{ display: "block", flexShrink: 0 }}>
+                  <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" /><path d="M13.73 21a2 2 0 0 1-3.46 0" />
+                </svg>
+                {unreadCount > 0 && (
+                  <div style={{
+                    position: "absolute", top: -5, right: -5,
+                    minWidth: 17, height: 17, borderRadius: 10,
+                    background: "#dc2626", border: "2px solid #fff",
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    fontSize: 8.5, fontWeight: 800, color: "#fff", padding: "0 3px",
+                    animation: "badge-in 0.28s cubic-bezier(.4,0,.2,1)",
+                  }}>{unreadCount > 9 ? "9+" : unreadCount}</div>
+                )}
+              </button>
+
+              {/* Health Indicator Dot */}
+              <div
+                className={`w-2.5 h-2.5 rounded-full mr-3 ${healthStatus === 'Green' ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]' : healthStatus === 'Yellow' ? 'bg-amber-500 shadow-[0_0_8px_rgba(245,158,11,0.5)] animate-pulse' : 'bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.5)] animate-ping'}`}
+                title={`System Health: ${healthStatus}`}
+              />
+
               {headerStore.rightContent}
               {headerStore.refreshAction && (
                 <button
@@ -847,11 +908,19 @@ const MainLayout = () => {
           </div>
         </div>
 
-        <main className="flex-1 overflow-y-auto pt-2">
+        <main className="flex-1 overflow-y-auto pt-2" style={{
+          transition: "filter 0.2s, opacity 0.2s"
+        }}>
           <div className="p-0 sm:px-8 pb-8 h-full">
             <Outlet />
           </div>
         </main>
+
+        <NotificationPanel
+          isOpen={isNotifOpen}
+          onClose={() => setIsNotifOpen(false)}
+          onUnreadCount={setUnreadCount}
+        />
       </div>
     </div>
   );

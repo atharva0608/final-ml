@@ -6,7 +6,7 @@ set -e
 # Version: 1.0.0
 # ============================================
 
-AGENT_VERSION="v1.0.0"
+AGENT_VERSION="latest"
 AGENT_IMAGE="atharva608/spot-optimizer-agent:${AGENT_VERSION}"
 NAMESPACE="spot-optimizer"
 
@@ -56,6 +56,7 @@ kubectl create secret generic spot-agent-secret \
 kubectl create configmap spot-agent-config \
     --namespace $NAMESPACE \
     --from-literal=BACKEND_URL="$BACKEND_URL" \
+    --from-literal=BACKEND_WS_URL="$BACKEND_WS_URL" \
     --from-literal=CLUSTER_ID="$CLUSTER_ID" \
     --dry-run=client -o yaml | kubectl apply -f -
 
@@ -133,6 +134,11 @@ spec:
                 configMapKeyRef:
                   name: spot-agent-config
                   key: CLUSTER_ID
+            - name: BACKEND_WS_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: spot-agent-config
+                  key: BACKEND_WS_URL
           resources:
             requests:
               cpu: "50m"

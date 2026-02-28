@@ -97,7 +97,6 @@ class User(Base):
     organization = relationship("Organization", back_populates="users")
     assigned_role = relationship("Role", back_populates="users")
     accounts = relationship("Account", back_populates="user", cascade="all, delete-orphan")
-    node_templates = relationship("NodeTemplate", back_populates="user", cascade="all, delete-orphan")
     onboarding_state = relationship("OnboardingState", uselist=False, back_populates="user", cascade="all, delete-orphan")
 
     # Direct/Custom Permissions (overrides or adds to Role)

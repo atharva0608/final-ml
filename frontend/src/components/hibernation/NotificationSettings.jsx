@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { hibernationAPI } from '../../services/api';
 
 /**
  * Notification Settings - Configure alerts for hibernation events
@@ -64,24 +65,22 @@ const NotificationSettings = () => {
 
   const loadSettings = async () => {
     try {
-      // Mock data - replace with actual API call
-      // const response = await hibernationApi.getNotificationSettings();
-      // setSettings(response.data);
+      const response = await hibernationAPI.getNotificationSettings?.();
+      if (response?.data) {
+        setSettings(prev => ({ ...prev, ...response.data }));
+      }
     } catch (error) {
       console.error('Failed to load notification settings:', error);
+      // Keep defaults on error — initial state is a valid empty form
     }
   };
 
   const handleSave = async () => {
     try {
       setSaving(true);
-      // await hibernationApi.updateNotificationSettings(settings);
-      console.log('Saving settings:', settings);
-
-      setTimeout(() => {
-        setSaving(false);
-        alert('Settings saved successfully!');
-      }, 1000);
+      await hibernationAPI.updateNotificationSettings?.(settings);
+      setSaving(false);
+      alert('Settings saved successfully!');
     } catch (error) {
       console.error('Failed to save settings:', error);
       setSaving(false);
@@ -461,7 +460,7 @@ const NotificationSettings = () => {
             </div>
 
             <div className="bg-yellow-50 border border-yellow-200 rounded p-3 text-sm text-yellow-800">
-               <strong>Note:</strong> PagerDuty will only be triggered for errors and conflicts to avoid alert fatigue.
+              <strong>Note:</strong> PagerDuty will only be triggered for errors and conflicts to avoid alert fatigue.
             </div>
           </div>
         )}
@@ -470,13 +469,12 @@ const NotificationSettings = () => {
       {/* Test Result Banner */}
       {testResult && (
         <div
-          className={`fixed bottom-6 right-6 px-6 py-4 rounded-lg shadow-lg ${
-            testResult.status === 'success'
+          className={`fixed bottom-6 right-6 px-6 py-4 rounded-lg shadow-lg ${testResult.status === 'success'
               ? 'bg-green-500 text-white'
               : testResult.status === 'error'
-              ? 'bg-red-500 text-white'
-              : 'bg-blue-500 text-white'
-          }`}
+                ? 'bg-red-500 text-white'
+                : 'bg-blue-500 text-white'
+            }`}
         >
           {testResult.status === 'sending' && '⏳ Sending test notification...'}
           {testResult.status === 'success' && '✓ Test notification sent successfully!'}

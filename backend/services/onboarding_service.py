@@ -1,12 +1,10 @@
 import uuid
 import boto3
-import os
 from sqlalchemy.orm import Session
 from fastapi import HTTPException
 from botocore.exceptions import ClientError
 from backend.models.user import User
 from backend.models.onboarding import OnboardingState, OnboardingStep, ConnectionMode
-from backend.core.config import settings
 import urllib.parse
 
 from pathlib import Path
@@ -15,26 +13,53 @@ from pathlib import Path
 TEMPLATE_DIR = Path(__file__).parent.parent / "templates" / "aws"
 # Note: URLs are now generated dynamically based on request host
 
-def get_platform_account_id():
-    """Get Platform Account ID - Auto-detect if not configured"""
-    # 1. Try environment variable first
-    env_id = os.getenv("PLATFORM_AWS_ACCOUNT_ID")
-    if env_id and env_id != "123456789012":
-        return env_id
-    
-    # 2. Auto-detect via STS
-    try:
-        sts = boto3.client('sts')
-        identity = sts.get_caller_identity()
-        return identity.get('Account', '123456789012')
-    except Exception:
-        return '123456789012'
-
-PLATFORM_ACCOUNT_ID = get_platform_account_id()  # Cache at module load
+# Sentinel used in CloudFormation templates when platform account is not yet configured
+_CFN_DEFAULT_ACCOUNT_ID = '123456789012'
 
 class OnboardingService:
     def __init__(self, db: Session):
         self.db = db
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _get_platform_sts_client(self):
+        """
+        Return a boto3 STS client authenticated with platform credentials
+        stored in the SystemConfig table (set via Super Admin UI).
+        Never reads from environment variables directly.
+        """
+        from backend.models.system_config import SystemConfig
+        access_key = self.db.query(SystemConfig).filter(SystemConfig.key == "PLATFORM_AWS_ACCESS_KEY").first()
+        secret_key = self.db.query(SystemConfig).filter(SystemConfig.key == "PLATFORM_AWS_SECRET").first()
+        region_cfg = self.db.query(SystemConfig).filter(SystemConfig.key == "PLATFORM_AWS_REGION").first()
+        region = (region_cfg.value if region_cfg and region_cfg.value else 'us-east-1')
+
+        if not (access_key and access_key.value and secret_key and secret_key.value):
+            raise HTTPException(
+                status_code=400,
+                detail="Platform AWS Identity is not configured. "
+                       "Go to Super Admin → Platform Identity and save your AWS credentials first."
+            )
+
+        return boto3.client(
+            'sts',
+            aws_access_key_id=access_key.value,
+            aws_secret_access_key=secret_key.value,
+            region_name=region
+        )
+
+    def _get_platform_account_id(self) -> str:
+        """
+        Return the platform AWS account ID from SystemConfig (Super Admin UI).
+        Falls back to the CFN sentinel so the CloudFormation template still renders.
+        """
+        from backend.models.system_config import SystemConfig
+        cfg = self.db.query(SystemConfig).filter(SystemConfig.key == "PLATFORM_AWS_ACCOUNT_ID").first()
+        if cfg and cfg.value and cfg.value != _CFN_DEFAULT_ACCOUNT_ID:
+            return cfg.value
+        return _CFN_DEFAULT_ACCOUNT_ID
 
     def get_or_create_state(self, user_id: str) -> OnboardingState:
         state = self.db.query(OnboardingState).filter(OnboardingState.user_id == user_id).first()
@@ -80,7 +105,7 @@ class OnboardingService:
             "stackName": stack_name,
             "templateURL": template_url,
             "param_ExternalId": state.external_id,
-            "param_PlatformAccountId": PLATFORM_ACCOUNT_ID
+            "param_PlatformAccountId": self._get_platform_account_id()
         }
         
         # Build URL
@@ -90,16 +115,11 @@ class OnboardingService:
 
     def verify_role_connection(self, user_id: str, role_arn: str) -> bool:
         state = self.get_or_create_state(user_id)
-        
+
         try:
-            # Attempt to Assume Role using the specific ExternalId
-            sts_client = boto3.client(
-                'sts',
-                aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
-                aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
-                region_name='us-east-1'
-            )
-            
+            # Assume Role using platform credentials from Super Admin UI (SystemConfig)
+            sts_client = self._get_platform_sts_client()
+
             response = sts_client.assume_role(
                 RoleArn=role_arn,
                 RoleSessionName=f"OnboardingVerify-{user_id}",
@@ -197,7 +217,7 @@ class OnboardingService:
         # Let's simple string replace specific keys if present to be helpful
         # "Default: '123456789012'" -> "Default: 'REAL_ID'"
         
-        content = content.replace("Default: '123456789012'", f"Default: '{PLATFORM_ACCOUNT_ID}'")
+        content = content.replace("Default: '123456789012'", f"Default: '{self._get_platform_account_id()}'")
         
         # We don't have a placeholder for ExternalId in the file currently (it likely has no default or dummy).
         # But we can try to inject it if we want.

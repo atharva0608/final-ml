@@ -6,6 +6,7 @@ REST API endpoints for managing hibernation schedules.
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from typing import List, Optional
+from datetime import datetime, timedelta
 from backend.core.dependencies import get_db, get_current_user
 from backend.services.hibernation_service import HibernationService
 from backend.schemas.hibernation_schemas import (
@@ -173,3 +174,142 @@ def get_active_status(
     """
     service = HibernationService(db)
     return service.get_active_hibernation_status(current_user.organization_id)
+
+
+# ── Emergency Controls ──────────────────────────────────────
+
+def _get_org_clusters(db: Session, user: User, cluster_id: str = None):
+    """Get clusters for the user's organization, optionally filtering by ID."""
+    from backend.models.cluster import Cluster
+    from backend.models.account import Account
+    
+    query = db.query(Cluster).join(Account, Cluster.account_id == Account.id).filter(
+        Account.organization_id == user.organization_id
+    )
+    if cluster_id and cluster_id != "all":
+        query = query.filter(Cluster.id == cluster_id)
+    return query.all()
+
+
+@router.post("/emergency/sleep")
+def emergency_sleep(
+    cluster_id: Optional[str] = Query(None, description="Specific cluster ID, or omit for all"),
+    strategy: str = Query("NAMESPACE_SLEEP", description="Strategy to use"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Immediately hibernate selected or all clusters."""
+    clusters = _get_org_clusters(db, current_user, cluster_id)
+    if not clusters:
+        raise HTTPException(status_code=404, detail="No clusters found")
+    
+    results = []
+    success_count = 0
+    error_count = 0
+    for cluster in clusters:
+        try:
+            from backend.workers.tasks.hibernation_worker import _get_strategy_class
+            strategy_cls = _get_strategy_class(strategy)
+            cluster_config = {"cluster_name": cluster.name, "region": cluster.region, "kubeconfig": {}}
+            strat = strategy_cls(cluster_config)
+            result = strat.sleep({})
+            
+            cluster.is_hibernating = True
+            cluster.hibernation_state = {
+                "action": "emergency_sleep",
+                "strategy": strategy,
+                "started_at": datetime.utcnow().isoformat(),
+                "triggered_by": current_user.email
+            }
+            results.append({"cluster_id": cluster.id, "cluster_name": cluster.name, "status": "sleeping"})
+            success_count += 1
+        except Exception as e:
+            results.append({"cluster_id": cluster.id, "cluster_name": cluster.name, "status": "error", "error": str(e)})
+            error_count += 1
+    
+    db.commit()
+    return {"action": "emergency_sleep", "results": results, "success_count": success_count, "error_count": error_count}
+
+
+@router.post("/emergency/wake")
+def emergency_wake(
+    cluster_id: Optional[str] = Query(None, description="Specific cluster ID, or omit for all"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Immediately wake selected or all clusters."""
+    clusters = _get_org_clusters(db, current_user, cluster_id)
+    if not clusters:
+        raise HTTPException(status_code=404, detail="No clusters found")
+    
+    results = []
+    success_count = 0
+    error_count = 0
+    for cluster in clusters:
+        try:
+            state = cluster.hibernation_state or {}
+            strategy_name = state.get("strategy", "NAMESPACE_SLEEP")
+            
+            from backend.workers.tasks.hibernation_worker import _get_strategy_class
+            strategy_cls = _get_strategy_class(strategy_name)
+            cluster_config = {"cluster_name": cluster.name, "region": cluster.region, "kubeconfig": {}}
+            strat = strategy_cls(cluster_config)
+            result = strat.wake(state)
+            
+            cluster.is_hibernating = False
+            cluster.hibernation_state = {}
+            results.append({"cluster_id": cluster.id, "cluster_name": cluster.name, "status": "awake"})
+            success_count += 1
+        except Exception as e:
+            results.append({"cluster_id": cluster.id, "cluster_name": cluster.name, "status": "error", "error": str(e)})
+            error_count += 1
+    
+    db.commit()
+    return {"action": "emergency_wake", "results": results, "success_count": success_count, "error_count": error_count}
+
+
+@router.post("/emergency/temp-hibernate")
+def emergency_temp_hibernate(
+    cluster_id: Optional[str] = Query(None, description="Specific cluster ID, or omit for all"),
+    hours: int = Query(4, ge=1, le=24, description="Duration in hours"),
+    strategy: str = Query("NAMESPACE_SLEEP", description="Strategy to use"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Temporarily hibernate selected or all clusters for a specified duration."""
+    clusters = _get_org_clusters(db, current_user, cluster_id)
+    if not clusters:
+        raise HTTPException(status_code=404, detail="No clusters found")
+    
+    wake_at = datetime.utcnow() + timedelta(hours=hours)
+    
+    results = []
+    success_count = 0
+    error_count = 0
+    for cluster in clusters:
+        try:
+            from backend.workers.tasks.hibernation_worker import _get_strategy_class
+            strategy_cls = _get_strategy_class(strategy)
+            cluster_config = {"cluster_name": cluster.name, "region": cluster.region, "kubeconfig": {}}
+            strat = strategy_cls(cluster_config)
+            result = strat.sleep({})
+            
+            cluster.is_hibernating = True
+            cluster.hibernation_state = {
+                "action": "temp_hibernate",
+                "strategy": strategy,
+                "started_at": datetime.utcnow().isoformat(),
+                "wake_at": wake_at.isoformat(),
+                "duration_hours": hours,
+                "triggered_by": current_user.email
+            }
+            results.append({"cluster_id": cluster.id, "cluster_name": cluster.name, "status": "sleeping", "wake_at": wake_at.isoformat()})
+            success_count += 1
+        except Exception as e:
+            results.append({"cluster_id": cluster.id, "cluster_name": cluster.name, "status": "error", "error": str(e)})
+            error_count += 1
+    
+    db.commit()
+    return {"action": "temp_hibernate", "results": results, "success_count": success_count, "error_count": error_count, "wake_at": wake_at.isoformat()}
+
+

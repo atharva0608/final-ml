@@ -554,7 +554,8 @@ class ActionActuator:
         url = f"{self.backend_url}/api/v1/actions/poll"
         headers = {
             'Authorization': f'Bearer {self.api_key}',
-            'Content-Type': 'application/json'
+            'Content-Type': 'application/json',
+            'ngrok-skip-browser-warning': 'true'
         }
 
         params = {'cluster_id': self.cluster_id}
@@ -594,7 +595,8 @@ class ActionActuator:
         url = f"{self.backend_url}/api/v1/actions/{action_id}/result"
         headers = {
             'Authorization': f'Bearer {self.api_key}',
-            'Content-Type': 'application/json'
+            'Content-Type': 'application/json',
+            'ngrok-skip-browser-warning': 'true'
         }
 
         payload = {
@@ -694,7 +696,8 @@ class ActionActuator:
         url = f"{self.backend_url}/api/v1/clusters/{self.cluster_id}/fallback"
         headers = {
             'Authorization': f'Bearer {self.api_key}',
-            'Content-Type': 'application/json'
+            'Content-Type': 'application/json',
+            'ngrok-skip-browser-warning': 'true'
         }
         payload = {
             'node_name': node_name,

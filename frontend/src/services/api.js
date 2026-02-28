@@ -1,6 +1,9 @@
 import axios from 'axios';
 
-const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
+// Use REACT_APP_API_URL env var when set (local dev with explicit backend URL).
+// In Docker, VITE_API_URL is passed but not read by CRA — so fall back to ''
+// (empty string = relative URL) which routes through the Nginx proxy at /api.
+const API_URL = process.env.REACT_APP_API_URL || '';
 
 const api = axios.create({
     baseURL: API_URL,
@@ -85,6 +88,16 @@ export const clusterAPI = {
     updateResourceCosts: (clusterId, costs) => api.post(`/api/v1/clusters/${clusterId}/costs`, costs),
     autoInstallAgent: (clusterId) => api.post(`/api/v1/clusters/${clusterId}/auto-install`),
     discover: () => api.post('/api/v1/clusters/discover'),
+    toggleAutoRebalance: (clusterId, enabled) => api.patch(`/api/v1/clusters/${clusterId}/auto-rebalance`, null, { params: { enabled } }),
+    getUtilization: (clusterId) => api.get(`/api/v1/clusters/${clusterId}/utilization`),
+    getWorkloadType: (clusterId) => api.get(`/api/v1/clusters/${clusterId}/workload-type`),
+    getNodesDetailed: (clusterId) => api.get(`/api/v1/clusters/${clusterId}/nodes/detailed`),
+    disconnectAgent: (clusterId) => api.post(`/api/v1/clusters/${clusterId}/agent/disconnect`),
+    removeAgent: (clusterId) => api.delete(`/api/v1/clusters/${clusterId}/agent`),
+    optimize: (clusterId) => api.post(`/api/v1/clusters/${clusterId}/optimize`),
+    fallback: (clusterId) => api.post(`/api/v1/clusters/${clusterId}/fallback`),
+    getOptimizationSettings: (clusterId) => api.get(`/api/v1/clusters/${clusterId}/optimization-settings`),
+    updateOptimizationSettings: (clusterId, settings) => api.put(`/api/v1/clusters/${clusterId}/optimization-settings`, settings),
 };
 export const clustersAPI = clusterAPI;
 
@@ -125,6 +138,8 @@ export const metricAPI = {
     getOverview: () => api.get('/api/v1/metrics/overview'),
     getTeamSummary: (teamId) => api.get(`/api/v1/metrics/teams/${teamId}/summary`),
     getAccountSummary: (accountId) => api.get(`/api/v1/metrics/accounts/${accountId}/summary`),
+    // Task 7.6: Rejection counters for decision engine
+    getRejectionCounters: (clusterId) => api.get(`/api/v1/metrics/rejections/${clusterId}`),
 };
 export const metricsAPI = metricAPI;
 
@@ -183,6 +198,22 @@ export const templateAPI = {
     getDefault: () => api.get('/api/v1/templates/default'),
 };
 export const templatesAPI = templateAPI;
+
+export const nodeTemplateAPI = {
+    // Global Registry
+    getGlobalTemplates: () => api.get(`/api/v1/node-templates`),
+    createGlobalTemplate: (data) => api.post(`/api/v1/node-templates`, data),
+    deleteGlobalTemplate: (id) => api.delete(`/api/v1/node-templates/${id}`),
+    getVersions: (templateId) => api.get(`/api/v1/node-templates/${templateId}/versions`),
+    createVersion: (templateId, data) => api.post(`/api/v1/node-templates/${templateId}/versions`, data),
+
+    // Cluster Mappings
+    getActiveMapping: (clusterId) => api.get(`/api/v1/clusters/${clusterId}/node-template/active`),
+    assignToCluster: (clusterId, templateId, versionId) => api.post(`/api/v1/clusters/${clusterId}/node-template/assign`, { template_id: templateId, version_id: versionId }),
+
+    // Validation
+    validate: (data) => api.post(`/api/v1/node-templates/validate`, data),
+};
 
 export const experimentsAPI = {
     list: (params) => api.get('/api/v1/lab/experiments', { params }),
@@ -264,10 +295,18 @@ export const hygieneAPI = {
 // AtharvaAi Pool Selection & Termination Monitoring API
 export const atharvaaiAPI = {
     // Pool Rankings - Get ML-scored pool recommendations
-    getRankings: (template, region = 'ap-south-1', limit = 10, clusterId = null) =>
-        api.post('/api/v1/atharvaai/pools/rankings', template, {
-            params: { region, limit, cluster_id: clusterId }
-        }),
+    getRankings: (template, region = 'ap-south-1', limit = 10, clusterId = null, currentNodeContext = null) => {
+        const params = { region, limit };
+        if (clusterId) params.cluster_id = clusterId;
+
+        // Add current node context for real savings calculation
+        if (currentNodeContext) {
+            if (currentNodeContext.instance_type) params.current_instance_type = currentNodeContext.instance_type;
+            if (currentNodeContext.lifecycle) params.current_instance_lifecycle = currentNodeContext.lifecycle;
+        }
+
+        return api.post('/api/v1/atharvaai/pools/rankings', template, { params });
+    },
 
     // Get rankings using a saved template ID
     getRankingsForTemplate: (templateId, region = 'ap-south-1', limit = 10) =>
@@ -292,6 +331,15 @@ export const atharvaaiAPI = {
 
     // Health check
     getHealth: () => api.get('/api/v1/atharvaai/health'),
+
+    // Effective Configuration
+    getEffectiveConfiguration: (clusterId) => api.get(`/api/v1/atharvaai/clusters/${clusterId}/effective-configuration`),
+
+    // Node-Specific Rankings (To be implemented in backend)
+    getNodeRecommendations: (clusterId) => api.get(`/api/v1/atharvaai/clusters/${clusterId}/node-recommendations`),
+
+    // Cluster Impact (To be implemented in backend)
+    getClusterImpact: (clusterId) => api.get(`/api/v1/atharvaai/clusters/${clusterId}/impact`),
 };
 export const cleanupAPI = hygieneAPI;
 
@@ -365,7 +413,115 @@ export const karpenterAPI = {
 
     // Mode management
     switchMode: (clusterId, mode) => api.patch(`/api/v1/karpenter/mode/${clusterId}`, { mode }),
+
+    // Execution Plan & History
+    getExecutionPlan: (clusterId = null) => api.get('/api/v1/karpenter/execution-plan', { params: { cluster_id: clusterId } }),
+    getHistory: (clusterId = null) => api.get('/api/v1/karpenter/history', { params: { cluster_id: clusterId } }),
+};
+
+// ── Tag Governance APIs ──────────────────────────────────────────────────────
+export const tagPolicyAPI = {
+    list: () => api.get('/api/v1/tags/policies/'),
+    create: (data) => api.post('/api/v1/tags/policies/', data),
+    update: (id, data) => api.put(`/api/v1/tags/policies/${id}`, data),
+    delete: (id) => api.delete(`/api/v1/tags/policies/${id}`),
+    toggle: (id) => api.patch(`/api/v1/tags/policies/${id}/toggle`),
+};
+
+export const tagTemplateAPI = {
+    list: () => api.get('/api/v1/tags/templates/'),
+    create: (data) => api.post('/api/v1/tags/templates/', data),
+    get: (id) => api.get(`/api/v1/tags/templates/${id}`),
+    update: (id, data) => api.put(`/api/v1/tags/templates/${id}`, data),
+    delete: (id) => api.delete(`/api/v1/tags/templates/${id}`),
+};
+
+export const tagAutomationAPI = {
+    listRules: () => api.get('/api/v1/tags/automation/rules'),
+    createRule: (data) => api.post('/api/v1/tags/automation/rules', data),
+    updateRule: (id, data) => api.put(`/api/v1/tags/automation/rules/${id}`, data),
+    deleteRule: (id) => api.delete(`/api/v1/tags/automation/rules/${id}`),
+    toggleRule: (id) => api.patch(`/api/v1/tags/automation/rules/${id}/toggle`),
+    getLog: (params) => api.get('/api/v1/tags/automation/log', { params }),
+};
+
+export const tagScoringAPI = {
+    getConfig: () => api.get('/api/v1/tags/scoring/config'),
+    saveConfig: (data) => api.put('/api/v1/tags/scoring/config', data),
+    preview: (params) => api.get('/api/v1/tags/scoring/preview', { params }),
+};
+
+export const tagComplianceAPI = {
+    getSummary: (params) => api.get('/api/v1/tags/compliance/summary', { params }),
+    listResources: (params) => api.get('/api/v1/tags/compliance/resources', { params }),
+    getHeatmap: (params) => api.get('/api/v1/tags/compliance/heatmap', { params }),
+};
+
+export const atharvaAiAPI = {
+    getVolatilityStatus: () => api.get('/api/v1/atharvaai/volatility/status'),
+    getHealth: () => api.get('/api/v1/atharvaai/health'),
+    getRankings: () => api.post('/api/v1/atharvaai/pools/rankings', { architecture: ["amd64", "arm64"], vcpu_min: 2, vcpu_max: 64, memory_gb_min: 4, memory_gb_max: 256, allowed_families: null, allowed_sizes: null, allowed_azs: null, excluded_instance_types: null }, { params: { region: 'ap-south-1', limit: 10 } }),
+    getBlacklistStatus: () => api.get('/api/v1/atharvaai/blacklist'),
+};
+
+// Decision Engine v3 API
+export const decisionEngineAPI = {
+    // Legacy endpoints (keep for backwards compatibility)
+    getLogs: (clusterId) => api.get('/api/v1/decision/logs', { params: { cluster_id: clusterId } }),
+    getDryRunBudget: () => api.get('/api/v1/dryrun/budget'),
+    getCooldownStatus: (clusterId) => api.get(`/api/v1/cooldown/${clusterId}`),
+    getExecutionStatus: (clusterId) => api.get(`/api/v1/execution/status/${clusterId}`),
+    getSubstituteStatus: (clusterId) => api.get(`/api/v1/substitute/status/${clusterId}`),
+    getClassification: (clusterId) => api.get(`/api/v1/clusters/${clusterId}/classification`),
+    updateOptimizationMode: (clusterId, mode) => api.patch(`/api/v1/clusters/${clusterId}`, { optimization_mode: mode }),
+
+    // Decision Engine v3 endpoints
+    getGlobalIntelligenceStatus: (region) => api.get('/api/v1/atharvaai/v3/global-intelligence/status', { params: { region } }),
+    getDiversityStatus: (clusterId) => api.get(`/api/v1/atharvaai/v3/diversity/${clusterId}`),
+    getCooldownStatusV3: (clusterId) => api.get(`/api/v1/atharvaai/v3/cooldown/${clusterId}`),
+    getSubstituteStatusV3: (clusterId) => api.get(`/api/v1/atharvaai/v3/substitute/${clusterId}`),
+    getStateMachine: (clusterId) => api.get(`/api/v1/atharvaai/v3/state-machine/${clusterId}`),
+    setOptimizationMode: (clusterId, mode) => api.put(`/api/v1/atharvaai/v3/cluster/${clusterId}/optimization-mode`, null, { params: { mode } }),
+    upgradeModelVersion: (clusterId, version) => api.put(`/api/v1/atharvaai/v3/cluster/${clusterId}/model-version`, null, { params: { version } }),
+    getDecisionMetrics: () => api.get('/api/v1/atharvaai/v3/metrics'),
+    getWorkloadStatus: (clusterId) => api.get(`/api/v1/atharvaai/v3/workload-status/${clusterId}`),
+    deploySubstitute: (clusterId, targetNodeName) => api.post(`/api/v1/karpenter/v3/substitute/${clusterId}/deploy`, null, { params: { target_node_name: targetNodeName } }),
+    getSubstituteStatusDetailed: (clusterId) => api.get(`/api/v1/karpenter/v3/substitute/${clusterId}/status`),
+    getCooldownDetailed: (clusterId) => api.get(`/api/v1/karpenter/v3/cooldown/${clusterId}`),
+};
+
+// ── Optimizer Coordinator API ─────────────────────────────────────────
+export const optimizerCoordinatorAPI = {
+    getStatus: (clusterId) =>
+        api.get(`/api/v1/optimizer/status/${clusterId}`),
+    triggerEvaluation: (clusterId) =>
+        api.post(`/api/v1/optimizer/evaluate/${clusterId}`),
+    listProposals: (clusterId, status) =>
+        api.get(`/api/v1/optimizer/proposals/${clusterId}`, { params: status ? { status } : {} }),
+    approveProposal: (proposalId) =>
+        api.post(`/api/v1/optimizer/proposals/${proposalId}/approve`),
+    rejectProposal: (proposalId, reason) =>
+        api.post(`/api/v1/optimizer/proposals/${proposalId}/reject`, { reason }),
+    getComparison: (proposalId) =>
+        api.get(`/api/v1/optimizer/comparison/${proposalId}`),
+    initializeCluster: (clusterId) =>
+        api.post(`/api/v1/optimizer/initialize/${clusterId}`),
+    getTrustPhase: (clusterId) =>
+        api.get(`/api/v1/optimizer/trust-phase/${clusterId}`),
+    getResizeGuardStatus: (clusterId) =>
+        api.get(`/api/v1/optimizer/resize-guard/${clusterId}`),
+    getCircuitBreakerStatus: (clusterId) =>
+        api.get(`/api/v1/optimizer/circuit-breaker/${clusterId}`),
+};
+
+// ── Pool Rotation API ──────────────────────────────────────────────────
+export const poolRotationAPI = {
+    getStatus: (clusterId) =>
+        api.get(`/api/v1/pool-rotation/status/${clusterId}`),
+    checkRotation: (clusterId, region) =>
+        api.post(`/api/v1/pool-rotation/check/${clusterId}`, region ? { region } : {}),
+    forceRotation: (clusterId, region) =>
+        api.post(`/api/v1/pool-rotation/force/${clusterId}`, region ? { region } : {}),
 };
 
 export default api;
-

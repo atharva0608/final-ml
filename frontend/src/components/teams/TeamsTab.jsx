@@ -24,9 +24,9 @@ function TeamCard({ team, memberCount, onClick }) {
 
             <div className="grid grid-cols-2 gap-4 mb-6">
                 <StatBox label="Members" value={memberCount} valueColor="text-gray-900" />
-                <StatBox label="Monthly Cost" value="$4,820" valueColor="text-emerald-500" />
-                <StatBox label="Resources" value="12" valueColor="text-indigo-600" />
-                <StatBox label="Savings" value="~$1,446" valueColor="text-orange-500" />
+                <StatBox label="Monthly Cost" value={`$${(team.monthly_cost || 0).toLocaleString()}`} valueColor="text-emerald-500" />
+                <StatBox label="Resources" value={team.resource_count || 0} valueColor="text-indigo-600" />
+                <StatBox label="Savings" value={`~$${(team.savings_realized || 0).toLocaleString()}`} valueColor="text-orange-500" />
             </div>
 
             <div className="flex items-center gap-2 text-blue-600 font-bold text-sm group-hover:gap-3 transition-all">

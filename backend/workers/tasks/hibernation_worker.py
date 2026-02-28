@@ -109,6 +109,32 @@ def execute_hibernation_scheduler():
                 
                 # Check if it's time to execute
                 if next_time <= now:
+                    # ── Task 9.1: Conflict detection ─────────────────
+                    # Check if any cluster in this schedule already has an active
+                    # hibernation lock from another schedule
+                    has_conflict = False
+                    for cluster in schedule.clusters:
+                        conflict_key = f"hibernation:active_schedule:{cluster.id}"
+                        active_schedule = redis.get(conflict_key)
+                        if active_schedule and active_schedule != schedule.id:
+                            logger.warning(
+                                f"Conflict: cluster {cluster.id} locked by schedule {active_schedule}, "
+                                f"skipping {action} for schedule {schedule.id}"
+                            )
+                            has_conflict = True
+                            break
+                    
+                    if has_conflict:
+                        continue
+                    
+                    # Mark clusters as owned by this schedule 
+                    for cluster in schedule.clusters:
+                        redis.setex(
+                            f"hibernation:active_schedule:{cluster.id}",
+                            3600,  # 1 hour TTL — auto-expires
+                            schedule.id
+                        )
+                    
                     logger.info(f"Executing {action} for schedule {schedule.name}")
                     
                     if action == "sleep":
@@ -142,6 +168,18 @@ def execute_hibernation(self, schedule_id: str):
         if not schedule:
             logger.error(f"Schedule {schedule_id} not found")
             return
+        
+        # ── SAFETY GATE: Substitute Mutual Exclusion (Task 1.2) ──
+        # Check for each cluster before proceeding
+        for cluster in schedule.clusters:
+            substitute_state = redis.get(f"spot:substitute:state:{cluster.id}")
+            substitute_state = substitute_state.decode() if substitute_state else "IDLE"
+            if substitute_state not in ("IDLE", "FAILED", "COMPLETED"):
+                logger.warning(
+                    f"Deferring hibernation for {cluster.id}: substitute in {substitute_state}"
+                )
+                execute_hibernation.apply_async(args=[schedule_id], countdown=300)
+                return
         
         logger.info(f"Starting hibernation for schedule: {schedule.name}")
         
@@ -244,16 +282,27 @@ def execute_wake(self, schedule_id: str):
                 strategy = strategy_class(cluster_config)
                 saved_state = schedule.saved_state.get(cluster.id, {})
                 
-                # Check state staleness — warn if saved state is >24h old
+                # ── Task 9.2: Strategy-aware staleness threshold ──
+                # Nuclear/Snapshot need tighter staleness — they modify ASG state
+                staleness_thresholds = {
+                    HibernationStrategy.NUCLEAR.value: 8,         # 8h — ASG state drifts fast
+                    HibernationStrategy.SNAPSHOT_RESTORE.value: 8, # 8h — snapshot may be outdated
+                    HibernationStrategy.NAMESPACE_SLEEP.value: 24, # 24h — only replica counts
+                }
+                max_staleness_hours = staleness_thresholds.get(
+                    schedule.strategy, 24
+                )
+                
                 state_captured_at = saved_state.get("state_captured_at")
                 if state_captured_at:
                     try:
                         captured_time = datetime.fromisoformat(state_captured_at)
                         age = datetime.utcnow() - captured_time
-                        if age > timedelta(hours=24):
+                        if age > timedelta(hours=max_staleness_hours):
                             logger.warning(
                                 f"⚠️ Stale hibernation state for cluster {cluster.name} — "
-                                f"captured {age.total_seconds() / 3600:.1f}h ago. "
+                                f"captured {age.total_seconds() / 3600:.1f}h ago "
+                                f"(max {max_staleness_hours}h for {schedule.strategy}). "
                                 f"Replica counts may have changed since hibernation."
                             )
                     except (ValueError, TypeError):

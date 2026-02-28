@@ -109,7 +109,7 @@ class AccountService:
     ) -> dict:
         """Link a new AWS account after verifying credentials"""
         from backend.models.user import UserRole
-        from backend.models.legacy_approval import ApprovalRequest
+        from backend.models.approval import Approval, ApprovalType, ApprovalStatus, JITScope
         from backend.models.organization import Organization
         
         # SECURITY: Always enforce the Organization's unique External ID
@@ -164,13 +164,15 @@ class AccountService:
         self.db.commit()
         
         if needs_approval:
-            approval_req = ApprovalRequest(
+            approval_req = Approval(
                 organization_id=organization_id,
-                requester_id=requester.id,
-                resource_type="AWS_ACCOUNT",
+                user_id=requester.id,
+                type=ApprovalType.ACTION,
+                action_type="CONNECT_ACCOUNT",
                 resource_id=account.id,
-                action="CONNECT_ACCOUNT",
-                execution_payload={} 
+                status=ApprovalStatus.PENDING,
+                jit_scope=JITScope.ORGANIZATION,
+                jit_metadata={"aws_account_id": aws_account_id}
             )
             self.db.add(approval_req)
             self.db.commit()

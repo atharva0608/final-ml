@@ -304,7 +304,9 @@ def get_api_key_cluster(
     """
     Validate API key and return associated cluster ID
 
-    Used for Kubernetes Agent authentication
+    Used for Kubernetes Agent authentication (LEGACY)
+
+    DEPRECATED: Use get_agent_cluster_from_jwt for OIDC-based authentication
 
     Args:
         api_key: API key from Agent
@@ -340,6 +342,134 @@ def get_api_key_cluster(
     db.commit()
 
     return api_key_record.cluster_id
+
+
+def get_agent_cluster_from_jwt(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    db: Session = Depends(get_db)
+) -> str:
+    """
+    Validate Kubernetes ServiceAccount JWT token and return cluster ID.
+
+    Phase 7: Agent Security (OIDC Federation)
+
+    Enterprise Security Validation:
+    - JWT signature verification using JWKS public keys
+    - Issuer validation (must match cluster OIDC issuer)
+    - Audience validation (must be sts.amazonaws.com)
+    - Expiration validation (token not expired)
+    - Not-before validation (token is valid now)
+    - Token age validation (max 1 hour)
+    - ServiceAccount subject validation
+
+    Args:
+        credentials: HTTP Bearer credentials containing JWT token
+        db: Database session
+
+    Returns:
+        Cluster ID associated with the agent
+
+    Raises:
+        AuthenticationError: If token is invalid or validation fails
+    """
+    from backend.services.oidc_federation_service import OIDCFederationService
+    from backend.models.agent_identity import AgentIdentity
+
+    token = credentials.credentials
+
+    # Extract cluster_id from token claims (unverified, just for lookup)
+    # The actual validation happens in OIDCFederationService
+    try:
+        from jose import jwt
+        unverified_payload = jwt.get_unverified_claims(token)
+
+        # Try to extract cluster_id from custom claim
+        # Format: kubernetes.io/serviceaccount/cluster-id or custom claim
+        cluster_id_claim = unverified_payload.get("kubernetes.io/cluster-id")
+
+        if not cluster_id_claim:
+            # Fallback: Extract from subject or namespace metadata
+            # This requires agents to include cluster_id in token somehow
+            # For now, we'll iterate through all active agent identities
+            # and try validation (not optimal, but works for Phase 7)
+            active_identities = db.query(AgentIdentity).filter(
+                AgentIdentity.is_active == True
+            ).all()
+
+            oidc_service = OIDCFederationService(db)
+
+            for agent_identity in active_identities:
+                is_valid, payload, error = oidc_service.validate_agent_token(
+                    token=token,
+                    cluster_id=agent_identity.cluster_id
+                )
+
+                if is_valid:
+                    return agent_identity.cluster_id
+
+            # No matching cluster found
+            raise AuthenticationError("No cluster found for agent token")
+
+        else:
+            # Validate token for specific cluster
+            oidc_service = OIDCFederationService(db)
+            is_valid, payload, error = oidc_service.validate_agent_token(
+                token=token,
+                cluster_id=cluster_id_claim
+            )
+
+            if not is_valid:
+                raise AuthenticationError(f"Agent token validation failed: {error}")
+
+            return cluster_id_claim
+
+    except Exception as e:
+        raise AuthenticationError(f"Agent authentication failed: {str(e)}")
+
+
+def get_agent_cluster_hybrid(
+    request: Request,
+    db: Session = Depends(get_db)
+) -> str:
+    """
+    Hybrid agent authentication supporting both API key (legacy) and JWT token (OIDC).
+
+    Phase 7: Backward compatibility wrapper
+
+    Checks for:
+    1. Authorization: Bearer <JWT token> (OIDC - preferred)
+    2. X-API-Key: <api_key> (Legacy - deprecated)
+
+    Args:
+        request: FastAPI request
+        db: Database session
+
+    Returns:
+        Cluster ID
+
+    Raises:
+        AuthenticationError: If authentication fails
+    """
+    # Try JWT token first (preferred)
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        try:
+            from fastapi.security import HTTPAuthorizationCredentials
+            credentials = HTTPAuthorizationCredentials(
+                scheme="Bearer",
+                credentials=auth_header[7:]  # Remove "Bearer " prefix
+            )
+            return get_agent_cluster_from_jwt(credentials, db)
+        except Exception as e:
+            # Fall through to API key auth
+            pass
+
+    # Try API key (legacy)
+    api_key = request.headers.get("X-API-Key")
+    if api_key:
+        return get_api_key_cluster(api_key, db)
+
+    raise AuthenticationError("No valid authentication credentials provided")
 
 
 async def verify_rate_limit(

@@ -275,7 +275,8 @@ class PodMetricsCollector:
         url = f"{self.backend_url}/api/v1/pod-metrics/batch"
         headers = {
             'Authorization': f'Bearer {self.api_key}',
-            'Content-Type': 'application/json'
+            'Content-Type': 'application/json',
+            'ngrok-skip-browser-warning': 'true'
         }
 
         payload = {

@@ -135,6 +135,22 @@ def analyze_cluster_potential(cluster_name: str, region: str, ec2_client, creden
 
 
 
+def _make_boto3_client(service: str, region: str, credentials):
+    """
+    Create a boto3 client, using assumed-role credentials when available
+    or falling back to the env/instance-profile credential chain.
+    """
+    if credentials:
+        return boto3.client(
+            service,
+            region_name=region,
+            aws_access_key_id=credentials['AccessKeyId'],
+            aws_secret_access_key=credentials['SecretAccessKey'],
+            aws_session_token=credentials['SessionToken']
+        )
+    return boto3.client(service, region_name=region)
+
+
 def _get_platform_sts_client(db: Session):
     """
     Get an STS client using platform credentials stored in SystemConfig.
@@ -258,37 +274,71 @@ def scan_account(account: Account, db: Session, redis_client) -> Dict[str, int]:
     instances_found = 0
 
     # Validate account has required fields
-    if not account.role_arn or not account.external_id:
-        logger.warning(f"[WORK-DISC-01] Account {account.aws_account_id} missing role_arn or external_id, skipping")
+    if not account.role_arn:
+        logger.warning(f"[WORK-DISC-01] Account {account.aws_account_id} missing role_arn, skipping")
         return {"clusters_found": 0, "instances_found": 0}
-    
+
     try:
         # Assume IAM role via STS using platform credentials
         sts_client = _get_platform_sts_client(db)
-        assumed_role = sts_client.assume_role(
-            RoleArn=account.role_arn,
-            RoleSessionName=f"SpotOptimizer-Discovery-{account.id}",
-            ExternalId=account.external_id
-        )
 
-        credentials = assumed_role['Credentials']
+        # Build assume_role kwargs — ExternalId is required by trust policy but must not be empty
+        assume_kwargs = {
+            'RoleArn': account.role_arn,
+            'RoleSessionName': f"SpotOptimizer-Discovery-{account.id}",
+        }
+        if account.external_id:
+            assume_kwargs['ExternalId'] = account.external_id
 
-        # Create AWS clients with assumed credentials
-        ec2_client = boto3.client(
-            'ec2',
-            region_name=account.region or 'us-east-1',
-            aws_access_key_id=credentials['AccessKeyId'],
-            aws_secret_access_key=credentials['SecretAccessKey'],
-            aws_session_token=credentials['SessionToken']
-        )
+        credentials = None
+        try:
+            assumed_role = sts_client.assume_role(**assume_kwargs)
+            credentials = assumed_role['Credentials']
+            logger.info(f"[WORK-DISC-01] Successfully assumed role for account {account.aws_account_id}")
+        except ClientError as assume_err:
+            error_code = assume_err.response['Error']['Code']
+            if error_code in ('AccessDenied', 'AccessDeniedException'):
+                # Check if same-account scenario — if so, fall back to env credentials directly
+                try:
+                    caller = sts_client.get_caller_identity()
+                    role_account_id = account.role_arn.split(':')[4]
+                    if caller['Account'] == role_account_id:
+                        logger.warning(
+                            f"[WORK-DISC-01] AssumeRole AccessDenied for same-account role "
+                            f"({account.aws_account_id}). Falling back to env credentials directly. "
+                            f"To fix permanently: attach sts:AssumeRole policy to your IAM user for "
+                            f"role {account.role_arn}"
+                        )
+                        # credentials=None signals callers below to use boto3 default credential chain
+                        credentials = None
+                    else:
+                        raise  # Cross-account failure — cannot bypass
+                except Exception:
+                    raise assume_err
+            else:
+                raise
 
-        eks_client = boto3.client(
-            'eks',
-            region_name=account.region or 'us-east-1',
-            aws_access_key_id=credentials['AccessKeyId'],
-            aws_secret_access_key=credentials['SecretAccessKey'],
-            aws_session_token=credentials['SessionToken']
-        )
+        # Create AWS clients — use assumed role credentials when available, else env credentials
+        region = account.region or 'us-east-1'
+        if credentials:
+            ec2_client = boto3.client(
+                'ec2',
+                region_name=region,
+                aws_access_key_id=credentials['AccessKeyId'],
+                aws_secret_access_key=credentials['SecretAccessKey'],
+                aws_session_token=credentials['SessionToken']
+            )
+            eks_client = boto3.client(
+                'eks',
+                region_name=region,
+                aws_access_key_id=credentials['AccessKeyId'],
+                aws_secret_access_key=credentials['SecretAccessKey'],
+                aws_session_token=credentials['SessionToken']
+            )
+        else:
+            # Same-account fallback: use boto3 default credential chain (env vars / instance profile)
+            ec2_client = boto3.client('ec2', region_name=region)
+            eks_client = boto3.client('eks', region_name=region)
 
         # Scan EKS clusters
         clusters_found = scan_eks_clusters(account, eks_client, db, credentials)
@@ -355,13 +405,7 @@ def scan_eks_clusters(account: Account, eks_client, db: Session, credentials: Di
             try:
                 if should_update_cost:
                     # Initialize Cost Explorer
-                    ce = boto3.client(
-                        'ce',
-                        region_name=account.region or 'us-east-1',
-                        aws_access_key_id=credentials['AccessKeyId'],
-                        aws_secret_access_key=credentials['SecretAccessKey'],
-                        aws_session_token=credentials['SessionToken']
-                    )
+                    ce = _make_boto3_client('ce', account.region or 'us-east-1', credentials)
                     
                     # Get cost for last 30 days
                     end_date = datetime.utcnow().date()
@@ -400,16 +444,11 @@ def scan_eks_clusters(account: Account, eks_client, db: Session, credentials: Di
                 logger.warning(f"[WORK-DISC-01] Failed to fetch costs for {cluster_name}: {e}")
 
             # --- Shallow Scan for Teaser (Real Savings) ---
+            cluster_region = cluster_data.get('arn').split(':')[3] if cluster_data.get('arn') else (account.region or 'us-east-1')
             teaser_data = analyze_cluster_potential(
-                cluster_name, 
-                account.region or 'us-east-1', 
-                ec2_client=boto3.client(
-                    'ec2', 
-                    region_name=cluster_data.get('arn').split(':')[3] if cluster_data.get('arn') else account.region,
-                    aws_access_key_id=credentials['AccessKeyId'],
-                    aws_secret_access_key=credentials['SecretAccessKey'],
-                    aws_session_token=credentials['SessionToken']
-                ),
+                cluster_name,
+                account.region or 'us-east-1',
+                ec2_client=_make_boto3_client('ec2', cluster_region, credentials),
                 credentials=credentials
             )
             potential_savings = teaser_data['potential_savings_monthly']
@@ -420,13 +459,17 @@ def scan_eks_clusters(account: Account, eks_client, db: Session, credentials: Di
                 logger.info(f"[WORK-DISC-01] Cost Explorer returned $0 for {cluster_name}, calculating from instance prices...")
                 pricing_helper = get_pricing_helper()
 
+                # Create EC2 client for instance pricing calculation
+                pricing_region = cluster_data.get('arn').split(':')[3] if cluster_data.get('arn') else (account.region or 'us-east-1')
+                ec2_client_pricing = _make_boto3_client('ec2', pricing_region, credentials)
+
                 # Get all instances for this cluster
                 cluster_instances_filter = [
                     {'Name': f'tag:kubernetes.io/cluster/{cluster_name}', 'Values': ['owned']},
                     {'Name': 'instance-state-name', 'Values': ['running']}
                 ]
 
-                instance_pages = ec2_client.get_paginator('describe_instances').paginate(Filters=cluster_instances_filter)
+                instance_pages = ec2_client_pricing.get_paginator('describe_instances').paginate(Filters=cluster_instances_filter)
                 cluster_monthly_cost = 0.0
 
                 for page in instance_pages:
@@ -510,8 +553,44 @@ def scan_eks_clusters(account: Account, eks_client, db: Session, credentials: Di
 
         for db_cluster in db_clusters:
             if db_cluster.name not in discovered_cluster_names:
-                # Cluster not found in AWS
-                # Check if agent is also offline (no heartbeat for 10+ minutes)
+                # Cluster not found in AWS — apply grace periods before deletion
+
+                # Grace period 1: Never delete clusters created less than 60 minutes ago.
+                # This prevents cleanup from racing with agent installation.
+                if db_cluster.created_at:
+                    minutes_since_created = (datetime.utcnow() - db_cluster.created_at).total_seconds() / 60
+                    if minutes_since_created < 60:
+                        logger.info(
+                            f"[WORK-DISC-01] Cluster {db_cluster.name} not in AWS but only "
+                            f"{minutes_since_created:.1f} mins old — skipping cleanup (grace period)."
+                        )
+                        continue
+
+                # Grace period 2: If agent was successfully installed, require a much
+                # longer heartbeat absence (2 hours) before considering the cluster gone.
+                if db_cluster.agent_installed == 'Y':
+                    if db_cluster.last_heartbeat:
+                        minutes_since_heartbeat = (datetime.utcnow() - db_cluster.last_heartbeat).total_seconds() / 60
+                        if minutes_since_heartbeat > 120:
+                            clusters_to_cleanup.append(db_cluster)
+                            logger.info(
+                                f"[WORK-DISC-01] Cluster {db_cluster.name} not in AWS, agent offline "
+                                f"{minutes_since_heartbeat:.1f} mins (>2h). Marking for cleanup."
+                            )
+                        else:
+                            logger.info(
+                                f"[WORK-DISC-01] Cluster {db_cluster.name} not in AWS but agent installed "
+                                f"and heartbeat {minutes_since_heartbeat:.1f} mins ago — skipping cleanup."
+                            )
+                    else:
+                        # Agent installed but heartbeat never received — wait 30 min
+                        logger.info(
+                            f"[WORK-DISC-01] Cluster {db_cluster.name} not in AWS, agent installed "
+                            f"but no heartbeat yet — skipping cleanup (30-min grace)."
+                        )
+                    continue
+
+                # Standard cleanup: no agent, not in AWS
                 if db_cluster.last_heartbeat:
                     minutes_since_heartbeat = (datetime.utcnow() - db_cluster.last_heartbeat).total_seconds() / 60
                     if minutes_since_heartbeat > 10:

@@ -37,7 +37,7 @@ def inject_agent_task(self, cluster_id: str):
             cluster_id=cluster.id,
             cluster_name=cluster.name,
             cluster_arn=cluster.arn or "",
-            cluster_endpoint=cluster.endpoint or str(cluster.endpoint),
+            cluster_endpoint=cluster.endpoint or "",  # avoid "None" string when endpoint is None
             cluster_ca_data=cluster.ca_data or "",
             role_arn=account.role_arn,
             external_id=account.external_id or "",

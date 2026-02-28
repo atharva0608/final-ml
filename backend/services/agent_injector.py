@@ -95,6 +95,8 @@ class AgentInjectorService:
         """
         Main method to inject agent into an EKS cluster.
 
+        Phase 7: Enhanced with OIDC Federation support
+
         Args:
             cluster_id: Internal cluster UUID
             cluster_name: EKS cluster name
@@ -103,7 +105,7 @@ class AgentInjectorService:
             cluster_ca_data: Base64 encoded CA certificate
             role_arn: Customer's cross-account role ARN
             external_id: External ID for role assumption
-            api_key: API key for agent authentication
+            api_key: API key for agent authentication (legacy, will be deprecated)
 
         Returns:
             Dict with status and message
@@ -123,11 +125,20 @@ class AgentInjectorService:
                 region=region
             )
 
-            # Step 3: Get backend credentials and generate Kubernetes token
+            # Step 3: Setup OIDC Federation (Phase 7)
+            logger.info("Step 3: Setting up OIDC federation for agent authentication...")
+            oidc_issuer = self._setup_oidc_federation(
+                cluster_id=cluster_id,
+                cluster_name=cluster_name,
+                credentials=assumed_credentials,
+                region=region
+            )
+
+            # Step 4: Get backend credentials and generate Kubernetes token
             # IMPORTANT: Token must be generated using backend's own IAM credentials,
             # not the assumed role credentials, because the access entry was created
             # for the backend IAM principal
-            logger.info("Step 3: Generating Kubernetes token using backend credentials...")
+            logger.info("Step 4: Generating Kubernetes token using backend credentials...")
             backend_credentials = self._get_backend_credentials(region)
             k8s_token = self._get_eks_token(
                 cluster_name=cluster_name,
@@ -135,8 +146,8 @@ class AgentInjectorService:
                 region=region
             )
 
-            # Step 4: Deploy agent manifests
-            logger.info("Step 4: Deploying agent manifests...")
+            # Step 5: Deploy agent manifests
+            logger.info("Step 5: Deploying agent manifests...")
             self._deploy_agent(
                 cluster_id=cluster_id,
                 cluster_endpoint=cluster_endpoint,
@@ -148,7 +159,8 @@ class AgentInjectorService:
             logger.info(f"Agent successfully injected into cluster {cluster_name}")
             return {
                 "status": "success",
-                "message": f"Agent installed in cluster {cluster_name}"
+                "message": f"Agent installed in cluster {cluster_name}",
+                "oidc_issuer": oidc_issuer
             }
 
         except Exception as e:
@@ -196,18 +208,43 @@ class AgentInjectorService:
             logger.warning(f"Platform credentials not found, using env/instance profile in {target_region}")
             sts_client = boto3.client('sts', region_name=target_region)
         
-        response = sts_client.assume_role(
-            RoleArn=role_arn,
-            RoleSessionName='SpotOptimizerAgentInjector',
-            ExternalId=external_id,
-            DurationSeconds=3600  # 1 hour
-        )
-        
-        return {
-            'access_key': response['Credentials']['AccessKeyId'],
-            'secret_key': response['Credentials']['SecretAccessKey'],
-            'session_token': response['Credentials']['SessionToken']
+        assume_kwargs = {
+            'RoleArn': role_arn,
+            'RoleSessionName': 'SpotOptimizerAgentInjector',
+            'DurationSeconds': 3600  # 1 hour
         }
+        if external_id:  # STS rejects ExternalId="" (must be >= 2 chars)
+            assume_kwargs['ExternalId'] = external_id
+
+        try:
+            response = sts_client.assume_role(**assume_kwargs)
+            return {
+                'access_key': response['Credentials']['AccessKeyId'],
+                'secret_key': response['Credentials']['SecretAccessKey'],
+                'session_token': response['Credentials']['SessionToken']
+            }
+        except Exception as assume_err:
+            from botocore.exceptions import ClientError as BotoClientError
+            if isinstance(assume_err, BotoClientError):
+                error_code = assume_err.response['Error']['Code']
+                if error_code in ('AccessDenied', 'AccessDeniedException'):
+                    # Same-account fallback: check if caller and role are in the same account.
+                    # If so, use env/instance-profile credentials directly instead of AssumeRole.
+                    try:
+                        caller = sts_client.get_caller_identity()
+                        role_account_id = role_arn.split(':')[4]
+                        if caller['Account'] == role_account_id:
+                            logger.warning(
+                                f"AssumeRole AccessDenied for same-account role {role_arn}. "
+                                "Falling back to env credentials directly. "
+                                "To fix permanently: attach 'sts:AssumeRole' policy to your "
+                                f"IAM user for role {role_arn}"
+                            )
+                            # Return empty dict → callers use boto3 default credential chain
+                            return {}
+                    except Exception:
+                        pass
+            raise assume_err
 
     def _get_backend_credentials(self, region: str) -> Dict:
         """
@@ -246,13 +283,16 @@ class AgentInjectorService:
         """
         Create an EKS access entry to allow our backend role to manage the cluster.
         """
-        eks_client = boto3.client(
-            'eks',
-            aws_access_key_id=credentials['access_key'],
-            aws_secret_access_key=credentials['secret_key'],
-            aws_session_token=credentials['session_token'],
-            region_name=region
-        )
+        if credentials and 'access_key' in credentials:
+            eks_client = boto3.client(
+                'eks',
+                aws_access_key_id=credentials['access_key'],
+                aws_secret_access_key=credentials['secret_key'],
+                aws_session_token=credentials.get('session_token'),
+                region_name=region
+            )
+        else:
+            eks_client = boto3.client('eks', region_name=region)
         
         # Create access entry (idempotent via try/except)
         try:
@@ -290,6 +330,37 @@ class AgentInjectorService:
         )
         
         logger.info(f"Created access entry for {self.backend_role_arn}")
+
+    def _setup_oidc_federation(
+        self,
+        cluster_id: str,
+        cluster_name: str,
+        credentials: Dict,
+        region: str
+    ) -> Optional[str]:
+        """
+        Setup OIDC federation for secure agent authentication.
+
+        Phase 7 Agent Security: This method configures OIDC provider
+        and IAM role for service account-based authentication.
+
+        For now, this is a stub that skips OIDC setup.
+        Agent will use API key authentication instead.
+
+        Returns:
+            OIDC issuer URL if configured, None otherwise
+        """
+        logger.info("OIDC federation setup skipped - using API key authentication")
+        logger.info("To enable OIDC: Implement full OIDC provider configuration")
+
+        # TODO Phase 7: Implement full OIDC setup
+        # 1. Get cluster OIDC provider URL
+        # 2. Create/update OIDC provider in IAM
+        # 3. Create IAM role for service account
+        # 4. Configure trust relationship
+        # 5. Return OIDC issuer URL
+
+        return None
 
     def _get_eks_token(self, cluster_name: str, credentials: Dict, region: str) -> str:
         """
@@ -567,6 +638,15 @@ class AgentInjectorService:
                                                 config_map_key_ref=k8s_client.V1ConfigMapKeySelector(
                                                     name="spot-agent-config",
                                                     key="BACKEND_URL"
+                                                )
+                                            )
+                                        ),
+                                        k8s_client.V1EnvVar(
+                                            name="BACKEND_WS_URL",
+                                            value_from=k8s_client.V1EnvVarSource(
+                                                config_map_key_ref=k8s_client.V1ConfigMapKeySelector(
+                                                    name="spot-agent-config",
+                                                    key="BACKEND_WS_URL"
                                                 )
                                             )
                                         ),

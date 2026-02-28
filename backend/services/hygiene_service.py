@@ -1500,18 +1500,13 @@ class HygieneService:
             
             # 1. Check if System Approval is Required for Cleanup
             org = self.db.query(Organization).filter(Organization.id == user.organization_id).first()
-            if org and org.require_automation_approval:
-                # Create a System Approval Ticket instead of executing
-                # But wait, is this a "System Automated Action" or a "User Clicked Cleanup" action?
-                # User request asks "if we turned on that we have to delete all untagged resources... system actions will take place"
-                # This implies the TRIGGER is automatic (e.g. Schedule).
-                # BUT `execute_action` is currently called by user clicks mostly.
-                # However, if we assume this function is the gateway for ALL cleanup actions:
-                
-                # Check if ticket already exists for this batch? (Hard to track exact batch)
-                # Just create a new ticket for this action request.
-                
-                logger.info(f"System Approval required. Creating ticket for {action_data.action_type}")
+            
+            # Admins bypass approval — only MEMBER/TEAM_LEAD need tickets
+            from backend.models.user import UserRole
+            is_admin = user.role in (UserRole.SUPER_ADMIN, UserRole.ORG_ADMIN, 'SUPER_ADMIN', 'ORG_ADMIN')
+            
+            if org and org.require_automation_approval and not is_admin:
+                logger.info(f"System Approval required for {user.role}. Creating ticket for {action_data.action_type}")
                 
                 approval_service = ApprovalService(self.db)
                 approval_in = ApprovalCreate(
@@ -1557,8 +1552,13 @@ class HygieneService:
             raise Exception("Account not found")
 
         try:
+            # Normalize region — "global" is not a valid AWS region
+            region = action_data.region
+            if not region or region.lower() == 'global':
+                region = 'us-east-1'
+            
             # Get session for the specific region
-            session = self._get_account_session(account, region=action_data.region)
+            session = self._get_account_session(account, region=region)
             ec2 = session.client('ec2')
             
             action_type = action_data.action_type

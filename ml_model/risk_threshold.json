@@ -1,0 +1,6 @@
+{
+    "optimal_threshold": 0.35,
+    "model_version": "6",
+    "feature_schema_version": "6",
+    "note": "F1-optimized threshold. Scoring uses expected_value = savings * (1 - risk). No weight multipliers."
+}

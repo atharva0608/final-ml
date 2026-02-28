@@ -2,8 +2,11 @@
 AtharvaAi Celery Workers - Pool Selection & Spot Price Collection
 
 Scheduled Tasks:
-1. execute_pool_ranking_pipeline - Runs 8-step pool selection every 30 seconds
+1. execute_pool_ranking_pipeline - Runs 8-step pool selection every 1 hour
 2. collect_spot_prices - Collects historical spot prices every 10 minutes
+3. warm_global_cache - Pre-warms global pool cache every hour
+4. check_ondemand_fallback_expiry - Checks on-demand fallback TTLs every 30 minutes
+5. cleanup_blacklist - Cleans expired blacklist entries every hour
 """
 
 from celery import Task
@@ -25,7 +28,7 @@ def execute_pool_ranking_pipeline(self: Task) -> Dict[str, Any]:
     """
     Execute AtharvaAi 8-step pool selection pipeline.
 
-    Runs every 30 seconds to provide real-time pool recommendations.
+    Runs every 1 hour to provide ML-ranked pool recommendations.
 
     Steps:
     1. Node Template Filtering
@@ -244,7 +247,7 @@ def sync_karpenter_nodepools(self: Task) -> Dict[str, Any]:
     """
     Syncs ML-ranked instance types to Karpenter NodePools.
 
-    Runs every 30 seconds to keep Karpenter NodePools updated with:
+    Runs every 1 hour (after pool ranking completes) to keep Karpenter NodePools updated with:
     - Top 10 ML-approved instance types
     - Safest availability zones
     - Latest pool rankings from ML pipeline
@@ -263,7 +266,7 @@ def sync_karpenter_nodepools(self: Task) -> Dict[str, Any]:
         from backend.services.karpenter_service import KarpenterService
         from backend.models.cluster import Cluster
 
-        karpenter_service = KarpenterService(db)
+        karpenter_service = KarpenterService(db, redis)
 
         # Get all active EKS clusters
         clusters = db.query(Cluster).filter(

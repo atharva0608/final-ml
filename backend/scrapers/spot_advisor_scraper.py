@@ -129,18 +129,25 @@ def parse_and_store_data(
     # Data structure: {"spot_advisor": {"Linux": {...}}}
     spot_data = data.get("spot_advisor", {})
 
-    for os_type, os_data in spot_data.items():
-        logger.info(f"[SVC-SCRAPE-01] Processing OS type: {os_type}")
+    # The actual AWS Spot Advisor JSON structure is: region → os_type → instance_type
+    # e.g. {"ap-south-1": {"Linux": {"t3.medium": {"r": 0, "s": 73}}}}
+    for region, region_data in spot_data.items():
+        if region == "ranges":
+            continue  # Skip the ranges metadata
 
-        # Iterate through regions
-        for region, region_data in os_data.items():
-            if region == "ranges":
-                continue  # Skip the ranges metadata
+        logger.info(f"[SVC-SCRAPE-01] Processing region: {region}")
+
+        # Iterate through OS types within this region
+        for os_type, os_data in region_data.items():
+            if not isinstance(os_data, dict):
+                continue
 
             stats["regions_processed"] += 1
 
-            # Iterate through instance types in this region
-            for instance_type, instance_data in region_data.items():
+            # Iterate through instance types in this region+OS combo
+            for instance_type, instance_data in os_data.items():
+                if not isinstance(instance_data, dict):
+                    continue
                 stats["instance_types_processed"] += 1
 
                 # Parse instance data
