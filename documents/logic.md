@@ -7,11 +7,11 @@
 
 ---
 
-# SECTION 1: ATHARVA AI — Decision Engine + ML Pipeline
+# SECTION 1: ASCP.AI — Decision Engine + ML Pipeline
 
 ## 1.1 Architecture Overview
 
-Atharva AI consists of three subsystems:
+ASCP AI consists of three subsystems:
 
 | System | File | Purpose |
 |---|---|---|
@@ -113,9 +113,9 @@ flowchart LR
 ```
 
 **Circuit Breaker**:
-- Counter: `atharvaai:ml_fail_count` (10-min window)
+- Counter: `ASCPai:ml_fail_count` (10-min window)
 - Threshold: `> 5 failures` → switch to `_fallback_scoring()`
-- Degraded flag: `atharvaai:ml_degraded` (10-min TTL)
+- Degraded flag: `ASCPai:ml_degraded` (10-min TTL)
 
 ### Step 9 — Post-Score DryRun Capacity Check
 - Only validates **top 10** candidates (not all)
@@ -576,9 +576,9 @@ flowchart TD
 
 ---
 
-## 1.16 Celery Workers (Atharva AI)
+## 1.16 Celery Workers (ASCP AI)
 
-**Source**: `backend/workers/tasks/atharvaai_worker.py` (360 lines)
+**Source**: `backend/workers/tasks/ASCPai_worker.py` (360 lines)
 
 | Task | Schedule | Description |
 |---|---|---|
@@ -1027,8 +1027,8 @@ estimated_remaining = (elapsed / progress) × (100 - progress)
 | `spot:blacklist_suspended:{region}` | BlacklistService | 30 min | Cascade dampener |
 | `capacity:{type}:{az}` | PoolRankingService | 15 min | Capacity DryRun cache |
 | `global_pool_rankings:{region}` | PoolRankingService | 65 min | Tier 1 global cache |
-| `atharvaai:ml_fail_count` | PoolRankingService | 10 min | ML circuit breaker |
-| `atharvaai:ml_degraded` | PoolRankingService | 10 min | ML degraded flag |
+| `ASCPai:ml_fail_count` | PoolRankingService | 10 min | ML circuit breaker |
+| `ASCPai:ml_degraded` | PoolRankingService | 10 min | ML degraded flag |
 | `spot:substitute:state:{id}` | SubstituteManager | Variable | Substitute lifecycle |
 | `spot:substitute:meta:{id}` | SubstituteManager | Variable | Substitute metadata |
 | `hibernation:lock:{sched}:{cluster}` | HibernationWorker | 180s | Distributed lock |
@@ -1049,10 +1049,10 @@ estimated_remaining = (elapsed / progress) × (100 - progress)
 
 | Task | File | Interval | Description |
 |---|---|---|---|
-| `execute_pool_ranking_pipeline` | `atharvaai_worker.py` | 1 hour | Full ML pipeline |
-| `collect_spot_prices` | `atharvaai_worker.py` | 10 min | Price collection |
-| `compute_family_baselines` | `atharvaai_worker.py` | Weekly | Family statistics |
-| `sync_karpenter_nodepools` | `atharvaai_worker.py` | 1 hour | NodePool sync |
+| `execute_pool_ranking_pipeline` | `ASCPai_worker.py` | 1 hour | Full ML pipeline |
+| `collect_spot_prices` | `ASCPai_worker.py` | 10 min | Price collection |
+| `compute_family_baselines` | `ASCPai_worker.py` | Weekly | Family statistics |
+| `sync_karpenter_nodepools` | `ASCPai_worker.py` | 1 hour | NodePool sync |
 | `run_all_clusters_decision_cycle` | `control_plane_loop.py` | 5 min | Control plane loop |
 | `execute_hibernation_scheduler` | `hibernation_worker.py` | 1 min | Schedule checker |
 | `execute_rebalancing` | `auto_rebalancer.py` | On-demand | Node migration |
