@@ -67,6 +67,18 @@ def execute_hygiene_action(
     Execute hygiene actions (Terminate, Delete, Release).
     Supports RBAC - Members require approval.
     """
+    # fix_A1 (HYGIENE-REGION-01): Reject pseudo-regions — they cause silent mis-targeting
+    _region = (action.region or "").strip().lower()
+    if not _region or _region in ("global", "all", "none"):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"region must be a valid AWS region (e.g. 'us-east-1'). "
+                f"Received: {action.region!r}. "
+                "Select a specific region before executing an action."
+            ),
+        )
+
     service = HygieneService(db)
     try:
         result = service.execute_action(account_id, action, user=current_user)
@@ -258,3 +270,20 @@ def get_cost_consuming_services(
         "deprecated": True,
         "message": "This endpoint is deprecated. Use /hygiene/scan endpoint for resource breakdown."
     }
+
+@router.get("/scan-history")
+def get_scan_history(
+    account_id: str = Query(..., description="The account ID to fetch scan history for"),
+    days: int = Query(7, ge=1, le=30, description="Number of days of history"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Get historical scan trend data for sparkline charts.
+    """
+    service = HygieneService(db)
+    try:
+        return service.get_scan_history(account_id, days, organization_id=current_user.organization_id)
+    except Exception as e:
+        logger.exception("Failed to get scan history for account %s", account_id)
+        raise HTTPException(status_code=500, detail=str(e))

@@ -8,9 +8,9 @@ These endpoints handle:
 """
 
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, Header
+from fastapi import APIRouter, Depends, HTTPException, Header, Query
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 from sqlalchemy.orm import Session
 
 from backend.models.base import get_db
@@ -169,3 +169,110 @@ async def agent_heartbeat(
         message="Heartbeat received",
         agent_id=request.agent_id
     )
+
+
+# ─── Action Polling (HTTP fallback for agents without persistent WebSocket) ───
+
+class ActionResultRequest(BaseModel):
+    action_id: str
+    success: bool
+    result: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
+    nodes_cordoned: Optional[int] = None
+    pods_evicted: Optional[int] = None
+
+
+@router.get("/actions/pending")
+async def get_pending_actions(
+    db: Session = Depends(get_db),
+    cluster: Cluster = Depends(validate_api_key),
+):
+    """
+    HTTP poll endpoint for agents to fetch pending K8s commands.
+
+    The agent calls this every 15s as a fallback when WebSocket is not available.
+    Returns at most 10 PENDING actions, marks them as PICKED_UP.
+
+    Protocol:
+      GET /api/v1/agents/actions/pending
+      Authorization: Bearer <cluster_api_key>
+    """
+    from backend.models.agent_action import AgentAction, AgentActionStatus
+
+    pending = (
+        db.query(AgentAction)
+        .filter(
+            AgentAction.cluster_id == cluster.id,
+            AgentAction.status == AgentActionStatus.PENDING,
+        )
+        .order_by(AgentAction.created_at)
+        .limit(10)
+        .all()
+    )
+
+    commands = []
+    for action in pending:
+        commands.append({
+            "action_id": action.id,
+            "action_type": action.action_type.value,
+            "payload": action.payload or {},
+            "created_at": action.created_at.isoformat(),
+            "expires_at": action.expires_at.isoformat(),
+        })
+        action.status = AgentActionStatus.PICKED_UP
+        action.picked_up_at = datetime.utcnow()
+
+    if pending:
+        db.commit()
+
+    return {"commands": commands, "count": len(commands)}
+
+
+@router.post("/actions/{action_id}/result")
+async def submit_action_result(
+    action_id: str,
+    request: ActionResultRequest,
+    db: Session = Depends(get_db),
+    cluster: Cluster = Depends(validate_api_key),
+):
+    """
+    Agent reports the result of a command it executed.
+
+    Called after the agent finishes CORDON_NODE / DRAIN_NODE / PATCH_KARPENTER_NODEPOOL.
+    Updates the AgentAction record and logs the outcome.
+
+    Protocol:
+      POST /api/v1/agents/actions/{action_id}/result
+      Authorization: Bearer <cluster_api_key>
+      Body: { "success": true, "result": {...}, "nodes_cordoned": 1, "pods_evicted": 4 }
+    """
+    from backend.models.agent_action import AgentAction, AgentActionStatus
+    from backend.core.logger import logger
+
+    action = (
+        db.query(AgentAction)
+        .filter(AgentAction.id == action_id, AgentAction.cluster_id == cluster.id)
+        .first()
+    )
+    if not action:
+        raise HTTPException(status_code=404, detail="Action not found")
+
+    action.status = AgentActionStatus.COMPLETED if request.success else AgentActionStatus.FAILED
+    action.completed_at = datetime.utcnow()
+    action.result = request.result or {}
+    action.error_message = request.error if not request.success else None
+
+    if request.nodes_cordoned is not None:
+        action.result = {**(action.result or {}), "nodes_cordoned": request.nodes_cordoned}
+    if request.pods_evicted is not None:
+        action.result = {**(action.result or {}), "pods_evicted": request.pods_evicted}
+
+    db.commit()
+
+    status_word = "COMPLETED" if request.success else "FAILED"
+    logger.info(
+        f"[agent] Action {action_id} {status_word} for cluster {cluster.id} "
+        f"(type={action.action_type.value})"
+    )
+
+    return {"success": True, "action_id": action_id, "status": action.status.value}

@@ -281,14 +281,37 @@ class AgentOrchestrator:
 
         event_response = self.event_monitoring.execute(event_input)
 
-        # If termination notice, activate substitute
+        # If termination notice, activate substitute with fresh pool rankings
         if event_type == 'termination_notice' and event_response.status == "SUCCESS":
-            logger.info("Activating substitute manager")
+            logger.info("Activating substitute manager — fetching fresh pool rankings")
+
+            # Fetch fresh rankings AFTER the interruption so the blacklist already
+            # includes the pool that just got interrupted.  Pass the interrupted
+            # pool as an explicit exclude so the substitute never targets the same
+            # pool that just failed.
+            interrupted_pool_id = f"{instance_type}:{az}"
+            candidate_pools = []
+            try:
+                global_result = self.global_intelligence.execute({
+                    "cluster_id": cluster_id,
+                    "exclude_pool": interrupted_pool_id,
+                    "is_emergency": True,
+                })
+                candidate_pools = global_result.data.get("ranked_pools", [])
+                logger.info(
+                    f"Emergency pool fetch: {len(candidate_pools)} candidates "
+                    f"(excluded {interrupted_pool_id})"
+                )
+            except Exception as pool_err:
+                logger.warning(
+                    f"Could not fetch fresh rankings for substitute on interruption: {pool_err}. "
+                    "SubstituteManager will fall back to its own PoolRankingService call."
+                )
 
             substitute_input = {
                 "cluster_state": {"failed_instance": instance_type},
-                "stress_level": "elevated",  # High priority due to termination
-                "candidate_pools": []  # Would get from global intelligence
+                "stress_level": "elevated",
+                "candidate_pools": candidate_pools,
             }
 
             substitute_response = self.substitute_manager.execute(substitute_input)

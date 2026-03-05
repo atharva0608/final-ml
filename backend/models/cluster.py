@@ -112,7 +112,7 @@ class Cluster(Base):
     cluster_policy = relationship("ClusterPolicy", back_populates="cluster", uselist=False)
     template_mappings = relationship("ClusterTemplateMapping", back_populates="cluster", cascade="all, delete-orphan")
     optimization_jobs = relationship("OptimizationJob", back_populates="cluster")
-    agent_actions = relationship("AgentAction", back_populates="cluster")
+    agent_actions = relationship("AgentAction", back_populates="cluster", cascade="all, delete-orphan", passive_deletes=True)
     metrics = relationship("ClusterMetric", back_populates="cluster")
     pod_metrics = relationship("PodMetric", back_populates="cluster", cascade="all, delete-orphan")
     # hibernation_schedules relationship is defined via backref in HibernationSchedule model (many-to-many)

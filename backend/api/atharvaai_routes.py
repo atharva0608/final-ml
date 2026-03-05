@@ -981,9 +981,14 @@ async def get_substitute_status(
     db: Session = Depends(get_db)
 ):
     """
-    Get substitute state for cluster.
+    Get warm spare substitute status for cluster.
 
-    Returns current substitute node status if any exists.
+    Returns:
+      - state: PREWARMING / READY / ACTIVE / RELEASING / IDLE
+      - is_warm_spare: true when 24x7 spare is running
+      - spare_instance_type / spare_az / spot_price_hourly / monthly_cost
+      - compatible_with: "Any node ≤ N vCPU / M GB"
+      - next_spare: present when primary is ACTIVE and replacement is prewarming
     """
     try:
         redis = get_redis_client()
@@ -995,18 +1000,28 @@ async def get_substitute_status(
         if status:
             return {
                 "cluster_id": cluster_id,
-                "state": status.get("state"),
-                "substitute_type": status.get("substitute_type"),
-                "instance_type": status.get("instance_type"),
-                "az": status.get("az"),
-                "cost_impact": status.get("cost_impact"),
-                "duration_hours": status.get("duration_hours"),
+                "state": status.get("state", "IDLE"),
+                "is_warm_spare": status.get("is_warm_spare", False),
+                "spare_instance_type": status.get("substitute_instance_type"),
+                "spare_az": status.get("substitute_az"),
+                "spare_lifecycle": status.get("substitute_lifecycle", "spot"),
+                "spot_price_hourly": status.get("spot_price_hourly"),
+                "monthly_cost": status.get("monthly_cost"),
+                "risk_score": status.get("risk_score"),
+                "target_vcpu": status.get("target_vcpu"),
+                "target_memory_gb": status.get("target_memory_gb"),
+                "target_node_instance_type": status.get("target_node_instance_type"),
+                "compatible_with": status.get("compatible_with"),
+                "started_at": status.get("started_at"),
+                "next_spare": status.get("next_spare"),
+                "cost_drift": status.get("cost_drift"),
                 "timestamp": datetime.utcnow().isoformat()
             }
 
         return {
             "cluster_id": cluster_id,
             "state": "IDLE",
+            "is_warm_spare": False,
             "timestamp": datetime.utcnow().isoformat()
         }
     except Exception as e:
@@ -1060,6 +1075,7 @@ async def get_volatility_status(db: Session = Depends(get_db)):
     except Exception as e:
         logger.error(f"Failed to get volatility status: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
 
 
 @router.get("/clusters/{cluster_id}/node-recommendations")
@@ -1148,14 +1164,27 @@ async def get_node_recommendations(
     recommendations = []
     used_types = set()  # Diversity by instance_type (not az) so each node gets a different family
 
-    for inst in instances:
-        instance_type = inst.instance_type or "m5.large"
-        az = getattr(inst, 'availability_zone', None) or f"{region}a"
-        lifecycle_raw = inst.lifecycle
-        lifecycle = (lifecycle_raw.value if hasattr(lifecycle_raw, 'value') else str(lifecycle_raw or 'on-demand')).lower()
+    # Normalise ORM instances to a common dict interface
+    _node_list = [
+        {
+            "instance_id": inst.instance_id or f"node-{str(inst.id)[:8]}",
+            "instance_type": inst.instance_type or "m5.large",
+            "az": inst.az or f"{region}a",
+            "lifecycle": (inst.lifecycle.value if hasattr(inst.lifecycle, 'value') else str(inst.lifecycle or 'on-demand')).lower(),
+            "cpu_util": float(inst.cpu_util) if getattr(inst, 'cpu_util', None) else 0.0,
+            "memory_util": float(inst.memory_util) if getattr(inst, 'memory_util', None) else 0.0,
+            "risk_score": float(inst.risk_score) if getattr(inst, 'risk_score', None) else None,
+        }
+        for inst in instances
+    ]
+
+    for node in _node_list:
+        instance_type = node["instance_type"]
+        az = node["az"]
+        lifecycle = node["lifecycle"]
         is_already_spot = 'spot' in lifecycle
 
-        node_name = inst.instance_id or f"node-{str(inst.id)[:8]}"
+        node_name = node["instance_id"]
         on_demand_hourly = INSTANCE_HOURLY.get(instance_type, 0.096)
         current_vcpu = VCPU_COUNT.get(instance_type, 2)
 
@@ -1173,7 +1202,7 @@ async def get_node_recommendations(
         target_az = az
         spot_price_hourly = on_demand_hourly * 0.30
         spot_savings_pct = 70
-        risk_score = float(inst.risk_score) if getattr(inst, 'risk_score', None) else 0.25
+        risk_score = float(node["risk_score"]) if node.get("risk_score") is not None else 0.25
 
         if not is_already_spot and top_pools:
             chosen_pool = None
@@ -1238,7 +1267,7 @@ async def get_node_recommendations(
                     spot_price_hourly = on_demand_hourly * max(0.1, 1.0 - chosen_pool.predicted_savings)
                     spot_savings_pct = round(chosen_pool.predicted_savings * 100)
 
-        cpu_util = float(inst.cpu_util) if getattr(inst, 'cpu_util', None) else 0.0
+        cpu_util = float(node.get("cpu_util") or 0.0)
         confidence = f"{max(50, round((1.0 - risk_score) * 100))}%"
 
         if is_already_spot:
@@ -1286,7 +1315,18 @@ async def get_cluster_impact(
         raise HTTPException(status_code=404, detail="Cluster not found")
 
     instances = db.query(Instance).filter(Instance.cluster_id == cluster_id).all()
-    total = len(instances)
+
+    _impact_nodes = [
+        {
+            "instance_type": (i.instance_type or "m5.large"),
+            "az": i.az or f"{cluster.region or 'ap-south-1'}a",
+            "lifecycle": (i.lifecycle.value if hasattr(i.lifecycle, 'value') else str(i.lifecycle or 'on-demand')).lower(),
+            "risk_score": float(i.risk_score) if getattr(i, 'risk_score', None) else 0.25,
+        }
+        for i in instances
+    ]
+
+    total = len(_impact_nodes)
 
     # On-demand hourly pricing by instance type
     INSTANCE_HOURLY = {
@@ -1298,34 +1338,46 @@ async def get_cluster_impact(
         "c6g.large": 0.068, "c6g.xlarge": 0.136, "m6i.large": 0.096,
     }
 
+    # Helper: reliably detect SPOT lifecycle regardless of enum vs string
+    def _is_spot_lifecycle(inst) -> bool:
+        lc = inst.lifecycle
+        lc_str = (lc.value if hasattr(lc, 'value') else str(lc or '')).lower()
+        return 'spot' in lc_str
+
     # Group instances by (instance_type, az) pools
     from collections import defaultdict
     pool_groups = defaultdict(list)
-    for inst in instances:
-        itype = inst.instance_type or "m5.large"
-        az = getattr(inst, 'availability_zone', None) or "us-east-1a"
-        lifecycle = getattr(inst, 'lifecycle', 'on_demand') or 'on_demand'
+    az_counts: dict = defaultdict(int)
+    family_counts: dict = defaultdict(int)
+    spot_count = 0
+    on_demand_count = 0
+
+    for node in _impact_nodes:
+        itype = node["instance_type"]
+        az = node["az"]
         pool_key = f"{itype} ({az})"
-        pool_groups[pool_key].append(inst)
+        pool_groups[pool_key].append(node)
+        az_counts[az] += 1
+        family = itype.split('.')[0] if '.' in itype else itype
+        family_counts[family] += 1
+        if 'spot' in node["lifecycle"]:
+            spot_count += 1
+        else:
+            on_demand_count += 1
 
     pools = []
     for pool_key, pool_instances in pool_groups.items():
-        on_demand_instances = [i for i in pool_instances if getattr(i, 'lifecycle', 'on_demand') != 'spot']
+        on_demand_instances = [i for i in pool_instances if 'spot' not in i["lifecycle"]]
         eligible_count = len(on_demand_instances)
-        if eligible_count == 0:
-            continue
+        spot_in_pool = len(pool_instances) - eligible_count
 
-        # Get representative instance type for pricing
-        rep_type = pool_instances[0].instance_type or "m5.large"
+        rep_type = pool_instances[0]["instance_type"]
         hourly_rate = INSTANCE_HOURLY.get(rep_type, 0.096)
         spot_rate = hourly_rate * 0.35  # spot ~65% off
         avg_savings_monthly = round((hourly_rate - spot_rate) * 730, 2)
         total_savings_monthly = round(avg_savings_monthly * eligible_count, 2)
 
-        avg_risk = sum(
-            float(i.risk_score) if getattr(i, 'risk_score', None) else 0.25
-            for i in pool_instances
-        ) / len(pool_instances)
+        avg_risk = sum(i.get("risk_score", 0.25) or 0.25 for i in pool_instances) / len(pool_instances)
         is_flagged = avg_risk > 0.55
 
         cluster_usage_pct = round((len(pool_instances) / total * 100), 1) if total else 0
@@ -1333,6 +1385,7 @@ async def get_cluster_impact(
         pools.append({
             "target_pool": pool_key,
             "eligible_nodes": eligible_count,
+            "spot_nodes": spot_in_pool,
             "avg_savings": avg_savings_monthly,
             "total_savings": total_savings_monthly,
             "avg_risk": round(avg_risk, 3),
@@ -1340,4 +1393,17 @@ async def get_cluster_impact(
             "cluster_usage_pct": cluster_usage_pct,
         })
 
-    return {"pools": pools}
+    # Build chart datasets
+    az_distribution = [{"az": k, "count": v} for k, v in sorted(az_counts.items())]
+    family_distribution = [{"family": k, "count": v} for k, v in sorted(family_counts.items(), key=lambda x: -x[1])]
+    spot_ratio = round(spot_count / total * 100) if total > 0 else 0
+
+    return {
+        "pools": pools,
+        "az_distribution": az_distribution,
+        "family_distribution": family_distribution,
+        "spot_ratio": spot_ratio,
+        "spot_count": spot_count,
+        "on_demand_count": on_demand_count,
+        "total_nodes": total,
+    }

@@ -359,12 +359,59 @@ class OptimizerCoordinator:
         # Transition to COMBINED_EXECUTION phase
         self.transition_phase(cluster_id, OptimizationPhase.COMBINED_EXECUTION, "Evaluating combined proposal")
 
-        # TODO: Re-run Spot ML constrained to new size to get best pool for new size
-        # For now, use placeholder values
-        # This would call: pool_ranking_service.rank_pools_for_size(new_size_vcpu, new_size_memory)
+        # Re-run Spot ML constrained to the proposed instance size to get the
+        # best pool for the new size.  This is the core of the combined EV calculation:
+        # rightsizing shrinks the instance → ML finds the cheapest spot pool for it.
+        best_pool_for_new_size_cost = proposal.proposed_hourly_cost * 0.7  # fallback
+        best_pool_risk = 0.08  # fallback
+        best_pool_az = "best-az"  # fallback
 
-        best_pool_for_new_size_cost = proposal.proposed_hourly_cost * 0.7  # Assume 30% savings from optimal pool
-        best_pool_risk = 0.08  # Placeholder risk score
+        _VCPU_MEM_LOOKUP = {
+            "t3.micro": (2, 1), "t3.small": (2, 2), "t3.medium": (2, 4),
+            "t3.large": (2, 8), "t3.xlarge": (4, 16), "t3.2xlarge": (8, 32),
+            "t3a.micro": (2, 1), "t3a.small": (2, 2), "t3a.medium": (2, 4),
+            "t3a.large": (2, 8), "t3a.xlarge": (4, 16),
+            "t4g.micro": (2, 1), "t4g.small": (2, 2), "t4g.medium": (2, 4),
+            "t4g.large": (2, 8), "t4g.xlarge": (4, 16),
+            "m5.large": (2, 8), "m5.xlarge": (4, 16), "m5.2xlarge": (8, 32),
+            "m6i.large": (2, 8), "m6i.xlarge": (4, 16), "m6i.2xlarge": (8, 32),
+            "m6g.large": (2, 8), "m6g.xlarge": (4, 16), "m6g.2xlarge": (8, 32),
+            "c5.large": (2, 4), "c5.xlarge": (4, 8), "c5.2xlarge": (8, 16),
+            "c6i.large": (2, 4), "c6i.xlarge": (4, 8), "c6i.2xlarge": (8, 16),
+            "c6g.large": (2, 4), "c6g.xlarge": (4, 8), "c6g.2xlarge": (8, 16),
+            "r5.large": (2, 16), "r5.xlarge": (4, 32), "r5.2xlarge": (8, 64),
+            "r6i.large": (2, 16), "r6i.xlarge": (4, 32),
+        }
+
+        try:
+            _proposed_type = proposal.proposed_instance_type or ""
+            _specs = _VCPU_MEM_LOOKUP.get(_proposed_type)
+            if _specs:
+                _vcpu, _mem_gb = _specs
+                from backend.services.pool_ranking_service import PoolRankingService
+                from backend.core.redis_client import get_redis_client
+                _cluster = self.db.query(Cluster).filter(Cluster.id == cluster_id).first()
+                _region = (_cluster.region if _cluster else None) or "ap-south-1"
+                _redis = get_redis_client()
+                _svc = PoolRankingService(self.db, _redis)
+                _pools = _svc.rank_pools_for_size(
+                    vcpu=_vcpu,
+                    memory_gb=float(_mem_gb),
+                    region=_region,
+                    limit=3
+                )
+                if _pools:
+                    _best = _pools[0]
+                    best_pool_for_new_size_cost = _best.pool.spot_price
+                    best_pool_risk = _best.risk_probability
+                    best_pool_az = _best.pool.az
+                    logger.info(
+                        f"Combined EV ML re-scoring: {_proposed_type} → "
+                        f"{_best.pool.instance_type}:{_best.pool.az} "
+                        f"@ ${_best.pool.spot_price:.4f}/hr (risk={_best.risk_probability:.3f})"
+                    )
+        except Exception as _ml_err:
+            logger.warning(f"Combined EV ML re-scoring failed, using fallback: {_ml_err}")
 
         # Calculate combined EV
         try:
@@ -418,7 +465,7 @@ class OptimizerCoordinator:
             proposal.combined_ev_option_b = ev_result["option_b"]["expected_value"]
             proposal.combined_ev_option_c = ev_result["option_c"]["expected_value"]
             proposal.selected_option = ev_result["recommended_option"]
-            proposal.best_pool_for_new_size = f"{proposal.proposed_instance_type}:best-az"  # Placeholder
+            proposal.best_pool_for_new_size = f"{proposal.proposed_instance_type}:{best_pool_az}"
             proposal.best_pool_hourly_cost = best_pool_for_new_size_cost
             proposal.best_pool_risk_score = best_pool_risk
             proposal.evaluation_breakdown = ev_result

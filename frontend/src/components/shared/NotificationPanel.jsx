@@ -425,7 +425,7 @@ export function NotificationPanel({ isOpen, onClose, onUnreadCount }) {
                             title: "Spot Interruption Warning",
                             body: `Pool ${r.az || 'Region'} showing elevated interruption rate. Rebalancing active.`,
                             meta: { Pool: r.az || '-', Rate: `${r.interruption_rate || 0}%`, Status: "Rebalancing" },
-                            sourceLabel: "AtharvaAI",
+                            sourceLabel: "ASCP.ai",
                             link: "/atharva-ai"
                         });
                     });

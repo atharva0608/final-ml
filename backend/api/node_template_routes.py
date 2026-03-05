@@ -171,10 +171,18 @@ def get_cluster_active_template(
     return {
         "id": str(mapping.id),
         "cluster_id": cluster_id,
-        "template_id": str(mapping.node_template_id) if hasattr(mapping, 'node_template_id') else None,
-        "template_name": mapping.node_template.name if hasattr(mapping, 'node_template') and mapping.node_template else None,
+        "template_id": str(mapping.template_id),
+        "version_id": str(mapping.version_id),
         "is_default": mapping.is_default,
         "assigned": True,
+        "template": {
+            "name": mapping.template.name if mapping.template else None,
+        },
+        "version": {
+            "id": str(mapping.version_id),
+            "version_number": mapping.version.version_number if mapping.version else None,
+            "constraints_json": mapping.version.constraints_json if mapping.version else None,
+        },
     }
 
 @router.post(

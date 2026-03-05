@@ -23,6 +23,92 @@ from backend.core.dependencies import get_current_user, RequireAccess
 from backend.core.logger import logger
 
 
+# ─── Instance Specs: (vcpu, memory_gb, hourly_od_ap-south-1) ─────────────────
+INSTANCE_SPECS: Dict[str, tuple] = {
+    "t3.nano":    (2, 0.5,  0.0058), "t3.micro":   (2, 1.0,  0.0116),
+    "t3.small":   (2, 2.0,  0.0232), "t3.medium":  (2, 4.0,  0.0464),
+    "t3.large":   (2, 8.0,  0.0928), "t3.xlarge":  (4, 16.0, 0.1856),
+    "t3.2xlarge": (8, 32.0, 0.3712),
+    "t3a.micro":  (2, 1.0,  0.0104), "t3a.small":  (2, 2.0,  0.0209),
+    "t3a.medium": (2, 4.0,  0.0418), "t3a.large":  (2, 8.0,  0.0836),
+    "t3a.xlarge": (4, 16.0, 0.1672), "t3a.2xlarge":(8, 32.0, 0.3344),
+    "t4g.micro":  (2, 1.0,  0.0092), "t4g.small":  (2, 2.0,  0.0184),
+    "t4g.medium": (2, 4.0,  0.0368), "t4g.large":  (2, 8.0,  0.0736),
+    "t4g.xlarge": (4, 16.0, 0.1472), "t4g.2xlarge":(8, 32.0, 0.2944),
+    "m5.large":   (2, 8.0,  0.096),  "m5.xlarge":  (4, 16.0, 0.192),
+    "m5.2xlarge": (8, 32.0, 0.384),  "m5.4xlarge": (16,64.0, 0.768),
+    "m6i.large":  (2, 8.0,  0.096),  "m6i.xlarge": (4, 16.0, 0.192),
+    "m6i.2xlarge":(8, 32.0, 0.384),
+    "m6g.medium": (1, 4.0,  0.038),  "m6g.large":  (2, 8.0,  0.077),
+    "m6g.xlarge": (4, 16.0, 0.154),
+    "c5.large":   (2, 4.0,  0.085),  "c5.xlarge":  (4, 8.0,  0.17),
+    "c5.2xlarge": (8, 16.0, 0.34),
+    "c6i.large":  (2, 4.0,  0.085),  "c6i.xlarge": (4, 8.0,  0.17),
+    "c6g.medium": (1, 2.0,  0.034),  "c6g.large":  (2, 4.0,  0.068),
+    "c6g.xlarge": (4, 8.0,  0.136),
+    "r5.large":   (2, 16.0, 0.126),  "r5.xlarge":  (4, 32.0, 0.252),
+    "r5.2xlarge": (8, 64.0, 0.504),
+    "r6i.large":  (2, 16.0, 0.126),  "r6i.xlarge": (4, 32.0, 0.252),
+}
+
+
+def _bin_pack_instance(current_type: str, cpu_pct: float, mem_pct: float,
+                        buffer_pct: float = 30.0):
+    """
+    Bin-pack a node based on observed CPU/memory utilization.
+
+    Returns (recommended_type, delta_monthly_usd) where:
+      - delta > 0: downsize recommended (monthly savings)
+      - delta < 0: upsize recommended (monthly cost increase, but node is under-provisioned)
+      - delta = 0: already optimal
+
+    Logic:
+      1. Compute required resources = observed * (1 + buffer_pct/100).
+      2. If required > current capacity → current node is over-utilised: find cheapest
+         larger type that satisfies required.
+      3. If required <= current capacity → under-utilised: find cheapest smaller type
+         that still satisfies required.
+
+    buffer_pct: safety headroom above observed P95 (default 30%).
+    """
+    specs = INSTANCE_SPECS.get(current_type)
+    # Only bail when BOTH metrics are zero (no data at all).
+    # cpu_pct=0 is valid — idle node should still be downsized based on memory usage.
+    if not specs or (cpu_pct <= 0 and mem_pct <= 0):
+        return current_type, 0.0
+
+    c_vcpu, c_mem, c_hourly = specs
+    buf = 1.0 + buffer_pct / 100.0
+
+    required_vcpu = max(0.25, (c_vcpu * cpu_pct / 100.0) * buf)
+    required_mem  = max(0.5,  (c_mem  * mem_pct / 100.0) * buf)
+
+    current_fits = (c_vcpu >= required_vcpu and c_mem >= required_mem)
+
+    if not current_fits:
+        # Over-utilised: find the cheapest type that is LARGER and fits required + buffer
+        candidates = sorted(
+            [(t, v, m, h) for t, (v, m, h) in INSTANCE_SPECS.items() if h > c_hourly],
+            key=lambda x: x[3]  # ascending price → cheapest upsize first
+        )
+        for t_name, vcpu, mem, hourly in candidates:
+            if vcpu >= required_vcpu and mem >= required_mem:
+                # negative delta = cost increase (necessary for headroom)
+                return t_name, round((c_hourly - hourly) * 720, 2)
+        return current_type, 0.0  # Already largest in catalog
+
+    else:
+        # Under-utilised: find the cheapest type that is SMALLER and still fits
+        candidates = sorted(
+            [(t, v, m, h) for t, (v, m, h) in INSTANCE_SPECS.items() if h < c_hourly],
+            key=lambda x: x[3]  # ascending price → cheapest downsize first
+        )
+        for t_name, vcpu, mem, hourly in candidates:
+            if vcpu >= required_vcpu and mem >= required_mem:
+                return t_name, round((c_hourly - hourly) * 720, 2)
+        return current_type, 0.0  # Already smallest that fits
+
+
 # ─── Pydantic Schemas ────────────────────────────────────────────────────────
 
 class KarpenterModeStr(str, PyEnum):
@@ -136,6 +222,29 @@ def get_karpenter_status(
     }
 
 
+_KARPENTER_CONFIG_DEFAULTS = {
+    "strategy": "balanced",
+    "instance_families": ["m5", "m6i", "c5", "c6i", "t3", "t4g"],
+    "architectures": ["amd64", "arm64"],
+    "spot_target_pct": 75,
+    "on_demand_fallback": True,
+    "buffer_pct": 30,          # Safety headroom above P95 usage for bin-packing
+    "min_vcpu": 1,
+    "max_vcpu": 16,
+    "min_memory_gib": 1,
+    "max_memory_gib": 64,
+    "consolidation_enabled": True,
+    "consolidation_threshold_pct": 60,
+    "node_max_lifetime_days": 7,
+    "auto_rebalancing_enabled": False,   # Karpenter mode = auto
+    "auto_rightsizing_enabled": False,   # Instance type bin-packing auto-apply
+    "stateful_max_downscale_pct": 50,    # Max % size reduction allowed for stateful
+    "stateful_spot_migration": False,    # Always manual for stateful
+    "stateful_od_rightsizing": True,     # On-demand rightsizing for stateful
+    "is_active": False,
+}
+
+
 @router.get(
     "/config",
     summary="Get Karpenter config for cluster",
@@ -146,23 +255,32 @@ def get_karpenter_config(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ) -> Dict[str, Any]:
-    """Get per-cluster Karpenter configuration."""
-    return {
-        "cluster_id": cluster_id,
-        "strategy": "balanced",
-        "instance_families": ["m5", "m6i", "c5", "c6i"],
-        "architectures": ["amd64"],
-        "spot_target_pct": 75,
-        "on_demand_fallback": True,
-        "min_vcpu": 2,
-        "max_vcpu": 16,
-        "min_memory_gib": 4,
-        "max_memory_gib": 64,
-        "consolidation_enabled": True,
-        "consolidation_threshold_pct": 60,
-        "node_max_lifetime_days": 7,
-        "is_active": False,
-    }
+    """Get per-cluster Karpenter configuration (Redis-backed, falls back to defaults)."""
+    import json as _json
+    try:
+        from backend.core.redis_client import get_redis_client as _get_redis
+        _redis = _get_redis()
+        _stored = _redis.get(f"karpenter_config:{cluster_id}")
+        if _stored:
+            stored_cfg = _json.loads(_stored)
+            # Merge with defaults so new fields are always present
+            cfg = {**_KARPENTER_CONFIG_DEFAULTS, **stored_cfg, "cluster_id": cluster_id}
+            return cfg
+    except Exception:
+        pass
+
+    # Check karpenter_mode from DB to reflect current state
+    try:
+        cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+        if cluster and cluster.karpenter_mode:
+            is_auto = cluster.karpenter_mode.value == "auto"
+            defaults = {**_KARPENTER_CONFIG_DEFAULTS, "cluster_id": cluster_id,
+                        "auto_rebalancing_enabled": is_auto}
+            return defaults
+    except Exception:
+        pass
+
+    return {**_KARPENTER_CONFIG_DEFAULTS, "cluster_id": cluster_id}
 
 
 @router.post(
@@ -196,18 +314,37 @@ def update_karpenter_config(
     current_user: User = Depends(RequireAccess("EXECUTION")),
     db: Session = Depends(get_db)
 ) -> Dict[str, Any]:
-    """Patch cluster-level Karpenter settings, including mode."""
+    """Patch cluster-level Karpenter settings (Redis-persisted), including mode."""
+    import json as _json
     logger.info(f"Updating Karpenter config for cluster {cluster_id}: {list(updates.keys())}")
 
-    # Handle mode switching
-    if "mode" in updates:
+    # Handle auto_rebalancing_enabled → maps to karpenter_mode in DB
+    auto_rebalancing = updates.get("auto_rebalancing_enabled")
+    if auto_rebalancing is not None or "mode" in updates:
         cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
         if not cluster:
             raise HTTPException(status_code=404, detail=f"Cluster {cluster_id} not found")
-        new_mode = updates["mode"]
-        cluster.karpenter_mode = KarpenterMode(new_mode)
-        db.commit()
-        logger.info(f"Karpenter mode switched to {new_mode} for cluster {cluster_id}")
+        if auto_rebalancing is not None:
+            new_mode = "auto" if auto_rebalancing else "dry_run"
+        else:
+            new_mode = updates["mode"]
+        try:
+            cluster.karpenter_mode = KarpenterMode(new_mode)
+            db.commit()
+            logger.info(f"Karpenter mode switched to {new_mode} for cluster {cluster_id}")
+        except Exception:
+            pass  # Mode may not be set if Karpenter not deployed
+
+    # Persist all settings to Redis
+    try:
+        from backend.core.redis_client import get_redis_client as _get_redis
+        _redis = _get_redis()
+        _cfg_key = f"karpenter_config:{cluster_id}"
+        _existing = _json.loads(_redis.get(_cfg_key) or '{}')
+        _existing.update(updates)
+        _redis.set(_cfg_key, _json.dumps(_existing))
+    except Exception as _e:
+        logger.warning(f"Could not persist Karpenter config to Redis: {_e}")
 
     return {"cluster_id": cluster_id, "updated_fields": list(updates.keys()), "success": True}
 
@@ -521,6 +658,36 @@ def get_karpenter_recommendations(
         except Exception:
             pass  # No classification available — use default below
 
+        # Load cluster's assigned template constraints for recommendation filtering
+        # Template fields: allowed_families, allowed_zones, architectures, vcpu/memory bounds
+        _tpl_allowed_families = None
+        _tpl_allowed_azs = None
+        _tpl_architectures = ["amd64", "arm64"]
+        _tpl_max_vcpu = 128
+        _tpl_max_mem = 512
+        try:
+            from backend.models.node_template import ClusterTemplateMapping, NodeTemplateVersion as _NTV
+            _mapping = db.query(ClusterTemplateMapping).filter(
+                ClusterTemplateMapping.cluster_id == cluster.id,
+                ClusterTemplateMapping.is_default == True
+            ).first()
+            if _mapping and _mapping.version_id:
+                _tv = db.query(_NTV).filter(_NTV.id == _mapping.version_id).first()
+                if _tv and _tv.constraints_json:
+                    _c = _tv.constraints_json
+                    _tpl_architectures = _c.get('architectures') or ["amd64", "arm64"]
+                    _tpl_max_vcpu = _c.get('max_vcpu') or 128
+                    _tpl_max_mem = _c.get('max_memory') or 512
+                    _tpl_allowed_families = _c.get('allowed_families') or None
+                    _tpl_allowed_azs = _c.get('allowed_zones') or None
+                    logger.info(
+                        f"Applying template '{_mapping.template_id}' constraints to cluster {cluster.id}: "
+                        f"families={_tpl_allowed_families}, azs={_tpl_allowed_azs}, "
+                        f"arch={_tpl_architectures}, max_vcpu={_tpl_max_vcpu}, max_mem={_tpl_max_mem}"
+                    )
+        except Exception as _te:
+            logger.debug(f"No active template for cluster {cluster.id}: {_te}")
+
         for instance in instances:
             instance_type = instance.instance_type or 'unknown'
             # instance.lifecycle is an InstanceLifecycle enum — use .value to get the string
@@ -541,18 +708,127 @@ def get_karpenter_recommendations(
                 # STATELESS_ELIGIBLE, SYSTEM_PROTECTED, or no cache → stateless
                 node_type = "stateless"
 
+            cpu_pct = round(instance.cpu_util or 0.0, 1)
+            mem_pct = round(instance.memory_util or 0.0, 1)
+
+            # ── Bin-pack: find smaller right-sized instance ───────────────
+            recommended_type, resize_savings = _bin_pack_instance(
+                instance_type, cpu_pct, mem_pct, buffer_pct=30.0
+            )
+            # If template restricts allowed families, validate the bin-packed result.
+            # If the recommended type's family is not in allowed_families, fall back
+            # to the cheapest allowed-family type that fits, or keep current type.
+            if _tpl_allowed_families and recommended_type != instance_type:
+                _rec_family = recommended_type.split(".")[0]
+                if _rec_family not in _tpl_allowed_families:
+                    # Try bin-packing restricted to allowed families
+                    _specs = INSTANCE_SPECS.get(instance_type)
+                    if _specs:
+                        _c_vcpu, _c_mem, _c_hr = _specs
+                        _buf = 1.3
+                        _req_vcpu = max(0.25, (_c_vcpu * cpu_pct / 100.0) * _buf)
+                        _req_mem  = max(0.5,  (_c_mem  * mem_pct / 100.0) * _buf)
+                        _filtered_candidates = sorted(
+                            [(t, v, m, h) for t, (v, m, h) in INSTANCE_SPECS.items()
+                             if h < _c_hr and t.split(".")[0] in _tpl_allowed_families],
+                            key=lambda x: x[3]
+                        )
+                        recommended_type = instance_type  # default: keep current
+                        resize_savings = 0.0
+                        for _t, _v, _m, _h in _filtered_candidates:
+                            if _v >= _req_vcpu and _m >= _req_mem:
+                                recommended_type = _t
+                                resize_savings = round((_c_hr - _h) * 720, 2)
+                                break
+            hourly_rec = INSTANCE_SPECS.get(recommended_type, (None, None, hourly_od))[2]
+
+            # ── Spot pool suggestion for stateless nodes ──────────────────
+            spot_pool = None
+            if node_type == "stateless" and not is_spot:
+                try:
+                    import json as _sjson
+                    from backend.services.pool_ranking_service import PoolRankingService, NodeTemplate
+                    from backend.core.redis_client import get_redis_client as _get_redis_svc
+                    _redis_svc = _get_redis_svc()
+                    _svc = PoolRankingService(db, _redis_svc)
+                    _rec_specs = INSTANCE_SPECS.get(recommended_type)
+                    _max_vcpu = max(4, _rec_specs[0] * 2) if _rec_specs else 8
+                    _max_mem  = max(8, _rec_specs[1] * 2) if _rec_specs else 16
+                    # Merge per-instance size constraints with template-level constraints
+                    _combined_max_vcpu = min(_max_vcpu, _tpl_max_vcpu)
+                    _combined_max_mem  = min(_max_mem,  _tpl_max_mem)
+                    _pools = _svc.rank_pools(
+                        node_template=NodeTemplate(
+                            architecture=_tpl_architectures,
+                            vcpu_range=(1, _combined_max_vcpu),
+                            memory_range=(1, _combined_max_mem),
+                            allowed_families=_tpl_allowed_families,
+                            allowed_azs=_tpl_allowed_azs,
+                        ),
+                        region=getattr(cluster, 'region', None) or "ap-south-1",
+                        limit=5
+                    )
+                    if _pools:
+                        _p = _pools[0]
+                        spot_pool = {
+                            "instance_type": _p.pool.instance_type,
+                            "az": _p.pool.az,
+                            "spot_price_hourly": round(_p.pool.spot_price, 4),
+                            "risk_score": round(_p.risk_probability, 3),
+                            "predicted_savings_pct": round(_p.predicted_savings * 100),
+                        }
+                except Exception:
+                    pass
+
+            # ── Determine direction: upsize vs downsize ───────────────────
+            is_upsize = (resize_savings < 0 and recommended_type != instance_type)
+
+            # ── Compute combined savings ──────────────────────────────────
             if is_spot:
-                # Already spot-optimized — current cost ≈ 30% of on-demand
-                monthly_current = round(monthly_od * 0.3, 2)
+                monthly_current = round(hourly_od * 720 * 0.3, 2)
                 potential_savings = 0.0
                 savings_pct = 0
                 reason = "Already running on spot — lifecycle optimized"
-            else:
-                # On-demand — converting to spot saves ~70%
+                recommended_type = instance_type  # No lifecycle change needed
+            elif is_upsize:
+                # Over-utilised: upsize needed — surface as a risk alert, not a savings opportunity
                 monthly_current = monthly_od
-                potential_savings = round(monthly_od * 0.7, 2)
-                savings_pct = 70
-                reason = "Convert on-demand to spot for 70% cost savings"
+                potential_savings = resize_savings  # negative (cost increase)
+                savings_pct = 0
+                reason = (f"⚠ Node over-utilised ({cpu_pct}% CPU / {mem_pct}% mem) — "
+                          f"upsize {instance_type}→{recommended_type} recommended to maintain headroom")
+            elif node_type == "stateless":
+                monthly_current = monthly_od
+                if spot_pool and spot_pool["spot_price_hourly"] > 0:
+                    # Combined: downsize OD + migrate to spot pool
+                    target_hourly = spot_pool["spot_price_hourly"]
+                    potential_savings = max(0.0, round((hourly_od - target_hourly) * 720 + resize_savings, 2))
+                    savings_pct = round(potential_savings / monthly_od * 100) if monthly_od > 0 else 70
+                    reason = (f"Downsize to {recommended_type} + migrate to "
+                              f"{spot_pool['instance_type']} spot ({spot_pool['predicted_savings_pct']}% savings)")
+                else:
+                    potential_savings = max(resize_savings, round(monthly_od * 0.7, 2))
+                    savings_pct = round(potential_savings / monthly_od * 100) if monthly_od > 0 else 70
+                    reason = (f"Downsize {instance_type}→{recommended_type} and convert to spot"
+                              if recommended_type != instance_type
+                              else "Convert on-demand to spot for savings")
+            else:
+                # Stateful: on-demand right-sizing only (no spot)
+                monthly_current = monthly_od
+                potential_savings = resize_savings  # Only resize savings, no spot
+                savings_pct = round(potential_savings / monthly_od * 100) if monthly_od > 0 and potential_savings > 0 else 0
+                reason = (f"Resize {instance_type}→{recommended_type} on-demand (stateful — no spot migration)"
+                          if recommended_type != instance_type
+                          else "Already right-sized for current workload")
+
+            # EV score and impact
+            ev_pct = min(99, savings_pct) if savings_pct > 0 else 0
+            if is_upsize:
+                impact = "Critical"   # Over-utilised → alert priority
+            elif resize_savings > 10:
+                impact = "High"
+            else:
+                impact = "Neutral"
 
             recommendations.append({
                 "id": f"rec-{instance.id}",
@@ -560,16 +836,21 @@ def get_karpenter_recommendations(
                 "cluster_name": cluster.name,
                 "instance_id": instance.instance_id,
                 "current_type": instance_type,
-                "recommended_type": instance_type,  # Same type, lifecycle change
+                "recommended_type": recommended_type,        # REAL bin-packed type
                 "current_lifecycle": lifecycle,
-                "recommended_lifecycle": "spot",
-                "cpu": round(instance.cpu_util or 0.0, 1),
-                "mem": round(instance.memory_util or 0.0, 1),
+                "recommended_lifecycle": "spot" if node_type == "stateless" else lifecycle,
+                "cpu": cpu_pct,
+                "mem": mem_pct,
                 "current_cost_monthly": monthly_current,
-                "recommended_cost_monthly": round(monthly_od * 0.3, 2),
-                "potential_savings": potential_savings,
+                "recommended_cost_monthly": round(hourly_rec * 720 * (0.3 if node_type == "stateless" else 1.0), 2),
+                "potential_savings": potential_savings,      # Negative if upsize
                 "savings_pct": savings_pct,
-                "risk_prob": 15,
+                "resize_savings": resize_savings,           # Savings from bin-packing (negative = upsize)
+                "is_upsize": is_upsize,                     # True when node is over-utilised
+                "spot_pool": spot_pool,                     # Best spot pool for stateless nodes
+                "ev_pct": ev_pct,
+                "impact": impact,                           # "Critical" for upsize, "High"/"Neutral" for downsize
+                "risk_prob": round((spot_pool["risk_score"] if spot_pool else 0.15) * 100),
                 "status": "pending",
                 "node_type": node_type,
                 "created_at": datetime.utcnow().isoformat(),
@@ -965,6 +1246,339 @@ async def get_cooldown_status(cluster_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ============================================================================
+# Karpenter Install / Uninstall via Agent
+# ============================================================================
+
+
+class KarpenterInstallRequest(BaseModel):
+    karpenter_version: str = Field(default="1.0.8", description="Helm chart version to install")
+    nodepool_name: str = Field(default="default", description="Name for the default NodePool created after install")
+
+
+@router.post(
+    "/clusters/{cluster_id}/install",
+    summary="Queue Karpenter installation via agent",
+    description="Creates an INSTALL_KARPENTER AgentAction; the DaemonSet agent runs helm install inside the cluster"
+)
+def install_karpenter(
+    cluster_id: str,
+    payload: KarpenterInstallRequest = KarpenterInstallRequest(),
+    current_user: User = Depends(RequireAccess("EXECUTION")),
+    db: Session = Depends(get_db)
+) -> Dict[str, Any]:
+    cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+    if not cluster:
+        raise HTTPException(status_code=404, detail=f"Cluster {cluster_id} not found")
+
+    if cluster.agent_installed != 'Y':
+        raise HTTPException(
+            status_code=400,
+            detail="Agent must be installed before Karpenter can be installed. Deploy the agent first."
+        )
+
+    from backend.models.agent_action import AgentAction, AgentActionType, AgentActionStatus
+
+    # Check for an in-flight install action
+    in_flight = db.query(AgentAction).filter(
+        AgentAction.cluster_id == cluster_id,
+        AgentAction.action_type == AgentActionType.INSTALL_KARPENTER,
+        AgentAction.status.in_([AgentActionStatus.PENDING, AgentActionStatus.PICKED_UP])
+    ).first()
+    if in_flight:
+        raise HTTPException(status_code=409, detail="Karpenter installation already in progress")
+
+    # Pre-flight: patch the agent ClusterRole with secrets/RBAC/Karpenter permissions
+    # so helm can store release state in the karpenter namespace without a full agent reinstall.
+    if cluster.endpoint and cluster.ca_data:
+        try:
+            from backend.services.agent_injector import AgentInjectorService
+            _injector = AgentInjectorService(db)
+            _patch_result = _injector.patch_clusterrole(
+                cluster_name=cluster.name,
+                cluster_endpoint=cluster.endpoint,
+                cluster_ca_data=cluster.ca_data,
+                region=cluster.region or "ap-south-1",
+            )
+            logger.info(f"ClusterRole pre-flight patch: {_patch_result}")
+        except Exception as _patch_err:
+            logger.warning(f"ClusterRole pre-flight patch failed (non-fatal): {_patch_err}")
+
+    # INSTALL-KARPENTER-01: Derive Karpenter ARNs from known naming convention.
+    # KarpenterNodeRole, KarpenterControllerRole, SQS queue, and EventBridge rules
+    # are now created in the main full-access-role.yaml CF stack at onboarding time.
+    # Backend derives ARNs deterministically — no CF output lookup needed.
+    karpenter_iam_role_arn = ""
+    karpenter_node_role_arn = ""
+    # Karpenter uses the bare cluster name as its INTERRUPTION_QUEUE env var
+    # (set via settings.interruptionQueue in Helm). Match that here so the
+    # SQS queue our auto-setup creates is always the one Karpenter expects.
+    sqs_queue_name = cluster.name
+    account_id = ""
+    if cluster.account and cluster.account.aws_account_id:
+        account_id = cluster.account.aws_account_id
+        karpenter_iam_role_arn = (
+            f"arn:aws:iam::{account_id}:role/KarpenterControllerRole-{cluster.name}"
+        )
+        karpenter_node_role_arn = (
+            f"arn:aws:iam::{account_id}:role/KarpenterNodeRole-{cluster.name}"
+        )
+    logger.info(
+        f"Karpenter install payload for cluster {cluster.name}: "
+        f"sqs_queue_name={sqs_queue_name!r}, "
+        f"karpenter_iam_role_arn={karpenter_iam_role_arn!r}, "
+        f"karpenter_node_role_arn={karpenter_node_role_arn!r}"
+    )
+
+    # AUTO-SETUP: Ensure all Karpenter AWS prerequisites are created before install.
+    # This replaces manual CloudFormation deployment — all resources are created
+    # automatically: IAM roles, SQS queue, EventBridge rules, OIDC provider.
+    # Idempotent — already-existing resources are silently skipped.
+    try:
+        from backend.services.agent_injector import AgentInjectorService as _Inj
+        _inj = _Inj(db)
+        _role_arn = (
+            cluster.aws_role_arn
+            or (cluster.account.role_arn if cluster.account else "")
+            or ""
+        )
+        _ext_id = (
+            cluster.aws_external_id
+            or (cluster.account.external_id if cluster.account else "")
+            or ""
+        )
+        if _role_arn:
+            _creds = _inj._assume_role(
+                role_arn=_role_arn,
+                external_id=_ext_id,
+                region=cluster.region or "ap-south-1",
+            )
+            if _creds:
+                # 1. Register OIDC provider (required for IRSA)
+                try:
+                    _inj._ensure_oidc_provider_registered(
+                        cluster_name=cluster.name,
+                        region=cluster.region or "ap-south-1",
+                        credentials=_creds,
+                    )
+                except Exception as _oidc_err:
+                    logger.warning(f"OIDC registration pre-install (non-fatal): {_oidc_err}")
+
+                # 2. Create all AWS resources (IAM, SQS, EventBridge) — auto-setup
+                try:
+                    _inj._ensure_karpenter_aws_prerequisites(
+                        cluster_name=cluster.name,
+                        region=cluster.region or "ap-south-1",
+                        credentials=_creds,
+                    )
+                    logger.info(f"Karpenter AWS prerequisites ensured for {cluster.name}")
+                except Exception as _prereq_err:
+                    logger.warning(
+                        f"Karpenter prerequisites auto-setup (non-fatal): {_prereq_err}. "
+                        f"Will attempt install anyway."
+                    )
+
+                # 3. Update trust policy now that role is guaranteed to exist
+                try:
+                    _inj._update_karpenter_controller_trust_policy(
+                        cluster_name=cluster.name,
+                        region=cluster.region or "ap-south-1",
+                        credentials=_creds,
+                    )
+                except Exception as _tp_err:
+                    logger.warning(f"Trust policy update pre-install (non-fatal): {_tp_err}")
+
+                # 4. Tag subnets/SGs for EC2NodeClass discovery
+                try:
+                    _inj._tag_karpenter_network_resources(
+                        cluster_name=cluster.name,
+                        region=cluster.region or "ap-south-1",
+                        credentials=_creds,
+                    )
+                except Exception as _tag_err:
+                    logger.warning(f"Network tagging pre-install (non-fatal): {_tag_err}")
+    except Exception as _setup_err:
+        # Log but don't block install — agent will report any remaining errors
+        logger.warning(
+            f"Karpenter auto-setup encountered unexpected error (non-blocking): {_setup_err}. "
+            f"Proceeding with INSTALL_KARPENTER action queue."
+        )
+
+    logger.info(f"Karpenter pre-flight auto-setup complete for cluster {cluster.name}")
+
+    action = AgentAction(
+        cluster_id=cluster_id,
+        action_type=AgentActionType.INSTALL_KARPENTER,
+        status=AgentActionStatus.PENDING,
+        payload={
+            "cluster_name": cluster.name,
+            "region": cluster.region or "ap-south-1",
+            "karpenter_version": payload.karpenter_version,
+            "nodepool_name": payload.nodepool_name,
+            "karpenter_iam_role_arn": karpenter_iam_role_arn,
+            "sqs_queue_name": sqs_queue_name,  # helm settings.interruptionQueue value
+            "karpenter_node_role_arn": karpenter_node_role_arn,
+        }
+    )
+    db.add(action)
+    db.commit()
+    db.refresh(action)
+
+    logger.info(f"Queued INSTALL_KARPENTER action {action.id} for cluster {cluster_id} by user {current_user.email}")
+
+    return {
+        "action_id": action.id,
+        "status": "queued",
+        "message": "Karpenter installation queued. The agent will run helm install inside the cluster.",
+        "cluster_id": cluster_id,
+        "karpenter_version": payload.karpenter_version,
+        "queued_at": datetime.utcnow().isoformat(),
+    }
+
+
+@router.delete(
+    "/clusters/{cluster_id}/install",
+    summary="Queue Karpenter uninstallation via agent",
+    description="Creates an UNINSTALL_KARPENTER AgentAction; the DaemonSet agent runs helm uninstall inside the cluster"
+)
+def uninstall_karpenter(
+    cluster_id: str,
+    current_user: User = Depends(RequireAccess("EXECUTION")),
+    db: Session = Depends(get_db)
+) -> Dict[str, Any]:
+    cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+    if not cluster:
+        raise HTTPException(status_code=404, detail=f"Cluster {cluster_id} not found")
+
+    if cluster.agent_installed != 'Y':
+        raise HTTPException(status_code=400, detail="Agent must be installed to perform Karpenter uninstall")
+
+    from backend.models.agent_action import AgentAction, AgentActionType, AgentActionStatus
+
+    in_flight = db.query(AgentAction).filter(
+        AgentAction.cluster_id == cluster_id,
+        AgentAction.action_type == AgentActionType.UNINSTALL_KARPENTER,
+        AgentAction.status.in_([AgentActionStatus.PENDING, AgentActionStatus.PICKED_UP])
+    ).first()
+    if in_flight:
+        raise HTTPException(status_code=409, detail="Karpenter uninstallation already in progress")
+
+    action = AgentAction(
+        cluster_id=cluster_id,
+        action_type=AgentActionType.UNINSTALL_KARPENTER,
+        status=AgentActionStatus.PENDING,
+        payload={
+            "release_name": "karpenter",
+            "namespace": "karpenter",
+        }
+    )
+    db.add(action)
+    db.commit()
+    db.refresh(action)
+
+    logger.info(f"Queued UNINSTALL_KARPENTER action {action.id} for cluster {cluster_id} by user {current_user.email}")
+
+    # AUTO-CLEANUP: Delete AWS resources created by _ensure_karpenter_aws_prerequisites
+    # (SQS queue, EventBridge rules). IAM roles are kept to avoid accidental data loss.
+    try:
+        from backend.services.agent_injector import AgentInjectorService as _Inj
+        _inj = _Inj(db)
+        _role_arn = (
+            cluster.aws_role_arn
+            or (cluster.account.role_arn if cluster.account else "")
+            or ""
+        )
+        _ext_id = (
+            cluster.aws_external_id
+            or (cluster.account.external_id if cluster.account else "")
+            or ""
+        )
+        if _role_arn:
+            _creds = _inj._assume_role(
+                role_arn=_role_arn,
+                external_id=_ext_id,
+                region=cluster.region or "ap-south-1",
+            )
+            if _creds:
+                _inj.cleanup_karpenter_aws_resources(
+                    cluster_name=cluster.name,
+                    region=cluster.region or "ap-south-1",
+                    credentials=_creds,
+                )
+    except Exception as _cleanup_err:
+        logger.warning(f"Karpenter AWS cleanup on uninstall (non-fatal): {_cleanup_err}")
+
+    # Clear karpenter_mode from cluster record
+    try:
+        cluster.karpenter_mode = None
+        db.commit()
+    except Exception:
+        pass
+
+    return {
+        "action_id": action.id,
+        "status": "queued",
+        "message": "Karpenter uninstallation queued. The agent will run helm uninstall inside the cluster.",
+        "cluster_id": cluster_id,
+        "queued_at": datetime.utcnow().isoformat(),
+    }
+
+
+@router.get(
+    "/clusters/{cluster_id}/install-status",
+    summary="Get Karpenter install status for a cluster",
+    description="Returns the status of the latest INSTALL_KARPENTER or UNINSTALL_KARPENTER AgentAction"
+)
+def get_karpenter_install_status(
+    cluster_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+) -> Dict[str, Any]:
+    from backend.models.agent_action import AgentAction, AgentActionType, AgentActionStatus
+
+    # Get the most recent install or uninstall action
+    latest = db.query(AgentAction).filter(
+        AgentAction.cluster_id == cluster_id,
+        AgentAction.action_type.in_([AgentActionType.INSTALL_KARPENTER, AgentActionType.UNINSTALL_KARPENTER])
+    ).order_by(AgentAction.created_at.desc()).first()
+
+    if not latest:
+        return {
+            "cluster_id": cluster_id,
+            "karpenter_installed": False,
+            "last_action": None,
+            "status": "unknown",
+            "message": "No install/uninstall action found for this cluster",
+        }
+
+    action_type = latest.action_type.value
+    action_status = latest.status.value
+
+    # Derive installed state
+    if action_type == "INSTALL_KARPENTER" and action_status == "COMPLETED":
+        installed = True
+    elif action_type == "UNINSTALL_KARPENTER" and action_status == "COMPLETED":
+        installed = False
+    elif action_status in ("PENDING", "PICKED_UP"):
+        installed = None  # In progress
+    else:
+        installed = False  # Failed or expired
+
+    return {
+        "cluster_id": cluster_id,
+        "karpenter_installed": installed,
+        "last_action": {
+            "id": latest.id,
+            "type": action_type,
+            "status": action_status,
+            "created_at": latest.created_at.isoformat() if latest.created_at else None,
+            "completed_at": latest.completed_at.isoformat() if latest.completed_at else None,
+            "error_message": latest.error_message,
+            "result": latest.result,
+        }
+    }
+
+
 @router.get("/v3/workload-status/{cluster_id}")
 async def get_workload_status(cluster_id: str):
     """
@@ -1013,3 +1627,217 @@ async def get_workload_status(cluster_id: str):
     except Exception as e:
         logger.error(f"Failed to get workload status for {cluster_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# EXEC-08/09: No-Karpenter Spot Mode — ASG MixedInstancesPolicy routes
+# =============================================================================
+# For clusters that cannot or should not use Karpenter (legacy EKS versions,
+# SCP-restricted environments, managed nodegroups with custom lifecycle hooks).
+# These routes call SpotASGService which updates the ASG's MixedInstancesPolicy
+# directly using the cluster's cross-account IAM role.
+
+class EnableSpotASGPayload(BaseModel):
+    nodegroup_name: str = Field(..., description="EKS managed nodegroup name (e.g. 'workers')")
+    spot_instance_types: Optional[List[str]] = Field(
+        None, description="Override spot instance type list; auto-selected if omitted"
+    )
+    on_demand_base_capacity: int = Field(
+        1, ge=0, description="Minimum on-demand nodes always kept (0 = max spot coverage)"
+    )
+    spot_percentage: int = Field(
+        70, ge=0, le=100, description="% of nodes above base that should be spot (default 70)"
+    )
+
+
+@router.post("/nodegroup/{cluster_id}/enable-spot")
+async def enable_spot_asg(
+    cluster_id: str,
+    payload: EnableSpotASGPayload,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequireAccess("EXECUTION")),
+):
+    """
+    EXEC-08: Enable spot instances on an EKS managed nodegroup WITHOUT Karpenter.
+
+    Updates the nodegroup's ASG to use MixedInstancesPolicy with
+    price-capacity-optimized allocation and multiple compatible instance types.
+
+    Use this for clusters where Karpenter cannot be installed.
+    """
+    cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+    if not cluster:
+        raise HTTPException(status_code=404, detail="Cluster not found")
+
+    from backend.services.spot_asg_service import SpotASGService
+    from backend.services.agent_injector import AgentInjectorService
+
+    region = cluster.region or "ap-south-1"
+
+    # Build an authenticated boto3 session using the cluster's cross-account role
+    try:
+        _injector = AgentInjectorService(db)
+        creds = _injector._assume_role(
+            role_arn=cluster.aws_role_arn or "",
+            external_id=cluster.aws_external_id or "",
+            region=region,
+        )
+        if creds:
+            import boto3 as _boto3
+            boto_session = _boto3.Session(
+                aws_access_key_id=creds["access_key"],
+                aws_secret_access_key=creds["secret_key"],
+                aws_session_token=creds.get("session_token"),
+                region_name=region,
+            )
+        else:
+            import boto3 as _boto3
+            boto_session = _boto3.Session(region_name=region)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Could not assume cluster role: {e}")
+
+    svc = SpotASGService(db_session=db)
+    result = svc.enable_spot_on_nodegroup(
+        boto_session=boto_session,
+        cluster_name=cluster.name,
+        nodegroup_name=payload.nodegroup_name,
+        region=region,
+        spot_instance_types=payload.spot_instance_types,
+        on_demand_base_capacity=payload.on_demand_base_capacity,
+        spot_percentage=payload.spot_percentage,
+    )
+
+    if not result.get("success"):
+        raise HTTPException(status_code=500, detail=result.get("message", "Unknown error"))
+
+    logger.info(
+        f"SpotASG enabled on {cluster.name}/{payload.nodegroup_name} by {current_user.email}: "
+        f"{result['spot_types']}"
+    )
+    return {
+        "cluster_id": cluster_id,
+        "cluster_name": cluster.name,
+        **result,
+    }
+
+
+@router.post("/nodegroup/{cluster_id}/revert-to-ondemand")
+async def revert_spot_asg(
+    cluster_id: str,
+    nodegroup_name: str = Query(..., description="EKS managed nodegroup name"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RequireAccess("EXECUTION")),
+):
+    """
+    EXEC-09: Revert a nodegroup from spot (MixedInstancesPolicy) back to 100% on-demand.
+
+    Sets OnDemandPercentageAboveBaseCapacity=100. Existing spot instances are
+    not immediately terminated — they drain naturally as the ASG replaces them.
+    """
+    cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+    if not cluster:
+        raise HTTPException(status_code=404, detail="Cluster not found")
+
+    from backend.services.spot_asg_service import SpotASGService
+    from backend.services.agent_injector import AgentInjectorService
+
+    region = cluster.region or "ap-south-1"
+
+    try:
+        _injector = AgentInjectorService(db)
+        creds = _injector._assume_role(
+            role_arn=cluster.aws_role_arn or "",
+            external_id=cluster.aws_external_id or "",
+            region=region,
+        )
+        if creds:
+            import boto3 as _boto3
+            boto_session = _boto3.Session(
+                aws_access_key_id=creds["access_key"],
+                aws_secret_access_key=creds["secret_key"],
+                aws_session_token=creds.get("session_token"),
+                region_name=region,
+            )
+        else:
+            import boto3 as _boto3
+            boto_session = _boto3.Session(region_name=region)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Could not assume cluster role: {e}")
+
+    svc = SpotASGService(db_session=db)
+    result = svc.revert_to_on_demand(
+        boto_session=boto_session,
+        cluster_name=cluster.name,
+        nodegroup_name=nodegroup_name,
+        region=region,
+    )
+
+    if not result.get("success"):
+        raise HTTPException(status_code=500, detail=result.get("message", "Unknown error"))
+
+    logger.info(
+        f"SpotASG reverted to on-demand on {cluster.name}/{nodegroup_name} by {current_user.email}"
+    )
+    return {
+        "cluster_id": cluster_id,
+        "cluster_name": cluster.name,
+        **result,
+    }
+
+
+@router.get("/nodegroup/{cluster_id}/spot-status")
+async def get_nodegroup_spot_status(
+    cluster_id: str,
+    nodegroup_name: str = Query(..., description="EKS managed nodegroup name"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    EXEC-08: Get the current spot/on-demand configuration for a nodegroup.
+
+    Returns whether MixedInstancesPolicy is active, the spot percentage,
+    and which instance types are configured.
+    """
+    cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+    if not cluster:
+        raise HTTPException(status_code=404, detail="Cluster not found")
+
+    from backend.services.spot_asg_service import SpotASGService
+    from backend.services.agent_injector import AgentInjectorService
+
+    region = cluster.region or "ap-south-1"
+
+    try:
+        _injector = AgentInjectorService(db)
+        creds = _injector._assume_role(
+            role_arn=cluster.aws_role_arn or "",
+            external_id=cluster.aws_external_id or "",
+            region=region,
+        )
+        if creds:
+            import boto3 as _boto3
+            boto_session = _boto3.Session(
+                aws_access_key_id=creds["access_key"],
+                aws_secret_access_key=creds["secret_key"],
+                aws_session_token=creds.get("session_token"),
+                region_name=region,
+            )
+        else:
+            import boto3 as _boto3
+            boto_session = _boto3.Session(region_name=region)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Could not assume cluster role: {e}")
+
+    svc = SpotASGService(db_session=db)
+    result = svc.get_nodegroup_spot_status(
+        boto_session=boto_session,
+        cluster_name=cluster.name,
+        nodegroup_name=nodegroup_name,
+        region=region,
+    )
+    return {
+        "cluster_id": cluster_id,
+        "cluster_name": cluster.name,
+        "nodegroup_name": nodegroup_name,
+        **result,
+    }

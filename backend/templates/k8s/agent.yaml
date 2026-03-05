@@ -18,8 +18,17 @@ rules:
     resources: ["nodes", "pods", "deployments", "replicasets", "daemonsets", "statefulsets", "jobs"]
     verbs: ["get", "list", "watch"]
   - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["patch", "update"]
+  - apiGroups: [""]
     resources: ["pods/eviction"]
     verbs: ["create"]
+  - apiGroups: ["policy"]
+    resources: ["poddisruptionbudgets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["karpenter.sh"]
+    resources: ["nodepools", "nodeclaims"]
+    verbs: ["get", "list", "watch", "patch", "update"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

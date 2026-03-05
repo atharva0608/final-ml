@@ -475,21 +475,105 @@ from typing import Dict
 # Store active connections: cluster_id -> WebSocket
 active_connections: Dict[str, WebSocket] = {}
 
+async def _push_pending_actions(websocket: WebSocket, cluster_id: str):
+    """
+    Push PENDING AgentAction records to the connected agent.
+    Called on initial connection and periodically in the receive loop.
+    """
+    import json as _json
+    try:
+        from backend.models.base import get_db as _get_db
+        from backend.models.agent_action import AgentAction, AgentActionStatus
+        db = next(_get_db())
+        try:
+            pending = db.query(AgentAction).filter(
+                AgentAction.cluster_id == cluster_id,
+                AgentAction.status == AgentActionStatus.PENDING,
+            ).order_by(AgentAction.created_at).limit(20).all()
+
+            for action in pending:
+                command = {
+                    "type": "command",
+                    "action_id": action.id,
+                    "action_type": action.action_type.value,
+                    "payload": action.payload or {},
+                }
+                await websocket.send_text(_json.dumps(command))
+                action.status = AgentActionStatus.PICKED_UP
+                from datetime import datetime as _dt
+                action.picked_up_at = _dt.utcnow()
+            if pending:
+                db.commit()
+                logger.info(f"[ws] Pushed {len(pending)} pending actions to agent for cluster {cluster_id}")
+        finally:
+            db.close()
+    except Exception as e:
+        logger.warning(f"[ws] Could not push pending actions for {cluster_id}: {e}")
+
+
+async def _handle_agent_message(cluster_id: str, raw: str):
+    """
+    Parse a message received from the agent.
+    Handles: action_result, heartbeat, metrics.
+    """
+    import json as _json
+    try:
+        msg = _json.loads(raw)
+    except Exception:
+        return  # Not JSON — ignore
+
+    msg_type = msg.get("type", "")
+    if msg_type == "action_result":
+        from backend.models.base import get_db as _get_db
+        from backend.models.agent_action import AgentAction, AgentActionStatus
+        from datetime import datetime as _dt
+        db = next(_get_db())
+        try:
+            action_id = msg.get("action_id")
+            success = msg.get("success", False)
+            action = db.query(AgentAction).filter(AgentAction.id == action_id).first()
+            if action:
+                action.status = AgentActionStatus.COMPLETED if success else AgentActionStatus.FAILED
+                action.completed_at = _dt.utcnow()
+                action.result = msg.get("result")
+                action.error_message = msg.get("error") if not success else None
+                db.commit()
+                logger.info(f"[ws] Action {action_id} {'COMPLETED' if success else 'FAILED'} for cluster {cluster_id}")
+        finally:
+            db.close()
+
+
 @app.websocket("/ws/cluster/{cluster_id}")
-async def websocket_cluster_endpoint(websocket: WebSocket, cluster_id: str):
+async def websocket_cluster_endpoint(websocket: WebSocket, cluster_id: str,
+                                      agent_id: str = None, cluster_id_param: str = None):
     """
-    Websocket endpoint for cluster agents
+    WebSocket endpoint for cluster agents.
+    Bidirectional:
+      - Agent → Backend: metrics, heartbeats, action results (JSON)
+      - Backend → Agent: commands (cordon, drain, karpenter nodepool patch)
     """
+    import asyncio as _asyncio
     await websocket.accept()
     active_connections[cluster_id] = websocket
     logger.info(f"Using Websocket connection for cluster {cluster_id}")
+
+    # On connect: immediately push any pending actions queued by auto_rebalancer
+    await _push_pending_actions(websocket, cluster_id)
+
     try:
+        tick = 0
         while True:
-            # Keep connection alive and process messages
-            data = await websocket.receive_text()
-            # In future: Handle incoming messages (e.g. immediate alerts)
-            # For now just echo or ack
-            await websocket.send_text(f"Ack: {len(data)} bytes")
+            # Receive with timeout so we can periodically push new pending actions
+            try:
+                data = await _asyncio.wait_for(websocket.receive_text(), timeout=5.0)
+                await _handle_agent_message(cluster_id, data)
+            except _asyncio.TimeoutError:
+                pass  # No message — fall through to push check
+
+            tick += 1
+            if tick % 3 == 0:  # Every ~15 seconds, push any newly queued actions
+                await _push_pending_actions(websocket, cluster_id)
+
     except WebSocketDisconnect:
         logger.info(f"Websocket disconnected for cluster {cluster_id}")
         if cluster_id in active_connections:

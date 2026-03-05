@@ -47,9 +47,9 @@ const AtharvaAiPage = () => {
             {/* Page Header & Cluster Selector */}
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
                 <div>
-                    <h1 className="text-2xl font-bold text-gray-900">AtharvaAI - ML Pool Optimizer</h1>
+                    <h1 className="text-2xl font-bold text-gray-900">ASCP.ai</h1>
                     <p className="text-sm text-gray-500 mt-1">
-                        Decision Engine v3: 15-step pipeline for intelligent spot instance optimization
+                        Spot Cost Prediction · Intelligent Rebalancing · ML Pool Optimizer
                     </p>
                 </div>
                 <div className="w-full md:w-64">

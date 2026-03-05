@@ -64,14 +64,42 @@ class PoolRotationService:
             Dict with rotation status and actions taken
         """
         try:
-            # ── SAFETY GATE: Substitute Mutual Exclusion (Task 1.2) ──
+            # ── SAFETY GATE 1: Substitute Mutual Exclusion ───────────────────
             substitute_state = self.redis.get(f"spot:substitute:state:{cluster_id}")
-            substitute_state = substitute_state.decode() if substitute_state else "IDLE"
+            substitute_state = (substitute_state.decode('utf-8') if isinstance(substitute_state, bytes) else substitute_state) or "IDLE"
             if substitute_state not in ("IDLE", "FAILED", "COMPLETED"):
                 logger.info(
                     f"Deferring rotation for {cluster_id}: substitute in {substitute_state}"
                 )
                 return {"status": "DEFERRED", "reason": "SUBSTITUTE_ACTIVE"}
+
+            # ── SAFETY GATE 2: Stabilization lock ────────────────────────────
+            # Another system (auto_rebalancer, right-sizing) executed recently — wait
+            from backend.services.cooldown_controller import CooldownController
+            _cooldown = CooldownController(self.redis)
+            is_locked, remaining = _cooldown.is_stabilization_locked(cluster_id)
+            if is_locked:
+                logger.info(
+                    f"Deferring rotation for {cluster_id}: stabilization lock active "
+                    f"({remaining}s remaining) — cluster stabilizing after recent operation"
+                )
+                return {"status": "DEFERRED", "reason": "STABILIZATION_LOCK", "remaining_seconds": remaining}
+
+            # ── SAFETY GATE 3: OptimizerCoordinator phase ────────────────────
+            # Don't re-rank pools while combined EV is being computed mid-phase
+            try:
+                from backend.models.optimizer_state import OptimizerState
+                _opt_state = self.db.query(OptimizerState).filter(
+                    OptimizerState.cluster_id == cluster_id
+                ).first()
+                if _opt_state and _opt_state.current_phase in ("RIGHTSIZING_EVALUATION", "COMBINED_EXECUTION"):
+                    logger.info(
+                        f"Deferring rotation for {cluster_id}: optimizer in phase "
+                        f"{_opt_state.current_phase} — pool re-rank would corrupt EV calculation"
+                    )
+                    return {"status": "DEFERRED", "reason": f"OPTIMIZER_PHASE_{_opt_state.current_phase}"}
+            except Exception:
+                pass  # OptimizerState table may not exist on all deployments
 
             # Get cluster and its template config
             cluster = self.db.query(Cluster).filter(Cluster.id == cluster_id).first()
@@ -104,10 +132,25 @@ class PoolRotationService:
                     f"min_threshold={pool_status['min_viable_threshold']}"
                 )
 
-                # Execute rotation
-                rotation_result = self._execute_rotation(cluster_id, region, pool_status, flagging_rules)
+                # Execute rotation under distributed lock so auto_rebalancer can't
+                # simultaneously cordon/drain the same nodes (RC-4)
+                from backend.services.distributed_locks import distributed_lock
+                lock_key = f"lock:node_action:{cluster_id}"
+                try:
+                    with distributed_lock(lock_key, timeout=120):
+                        rotation_result = self._execute_rotation(cluster_id, region, pool_status, flagging_rules)
+                except RuntimeError:
+                    logger.warning(
+                        f"Pool rotation for {cluster_id} deferred: node-action lock held by another system"
+                    )
+                    return {"status": "DEFERRED", "reason": "LOCK_CONTENTION"}
+
                 result["rotation_executed"] = True
                 result["rotation_result"] = rotation_result
+
+                # Acquire stabilization lock — prevents right-sizing and auto_rebalancer
+                # from acting on this cluster while it stabilizes after rotation (RC-7)
+                _cooldown.acquire_stabilization_lock(cluster_id, reason="pool_rotation")
 
                 # Send notification
                 self._notify_rotation(cluster_id, rotation_result)

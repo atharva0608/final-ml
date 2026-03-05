@@ -75,8 +75,8 @@ def get_template(
         # Authenticated mode
         yaml_content = service.get_template(current_user.id, mode)
         
-    return Response(content=yaml_content, media_type="application/x-yaml", headers={
-        "Content-Disposition": "attachment; filename=spot-optimizer-role.yaml"
+    return Response(content=yaml_content, media_type="text/yaml", headers={
+        "Content-Disposition": 'attachment; filename="spot-optimizer-role.yaml"'
     })
 
 @router.post("/verify")

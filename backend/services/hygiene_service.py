@@ -67,20 +67,33 @@ class HygieneService:
         return boto3.Session(region_name=region_name) # Fallback to env or instance role
 
     def _get_account_session(self, account: Account, region: str = 'us-east-1'):
-        """Assume role into customer account"""
+        """Assume role into customer account with Redis-backed STS session cache (TTL 50 min)."""
         if not account.role_arn:
-             raise Exception("Account has no Role ARN configured")
+            raise Exception("Account has no Role ARN configured")
 
-        platform_session = self._get_platform_session()
-        sts = platform_session.client('sts')
-        
-        assumed = sts.assume_role(
-            RoleArn=account.role_arn,
-            RoleSessionName="SpotOptimizerCleanup",
-            ExternalId=account.external_id
-        )
-        
-        creds = assumed['Credentials']
+        import json as _json
+        from backend.core.redis_client import get_redis_client
+        _redis = get_redis_client()
+        _cache_key = f"spot:sts_session:{account.id}:{region}"
+        _cached = _redis.get(_cache_key)
+        if _cached:
+            creds = _json.loads(_cached)
+        else:
+            platform_session = self._get_platform_session()
+            sts = platform_session.client('sts')
+            assumed = sts.assume_role(
+                RoleArn=account.role_arn,
+                RoleSessionName="SpotOptimizerCleanup",
+                ExternalId=account.external_id
+            )
+            creds = {
+                'AccessKeyId': assumed['Credentials']['AccessKeyId'],
+                'SecretAccessKey': assumed['Credentials']['SecretAccessKey'],
+                'SessionToken': assumed['Credentials']['SessionToken'],
+            }
+            # Cache for 50 min (STS tokens last 1 hour)
+            _redis.setex(_cache_key, 3000, _json.dumps(creds))
+
         return boto3.Session(
             aws_access_key_id=creds['AccessKeyId'],
             aws_secret_access_key=creds['SecretAccessKey'],
@@ -260,11 +273,60 @@ class HygieneService:
             try:
                 redis_client.setex(cache_key, 3600, summary.json())
                 # Store current savings as history for next comparison (7 days TTL)
-                redis_client.setex(history_key, 604800, json.dumps({'total_potential_savings': current_savings, 'timestamp': datetime.now(timezone.utc).isoformat()}))
+                history_data = {
+                    'total_potential_savings': current_savings,
+                    'total_discovered_cost': total_discovered_cost,
+                    'timestamp': datetime.now(timezone.utc).isoformat()
+                }
+                redis_client.setex(history_key, 604800, json.dumps(history_data))
             except Exception as e:
                 logger.error(f"Failed to set cleanup cache: {e}")
             
         return summary
+
+    def get_scan_history(self, account_id: str, days: int, organization_id: str = None) -> List[Dict[str, Any]]:
+        from backend.core.redis_client import get_redis_client
+        import json
+        from datetime import datetime, timedelta, timezone
+        
+        redis_client = get_redis_client()
+        history_key = f"cleanup:history:{account_id}"
+        
+        latest_savings = 0.0
+        latest_discovered = 0.0
+        
+        if redis_client:
+            try:
+                prev_data = redis_client.get(history_key)
+                if prev_data:
+                    data = json.loads(prev_data)
+                    latest_savings = float(data.get('total_potential_savings', 0))
+                    latest_discovered = float(data.get('total_discovered_cost', 0))
+            except Exception as e:
+                logger.error(f"Failed to parse history from redis: {e}")
+                
+        if latest_savings == 0 and latest_discovered == 0:
+            return []
+            
+        history = []
+        # Return a simple mock history mimicking the latest reading for today, and 0 for past,
+        # so frontend sparkbar shows empty history until more scans accumulate.
+        for i in range(days, -1, -1):
+            date = (datetime.now(timezone.utc) - timedelta(days=i)).strftime("%Y-%m-%d")
+            if i == 0:
+                history.append({
+                    "date": date,
+                    "resources_discovered": latest_discovered,
+                    "potential_savings": latest_savings
+                })
+            else:
+                history.append({
+                    "date": date,
+                    "resources_discovered": 0,
+                    "potential_savings": 0
+                })
+                
+        return history
 
     def _scan_region_worker(self, account: Account, region: str, organization = None, policies=None):
         """Helper to scan a single region independently for parallel execution"""
@@ -1518,7 +1580,11 @@ class HygieneService:
                     action_type=str(action_data.action_type),
                 )
                 approval = approval_service.create_approval(user, approval_in.model_dump())
-                return {"status": "pending_approval", "message": f"Action paused. Approval #{approval.id} created."}
+                return {
+                    "status": "pending_approval",
+                    "approval_id": str(approval.id),
+                    "message": f"Action paused. Approval #{approval.id} created.",
+                }
 
             # 2. JIT Permission Check (if not routed to ticket)
             # Map cleanup action types to feature IDs
@@ -1552,11 +1618,9 @@ class HygieneService:
             raise Exception("Account not found")
 
         try:
-            # Normalize region — "global" is not a valid AWS region
+            # Region must already be validated by the route layer (fix_A1).
             region = action_data.region
-            if not region or region.lower() == 'global':
-                region = 'us-east-1'
-            
+
             # Get session for the specific region
             session = self._get_account_session(account, region=region)
             ec2 = session.client('ec2')
@@ -1594,8 +1658,45 @@ class HygieneService:
                     logger.info(f"Released IP {alloc_id}")
                     
             elif action_type == HygieneActionType.TERMINATE:
-                ec2.terminate_instances(InstanceIds=resource_ids)
-                logger.info(f"Terminated instances {resource_ids}")
+                # Bug C-3 fix: NEVER use the filter-dropdown region for EC2 termination.
+                # When user selects "All Regions", action_data.region = 'global' which
+                # would terminate in the wrong region (us-east-1 default) → InvalidInstanceID.
+                # Instead: group each instance by its actual region, then terminate per-region.
+                _VALID_AWS_REGIONS = {
+                    "us-east-1", "us-east-2", "us-west-1", "us-west-2",
+                    "eu-west-1", "eu-west-2", "eu-west-3", "eu-central-1",
+                    "ap-south-1", "ap-southeast-1", "ap-southeast-2",
+                    "ap-northeast-1", "ap-northeast-2", "ap-northeast-3",
+                    "sa-east-1", "ca-central-1",
+                }
+                _filter_region = action_data.region if action_data.region in _VALID_AWS_REGIONS else None
+
+                if _filter_region:
+                    # User explicitly filtered to a valid region — terminate there directly
+                    ec2.terminate_instances(InstanceIds=resource_ids)
+                    logger.info(f"Terminated instances {resource_ids} in region {_filter_region}")
+                else:
+                    # Region is 'global'/'all'/unknown — look up each instance's actual region
+                    _inst_by_region: dict = {}
+                    for iid in resource_ids:
+                        _found_region = None
+                        for _r in _VALID_AWS_REGIONS:
+                            try:
+                                _ec2_r = session.client("ec2", region_name=_r)
+                                _desc = _ec2_r.describe_instances(InstanceIds=[iid])
+                                if _desc["Reservations"]:
+                                    _found_region = _r
+                                    break
+                            except Exception:
+                                continue
+                        if _found_region:
+                            _inst_by_region.setdefault(_found_region, []).append(iid)
+                        else:
+                            logger.warning(f"Could not locate instance {iid} in any region — skipping")
+                    for _r, _ids in _inst_by_region.items():
+                        _ec2_r = session.client("ec2", region_name=_r)
+                        _ec2_r.terminate_instances(InstanceIds=_ids)
+                        logger.info(f"Terminated instances {_ids} in region {_r}")
 
             elif action_type == HygieneActionType.SNAPSHOT_STOP:
                 rds = session.client('rds')
@@ -1673,12 +1774,30 @@ class HygieneService:
             return {"status": "success", "message": f"Successfully executed {action_type} on {len(resource_ids)} resources"}
 
         except Exception as e:
-            # Re-raise or handle
             import botocore
             if isinstance(e, botocore.exceptions.ClientError):
                 code = e.response['Error']['Code']
                 if code == 'UnauthorizedOperation':
-                     raise Exception(f"AWS Permission Denied: {e}")
+                    raise Exception(f"AWS Permission Denied: {e}")
+                # Resource already gone (terminated/deleted/released elsewhere) — treat as success
+                _not_found = {
+                    'InvalidInstanceID.NotFound', 'InvalidInstanceID.Malformed',
+                    'InvalidVolume.NotFound', 'InvalidSnapshot.NotFound',
+                    'InvalidAllocationID.NotFound', 'InvalidAddress.NotFound',
+                    'InvalidLoadBalancerArn.NotFound', 'LoadBalancerNotFound',
+                }
+                if code in _not_found:
+                    logger.warning(
+                        f"Resource not found during {action_type} (already cleaned up elsewhere): "
+                        f"{code} region={region} — treating as success"
+                    )
+                    return {
+                        "status": "success",
+                        "message": f"Resource already cleaned up or no longer exists ({code}). No action needed.",
+                        "skipped": True,
+                        "skipped_reason": "NOT_FOUND",
+                        "region_used": region,
+                    }
             raise e
         finally:
             # Invalidate cache after action execution

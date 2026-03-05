@@ -318,8 +318,45 @@ def scan_account(account: Account, db: Session, redis_client) -> Dict[str, int]:
             else:
                 raise
 
-        # Create AWS clients — use assumed role credentials when available, else env credentials
-        region = account.region or 'us-east-1'
+        # Scan EKS clusters across ALL major regions (not just the account's home region)
+        # EKS clusters can be in any region regardless of the account's configured region
+        ALL_EKS_REGIONS = [
+            "ap-south-1", "ap-southeast-1", "ap-southeast-2",
+            "ap-northeast-1", "ap-northeast-2",
+            "us-east-1", "us-east-2", "us-west-1", "us-west-2",
+            "eu-west-1", "eu-west-2", "eu-central-1",
+            "ca-central-1", "sa-east-1",
+        ]
+        # Put account's configured region first so it's found quickly
+        account_region = account.region or 'us-east-1'
+        regions_to_scan = [account_region] + [r for r in ALL_EKS_REGIONS if r != account_region]
+
+        clusters_found = 0
+        all_discovered_names: set = set()
+        for scan_region in regions_to_scan:
+            try:
+                if credentials:
+                    eks_client = boto3.client(
+                        'eks',
+                        region_name=scan_region,
+                        aws_access_key_id=credentials['AccessKeyId'],
+                        aws_secret_access_key=credentials['SecretAccessKey'],
+                        aws_session_token=credentials['SessionToken']
+                    )
+                else:
+                    eks_client = boto3.client('eks', region_name=scan_region)
+                count, names = scan_eks_clusters(account, eks_client, db, credentials, region_override=scan_region)
+                clusters_found += count
+                all_discovered_names.update(names)
+            except Exception as region_err:
+                logger.debug(f"[WORK-DISC-01] Region {scan_region} not accessible: {region_err}")
+                continue
+
+        # Run cleanup ONCE after all regions — avoids false-positives for cross-region clusters
+        _cleanup_deleted_clusters(account, db, all_discovered_names)
+
+        # Scan EC2 instances in the account's primary region
+        region = account_region
         if credentials:
             ec2_client = boto3.client(
                 'ec2',
@@ -328,22 +365,8 @@ def scan_account(account: Account, db: Session, redis_client) -> Dict[str, int]:
                 aws_secret_access_key=credentials['SecretAccessKey'],
                 aws_session_token=credentials['SessionToken']
             )
-            eks_client = boto3.client(
-                'eks',
-                region_name=region,
-                aws_access_key_id=credentials['AccessKeyId'],
-                aws_secret_access_key=credentials['SecretAccessKey'],
-                aws_session_token=credentials['SessionToken']
-            )
         else:
-            # Same-account fallback: use boto3 default credential chain (env vars / instance profile)
             ec2_client = boto3.client('ec2', region_name=region)
-            eks_client = boto3.client('eks', region_name=region)
-
-        # Scan EKS clusters
-        clusters_found = scan_eks_clusters(account, eks_client, db, credentials)
-
-        # Scan EC2 instances
         instances_found = scan_ec2_instances(account, ec2_client, db)
 
         # Update account status
@@ -361,13 +384,14 @@ def scan_account(account: Account, db: Session, redis_client) -> Dict[str, int]:
     }
 
 
-def scan_eks_clusters(account: Account, eks_client, db: Session, credentials: Dict[str, str]) -> int:
+def scan_eks_clusters(account: Account, eks_client, db: Session, credentials: Dict[str, str], region_override: str = None) -> tuple:
     """
-    Scan EKS clusters in the account
+    Scan EKS clusters in a specific region.
 
     Returns:
-        Number of clusters found
+        (count, list_of_cluster_names) — cleanup is handled by the caller after all regions
     """
+    scan_region = region_override or account.region or 'us-east-1'
     try:
         # List all clusters using paginator
         paginator = eks_client.get_paginator('list_clusters')
@@ -444,10 +468,10 @@ def scan_eks_clusters(account: Account, eks_client, db: Session, credentials: Di
                 logger.warning(f"[WORK-DISC-01] Failed to fetch costs for {cluster_name}: {e}")
 
             # --- Shallow Scan for Teaser (Real Savings) ---
-            cluster_region = cluster_data.get('arn').split(':')[3] if cluster_data.get('arn') else (account.region or 'us-east-1')
+            cluster_region = cluster_data.get('arn').split(':')[3] if cluster_data.get('arn') else scan_region
             teaser_data = analyze_cluster_potential(
                 cluster_name,
-                account.region or 'us-east-1',
+                cluster_region,
                 ec2_client=_make_boto3_client('ec2', cluster_region, credentials),
                 credentials=credentials
             )
@@ -541,97 +565,65 @@ def scan_eks_clusters(account: Account, eks_client, db: Session, credentials: Di
 
             db.commit()
 
-        # --- Cleanup Logic: Remove clusters deleted from AWS ---
-        # Get all clusters in DB for this account
-        db_clusters = db.query(Cluster).filter(
-            Cluster.account_id == account.id
-        ).all()
-
-        # Find clusters that exist in DB but NOT in AWS anymore
-        discovered_cluster_names = set(cluster_names)
-        clusters_to_cleanup = []
-
-        for db_cluster in db_clusters:
-            if db_cluster.name not in discovered_cluster_names:
-                # Cluster not found in AWS — apply grace periods before deletion
-
-                # Grace period 1: Never delete clusters created less than 60 minutes ago.
-                # This prevents cleanup from racing with agent installation.
-                if db_cluster.created_at:
-                    minutes_since_created = (datetime.utcnow() - db_cluster.created_at).total_seconds() / 60
-                    if minutes_since_created < 60:
-                        logger.info(
-                            f"[WORK-DISC-01] Cluster {db_cluster.name} not in AWS but only "
-                            f"{minutes_since_created:.1f} mins old — skipping cleanup (grace period)."
-                        )
-                        continue
-
-                # Grace period 2: If agent was successfully installed, require a much
-                # longer heartbeat absence (2 hours) before considering the cluster gone.
-                if db_cluster.agent_installed == 'Y':
-                    if db_cluster.last_heartbeat:
-                        minutes_since_heartbeat = (datetime.utcnow() - db_cluster.last_heartbeat).total_seconds() / 60
-                        if minutes_since_heartbeat > 120:
-                            clusters_to_cleanup.append(db_cluster)
-                            logger.info(
-                                f"[WORK-DISC-01] Cluster {db_cluster.name} not in AWS, agent offline "
-                                f"{minutes_since_heartbeat:.1f} mins (>2h). Marking for cleanup."
-                            )
-                        else:
-                            logger.info(
-                                f"[WORK-DISC-01] Cluster {db_cluster.name} not in AWS but agent installed "
-                                f"and heartbeat {minutes_since_heartbeat:.1f} mins ago — skipping cleanup."
-                            )
-                    else:
-                        # Agent installed but heartbeat never received — wait 30 min
-                        logger.info(
-                            f"[WORK-DISC-01] Cluster {db_cluster.name} not in AWS, agent installed "
-                            f"but no heartbeat yet — skipping cleanup (30-min grace)."
-                        )
-                    continue
-
-                # Standard cleanup: no agent, not in AWS
-                if db_cluster.last_heartbeat:
-                    minutes_since_heartbeat = (datetime.utcnow() - db_cluster.last_heartbeat).total_seconds() / 60
-                    if minutes_since_heartbeat > 10:
-                        clusters_to_cleanup.append(db_cluster)
-                        logger.info(
-                            f"[WORK-DISC-01] Cluster {db_cluster.name} not found in AWS "
-                            f"and agent offline for {minutes_since_heartbeat:.1f} mins. "
-                            f"Marking for cleanup."
-                        )
-                else:
-                    # No heartbeat ever recorded, safe to cleanup
-                    clusters_to_cleanup.append(db_cluster)
-                    logger.info(
-                        f"[WORK-DISC-01] Cluster {db_cluster.name} not found in AWS "
-                        f"and never had agent connection. Marking for cleanup."
-                    )
-
-        # Remove clusters from database
-        for cluster in clusters_to_cleanup:
-            logger.info(f"[WORK-DISC-01] Removing deleted cluster: {cluster.name} (ID: {cluster.id})")
-
-            # Also remove associated instances
-            from backend.models.instance import Instance
-            instances_deleted = db.query(Instance).filter(
-                Instance.cluster_id == cluster.id
-            ).delete()
-
-            logger.info(f"[WORK-DISC-01] Removed {instances_deleted} instances for cluster {cluster.name}")
-
-            # Remove the cluster
-            db.delete(cluster)
-
-        if clusters_to_cleanup:
-            db.commit()
-            logger.info(f"[WORK-DISC-01] Cleaned up {len(clusters_to_cleanup)} deleted clusters")
-
-        return len(cluster_names)
+        # Return count + names; cleanup runs in scan_account after ALL regions are scanned
+        return len(cluster_names), cluster_names
 
     except ClientError as e:
         logger.error(f"[WORK-DISC-01] Failed to scan EKS clusters: {str(e)}")
-        return 0
+        return 0, []
+
+
+def _cleanup_deleted_clusters(account: Account, db: Session, all_discovered_names: set) -> None:
+    """
+    Remove clusters from the DB that no longer exist in AWS across ALL regions.
+    Must be called once after all regions have been scanned.
+    """
+    db_clusters = db.query(Cluster).filter(Cluster.account_id == account.id).all()
+    clusters_to_cleanup = []
+
+    for db_cluster in db_clusters:
+        if db_cluster.name not in all_discovered_names:
+            # Grace period 1: never delete clusters created < 60 minutes ago
+            if db_cluster.created_at:
+                minutes_since_created = (datetime.utcnow() - db_cluster.created_at).total_seconds() / 60
+                if minutes_since_created < 60:
+                    logger.info(
+                        f"[WORK-DISC-01] Cluster {db_cluster.name} not in AWS but only "
+                        f"{minutes_since_created:.1f} mins old — skipping cleanup."
+                    )
+                    continue
+
+            # Grace period 2: agent installed — require 2h heartbeat absence
+            if db_cluster.agent_installed == 'Y':
+                if db_cluster.last_heartbeat:
+                    minutes_since_heartbeat = (datetime.utcnow() - db_cluster.last_heartbeat).total_seconds() / 60
+                    if minutes_since_heartbeat <= 120:
+                        logger.info(
+                            f"[WORK-DISC-01] Cluster {db_cluster.name} not in AWS but agent heartbeat "
+                            f"{minutes_since_heartbeat:.1f} mins ago — skipping cleanup."
+                        )
+                        continue
+                else:
+                    logger.info(f"[WORK-DISC-01] {db_cluster.name} not in AWS, agent installed, no heartbeat — skipping.")
+                    continue
+
+            # Standard cleanup: no agent, not in AWS
+            if db_cluster.last_heartbeat:
+                minutes_since_heartbeat = (datetime.utcnow() - db_cluster.last_heartbeat).total_seconds() / 60
+                if minutes_since_heartbeat <= 10:
+                    continue
+
+            clusters_to_cleanup.append(db_cluster)
+            logger.info(f"[WORK-DISC-01] Marking cluster {db_cluster.name} for cleanup (not found in any AWS region).")
+
+    for cluster in clusters_to_cleanup:
+        from backend.models.instance import Instance
+        db.query(Instance).filter(Instance.cluster_id == cluster.id).delete()
+        db.delete(cluster)
+        logger.info(f"[WORK-DISC-01] Removed deleted cluster: {cluster.name}")
+
+    if clusters_to_cleanup:
+        db.commit()
 
 
 def scan_ec2_instances(account: Account, ec2_client, db: Session) -> int:

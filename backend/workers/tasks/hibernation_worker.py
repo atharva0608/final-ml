@@ -14,6 +14,7 @@ from backend.hibernation_strategy import (
     SnapshotRestoreStrategy
 )
 from datetime import datetime, timedelta
+import base64
 import pytz
 import logging
 import uuid
@@ -195,12 +196,8 @@ def execute_hibernation(self, schedule_id: str):
                 continue
             
             try:
-                cluster_config = {
-                    "cluster_name": cluster.name,
-                    "region": cluster.region,
-                    "kubeconfig": {}  # TODO: Load from cluster config
-                }
-                
+                cluster_config = _build_cluster_kubeconfig(cluster)
+
                 strategy = strategy_class(cluster_config)
                 result = strategy.sleep(schedule.saved_state.get(cluster.id, {}))
                 
@@ -273,12 +270,8 @@ def execute_wake(self, schedule_id: str):
                 continue
             
             try:
-                cluster_config = {
-                    "cluster_name": cluster.name,
-                    "region": cluster.region,
-                    "kubeconfig": {}
-                }
-                
+                cluster_config = _build_cluster_kubeconfig(cluster)
+
                 strategy = strategy_class(cluster_config)
                 saved_state = schedule.saved_state.get(cluster.id, {})
                 
@@ -387,3 +380,157 @@ def _get_strategy_class(strategy_name: str):
         HibernationStrategy.SNAPSHOT_RESTORE.value: SnapshotRestoreStrategy
     }
     return strategy_map.get(strategy_name, NamespaceSleepStrategy)
+
+
+# ──────────────────────────────────────────────────────────────
+# EKS Kubeconfig Builder — replaces the `kubeconfig: {}` TODO
+# ──────────────────────────────────────────────────────────────
+
+def _get_eks_token(boto_session, cluster_name: str, region: str) -> str:
+    """
+    Generate a Kubernetes bearer token for an EKS cluster.
+
+    Produces the same presigned STS URL token as `aws eks get-token`.
+    Token format: 'k8s-aws-v1.' + base64(presigned_sts_url)
+    Token is valid for 15 minutes (STS_TOKEN_EXPIRES_IN = 900s max, but
+    EKS caps it at 15 min regardless).
+
+    Args:
+        boto_session: Authenticated boto3 Session (assumed cross-account role)
+        cluster_name: EKS cluster name
+        region:       AWS region
+
+    Returns:
+        Bearer token string starting with 'k8s-aws-v1.'
+    """
+    from botocore.signers import RequestSigner
+
+    sts_client = boto_session.client("sts", region_name=region)
+    signer = RequestSigner(
+        sts_client.meta.service_model.service_id,
+        region,
+        "sts",
+        "v4",
+        boto_session.get_credentials(),
+        boto_session.events,
+    )
+    params = {
+        "method": "GET",
+        "url": (
+            f"https://sts.{region}.amazonaws.com/"
+            "?Action=GetCallerIdentity&Version=2011-06-15"
+        ),
+        "body": {},
+        "headers": {"x-k8s-aws-id": cluster_name},
+        "context": {},
+    }
+    signed_url = signer.generate_presigned_url(
+        params,
+        region_name=region,
+        expires_in=900,
+        operation_name="",
+    )
+    token = "k8s-aws-v1." + base64.urlsafe_b64encode(
+        signed_url.encode("utf-8")
+    ).decode("utf-8").rstrip("=")
+    return token
+
+
+def _build_cluster_kubeconfig(cluster) -> dict:
+    """
+    Build a valid kubeconfig dict for a cluster using EKS presigned token auth.
+
+    Replaces the `"kubeconfig": {}` TODO in hibernation_worker.py.
+    Uses the same cross-account role assumption pattern as agent_injector.py.
+
+    Requires the cluster to have:
+      - cluster.endpoint     (EKS API server URL)
+      - cluster.aws_role_arn (customer cross-account role ARN)
+      - cluster.aws_external_id (external ID for role assumption)
+      - cluster.region
+
+    Falls back to empty dict (in-cluster config) if credentials are missing,
+    which works when Celery runs inside the target EKS cluster (dev/test only).
+
+    Args:
+        cluster: Cluster ORM object
+
+    Returns:
+        Cluster config dict: {"cluster_name": ..., "region": ..., "kubeconfig": {...}}
+    """
+    import boto3
+    from backend.services.agent_injector import AgentInjectorService
+
+    base = {"cluster_name": cluster.name, "region": cluster.region or "ap-south-1"}
+
+    if not cluster.aws_role_arn or not cluster.endpoint:
+        logger.warning(
+            f"Cluster {cluster.name} missing aws_role_arn or endpoint — "
+            "falling back to in-cluster kubeconfig (only works if Celery runs in-cluster)"
+        )
+        base["kubeconfig"] = {}
+        return base
+
+    try:
+        # Assume the customer's cross-account role to get EKS cluster info + token
+        injector = AgentInjectorService(db_session=None)
+        assumed = injector._assume_role(
+            cluster.aws_role_arn,
+            cluster.aws_external_id or "",
+            cluster.region,
+        )
+
+        if assumed and "access_key" in assumed:
+            boto_session = boto3.Session(
+                aws_access_key_id=assumed["access_key"],
+                aws_secret_access_key=assumed["secret_key"],
+                aws_session_token=assumed.get("session_token"),
+                region_name=cluster.region,
+            )
+        else:
+            boto_session = boto3.Session(region_name=cluster.region)
+
+        eks_client = boto_session.client("eks", region_name=cluster.region)
+
+        # Get the CA certificate (may not be stored on the cluster object)
+        ca_data = getattr(cluster, "ca_cert_data", None)
+        if not ca_data:
+            cluster_info = eks_client.describe_cluster(name=cluster.name)["cluster"]
+            ca_data = cluster_info["certificateAuthority"]["data"]
+            endpoint = cluster_info.get("endpoint", cluster.endpoint)
+        else:
+            endpoint = cluster.endpoint
+
+        token = _get_eks_token(boto_session, cluster.name, cluster.region)
+
+        kubeconfig = {
+            "apiVersion": "v1",
+            "kind": "Config",
+            "clusters": [{
+                "name": cluster.name,
+                "cluster": {
+                    "server": endpoint,
+                    "certificate-authority-data": ca_data,
+                }
+            }],
+            "users": [{
+                "name": "spot-optimizer",
+                "user": {"token": token}
+            }],
+            "contexts": [{
+                "name": cluster.name,
+                "context": {"cluster": cluster.name, "user": "spot-optimizer"}
+            }],
+            "current-context": cluster.name,
+        }
+        base["kubeconfig"] = kubeconfig
+        logger.info(f"Built kubeconfig for cluster {cluster.name} via EKS token auth")
+        return base
+
+    except Exception as e:
+        logger.error(
+            f"Failed to build kubeconfig for cluster {cluster.name}: {e}. "
+            "Falling back to empty kubeconfig (hibernation will fail on remote clusters)."
+        )
+        base["kubeconfig"] = {}
+        return base

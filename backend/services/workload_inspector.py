@@ -73,6 +73,7 @@ class WorkloadInspector:
             # time.sleep(jitter_seconds)  # Commented out - implement in scheduler
 
             classification = {}
+            arch_classification = {}  # node_name → list of required architectures (empty = any)
 
             if not self.k8s:
                 logger.warning(f"K8s client not available for cluster {cluster_id}")
@@ -94,6 +95,7 @@ class WorkloadInspector:
                 # 1. Check if system/control plane node
                 if self._is_system_node(node):
                     classification[node_name] = NodeStatus.SYSTEM_PROTECTED
+                    arch_classification[node_name] = []
                     continue
 
                 # 2. Fetch pods on this node
@@ -107,6 +109,7 @@ class WorkloadInspector:
 
                 if has_stateful:
                     classification[node_name] = NodeStatus.STATEFUL_PROTECTED
+                    arch_classification[node_name] = []
                     continue
 
                 # 4. Check for PVC volumes
@@ -114,6 +117,7 @@ class WorkloadInspector:
 
                 if has_pvc:
                     classification[node_name] = NodeStatus.STATEFUL_PROTECTED
+                    arch_classification[node_name] = []
                     continue
 
                 # 5. Check for hostPath volumes
@@ -121,19 +125,34 @@ class WorkloadInspector:
 
                 if has_hostpath:
                     classification[node_name] = NodeStatus.STATEFUL_PROTECTED
+                    arch_classification[node_name] = []
                     continue
 
                 # 6. Check for blocking PDB
                 if self._has_blocking_pdb(cluster_id, node_name, pods):
                     classification[node_name] = NodeStatus.DRAIN_UNSAFE
+                    arch_classification[node_name] = []
                     continue
+
+                # Collect required architectures from pod constraints (Bug A-5 fix)
+                node_required_archs: set = set()
+                for pod in pods:
+                    arch = self._has_arch_affinity(pod)
+                    if arch:
+                        node_required_archs.add(arch)
+                # Store arch constraints alongside classification
+                arch_classification[node_name] = sorted(node_required_archs)
 
                 # Default: stateless eligible
                 classification[node_name] = NodeStatus.STATELESS_ELIGIBLE
 
-            # Cache in Redis
+            # Cache classification in Redis
             cache_key = f"spot:node_classification:{cluster_id}"
             self.redis.setex(cache_key, self.CLASSIFICATION_TTL, json.dumps(classification))
+
+            # Cache per-node arch constraints (used by auto_rebalancer to build NodePool requirements)
+            arch_cache_key = f"spot:node_arch_constraints:{cluster_id}"
+            self.redis.setex(arch_cache_key, self.CLASSIFICATION_TTL, json.dumps(arch_classification))
 
             # Update cluster.workload_type column for audit (informational only)
             self._update_cluster_workload_type(cluster_id, classification)
@@ -197,6 +216,33 @@ class WorkloadInspector:
                     return []
         return []
 
+    def _has_arch_affinity(self, pod: dict) -> str | None:
+        """
+        Returns the required architecture if the pod is pinned to a specific arch.
+        Returns None if the pod can run on any architecture (safe for Graviton migration).
+
+        Checks nodeSelector and nodeAffinity.requiredDuringScheduling.
+        """
+        spec = pod.get("spec", {})
+
+        # Check nodeSelector
+        node_selector = spec.get("nodeSelector", {})
+        arch = node_selector.get("kubernetes.io/arch")
+        if arch:
+            return arch
+
+        # Check nodeAffinity
+        affinity = spec.get("affinity", {})
+        node_affinity = affinity.get("nodeAffinity", {})
+        required = node_affinity.get("requiredDuringSchedulingIgnoredDuringExecution", {})
+        for term in required.get("nodeSelectorTerms", []):
+            for expr in term.get("matchExpressions", []):
+                if expr.get("key") == "kubernetes.io/arch" and expr.get("operator") == "In":
+                    values = expr.get("values", [])
+                    return values[0] if len(values) == 1 else None
+
+        return None
+
     def _is_system_node(self, node: dict) -> bool:
         """Check if node is control plane or system node"""
         labels = node.get("metadata", {}).get("labels", {})
@@ -236,10 +282,62 @@ class WorkloadInspector:
         """
         Check if any PDB would block drain (maxUnavailable=0).
 
-        This is a simplified check. Full implementation would query PDB API.
+        Queries the K8s policy API for PodDisruptionBudgets and checks whether
+        any PDB selector matches a pod on this node with maxUnavailable=0.
+
+        Returns False (safe to drain) when:
+        - K8s client is unavailable
+        - No pods on the node have labels
+        - No PDB has maxUnavailable=0
+        - K8s API call fails (fail-open for draining)
         """
-        # TODO: Implement PDB check via K8s API
-        # For now, return False (assume no blocking PDBs)
+        if not self.k8s:
+            return False
+
+        # Collect pod label sets from pods on this node
+        pod_label_sets = [
+            pod.get("metadata", {}).get("labels", {})
+            for pod in pods
+            if pod.get("metadata", {}).get("labels")
+        ]
+        if not pod_label_sets:
+            return False
+
+        try:
+            # Use k8s client to list PDBs — method may be list_pod_disruption_budgets
+            list_pdbs_fn = getattr(self.k8s, "list_pod_disruption_budgets", None)
+            if list_pdbs_fn is None:
+                # K8s client doesn't expose PDB API — skip check
+                return False
+
+            pdb_list = list_pdbs_fn(cluster_id)
+
+            for pdb in (pdb_list or []):
+                spec = pdb.get("spec", {})
+                max_unavailable = spec.get("maxUnavailable")
+
+                # Only care about PDBs that allow zero unavailability
+                if max_unavailable not in (0, "0"):
+                    continue
+
+                selector = spec.get("selector", {}).get("matchLabels", {})
+                if not selector:
+                    continue
+
+                # Check if any pod on this node matches this PDB's selector
+                for pod_labels in pod_label_sets:
+                    if all(pod_labels.get(k) == v for k, v in selector.items()):
+                        pdb_name = pdb.get("metadata", {}).get("name", "unknown")
+                        logger.info(
+                            f"Blocking PDB '{pdb_name}' on node {node_name}: "
+                            f"maxUnavailable=0, selector={selector}"
+                        )
+                        return True
+
+        except Exception as e:
+            # Fail-open: if PDB check errors, don't block drain — log and continue
+            logger.warning(f"PDB check failed for node {node_name}: {e}")
+
         return False
 
     def _update_cluster_workload_type(self, cluster_id: str, classification: Dict):

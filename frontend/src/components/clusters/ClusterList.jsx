@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { createPortal } from 'react-dom';
-import { clusterAPI } from '../../services/api';
+import { clusterAPI, karpenterAPI } from '../../services/api';
 import { useClusterStore, useHeaderStore } from '../../store/useStore';
 import { formatCurrency } from '../../utils/formatters';
 import toast from 'react-hot-toast';
@@ -60,12 +60,14 @@ const typeColor = {
   spot: C.spotColor,
   fallback: C.fallbackColor,
   "on-demand": C.onDemandColor,
+  "warm-spare": "#7c3aed",
 };
 
 const typeBg = {
   spot: C.spotBg,
   fallback: C.fallbackBg,
   "on-demand": C.onDemandBg,
+  "warm-spare": "#f5f3ff",
 };
 
 const statusConfig = {
@@ -157,9 +159,36 @@ const OptimizationSettingsTab = ({ cluster }) => {
     return <div style={{ padding: 20, textAlign: 'center', color: C.muted, fontSize: 13 }}>Loading settings...</div>;
   }
 
+  // Derive current optimization mode from toggle state
+  const optimizationMode = (() => {
+    const r = settings.auto_rebalance_enabled;
+    const s = settings.auto_rightsizing_enabled;
+    if (r && s) return { label: 'COMBINED MODE', desc: 'Pool-first rebalancing → bin-pack right-sizing in sequence', color: '#16a34a', bg: '#f0fdf4', border: '#bbf7d0' };
+    if (r && !s) return { label: 'REBALANCE ONLY', desc: 'ML spot pool optimization — no resource request changes', color: '#2563eb', bg: '#eff6ff', border: '#bfdbfe' };
+    if (!r && s) return { label: 'RIGHTSIZING ONLY', desc: 'Resource request optimization — no pool switching', color: '#7c3aed', bg: '#f5f3ff', border: '#ddd6fe' };
+    return { label: 'DISABLED', desc: 'All automation paused — manual mode only', color: '#6b7280', bg: '#f9fafb', border: '#e5e7eb' };
+  })();
+
   return (
     <div style={{ marginTop: 20, display: "flex", flexDirection: "column", gap: 16 }}>
       <div style={{ fontSize: 13, fontWeight: 600, color: C.text, marginBottom: 8 }}>Optimization Engine Settings</div>
+
+      {/* ── Current Mode Banner ── */}
+      {!loading && (
+        <div style={{
+          display: "flex", alignItems: "center", gap: 12,
+          padding: "12px 16px", borderRadius: 10,
+          background: optimizationMode.bg,
+          border: `1.5px solid ${optimizationMode.border}`,
+        }}>
+          <div style={{ width: 10, height: 10, borderRadius: "50%", background: optimizationMode.color, flexShrink: 0,
+            boxShadow: optimizationMode.label !== 'DISABLED' ? `0 0 6px ${optimizationMode.color}80` : 'none' }} />
+          <div style={{ flex: 1 }}>
+            <span style={{ fontSize: 12, fontWeight: 700, color: optimizationMode.color, letterSpacing: "0.04em" }}>{optimizationMode.label}</span>
+            <span style={{ fontSize: 11, color: '#6b7280', marginLeft: 10 }}>{optimizationMode.desc}</span>
+          </div>
+        </div>
+      )}
 
       <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: 20 }}>
 
@@ -228,7 +257,7 @@ const OptimizationSettingsTab = ({ cluster }) => {
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <div style={{ paddingRight: 32 }}>
             <div style={{ fontSize: 13, fontWeight: 600, color: C.text }}>Manual Approval Required (RBAC)</div>
-            <div style={{ fontSize: 11, color: C.subtle, marginTop: 4 }}>If the AtharvaAI decision engine proposes infrastructure changes, route to Team Lead / Org Admin for manual approval before execution.</div>
+            <div style={{ fontSize: 11, color: C.subtle, marginTop: 4 }}>If the ASCP.ai decision engine proposes infrastructure changes, route to Team Lead / Org Admin for manual approval before execution.</div>
           </div>
           <ToggleSwitch
             checked={settings.manual_approval_required}
@@ -375,13 +404,15 @@ const NodeTreemap = ({ nodes }) => {
                   width: size,
                   height: size,
                   borderRadius: 12,
-                  background: isHovered ? bg : bg,
-                  border: `2px solid ${isHovered ? color : color + "55"}`,
+                  background: node.type === 'warm-spare' ? '#f5f3ff' : (isHovered ? bg : bg),
+                  border: node.type === 'warm-spare'
+                    ? `2px dashed #7c3aed`
+                    : `2px solid ${isHovered ? color : color + "55"}`,
                   padding: 10,
                   cursor: "pointer",
                   transition: "all 0.15s cubic-bezier(.4,0,.2,1)",
                   transform: isHovered ? "scale(1.06)" : "scale(1)",
-                  boxShadow: isHovered ? `0 4px 16px ${color}30` : "none",
+                  boxShadow: isHovered ? `0 4px 16px ${node.type === 'warm-spare' ? '#7c3aed' : color}30` : "none",
                   position: "relative",
                   display: "flex",
                   flexDirection: "column",
@@ -394,10 +425,11 @@ const NodeTreemap = ({ nodes }) => {
                   display: "flex", justifyContent: "space-between", alignItems: "flex-start"
                 }}>
                   <span style={{
-                    fontSize: 9, fontWeight: 700, color: color,
-                    background: bg, borderRadius: 3, padding: "0px 4px",
-                    lineHeight: "14px",
-                  }}>N{nodeNum}</span>
+                    fontSize: 9, fontWeight: 700,
+                    color: node.type === 'warm-spare' ? '#7c3aed' : color,
+                    background: node.type === 'warm-spare' ? '#ede9fe' : bg,
+                    borderRadius: 3, padding: "0px 4px", lineHeight: "14px",
+                  }}>{node.type === 'warm-spare' ? 'WS' : `N${nodeNum}`}</span>
                   <div style={{ display: "flex", gap: 3 }}>
                     <div style={{
                       width: 6, height: 6, borderRadius: "50%",
@@ -537,9 +569,10 @@ const NodeTreemap = ({ nodes }) => {
       )}
 
       {/* Node type breakdown strip */}
-      <div style={{ display: "flex", gap: 6, marginTop: 12 }}>
-        {["spot", "fallback", "on-demand"].map(t => {
+      <div style={{ display: "flex", gap: 6, marginTop: 12, flexWrap: "wrap" }}>
+        {["spot", "fallback", "on-demand", "warm-spare"].map(t => {
           const count = nodes.filter(n => n.type === t).length;
+          const label = t === "warm-spare" ? "Warm Spare" : t.charAt(0).toUpperCase() + t.slice(1);
           return (
             <div key={t} style={{
               display: "flex", alignItems: "center", gap: 6,
@@ -547,7 +580,7 @@ const NodeTreemap = ({ nodes }) => {
               background: typeBg[t], border: `1px solid ${typeColor[t]}30`,
             }}>
               <div style={{ width: 7, height: 7, borderRadius: "50%", background: typeColor[t] }} />
-              <span style={{ fontSize: 11, fontWeight: 600, color: typeColor[t], textTransform: "capitalize" }}>{t}</span>
+              <span style={{ fontSize: 11, fontWeight: 600, color: typeColor[t] }}>{label}</span>
               <span style={{ fontSize: 11, color: C.muted }}>{count} nodes</span>
             </div>
           );
@@ -677,8 +710,71 @@ const SectionHeader = ({ children }) => (
   }}>{children}</div>
 );
 
-const ClusterDetail = ({ cluster }) => {
+const ClusterDetail = ({ cluster, onClose }) => {
   const [activeTab, setActiveTab] = useState('Overview');
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [showDisconnectModal, setShowDisconnectModal] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [karpenterInstallStatus, setKarpenterInstallStatus] = useState(undefined); // undefined=loading, obj=loaded
+  const [karpenterActionLoading, setKarpenterActionLoading] = useState(false);
+  const karpenterPollRef = React.useRef(null);
+
+  const fetchKarpenterStatus = React.useCallback(() => {
+    return karpenterAPI.getInstallStatus(cluster.id)
+      .then(res => { setKarpenterInstallStatus(res.data); return res.data; })
+      .catch(() => { setKarpenterInstallStatus(null); return null; });
+  }, [cluster.id]);
+
+  // Poll every 4s while an action is in-progress (PENDING/PICKED_UP), stop otherwise
+  useEffect(() => {
+    const agentOn = cluster.agent_installed === true || cluster.agent_installed === 'Y';
+    if (!agentOn) return;
+
+    fetchKarpenterStatus();
+
+    karpenterPollRef.current = setInterval(() => {
+      fetchKarpenterStatus().then(data => {
+        // Stop polling once action is no longer in-progress
+        const inProgress = data?.last_action?.status === 'PENDING' || data?.last_action?.status === 'PICKED_UP';
+        if (!inProgress && karpenterPollRef.current) {
+          clearInterval(karpenterPollRef.current);
+          karpenterPollRef.current = null;
+        }
+      });
+    }, 4000);
+
+    return () => {
+      if (karpenterPollRef.current) clearInterval(karpenterPollRef.current);
+    };
+  }, [cluster.id, cluster.agent_installed, fetchKarpenterStatus]);
+
+  const handleDeleteCluster = () => {
+    setDeleting(true);
+    // removeAgent: uninstalls K8s DaemonSet + resets cluster to DISCOVERED state (keeps in list as fresh)
+    clusterAPI.removeAgent(cluster.id)
+      .then(() => {
+        toast.success(`Agent removed. "${cluster.name}" is now ready for fresh installation.`);
+        setShowDeleteModal(false);
+        window.dispatchEvent(new Event('refresh-clusters'));
+        if (onClose) onClose();
+      })
+      .catch((err) => {
+        toast.error(`Failed: ${err.response?.data?.detail || err.message}`);
+        setDeleting(false);
+      });
+  };
+
+  const handleDisconnectAgent = () => {
+    toast.promise(clusterAPI.disconnectAgent(cluster.id), {
+      loading: 'Disconnecting agent...',
+      success: () => {
+        setShowDisconnectModal(false);
+        window.dispatchEvent(new Event('refresh-clusters'));
+        return 'Agent disconnected';
+      },
+      error: (err) => `Failed: ${err.response?.data?.detail || err.message}`
+    });
+  };
   // Top-level cluster cards should always mathematically reflect exactly what the used/total capacity displays
   const cpuPct = cluster.cpu.total > 0 ? Math.round((cluster.cpu.used / cluster.cpu.total) * 100) : 0;
   const memPct = cluster.memory.total > 0 ? Math.round((cluster.memory.used / cluster.memory.total) * 100) : 0;
@@ -766,18 +862,7 @@ const ClusterDetail = ({ cluster }) => {
           <div style={{ display: "flex", gap: 6, borderLeft: `1px solid ${C.border}`, paddingLeft: "12px" }}>
             {cluster.agent_installed === 'Y' && (
               <button
-                onClick={() => {
-                  if (window.confirm(`Are you sure you want to disconnect the agent from ${cluster.name}? This will stop data collection but preserve history.`)) {
-                    toast.promise(clusterAPI.disconnectAgent(cluster.id), {
-                      loading: 'Disconnecting agent...',
-                      success: () => {
-                        window.dispatchEvent(new Event('refresh-clusters'));
-                        return 'Agent disconnected';
-                      },
-                      error: (err) => `Failed: ${err.response?.data?.detail || err.message}`
-                    });
-                  }
-                }}
+                onClick={() => setShowDisconnectModal(true)}
                 style={{
                   padding: "7px 14px", borderRadius: 9,
                   background: "#fffbeb", border: "1px solid #fcd34d",
@@ -787,18 +872,7 @@ const ClusterDetail = ({ cluster }) => {
               >Disconnect</button>
             )}
             <button
-              onClick={() => {
-                if (window.confirm(`Are you sure you want to completely remove ${cluster.name}? This will delete all history and uninstall the agent if present.`)) {
-                  toast.promise(clusterAPI.deleteCluster(cluster.id), {
-                    loading: 'Removing cluster...',
-                    success: () => {
-                      window.dispatchEvent(new Event('refresh-clusters'));
-                      return 'Cluster removed completely';
-                    },
-                    error: (err) => `Failed: ${err.response?.data?.detail || err.message}`
-                  });
-                }
-              }}
+              onClick={() => setShowDeleteModal(true)}
               style={{
                 padding: "7px 14px", borderRadius: 9,
                 background: "#fef2f2", border: "1px solid #fecaca",
@@ -876,7 +950,7 @@ const ClusterDetail = ({ cluster }) => {
             <div style={{ flex: 1 }}>
               <div style={{ fontSize: 12, fontWeight: 600, color: C.text }}>Agent Not Installed</div>
               <div style={{ fontSize: 11, color: C.subtle, marginTop: 2 }}>
-                Install the agent to unlock real-time metrics, AtharvaAI, and savings optimization.
+                Install the agent to unlock real-time metrics, ASCP.ai, and savings optimization.
               </div>
             </div>
             <button
@@ -1019,7 +1093,7 @@ const ClusterDetail = ({ cluster }) => {
             borderLeft: `3px solid ${cluster.atharva.active ? C.purple : C.border}`,
             borderRadius: 10, padding: "12px 14px",
           }}>
-            <div style={{ fontSize: 11, fontWeight: 600, color: C.muted, marginBottom: 8 }}>AtharvaAI</div>
+            <div style={{ fontSize: 11, fontWeight: 600, color: C.muted, marginBottom: 8 }}>ASCP.ai</div>
             <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
               <div style={{ width: 6, height: 6, borderRadius: "50%", background: cluster.atharva.active ? C.purple : C.subtle }} />
               <span style={{ fontSize: 11, color: C.muted }}>{cluster.atharva.active ? "Active" : "Inactive"}</span>
@@ -1109,6 +1183,89 @@ const ClusterDetail = ({ cluster }) => {
           }}>Manage Policies →</button>
         </div>
 
+        {/* ── Karpenter Management — only when agent connected ── */}
+        {(cluster.agent_installed === true || cluster.agent_installed === 'Y') && (() => {
+          const ks = karpenterInstallStatus;
+          const lastAction = ks?.last_action;
+          const inProgress = lastAction?.status === 'PENDING' || lastAction?.status === 'PICKED_UP';
+          const failed = lastAction?.status === 'FAILED';
+          const installed = ks?.karpenter_installed === true;
+          const checking = ks === undefined;
+
+          // Badge colours
+          let badgeBg = "#f3f4f6", badgeColor = C.subtle, badgeBorder = C.border, badgeText = "Not Installed";
+          let statusDesc = "Not installed — required to apply right-sizing optimizations";
+          if (checking) { badgeText = "Checking..."; statusDesc = "Fetching status..."; }
+          else if (installed) { badgeBg = C.greenBg; badgeColor = C.green; badgeBorder = C.greenBorder; badgeText = "Installed"; statusDesc = "NodePool provisioning active"; }
+          else if (inProgress) { badgeBg = C.amberBg; badgeColor = C.amber; badgeBorder = C.amberBorder; badgeText = lastAction?.type === 'INSTALL_KARPENTER' ? "Installing…" : "Uninstalling…"; statusDesc = lastAction?.type === 'INSTALL_KARPENTER' ? "Installing Karpenter — this takes ~3-5 minutes" : "Uninstalling Karpenter — ~2 minutes"; }
+          else if (failed) { badgeBg = "#fef2f2"; badgeColor = "#dc2626"; badgeBorder = "#fecaca"; badgeText = "Failed"; statusDesc = `Last ${lastAction?.type === 'INSTALL_KARPENTER' ? 'install' : 'uninstall'} failed`; }
+
+          return (
+            <div style={{ marginTop: 12, background: C.surface, border: `1px solid ${failed ? "#fecaca" : C.border}`, borderRadius: 10, padding: "14px 16px" }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: C.muted, letterSpacing: ".06em", textTransform: "uppercase", marginBottom: 10 }}>Karpenter Management</div>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: failed && lastAction?.error_message ? 8 : 12 }}>
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: C.text }}>Status</div>
+                  <div style={{ fontSize: 11, color: C.subtle, marginTop: 2 }}>{statusDesc}</div>
+                </div>
+                <div style={{ padding: "3px 10px", borderRadius: 20, fontSize: 11, fontWeight: 600, background: badgeBg, color: badgeColor, border: `1px solid ${badgeBorder}` }}>
+                  {inProgress ? <span>⟳ {badgeText}</span> : badgeText}
+                </div>
+              </div>
+
+              {/* Error message box */}
+              {failed && lastAction?.error_message && (
+                <div style={{ marginBottom: 12, padding: "8px 10px", borderRadius: 7, background: "#fef2f2", border: "1px solid #fecaca", fontSize: 11, color: "#b91c1c", fontFamily: "monospace", whiteSpace: "pre-wrap", wordBreak: "break-word", maxHeight: 80, overflowY: "auto" }}>
+                  {lastAction.error_message}
+                </div>
+              )}
+
+              {/* Action buttons */}
+              {!installed ? (
+                <button
+                  disabled={karpenterActionLoading || inProgress}
+                  onClick={async () => {
+                    if (!window.confirm(`Install Karpenter on cluster "${cluster.name}"?\n\nPrerequisites (run karpenter-prerequisites.yaml CloudFormation stack first):\n• KarpenterNodeRole-${cluster.name} IAM role must exist\n• KarpenterNodeInstanceProfile-${cluster.name} instance profile must exist\n• KarpenterControllerRole-${cluster.name} IRSA role must exist\n• Cluster OIDC provider must be configured\n• aws-auth ConfigMap must include the node role\n\nDownload the template from: Settings → CloudFormation Templates\n\nThis will take ~3-5 minutes.`)) return;
+                    setKarpenterActionLoading(true);
+                    try {
+                      await karpenterAPI.installKarpenter(cluster.id);
+                      toast.success("Karpenter install queued. Status will update automatically.");
+                      fetchKarpenterStatus();
+                    } catch (e) {
+                      toast.error('Install failed: ' + (e.response?.data?.detail || e.message));
+                    } finally {
+                      setKarpenterActionLoading(false);
+                    }
+                  }}
+                  style={{ padding: "7px 16px", borderRadius: 7, border: "none", background: (karpenterActionLoading || inProgress) ? C.border : (failed ? "#dc2626" : C.green), color: "#fff", fontSize: 12, fontWeight: 600, cursor: (karpenterActionLoading || inProgress) ? "not-allowed" : "pointer" }}
+                >
+                  {karpenterActionLoading ? 'Queuing...' : inProgress ? 'Installing...' : failed ? '↺ Retry Install' : '⬇ Install Karpenter'}
+                </button>
+              ) : (
+                <button
+                  disabled={karpenterActionLoading || inProgress}
+                  onClick={async () => {
+                    if (!window.confirm('Uninstall Karpenter from this cluster?\n\nThis will remove the Karpenter controller. Existing nodes will NOT be terminated immediately, but Karpenter will stop managing provisioning.\n\nThis takes ~2 minutes.')) return;
+                    setKarpenterActionLoading(true);
+                    try {
+                      await karpenterAPI.uninstallKarpenter(cluster.id);
+                      toast.success("Karpenter uninstall queued. Status will update automatically.");
+                      fetchKarpenterStatus();
+                    } catch (e) {
+                      toast.error('Uninstall failed: ' + (e.response?.data?.detail || e.message));
+                    } finally {
+                      setKarpenterActionLoading(false);
+                    }
+                  }}
+                  style={{ padding: "7px 16px", borderRadius: 7, border: `1px solid ${C.red}`, background: "transparent", color: C.red, fontSize: 12, fontWeight: 600, cursor: (karpenterActionLoading || inProgress) ? "not-allowed" : "pointer" }}
+                >
+                  {karpenterActionLoading ? 'Queuing...' : inProgress ? 'Uninstalling...' : 'Uninstall Karpenter'}
+                </button>
+              )}
+            </div>
+          );
+        })()}
+
         {/* ── Node Visualization ── */}
         <NodeTreemap nodes={cluster.nodeList} />
 
@@ -1130,94 +1287,201 @@ const ClusterDetail = ({ cluster }) => {
         <OptimizationSettingsTab cluster={cluster} />
       )}
 
+      {/* ── Delete Cluster Confirmation Modal ── */}
+      {showDeleteModal && (
+        <div style={{
+          position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)",
+          display: "flex", alignItems: "center", justifyContent: "center", zIndex: 9999,
+        }}>
+          <div style={{
+            background: "#fff", borderRadius: 14, padding: "28px 32px",
+            maxWidth: 420, width: "100%", margin: "0 16px", boxShadow: "0 20px 60px rgba(0,0,0,0.25)",
+          }}>
+            <div style={{ fontSize: 17, fontWeight: 700, color: "#dc2626", marginBottom: 10 }}>Remove Agent?</div>
+            <div style={{ fontSize: 13, color: "#374151", marginBottom: 8 }}>
+              This will uninstall the agent from <strong>{cluster.name}</strong> and clear all collected data:
+            </div>
+            <ul style={{ fontSize: 13, color: "#4b5563", marginBottom: 16, paddingLeft: 20, lineHeight: 1.8, background: "#fef2f2", borderRadius: 8, padding: "10px 20px" }}>
+              <li>All pod metrics and CPU/memory history</li>
+              <li>All instance records and rebalancing history</li>
+              <li>Agent DaemonSet removed from your cluster</li>
+            </ul>
+            <div style={{ fontSize: 13, fontWeight: 500, color: "#374151", marginBottom: 20 }}>The cluster will remain registered and can have the agent reinstalled at any time.</div>
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+              <button
+                onClick={() => setShowDeleteModal(false)}
+                disabled={deleting}
+                style={{ padding: "8px 18px", borderRadius: 8, border: "1px solid #d1d5db", background: "#fff", fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}
+              >Cancel</button>
+              <button
+                onClick={handleDeleteCluster}
+                disabled={deleting}
+                style={{ padding: "8px 18px", borderRadius: 8, border: "none", background: "#dc2626", color: "#fff", fontSize: 13, fontWeight: 600, cursor: deleting ? "not-allowed" : "pointer", fontFamily: "inherit", opacity: deleting ? 0.7 : 1 }}
+              >{deleting ? "Removing..." : "Remove Agent"}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Disconnect Agent Confirmation Modal ── */}
+      {showDisconnectModal && (
+        <div style={{
+          position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)",
+          display: "flex", alignItems: "center", justifyContent: "center", zIndex: 9999,
+        }}>
+          <div style={{
+            background: "#fff", borderRadius: 14, padding: "28px 32px",
+            maxWidth: 400, width: "100%", margin: "0 16px", boxShadow: "0 20px 60px rgba(0,0,0,0.25)",
+          }}>
+            <div style={{ fontSize: 17, fontWeight: 700, color: "#b45309", marginBottom: 10 }}>Disconnect Agent?</div>
+            <div style={{ fontSize: 13, color: "#374151", marginBottom: 16, lineHeight: 1.7 }}>
+              This will stop data collection on <strong>{cluster.name}</strong> but preserve all existing history and metrics.
+            </div>
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+              <button
+                onClick={() => setShowDisconnectModal(false)}
+                style={{ padding: "8px 18px", borderRadius: 8, border: "1px solid #d1d5db", background: "#fff", fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}
+              >Cancel</button>
+              <button
+                onClick={handleDisconnectAgent}
+                style={{ padding: "8px 18px", borderRadius: 8, border: "none", background: "#d97706", color: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}
+              >Disconnect Agent</button>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 };
 
-const NoAgentDetail = ({ cluster }) => (
-  <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 40, textAlign: "center" }}>
-    <div style={{ fontSize: 40, marginBottom: 16, opacity: 0.25 }}>⬡</div>
-    <div style={{ fontSize: 16, fontWeight: 700, color: C.text, marginBottom: 6 }}>{cluster.name}</div>
-    <div style={{ fontSize: 13, color: C.muted, maxWidth: 340, lineHeight: 1.7, marginBottom: 24 }}>
-      This cluster doesn't have the Spot Optimizer agent installed. Install it to unlock real-time metrics, AtharvaAI ML optimization, and savings tracking.
-    </div>
-    <div style={{ display: "flex", gap: 8 }}>
-      <button
-        onClick={(e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          console.log('🔘 Install Agent button clicked from NoAgentDetail!', cluster.id);
+const NoAgentDetail = ({ cluster, onClose }) => {
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
-          toast.loading(`Installing agent on ${cluster.name}...`, { id: 'inject' });
+  const handleDeleteCluster = () => {
+    setDeleting(true);
+    clusterAPI.deleteCluster(cluster.id)
+      .then(() => {
+        toast.success(`Cluster "${cluster.name}" removed. Triggering re-discovery...`);
+        setShowDeleteModal(false);
+        if (onClose) onClose();
+        // Trigger background re-discovery so the cluster reappears as fresh
+        clusterAPI.discover().catch(() => {});
+        // Refresh list after a short delay to pick up re-discovered cluster
+        setTimeout(() => window.dispatchEvent(new Event('refresh-clusters')), 3000);
+        setTimeout(() => window.dispatchEvent(new Event('refresh-clusters')), 8000);
+      })
+      .catch((err) => {
+        toast.error(`Failed: ${err.response?.data?.detail || err.message}`);
+        setDeleting(false);
+      });
+  };
 
-          clusterAPI.autoInstallAgent(cluster.id)
-            .then((result) => {
-              console.log('✅ API response:', result);
-              toast.success(`Agent installation queued for ${cluster.name}. It will be active in ~30s.`, { id: 'inject', duration: 5000 });
-              setTimeout(() => window.dispatchEvent(new Event('refresh-clusters')), 8000);
-            })
-            .catch((error) => {
-              console.error('❌ Agent installation error:', error);
-              toast.error('Failed to install agent: ' + (error.response?.data?.detail || error.message), { id: 'inject' });
-            });
-        }}
-        style={{
+  return (
+    <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 40, textAlign: "center" }}>
+      <div style={{ fontSize: 40, marginBottom: 16, opacity: 0.25 }}>⬡</div>
+      <div style={{ fontSize: 16, fontWeight: 700, color: C.text, marginBottom: 6 }}>{cluster.name}</div>
+      <div style={{ fontSize: 13, color: C.muted, maxWidth: 340, lineHeight: 1.7, marginBottom: 24 }}>
+        This cluster doesn't have the Spot Optimizer agent installed. Install it to unlock real-time metrics, ASCP.ai ML optimization, and savings tracking.
+      </div>
+      <div style={{ display: "flex", gap: 8 }}>
+        <button
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            toast.loading(`Installing agent on ${cluster.name}...`, { id: 'inject' });
+            clusterAPI.autoInstallAgent(cluster.id)
+              .then(() => {
+                toast.success(`Agent installation queued for ${cluster.name}. It will be active in ~30s.`, { id: 'inject', duration: 5000 });
+                setTimeout(() => window.dispatchEvent(new Event('refresh-clusters')), 8000);
+              })
+              .catch((error) => {
+                toast.error('Failed to install agent: ' + (error.response?.data?.detail || error.message), { id: 'inject' });
+              });
+          }}
+          style={{
+            padding: "9px 20px", borderRadius: 10,
+            background: "linear-gradient(135deg, #2563eb, #4f46e5)",
+            border: "none", color: "#fff", fontSize: 13, fontWeight: 600,
+            cursor: "pointer", fontFamily: "inherit",
+            boxShadow: "0 2px 10px rgba(37,99,235,0.3)",
+            position: "relative", zIndex: 9999,
+          }}
+          type="button"
+        >Install Agent</button>
+        <button style={{
           padding: "9px 20px", borderRadius: 10,
-          background: "linear-gradient(135deg, #2563eb, #4f46e5)",
-          border: "none", color: "#fff", fontSize: 13, fontWeight: 600,
-          cursor: "pointer", fontFamily: "inherit",
-          boxShadow: "0 2px 10px rgba(37,99,235,0.3)",
-          position: "relative",
-          zIndex: 9999,
-        }}
-        type="button"
-      >Install Agent</button>
-      <button style={{
-        padding: "9px 20px", borderRadius: 10,
-        border: `1px solid ${C.border}`, background: C.surface,
-        color: C.muted, fontSize: 13, cursor: "pointer", fontFamily: "inherit",
-      }}>View Docs</button>
-      <button
-        onClick={() => {
-          if (window.confirm(`Are you sure you want to completely remove ${cluster.name}? This will delete all history.`)) {
-            toast.promise(clusterAPI.deleteCluster(cluster.id), {
-              loading: 'Removing cluster...',
-              success: () => {
-                window.dispatchEvent(new Event('refresh-clusters'));
-                return 'Cluster removed completely';
-              },
-              error: (err) => `Failed: ${err.response?.data?.detail || err.message}`
-            });
-          }
-        }}
-        style={{
-          padding: "9px 20px", borderRadius: 10,
-          background: "#fef2f2", border: "1px solid #fecaca",
-          color: "#dc2626", fontSize: 13, fontWeight: 600,
-          cursor: "pointer", fontFamily: "inherit",
-        }}
-      >Remove Cluster</button>
+          border: `1px solid ${C.border}`, background: C.surface,
+          color: C.muted, fontSize: 13, cursor: "pointer", fontFamily: "inherit",
+        }}>View Docs</button>
+        <button
+          onClick={() => setShowDeleteModal(true)}
+          style={{
+            padding: "9px 20px", borderRadius: 10,
+            background: "#fef2f2", border: "1px solid #fecaca",
+            color: "#dc2626", fontSize: 13, fontWeight: 600,
+            cursor: "pointer", fontFamily: "inherit",
+          }}
+        >Remove Cluster</button>
+      </div>
+      <div style={{ marginTop: 32, display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 10, width: "100%", maxWidth: 640 }}>
+        <MetricBox label="Region" value={cluster.region} />
+        <MetricBox label="K8s Version" value={cluster.k8sVersion} />
+        <MetricBox label="Total Nodes" value={cluster.nodes.total} />
+        <MetricBox label="Est. Cost" value={`$${cluster.cost.monthly}/mo`} sub="on-demand pricing" />
+        <MetricBox label="Est. Savings" value={`$${cluster.cost.potential || 0}/mo`} sub="potential" />
+      </div>
+
+      {showDeleteModal && (
+        <div style={{
+          position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)",
+          display: "flex", alignItems: "center", justifyContent: "center", zIndex: 9999,
+        }}>
+          <div style={{
+            background: "#fff", borderRadius: 14, padding: "28px 32px",
+            maxWidth: 420, width: "100%", margin: "0 16px", boxShadow: "0 20px 60px rgba(0,0,0,0.25)",
+          }}>
+            <div style={{ fontSize: 17, fontWeight: 700, color: "#dc2626", marginBottom: 10 }}>Remove Cluster?</div>
+            <div style={{ fontSize: 13, color: "#374151", marginBottom: 16, lineHeight: 1.7 }}>
+              Permanently delete <strong>{cluster.name}</strong> and all associated data? This cannot be undone.
+            </div>
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+              <button
+                onClick={() => setShowDeleteModal(false)}
+                disabled={deleting}
+                style={{ padding: "8px 18px", borderRadius: 8, border: "1px solid #d1d5db", background: "#fff", fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}
+              >Cancel</button>
+              <button
+                onClick={handleDeleteCluster}
+                disabled={deleting}
+                style={{ padding: "8px 18px", borderRadius: 8, border: "none", background: "#dc2626", color: "#fff", fontSize: 13, fontWeight: 600, cursor: deleting ? "not-allowed" : "pointer", fontFamily: "inherit", opacity: deleting ? 0.7 : 1 }}
+              >{deleting ? "Removing..." : "Remove Cluster"}</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
-    <div style={{ marginTop: 32, display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 10, width: "100%", maxWidth: 640 }}>
-      <MetricBox label="Region" value={cluster.region} />
-      <MetricBox label="K8s Version" value={cluster.k8sVersion} />
-      <MetricBox label="Total Nodes" value={cluster.nodes.total} />
-      <MetricBox label="Est. Cost" value={`$${cluster.cost.monthly}/mo`} sub="on-demand pricing" />
-      <MetricBox label="Est. Savings" value={`$${cluster.cost.potential || 0}/mo`} sub="potential" />
-    </div>
-  </div>
-);
+  );
+};
 
 // ─── MAIN COMPONENT ───────────────────────────────────────────────────────────
 export default function ClustersPage() {
   const { clusters, setClusters, setLoading, loading } = useClusterStore();
   const headerStore = useHeaderStore();
-  const [selected, setSelected] = useState(null);
+  // Persist selected cluster across page refreshes (survives F5 but clears on tab close)
+  const [selected, setSelected] = useState(() => sessionStorage.getItem('clusters_selected_id') || null);
+  const setSelectedAndPersist = React.useCallback((id) => {
+    if (id) sessionStorage.setItem('clusters_selected_id', id);
+    else sessionStorage.removeItem('clusters_selected_id');
+    setSelected(id);
+  }, []);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("All");
 
   const [refreshing, setRefreshing] = useState(false);
   const [nodeDetails, setNodeDetails] = useState({});
+  const [rightsizingData, setRightsizingData] = useState({});
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -1226,7 +1490,13 @@ export default function ClustersPage() {
       const newClusters = clusterRes.data.clusters || [];
       setClusters(newClusters);
       // Clear selected panel if the selected cluster was deleted
-      setSelected(prev => (prev && !newClusters.find(c => c.id === prev) ? null : prev));
+      setSelected(prev => {
+        if (prev && !newClusters.find(c => c.id === prev)) {
+          sessionStorage.removeItem('clusters_selected_id');
+          return null;
+        }
+        return prev;
+      });
     } catch (error) {
       toast.error('Failed to load clusters');
     } finally {
@@ -1245,6 +1515,30 @@ export default function ClustersPage() {
     return () => window.removeEventListener('refresh-clusters', handleRefresh);
   }, [fetchData, handleRefresh]);
 
+  // Fetch rightsizing recommendations for all clusters (background, non-blocking)
+  useEffect(() => {
+    if (clusters.length === 0) return;
+    Promise.allSettled(
+      clusters.map(c =>
+        karpenterAPI.getRecommendations(c.id)
+          .then(res => ({ id: c.id, recs: res.data?.recommendations || [] }))
+          .catch(() => ({ id: c.id, recs: [] }))
+      )
+    ).then(results => {
+      const rd = {};
+      results.forEach(r => {
+        if (r.status === 'fulfilled') {
+          const recs = r.value.recs;
+          rd[r.value.id] = {
+            overProvisioned: recs.length,
+            savingsPotential: Math.round(recs.reduce((s, rec) => s + (rec.potential_savings || 0), 0)),
+          };
+        }
+      });
+      setRightsizingData(rd);
+    });
+  }, [clusters]);
+
   // Map API clusters to UI expected format
   const mappedClusters = useMemo(() => {
     return clusters.map(c => {
@@ -1255,12 +1549,26 @@ export default function ClustersPage() {
       let mappedStatus = "no-agent";
 
       if (agentInstalled) {
-        // Check heartbeat freshness (last 2 mins)
+        // Three-tier heartbeat freshness check:
+        //   < 45s  → healthy (agent running normally)
+        //   45s–5m → warning (degraded / slow heartbeat)
+        //   > 5m   → offline (treat as no-agent; backend will auto-reset)
         if (c.last_heartbeat) {
           const lastHB = new Date(c.last_heartbeat);
-          const twoMinAgo = new Date(Date.now() - 2 * 60 * 1000);
-          agentHealthy = lastHB > twoMinAgo;
-          mappedStatus = agentHealthy ? "healthy" : "warning";
+          const now = Date.now();
+          const ageMs = now - lastHB.getTime();
+          if (ageMs < 45 * 1000) {
+            agentHealthy = true;
+            mappedStatus = "healthy";
+          } else if (ageMs < 5 * 60 * 1000) {
+            agentHealthy = false;
+            mappedStatus = "warning";
+          } else {
+            // >5 min with no heartbeat → agent is effectively offline
+            agentInstalled = false;
+            agentHealthy = false;
+            mappedStatus = "no-agent";
+          }
         } else {
           mappedStatus = "warning";
         }
@@ -1290,7 +1598,9 @@ export default function ClustersPage() {
           const util = Math.round(Math.max(node.cpu_utilization_pct, node.memory_utilization_pct));
           // Determine node type
           let nodeType = "spot";
-          if (node.lifecycle === "on-demand" || node.lifecycle === "on_demand") {
+          if (node._isWarmSpare) {
+            nodeType = "warm-spare";
+          } else if (node.lifecycle === "on-demand" || node.lifecycle === "on_demand") {
             nodeType = "on-demand";
           }
 
@@ -1355,31 +1665,53 @@ export default function ClustersPage() {
         atharva: { active: agentHealthy, realized: c.realized_savings_monthly || 0, potential: c.potential_savings_monthly || 0 },
         policies: { active: c.policy_count || 0, total: 5 },
         hibernation: { schedules: c.hibernation_schedules || 0, savedHrs: 0 },
-        rightsizing: { overProvisioned: 0, savingsPotential: 0 },
+        rightsizing: rightsizingData[c.id] || { overProvisioned: 0, savingsPotential: 0 },
         k8sVersion: c.version || "1.28",
         nodeGroups: c.node_pool_count || 2,
         nodeList,
         agent_installed: c.agent_installed // Pass through for banner check
       };
     });
-  }, [clusters, nodeDetails]);
+  }, [clusters, nodeDetails, rightsizingData]);
 
   // Fetch detailed nodes when a cluster is selected
   useEffect(() => {
     if (selected && !nodeDetails[selected]) {
       const selectedCluster = mappedClusters.find(c => c.id === selected);
       if (selectedCluster && selectedCluster.agentInstalled) {
-        // Only fetch if agent is installed
-        clusterAPI.getNodesDetailed(selected)
-          .then((res) => {
-            setNodeDetails(prev => ({
-              ...prev,
-              [selected]: res.data
-            }));
-          })
-          .catch((err) => {
-            console.error('Failed to fetch node details:', err);
-          });
+        Promise.all([
+          clusterAPI.getNodesDetailed(selected),
+          clusterAPI.getWarmSpareStatus(selected).catch(() => null),
+        ]).then(([nodesRes, subRes]) => {
+          const data = { ...nodesRes.data };
+          // Only inject warm spare node when it is ACTUALLY spinning up (PREWARMING) or
+          // already running and ready to swap (ACTIVE). READY means a candidate pool was
+          // pre-selected by DryRun — no actual EC2 instance is running yet, so don't show it.
+          const sub = subRes?.data;
+          if (sub && sub.is_warm_spare && sub.state && ['PREWARMING', 'ACTIVE'].includes(sub.state)) {
+            const spareNode = {
+              instance_id: 'warm-spare',
+              node_name: 'Warm Spare',
+              instance_type: sub.spare_instance_type || 'spot',
+              lifecycle: 'spot',
+              classification: 'WARM_SPARE',
+              cpu_utilization_pct: 0,
+              memory_utilization_pct: 0,
+              cpu_capacity_cores: sub.target_vcpu || 2,
+              memory_capacity_gb: sub.target_memory_gb || 4,
+              pod_count: 0,
+              status: sub.state === 'READY' ? 'ready' : 'prewarming',
+              _isWarmSpare: true,
+              _spareState: sub.state,
+              _spareAz: sub.spare_az,
+              _sparePrice: sub.spot_price_hourly,
+            };
+            data.nodes = [...(data.nodes || []), spareNode];
+          }
+          setNodeDetails(prev => ({ ...prev, [selected]: data }));
+        }).catch((err) => {
+          console.error('Failed to fetch node details:', err);
+        });
       }
     }
   }, [selected, mappedClusters]);
@@ -1409,20 +1741,21 @@ export default function ClustersPage() {
 
   const handleRefreshDiscovery = async () => {
     setRefreshing(true);
-    toast.loading('Starting discovery scan...', { id: 'discovery' });
+    toast.loading('Scanning all regions for clusters...', { id: 'discovery' });
     try {
       await clusterAPI.discover();
-      toast.loading('Scanning AWS accounts for clusters...', { id: 'discovery' });
 
-      // Poll for up to 15 seconds to see if the table count increases
+      // Poll every 2s for up to 30s — discovery scans 14 regions so takes a bit longer
       let foundNew = false;
       const initialCount = clusters.length;
 
       for (let i = 0; i < 15; i++) {
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        await new Promise(resolve => setTimeout(resolve, 2000));
         try {
           const pollRes = await clusterAPI.list();
-          if (pollRes.data && pollRes.data.length > initialCount) {
+          // Fix: response is { clusters: [...], total: N } — check .clusters.length
+          const newCount = pollRes.data?.clusters?.length ?? pollRes.data?.length ?? 0;
+          if (newCount > initialCount) {
             foundNew = true;
             break;
           }
@@ -1431,15 +1764,15 @@ export default function ClustersPage() {
         }
       }
 
-      await fetchData(); // Final sync
+      await fetchData(); // Final sync — always refresh after discovery
 
       if (foundNew) {
         toast.success('New clusters discovered!', { id: 'discovery' });
       } else {
-        toast.success('Discovery scan completed (No new clusters)', { id: 'discovery' });
+        toast.success('Discovery scan complete', { id: 'discovery' });
       }
     } catch (error) {
-      toast.error('Failed to start discovery', { id: 'discovery' });
+      toast.error('Failed to start discovery: ' + (error.response?.data?.detail || error.message), { id: 'discovery' });
     } finally {
       setRefreshing(false);
     }
@@ -1562,7 +1895,7 @@ export default function ClustersPage() {
                 key={c.id}
                 cluster={c}
                 selected={selected === c.id}
-                onClick={() => setSelected(c.id)}
+                onClick={() => setSelectedAndPersist(c.id)}
               />
             ))}
             {filtered.length === 0 && (
@@ -1575,8 +1908,8 @@ export default function ClustersPage() {
         <div style={{ flex: 1, overflowY: "auto", background: C.bg }}>
           {cluster ? (
             cluster.agentInstalled
-              ? <ClusterDetail cluster={cluster} />
-              : <NoAgentDetail cluster={cluster} />
+              ? <ClusterDetail cluster={cluster} onClose={() => setSelectedAndPersist(null)} />
+              : <NoAgentDetail cluster={cluster} onClose={() => setSelectedAndPersist(null)} />
           ) : (
             <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: C.muted, fontSize: 14 }}>
               No cluster selected. Connect your AWS Account to generate clusters.

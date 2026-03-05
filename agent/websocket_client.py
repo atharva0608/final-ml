@@ -60,6 +60,9 @@ class WebSocketClient:
         self.message_handlers = {}
         self.default_handler = None
 
+        # Reference to actuator for executing commands received via WebSocket
+        self.actuator = None
+
         # Message buffer for when disconnected
         self.message_buffer = []
         self.max_buffer_size = 1000
@@ -87,19 +90,34 @@ class WebSocketClient:
         self.default_handler = handler
         logger.info("Set default message handler")
 
+    def set_actuator(self, actuator):
+        """
+        Wire in the ActionActuator so the WebSocket handler can execute commands.
+        Must be called before run().
+        """
+        self.actuator = actuator
+        logger.info("ActionActuator wired into WebSocketClient")
+
     async def connect(self):
         """
         Establish WebSocket connection to backend.
+        Backend endpoint: /ws/cluster/{cluster_id}?agent_id={agent_id}
         """
-        # Build connection URL with authentication
-        url = f"{self.backend_ws_url}?cluster_id={self.cluster_id}&agent_id={self.agent_id}"
+        # Normalize base URL: strip trailing /ws if present, then append /ws/cluster/{id}
+        base = self.backend_ws_url.rstrip('/')
+        if f"/ws/cluster/{self.cluster_id}" in base:
+            url = f"{base}?agent_id={self.agent_id}"
+        else:
+            if base.endswith('/ws'):
+                base = base[:-3]  # strip /ws
+            url = f"{base}/ws/cluster/{self.cluster_id}?agent_id={self.agent_id}"
 
         headers = {
             'Authorization': f'Bearer {self.api_key}'
         }
 
         try:
-            logger.info(f"Connecting to WebSocket: {self.backend_ws_url}")
+            logger.info(f"Connecting to WebSocket: {url}")
             self.websocket = await websockets.connect(
                 url,
                 extra_headers=headers,
@@ -241,21 +259,59 @@ class WebSocketClient:
         except Exception as e:
             logger.error(f"Error in message handler: {e}", exc_info=True)
 
-    async def handle_action_command(self, message: Dict[str, Any]):
+    async def handle_command(self, message: Dict[str, Any]):
         """
-        Handle action command from backend.
+        Handle a command pushed by the backend.
 
-        Args:
-            message: Message containing action details
+        Backend format:
+          {"type": "command", "action_id": "...", "action_type": "cordon_node", "payload": {...}}
+
+        Executes the action via actuator (inside the cluster), then sends result back:
+          {"type": "action_result", "action_id": "...", "success": true/false, "result": {...}}
         """
-        logger.info(f"Received action command: {message.get('action')}")
+        action_id = message.get('action_id')
+        action_type = message.get('action_type', '')
+        payload = message.get('payload', {})
 
-        # Send acknowledgment
+        logger.info(f"[ws] Received command: action_id={action_id}, type={action_type}")
+
+        if not action_id or not action_type:
+            logger.warning(f"[ws] Malformed command (missing action_id or action_type): {message}")
+            return
+
+        if not self.actuator:
+            logger.error("[ws] No actuator wired — cannot execute command. Call set_actuator() first.")
+            await self.send_message({
+                'type': 'action_result',
+                'action_id': action_id,
+                'success': False,
+                'error': 'Agent actuator not initialized',
+            })
+            return
+
+        # Execute synchronously in a thread pool to avoid blocking the async loop
+        loop = asyncio.get_event_loop()
+        try:
+            result = await loop.run_in_executor(
+                None, self.actuator.execute_action_v2, action_type, payload
+            )
+        except Exception as e:
+            result = {'success': False, 'message': str(e)}
+            logger.error(f"[ws] Exception executing {action_type}: {e}", exc_info=True)
+
+        # Report result back to backend via WebSocket
         await self.send_message({
-            'type': 'action_ack',
-            'action_id': message.get('action_id'),
-            'status': 'received'
+            'type': 'action_result',
+            'action_id': action_id,
+            'success': result.get('success', False),
+            'result': result,
+            'error': result.get('message') if not result.get('success') else None,
         })
+        logger.info(f"[ws] Command {action_id} ({action_type}) done: success={result.get('success')}")
+
+    async def handle_action_command(self, message: Dict[str, Any]):
+        """Legacy handler kept for backward compatibility — delegates to handle_command."""
+        await self.handle_command(message)
 
     async def handle_config_update(self, message: Dict[str, Any]):
         """
@@ -347,7 +403,8 @@ class WebSocketClient:
         logger.info("Starting WebSocket client")
 
         # Register built-in handlers
-        self.register_handler('action_command', self.handle_action_command)
+        self.register_handler('command', self.handle_command)           # v2: backend pushes commands
+        self.register_handler('action_command', self.handle_action_command)  # v1: legacy compat
         self.register_handler('config_update', self.handle_config_update)
         self.register_handler('ping', self.handle_ping)
 

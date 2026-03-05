@@ -81,7 +81,7 @@ export default function MembersTab() {
             if (inviteTeam) {
                 await teamAPI.invite(inviteTeam, inviteEmail, inviteRole, inviteName);
             } else {
-                await organizationAPI.inviteMember(inviteEmail, inviteRole, 'FULL_ACCESS');
+                await organizationAPI.inviteMember(inviteEmail, inviteRole, 'FULL');
             }
 
             toast.success(`Invitation sent to ${inviteEmail}`);

@@ -10,6 +10,7 @@ from typing import List
 from backend.models.base import get_db
 from backend.models.user import User
 from backend.models.cluster import Cluster
+from backend.models.account import Account
 from backend.services.cluster_service import ClusterService
 from backend.core.dependencies import get_current_user
 
@@ -183,16 +184,60 @@ def toggle_auto_rebalance(
 def delete_cluster(
     cluster_id: str,
     current_user: User = Depends(get_current_user),
-    service: ClusterService = Depends(get_cluster_service)
+    service: ClusterService = Depends(get_cluster_service),
+    db: Session = Depends(get_db)
 ):
     """
-    Delete a cluster (must resolve active instances first)
+    Delete a cluster and clean up all associated AWS + Kubernetes resources.
+    Cleanup is best-effort — DB row is deleted even if AWS cleanup partially fails.
     """
+    from backend.services.cluster_cleanup_service import ClusterCleanupService
+
+    # Load cluster before deletion so we have name/region for cleanup
+    cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+    if not cluster:
+        return {"status": "success", "message": "Cluster already deleted"}
+
+    cleanup_results = {}
+    try:
+        account = db.query(Account).filter(Account.id == cluster.account_id).first()
+        if account and account.role_arn:
+            from backend.services.agent_injector import AgentInjectorService
+            _inj = AgentInjectorService(db)
+            try:
+                # Use existing _assume_role to get temporary credentials for cleanup
+                _creds = _inj._assume_role(
+                    role_arn=account.role_arn,
+                    external_id=account.external_id or "",
+                    region=cluster.region or "ap-south-1",
+                )
+                import boto3 as _boto3
+                boto_session = _boto3.Session(
+                    aws_access_key_id=_creds["access_key"],
+                    aws_secret_access_key=_creds["secret_key"],
+                    aws_session_token=_creds.get("session_token"),
+                    region_name=cluster.region or "ap-south-1",
+                )
+                k8s_reachable = cluster.agent_installed == "Y"
+                cleanup_svc = ClusterCleanupService()
+                cleanup_results = cleanup_svc.cleanup_cluster(
+                    cluster=cluster,
+                    account=account,
+                    boto_session=boto_session,
+                    db=db,
+                    k8s_reachable=k8s_reachable,
+                )
+                logger.info(f"Cluster {cluster_id} AWS/K8s cleanup: {cleanup_results}")
+            except Exception as cleanup_err:
+                logger.warning(f"Cluster {cluster_id} cleanup partial failure (non-blocking): {cleanup_err}")
+    except Exception as e:
+        logger.warning(f"Cluster {cluster_id} cleanup skipped — no account credentials: {e}")
+
+    # Delete DB row
     try:
         service.delete_cluster(cluster_id, current_user.id)
-        return {"status": "success", "message": "Cluster deleted"}
-    except ResourceNotFoundError as e:
-        # Idempotent behaviour: if it's already deleted, return success
+        return {"status": "success", "message": "Cluster deleted", "cleanup": cleanup_results}
+    except ResourceNotFoundError:
         return {"status": "success", "message": "Cluster already deleted"}
     except ValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -306,27 +351,83 @@ def request_fallback_node(
 ):
     """
     Handle Spot Interruption Fallback Request.
-    Triggered by Agent when a Spot node is about to be terminated.
+
+    Triggered by the Agent when it receives a spot termination notice (2-minute warning)
+    for a node in this cluster.  Immediately switches the Karpenter NodePool to on-demand
+    so any replacement nodes provisioned by Karpenter use on-demand capacity instead of
+    continuing to target the same interrupted spot pool.
+
+    Payload fields:
+        node_name (str):          K8s node name of the interrupting node
+        reason    (str):          e.g. "spot_interruption" | "rebalance_notice"
+        instance_type (str, opt): EC2 instance type that was interrupted
+        az        (str, opt):     AZ of the interrupting node
     """
-    from backend.models.instance import Instance, InstanceLifecycle
+    from backend.services.karpenter_service import KarpenterService
+    from backend.models.cluster import Cluster
+    from backend.models.node_template import NodeTemplate
     import logging
     logger = logging.getLogger("api")
 
-    node_name = payload.get('node_name')
-    reason = payload.get('reason')
+    node_name     = payload.get("node_name")
+    reason        = payload.get("reason", "spot_interruption")
+    instance_type = payload.get("instance_type")
+    az            = payload.get("az")
 
-    logger.critical(f"[FALLBACK] Received fallback request for node {node_name} in cluster {cluster_id}. Reason: {reason}")
+    logger.critical(
+        f"[FALLBACK] Spot interruption received — cluster={cluster_id} "
+        f"node={node_name} instance={instance_type} az={az} reason={reason}"
+    )
 
-    # 1. Provide Immediate Safety: Launch On-Demand Replacement
-    # In a real implementation, this would call EC2 RunInstances or modify ASG
-    # For now, we simulate this and tag the intent for the Reversion cycle
+    try:
+        cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+        if not cluster:
+            raise HTTPException(status_code=404, detail="Cluster not found")
 
-    # Check if we assume it's successful
-    logger.info(f"[FALLBACK] Launching emergency On-Demand replacement for {node_name}")
+        # Fetch the node template to get the allowed instance types and AZs
+        # (KarpenterService.switch_to_ondemand needs them to build the NodePool spec)
+        template = None
+        if cluster.node_template_id:
+            template = db.query(NodeTemplate).filter(
+                NodeTemplate.id == cluster.node_template_id
+            ).first()
 
-    # TODO: Call cloud_provider.launch_instance(type='on-demand', tags={'spot-optimizer/fallback': 'true'})
+        template_instance_types = (
+            template.instance_types if template and template.instance_types
+            else ["m5.large", "m5.xlarge", "m6i.large", "m6i.xlarge", "c5.large"]
+        )
+        template_azs = (
+            template.availability_zones if template and getattr(template, "availability_zones", None)
+            else None
+        )
 
-    return {"status": "success", "message": "Fallback initiated", "action": "LAUNCH_ON_DEMAND"}
+        karpenter_svc = KarpenterService(db)
+        result = karpenter_svc.switch_to_ondemand(
+            cluster_id=cluster_id,
+            template_instance_types=template_instance_types,
+            template_azs=template_azs,
+            nodepool_name="default",
+        )
+
+        logger.info(f"[FALLBACK] switch_to_ondemand result: {result}")
+        return {
+            "status":  "success",
+            "message": "NodePool switched to on-demand — Karpenter will provision OD replacement",
+            "action":  "SWITCH_NODEPOOL_TO_ONDEMAND",
+            "node":    node_name,
+            "result":  result,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[FALLBACK] Failed to switch to on-demand for cluster {cluster_id}: {e}", exc_info=True)
+        # Return success with degraded message so the agent doesn't retry in a loop
+        return {
+            "status":  "degraded",
+            "message": f"Fallback attempted but NodePool switch failed: {str(e)[:200]}",
+            "action":  "LAUNCH_ON_DEMAND",
+        }
 
 @router.get("/{cluster_id}/utilization")
 def get_cluster_utilization(
@@ -455,6 +556,47 @@ def remove_agent(
     if not cluster:
         raise HTTPException(status_code=404, detail="Cluster not found")
 
+    # ── AWS CLEANUP: delete all Karpenter AWS resources created by platform ──
+    # Runs before Kubernetes uninstall so IAM roles aren't deleted while Karpenter is still running.
+    _acct = getattr(cluster, 'account', None)
+    _aws_role = cluster.aws_role_arn or (_acct.role_arn if _acct else "")
+    if _aws_role:
+        try:
+            from backend.services.agent_injector import AgentInjectorService as _Inj
+            _inj = _Inj(db)
+            _ext = cluster.aws_external_id or (_acct.external_id if _acct else "")
+            _rgn = cluster.region or "ap-south-1"
+            _creds = _inj._assume_role(role_arn=_aws_role, external_id=_ext or "", region=_rgn)
+            if _creds:
+                _result = _inj.delete_all_cluster_karpenter_resources(
+                    cluster_name=cluster.name, region=_rgn, credentials=_creds)
+                logger.info(
+                    f"[remove_agent] AWS cleanup for {cluster.name}: "
+                    f"{len(_result.get('deleted', []))} deleted, "
+                    f"{len(_result.get('errors', []))} warnings"
+                )
+        except Exception as _aws_err:
+            logger.warning(
+                f"[remove_agent] AWS cleanup failed for {cluster.name} (non-fatal): {_aws_err}")
+
+    # Attempt to uninstall DaemonSet from the actual Kubernetes cluster
+    if cluster.endpoint and cluster.ca_data and _acct:
+        try:
+            from backend.services.agent_injector import AgentInjectorService
+            injector = AgentInjectorService(db)
+            uninstall_result = injector.uninstall_agent(
+                cluster_name=cluster.name,
+                cluster_endpoint=cluster.endpoint,
+                cluster_ca_data=cluster.ca_data,
+                role_arn=_acct.role_arn,
+                external_id=_acct.external_id,
+                region=cluster.region or "us-east-1"
+            )
+            logger.info(f"K8s agent uninstall for cluster {cluster_id}: {uninstall_result}")
+        except Exception as uninstall_err:
+            # Log but don't abort — still clean up DB state so UI reflects removal
+            logger.warning(f"K8s uninstall failed for cluster {cluster_id}, continuing with DB cleanup: {uninstall_err}")
+
     # Count records being deleted for the response
     pod_metrics_count = db.query(PodMetric).filter(PodMetric.cluster_id == cluster_id).count()
     instance_count = db.query(Instance).filter(Instance.cluster_id == cluster_id).count()
@@ -558,29 +700,33 @@ def update_cluster_optimization_settings(
     if not cluster:
         raise HTTPException(status_code=404, detail="Cluster not found")
         
-    # Automation Controls
-    if not cluster.optimization_settings:
-        cluster.optimization_settings = ClusterOptimizationSettings(cluster_id=cluster_id)
-    for k, v in settings.automation_controls.model_dump().items():
-        setattr(cluster.optimization_settings, k, v)
-        
+    # Automation Controls (partial update — only applied when section is present)
+    if settings.automation_controls is not None:
+        if not cluster.optimization_settings:
+            cluster.optimization_settings = ClusterOptimizationSettings(cluster_id=cluster_id)
+        for k, v in settings.automation_controls.model_dump().items():
+            setattr(cluster.optimization_settings, k, v)
+
     # Optimization Strategy
-    if not cluster.optimization_strategy_profile:
-        cluster.optimization_strategy_profile = OptimizationStrategy(cluster_id=cluster_id)
-    for k, v in settings.optimization_strategy.model_dump().items():
-        setattr(cluster.optimization_strategy_profile, k, v)
-        
+    if settings.optimization_strategy is not None:
+        if not cluster.optimization_strategy_profile:
+            cluster.optimization_strategy_profile = OptimizationStrategy(cluster_id=cluster_id)
+        for k, v in settings.optimization_strategy.model_dump().items():
+            setattr(cluster.optimization_strategy_profile, k, v)
+
     # Stateless Rules
-    if not cluster.stateless_rules:
-        cluster.stateless_rules = StatelessRuntimeRules(cluster_id=cluster_id)
-    for k, v in settings.stateless_rules.model_dump().items():
-        setattr(cluster.stateless_rules, k, v)
-        
+    if settings.stateless_rules is not None:
+        if not cluster.stateless_rules:
+            cluster.stateless_rules = StatelessRuntimeRules(cluster_id=cluster_id)
+        for k, v in settings.stateless_rules.model_dump().items():
+            setattr(cluster.stateless_rules, k, v)
+
     # Stateful Rules
-    if not cluster.stateful_rules:
-        cluster.stateful_rules = StatefulRules(cluster_id=cluster_id)
-    for k, v in settings.stateful_rules.model_dump().items():
-        setattr(cluster.stateful_rules, k, v)
+    if settings.stateful_rules is not None:
+        if not cluster.stateful_rules:
+            cluster.stateful_rules = StatefulRules(cluster_id=cluster_id)
+        for k, v in settings.stateful_rules.model_dump().items():
+            setattr(cluster.stateful_rules, k, v)
         
     db.commit()
     

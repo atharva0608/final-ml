@@ -333,19 +333,22 @@ export default function Dashboard() {
           console.error("RightSizing fetch error", e);
         }
 
-        // Fetch AtharvaAI Data (Task 8.6)
+        // Fetch AtharvaAI Data
         try {
-          // Fallback to /status/global if /rankings/global drops a 404
-          const globalRankingsRes = await api.get('/api/v1/atharvaai/status/global').catch(() => ({ data: {} }));
-          const hrRes = await atharvaAiAPI.getHealth();
+          const [globalRes, hrRes] = await Promise.allSettled([
+            api.get('/api/v1/atharvaai/v3/global-intelligence/status'),
+            atharvaAiAPI.getHealth(),
+          ]);
 
-          const rankingsData = globalRankingsRes.data;
+          const d = globalRes.status === 'fulfilled' ? (globalRes.value.data || {}) : {};
+          const hr = hrRes.status === 'fulfilled' ? (hrRes.value.data || {}) : {};
+
           setAtharvaAioData({
-            poolsAnalyzed: rankingsData.pools_analyzed_count || 0,
-            topScore: rankingsData.top_ml_score || 0,
-            regions: (rankingsData.regions_covered || []).length,
-            lastRun: rankingsData.last_pipeline_run ? new Date(rankingsData.last_pipeline_run) : null,
-            status: hrRes.data.ml_degraded ? 'degraded' : 'healthy'
+            poolsAnalyzed: d.pools_evaluated || d.pools_analyzed_count || 0,
+            topScore: d.capacity_validated_count || 0,
+            regions: d.active_clusters || 1,
+            lastRun: d.last_ranking_timestamp ? new Date(d.last_ranking_timestamp) : null,
+            status: hr.ml_degraded ? 'degraded' : 'healthy',
           });
         } catch (e) {
           console.error("AtharvaAI fetch error", e);
@@ -607,7 +610,7 @@ export default function Dashboard() {
                   <div style={{ width: 32, height: 32, borderRadius: 8, background: C.indigoLight, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16 }}>◈</div>
                   <div>
                     <div style={{ fontWeight: 600, fontSize: 13, display: "flex", alignItems: "center", gap: 6 }}>
-                      AtharvaAI
+                      ASCP.ai
                       {atharvaAioData.status === 'healthy' && <Dot color={C.green} />}
                       {atharvaAioData.status === 'degraded' && <Dot color={C.amber} />}
                       {atharvaAioData.status === 'error' && <Dot color={C.red} />}
@@ -752,9 +755,35 @@ export default function Dashboard() {
                     <button onClick={() => navigate('/clusters')} style={{ fontSize: 11, color: C.blue, background: "none", border: "none", cursor: "pointer" }}>View all →</button>
                   </div>
                 } noPad>
-                  <div style={{ padding: "32px 18px", textAlign: "center", color: C.subtle, fontSize: 12 }}>
-                    No clusters connected. Install the agent to start monitoring.
-                  </div>
+                  {clusters.length === 0 ? (
+                    <div style={{ padding: "32px 18px", textAlign: "center", color: C.subtle, fontSize: 12 }}>
+                      No clusters connected. Install the agent to start monitoring.
+                    </div>
+                  ) : (
+                    <div>
+                      {clusters.map((c, i) => (
+                        <div key={c.id} onClick={() => navigate(`/clusters`)} style={{
+                          display: "flex", alignItems: "center", gap: 12,
+                          padding: "11px 16px", cursor: "pointer",
+                          borderBottom: i < clusters.length - 1 ? `1px solid ${C.border}` : "none",
+                          transition: "background 0.1s",
+                        }}
+                          onMouseEnter={e => e.currentTarget.style.background = C.bg}
+                          onMouseLeave={e => e.currentTarget.style.background = "transparent"}
+                        >
+                          <div style={{ width: 8, height: 8, borderRadius: "50%", background: c.status === "ACTIVE" ? C.green : C.amber, flexShrink: 0 }} />
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontWeight: 600, fontSize: 13, color: C.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{c.name}</div>
+                            <div style={{ fontSize: 11, color: C.subtle, marginTop: 1 }}>{c.region} · {c.node_count || c.nodes || 0} nodes</div>
+                          </div>
+                          <div style={{ display: "flex", gap: 6, alignItems: "center", flexShrink: 0 }}>
+                            {c.agent_installed && <span style={{ fontSize: 10, fontWeight: 600, color: C.green, background: C.greenLight, padding: "2px 7px", borderRadius: 10 }}>Agent</span>}
+                            <span style={{ fontSize: 10, fontWeight: 600, color: c.status === "ACTIVE" ? C.green : C.amber, background: c.status === "ACTIVE" ? C.greenLight : C.amberLight, padding: "2px 7px", borderRadius: 10 }}>{c.status}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </Card>
               </div>
 
@@ -763,7 +792,7 @@ export default function Dashboard() {
                   <button onClick={() => navigate('/atharva-ai?tab=rankings')} style={{ fontSize: 11, color: C.blue, background: "none", border: "none", cursor: "pointer" }}>Manage →</button>
                 }>
                   <div style={{ color: C.subtle, fontSize: 12, marginBottom: 12 }}>
-                    Templates filter instance pools for AtharvaAI rankings.
+                    Templates filter instance pools for ASCP.ai rankings.
                   </div>
                   <button onClick={() => navigate('/atharva-ai?tab=rankings')} style={{
                     width: "100%", padding: "7px 0", borderRadius: 8,

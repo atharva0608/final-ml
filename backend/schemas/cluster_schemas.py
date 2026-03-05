@@ -393,7 +393,9 @@ class StatefulRulesSchema(BaseModel):
     max_downscale_percent: int = 25
 
 class UnifiedOptimizationSettings(BaseModel):
-    automation_controls: AutomationControlsSchema
-    optimization_strategy: OptimizationStrategySchema
-    stateless_rules: StatelessRulesSchema
-    stateful_rules: StatefulRulesSchema
+    # All sections are optional so callers can do partial updates
+    # (e.g. ClusterList only sends automation_controls — the rest are preserved)
+    automation_controls: Optional[AutomationControlsSchema] = None
+    optimization_strategy: Optional[OptimizationStrategySchema] = None
+    stateless_rules: Optional[StatelessRulesSchema] = None
+    stateful_rules: Optional[StatefulRulesSchema] = None

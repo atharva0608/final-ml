@@ -98,6 +98,7 @@ export const clusterAPI = {
     fallback: (clusterId) => api.post(`/api/v1/clusters/${clusterId}/fallback`),
     getOptimizationSettings: (clusterId) => api.get(`/api/v1/clusters/${clusterId}/optimization-settings`),
     updateOptimizationSettings: (clusterId, settings) => api.put(`/api/v1/clusters/${clusterId}/optimization-settings`, settings),
+    getWarmSpareStatus: (clusterId) => api.get(`/api/v1/atharvaai/v3/substitute/${clusterId}`),
 };
 export const clustersAPI = clusterAPI;
 
@@ -290,6 +291,9 @@ export const hygieneAPI = {
     getCostServices: (accountId) => api.get('/api/v1/hygiene/cost-services', {
         params: accountId ? { account_id: accountId } : {}
     }),
+    getScanHistory: (accountId, days = 7) => api.get('/api/v1/hygiene/scan-history', {
+        params: { account_id: accountId, days }
+    }),
 };
 
 // AtharvaAi Pool Selection & Termination Monitoring API
@@ -417,6 +421,11 @@ export const karpenterAPI = {
     // Execution Plan & History
     getExecutionPlan: (clusterId = null) => api.get('/api/v1/karpenter/execution-plan', { params: { cluster_id: clusterId } }),
     getHistory: (clusterId = null) => api.get('/api/v1/karpenter/history', { params: { cluster_id: clusterId } }),
+
+    // Karpenter install / uninstall (runs via agent DaemonSet inside the cluster)
+    installKarpenter: (clusterId, data = {}) => api.post(`/api/v1/karpenter/clusters/${clusterId}/install`, data),
+    uninstallKarpenter: (clusterId) => api.delete(`/api/v1/karpenter/clusters/${clusterId}/install`),
+    getInstallStatus: (clusterId) => api.get(`/api/v1/karpenter/clusters/${clusterId}/install-status`),
 };
 
 // ── Tag Governance APIs ──────────────────────────────────────────────────────

@@ -2,10 +2,40 @@ import React, { useState, useEffect } from 'react';
 import { Outlet, Link, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../../hooks/useAuth';
 import { useHeaderStore } from '../../store/useStore';
-import { clusterAPI, atharvaAiAPI } from '../../services/api';
+import { clusterAPI, atharvaAiAPI, approvalsAPI } from '../../services/api';
 import { FiHome, FiServer, FiFileText, FiSettings, FiTarget, FiClock, FiBarChart2, FiUsers, FiActivity, FiLogOut, FiClipboard, FiBriefcase, FiCheckSquare, FiShield, FiLock, FiTag, FiZap, FiCpu } from 'react-icons/fi';
 import { NotificationPanel, ICONS } from '../shared/NotificationPanel';
 import VolatilityMonitor from '../atharvaai/VolatilityMonitor';
+
+// Pending Approvals Badge — polls for real-time count
+const PendingApprovalsBadge = () => {
+  const [count, setCount] = useState(0);
+
+  useEffect(() => {
+    const fetch = async () => {
+      try {
+        const res = await approvalsAPI.list('PENDING');
+        const items = res.data?.approvals || res.data || [];
+        setCount(Array.isArray(items) ? items.length : 0);
+      } catch (e) {
+        // silently fail
+      }
+    };
+    fetch();
+    const interval = setInterval(fetch, 30000);
+    return () => clearInterval(interval);
+  }, []);
+
+  if (!count) return null;
+  return (
+    <span style={{
+      background: "#f59e0b", color: "#fff", fontSize: 9, fontWeight: 700,
+      padding: "1px 6px", borderRadius: 10, letterSpacing: "0.04em"
+    }}>
+      {count}
+    </span>
+  );
+};
 
 // Cluster Notification Badge Component
 const ClusterBadge = () => {
@@ -87,7 +117,6 @@ const routeMap = {
   "tag-scoring": "/tagging-policies?tab=scoring",
   "tag-automation": "/tagging-policies?tab=automation",
   "tag-monitor": "/tagging-policies?tab=monitor",
-  "automation": "/automation-settings",
   "teams": "/teams",
   "audit": "/audit",
   "settings": "/settings"
@@ -117,7 +146,7 @@ const NAV_STRUCTURE = [
     items: [
       {
         id: "atharvaai",
-        label: "AtharvaAI Optimizer",
+        label: "ASCP.ai",
         icon: "◈",
         badge: "ML",
         badgeColor: "#6366f1",
@@ -190,7 +219,7 @@ const NAV_STRUCTURE = [
         id: "approvals",
         label: "Approvals",
         icon: "✓",
-        badge: "3",
+        badge: null,
         badgeColor: "#f59e0b",
         description: "JIT access requests & grants"
       },
@@ -208,13 +237,6 @@ const NAV_STRUCTURE = [
           { id: "tag-monitor", label: "Compliance Monitor" }
         ]
       },
-      {
-        id: "automation",
-        label: "Automation",
-        icon: "⚡",
-        badge: null,
-        description: "Autopilot rules & governance policies"
-      }
     ]
   },
   {
@@ -251,7 +273,7 @@ const NAV_STRUCTURE = [
 ];
 
 const SEARCH_INDEX = [
-  { id: "atharvaai", terms: ["ml", "machine learning", "pool", "rankings", "onnx", "spot advisor", "interruption", "heatmap", "rebalancing", "blacklist", "capacity"] },
+  { id: "atharvaai", terms: ["ml", "machine learning", "pool", "rankings", "onnx", "spot advisor", "interruption", "heatmap", "rebalancing", "blacklist", "capacity", "ascp.ai", "ascp"] },
   { id: "rightsizing", terms: ["karpenter", "right sizing", "rightsizing", "downsize", "recommendations", "cpu", "memory", "utilization", "overprovisioned", "savings"] },
   { id: "resource-hygiene", terms: ["zombie", "cleanup", "ebs", "ec2", "elastic ip", "s3", "snapshot", "stopped", "orphaned", "waste", "idle", "unused", "delete", "scan"] },
   { id: "hibernation", terms: ["sleep", "wake", "schedule", "namespace sleep", "nuclear", "snapshot restore", "cost schedule", "off hours", "weekends", "nights"] },
@@ -259,7 +281,6 @@ const SEARCH_INDEX = [
   { id: "node-templates", terms: ["template", "instance family", "architecture", "arm64", "amd64", "blacklist"] },
   { id: "approvals", terms: ["approval", "jit", "access", "request", "grant", "permission", "revoke"] },
   { id: "tag-governance", terms: ["tag", "tagging", "policy", "compliance", "bulk tag", "enforcement", "template", "automation", "scoring"] },
-  { id: "automation", terms: ["autopilot", "automation", "governance", "rule", "auto cleanup"] },
   { id: "teams", terms: ["team", "member", "role", "invite", "organization", "permission", "rbac"] },
   { id: "audit", terms: ["audit", "log", "history", "event", "checksum", "activity", "diff"] },
   { id: "settings", terms: ["settings", "aws", "account", "integration", "billing", "profile", "password", "notification"] },
@@ -632,6 +653,7 @@ const MainLayout = () => {
                             </span>
 
                             {item.id === "clusters" && <ClusterBadge />}
+                            {item.id === "approvals" && <PendingApprovalsBadge />}
 
                             {item.badge && item.id !== "clusters" && (
                               <span style={{

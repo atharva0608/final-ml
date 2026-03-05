@@ -19,7 +19,7 @@ NC='\033[0m' # No Color
 
 # Configuration
 IMAGE_NAME="atharva608/spot-optimizer-agent"
-VERSION="v1.1-pod-metrics"
+VERSION="v1.2-command-pipeline"
 
 # Parse arguments
 SKIP_PUSH=false

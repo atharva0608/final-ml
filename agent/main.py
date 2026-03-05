@@ -229,7 +229,9 @@ class Agent:
             cluster_id=self.cluster_id,
             agent_id=self.agent_id
         )
-        logger.info("WebSocket client initialized")
+        # Wire actuator into WebSocket client so it can execute backend commands
+        self.websocket_client.set_actuator(self.actuator)
+        logger.info("WebSocket client initialized (actuator wired)")
 
         # Initialize Spot Poller (Runtime Safety)
         self.spot_poller = SpotPoller(

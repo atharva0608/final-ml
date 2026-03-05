@@ -109,6 +109,19 @@ class ClusterService:
         account = self.db.query(Account).filter(Account.id == account_id).first()
         if not account: return []
 
+        # Scan these regions — covers all common EKS regions
+        # Always includes the account's configured region plus all major regions
+        SCAN_REGIONS = [
+            "ap-south-1", "ap-southeast-1", "ap-southeast-2",
+            "ap-northeast-1", "ap-northeast-2",
+            "us-east-1", "us-east-2", "us-west-1", "us-west-2",
+            "eu-west-1", "eu-west-2", "eu-central-1",
+            "ca-central-1", "sa-east-1",
+        ]
+        # Put the account's own region first so it's found fast
+        account_region = account.region or "us-east-1"
+        regions_to_scan = [account_region] + [r for r in SCAN_REGIONS if r != account_region]
+
         discovered = []
         try:
             # Assume Role
@@ -119,55 +132,70 @@ class ClusterService:
                 ExternalId=account.external_id
             )
             creds = assumed['Credentials']
-            
-            # List Clusters
-            eks = boto3.client(
-                'eks',
-                aws_access_key_id=creds['AccessKeyId'],
-                aws_secret_access_key=creds['SecretAccessKey'],
-                aws_session_token=creds['SessionToken'],
-                region_name=account.region or 'us-east-1'
-            )
-            
-            cluster_names = eks.list_clusters()['clusters']
 
-            for cluster_name in cluster_names:
-                # 3. Get Details for each cluster
-                details = eks.describe_cluster(name=cluster_name)['cluster']
-                
-                # 4. Save or Update in DB
-                cluster = self.db.query(Cluster).filter(
-                    Cluster.name == cluster_name, 
-                    Cluster.account_id == account.id
-                ).first()
-
-                if not cluster:
-                    cluster = Cluster(
-                        id=str(uuid.uuid4()),
-                        name=cluster_name,
-                        account_id=account.id,
-                        region=account.region or "us-east-1",
-                        status=ClusterStatus.DISCOVERED,
-                        version=details.get('version'),
-                        endpoint=details.get('endpoint'),
-                        created_at=datetime.utcnow(),
-                        updated_at=datetime.utcnow()
+            for region in regions_to_scan:
+                try:
+                    eks = boto3.client(
+                        'eks',
+                        aws_access_key_id=creds['AccessKeyId'],
+                        aws_secret_access_key=creds['SecretAccessKey'],
+                        aws_session_token=creds['SessionToken'],
+                        region_name=region
                     )
-                    self.db.add(cluster)
-                else:
-                    # Update existing cluster details
-                    cluster.status = ClusterStatus.DISCOVERED
-                    cluster.version = details.get('version')
-                    cluster.endpoint = details.get('endpoint')
-                    cluster.updated_at = datetime.utcnow()
-                
-                discovered.append({
-                    "name": cluster.name, 
-                    "status": "active", 
-                    "version": cluster.version
-                })
-            
+                    cluster_names = eks.list_clusters().get('clusters', [])
+                except Exception:
+                    continue  # Region not accessible — skip silently
+
+                for cluster_name in cluster_names:
+                    try:
+                        details = eks.describe_cluster(name=cluster_name)['cluster']
+                    except Exception:
+                        continue
+
+                    cluster = self.db.query(Cluster).filter(
+                        Cluster.name == cluster_name,
+                        Cluster.account_id == account.id
+                    ).first()
+
+                    if not cluster:
+                        cluster = Cluster(
+                            id=str(uuid.uuid4()),
+                            name=cluster_name,
+                            account_id=account.id,
+                            region=region,
+                            status=ClusterStatus.DISCOVERED,
+                            version=details.get('version'),
+                            endpoint=details.get('endpoint'),
+                            created_at=datetime.utcnow(),
+                            updated_at=datetime.utcnow()
+                        )
+                        self.db.add(cluster)
+                        logger.info(f"Discovered new cluster: {cluster_name} in {region}")
+                    else:
+                        cluster.status = ClusterStatus.DISCOVERED
+                        cluster.version = details.get('version')
+                        cluster.endpoint = details.get('endpoint')
+                        cluster.region = region  # Update region in case it changed
+                        cluster.updated_at = datetime.utcnow()
+
+                    discovered.append({
+                        "name": cluster.name,
+                        "region": region,
+                        "status": "active",
+                        "version": cluster.version
+                    })
+
             self.db.commit()
+
+            # Invalidate cluster list cache so the UI shows results immediately
+            try:
+                import redis as _redis_lib
+                _r = _redis_lib.from_url(os.getenv("REDIS_URL", "redis://redis:6379/0"))
+                for key in _r.scan_iter("clusters:*"):
+                    _r.delete(key)
+            except Exception:
+                pass
+
             return discovered
 
         except Exception as e:
@@ -571,90 +599,122 @@ class ClusterService:
         if not cluster:
             raise ResourceNotFoundError("Cluster", cluster_id)
 
-        # ── Pre-Deletion Safety Checks ──────────────────────────────
-        # Prevent deletion of clusters with active infrastructure dependencies
-        
-        # Check 1: Karpenter active? Orphaned controller would keep provisioning nodes
-        if getattr(cluster, 'karpenter_enabled', None) and getattr(cluster, 'karpenter_mode', None) in ('auto', 'dry_run'):
-            raise ValidationError(
-                "Cannot delete cluster with active Karpenter. "
-                "Disable Karpenter before deleting this cluster."
-            )
-        
-        # Check 2: Active hibernation schedules? Would fail silently
-        try:
-            from backend.models.hibernation_schedule import HibernationSchedule
-            active_schedules = self.db.query(HibernationSchedule).filter(
-                HibernationSchedule.clusters.any(id=cluster_id),
-                HibernationSchedule.is_active == "Y"
-            ).count()
-            if active_schedules > 0:
-                raise ValidationError(
-                    f"Cannot delete cluster: {active_schedules} active hibernation schedule(s) "
-                    f"reference this cluster. Remove them first."
-                )
-        except ValidationError:
-            raise
-        except Exception:
-            pass  # Model not available or query error — skip check
+        # ── Cascade-delete all related records before deleting the cluster ──
+        # (FK constraints prevent cluster deletion if child rows exist)
 
-        # Check 3: Pending approvals? Would become orphaned
-        try:
-            from backend.models.approval import Approval
-            pending_approvals = self.db.query(Approval).filter(
-                Approval.resource_id == cluster_id,
-                Approval.status == 'PENDING'
-            ).count()
-            if pending_approvals > 0:
-                raise ValidationError(
-                    f"Cannot delete cluster: {pending_approvals} pending approval(s) exist. "
-                    f"Resolve them first."
-                )
-        except ValidationError:
-            raise
-        except Exception:
-            pass  # Model not available or query error — skip check
-
-
-        # Remove active instances check - allow forced deletion
-        # Check for active instances just for logging
-        active_instances = self.db.query(Instance).filter(
-            and_(
-                Instance.cluster_id == cluster_id,
-                Instance.state.in_(['running', 'pending'])
-            )
-        ).count()
-
-        if active_instances > 0:
-            logger.warning(f"Deleting cluster {cluster_id} with {active_instances} active instances. They will be orphaned or deleted.")
-            
-        # Explicitly delete instances to ensure cleanup (even if DB cascade exists)
+        # Instances
         self.db.query(Instance).filter(Instance.cluster_id == cluster_id).delete(synchronize_session=False)
 
-        # Also delete cluster_metrics to avoid IntegrityError (NOT NULL on cluster_id)
-        from backend.models.cluster_metric import ClusterMetric
-        self.db.query(ClusterMetric).filter(ClusterMetric.cluster_id == cluster_id).delete(synchronize_session=False)
+        # Cluster metrics
+        try:
+            from backend.models.cluster_metric import ClusterMetric
+            self.db.query(ClusterMetric).filter(ClusterMetric.cluster_id == cluster_id).delete(synchronize_session=False)
+        except Exception:
+            pass
 
-        # Explicitly delete optimizer_state to prevent FK nullification error
-        # (optimizer_state.cluster_id is nullable=False, so SQLAlchemy nullify cascade would fail)
+        # Rebalancing actions
+        try:
+            from backend.models.rebalancing_action import RebalancingAction
+            self.db.query(RebalancingAction).filter(RebalancingAction.cluster_id == cluster_id).delete(synchronize_session=False)
+        except Exception:
+            pass
+
+        # Optimizer state
         try:
             from backend.models.optimizer_state import OptimizerState
-            opt_state = self.db.query(OptimizerState).filter(
-                OptimizerState.cluster_id == cluster_id
-            ).first()
-            if opt_state:
-                self.db.delete(opt_state)
+            self.db.query(OptimizerState).filter(OptimizerState.cluster_id == cluster_id).delete(synchronize_session=False)
+        except Exception:
+            pass
+
+        # Cluster cooldowns
+        try:
+            from backend.models.cluster_cooldown import ClusterCooldown
+            self.db.query(ClusterCooldown).filter(ClusterCooldown.cluster_id == cluster_id).delete(synchronize_session=False)
+        except Exception:
+            pass
+
+        # Pool cooldowns
+        try:
+            from backend.models.pool_cooldown import PoolCooldown
+            self.db.query(PoolCooldown).filter(PoolCooldown.cluster_id == cluster_id).delete(synchronize_session=False)
+        except Exception:
+            pass
+
+        # Substitute states
+        try:
+            from backend.models.substitute_state import SubstituteState
+            self.db.query(SubstituteState).filter(SubstituteState.cluster_id == cluster_id).delete(synchronize_session=False)
+        except Exception:
+            pass
+
+        # Optimization settings
+        try:
+            from backend.models.cluster import ClusterOptimizationSettings, StatelessRuntimeRules
+            self.db.query(ClusterOptimizationSettings).filter(ClusterOptimizationSettings.cluster_id == cluster_id).delete(synchronize_session=False)
+            self.db.query(StatelessRuntimeRules).filter(StatelessRuntimeRules.cluster_id == cluster_id).delete(synchronize_session=False)
+        except Exception:
+            pass
+
+        # Pod metrics
+        try:
+            from backend.models.pod_metric import PodMetric
+            self.db.query(PodMetric).filter(PodMetric.cluster_id == cluster_id).delete(synchronize_session=False)
+        except Exception:
+            pass
+
+        # Clear Redis warm spare & substitute state for this cluster
+        try:
+            from backend.core.redis_client import get_redis_client
+            _redis = get_redis_client()
+            for key in [
+                f"spot:substitute:state:{cluster_id}",
+                f"spot:substitute:meta:{cluster_id}",
+                f"spot:substitute:next_spare:{cluster_id}",
+                f"spot:cooldown:cluster:{cluster_id}",
+                f"karpenter_config:{cluster_id}",
+                f"clusters:org:{getattr(cluster, 'account', None) and cluster.account.organization_id}",
+            ]:
+                try:
+                    _redis.delete(key)
+                except Exception:
+                    pass
         except Exception:
             pass
 
 
-        # Uninstall Agent if installed
         account = getattr(cluster, 'account', None)
+
+        # ── AWS CLEANUP: delete all Karpenter resources the platform created ─
+        # Runs regardless of whether agent/Karpenter are currently installed.
+        # Idempotent — already-deleted resources are silently skipped.
+        if account and (account.role_arn or cluster.aws_role_arn):
+            try:
+                from backend.services.agent_injector import AgentInjectorService as _Inj
+                _inj = _Inj(self.db)
+                _role_arn = cluster.aws_role_arn or account.role_arn
+                _ext_id = cluster.aws_external_id or account.external_id
+                _region = cluster.region or "ap-south-1"
+                _creds = _inj._assume_role(
+                    role_arn=_role_arn, external_id=_ext_id or "", region=_region)
+                if _creds:
+                    _result = _inj.delete_all_cluster_karpenter_resources(
+                        cluster_name=cluster.name, region=_region, credentials=_creds)
+                    logger.info(
+                        f"AWS Karpenter cleanup for {cluster.name}: "
+                        f"{len(_result.get('deleted', []))} deleted, "
+                        f"{len(_result.get('errors', []))} warnings"
+                    )
+            except Exception as _aws_err:
+                logger.warning(
+                    f"AWS Karpenter cleanup failed for {cluster.name} (non-fatal): {_aws_err}")
+                # Proceed with DB deletion anyway
+
+        # Uninstall Agent from Kubernetes if installed
         if cluster.agent_installed == 'Y' and account and account.role_arn:
             try:
                 from backend.services.agent_injector import AgentInjectorService
                 injector = AgentInjectorService(self.db)
-                
+
                 logger.info(f"Uninstalling agent from cluster {cluster.name} before deletion...")
                 injector.uninstall_agent(
                     cluster_name=cluster.name,

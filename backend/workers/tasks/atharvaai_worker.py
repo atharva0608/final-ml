@@ -324,7 +324,7 @@ def sync_karpenter_nodepools(self: Task) -> Dict[str, Any]:
                 result = karpenter_service.sync_ml_rankings_to_nodepool(
                     cluster_id=cluster.id,
                     top_pools=top_pools,
-                    nodepool_name='ml-optimized'
+                    nodepool_name='default'
                 )
 
                 if result['status'] == 'success':

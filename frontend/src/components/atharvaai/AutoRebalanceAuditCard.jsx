@@ -126,22 +126,8 @@ const AutoRebalanceAuditCard = ({ clusterId, initialEnabled = false }) => {
             <div className="flex items-center justify-between mb-4">
                 <div className="flex items-center gap-2">
                     <div className={`w-2 h-2 rounded-full ${isEnabled ? 'bg-green-500 animate-pulse' : 'bg-gray-300'}`}></div>
-                    <h3 className="font-semibold text-gray-800">Auto-Rebalancer</h3>
+                    <h3 className="font-semibold text-gray-800">Auto-Rebalancer History</h3>
                 </div>
-
-                {/* Toggle Switch */}
-                <button
-                    onClick={handleToggle}
-                    disabled={toggling || !clusterId}
-                    className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none ${
-                        toggling ? 'opacity-50 cursor-not-allowed' : ''
-                    } ${isEnabled ? 'bg-green-500' : 'bg-gray-200'}`}
-                    title={isEnabled ? 'Disable auto-rebalancing' : 'Enable auto-rebalancing'}
-                >
-                    <span className={`inline-block h-3 w-3 transform rounded-full bg-white transition-transform ${
-                        isEnabled ? 'translate-x-5' : 'translate-x-1'
-                    }`} />
-                </button>
             </div>
 
             <div className="space-y-3 flex-1">

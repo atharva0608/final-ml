@@ -273,7 +273,20 @@ function StatefulProposalModal({ node, onClose }) {
 
         <div style={{ display: "flex", gap: 12, justifyContent: "flex-end" }}>
           <button onClick={onClose} style={{ padding: "8px 16px", borderRadius: 6, border: `1px solid ${T.border}`, background: T.surface, color: T.textMid, fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Cancel</button>
-          <button onClick={() => { toast.success("Resize request sent for approval."); onClose(); }} style={{ padding: "8px 16px", borderRadius: 6, border: "none", background: T.greyDark, color: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Submit for Approval</button>
+          <button
+            onClick={() => {
+              karpenterAPI.applyRecommendation(node.id, {
+                instance_id: node.name,
+                recommended_type: node.recommended,
+                is_stateful: true,
+              }).then(() => {
+                toast.success(`Resize queued: ${node.name} → ${node.recommended} (On-Demand)`);
+                onClose();
+              }).catch(() => toast.error('Submit failed — check permissions'));
+            }}
+            style={{ padding: "8px 16px", borderRadius: 6, border: "none", background: T.greyDark, color: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
+            Submit for Approval
+          </button>
         </div>
       </div>
     </div>
@@ -326,61 +339,99 @@ function StatelessSection({ nodes, isAutoOn }) {
             <tr style={{ background: T.bg, borderBottom: `1px solid ${T.border}` }}>
               <th style={{ padding: "12px 16px", color: T.textFaint, fontWeight: 600, fontSize: 11 }}>Node</th>
               <th style={{ padding: "12px 16px", color: T.textFaint, fontWeight: 600, fontSize: 11 }}>Current Type</th>
-              <th style={{ padding: "12px 16px", color: T.textFaint, fontWeight: 600, fontSize: 11 }}>CPU / Mem P95</th>
-              <th style={{ padding: "12px 16px", color: T.textFaint, fontWeight: 600, fontSize: 11 }}>Recommended Type</th>
+              <th style={{ padding: "12px 16px", color: T.textFaint, fontWeight: 600, fontSize: 11 }}>CPU / Mem</th>
+              <th style={{ padding: "12px 16px", color: T.textFaint, fontWeight: 600, fontSize: 11 }}>Bin-Packed Size</th>
+              <th style={{ padding: "12px 16px", color: T.textFaint, fontWeight: 600, fontSize: 11 }}>Optimal Action</th>
+              {!isAutoOn && <th style={{ padding: "12px 16px", color: T.textFaint, fontWeight: 600, fontSize: 11 }}>Best Spot Pool</th>}
               <th style={{ padding: "12px 16px", color: T.textFaint, fontWeight: 600, fontSize: 11 }}>Savings</th>
-              <th style={{ padding: "12px 16px", color: T.textFaint, fontWeight: 600, fontSize: 11 }}>EV (Server)</th>
-              <th style={{ padding: "12px 16px", color: T.textFaint, fontWeight: 600, fontSize: 11 }}>Impact</th>
+              <th style={{ padding: "12px 16px", color: T.textFaint, fontWeight: 600, fontSize: 11 }}>EV</th>
               <th style={{ padding: "12px 16px", color: T.textFaint, fontWeight: 600, fontSize: 11 }}>Status</th>
               <th style={{ padding: "12px 16px", color: T.textFaint, fontWeight: 600, fontSize: 11, textAlign: "right" }}>Action</th>
             </tr>
           </thead>
           <tbody>
             {nodes.length === 0 ? (
-              <tr><td colSpan="9" style={{ padding: "24px", textAlign: "center", color: T.textMuted }}>No stateless nodes found.</td></tr>
+              <tr><td colSpan={isAutoOn ? 9 : 10} style={{ padding: "24px", textAlign: "center", color: T.textMuted }}>No stateless nodes found.</td></tr>
             ) : nodes.map((n, i) => {
-              // Derive mock impact based on confidence for demo
-              let impactIcon = <FiCheckCircle size={14} />;
-              let impactLabel = "Neutral";
-              let impactColor = T.textMuted;
-              if (n.confidence < 70) { impactIcon = <FiAlertTriangle size={14} />; impactLabel = "Increases Family Concentration"; impactColor = T.amber; }
-              if (n.cooldown) { impactIcon = <FiAlertCircle size={14} />; impactLabel = "AZ Imbalance Risk"; impactColor = T.red; }
-
+              const isSameType = n.recommended === n.current;
+              const hasSpotPool = !!n.spot_pool;
+              // Derive optimal action strategy badge
+              const strategy = n.is_upsize
+                ? { label: '⚠ Scale Up', color: T.red, bg: T.redLight }
+                : (!isSameType && hasSpotPool)
+                  ? { label: '✦ Resize + Spot', color: T.primary, bg: T.primaryLight }
+                  : (!isSameType && !hasSpotPool)
+                    ? { label: '↓ Resize Only', color: T.cyan, bg: T.cyanLight }
+                    : (isSameType && hasSpotPool)
+                      ? { label: '⟳ Spot Pool', color: '#7c3aed', bg: '#ede9fe' }
+                      : { label: '✓ No Change', color: T.textMuted, bg: T.bg };
               return (
                 <tr key={n.id} style={{ borderBottom: i === nodes.length - 1 ? "none" : `1px solid ${T.borderLight}`, background: T.surface, transition: "background 0.2s" }} onMouseEnter={e => e.currentTarget.style.background = T.bg} onMouseLeave={e => e.currentTarget.style.background = T.surface}>
                   <td style={{ padding: "12px 16px", fontWeight: 500, color: T.primary, cursor: "pointer" }} onClick={() => setSelectedNode(n)}>{n.name}</td>
                   <td style={{ padding: "12px 16px", color: T.textMid }}>{n.current}</td>
                   <td style={{ padding: "12px 16px", color: T.textMid }}>
-                    <span style={{ color: n.cpu > 80 ? T.red : T.textMid }}>{n.cpu}%</span> / <span style={{ color: n.mem > 80 ? T.red : T.textMid }}>{n.mem}%</span>
+                    <span style={{ color: n.cpu > 80 ? T.red : T.textMid }}>{n.cpu}%</span>
+                    {' / '}
+                    <span style={{ color: n.mem > 80 ? T.red : T.textMid }}>{n.mem}%</span>
                   </td>
-                  <td style={{ padding: "12px 16px", fontWeight: 600, color: T.text }}>{n.recommended}</td>
-                  <td style={{ padding: "12px 16px", color: T.green, fontWeight: 600 }}>${n.savings}/mo</td>
-                  {/* Task 8.2: EV from server — no client-side computation */}
                   <td style={{ padding: "12px 16px" }}>
-                    {n.ev_breakdown ? (
-                      <span
-                        title={
-                          `Savings: $${n.ev_breakdown.savings?.toFixed(2) || '0'}/hr\n` +
-                          `Interruption: $${n.ev_breakdown.interruption_cost?.toFixed(2) || '0'}/hr\n` +
-                          `Migration: $${n.ev_breakdown.migration_penalty?.toFixed(2) || '0'}\n` +
-                          `Volatility: $${n.ev_breakdown.volatility_cost?.toFixed(2) || '0'}/hr`
-                        }
-                        style={{ color: n.ev_breakdown.is_eligible ? T.green : T.amber, fontWeight: 600, cursor: "help" }}
-                      >
-                        ${n.ev_breakdown.ev?.toFixed(2) || '—'}/hr
+                    {isSameType ? (
+                      <span style={{ color: T.textMuted, fontSize: 12 }}>—</span>
+                    ) : n.is_upsize ? (
+                      <span style={{ fontWeight: 700, color: T.red }}>
+                        {n.recommended}
+                        <span style={{ fontSize: 11, color: T.red, marginLeft: 4 }}>(+${Math.abs(n.resize_savings)}/mo)</span>
                       </span>
                     ) : (
-                      <span style={{ color: n.confidence > 80 ? T.green : T.amber }}>{n.confidence}%</span>
+                      <span style={{ fontWeight: 700, color: T.green }}>
+                        {n.recommended}
+                        {n.resize_savings > 0 && <span style={{ fontSize: 11, color: T.textMuted, marginLeft: 4 }}>(−${n.resize_savings}/mo)</span>}
+                      </span>
                     )}
                   </td>
                   <td style={{ padding: "12px 16px" }}>
-                    <span title={impactLabel} style={{ color: impactColor, fontWeight: 600, cursor: "help" }}>{impactIcon} {impactLabel}</span>
+                    <span style={{ display: "inline-flex", alignItems: "center", background: strategy.bg, color: strategy.color, fontSize: 11, fontWeight: 700, padding: "3px 8px", borderRadius: 4, whiteSpace: "nowrap" }}>
+                      {strategy.label}
+                    </span>
+                  </td>
+                  {!isAutoOn && (
+                    <td style={{ padding: "12px 16px" }}>
+                      {hasSpotPool ? (
+                        <div>
+                          <div style={{ fontWeight: 600, color: T.cyan, fontSize: 12 }}>{n.spot_pool.instance_type}</div>
+                          <div style={{ fontSize: 11, color: T.textMuted }}>{n.spot_pool.az} · risk {n.spot_pool.risk_score}</div>
+                          {n.spot_pool.predicted_savings_pct > 0 && (
+                            <div style={{ fontSize: 11, color: T.green, fontWeight: 600 }}>−{n.spot_pool.predicted_savings_pct}% vs OD</div>
+                          )}
+                        </div>
+                      ) : (
+                        <span style={{ color: T.textMuted, fontSize: 12 }}>—</span>
+                      )}
+                    </td>
+                  )}
+                  <td style={{ padding: "12px 16px", fontWeight: 600 }}>
+                    {n.is_upsize ? (
+                      <span style={{ color: T.red }}>+${Math.abs(n.savings)}/mo</span>
+                    ) : (
+                      <div>
+                        <span style={{ color: T.green }}>${n.savings}/mo</span>
+                        {n.savings_pct > 0 && (
+                          <span style={{ fontSize: 11, color: T.green, marginLeft: 4, fontWeight: 700 }}>({n.savings_pct}%)</span>
+                        )}
+                      </div>
+                    )}
                   </td>
                   <td style={{ padding: "12px 16px" }}>
-                    {n.cooldown ? (
-                      <Badge color={T.amber} bg={T.amberLight} style={{ display: "flex", gap: 4, alignItems: "center" }}>
-                        <FiClock size={12} title="Resize blocked for 3h remaining" style={{ marginRight: 2 }} /> In Cooldown
-                      </Badge>
+                    {n.is_upsize
+                      ? <span style={{ color: T.red, fontWeight: 700 }}>—</span>
+                      : <span style={{ color: n.ev_pct > 80 ? T.green : T.amber, fontWeight: 600 }}>{n.ev_pct}%</span>
+                    }
+                  </td>
+                  <td style={{ padding: "12px 16px" }}>
+                    {n.is_upsize ? (
+                      <Badge color={T.red} bg={T.redLight}><FiAlertTriangle size={12} style={{ marginRight: 2 }} />Scale Up</Badge>
+                    ) : n.cooldown ? (
+                      <Badge color={T.amber} bg={T.amberLight}><FiClock size={12} style={{ marginRight: 2 }} />Cooldown</Badge>
                     ) : n.confidence < 60 ? (
                       <Badge color={T.red} bg={T.redLight}>High Volatility</Badge>
                     ) : (
@@ -393,9 +444,17 @@ function StatelessSection({ nodes, isAutoOn }) {
                     ) : (
                       <button
                         disabled={n.cooldown}
-                        onClick={(e) => { e.stopPropagation(); toast.success(`Applying resize to ${n.name}`); }}
-                        style={{ padding: "6px 12px", background: n.cooldown ? T.bg : T.primaryLight, color: n.cooldown ? T.textMuted : T.primary, border: `1px solid ${n.cooldown ? T.border : T.primary}`, borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: n.cooldown ? "not-allowed" : "pointer" }}>
-                        Apply
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          karpenterAPI.applyRecommendation(n.id, {
+                            instance_id: n.name,
+                            recommended_type: n.recommended,
+                            spot_pool: n.spot_pool,
+                          }).then(() => toast.success(`Queued: ${n.name} → ${n.recommended}${n.spot_pool ? ` + ${n.spot_pool.instance_type} spot` : ''}`))
+                            .catch(() => toast.error('Apply failed — check permissions'));
+                        }}
+                        style={{ padding: "6px 12px", background: n.cooldown ? T.bg : n.is_upsize ? T.redLight : T.primaryLight, color: n.cooldown ? T.textMuted : n.is_upsize ? T.red : T.primary, border: `1px solid ${n.cooldown ? T.border : n.is_upsize ? T.red : T.primary}`, borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: n.cooldown ? "not-allowed" : "pointer" }}>
+                        {n.is_upsize ? 'Scale Up' : n.spot_pool ? 'Optimize' : 'Apply'}
                       </button>
                     )}
                   </td>
@@ -479,7 +538,12 @@ function StatefulSection({ nodes }) {
                 <td style={{ padding: "12px 16px", color: T.textMid }}>{n.current}</td>
                 <td style={{ padding: "12px 16px", color: T.textMid }}>{n.cpu}% / {n.mem}%</td>
                 <td style={{ padding: "12px 16px", fontWeight: 600, color: T.text }}>{n.recommended}</td>
-                <td style={{ padding: "12px 16px", color: T.green, fontWeight: 600 }}>${n.savings}/mo</td>
+                <td style={{ padding: "12px 16px", fontWeight: 600 }}>
+                  <span style={{ color: T.green }}>${n.savings}/mo</span>
+                  {n.savings_pct > 0 && (
+                    <span style={{ fontSize: 11, color: T.green, marginLeft: 4, fontWeight: 700 }}>({n.savings_pct}%)</span>
+                  )}
+                </td>
                 <td style={{ padding: "12px 16px" }}>
                   {n.status === "Blocked by Policy" ? (
                     <span style={{ fontSize: 12, color: T.amber }}>Blocked by Policy</span>
@@ -509,13 +573,170 @@ function StatefulSection({ nodes }) {
   );
 }
 
+// Karpenter Configuration Panel
+function KarpenterConfigPanel({ clusterId, initialConfig, onSaved }) {
+  const INSTANCE_FAMILIES = ['m5', 'm6i', 'c5', 'c6i', 't3', 't4g', 'c6g', 'm6g'];
+
+  const [form, setForm] = useState({
+    auto_rebalancing_enabled: initialConfig?.auto_rebalancing_enabled ?? false,
+    auto_rightsizing_enabled: initialConfig?.auto_rightsizing_enabled ?? false,
+    strategy: initialConfig?.strategy || 'balanced',
+    spot_target_pct: initialConfig?.spot_target_pct ?? 75,
+    buffer_pct: initialConfig?.buffer_pct ?? 30,
+    instance_families: initialConfig?.instance_families || ['m5', 'm6i', 'c5', 'c6i', 't3', 't4g'],
+    consolidation_enabled: initialConfig?.consolidation_enabled ?? true,
+    consolidation_threshold: initialConfig?.consolidation_threshold ?? 80,
+    stateful_max_downscale_pct: initialConfig?.stateful_max_downscale_pct ?? 50,
+    stateful_od_rightsizing: initialConfig?.stateful_od_rightsizing ?? true,
+  });
+  const [saving, setSaving] = useState(false);
+
+  const toggle = (field) => setForm(f => ({ ...f, [field]: !f[field] }));
+  const set = (field, val) => setForm(f => ({ ...f, [field]: val }));
+  const toggleFamily = (fam) => setForm(f => {
+    const fams = f.instance_families.includes(fam)
+      ? f.instance_families.filter(x => x !== fam)
+      : [...f.instance_families, fam];
+    return { ...f, instance_families: fams };
+  });
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      await karpenterAPI.updateConfig(clusterId, form);
+      await karpenterAPI.switchMode(clusterId, form.auto_rebalancing_enabled ? 'auto' : 'dry_run');
+      await clusterAPI.updateOptimizationSettings(clusterId, { auto_rightsizing_enabled: form.auto_rightsizing_enabled });
+      toast.success('Karpenter configuration saved');
+      if (onSaved) onSaved(form);
+    } catch {
+      toast.error('Failed to save configuration');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const ToggleSwitch = ({ value, onToggle }) => (
+    <div onClick={onToggle} style={{ width: 44, height: 24, borderRadius: 12, background: value ? T.green : T.border, cursor: 'pointer', position: 'relative', transition: 'background 0.2s', flexShrink: 0 }}>
+      <div style={{ position: 'absolute', top: 3, left: value ? 23 : 3, width: 18, height: 18, borderRadius: 9, background: '#fff', boxShadow: '0 1px 3px rgba(0,0,0,.2)', transition: 'left 0.2s' }} />
+    </div>
+  );
+
+  const ToggleRow = ({ label, desc, field }) => (
+    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '14px 0', borderBottom: `1px solid ${T.borderLight}` }}>
+      <div>
+        <div style={{ fontSize: 14, fontWeight: 600, color: T.text }}>{label}</div>
+        {desc && <div style={{ fontSize: 12, color: T.textMuted, marginTop: 2 }}>{desc}</div>}
+      </div>
+      <ToggleSwitch value={form[field]} onToggle={() => toggle(field)} />
+    </div>
+  );
+
+  return (
+    <div style={{ display: 'flex', gap: 24 }}>
+      {/* Left: Strategy (Auto toggles moved to Cluster Settings) */}
+      <Card style={{ flex: 1, padding: '24px' }}>
+        <div style={{ marginTop: 0 }}>
+          <SectionLabel>Optimization Strategy</SectionLabel>
+          <div style={{ display: 'flex', gap: 8 }}>
+            {['balanced', 'cost-first', 'performance-first'].map(s => (
+              <button key={s} onClick={() => set('strategy', s)} style={{ flex: 1, padding: '8px 0', borderRadius: 6, border: `1px solid ${form.strategy === s ? T.primary : T.border}`, background: form.strategy === s ? T.primaryLight : T.surface, color: form.strategy === s ? T.primary : T.textMid, fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
+                {s.replace('-', ' ')}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div style={{ marginTop: 24 }}>
+          <SectionLabel>Spot Target %</SectionLabel>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+            <input type="range" min="0" max="100" step="5" value={form.spot_target_pct} onChange={e => set('spot_target_pct', Number(e.target.value))} style={{ flex: 1 }} />
+            <span style={{ fontSize: 14, fontWeight: 700, color: T.primary, minWidth: 40 }}>{form.spot_target_pct}%</span>
+          </div>
+          <div style={{ fontSize: 11, color: T.textMuted, marginTop: 4 }}>Target percentage of nodes on spot instances</div>
+        </div>
+
+        <div style={{ marginTop: 24 }}>
+          <SectionLabel>Buffer % (Safety Headroom)</SectionLabel>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <input type="number" min="10" max="100" value={form.buffer_pct} onChange={e => set('buffer_pct', Number(e.target.value))} style={{ width: 80, padding: '6px 10px', border: `1px solid ${T.border}`, borderRadius: 6, fontSize: 14, fontWeight: 600, color: T.text }} />
+            <span style={{ fontSize: 12, color: T.textMuted }}>% above P95 usage — applied during bin-packing</span>
+          </div>
+        </div>
+      </Card>
+
+      {/* Right: Instance families + Stateful policy */}
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 20 }}>
+        <Card style={{ padding: '24px' }}>
+          <SectionLabel>Allowed Instance Families</SectionLabel>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+            {INSTANCE_FAMILIES.map(fam => {
+              const selected = form.instance_families.includes(fam);
+              return (
+                <div key={fam} onClick={() => toggleFamily(fam)} style={{ padding: '6px 14px', borderRadius: 6, cursor: 'pointer', background: selected ? T.primaryLight : T.bg, border: `1px solid ${selected ? T.primary : T.border}`, color: selected ? T.primary : T.textMid, fontSize: 13, fontWeight: 600 }}>
+                  {fam}
+                </div>
+              );
+            })}
+          </div>
+          <div style={{ fontSize: 11, color: T.textMuted, marginTop: 8 }}>Click to toggle. Bin-packing only considers selected families.</div>
+
+          <div style={{ marginTop: 20 }}>
+            <ToggleRow label="Consolidation" desc="Automatically consolidate underutilized nodes (Karpenter native)" field="consolidation_enabled" />
+            {form.consolidation_enabled && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, paddingTop: 12 }}>
+                <span style={{ fontSize: 13, color: T.textMuted }}>Trigger threshold:</span>
+                <input type="number" min="50" max="95" value={form.consolidation_threshold} onChange={e => set('consolidation_threshold', Number(e.target.value))} style={{ width: 70, padding: '5px 8px', border: `1px solid ${T.border}`, borderRadius: 6, fontSize: 13, fontWeight: 600 }} />
+                <span style={{ fontSize: 12, color: T.textMuted }}>% utilization</span>
+              </div>
+            )}
+          </div>
+        </Card>
+
+        <Card style={{ padding: '24px' }}>
+          <SectionLabel>Stateful Node Policy</SectionLabel>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px', background: T.bg, borderRadius: 8, border: `1px solid ${T.borderLight}` }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: T.text }}>Max Downscale</div>
+                <div style={{ fontSize: 11, color: T.textMuted }}>Maximum allowed instance size reduction per resize action</div>
+              </div>
+              <span style={{ fontSize: 16, fontWeight: 700, color: T.amber }}>{form.stateful_max_downscale_pct}%</span>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px', background: T.bg, borderRadius: 8, border: `1px solid ${T.borderLight}` }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: T.text }}>Spot Migration</div>
+                <div style={{ fontSize: 11, color: T.textMuted }}>Stateful nodes are never migrated to spot</div>
+              </div>
+              <Badge color={T.red} bg={T.redLight}>Always Disabled</Badge>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px', background: T.bg, borderRadius: 8, border: `1px solid ${T.borderLight}` }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: T.text }}>On-Demand Rightsizing</div>
+                <div style={{ fontSize: 11, color: T.textMuted }}>Propose smaller OD instance via bin-packing (no spot)</div>
+              </div>
+              <ToggleSwitch value={form.stateful_od_rightsizing} onToggle={() => toggle('stateful_od_rightsizing')} />
+            </div>
+          </div>
+        </Card>
+
+        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+          <button onClick={handleSave} disabled={saving} style={{ padding: '10px 28px', borderRadius: 8, border: 'none', background: T.primary, color: '#fff', fontSize: 14, fontWeight: 600, cursor: saving ? 'wait' : 'pointer', opacity: saving ? 0.7 : 1, boxShadow: T.shadow }}>
+            {saving ? 'Saving...' : 'Save Configuration'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // MAIN PAGE
 export default function RightSizingMonitoringDashboard() {
   const [clusters, setClusters] = useState([]);
   const [selectedClusterId, setSelectedClusterId] = useState("all");
   const [autoState, setAutoState] = useState(false); // is auto rightsizing enabled?
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState('monitoring'); // 'monitoring', 'execution', 'history'
+  const [searchParams] = useSearchParams();
+  const activeTab = searchParams.get('tab') || 'karpenter';
 
   // Data lists
   const [statelessNodes, setStatelessNodes] = useState([]);
@@ -527,6 +748,10 @@ export default function RightSizingMonitoringDashboard() {
   const [executionLoading, setExecutionLoading] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
 
+  // Karpenter config state
+  const [karpenterConfig, setKarpenterConfig] = useState(null);
+  const [configLoading, setConfigLoading] = useState(false);
+
   // Fetch clusters list
   useEffect(() => {
     clusterAPI.listClusters().then(res => {
@@ -537,16 +762,26 @@ export default function RightSizingMonitoringDashboard() {
     }).catch(console.error);
   }, []);
 
+  // Fetch karpenter config when config tab is active
+  useEffect(() => {
+    if (activeTab !== 'config' || selectedClusterId === 'all' || !selectedClusterId) return;
+    setConfigLoading(true);
+    karpenterAPI.getConfig(selectedClusterId)
+      .then(res => setKarpenterConfig(res.data || {}))
+      .catch(() => setKarpenterConfig({}))
+      .finally(() => setConfigLoading(false));
+  }, [activeTab, selectedClusterId]);
+
   // Fetch execution plan and history when tab changes
   useEffect(() => {
     if (selectedClusterId === "all" || !selectedClusterId) return;
-    if (activeTab === 'execution') {
+    if (activeTab === 'history') {
       setExecutionLoading(true);
       karpenterAPI.getExecutionPlan(selectedClusterId)
         .then(res => setExecutionPlan(res.data?.plan || []))
         .catch(() => setExecutionPlan([]))
         .finally(() => setExecutionLoading(false));
-    } else if (activeTab === 'history') {
+    } else if (activeTab === 'savings') {
       setHistoryLoading(true);
       karpenterAPI.getHistory(selectedClusterId)
         .then(res => setHistoryData({
@@ -579,8 +814,6 @@ export default function RightSizingMonitoringDashboard() {
       let stNodes = [];
 
       if (rawRecs.length > 0) {
-        // node_type='stateless' means already on spot (lifecycle-optimized)
-        // node_type='stateful'  means on-demand (still needs lifecycle action)
         sNodes = rawRecs
           .filter(r => r.node_type === 'stateless' || (r.current_lifecycle || '').includes('spot'))
           .map((r, i) => ({
@@ -588,10 +821,17 @@ export default function RightSizingMonitoringDashboard() {
             name: r.instance_id || `spot-node-${i}`,
             current: r.current_type || 'unknown',
             recommended: r.recommended_type || r.current_type || 'unknown',
-            cpu: Math.round(r.cpu || 0),
-            mem: Math.round(r.mem || 0),
+            cpu: r.cpu ?? 0,
+            mem: r.mem ?? 0,
             savings: Math.round(r.potential_savings || 0),
+            savings_pct: r.savings_pct ?? 0,
+            resize_savings: r.resize_savings ?? 0,          // can be negative (upsize)
+            spot_pool: r.spot_pool || null,
+            ev_pct: r.ev_pct ?? (r.risk_prob != null ? Math.max(0, 100 - r.risk_prob) : 85),
             confidence: r.risk_prob != null ? Math.max(0, 100 - r.risk_prob) : 85,
+            impact: r.impact || 'Neutral',
+            is_upsize: r.is_upsize || false,                // over-utilised node needs scale-up
+            reason: r.reason || '',
             cooldown: false,
           }));
 
@@ -602,9 +842,12 @@ export default function RightSizingMonitoringDashboard() {
             name: r.instance_id || `od-node-${i}`,
             current: r.current_type || 'unknown',
             recommended: r.recommended_type || r.current_type || 'unknown',
-            cpu: Math.round(r.cpu || 0),
-            mem: Math.round(r.mem || 0),
+            cpu: r.cpu ?? 0,
+            mem: r.mem ?? 0,
             savings: Math.round(r.potential_savings || 0),
+            savings_pct: r.savings_pct ?? 0,
+            resize_savings: Math.round(r.resize_savings || 0),
+            reason: r.reason || '',
             status: 'Ready',
           }));
       }
@@ -635,29 +878,12 @@ export default function RightSizingMonitoringDashboard() {
       </div>
 
       {/* TOP TABS */}
-      <div style={{ borderBottom: `1px solid ${T.border}`, marginBottom: 24, display: "flex", gap: 32 }}>
-        <button
-          onClick={() => setActiveTab('monitoring')}
-          style={{ padding: "12px 4px", border: "none", background: "none", borderBottom: activeTab === 'monitoring' ? `2px solid ${T.primary}` : "2px solid transparent", color: activeTab === 'monitoring' ? T.primary : T.textMuted, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>
-          Monitoring
-        </button>
-        <button
-          onClick={() => setActiveTab('execution')}
-          style={{ padding: "12px 4px", border: "none", background: "none", borderBottom: activeTab === 'execution' ? `2px solid ${T.primary}` : "2px solid transparent", color: activeTab === 'execution' ? T.primary : T.textMuted, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>
-          Execution Plan
-        </button>
-        <button
-          onClick={() => setActiveTab('history')}
-          style={{ padding: "12px 4px", border: "none", background: "none", borderBottom: activeTab === 'history' ? `2px solid ${T.primary}` : "2px solid transparent", color: activeTab === 'history' ? T.primary : T.textMuted, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>
-          History
-        </button>
-      </div>
 
       {!loading && selectedClusterId !== "all" && (
         <>
           <AutoModeBanner isAutoOn={autoState} isLoading={loading} />
 
-          {activeTab === 'monitoring' && (
+          {activeTab === 'karpenter' && (
             <>
               <ClusterHealthExposureBar
                 statelessCount={statelessNodes.length}
@@ -674,7 +900,7 @@ export default function RightSizingMonitoringDashboard() {
             </>
           )}
 
-          {activeTab === 'execution' && (
+          {activeTab === 'history' && (
             <div style={{ marginBottom: 32 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
                 <div>
@@ -730,7 +956,27 @@ export default function RightSizingMonitoringDashboard() {
             </div>
           )}
 
-          {activeTab === 'history' && (
+          {activeTab === 'config' && (
+            <div style={{ marginBottom: 32 }}>
+              <div style={{ marginBottom: 20 }}>
+                <h2 style={{ fontSize: 18, fontWeight: 700, color: T.text, margin: 0 }}>Karpenter Configuration</h2>
+                <p style={{ fontSize: 13, color: T.textMuted, margin: '4px 0 0' }}>
+                  Strategy, instance families, stateful node policy, and bin-packing settings. Auto-mode toggles are managed in Cluster Settings.
+                </p>
+              </div>
+              {configLoading ? (
+                <div style={{ textAlign: 'center', padding: '40px', color: T.textMuted }}>Loading configuration...</div>
+              ) : (
+                <KarpenterConfigPanel
+                  clusterId={selectedClusterId}
+                  initialConfig={karpenterConfig || {}}
+                  onSaved={(cfg) => setKarpenterConfig(cfg)}
+                />
+              )}
+            </div>
+          )}
+
+          {activeTab === 'savings' && (
             <div style={{ marginBottom: 32 }}>
               {historyLoading ? (
                 <div style={{ padding: "40px", textAlign: "center", color: T.textMuted }}>Loading history...</div>

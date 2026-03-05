@@ -460,9 +460,11 @@ export default function CleanupDashboard() {
   const [selectedAccount, setSelectedAccount] = useState('');
   const [selectedRegion, setSelectedRegion] = useState('ALL');
   const [scanResult, setScanResult] = useState(null);
+  const [scanHistory, setScanHistory] = useState([]);
 
   const [totalCost, setTotalCost] = useState(null);
   const [totalCostLoading, setTotalCostLoading] = useState(false);
+  const [actionLoading, setActionLoading] = useState(false);
 
   // -- Wizards --
   const [showRIWizard, setShowRIWizard] = useState(false);
@@ -511,11 +513,15 @@ export default function CleanupDashboard() {
     if (!selectedAccount) return;
     setLoading(true);
     try {
-      const res = await hygieneAPI.scan(selectedAccount, {
-        regions: selectedRegion === 'ALL' ? ['ALL'] : [selectedRegion],
-        force_refresh: forceRefresh
-      });
+      const [res, historyRes] = await Promise.all([
+        hygieneAPI.scan(selectedAccount, {
+          regions: selectedRegion === 'ALL' ? ['ALL'] : [selectedRegion],
+          force_refresh: forceRefresh
+        }),
+        hygieneAPI.getScanHistory(selectedAccount)
+      ]);
       setScanResult(res.data);
+      setScanHistory(historyRes.data || []);
       setSelected(new Set());
       if (forceRefresh) {
         toast.success("Scan refreshed successfully");
@@ -524,6 +530,7 @@ export default function CleanupDashboard() {
     } catch (err) {
       console.error("Scan failed", err);
       if (!scanResult) setScanResult(null);
+      if (!scanHistory.length) setScanHistory([]);
     } finally {
       setLoading(false);
     }
@@ -544,17 +551,46 @@ export default function CleanupDashboard() {
 
   const handleAction = async (actionType) => {
     if (selected.size === 0) return;
+    // fix_A1: group by resource.region so we never send 'global' to backend
+    const regionGroups = {};
+    for (const obj of selectedResourceObjects) {
+      const rgn = obj.region || (selectedRegion !== 'ALL' ? selectedRegion : null);
+      if (!rgn) continue;
+      if (!regionGroups[rgn]) regionGroups[rgn] = [];
+      regionGroups[rgn].push(obj.id);
+    }
+    if (Object.keys(regionGroups).length === 0) {
+      toast.error('Cannot determine region for selected resources. Filter by a specific region first.');
+      return;
+    }
+    setActionLoading(true);
     try {
-      await hygieneAPI.execute({
-        action_type: actionType,
-        resource_ids: Array.from(selected),
-        region: selectedRegion === 'ALL' ? 'global' : selectedRegion
-      }, selectedAccount);
-      toast.success(`Action ${actionType} initiated`);
-      handleScan(true);
-      setSelected(new Set());
+      const results = await Promise.all(
+        Object.entries(regionGroups).map(([rgn, ids]) =>
+          hygieneAPI.execute({ action_type: actionType, resource_ids: ids, region: rgn }, selectedAccount)
+            .then(res => ({ ok: true, data: res.data, rgn, ids }))
+            .catch(err => ({ ok: false, error: err, rgn, ids }))
+        )
+      );
+      // fix_A2 (HYGIENE-TOAST-01): status-aware toasts instead of optimistic success
+      let successCount = 0, skippedCount = 0, approvalIds = [], errors = [];
+      for (const r of results) {
+        if (!r.ok) { errors.push(r.error?.response?.data?.detail || `Error in ${r.rgn}`); continue; }
+        const d = r.data;
+        // fix_A5: 202 pending_approval now includes approval_id
+        if (d.status === 'pending_approval') approvalIds.push(d.approval_id || d.message);
+        else if (d.skipped) skippedCount++;
+        else successCount++;
+      }
+      if (approvalIds.length) toast(`Approval required — ticket created`, { icon: 'ℹ️' });
+      if (skippedCount) toast(`${skippedCount} resource(s) already gone — skipped`, { icon: '⚠️' });
+      if (successCount) toast.success(`${actionType} applied to ${successCount} resource(s)`);
+      if (errors.length) toast.error(errors[0]);
+      if (!errors.length) { handleScan(true); setSelected(new Set()); }
     } catch (e) {
       toast.error(`Failed to execute ${actionType}`);
+    } finally {
+      setActionLoading(false);
     }
   };
 
@@ -643,7 +679,11 @@ export default function CleanupDashboard() {
   ];
 
   // Aggregate KPIs based on API data
-  const TOTAL_DISCOVERED = totalCost?.total_cost ? Number(totalCost.total_cost.toFixed(2)) : 0;
+  // Use scan result's total_discovered_cost (sum of cost_per_month across ALL resources found)
+  // This matches the sidebar total and is the authoritative figure from the hygiene scan.
+  const TOTAL_DISCOVERED = scanResult?.summary?.total_discovered_cost
+    ? Number(scanResult.summary.total_discovered_cost.toFixed(2))
+    : Number(allResources.reduce((s, r) => s + (r.cost || 0), 0).toFixed(2));
   const TOTAL_POTENTIAL = scanResult?.summary?.total_potential_savings ? Number(scanResult.summary.total_potential_savings.toFixed(2)) : 0;
   const UNTAGGED = allResources.filter(r => r.missingTags.length > 0).length;
   const TAG_HEALTH_PCT = allResources.length > 0 ? Math.round((1 - UNTAGGED / allResources.length) * 100) : 100;
@@ -738,9 +778,9 @@ export default function CleanupDashboard() {
     lineHeight: 1,
   };
 
-  const sparkbarValues = TOTAL_DISCOVERED > 0
-    ? [TOTAL_DISCOVERED * 0.5, TOTAL_DISCOVERED * 0.7, TOTAL_DISCOVERED * 0.8, TOTAL_DISCOVERED * 0.75, TOTAL_DISCOVERED * 0.9, TOTAL_DISCOVERED * 0.95, TOTAL_DISCOVERED]
-    : [210, 280, 320, 290, 340, 360, 378]; // Fallback values for visualization if zero data
+  const sparkbarValues = scanHistory && scanHistory.length > 0
+    ? scanHistory.map(h => h.resources_discovered || 0).reverse()
+    : [0, 0, 0, 0, 0, 0, TOTAL_DISCOVERED]; // Empty state padding with current reading
 
   return (
     <div style={{
@@ -748,6 +788,7 @@ export default function CleanupDashboard() {
       fontFamily: "'DM Sans', system-ui, sans-serif",
       color: C.text, display: "flex", flexDirection: "column",
     }}>
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
 
       {/* Replace the hardcoded topbar UI with FilterPanel */}
       <div style={{ position: "sticky", top: 0, zIndex: 20 }}>
@@ -963,20 +1004,28 @@ export default function CleanupDashboard() {
                   onClick: () => handleAction('TERMINATE')
                 },
               ].map(a => (
-                <button key={a.label} onClick={a.onClick} style={{
+                <button key={a.label} onClick={actionLoading ? undefined : a.onClick} disabled={actionLoading} style={{
                   padding: "5px 12px", borderRadius: 7,
                   border: `1px solid ${a.color}30`,
                   background: a.color === C.red ? C.redBg : C.surface,
                   color: a.color, fontSize: 11.5, fontWeight: 500,
-                  cursor: "pointer", fontFamily: "inherit",
-                  transition: "all 0.12s",
+                  cursor: actionLoading ? "not-allowed" : "pointer", fontFamily: "inherit",
+                  transition: "all 0.12s", opacity: actionLoading ? 0.6 : 1,
+                  display: "flex", alignItems: "center", gap: 5,
                 }}
-                  onMouseEnter={e => { e.currentTarget.style.background = a.color; e.currentTarget.style.color = "#fff"; }}
+                  onMouseEnter={e => { if (!actionLoading) { e.currentTarget.style.background = a.color; e.currentTarget.style.color = "#fff"; } }}
                   onMouseLeave={e => {
                     e.currentTarget.style.background = a.color === C.red ? C.redBg : C.surface;
                     e.currentTarget.style.color = a.color;
                   }}
-                >{a.label}</button>
+                >
+                  {actionLoading && (
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" style={{ animation: "spin 0.8s linear infinite" }}>
+                      <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="31.4 31.4" />
+                    </svg>
+                  )}
+                  {a.label}
+                </button>
               ))}
               <button
                 onClick={() => setSelected(new Set())}

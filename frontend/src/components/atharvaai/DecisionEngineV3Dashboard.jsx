@@ -18,6 +18,8 @@ const DecisionEngineV3Dashboard = ({ clusterId, clusterRegion = 'ap-south-1', cl
     const [aiHealth, setAiHealth] = useState(null);
     // Task 7.6: Rejection Counters
     const [rejectionCounters, setRejectionCounters] = useState(null);
+    // Substitute live state
+    const [substituteStatus, setSubstituteStatus] = useState(null);
 
     const [config, setConfig] = useState({
         rightsizing: cluster?.rightsizing_enabled || false,
@@ -84,6 +86,11 @@ const DecisionEngineV3Dashboard = ({ clusterId, clusterRegion = 'ap-south-1', cl
                 metricsAPI.getRejectionCounters(clusterId)
                     .then(res => setRejectionCounters(res.data))
                     .catch(() => setRejectionCounters(null));
+
+                // Substitute live state (PREWARMING / READY / ACTIVE / RELEASING / IDLE)
+                decisionEngineAPI.getSubstituteStatusV3(clusterId)
+                    .then(res => setSubstituteStatus(res.data))
+                    .catch(() => setSubstituteStatus(null));
             } catch (err) {
                 console.error('Failed to fetch decision engine data:', err);
             } finally {
@@ -132,44 +139,7 @@ const DecisionEngineV3Dashboard = ({ clusterId, clusterRegion = 'ap-south-1', cl
 
     return (
         <div className="space-y-8 mt-8 border-t pt-8">
-            {/* Automation Controls */}
-            <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-                <div className="flex items-center justify-between mb-6">
-                    <div>
-                        <h3 className="text-xl font-bold text-gray-900 flex items-center">
-                            <FiActivity className="mr-2 text-indigo-600" />
-                            Cluster Automation Controls
-                        </h3>
-                        <p className="text-sm text-gray-500 mt-1">Master switches for this cluster's optimization routines.</p>
-                    </div>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    {/* Auto-Rightsizing */}
-                    <div className="border border-gray-200 rounded-lg p-5 flex items-center justify-between bg-gray-50 hover:bg-white transition-colors">
-                        <div>
-                            <h4 className="font-semibold text-gray-900">Auto-Rightsizing</h4>
-                            <p className="text-xs text-gray-500 mt-1">Automatically scale deployments and StatefulSets based on metrics.</p>
-                        </div>
-                        <label className="relative inline-flex items-center cursor-pointer">
-                            <input type="checkbox" className="sr-only peer" checked={config.rightsizing} onChange={() => handleConfigToggle('rightsizing')} />
-                            <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-indigo-600"></div>
-                        </label>
-                    </div>
-
-                    {/* Auto-Rebalancing */}
-                    <div className="border border-gray-200 rounded-lg p-5 flex items-center justify-between bg-gray-50 hover:bg-white transition-colors">
-                        <div>
-                            <h4 className="font-semibold text-gray-900">Auto-Rebalancing (Spot)</h4>
-                            <p className="text-xs text-gray-500 mt-1">Proactively substitute instances at-risk or un-optimized.</p>
-                        </div>
-                        <label className="relative inline-flex items-center cursor-pointer">
-                            <input type="checkbox" className="sr-only peer" checked={config.autoRebalance} onChange={() => handleConfigToggle('autoRebalance')} />
-                            <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-indigo-600"></div>
-                        </label>
-                    </div>
-                </div>
-            </div>
+            {/* Automation Controls removed as requested */}
             {/* Effective Configuration Summary & Execution Flow */}
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                 {/* Flow Diagram Mini-Panel */}
@@ -239,7 +209,7 @@ const DecisionEngineV3Dashboard = ({ clusterId, clusterRegion = 'ap-south-1', cl
                 <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
                     <h4 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
                         <FiActivity className="mr-2 text-green-600" />
-                        AtharvaAI Engine Health
+                        ASCP.ai Engine Health
                     </h4>
                     <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                         <div className={`p-4 rounded-lg ${aiHealth.status === 'active' ? 'bg-green-50' : aiHealth.status === 'degraded' ? 'bg-yellow-50' : 'bg-red-50'}`}>
@@ -265,6 +235,102 @@ const DecisionEngineV3Dashboard = ({ clusterId, clusterRegion = 'ap-south-1', cl
                     </div>
                 </div>
             )}
+
+            {/* Warm Spare Substitute Status */}
+            {substituteStatus && (() => {
+                const state = substituteStatus.state || 'IDLE';
+                const isWarmSpare = substituteStatus.is_warm_spare;
+                const stateCfg = {
+                    PREWARMING: { label: 'PREWARMING', color: 'text-amber-700', bg: 'bg-amber-50', border: 'border-amber-300', dot: 'bg-amber-500', pulse: true },
+                    READY: { label: 'READY — WARM', color: 'text-green-700', bg: 'bg-green-50', border: 'border-green-300', dot: 'bg-green-500', pulse: false },
+                    ACTIVE: { label: 'IN USE', color: 'text-indigo-700', bg: 'bg-indigo-50', border: 'border-indigo-300', dot: 'bg-indigo-500', pulse: true },
+                    RELEASING: { label: 'RELEASING', color: 'text-orange-700', bg: 'bg-orange-50', border: 'border-orange-300', dot: 'bg-orange-500', pulse: true },
+                    IDLE: { label: 'IDLE', color: 'text-gray-500', bg: 'bg-gray-50', border: 'border-gray-200', dot: 'bg-gray-400', pulse: false },
+                }[state] || { label: state, color: 'text-gray-500', bg: 'bg-gray-50', border: 'border-gray-200', dot: 'bg-gray-400', pulse: false };
+                return (
+                    <div className={`rounded-xl shadow-sm border p-6 ${stateCfg.bg} ${stateCfg.border}`}>
+                        <div className="flex items-center justify-between mb-1">
+                            <h4 className="text-lg font-semibold text-gray-900 flex items-center">
+                                <FiCpu className="mr-2 text-indigo-600" />
+                                Warm Spare Node
+                            </h4>
+                            <span className={`inline-flex items-center gap-1.5 text-xs font-bold px-3 py-1 rounded-full border ${stateCfg.bg} ${stateCfg.border} ${stateCfg.color}`}>
+                                <span className={`w-2 h-2 rounded-full ${stateCfg.dot} ${stateCfg.pulse ? 'animate-pulse' : ''}`}></span>
+                                {stateCfg.label}
+                            </span>
+                        </div>
+                        {isWarmSpare && (
+                            <p className="text-xs text-gray-500 mb-4">
+                                Running 24x7 · Compatible with any cluster node · Drain → reschedule in &lt;30s
+                            </p>
+                        )}
+
+                        {state === 'IDLE' ? (
+                            <p className="text-sm text-gray-500 mt-2">
+                                No warm spare yet. Enable <strong>Auto Rebalance</strong> in Cluster Settings — the system will provision a spot spare within 5 minutes.
+                            </p>
+                        ) : (
+                            <>
+                                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
+                                    <div className="p-3 bg-white rounded-lg shadow-sm border border-gray-100">
+                                        <div className="text-xs text-gray-500 mb-1">Spare Instance</div>
+                                        <div className="text-sm font-bold text-gray-900">{substituteStatus.spare_instance_type || '—'}</div>
+                                    </div>
+                                    <div className="p-3 bg-white rounded-lg shadow-sm border border-gray-100">
+                                        <div className="text-xs text-gray-500 mb-1">AZ</div>
+                                        <div className="text-sm font-bold text-gray-900">{substituteStatus.spare_az || '—'}</div>
+                                    </div>
+                                    <div className="p-3 bg-white rounded-lg shadow-sm border border-gray-100">
+                                        <div className="text-xs text-gray-500 mb-1">Spot Cost</div>
+                                        <div className="text-sm font-bold text-green-700">
+                                            {substituteStatus.spot_price_hourly ? `$${substituteStatus.spot_price_hourly}/hr` : '—'}
+                                        </div>
+                                        <div className="text-xs text-gray-400">
+                                            {substituteStatus.monthly_cost ? `~$${substituteStatus.monthly_cost}/mo` : ''}
+                                        </div>
+                                    </div>
+                                    <div className="p-3 bg-white rounded-lg shadow-sm border border-gray-100">
+                                        <div className="text-xs text-gray-500 mb-1">Sized For</div>
+                                        <div className="text-sm font-bold text-gray-900">
+                                            {substituteStatus.target_vcpu ? `${substituteStatus.target_vcpu} vCPU / ${substituteStatus.target_memory_gb} GB` : '—'}
+                                        </div>
+                                        <div className="text-xs text-gray-400">{substituteStatus.target_node_instance_type || ''}</div>
+                                    </div>
+                                </div>
+                                {substituteStatus.compatible_with && (
+                                    <div className="text-xs text-indigo-700 bg-indigo-50 rounded-lg px-3 py-2 mb-2 font-medium">
+                                        ✓ {substituteStatus.compatible_with} — can absorb drain of any node in this cluster
+                                    </div>
+                                )}
+                            </>
+                        )}
+
+                        {state === 'READY' && (
+                            <div className="mt-2 p-3 bg-green-100 rounded-lg text-xs text-green-800 font-medium">
+                                ✅ Spare is warm and ready. When any node needs draining: pods reschedule here instantly — no new node spin-up wait.
+                            </div>
+                        )}
+                        {state === 'ACTIVE' && (
+                            <>
+                                <div className="mt-2 p-3 bg-indigo-100 rounded-lg text-xs text-indigo-800 font-medium">
+                                    ⚡ Spare is IN USE — currently absorbing a node migration. A replacement spare is being provisioned.
+                                </div>
+                                {substituteStatus.next_spare && (
+                                    <div className="mt-2 p-3 bg-amber-100 rounded-lg text-xs text-amber-800 font-medium flex items-center gap-2">
+                                        <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse inline-block"></span>
+                                        Replacement spare prewarming: {substituteStatus.next_spare.instance_type} in {substituteStatus.next_spare.az}
+                                    </div>
+                                )}
+                            </>
+                        )}
+                        {state === 'PREWARMING' && (
+                            <div className="mt-2 p-3 bg-amber-100 rounded-lg text-xs text-amber-800 font-medium">
+                                ⏳ Provisioning warm spare in {substituteStatus.spare_az || 'target AZ'}. Will be READY within ~2 minutes once Kubernetes marks the node healthy.
+                            </div>
+                        )}
+                    </div>
+                );
+            })()}
 
             {/* Task 7.3: Pool Rotation Status */}
             {poolRotation && (
@@ -542,7 +608,7 @@ const DecisionEngineV3Dashboard = ({ clusterId, clusterRegion = 'ap-south-1', cl
                                 <h5 className="text-sm font-medium text-gray-800">Maximum Downscale %</h5>
                                 <p className="text-xs text-gray-500">Limit how much a stateful volume/compute can shrink.</p>
                             </div>
-                            <input type="number" value={unifiedConfig.optimization_strategy.risk_ceiling_percent} onChange={e => handleConfigChange("optimization_strategy", "risk_ceiling_percent", +e.target.value)} className="w-20 border-gray-300 rounded-md shadow-sm sm:text-sm text-right bg-white" />
+                            <input type="number" value={unifiedConfig.stateful_rules.max_downscale_percent} onChange={e => handleConfigChange("stateful_rules", "max_downscale_percent", +e.target.value)} className="w-20 border-gray-300 rounded-md shadow-sm sm:text-sm text-right bg-white" />
                         </div>
                     </div>
                 </div>

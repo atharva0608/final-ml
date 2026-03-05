@@ -12,11 +12,17 @@ Metadata:
           default: "Platform Configuration"
         Parameters:
           - PlatformAccountId
+      - Label:
+          default: "Karpenter Configuration (filled automatically after cluster connect)"
+        Parameters:
+          - ClusterName
     ParameterLabels:
       ExternalId:
         default: "External ID (auto-filled from dashboard)"
       PlatformAccountId:
         default: "Spot Optimizer Platform Account ID"
+      ClusterName:
+        default: "EKS Cluster Name (backend updates this after cluster connect)"
 
 Parameters:
   ExternalId:
@@ -27,6 +33,22 @@ Parameters:
     Type: String
     Description: 'The AWS Account ID of the Spot Optimizer Platform'
     Default: '123456789012'
+
+  # CF-MERGE-01: Karpenter parameters — the backend updates these automatically
+  # via cloudformation:UpdateStack after the cluster is connected.
+  # Default values allow the template to deploy successfully at onboarding
+  # even before the cluster name and OIDC URL are known.
+  ClusterName:
+    Type: String
+    Description: >
+      EKS cluster name — used to name Karpenter roles and SQS queue.
+      The backend updates this automatically after cluster connect.
+      Can be updated manually for multi-cluster setups via stack update.
+    Default: 'default'
+
+  # OIDCProviderURL intentionally removed.
+  # The backend patches KarpenterControllerRole trust policy directly via
+  # iam:UpdateAssumeRolePolicy on cluster connect — no CF parameter needed.
 
 Resources:
   SpotOptimizerRole:
@@ -150,9 +172,19 @@ Resources:
                   - 'eks:DescribeAccessEntry'
                   - 'eks:UpdateClusterConfig'
                   - 'eks:UpdateNodegroupConfig'
+                  - 'eks:CreateAddon'
+                  - 'eks:DeleteAddon'
+                  - 'eks:DescribeAddon'
+                  - 'eks:UpdateAddon'
+                  - 'eks:ListAddons'
+                  - 'eks:DescribeAddonVersions'
+                  - 'eks:TagResource'
                 Resource: '*'
 
-              # Auto Scaling Group Management for Hibernation (All Regions)
+              # Auto Scaling Group Management for Hibernation + Spot ASG mode (All Regions)
+              # CF-05: Extra actions required for SpotASGService (no-Karpenter spot path):
+              #   CreateOrUpdateTags — tags ASGs for tracking which are spot-enabled
+              #   PutScalingPolicy / DeletePolicy — manage target-tracking policies
               - Sid: 'AutoScalingManagement'
                 Effect: Allow
                 Action:
@@ -161,6 +193,9 @@ Resources:
                   - 'autoscaling:SuspendProcesses'
                   - 'autoscaling:ResumeProcesses'
                   - 'autoscaling:TerminateInstanceInAutoScalingGroup'
+                  - 'autoscaling:CreateOrUpdateTags'
+                  - 'autoscaling:PutScalingPolicy'
+                  - 'autoscaling:DeletePolicy'
                 Resource: '*'
 
               # EC2 Instance Management for Hibernation (All Regions)
@@ -183,6 +218,148 @@ Resources:
                   - 'ec2:CopySnapshot'
                   - 'ec2:DescribeSnapshotAttribute'
                   - 'ec2:ModifySnapshotAttribute'
+                Resource: '*'
+
+        # =============================================================================
+        # KARPENTER INSTALLATION PERMISSIONS (All Regions)
+        # Creates/manages Karpenter node roles, instance profiles, controller role,
+        # SQS interruption queue, and EventBridge spot interruption rules.
+        # =============================================================================
+        - PolicyName: 'SpotOptimizerKarpenterSetup'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # IAM — create Karpenter node role + controller role + instance profile
+              - Sid: 'KarpenterIAMRoles'
+                Effect: Allow
+                Action:
+                  - 'iam:CreateRole'
+                  - 'iam:DeleteRole'
+                  - 'iam:GetRole'
+                  - 'iam:PassRole'
+                  - 'iam:AttachRolePolicy'
+                  - 'iam:DetachRolePolicy'
+                  - 'iam:PutRolePolicy'
+                  - 'iam:DeleteRolePolicy'
+                  - 'iam:GetRolePolicy'
+                  - 'iam:ListRolePolicies'
+                  - 'iam:ListAttachedRolePolicies'
+                  - 'iam:TagRole'
+                  - 'iam:UntagRole'
+                  - 'iam:UpdateAssumeRolePolicy'
+                Resource:
+                  - !Sub 'arn:aws:iam::${AWS::AccountId}:role/KarpenterNodeRole-*'
+                  - !Sub 'arn:aws:iam::${AWS::AccountId}:role/KarpenterControllerRole-*'
+
+              - Sid: 'KarpenterInstanceProfile'
+                Effect: Allow
+                Action:
+                  - 'iam:CreateInstanceProfile'
+                  - 'iam:DeleteInstanceProfile'
+                  - 'iam:GetInstanceProfile'
+                  - 'iam:AddRoleToInstanceProfile'
+                  - 'iam:RemoveRoleFromInstanceProfile'
+                  - 'iam:TagInstanceProfile'
+                Resource:
+                  - !Sub 'arn:aws:iam::${AWS::AccountId}:instance-profile/KarpenterNodeInstanceProfile-*'
+
+              # OIDC — check/create cluster OIDC provider for IRSA
+              - Sid: 'OIDCProvider'
+                Effect: Allow
+                Action:
+                  - 'iam:CreateOpenIDConnectProvider'
+                  - 'iam:DeleteOpenIDConnectProvider'
+                  - 'iam:GetOpenIDConnectProvider'
+                  - 'iam:ListOpenIDConnectProviders'
+                  - 'iam:TagOpenIDConnectProvider'
+                Resource: '*'
+
+              # EC2 — Karpenter provisions spot/on-demand instances via CreateFleet
+              # CF-02: ec2:DescribeVpcs is required for subnet discovery (VPC placement)
+              - Sid: 'KarpenterEC2Provisioning'
+                Effect: Allow
+                Action:
+                  - 'ec2:RunInstances'
+                  - 'ec2:TerminateInstances'
+                  - 'ec2:CreateFleet'
+                  - 'ec2:DescribeFleets'
+                  - 'ec2:DeleteFleet'
+                  - 'ec2:CreateLaunchTemplate'
+                  - 'ec2:CreateLaunchTemplateVersion'
+                  - 'ec2:DeleteLaunchTemplate'
+                  - 'ec2:DescribeLaunchTemplates'
+                  - 'ec2:DescribeLaunchTemplateVersions'
+                  - 'ec2:DescribeSpotPriceHistory'
+                  - 'ec2:DescribeSubnets'
+                  - 'ec2:DescribeSecurityGroups'
+                  - 'ec2:DescribeInstanceTypeOfferings'
+                  - 'ec2:DescribeInstanceTypes'
+                  - 'ec2:DescribeAvailabilityZones'
+                  - 'ec2:DescribeVpcs'
+                  - 'ec2:CreateTags'
+                Resource: '*'
+
+              # SQS — Karpenter interruption handler queue
+              - Sid: 'KarpenterSQS'
+                Effect: Allow
+                Action:
+                  - 'sqs:CreateQueue'
+                  - 'sqs:DeleteQueue'
+                  - 'sqs:GetQueueAttributes'
+                  - 'sqs:GetQueueUrl'
+                  - 'sqs:SetQueueAttributes'
+                  - 'sqs:TagQueue'
+                  - 'sqs:ReceiveMessage'
+                  - 'sqs:DeleteMessage'
+                  - 'sqs:SendMessage'
+                Resource:
+                  - !Sub 'arn:aws:sqs:*:${AWS::AccountId}:*'
+
+              # CF-01: SSM — Karpenter reads AMI IDs from SSM Parameter Store at node launch.
+              # Without this, EC2NodeClass cannot resolve the al2023@latest alias
+              # or any Bottlerocket AMI and node provisioning fails with AccessDenied.
+              - Sid: 'KarpenterSSMAccess'
+                Effect: Allow
+                Action:
+                  - 'ssm:GetParameter'
+                  - 'ssm:GetParameters'
+                Resource:
+                  - 'arn:aws:ssm:*::parameter/aws/service/eks/optimized-ami/*'
+                  - 'arn:aws:ssm:*::parameter/aws/service/bottlerocket/*'
+
+              # CF-03: IAM — Create the EC2 Spot service-linked role on first-ever spot request.
+              # First-time spot accounts don't have AWSServiceRoleForEC2Spot yet.
+              # Without this, ec2:CreateFleet returns "Service-linked role not found" for spot.
+              - Sid: 'SpotServiceLinkedRole'
+                Effect: Allow
+                Action:
+                  - 'iam:CreateServiceLinkedRole'
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    'iam:AWSServiceName': 'spot.amazonaws.com'
+
+              # CF-06: IAM — List operations for idempotency checks before creating roles/profiles.
+              # These global list APIs cannot be scoped to a specific resource ARN.
+              - Sid: 'KarpenterIdempotencyChecks'
+                Effect: Allow
+                Action:
+                  - 'iam:ListRoles'
+                  - 'iam:ListInstanceProfiles'
+                Resource: '*'
+
+              # EventBridge — spot interruption + rebalance notification rules
+              - Sid: 'KarpenterEventBridge'
+                Effect: Allow
+                Action:
+                  - 'events:CreateRule'
+                  - 'events:DeleteRule'
+                  - 'events:DescribeRule'
+                  - 'events:PutRule'
+                  - 'events:PutTargets'
+                  - 'events:RemoveTargets'
+                  - 'events:ListTargetsByRule'
+                  - 'events:TagResource'
                 Resource: '*'
 
         # =============================================================================
@@ -228,6 +405,299 @@ Resources:
         - Key: 'ExternalId'
           Value: !Ref ExternalId
 
+  # ===========================================================================
+  # CF-MERGE-01: KARPENTER INFRASTRUCTURE RESOURCES
+  # ===========================================================================
+  # These resources are created at onboarding time alongside the cross-account
+  # role. They sit dormant until the user clicks "Install Karpenter" in the UI.
+  #
+  # The backend updates ClusterName via cloudformation:UpdateStack after cluster connect
+  # (to rename Karpenter roles for a new cluster). The IRSA trust policy is patched
+  # directly via iam:UpdateAssumeRolePolicy — no CF re-deploy needed for OIDC.
+  #
+  # Naming convention (deterministic — backend derives ARNs without CF output lookup):
+  #   KarpenterNodeRole-{ClusterName}
+  #   KarpenterNodeInstanceProfile-{ClusterName}
+  #   KarpenterControllerRole-{ClusterName}
+  #   SQS queue: {ClusterName}  (bare — matches Karpenter's INTERRUPTION_QUEUE env var)
+  # ===========================================================================
+
+  # ── 1. Karpenter Node Role ──────────────────────────────────────────────────
+  # EC2 nodes launched by Karpenter assume this role.
+  # Gives them permission to join the EKS cluster and pull images.
+  # Registered as an EC2_LINUX EKS access entry by the agent after helm install.
+  KarpenterNodeRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: !Sub 'KarpenterNodeRole-${ClusterName}'
+      Description: !Sub 'EC2 node role for Karpenter-managed nodes in cluster ${ClusterName}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy'
+        - 'arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly'
+        - 'arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy'
+        - 'arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore'
+      Tags:
+        - Key: 'ManagedBy'
+          Value: 'SpotOptimizer'
+        - Key: 'Purpose'
+          Value: 'KarpenterNodeRole'
+        - Key: 'ClusterName'
+          Value: !Ref ClusterName
+
+  # ── 2. Karpenter Node Instance Profile ─────────────────────────────────────
+  # EC2 requires an instance profile (wrapper around the node role).
+  # Karpenter references this profile by name in EC2NodeClass.
+  KarpenterNodeInstanceProfile:
+    Type: 'AWS::IAM::InstanceProfile'
+    Properties:
+      InstanceProfileName: !Sub 'KarpenterNodeInstanceProfile-${ClusterName}'
+      Roles:
+        - !Ref KarpenterNodeRole
+
+  # ── 3. Karpenter Controller Role ───────────────────────────────────────────
+  # The Karpenter controller pod assumes this role via IRSA (IAM Roles for
+  # Service Accounts).
+  #
+  # FIX-OIDC-01 / FIX-MULTI-CLUSTER-01: Trust policy uses static PLACEHOLDER values
+  # at CF deploy time. The backend calls iam:UpdateAssumeRolePolicy on cluster
+  # connect to inject the real OIDC provider URL and condition keys.
+  # This approach:
+  #   1. Avoids CloudFormation !Sub on condition MAP KEYS (unsupported syntax)
+  #   2. Supports multiple clusters without CF stack updates overwriting each other
+  #   3. Is idempotent — reconnecting a cluster refreshes its own role only
+  KarpenterControllerRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: !Sub 'KarpenterControllerRole-${ClusterName}'
+      Description: !Sub 'IRSA role for Karpenter controller in cluster ${ClusterName}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Sub 'arn:aws:iam::${AWS::AccountId}:oidc-provider/PLACEHOLDER'
+            Action: 'sts:AssumeRoleWithWebIdentity'
+            Condition:
+              StringEquals:
+                'PLACEHOLDER:aud': 'sts.amazonaws.com'
+                'PLACEHOLDER:sub': 'system:serviceaccount:karpenter:karpenter'
+            # ↑ Backend overwrites this via iam:UpdateAssumeRolePolicy on cluster connect.
+            # See agent_injector._update_karpenter_controller_trust_policy()
+      Policies:
+        - PolicyName: 'KarpenterControllerPolicy'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+
+              # EC2 — provision spot and on-demand instances
+              - Sid: 'AllowEC2Provisioning'
+                Effect: Allow
+                Action:
+                  - 'ec2:RunInstances'
+                  - 'ec2:CreateFleet'
+                  - 'ec2:CreateLaunchTemplate'
+                  - 'ec2:CreateLaunchTemplateVersion'
+                  - 'ec2:DeleteLaunchTemplate'
+                  - 'ec2:DescribeLaunchTemplates'
+                  - 'ec2:DescribeLaunchTemplateVersions'
+                Resource: '*'
+
+              # EC2 — terminate Karpenter-provisioned nodes during consolidation
+              # Condition ensures only nodes Karpenter tagged can be terminated
+              - Sid: 'AllowEC2Deprovisioning'
+                Effect: Allow
+                Action:
+                  - 'ec2:TerminateInstances'
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    'ec2:ResourceTag/karpenter.sh/nodepool': '*'
+
+              # EC2 — describe for scheduling decisions
+              - Sid: 'AllowEC2Describe'
+                Effect: Allow
+                Action:
+                  - 'ec2:DescribeAvailabilityZones'
+                  - 'ec2:DescribeImages'
+                  - 'ec2:DescribeInstances'
+                  - 'ec2:DescribeInstanceTypes'
+                  - 'ec2:DescribeInstanceTypeOfferings'
+                  - 'ec2:DescribeSecurityGroups'
+                  - 'ec2:DescribeSpotPriceHistory'
+                  - 'ec2:DescribeSubnets'
+                  - 'ec2:DescribeTags'
+                  - 'ec2:DescribeFleets'
+                  - 'ec2:DescribeVpcs'
+                Resource: '*'
+
+              # EC2 — tag instances Karpenter creates (enables scoped deprovisioning above)
+              - Sid: 'AllowEC2Tagging'
+                Effect: Allow
+                Action:
+                  - 'ec2:CreateTags'
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    'ec2:CreateAction':
+                      - 'RunInstances'
+                      - 'CreateFleet'
+                      - 'CreateLaunchTemplate'
+
+              # IAM — pass the node role to EC2 at launch
+              - Sid: 'AllowPassNodeRole'
+                Effect: Allow
+                Action:
+                  - 'iam:PassRole'
+                Resource: !GetAtt KarpenterNodeRole.Arn
+
+              # IAM — get instance profile to attach to new nodes
+              - Sid: 'AllowGetInstanceProfile'
+                Effect: Allow
+                Action:
+                  - 'iam:GetInstanceProfile'
+                Resource: !GetAtt KarpenterNodeInstanceProfile.Arn
+
+              # SQS — consume interruption events from the pre-created queue
+              - Sid: 'AllowSQSInterruptionQueue'
+                Effect: Allow
+                Action:
+                  - 'sqs:DeleteMessage'
+                  - 'sqs:GetQueueAttributes'
+                  - 'sqs:GetQueueUrl'
+                  - 'sqs:ReceiveMessage'
+                Resource: !GetAtt KarpenterInterruptionQueue.Arn
+
+              # SSM — resolve AMI IDs at node launch (al2023@latest, Bottlerocket)
+              - Sid: 'AllowSSMForAMI'
+                Effect: Allow
+                Action:
+                  - 'ssm:GetParameter'
+                Resource:
+                  - 'arn:aws:ssm:*::parameter/aws/service/eks/optimized-ami/*'
+                  - 'arn:aws:ssm:*::parameter/aws/service/bottlerocket/*'
+
+              # EventBridge — read rules for spot interruption and rebalance events
+              - Sid: 'AllowEventBridgeRead'
+                Effect: Allow
+                Action:
+                  - 'events:DescribeRule'
+                  - 'events:ListRules'
+                Resource: '*'
+
+              # EKS — read cluster info for scheduling decisions
+              - Sid: 'AllowEKSRead'
+                Effect: Allow
+                Action:
+                  - 'eks:DescribeCluster'
+                Resource: !Sub 'arn:aws:eks:*:${AWS::AccountId}:cluster/${ClusterName}'
+
+              # Pricing — spot price history for pool scoring
+              - Sid: 'AllowPricingRead'
+                Effect: Allow
+                Action:
+                  - 'pricing:GetProducts'
+                Resource: '*'
+
+      Tags:
+        - Key: 'ManagedBy'
+          Value: 'SpotOptimizer'
+        - Key: 'Purpose'
+          Value: 'KarpenterControllerRole'
+        - Key: 'ClusterName'
+          Value: !Ref ClusterName
+
+  # ── 4. Karpenter Interruption Queue ────────────────────────────────────────
+  # Pre-created SQS queue that Karpenter polls for spot interruption,
+  # rebalance, and instance state-change events from EventBridge.
+  # Pre-creating it ensures the queue name matches what the backend passes to helm
+  # as settings.interruptionQueue — the bare ClusterName (Karpenter's convention).
+  KarpenterInterruptionQueue:
+    Type: 'AWS::SQS::Queue'
+    Properties:
+      QueueName: !Ref ClusterName
+      MessageRetentionPeriod: 300  # 5 minutes — events older than this are irrelevant
+      SqsManagedSseEnabled: true
+      Tags:
+        - Key: 'ManagedBy'
+          Value: 'SpotOptimizer'
+        - Key: 'ClusterName'
+          Value: !Ref ClusterName
+
+  KarpenterInterruptionQueuePolicy:
+    Type: 'AWS::SQS::QueuePolicy'
+    Properties:
+      Queues:
+        - !Ref KarpenterInterruptionQueue
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - events.amazonaws.com
+                - sqs.amazonaws.com
+            Action: 'sqs:SendMessage'
+            Resource: !GetAtt KarpenterInterruptionQueue.Arn
+
+  # ── 5. EventBridge Rules ────────────────────────────────────────────────────
+  # These rules route spot lifecycle events into the interruption queue.
+  # Karpenter monitors the queue and takes proactive action before eviction.
+
+  # Spot interruption 2-minute warning — most critical for zero-downtime replacement
+  KarpenterSpotInterruptionRule:
+    Type: 'AWS::Events::Rule'
+    Properties:
+      Name: !Sub 'KarpenterRule-${ClusterName}-SpotInterruption'
+      Description: !Sub 'Routes EC2 spot interruption warnings to Karpenter queue for ${ClusterName}'
+      EventPattern:
+        source:
+          - 'aws.ec2'
+        detail-type:
+          - 'EC2 Spot Instance Interruption Warning'
+      State: ENABLED
+      Targets:
+        - Id: KarpenterInterruptionQueueTarget
+          Arn: !GetAtt KarpenterInterruptionQueue.Arn
+
+  # Spot rebalance recommendation — allows Karpenter to proactively migrate
+  KarpenterRebalanceRule:
+    Type: 'AWS::Events::Rule'
+    Properties:
+      Name: !Sub 'KarpenterRule-${ClusterName}-Rebalance'
+      Description: !Sub 'Routes EC2 rebalance recommendations to Karpenter queue for ${ClusterName}'
+      EventPattern:
+        source:
+          - 'aws.ec2'
+        detail-type:
+          - 'EC2 Instance Rebalance Recommendation'
+      State: ENABLED
+      Targets:
+        - Id: KarpenterInterruptionQueueTarget
+          Arn: !GetAtt KarpenterInterruptionQueue.Arn
+
+  # Instance state change — Karpenter tracks when nodes terminate to update its cache
+  KarpenterInstanceStateRule:
+    Type: 'AWS::Events::Rule'
+    Properties:
+      Name: !Sub 'KarpenterRule-${ClusterName}-InstanceStateChange'
+      Description: !Sub 'Routes EC2 state-change notifications to Karpenter queue for ${ClusterName}'
+      EventPattern:
+        source:
+          - 'aws.ec2'
+        detail-type:
+          - 'EC2 Instance State-change Notification'
+      State: ENABLED
+      Targets:
+        - Id: KarpenterInterruptionQueueTarget
+          Arn: !GetAtt KarpenterInterruptionQueue.Arn
+
 Outputs:
   RoleArn:
     Description: 'Copy this ARN and paste it into the Spot Optimizer dashboard'
@@ -245,4 +715,30 @@ Outputs:
 
   Permissions:
     Description: 'Permission Scope'
-    Value: 'Full cluster management, hibernation, resource cleanup, and Cost Explorer access across all regions'
+    Value: 'Full cluster management, Karpenter install/uninstall (IAM roles + instance profiles + SQS + EventBridge), hibernation, resource cleanup, and Cost Explorer access across all regions'
+
+  # CF-MERGE-01: Karpenter resource outputs — backend reads these via naming convention,
+  # but exports are provided for manual reference and cross-stack use if needed.
+  KarpenterNodeRoleArn:
+    Description: 'ARN of KarpenterNodeRole — used by agent for EC2_LINUX access entry registration'
+    Value: !GetAtt KarpenterNodeRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-KarpenterNodeRoleArn'
+
+  KarpenterControllerRoleArn:
+    Description: 'ARN of KarpenterControllerRole — IRSA annotation for Karpenter ServiceAccount in helm install'
+    Value: !GetAtt KarpenterControllerRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-KarpenterControllerRoleArn'
+
+  KarpenterInterruptionQueueName:
+    Description: 'SQS queue name — passed to helm as settings.interruptionQueue (equals bare ClusterName)'
+    Value: !GetAtt KarpenterInterruptionQueue.QueueName
+    Export:
+      Name: !Sub '${AWS::StackName}-KarpenterInterruptionQueueName'
+
+  KarpenterInterruptionQueueUrl:
+    Description: 'SQS queue URL — for reference only; Karpenter uses the queue name not URL'
+    Value: !Ref KarpenterInterruptionQueue
+    Export:
+      Name: !Sub '${AWS::StackName}-KarpenterInterruptionQueueUrl'

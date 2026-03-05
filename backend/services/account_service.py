@@ -1,4 +1,5 @@
 import uuid
+import logging
 import boto3
 from botocore.exceptions import ClientError
 from datetime import datetime
@@ -8,6 +9,8 @@ from sqlalchemy.orm import Session
 from backend.models.account import Account, AccountStatus
 from backend.models.user import User, UserRole
 from backend.schemas.account_schemas import AccountCreate, AccountResponse
+
+logger = logging.getLogger(__name__)
 
 class AccountService:
     def __init__(self, db: Session):
@@ -183,11 +186,95 @@ class AccountService:
         self.db.refresh(account)
         return account
     def delete_account(self, account_id: str, organization_id: str) -> bool:
-        """Delete/unlink an AWS account"""
+        """Delete/unlink an AWS account and all its child data in safe dependency order."""
+        from backend.models.cluster import Cluster
+        from sqlalchemy import text
+
         account = self.get_account(account_id, organization_id)
-        self.db.delete(account)
-        self.db.commit()
-        return True
+
+        # Collect all cluster IDs for this account so we can delete children first
+        cluster_ids = [c.id for c in self.db.query(Cluster.id).filter(
+            Cluster.account_id == account_id
+        ).all()]
+
+        try:
+            if cluster_ids:
+                placeholders = ", ".join(f"'{cid}'" for cid in cluster_ids)
+
+                # CRITICAL: When a Postgres DELETE fails (e.g. table doesn't exist,
+                # FK violation), Python catching the exception is NOT enough — Postgres
+                # marks the entire connection transaction as aborted.  All subsequent
+                # SQL on the same session is then rejected with InFailedSqlTransaction.
+                #
+                # Fix: wrap each table delete in a SAVEPOINT. On failure, roll back to
+                # the savepoint so the outer transaction stays alive.
+                tables_with_cluster_fk = [
+                    "pod_metrics",
+                    "cluster_metrics",
+                    "agent_actions",
+                    "execution_states",
+                    "rightsizing_proposals",
+                    "optimizer_states",
+                    "optimization_jobs",
+                    "rebalancing_actions",
+                    "substitute_states",
+                    "cluster_optimization_settings",
+                    "optimization_strategy",
+                    "stateless_runtime_rules",
+                    "stateful_rules",
+                    "cluster_template_mappings",
+                    "cluster_policies",
+                    "chaos_experiments",
+                    "api_keys",
+                    "instances",
+                ]
+
+                for table in tables_with_cluster_fk:
+                    sp_name = f"sp_{table}"
+                    try:
+                        self.db.execute(text(f"SAVEPOINT {sp_name}"))
+                        self.db.execute(
+                            text(f"DELETE FROM {table} WHERE cluster_id IN ({placeholders})")
+                        )
+                        self.db.execute(text(f"RELEASE SAVEPOINT {sp_name}"))
+                    except Exception as table_err:
+                        try:
+                            self.db.execute(text(f"ROLLBACK TO SAVEPOINT {sp_name}"))
+                        except Exception:
+                            pass
+                        logger.warning(
+                            "Skipped delete from '%s' (table may not exist yet): %s",
+                            table, table_err
+                        )
+
+                # Delete account-level FK rows
+                try:
+                    self.db.execute(text("SAVEPOINT sp_authorized_resources"))
+                    self.db.execute(
+                        text(f"DELETE FROM authorized_resources WHERE account_id = '{account_id}'")
+                    )
+                    self.db.execute(text("RELEASE SAVEPOINT sp_authorized_resources"))
+                except Exception:
+                    try:
+                        self.db.execute(text("ROLLBACK TO SAVEPOINT sp_authorized_resources"))
+                    except Exception:
+                        pass
+
+                # Delete the clusters themselves
+                self.db.execute(
+                    text(f"DELETE FROM clusters WHERE id IN ({placeholders})")
+                )
+
+            self.db.delete(account)
+            self.db.commit()
+            return True
+
+        except Exception as e:
+            self.db.rollback()
+            logger.exception("Failed to delete account %s: %s", account_id, e)
+            raise HTTPException(status_code=500, detail=f"Failed to delete account: {str(e)}")
+
+
 
     def validate_account(self, account_id: str, organization_id: str) -> Account:
         """Validate account credentials are still working"""

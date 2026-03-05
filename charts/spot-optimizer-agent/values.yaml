@@ -1,7 +1,7 @@
 image:
-  repository: spotoptimizer/agent
-  tag: v1.0.0
-  pullPolicy: IfNotPresent
+  repository: atharva608/spot-optimizer-agent
+  tag: latest
+  pullPolicy: Always
 
 config:
   apiKey: ""

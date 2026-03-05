@@ -26,6 +26,29 @@ from backend.services.resource_pricing_service import ResourcePricingService
 
 logger = logging.getLogger(__name__)
 
+# Compact vcpu/memory lookup for common instance types used during substitute selection.
+# Used to call PoolRankingService.rank_pools_for_size() with the right size constraints.
+_INSTANCE_VCPU_MEM: dict = {
+    "t3.nano": (2, 0.5), "t3.micro": (2, 1), "t3.small": (2, 2), "t3.medium": (2, 4),
+    "t3.large": (2, 8), "t3.xlarge": (4, 16), "t3.2xlarge": (8, 32),
+    "t3a.micro": (2, 1), "t3a.small": (2, 2), "t3a.medium": (2, 4), "t3a.large": (2, 8),
+    "t3a.xlarge": (4, 16), "t3a.2xlarge": (8, 32),
+    "t4g.nano": (2, 0.5), "t4g.micro": (2, 1), "t4g.small": (2, 2), "t4g.medium": (2, 4),
+    "t4g.large": (2, 8), "t4g.xlarge": (4, 16), "t4g.2xlarge": (8, 32),
+    "m5.large": (2, 8), "m5.xlarge": (4, 16), "m5.2xlarge": (8, 32), "m5.4xlarge": (16, 64),
+    "m5a.large": (2, 8), "m5a.xlarge": (4, 16), "m5a.2xlarge": (8, 32),
+    "m6i.large": (2, 8), "m6i.xlarge": (4, 16), "m6i.2xlarge": (8, 32),
+    "m6a.large": (2, 8), "m6a.xlarge": (4, 16), "m6a.2xlarge": (8, 32),
+    "m6g.medium": (1, 4), "m6g.large": (2, 8), "m6g.xlarge": (4, 16), "m6g.2xlarge": (8, 32),
+    "c5.large": (2, 4), "c5.xlarge": (4, 8), "c5.2xlarge": (8, 16), "c5.4xlarge": (16, 32),
+    "c6i.large": (2, 4), "c6i.xlarge": (4, 8), "c6i.2xlarge": (8, 16),
+    "c6a.large": (2, 4), "c6a.xlarge": (4, 8), "c6a.2xlarge": (8, 16),
+    "c6g.medium": (1, 2), "c6g.large": (2, 4), "c6g.xlarge": (4, 8), "c6g.2xlarge": (8, 16),
+    "r5.large": (2, 16), "r5.xlarge": (4, 32), "r5.2xlarge": (8, 64),
+    "r6i.large": (2, 16), "r6i.xlarge": (4, 32), "r6i.2xlarge": (8, 64),
+    "r6g.large": (2, 16), "r6g.xlarge": (4, 32), "r6g.2xlarge": (8, 64),
+}
+
 
 class SubstituteState(str, Enum):
     """Substitute instance lifecycle states"""
@@ -83,13 +106,13 @@ class SubstituteManager:
         Returns:
             Current SubstituteState
         """
-        state_key = f"substitute:state:{cluster_id}"
+        state_key = f"spot:substitute:state:{cluster_id}"
         state = self.redis.get(state_key)
 
         if not state:
             return SubstituteState.IDLE
 
-        return SubstituteState(state.decode("utf-8"))
+        return SubstituteState(state.decode("utf-8") if isinstance(state, bytes) else state)
 
     def _set_state(
         self,
@@ -107,14 +130,14 @@ class SubstituteManager:
             metadata: Optional metadata to store alongside state
             ttl_seconds: Optional TTL for state expiry
         """
-        state_key = f"substitute:state:{cluster_id}"
+        state_key = f"spot:substitute:state:{cluster_id}"
         self.redis.set(state_key, state.value)
 
         if ttl_seconds:
             self.redis.expire(state_key, ttl_seconds)
 
         if metadata:
-            meta_key = f"substitute:meta:{cluster_id}"
+            meta_key = f"spot:substitute:meta:{cluster_id}"
             self.redis.set(meta_key, json.dumps(metadata))
             if ttl_seconds:
                 self.redis.expire(meta_key, ttl_seconds)
@@ -131,13 +154,13 @@ class SubstituteManager:
         Returns:
             Metadata dict or None
         """
-        meta_key = f"substitute:meta:{cluster_id}"
+        meta_key = f"spot:substitute:meta:{cluster_id}"
         data = self.redis.get(meta_key)
 
         if not data:
             return None
 
-        return json.loads(data.decode("utf-8"))
+        return json.loads(data.decode("utf-8") if isinstance(data, bytes) else data)
 
     # =========================================================================
     # Substitute Type Selection
@@ -316,11 +339,17 @@ class SubstituteManager:
             List of candidate dicts with instance_type, az, lifecycle
         """
         candidates = []
+        region = cluster.region or "ap-south-1"
+        target_az = target_node.availability_zone
 
         if substitute_type == "on-demand":
             # NO_DOWNTIME_FIRST: use same instance type in different AZ (on-demand)
-            for az in ["us-east-1a", "us-east-1b", "us-east-1c"]:
-                if az != target_node.availability_zone:
+            # Try region-aware AZ names first, then fall back to generic us-east-1 set
+            region_prefix = region.rstrip("0123456789")
+            az_suffixes = ["a", "b", "c", "d"]
+            candidate_azs = [f"{region}{s}" for s in az_suffixes]
+            for az in candidate_azs:
+                if az != target_az:
                     candidates.append({
                         "instance_type": target_node.instance_type,
                         "az": az,
@@ -330,26 +359,67 @@ class SubstituteManager:
                         break
 
         else:
-            # BALANCED/COST_FIRST: use spot from different family+AZ
-            # Extract family (e.g., m5.large → m5)
-            family = target_node.instance_type.split(".")[0]
+            # BALANCED/COST_FIRST: use ML-ranked cheapest compatible spot pool
+            # Look up the target node's vcpu/memory to drive size-constrained ranking
+            target_specs = _INSTANCE_VCPU_MEM.get(target_node.instance_type)
+            if target_specs:
+                target_vcpu, target_mem = target_specs
+            else:
+                # Default: assume 2 vCPU / 8 GB (m5.large equivalent)
+                target_vcpu, target_mem = 2, 8
 
-            # Alternative families (prioritize similar CPU/memory ratio)
-            alt_families = self._get_alternative_families(family)
-
-            for alt_family in alt_families[:self.MAX_CANDIDATES]:
-                # Use different AZ for diversification
-                for az in ["us-east-1a", "us-east-1b", "us-east-1c"]:
-                    if az != target_node.availability_zone:
+            try:
+                from backend.services.pool_ranking_service import PoolRankingService
+                _svc = PoolRankingService(self.db, self.redis)
+                # Fetch extra candidates so we have enough after AZ filtering
+                ranked = _svc.rank_pools_for_size(
+                    vcpu=target_vcpu,
+                    memory_gb=float(target_mem),
+                    region=region,
+                    limit=self.MAX_CANDIDATES * 4
+                )
+                seen_azs: set = set()
+                for scored_pool in ranked:
+                    p = scored_pool.pool
+                    # Exclude same AZ and already-seen AZs for diversification
+                    if p.az != target_az and p.az not in seen_azs:
                         candidates.append({
-                            "instance_type": f"{alt_family}.large",  # Default to .large
-                            "az": az,
-                            "lifecycle": "spot"
+                            "instance_type": p.instance_type,
+                            "az": p.az,
+                            "lifecycle": "spot",
+                            "spot_price": p.spot_price,
+                            "risk_score": round(scored_pool.risk_probability, 3),
                         })
-                        break
+                        seen_azs.add(p.az)
+                        if len(candidates) >= self.MAX_CANDIDATES:
+                            break
+            except Exception as e:
+                logger.warning(
+                    f"ML pool ranking failed for substitute selection "
+                    f"(cluster={cluster.id}), falling back to family map: {e}"
+                )
 
-                if len(candidates) >= self.MAX_CANDIDATES:
-                    break
+            # Fallback: ML returned nothing — use conservative family + size suffix
+            if not candidates:
+                family = target_node.instance_type.split(".")[0]
+                size_suffix = (
+                    target_node.instance_type.split(".", 1)[-1]
+                    if "." in target_node.instance_type else "large"
+                )
+                alt_families = self._get_alternative_families(family)
+                az_suffixes = ["a", "b", "c"]
+                candidate_azs = [f"{region}{s}" for s in az_suffixes]
+                for alt_family in alt_families[:self.MAX_CANDIDATES]:
+                    for az in candidate_azs:
+                        if az != target_az:
+                            candidates.append({
+                                "instance_type": f"{alt_family}.{size_suffix}",
+                                "az": az,
+                                "lifecycle": "spot"
+                            })
+                            break
+                    if len(candidates) >= self.MAX_CANDIDATES:
+                        break
 
         return candidates[:self.MAX_CANDIDATES]
 
@@ -493,6 +563,19 @@ class SubstituteManager:
         except Exception as e:
             logger.error(f"Failed to record substitute cooldown: {e}")
 
+        # ── WARM SPARE: kick off replacement spare immediately ─────────
+        # Schedule a single-cluster warm spare task to provision the next spare
+        try:
+            from backend.workers.tasks.maintain_warm_spare_worker import maintain_warm_spare_single_cluster
+            cluster = self.db.query(Cluster).filter(Cluster.id == cluster_id).first()
+            region = cluster.region if cluster else "ap-south-1"
+            maintain_warm_spare_single_cluster.apply_async(
+                args=[cluster_id, region], countdown=10
+            )
+            logger.info(f"Scheduled replacement warm spare for cluster {cluster_id}")
+        except Exception as e:
+            logger.warning(f"Could not schedule replacement spare task: {e}")
+
         return {
             "success": True,
             "state": SubstituteState.ACTIVE.value,
@@ -606,6 +689,161 @@ class SubstituteManager:
         return None
 
     # =========================================================================
+    # Warm Spare — Persistent 24x7 compatible substitute
+    # =========================================================================
+
+    def find_max_node_specs(self, cluster_id: str) -> Optional[Dict]:
+        """
+        Find the largest node in the cluster (highest vCPU × memory_gb).
+
+        Returns dict with instance_type, vcpu, memory_gb, instance_id.
+        A substitute sized for this node can absorb ANY node drain in the cluster.
+        """
+        instances = self.db.query(Instance).filter(
+            Instance.cluster_id == cluster_id,
+            Instance.state == "running"
+        ).all()
+
+        if not instances:
+            return None
+
+        best = None
+        best_score = 0
+        for inst in instances:
+            specs = _INSTANCE_VCPU_MEM.get(inst.instance_type)
+            if not specs:
+                continue
+            vcpu, mem = specs
+            score = vcpu * mem
+            if score > best_score:
+                best_score = score
+                best = {
+                    "instance_type": inst.instance_type,
+                    "vcpu": vcpu,
+                    "memory_gb": float(mem),
+                    "instance_id": inst.instance_id,
+                }
+
+        return best
+
+    def ensure_warm_spare(self, cluster_id: str, region: str) -> Dict:
+        """
+        Ensure at least 1 warm spare is always running 24x7.
+
+        Logic:
+          - Find the largest node in the cluster
+          - Find the cheapest spot pool that can absorb that node's specs
+          - If no spare exists → PREWARMING → READY (no TTL, stays forever)
+          - If spare is ACTIVE (in use) → kick off replacement spare immediately
+          - If max-node specs grew → re-provision with larger spare
+          - READY state has no TTL — spare runs until used or specs change
+        """
+        state = self.get_state(cluster_id)
+        metadata = self._get_metadata(cluster_id) or {}
+
+        # ── Find the biggest node ──────────────────────────────────────────────
+        max_node = self.find_max_node_specs(cluster_id)
+        if not max_node:
+            return {"status": "no_nodes", "cluster_id": cluster_id}
+
+        # ── Find cheapest spot pool that fits those specs ──────────────────────
+        try:
+            from backend.services.pool_ranking_service import PoolRankingService
+            _svc = PoolRankingService(self.db, self.redis)
+            ranked = _svc.rank_pools_for_size(
+                vcpu=max_node["vcpu"],
+                memory_gb=max_node["memory_gb"],
+                region=region,
+                limit=5
+            )
+            if not ranked:
+                return {"status": "no_pools_found", "cluster_id": cluster_id, "max_node": max_node}
+            best = ranked[0]
+            best_pool_data = {
+                "instance_type": best.pool.instance_type,
+                "az": best.pool.az,
+                "spot_price_hourly": round(best.pool.spot_price, 4),
+                "risk_score": round(best.risk_probability, 3),
+                "monthly_cost": round(best.pool.spot_price * 720, 2),
+            }
+        except Exception as e:
+            logger.error(f"Pool ranking failed for warm spare cluster={cluster_id}: {e}")
+            return {"status": "pool_ranking_failed", "cluster_id": cluster_id, "error": str(e)}
+
+        # ── Check if re-provisioning is needed ────────────────────────────────
+        stored_vcpu = metadata.get("target_vcpu", 0)
+        stored_mem = metadata.get("target_memory_gb", 0)
+        specs_grew = (max_node["vcpu"] > stored_vcpu or max_node["memory_gb"] > stored_mem)
+
+        if state == SubstituteState.PREWARMING:
+            # Already warming up — nothing to do
+            return {"status": "already_prewarming", "cluster_id": cluster_id}
+
+        if state == SubstituteState.READY and not specs_grew:
+            # Healthy spare, still compatible — nothing to do
+            return {
+                "status": "spare_ready",
+                "cluster_id": cluster_id,
+                "spare_instance_type": metadata.get("substitute_instance_type"),
+                "spare_az": metadata.get("substitute_az"),
+                "monthly_cost": metadata.get("monthly_cost"),
+            }
+
+        # Need to provision (new, replacement after IN_USE, or spec upgrade)
+        if state == SubstituteState.ACTIVE:
+            action = "replacement_spare"
+            # Also store next-spare key so UI can show "replacement prewarming"
+            next_key = f"spot:substitute:next_spare:{cluster_id}"
+            self.redis.set(next_key, json.dumps({
+                "state": "PREWARMING",
+                "instance_type": best_pool_data["instance_type"],
+                "az": best_pool_data["az"],
+                "started_at": datetime.utcnow().isoformat(),
+            }))
+            # Main state stays ACTIVE — don't overwrite
+            logger.info(f"[warm-spare] Replacement spare prewarming for cluster {cluster_id}")
+            return {"status": "replacement_prewarming", "action": action, "cluster_id": cluster_id}
+        elif specs_grew:
+            action = "spec_upgrade"
+        else:
+            action = "initial_provision"
+
+        spare_meta = {
+            "is_warm_spare": True,
+            "target_node_instance_type": max_node["instance_type"],
+            "target_vcpu": max_node["vcpu"],
+            "target_memory_gb": max_node["memory_gb"],
+            "substitute_instance_type": best_pool_data["instance_type"],
+            "substitute_az": best_pool_data["az"],
+            "substitute_lifecycle": "spot",
+            "spot_price_hourly": best_pool_data["spot_price_hourly"],
+            "monthly_cost": best_pool_data["monthly_cost"],
+            "risk_score": best_pool_data["risk_score"],
+            "compatible_with": f"Any node ≤ {max_node['vcpu']} vCPU / {max_node['memory_gb']} GB",
+            "started_at": datetime.utcnow().isoformat(),
+            "validated_at": datetime.utcnow().isoformat(),
+        }
+
+        # PREWARMING (brief) → READY with no TTL (stays forever)
+        self._set_state(cluster_id, SubstituteState.PREWARMING, metadata=spare_meta)
+        self._set_state(cluster_id, SubstituteState.READY, metadata=spare_meta, ttl_seconds=None)
+
+        logger.info(
+            f"[warm-spare] {action} for cluster {cluster_id}: "
+            f"{best_pool_data['instance_type']} in {best_pool_data['az']} "
+            f"@ ${best_pool_data['spot_price_hourly']}/hr "
+            f"(${best_pool_data['monthly_cost']}/mo)"
+        )
+        return {
+            "status": "provisioned",
+            "action": action,
+            "cluster_id": cluster_id,
+            "spare_instance_type": best_pool_data["instance_type"],
+            "spare_az": best_pool_data["az"],
+            "monthly_cost": best_pool_data["monthly_cost"],
+        }
+
+    # =========================================================================
     # Status & Reconciliation
     # =========================================================================
 
@@ -613,33 +851,44 @@ class SubstituteManager:
         """
         Get complete substitute status for cluster.
 
-        Args:
-            cluster_id: Cluster identifier
-
         Returns:
-            Status dict or None if no active substitute
+            Status dict (always returns for READY/ACTIVE/PREWARMING warm spare,
+            None only for true IDLE with no spare configured)
         """
         state = self.get_state(cluster_id)
-        if state == SubstituteState.IDLE:
-            return None
-
         metadata = self._get_metadata(cluster_id) or {}
+
+        if state == SubstituteState.IDLE and not metadata.get("is_warm_spare"):
+            return None
 
         status = {
             "cluster_id": cluster_id,
             "state": state.value,
-            "target_node_name": metadata.get("target_node_name"),
+            "is_warm_spare": metadata.get("is_warm_spare", False),
             "substitute_instance_type": metadata.get("substitute_instance_type"),
             "substitute_az": metadata.get("substitute_az"),
-            "substitute_lifecycle": metadata.get("substitute_lifecycle"),
+            "substitute_lifecycle": metadata.get("substitute_lifecycle", "spot"),
+            "spot_price_hourly": metadata.get("spot_price_hourly"),
+            "monthly_cost": metadata.get("monthly_cost"),
+            "target_vcpu": metadata.get("target_vcpu"),
+            "target_memory_gb": metadata.get("target_memory_gb"),
+            "target_node_instance_type": metadata.get("target_node_instance_type"),
+            "compatible_with": metadata.get("compatible_with"),
+            "risk_score": metadata.get("risk_score"),
             "started_at": metadata.get("started_at"),
             "validated_at": metadata.get("validated_at"),
             "promoted_at": metadata.get("promoted_at"),
-            "handback_at": metadata.get("handback_at")
+            "handback_at": metadata.get("handback_at"),
+            # Legacy fields
+            "target_node_name": metadata.get("target_node_name"),
         }
 
-        # Add cost drift if ACTIVE
+        # Check for replacement spare being prewarmed (when primary is ACTIVE)
         if state == SubstituteState.ACTIVE:
+            next_key = f"spot:substitute:next_spare:{cluster_id}"
+            next_data = self.redis.get(next_key)
+            if next_data:
+                status["next_spare"] = json.loads(next_data.decode("utf-8") if isinstance(next_data, bytes) else next_data)
             drift = self.check_cost_drift(cluster_id)
             if drift:
                 status["cost_drift"] = drift
@@ -664,7 +913,7 @@ class SubstituteManager:
         transitions = []
 
         # Scan all substitute keys in Redis
-        pattern = "substitute:state:*"
+        pattern = "spot:substitute:state:*"
         for key in self.redis.scan_iter(match=pattern):
             cluster_id = key.decode("utf-8").split(":")[-1]
             state = self.get_state(cluster_id)
@@ -685,6 +934,9 @@ class SubstituteManager:
                         })
 
             elif state == SubstituteState.READY:
+                # Warm spare READY state has no timeout — it stays running 24x7
+                if metadata.get("is_warm_spare"):
+                    continue
                 validated_at = metadata.get("validated_at")
                 if validated_at:
                     validated = datetime.fromisoformat(validated_at)

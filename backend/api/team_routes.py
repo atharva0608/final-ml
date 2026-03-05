@@ -14,6 +14,37 @@ router = APIRouter(prefix="/teams", tags=["Teams"])
 def get_service(db: Session = Depends(get_db)):
     return TeamService(db)
 
+
+@router.get("/invites")
+def get_my_invites(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Get pending organization invitations for the current user.
+    Used by Dashboard to count awaiting consent items.
+    """
+    from backend.models.invitation import OrganizationInvitation, InvitationStatus
+    from datetime import datetime
+
+    invites = db.query(OrganizationInvitation).filter(
+        OrganizationInvitation.email == current_user.email,
+        OrganizationInvitation.status == InvitationStatus.PENDING,
+        OrganizationInvitation.expires_at > datetime.utcnow()
+    ).all()
+
+    return [
+        {
+            "id": inv.id,
+            "email": inv.email,
+            "role": inv.role.value if hasattr(inv.role, "value") else str(inv.role),
+            "organization_id": inv.organization_id,
+            "created_at": inv.created_at.isoformat() if inv.created_at else None,
+            "expires_at": inv.expires_at.isoformat() if inv.expires_at else None,
+        }
+        for inv in invites
+    ]
+
 @router.get("/", response_model=List[TeamResponse])
 def get_teams(service: TeamService = Depends(get_service), user: User = Depends(get_current_user)):
     return service.get_teams_for_user(user)

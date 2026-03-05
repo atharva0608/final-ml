@@ -366,6 +366,16 @@ class HibernationService:
                 monthly_savings[month_key]['savings'] += float(log.metadata.get('estimated_savings', 0))
                 monthly_savings[month_key]['sleep_hours'] += int(log.metadata.get('sleep_hours', 0))
 
+        # Extract per-schedule info
+        schedule_history = {}
+        for log in logs:
+            if log.metadata and 'schedule_id' in log.metadata:
+                sid = log.metadata['schedule_id']
+                if sid not in schedule_history:
+                    schedule_history[sid] = {'amount_saved': 0, 'hours_slept': 0}
+                schedule_history[sid]['amount_saved'] += float(log.metadata.get('estimated_savings', 0))
+                schedule_history[sid]['hours_slept'] += int(log.metadata.get('sleep_hours', 0))
+
         # Fill missing months with zeros
         result = []
         for i in range(months):
@@ -382,7 +392,17 @@ class HibernationService:
                     'sleep_hours': 0
                 })
 
-        return result
+        total_saved_all_time = sum(m['savings'] for m in result)
+        total_saved_this_month = result[-1]['savings'] if result else 0
+        avg_per_schedule = total_saved_all_time / len(schedule_history) if schedule_history else 0
+
+        return {
+            "total_saved_this_month": total_saved_this_month,
+            "total_saved_all_time": total_saved_all_time,
+            "avg_per_schedule": avg_per_schedule,
+            "history": result,
+            "per_schedule": schedule_history
+        }
 
     def get_active_hibernation_status(self, organization_id: str) -> Dict[str, Any]:
         """

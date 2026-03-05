@@ -91,6 +91,13 @@ def check_all_clusters_rotation(self):
         # Process each cluster
         for cluster in clusters:
             try:
+                # ── Toggle gate: only rotate if auto_rebalance_enabled ────────
+                opt_settings = cluster.optimization_settings
+                auto_rebalance = getattr(opt_settings, 'auto_rebalance_enabled', False) if opt_settings else False
+                if not auto_rebalance:
+                    logger.debug(f"Pool rotation skipped for {cluster.name}: auto_rebalance_enabled=False")
+                    continue
+
                 result = service.check_and_rotate(
                     cluster_id=cluster.id,
                     region=cluster.region or "ap-south-1"

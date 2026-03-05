@@ -171,6 +171,8 @@ class MetricsService:
             total_cost=float(cost_metrics.total_cost)
         )
 
+        optimization_rate = round((spot_instances / active_instances * 100), 1) if active_instances > 0 else 0.0
+
         return DashboardKPIs(
             total_instances=total_instances,
             active_instances=active_instances,
@@ -181,6 +183,7 @@ class MetricsService:
             savings_percentage=savings_metrics.savings_percentage,
             total_optimizations=total_optimizations,
             successful_optimizations=successful_optimizations,
+            optimization_rate=optimization_rate,
             time_range_start=start_date,
             time_range_end=end_date
         )

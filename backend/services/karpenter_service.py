@@ -54,7 +54,7 @@ class KarpenterService:
         self,
         cluster_id: str,
         top_pools: List[Dict],
-        nodepool_name: str = "ml-optimized"
+        nodepool_name: str = "default"
     ) -> Dict:
         """
         Syncs ML-ranked instance types to Karpenter NodePool.
@@ -117,7 +117,7 @@ class KarpenterService:
         cluster_id: str,
         template_instance_types: List[str],
         template_azs: Optional[List[str]] = None,
-        nodepool_name: str = "ml-optimized"
+        nodepool_name: str = "default"
     ) -> Dict:
         """
         Switch NodePool from spot to on-demand instances.
@@ -248,7 +248,7 @@ class KarpenterService:
     def revert_to_spot(
         self,
         cluster_id: str,
-        nodepool_name: str = "ml-optimized"
+        nodepool_name: str = "default"
     ) -> Dict:
         """
         Revert NodePool from on-demand back to spot.
@@ -760,7 +760,7 @@ class KarpenterService:
             logger.error(f"Failed to update NodePool: {e}")
             raise
 
-    def get_nodepool_status(self, cluster_id: str, nodepool_name: str = "ml-optimized") -> Dict:
+    def get_nodepool_status(self, cluster_id: str, nodepool_name: str = "default") -> Dict:
         """Gets current status of Karpenter NodePool."""
         try:
             cluster = self.db.query(Cluster).filter(Cluster.id == cluster_id).first()

@@ -1,6 +1,26 @@
 """
 Execution Controller — Safe Node Replacement Pipeline
 ======================================================
+⚠️  DEPRECATED — THIS CLASS IS DEAD CODE. DO NOT USE IN NEW FEATURES.
+
+Why it's deprecated:
+  The auto-rebalancer (backend/workers/tasks/auto_rebalancer.py) is the real,
+  working execution path. It creates AgentAction records in PostgreSQL which the
+  K8s DaemonSet agent picks up via WebSocket or HTTP polling and executes directly.
+
+  ExecutionController was an alternative design that never got wired to real AWS/K8s
+  calls. Every adapter method here returns a hardcoded True stub — it has NEVER
+  performed an actual node drain, EC2 termination, or capacity check in production.
+
+Real execution path (use these instead):
+  1. auto_rebalancer.py → create_pool_switch_actions() → 3 AgentAction records
+  2. agent_routes.py → WebSocket push / HTTP poll → agent/actuator.py
+  3. actuator.py → cordon_node(), drain_node(), patch_karpenter_nodepool()
+  4. agent_routes.py POST /actions/{id}/result → record result + SSE event
+
+This file is kept only because test_integration_hardening.py mocks it.
+Do not add new functionality here. This will be removed in a future cleanup.
+
 Implements problems.md §7:
   1. Dry-run capacity validation
   2. Provision substitute node
@@ -64,7 +84,7 @@ class ExecutionResult:
         }
 
 
-class ExecutionController:
+class ExecutionController:  # DEPRECATED — see module docstring for real path
     """
     Orchestrates zero-downtime spot node replacement.
     Uses injected adapters for K8s and AWS operations.

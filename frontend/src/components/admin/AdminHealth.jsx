@@ -168,7 +168,7 @@ const AdminHealth = () => {
             <FiActivity className={`w-12 h-12 ${mlHealth?.status === 'online' ? 'text-indigo-600' : 'text-gray-400'}`} />
             <div>
               <h2 className="text-2xl font-bold text-gray-900 capitalize">
-                AtharvaAI Decision Engine: {mlHealth?.status || 'UNKNOWN'}
+                ASCP.ai Engine: {mlHealth?.status || 'UNKNOWN'}
               </h2>
               <p className="text-sm text-gray-600 mt-1">
                 Version: {mlHealth?.version || 'v3.1.2'} • Global Engine Status

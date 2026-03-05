@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from redis import Redis
 
 from backend.core.config import settings
-from backend.models.instance import Instance
+from backend.models.instance import Instance, InstanceLifecycle
 from backend.models.cluster import Cluster
 from backend.schemas.metric_schemas import ChartData, PieData
 
@@ -174,7 +174,7 @@ class SpotOptimizationEngine:
         # In a real implementation, check for 'spot-optimizer/fallback=true' tag
         fallback_nodes = self.db.query(Instance).filter(
             Instance.cluster_id == cluster_id,
-            Instance.lifecycle == 'ON_DEMAND',
+            Instance.lifecycle == InstanceLifecycle.ON_DEMAND,
             Instance.state == 'running'
             # Instance.tags.contains('fallback') # Placeholder
         ).all()

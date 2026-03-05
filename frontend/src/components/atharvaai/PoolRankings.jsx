@@ -13,40 +13,15 @@ const getInstanceFamily = (instanceType) => {
     return match ? match[1] : null;
 };
 
-/**
- * Build a node template filter that:
- * - Always includes common spot-eligible families (m5, m6i, c5, c6i, r5, r6i, t3, t3a, t4g, Graviton)
- * - Adds the primary instance's family if not already present
- * - Opens architecture to include arm64 (Graviton)
- */
 const buildTemplate = (primaryInstanceType) => {
-    const family = getInstanceFamily(primaryInstanceType);
-
-    const baseFamilies = [
-        // x86 general purpose
-        'm5', 'm6i', 'm5a', 'm6a',
-        // x86 compute optimized
-        'c5', 'c6i', 'c5a', 'c6a',
-        // x86 memory optimized
-        'r5', 'r6i',
-        // x86 burstable (t-family on-demand → t-family spot saves ~70%)
-        't3', 't3a',
-        // Graviton (arm64)
-        't4g', 'm6g', 'c6g', 'r6g',
-    ];
-
-    const families = family && !baseFamilies.includes(family)
-        ? [...baseFamilies, family]
-        : baseFamilies;
-
     return {
         architecture: ['amd64', 'arm64'],   // include Graviton
         vcpu_min: 1,
-        vcpu_max: 32,
+        vcpu_max: 128,
         memory_gb_min: 1,
-        memory_gb_max: 128,
-        allowed_families: families,
-        allowed_sizes: ['nano', 'micro', 'small', 'medium', 'large', 'xlarge', '2xlarge', '4xlarge'],
+        memory_gb_max: 512,
+        allowed_families: null, // Allow backend or actual cluster config to dictate families
+        allowed_sizes: null,
         allowed_azs: null,
         excluded_instance_types: [],
     };
@@ -276,7 +251,7 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
         <div className="pool-rankings-container p-6">
             <div className="flex justify-between items-start mb-6">
                 <div>
-                    <h1 className="text-3xl font-bold text-gray-800">AtharvaAi Pool Rankings</h1>
+                    <h1 className="text-3xl font-bold text-gray-800">ASCP.ai Pool Rankings</h1>
 
                     <div className="flex items-center gap-4 mt-3 mb-2">
                         {effectiveConfig && effectiveConfig.optimization_strategy && (
@@ -476,7 +451,13 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
                                         {getHealthBadge(pool.is_flagged)}
                                     </td>
                                     <td className="px-4 py-3 whitespace-nowrap">
-                                        <span className="text-gray-500 text-xs italic">Calculating...</span>
+                                        {(() => {
+                                            const usedCount = nodeRecommendations.filter(r => r.current_type === pool.instance_type).length;
+                                            if (usedCount > 0) {
+                                                return <span className="px-2 py-0.5 inline-flex text-xs font-semibold rounded-full bg-indigo-100 text-indigo-800">{usedCount} node{usedCount > 1 ? 's' : ''}</span>;
+                                            }
+                                            return <span className="text-gray-400 text-xs">—</span>;
+                                        })()}
                                     </td>
                                 </tr>
                             ))}
@@ -499,42 +480,46 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
                     {(() => {
                         const totalNodes = nodeRecommendations.length;
                         const eligibleNodes = nodeRecommendations.filter(r => r.status === 'ELIGIBLE').length;
-                        const statelessNodes = nodeRecommendations.filter(r => r.status !== 'HIGH_UTILIZATION').length;
+                        const statelessNodes = nodeRecommendations.filter(r => r.status !== 'HIGH_UTILIZATION' && r.status !== 'SYSTEM_PROTECTED').length;
+                        const atRiskNodes = nodeRecommendations.filter(r => r.status === 'AT_RISK').length;
                         // Projected monthly savings: hourly cost × savings% × 720 hours
                         const projSavings = nodeRecommendations
                             .filter(r => r.status === 'ELIGIBLE')
                             .reduce((sum, r) => sum + (r.current_cost || 0) * ((r.projected_savings_pct || 0) / 100) * 720, 0);
                         return (
-                    <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
-                        <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
-                            <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Total Nodes</h4>
-                            <p className="mt-2 text-2xl font-bold text-gray-900">
-                                {nodeViewLoading ? '…' : totalNodes > 0 ? totalNodes : '0'}
-                            </p>
-                        </div>
-                        <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
-                            <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Stateless</h4>
-                            <p className="mt-2 text-2xl font-bold text-gray-900">
-                                {nodeViewLoading ? '…' : statelessNodes}
-                            </p>
-                        </div>
-                        <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
-                            <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Eligible</h4>
-                            <p className="mt-2 text-2xl font-bold text-indigo-600">
-                                {nodeViewLoading ? '…' : eligibleNodes}
-                            </p>
-                        </div>
-                        <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
-                            <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">In Cooldown</h4>
-                            <p className="mt-2 text-2xl font-bold text-orange-500">0</p>
-                        </div>
-                        <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
-                            <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Proj. Savings</h4>
-                            <p className="mt-2 text-2xl font-bold text-green-600">
-                                {nodeViewLoading ? '$…' : projSavings > 0 ? `$${Math.round(projSavings)}/mo` : '$0/mo'}
-                            </p>
-                        </div>
-                    </div>
+                            <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+                                <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
+                                    <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Total Nodes</h4>
+                                    <p className="mt-2 text-2xl font-bold text-gray-900">
+                                        {nodeViewLoading ? '…' : totalNodes > 0 ? totalNodes : '0'}
+                                    </p>
+                                </div>
+                                <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
+                                    <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Stateless</h4>
+                                    <p className="mt-2 text-2xl font-bold text-gray-900">
+                                        {nodeViewLoading ? '…' : statelessNodes}
+                                    </p>
+                                </div>
+                                <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
+                                    <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Eligible</h4>
+                                    <p className="mt-2 text-2xl font-bold text-indigo-600">
+                                        {nodeViewLoading ? '…' : eligibleNodes}
+                                    </p>
+                                </div>
+                                <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
+                                    <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">At Risk</h4>
+                                    <p className="mt-2 text-2xl font-bold text-orange-500">
+                                        {nodeViewLoading ? '…' : atRiskNodes}
+                                    </p>
+                                    <p className="text-xs text-gray-400 mt-1">risk &gt; 60%</p>
+                                </div>
+                                <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
+                                    <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Proj. Savings</h4>
+                                    <p className="mt-2 text-2xl font-bold text-green-600">
+                                        {nodeViewLoading ? '$…' : projSavings > 0 ? `$${Math.round(projSavings)}/mo` : '$0/mo'}
+                                    </p>
+                                </div>
+                            </div>
                         );
                     })()}
 
@@ -614,58 +599,156 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
                         const savingsPct = totalCurrentMonthly > 0
                             ? Math.round(savingsAmt / totalCurrentMonthly * 100) : 0;
                         const eligibleCount = nodeRecommendations.filter(r => r.status === 'ELIGIBLE').length;
-                        const spotExposurePct = nodeRecommendations.length > 0
-                            ? Math.round(eligibleCount / nodeRecommendations.length * 100) : 0;
+                        // Spot Adoption: use real AWS-synced ratio from cluster impact API.
+                        // Do NOT use eligible/total — that measures unmigrated nodes, not current spot state.
+                        const spotAdoptionPct = clusterImpact?.spot_ratio != null
+                            ? clusterImpact.spot_ratio
+                            : (nodeRecommendations.length > 0 ? Math.round(nodeRecommendations.filter(r => r.status === 'SPOT').length / nodeRecommendations.length * 100) : 0);
                         const isLoading = clusterViewLoading || nodeViewLoading;
+                        const alreadyOptimized = eligibleCount === 0 && spotAdoptionPct >= 100;
                         return (
-                    <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-                        <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
-                            <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Current Cost</h4>
-                            <p className="mt-2 text-2xl font-bold text-gray-900">
-                                {isLoading ? '$…' : totalCurrentMonthly > 0 ? `$${Math.round(totalCurrentMonthly)}/mo` : '$0/mo'}
-                            </p>
-                        </div>
-                        <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
-                            <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Projected Cost</h4>
-                            <p className="mt-2 text-2xl font-bold text-green-600">
-                                {isLoading ? '$…' : totalProjMonthly > 0 ? `$${Math.round(totalProjMonthly)}/mo` : '$0/mo'}
-                            </p>
-                        </div>
-                        <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
-                            <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Estimated Savings</h4>
-                            <p className="mt-2 text-2xl font-bold text-green-600">
-                                {isLoading ? '…%' : `${savingsPct}%`}
-                            </p>
-                        </div>
-                        <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
-                            <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Spot Exposure</h4>
-                            <p className="mt-2 text-2xl font-bold text-indigo-600">
-                                {isLoading ? '…%' : `${spotExposurePct}%`}
-                            </p>
-                        </div>
-                    </div>
+                            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                                <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
+                                    <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Current Cost</h4>
+                                    <p className="mt-2 text-2xl font-bold text-gray-900">
+                                        {isLoading ? '$…' : totalCurrentMonthly > 0 ? `$${Math.round(totalCurrentMonthly)}/mo` : '$0/mo'}
+                                    </p>
+                                </div>
+                                <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
+                                    <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Projected Cost</h4>
+                                    <p className="mt-2 text-2xl font-bold text-green-600">
+                                        {isLoading ? '$…' : totalProjMonthly > 0 ? `$${Math.round(totalProjMonthly)}/mo` : '$0/mo'}
+                                    </p>
+                                </div>
+                                <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
+                                    <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
+                                        {alreadyOptimized ? 'Additional Savings' : 'Estimated Savings'}
+                                    </h4>
+                                    <p className="mt-2 text-2xl font-bold text-green-600">
+                                        {isLoading ? '…%' : alreadyOptimized ? '✓ Fully Optimized' : `${savingsPct}%`}
+                                    </p>
+                                    {alreadyOptimized && !isLoading && (
+                                        <p className="text-xs text-gray-400 mt-1">All nodes on spot</p>
+                                    )}
+                                </div>
+                                <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
+                                    <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Spot Adoption</h4>
+                                    <p className="mt-2 text-2xl font-bold text-indigo-600">
+                                        {isLoading ? '…%' : `${spotAdoptionPct}%`}
+                                    </p>
+                                    <p className="text-xs text-gray-400 mt-1">
+                                        {clusterImpact ? `${clusterImpact.spot_count ?? 0} spot / ${clusterImpact.on_demand_count ?? 0} on-demand` : ''}
+                                    </p>
+                                </div>
+                            </div>
                         );
                     })()}
 
-                    {/* Chart Placeholders */}
+                    {/* Chart Panels — driven by clusterImpact data */}
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                        {/* AZ Distribution */}
                         <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200 h-64 flex flex-col">
-                            <h4 className="text-sm font-semibold text-gray-700 mb-4">AZ Distribution</h4>
-                            <div className="flex-1 flex items-center justify-center bg-gray-50 rounded border border-dashed border-gray-300">
-                                <span className="text-gray-400 text-sm">Pie Chart (Pending Data)</span>
-                            </div>
+                            <h4 className="text-sm font-semibold text-gray-700 mb-3">AZ Distribution</h4>
+                            {clusterImpact?.az_distribution?.length > 0 ? (
+                                <div className="flex-1 flex flex-col justify-center gap-2 overflow-y-auto">
+                                    {clusterImpact.az_distribution.map((item, i) => {
+                                        const total = clusterImpact.total_nodes || 1;
+                                        const pct = Math.round(item.count / total * 100);
+                                        const colors = ['bg-indigo-500', 'bg-blue-400', 'bg-sky-400', 'bg-cyan-400'];
+                                        return (
+                                            <div key={i}>
+                                                <div className="flex justify-between text-xs text-gray-600 mb-1">
+                                                    <span className="font-mono">{item.az}</span>
+                                                    <span className="font-semibold">{item.count} node{item.count !== 1 ? 's' : ''} ({pct}%)</span>
+                                                </div>
+                                                <div className="w-full bg-gray-100 rounded-full h-3">
+                                                    <div className={`${colors[i % colors.length]} h-3 rounded-full transition-all`} style={{ width: `${pct}%` }} />
+                                                </div>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            ) : (
+                                <div className="flex-1 flex items-center justify-center bg-gray-50 rounded border border-dashed border-gray-300">
+                                    <span className="text-gray-400 text-sm">No data</span>
+                                </div>
+                            )}
                         </div>
+
+                        {/* Instance Family Distribution */}
                         <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200 h-64 flex flex-col">
-                            <h4 className="text-sm font-semibold text-gray-700 mb-4">Instance Family Distribution</h4>
-                            <div className="flex-1 flex items-center justify-center bg-gray-50 rounded border border-dashed border-gray-300">
-                                <span className="text-gray-400 text-sm">Bar Chart (Pending Data)</span>
-                            </div>
+                            <h4 className="text-sm font-semibold text-gray-700 mb-3">Instance Family Distribution</h4>
+                            {clusterImpact?.family_distribution?.length > 0 ? (
+                                <div className="flex-1 flex flex-col justify-center gap-2 overflow-y-auto">
+                                    {clusterImpact.family_distribution.map((item, i) => {
+                                        const total = clusterImpact.total_nodes || 1;
+                                        const pct = Math.round(item.count / total * 100);
+                                        const colors = ['bg-purple-500', 'bg-violet-400', 'bg-fuchsia-400', 'bg-pink-400', 'bg-rose-400'];
+                                        return (
+                                            <div key={i}>
+                                                <div className="flex justify-between text-xs text-gray-600 mb-1">
+                                                    <span className="font-mono font-semibold">{item.family}.*</span>
+                                                    <span>{item.count} node{item.count !== 1 ? 's' : ''} ({pct}%)</span>
+                                                </div>
+                                                <div className="w-full bg-gray-100 rounded-full h-3">
+                                                    <div className={`${colors[i % colors.length]} h-3 rounded-full transition-all`} style={{ width: `${pct}%` }} />
+                                                </div>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            ) : (
+                                <div className="flex-1 flex items-center justify-center bg-gray-50 rounded border border-dashed border-gray-300">
+                                    <span className="text-gray-400 text-sm">No data</span>
+                                </div>
+                            )}
                         </div>
+
+                        {/* Spot vs On-Demand Ratio */}
                         <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200 h-64 flex flex-col">
-                            <h4 className="text-sm font-semibold text-gray-700 mb-4">Spot vs On-Demand Ratio</h4>
-                            <div className="flex-1 flex items-center justify-center bg-gray-50 rounded border border-dashed border-gray-300">
-                                <span className="text-gray-400 text-sm">Gauge Chart (Pending Data)</span>
-                            </div>
+                            <h4 className="text-sm font-semibold text-gray-700 mb-3">Spot vs On-Demand Ratio</h4>
+                            {clusterImpact?.total_nodes > 0 ? (() => {
+                                const spotPct = clusterImpact.spot_ratio ?? 0;
+                                const odPct = 100 - spotPct;
+                                return (
+                                    <div className="flex-1 flex flex-col justify-center gap-4">
+                                        {/* Gauge arc approximation */}
+                                        <div className="flex justify-center">
+                                            <div className="relative w-32 h-16 overflow-hidden">
+                                                <div className="absolute inset-0 rounded-t-full bg-gray-200" />
+                                                <div
+                                                    className="absolute inset-0 rounded-t-full bg-gradient-to-r from-green-400 to-green-600 origin-bottom"
+                                                    style={{ transform: `rotate(${(spotPct / 100) * 180 - 90}deg)`, clipPath: 'polygon(50% 100%,0 0,100% 0)' }}
+                                                />
+                                                <div className="absolute inset-x-4 bottom-0 flex items-end justify-center pb-1">
+                                                    <span className="text-2xl font-bold text-gray-900">{spotPct}%</span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div className="text-center text-xs text-gray-500 -mt-2">Spot Ratio</div>
+                                        {/* Legend */}
+                                        <div className="flex justify-center gap-6 text-sm">
+                                            <div className="flex items-center gap-1.5">
+                                                <div className="w-3 h-3 rounded-full bg-green-500" />
+                                                <span className="text-gray-700">Spot <strong>{clusterImpact.spot_count}</strong></span>
+                                            </div>
+                                            <div className="flex items-center gap-1.5">
+                                                <div className="w-3 h-3 rounded-full bg-blue-400" />
+                                                <span className="text-gray-700">On-Demand <strong>{clusterImpact.on_demand_count}</strong></span>
+                                            </div>
+                                        </div>
+                                        {/* Stacked bar */}
+                                        <div className="flex h-4 rounded-full overflow-hidden mx-4">
+                                            <div className="bg-green-500 transition-all" style={{ width: `${spotPct}%` }} />
+                                            <div className="bg-blue-400 transition-all" style={{ width: `${odPct}%` }} />
+                                        </div>
+                                    </div>
+                                );
+                            })() : (
+                                <div className="flex-1 flex items-center justify-center bg-gray-50 rounded border border-dashed border-gray-300">
+                                    <span className="text-gray-400 text-sm">No data</span>
+                                </div>
+                            )}
                         </div>
                     </div>
 

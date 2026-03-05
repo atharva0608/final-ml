@@ -26,6 +26,7 @@ app = Celery(
         'backend.workers.tasks.resize_guard_worker',  # NEW: Post-resize guard (Enhancement 4 & 9)
         'backend.workers.tasks.pool_rotation_worker',  # NEW: Pool auto-rotation & fresh cache
         'backend.workers.tasks.control_plane_loop',  # NEW: 8-step control plane
+        'backend.workers.tasks.maintain_warm_spare_worker',  # NEW: 24x7 warm spare maintenance
     ]
 )
 
@@ -44,6 +45,11 @@ app.conf.beat_schedule = {
     'zombie-cleanup-every-2-mins': {
         'task': 'backend.workers.tasks.health.cleanup_zombie_nodes',
         'schedule': 120.0,
+    },
+    # Agent Stale Detection (1 min) — resets agent_installed when heartbeat >5 min old
+    'reset-stale-agents-every-minute': {
+        'task': 'backend.workers.tasks.health.reset_stale_agents',
+        'schedule': 60.0,
     },
     # NEW: Reversion Check (1 hour)
     'reversion-check-every-hour': {
@@ -158,6 +164,12 @@ app.conf.beat_schedule = {
     # CONTROL PLANE: Full 8-step decision cycle (every 5 minutes)
     'control-plane-all-clusters-every-5-mins': {
         'task': 'workers.control_plane.run_all_clusters_decision_cycle',
+        'schedule': 300.0,  # 5 minutes
+    },
+    # WARM SPARE: Maintain 24x7 persistent substitute node (every 5 minutes)
+    # Ensures ≥1 spot spare is always READY for zero-downtime node migrations
+    'warm-spare-maintain-every-5-mins': {
+        'task': 'warm_spare.maintain_all_clusters',
         'schedule': 300.0,  # 5 minutes
     },
 }

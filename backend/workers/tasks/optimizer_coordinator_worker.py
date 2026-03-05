@@ -50,14 +50,21 @@ def pool_optimization_worker(self):
 
         for cluster in clusters:
             try:
-                # Check if pool optimization is allowed
+                # ── Toggle gate: only run if auto_rebalance_enabled ──────────
+                opt_settings = cluster.optimization_settings
+                auto_rebalance = getattr(opt_settings, 'auto_rebalance_enabled', False) if opt_settings else False
+                if not auto_rebalance:
+                    logger.debug(f"[OPTIMIZER] Pool optimization skipped for {cluster.name}: auto_rebalance_enabled=False")
+                    continue
+
+                # Check if pool optimization is allowed by phase
                 can_run, reason = coordinator.can_run_pool_optimization(cluster.id)
 
                 if not can_run:
                     logger.debug(f"[OPTIMIZER] Skipping pool optimization for {cluster.name}: {reason}")
                     continue
 
-                logger.info(f"[OPTIMIZER] Running pool optimization for {cluster.name}")
+                logger.info(f"[OPTIMIZER] Running pool optimization for {cluster.name} (Mode: {'COMBINED' if getattr(opt_settings, 'auto_rightsizing_enabled', False) else 'REBALANCE_ONLY'})")
 
                 # TODO: Execute actual pool optimization
                 # This would call: pool_ranking_service.rank_pools() and apply best pool
@@ -112,14 +119,31 @@ def rightsizing_evaluation_worker(self):
 
         for cluster in clusters:
             try:
-                # Check if rightsizing evaluation is allowed
+                # ── Toggle gate: only run if auto_rightsizing_enabled ─────────
+                opt_settings = cluster.optimization_settings
+                auto_rightsizing = getattr(opt_settings, 'auto_rightsizing_enabled', False) if opt_settings else False
+                if not auto_rightsizing:
+                    logger.debug(f"[OPTIMIZER] Rightsizing skipped for {cluster.name}: auto_rightsizing_enabled=False")
+                    continue
+
+                # Also block if rebalance is running (pool-first in Mode 1)
+                auto_rebalance = getattr(opt_settings, 'auto_rebalance_enabled', False) if opt_settings else False
+                if auto_rebalance:
+                    # Mode 1 (COMBINED): rightsizing must wait for pool stabilization
+                    can_pool_run, pool_reason = coordinator.can_run_pool_optimization(cluster.id)
+                    if can_pool_run:
+                        # Pool optimization hasn't run yet — rightsizing defers
+                        logger.info(f"[OPTIMIZER] Mode 1 (COMBINED): deferring rightsizing for {cluster.name} until pool stabilizes")
+                        continue
+
+                # Check if rightsizing evaluation is allowed by phase
                 can_run, reason = coordinator.can_run_rightsizing_evaluation(cluster.id)
 
                 if not can_run:
                     logger.debug(f"[OPTIMIZER] Skipping rightsizing for {cluster.name}: {reason}")
                     continue
 
-                logger.info(f"[OPTIMIZER] Running rightsizing evaluation for {cluster.name}")
+                logger.info(f"[OPTIMIZER] Running rightsizing evaluation for {cluster.name} (Mode: {'COMBINED' if auto_rebalance else 'RIGHTSIZING_ONLY'})")
 
                 # Create rightsizing proposals (does not execute)
                 proposal_ids = rightsizing_svc.create_rightsizing_proposals(

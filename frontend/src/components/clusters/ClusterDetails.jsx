@@ -4,7 +4,7 @@
  */
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { clusterAPI, metricsAPI, policyAPI, hibernationAPI, decisionEngineAPI } from '../../services/api';
+import { clusterAPI, metricsAPI, policyAPI, hibernationAPI, decisionEngineAPI, karpenterAPI } from '../../services/api';
 import { Card, Button, Badge } from '../shared';
 import { FiX, FiRefreshCw, FiSettings, FiClock, FiCpu, FiHardDrive, FiDollarSign, FiActivity } from 'react-icons/fi';
 import toast from 'react-hot-toast';
@@ -38,6 +38,8 @@ const ClusterDetails = ({ clusterId, onClose }) => {
   const [showRemoveModal, setShowRemoveModal] = useState(false);
   const [agentActionLoading, setAgentActionLoading] = useState(false);
   const [fallbackLoading, setFallbackLoading] = useState(false);
+  const [karpenterInstallStatus, setKarpenterInstallStatus] = useState(null);
+  const [karpenterActionLoading, setKarpenterActionLoading] = useState(false);
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -75,6 +77,14 @@ const ClusterDetails = ({ clusterId, onClose }) => {
       if (utilRes.status === 'fulfilled') setUtilization(utilRes.value.data);
       if (workloadRes.status === 'fulfilled') setWorkloadType(workloadRes.value.data);
       if (nodesRes.status === 'fulfilled') setNodesDetailed(nodesRes.value.data);
+
+      // Fetch Karpenter install status separately (non-critical)
+      try {
+        const karpenterRes = await karpenterAPI.getInstallStatus(clusterId);
+        setKarpenterInstallStatus(karpenterRes.data);
+      } catch (_) {
+        // Not critical — ignore
+      }
     } catch (error) {
       toast.error('Failed to load cluster details');
     } finally {
@@ -633,15 +643,28 @@ const ClusterDetails = ({ clusterId, onClose }) => {
                     <div className="bg-gray-50 p-3 rounded-md border border-gray-100">
                       <div className="text-xs text-gray-500 font-semibold uppercase mb-1">Substitute Engine</div>
                       <div className="flex items-center justify-between">
-                        <Badge color={substituteStatus?.state === 'ACTIVE' ? 'green' : substituteStatus?.state === 'PREWARMING' ? 'yellow' : 'gray'}>
-                          {substituteStatus?.state || 'IDLE'}
+                        <Badge color={
+                          substituteStatus?.state === 'ACTIVE' ? 'green' :
+                          substituteStatus?.state === 'PREWARMING' ? 'yellow' :
+                          substituteStatus?.state === 'READY' ? 'blue' : 'gray'
+                        }>
+                          {substituteStatus?.state === 'READY' ? 'Candidate Ready' :
+                           substituteStatus?.state === 'PREWARMING' ? 'Spinning Up' :
+                           substituteStatus?.state === 'ACTIVE' ? 'Node Running' :
+                           substituteStatus?.state || 'IDLE'}
                         </Badge>
                         {substituteStatus?.state === 'PREWARMING' && substituteStatus?.countdown && (
                           <span className="text-xs font-mono text-orange-600">{substituteStatus.countdown}s left</span>
                         )}
+                        {substituteStatus?.state === 'READY' && (
+                          <span className="text-xs text-blue-600">Spot pool pre-selected, not yet launched</span>
+                        )}
                       </div>
                       {substituteStatus?.state === 'ACTIVE' && substituteStatus?.pool && (
-                        <div className="mt-2 text-xs text-gray-700 break-words">Target: {substituteStatus.pool}</div>
+                        <div className="mt-2 text-xs text-gray-700 break-words">Node running: {substituteStatus.pool}</div>
+                      )}
+                      {substituteStatus?.state === 'READY' && substituteStatus?.spare_instance_type && (
+                        <div className="mt-2 text-xs text-gray-600">Candidate: {substituteStatus.spare_instance_type} in {substituteStatus.spare_az} (spot)</div>
                       )}
                     </div>
 
@@ -659,7 +682,7 @@ const ClusterDetails = ({ clusterId, onClose }) => {
                     </div>
 
                     {/* Task 8.4: Manual Fallback Button */}
-                    {(executionStatus?.state === 'OPEN' || ['PREWARMING', 'READY'].includes(substituteStatus?.state)) && (
+                    {(executionStatus?.state === 'OPEN' || ['PREWARMING', 'ACTIVE'].includes(substituteStatus?.state)) && (
                       <PermissionGate permission="manage_clusters">
                         <div className="bg-red-50 p-3 rounded-md border border-red-100">
                           <div className="text-xs text-red-700 font-semibold uppercase mb-1">Manual Fallback</div>
@@ -885,17 +908,17 @@ const ClusterDetails = ({ clusterId, onClose }) => {
                   <div>
                     <div className="text-sm font-medium text-gray-900">Agent Status</div>
                     <div className="text-sm text-gray-500">
-                      {cluster?.agent_installed === 'Y'
+                      {(cluster?.agent_installed === 'Y' || cluster?.agent_installed === true)
                         ? `Active — last heartbeat ${cluster?.last_heartbeat ? formatDateTime(cluster.last_heartbeat) : 'unknown'}`
                         : 'No agent installed or agent disconnected'}
                     </div>
                   </div>
-                  <Badge color={cluster?.agent_installed === 'Y' ? 'green' : 'gray'} size="lg">
-                    {cluster?.agent_installed === 'Y' ? 'Connected' : 'Not Connected'}
+                  <Badge color={(cluster?.agent_installed === 'Y' || cluster?.agent_installed === true) ? 'green' : 'gray'} size="lg">
+                    {(cluster?.agent_installed === 'Y' || cluster?.agent_installed === true) ? 'Connected' : 'Not Connected'}
                   </Badge>
                 </div>
 
-                {cluster?.agent_installed === 'Y' ? (
+                {(cluster?.agent_installed === 'Y' || cluster?.agent_installed === true) ? (
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                     <div className="border border-yellow-200 rounded-lg p-4 bg-yellow-50">
                       <h4 className="font-semibold text-gray-900 mb-1">Disconnect Agent</h4>
@@ -951,6 +974,133 @@ const ClusterDetails = ({ clusterId, onClose }) => {
                 )}
               </Card>
 
+              {/* Karpenter Management — only shown when agent is connected */}
+              {(cluster?.agent_installed === 'Y' || cluster?.agent_installed === true) && (
+                <Card>
+                  <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
+                    <FiSettings className="w-5 h-5 text-indigo-500" />
+                    Karpenter Management
+                  </h3>
+
+                  {/* Status row */}
+                  <div className="flex items-center justify-between p-3 bg-gray-50 rounded-lg mb-4">
+                    <div>
+                      <div className="text-sm font-medium text-gray-900">Karpenter Status</div>
+                      <div className="text-sm text-gray-500 mt-0.5">
+                        {karpenterInstallStatus === null
+                          ? 'Checking...'
+                          : karpenterInstallStatus.karpenter_installed === true
+                            ? 'Installed — NodePool provisioning active'
+                            : karpenterInstallStatus.karpenter_installed === null
+                              ? `${karpenterInstallStatus.last_action?.type === 'INSTALL_KARPENTER' ? 'Installing' : 'Uninstalling'}…`
+                              : 'Not installed'}
+                      </div>
+                      {karpenterInstallStatus?.last_action?.error_message && (
+                        <div className="text-xs text-red-500 mt-1">
+                          {karpenterInstallStatus.last_action.error_message}
+                        </div>
+                      )}
+                    </div>
+                    <Badge
+                      color={
+                        karpenterInstallStatus?.karpenter_installed === true ? 'green' :
+                        karpenterInstallStatus?.karpenter_installed === null ? 'yellow' : 'gray'
+                      }
+                      size="lg"
+                    >
+                      {karpenterInstallStatus?.karpenter_installed === true ? 'Installed' :
+                       karpenterInstallStatus?.karpenter_installed === null ? 'In Progress' : 'Not Installed'}
+                    </Badge>
+                  </div>
+
+                  {/* Install info banner */}
+                  <div className="mb-4 p-3 bg-blue-50 border border-blue-100 rounded-lg text-xs text-blue-700">
+                    <strong>Step 1 — Run CloudFormation:</strong> Deploy{' '}
+                    <code className="bg-blue-100 px-1 rounded">karpenter-prerequisites.yaml</code> in your AWS account
+                    (Settings → CloudFormation Templates). This creates{' '}
+                    <code className="bg-blue-100 px-1 rounded">KarpenterNodeRole-{cluster?.name}</code>,{' '}
+                    <code className="bg-blue-100 px-1 rounded">KarpenterNodeInstanceProfile-{cluster?.name}</code>, and{' '}
+                    <code className="bg-blue-100 px-1 rounded">KarpenterControllerRole-{cluster?.name}</code>.<br /><br />
+                    <strong>Step 2 — Update aws-auth:</strong> Add the node role to your cluster's <code className="bg-blue-100 px-1 rounded">aws-auth</code> ConfigMap (output shown in the CloudFormation stack).<br /><br />
+                    <strong>Step 3 — Click Install:</strong> The agent runs{' '}
+                    <code className="bg-blue-100 px-1 rounded">helm upgrade --install karpenter</code> inside the cluster. No external AWS access needed.
+                  </div>
+
+                  {/* Action buttons */}
+                  {karpenterInstallStatus?.karpenter_installed !== true ? (
+                    <div className="border border-green-200 rounded-lg p-4 bg-green-50">
+                      <h4 className="font-semibold text-gray-900 mb-1">Install Karpenter</h4>
+                      <p className="text-xs text-gray-500 mb-3">
+                        Installs Karpenter {' '}<strong>v1.0.8</strong> via Helm and creates a default NodePool with spot + on-demand instances.
+                        The cluster must have the required IAM roles pre-configured.
+                      </p>
+                      <button
+                        disabled={karpenterActionLoading || karpenterInstallStatus?.karpenter_installed === null}
+                        onClick={async () => {
+                          if (!window.confirm(
+                            `Install Karpenter on cluster "${cluster?.name}"?\n\n` +
+                            `Run karpenter-prerequisites.yaml CloudFormation stack first, then confirm:\n` +
+                            `• KarpenterNodeRole-${cluster?.name} IAM role exists\n` +
+                            `• KarpenterNodeInstanceProfile-${cluster?.name} instance profile exists\n` +
+                            `• KarpenterControllerRole-${cluster?.name} IRSA role exists\n` +
+                            `• Cluster OIDC provider is configured\n` +
+                            `• aws-auth ConfigMap updated with node role\n\n` +
+                            `The agent will run helm install inside the cluster (~3-5 minutes).`
+                          )) return;
+                          setKarpenterActionLoading(true);
+                          try {
+                            const res = await karpenterAPI.installKarpenter(clusterId);
+                            toast.success(`Karpenter installation queued (action: ${res.data.action_id?.substring(0, 8)}). Check back in ~3 minutes.`);
+                            setTimeout(() => fetchClusterDetails(), 5000);
+                          } catch (err) {
+                            toast.error('Failed to queue install: ' + (err.response?.data?.detail || err.message));
+                          } finally {
+                            setKarpenterActionLoading(false);
+                          }
+                        }}
+                        className="text-sm px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {karpenterActionLoading ? 'Queuing...' :
+                         karpenterInstallStatus?.karpenter_installed === null ? 'Installing...' :
+                         'Install Karpenter'}
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="border border-red-200 rounded-lg p-4 bg-red-50">
+                      <h4 className="font-semibold text-gray-900 mb-1">Uninstall Karpenter</h4>
+                      <p className="text-xs text-gray-500 mb-3">
+                        Runs <code className="bg-red-100 px-1 rounded">helm uninstall karpenter</code> and deletes the karpenter namespace.
+                        Existing nodes managed by Karpenter will be converted back to standard node groups.
+                        This cannot be undone without reinstalling.
+                      </p>
+                      <button
+                        disabled={karpenterActionLoading}
+                        onClick={async () => {
+                          if (!window.confirm(
+                            `Uninstall Karpenter from cluster "${cluster?.name}"?\n\n` +
+                            `This will remove Karpenter and its NodePools.\n` +
+                            `Existing workloads will continue running but new Karpenter-managed nodes will not be provisioned.`
+                          )) return;
+                          setKarpenterActionLoading(true);
+                          try {
+                            const res = await karpenterAPI.uninstallKarpenter(clusterId);
+                            toast.success(`Karpenter uninstallation queued (action: ${res.data.action_id?.substring(0, 8)}). Check back in ~2 minutes.`);
+                            setTimeout(() => fetchClusterDetails(), 5000);
+                          } catch (err) {
+                            toast.error('Failed to queue uninstall: ' + (err.response?.data?.detail || err.message));
+                          } finally {
+                            setKarpenterActionLoading(false);
+                          }
+                        }}
+                        className="text-sm px-4 py-2 border border-red-500 text-red-700 rounded-lg hover:bg-red-100 transition-colors disabled:opacity-50"
+                      >
+                        {karpenterActionLoading ? 'Queuing...' : 'Uninstall Karpenter'}
+                      </button>
+                    </div>
+                  )}
+                </Card>
+              )}
+
               {/* Node List */}
               <NodeList clusterId={clusterId} />
             </>
@@ -977,7 +1127,7 @@ const ClusterDetails = ({ clusterId, onClose }) => {
                     <div>
                       <h4 className="font-semibold text-gray-900">Auto Rebalance (ML Spot Optimization)</h4>
                       <p className="text-sm text-gray-500 mt-1">
-                        Allow AtharvaAI to automatically move stateless pods to cheaper, stable Spot instances.
+                        Allow ASCP.ai to automatically move stateless pods to cheaper, stable Spot instances.
                       </p>
                     </div>
                     <label className="relative inline-flex items-center cursor-pointer mt-1">

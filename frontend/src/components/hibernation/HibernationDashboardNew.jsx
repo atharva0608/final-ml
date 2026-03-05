@@ -76,8 +76,7 @@ const calculateStats = (schedules) => {
     awakeHours: 168 - totalSleepHours,
     savings: Math.round((totalSleepHours / 168) * 100),
     activeCount: activeSchedules.length,
-    pausedCount: schedules.length - activeSchedules.length,
-    monthlySaved: activeSchedules.length * 1500 // Estimate
+    pausedCount: schedules.length - activeSchedules.length
   };
 };
 
@@ -156,48 +155,21 @@ const LiveProgressBanner = ({ onDismiss }) => {
 };
 
 // Savings Report
-const SavingsReport = ({ schedules }) => {
-  const [trendData, setTrendData] = useState([]);
-  const [loading, setLoading] = useState(true);
-
+const SavingsReport = ({ schedules, savingsHistory, loading = false }) => {
   // Filter active schedules
   const activeSchedules = schedules ? schedules.filter(s => s.is_active === 'Y' || s.is_active === true) : [];
 
-  useEffect(() => {
-    fetchSavingsHistory();
-  }, []);
-
-  const fetchSavingsHistory = async () => {
-    try {
-      const response = await api.get('/api/v1/hibernation/savings/history?months=6');
-      const history = response.data || [];
-      // Map to chart format: { month, value }
-      const chartData = history.map(h => ({
-        month: h.month,
-        value: h.savings
-      }));
-      // Ensure at least one data point for chart rendering
-      if (chartData.length === 0) {
-        const currentMonth = new Date().toLocaleDateString('en-US', { month: 'short' });
-        setTrendData([{ month: currentMonth, value: 0 }]);
-      } else {
-        setTrendData(chartData);
-      }
-    } catch (error) {
-      console.error('Failed to fetch savings history:', error);
-      // Fallback to empty array with current month only
-      const currentMonth = new Date().toLocaleDateString('en-US', { month: 'short' });
-      setTrendData([{ month: currentMonth, value: 0 }]);
-    } finally {
-      setLoading(false);
-    }
-  };
+  const trendData = savingsHistory?.history || [];
+  const currentMonth = new Date().toLocaleDateString('en-US', { month: 'short' });
+  if (trendData.length === 0) {
+    trendData.push({ month: currentMonth, savings: 0 });
+  }
 
   // Calculate totals from real data
-  const totalSaved = trendData.length > 0 ? trendData[trendData.length - 1].value : 0;
-  const projectedAnnual = totalSaved * 12;
+  const totalSaved = savingsHistory?.total_saved_all_time || 0;
+  const projectedAnnual = totalSaved > 0 ? (trendData[trendData.length - 1]?.savings * 12) : 0;
 
-  const maxValue = Math.max(...trendData.map(d => d.value), 1);
+  const maxValue = Math.max(...trendData.map(d => d.savings || 0), 1);
 
   return (
     <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
@@ -280,9 +252,9 @@ const SavingsReport = ({ schedules }) => {
                 fill="none"
                 stroke="#22c55e"
                 strokeWidth="3"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
 
               {/* Data points (dots) */}
               {trendData.map((d, i) => {
@@ -327,7 +299,8 @@ const SavingsReport = ({ schedules }) => {
           ) : (
             activeSchedules.map((s, idx) => {
               const st = getStrategyMeta(s.strategy);
-              const savings = 1500; // Per schedule estimate
+              const savingsMap = savingsHistory?.per_schedule || {};
+              const savings = savingsMap[s.id]?.amount_saved || 0;
               const pct = totalSaved > 0 ? Math.round((savings / totalSaved) * 100) : 0;
               return (
                 <div key={s.id}>
@@ -400,11 +373,10 @@ const StrategySelector = ({ value, onChange }) => (
         <button
           key={st.id}
           onClick={() => onChange(st.id)}
-          className={`w-full flex items-center gap-3 p-3 rounded-lg border transition-all text-left ${
-            isSelected
-              ? 'border-indigo-500 bg-indigo-50'
-              : 'border-gray-200 bg-gray-50 hover:bg-gray-100'
-          }`}
+          className={`w-full flex items-center gap-3 p-3 rounded-lg border transition-all text-left ${isSelected
+            ? 'border-indigo-500 bg-indigo-50'
+            : 'border-gray-200 bg-gray-50 hover:bg-gray-100'
+            }`}
         >
           <div
             className="w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0 border"
@@ -525,9 +497,8 @@ const ScheduleForm = ({ initial, clusters, onSave, onCancel }) => {
                 return (
                   <label
                     key={cluster.id}
-                    className={`flex items-center gap-3 p-3 cursor-pointer border-b last:border-b-0 transition-colors ${
-                      selected ? 'bg-indigo-50' : 'bg-white hover:bg-gray-50'
-                    }`}
+                    className={`flex items-center gap-3 p-3 cursor-pointer border-b last:border-b-0 transition-colors ${selected ? 'bg-indigo-50' : 'bg-white hover:bg-gray-50'
+                      }`}
                   >
                     <input
                       type="checkbox"
@@ -538,11 +509,10 @@ const ScheduleForm = ({ initial, clusters, onSave, onCancel }) => {
                     <div className="flex-1">
                       <div className="flex items-center gap-2">
                         <span className="text-sm font-semibold text-gray-900">{cluster.name}</span>
-                        <span className={`px-2 py-0.5 text-xs font-medium rounded-full ${
-                          cluster.status === 'ACTIVE'
-                            ? 'bg-green-100 text-green-700'
-                            : 'bg-gray-100 text-gray-600'
-                        }`}>
+                        <span className={`px-2 py-0.5 text-xs font-medium rounded-full ${cluster.status === 'ACTIVE'
+                          ? 'bg-green-100 text-green-700'
+                          : 'bg-gray-100 text-gray-600'
+                          }`}>
                           {cluster.status === 'ACTIVE' ? 'Active' : cluster.status}
                         </span>
                       </div>
@@ -601,11 +571,10 @@ const ScheduleForm = ({ initial, clusters, onSave, onCancel }) => {
         <button
           onClick={() => valid && onSave(form)}
           disabled={!valid}
-          className={`w-full flex items-center justify-center gap-2 px-4 py-3 rounded-lg text-sm font-semibold transition-all ${
-            valid
-              ? 'bg-indigo-600 text-white hover:bg-indigo-700'
-              : 'bg-gray-200 text-gray-500 cursor-not-allowed'
-          }`}
+          className={`w-full flex items-center justify-center gap-2 px-4 py-3 rounded-lg text-sm font-semibold transition-all ${valid
+            ? 'bg-indigo-600 text-white hover:bg-indigo-700'
+            : 'bg-gray-200 text-gray-500 cursor-not-allowed'
+            }`}
         >
           <FiCheck size={16} />
           {initial ? 'Update Schedule' : 'Create Schedule'}
@@ -639,11 +608,10 @@ const ScheduleItem = ({ schedule, clusters, onToggle, onEdit, onDelete }) => {
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 mb-1">
           <span className="text-sm font-bold text-gray-900">{schedule.name}</span>
-          <span className={`px-2 py-0.5 text-xs font-semibold rounded-full ${
-            isActive
-              ? 'bg-green-100 text-green-700'
-              : 'bg-gray-100 text-gray-600'
-          }`}>
+          <span className={`px-2 py-0.5 text-xs font-semibold rounded-full ${isActive
+            ? 'bg-green-100 text-green-700'
+            : 'bg-gray-100 text-gray-600'
+            }`}>
             {isActive ? 'Active' : 'Paused'}
           </span>
         </div>
@@ -688,11 +656,10 @@ const ScheduleItem = ({ schedule, clusters, onToggle, onEdit, onDelete }) => {
       <div className="flex items-center gap-2 flex-shrink-0">
         <button
           onClick={() => onToggle(schedule.id)}
-          className={`p-2 rounded-lg border transition-colors ${
-            isActive
-              ? 'bg-amber-50 text-amber-600 border-amber-200 hover:bg-amber-100'
-              : 'bg-green-50 text-green-600 border-green-200 hover:bg-green-100'
-          }`}
+          className={`p-2 rounded-lg border transition-colors ${isActive
+            ? 'bg-amber-50 text-amber-600 border-amber-200 hover:bg-amber-100'
+            : 'bg-green-50 text-green-600 border-green-200 hover:bg-green-100'
+            }`}
           title={isActive ? 'Pause' : 'Resume'}
         >
           {isActive ? <FiPause size={14} /> : <FiPlay size={14} />}
@@ -868,6 +835,7 @@ const StrategyReference = () => (
 const HibernationDashboardNew = () => {
   const [schedules, setSchedules] = useState([]);
   const [clusters, setClusters] = useState([]);
+  const [savingsHistory, setSavingsHistory] = useState(null);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [editingSchedule, setEditingSchedule] = useState(null);
@@ -882,13 +850,15 @@ const HibernationDashboardNew = () => {
   const loadData = async () => {
     try {
       setLoading(true);
-      const [schedulesRes, clustersRes] = await Promise.all([
+      const [schedulesRes, clustersRes, savingsRes] = await Promise.all([
         hibernationApi.listSchedules(),
-        api.get('/api/v1/clusters')
+        api.get('/api/v1/clusters'),
+        api.get('/api/v1/hibernation/savings/history?months=6')
       ]);
 
       setSchedules(schedulesRes.data.schedules || []);
       setClusters(clustersRes.data.clusters || []);
+      setSavingsHistory(savingsRes.data);
     } catch (error) {
       console.error('Failed to load data:', error);
       showToast('Failed to load data', 'error');
@@ -974,11 +944,10 @@ const HibernationDashboardNew = () => {
     <div className="min-h-screen bg-gray-50">
       {/* Toast */}
       {toast && (
-        <div className={`fixed top-5 right-5 z-50 px-4 py-3 rounded-lg shadow-lg flex items-center gap-2 animate-slide-in-right ${
-          toast.type === 'error' ? 'bg-red-50 border border-red-200 text-red-800' :
+        <div className={`fixed top-5 right-5 z-50 px-4 py-3 rounded-lg shadow-lg flex items-center gap-2 animate-slide-in-right ${toast.type === 'error' ? 'bg-red-50 border border-red-200 text-red-800' :
           toast.type === 'warning' ? 'bg-amber-50 border border-amber-200 text-amber-800' :
-          'bg-green-50 border border-green-200 text-green-800'
-        }`}>
+            'bg-green-50 border border-green-200 text-green-800'
+          }`}>
           {toast.type === 'success' ? <FiCheck size={16} /> : <FiAlertCircle size={16} />}
           <span className="text-sm font-semibold">{toast.msg}</span>
         </div>
@@ -1025,7 +994,7 @@ const HibernationDashboardNew = () => {
         <div className="grid grid-cols-4 gap-4 mb-6">
           <KPICard
             label="Saved This Month"
-            value={`$${stats.monthlySaved.toLocaleString()}`}
+            value={`$${(savingsHistory?.total_saved_this_month || 0).toLocaleString()}`}
             sub="vs. always-on baseline"
             color="#16a34a"
             accent="#22c55e"
@@ -1118,7 +1087,7 @@ const HibernationDashboardNew = () => {
 
           {/* Column 2: Savings Report + Audit History + Emergency Controls */}
           <div className="space-y-6">
-            <SavingsReport schedules={schedules} />
+            <SavingsReport schedules={schedules} savingsHistory={savingsHistory} loading={loading} />
             <AuditHistory />
             <EmergencyControls clusters={clusters} />
           </div>

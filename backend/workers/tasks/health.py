@@ -89,3 +89,47 @@ def cleanup_zombie_nodes(db: Session, threshold_minutes: int = 5):
         
     db.commit()
     return count
+
+
+@app.task(name="backend.workers.tasks.health.reset_stale_agents")
+def reset_stale_agents_task():
+    """
+    Every minute: find clusters whose agent_installed='Y' but have had no
+    heartbeat for >5 minutes (i.e. pods were manually deleted or crashed).
+    Resets them to DISCOVERED state so the UI immediately reflects the real status.
+    """
+    try:
+        db = next(get_db())
+        _reset_stale_agents(db)
+    except Exception as e:
+        logger.error(f"[MOD-HEALTH-02] reset_stale_agents_task error: {e}")
+
+
+def _reset_stale_agents(db: Session, stale_minutes: int = 5):
+    from backend.models.cluster import ClusterStatus
+    stale_threshold = datetime.utcnow() - timedelta(minutes=stale_minutes)
+
+    stale = db.query(Cluster).filter(
+        Cluster.agent_installed == 'Y',
+        Cluster.last_heartbeat < stale_threshold,
+    ).all()
+
+    for cluster in stale:
+        logger.warning(
+            f"[MOD-HEALTH-02] Cluster {cluster.name} agent offline "
+            f"(last heartbeat: {cluster.last_heartbeat}). Resetting to DISCOVERED."
+        )
+        cluster.agent_installed = 'N'
+        cluster.status = ClusterStatus.DISCOVERED
+
+    if stale:
+        db.commit()
+        # Bust Redis cluster cache so API reflects the change immediately
+        try:
+            from backend.core.redis_client import get_redis_client
+            r = get_redis_client()
+            for key in r.scan_iter("clusters:*"):
+                r.delete(key)
+        except Exception:
+            pass
+        logger.info(f"[MOD-HEALTH-02] Reset {len(stale)} stale agent(s) to DISCOVERED.")

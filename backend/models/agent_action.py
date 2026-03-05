@@ -10,21 +10,26 @@ from backend.models.base import Base, generate_uuid
 
 
 class AgentActionType(enum.Enum):
-    """Agent action type enumeration"""
-    EVICT_POD = "evict_pod"
-    CORDON_NODE = "cordon_node"
-    DRAIN_NODE = "drain_node"
-    LABEL_NODE = "label_node"
-    UPDATE_DEPLOYMENT = "update_deployment"
+    """Agent action type enumeration — values MUST match PostgreSQL agentactiontype enum (UPPERCASE)"""
+    EVICT_POD = "EVICT_POD"
+    CORDON_NODE = "CORDON_NODE"
+    DRAIN_NODE = "DRAIN_NODE"
+    LABEL_NODE = "LABEL_NODE"
+    UPDATE_DEPLOYMENT = "UPDATE_DEPLOYMENT"
+    PATCH_KARPENTER_NODEPOOL = "PATCH_KARPENTER_NODEPOOL"
+    INSTALL_KARPENTER = "INSTALL_KARPENTER"
+    UNINSTALL_KARPENTER = "UNINSTALL_KARPENTER"
+    PATCH_CONTAINER_RESOURCES = "PATCH_CONTAINER_RESOURCES"  # Right-sizing: update CPU/memory requests+limits
+    TERMINATE_NODE = "TERMINATE_NODE"  # Terminate EC2 instance after drain so Karpenter sees Pending pods
 
 
 class AgentActionStatus(enum.Enum):
-    """Agent action status enumeration"""
-    PENDING = "pending"
-    PICKED_UP = "picked_up"
-    COMPLETED = "completed"
-    FAILED = "failed"
-    EXPIRED = "expired"
+    """Agent action status enumeration — values MUST match PostgreSQL agentactionstatus enum (UPPERCASE)"""
+    PENDING = "PENDING"
+    PICKED_UP = "PICKED_UP"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    EXPIRED = "EXPIRED"
 
 
 class AgentAction(Base):
