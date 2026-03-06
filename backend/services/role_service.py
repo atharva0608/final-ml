@@ -94,39 +94,90 @@ DEFAULT_PERMISSIONS = [
     {"slug": "alert:manage_destinations", "name": "Manage Alert Destinations", "module": "System", "description": "Configure where critical system alerts are sent"},
 ]
 
-# Default system roles with their permissions - aligned with WebEngage specification
+# Default system roles with their permissions — slugs MUST match DEFAULT_PERMISSIONS exactly
 DEFAULT_SYSTEM_ROLES = {
     "Organization Admin": {
         "description": "Full access to all organization features. Global dashboard view.",
         "permissions": [
-            "dashboard:global",
-            "user:invite_any", "user:delete",
-            "team:create", "team:manage",
+            # Compute
+            "compute:view", "compute:modify", "compute:resize",
+            "compute:terminate:own", "compute:terminate:any",
+            # Storage
+            "storage:delete:own", "storage:delete:any", "storage:manage",
+            # Network / DB / Lab
+            "network:modify", "db:delete", "lab:create",
+            # Cloud integration
             "cloud:connect", "cloud:disconnect",
-            "hygiene:view", "hygiene:execute",
-            "approval:approve", "approval:override",
-            "governance:global", "governance:team",
-            "billing:view", "billing:manage",
-            "audit:view",
+            # Hygiene
+            "hygiene:view", "hygiene:scan", "hygiene:view_costs",
+            "hygiene:execute", "hygiene:authorize", "hygiene:tag",
+            # Governance & approvals
+            "approval:approve", "approval:reject", "approval:bypass", "policy:manage",
+            # Teams & users
+            "team:view", "team:create", "team:invite", "team:remove_member",
+            "team:promote", "team:manage_members", "team:manage_roles",
+            # Billing
+            "billing:view_spend", "billing:view_invoices",
+            "billing:manage_cc", "billing:manage_plan",
+            # Hibernation
+            "hibernation:view", "hibernation:manage", "hibernation:execute",
+            # Templates
+            "template:view", "template:manage",
+            # Security
+            "auth:manage_mfa", "auth:manage_sso", "auth:revoke_session",
+            "auth:view_login_history", "api_key:manage", "security:manage_ip",
+            # Audit & compliance
+            "audit:view", "audit:export", "audit:view_sensitive",
+            "compliance:view_reports", "config:manage_retention",
+            # System
+            "system:manage_maintenance", "system:view_health",
+            "alert:manage_destinations",
         ]
     },
     "Team Lead": {
         "description": "Manage team, execute cleanups, approve requests. Team dashboard view.",
         "permissions": [
-            "dashboard:team",
-            "user:invite_team", "user:remove_team",
+            # Compute
+            "compute:view", "compute:resize", "compute:terminate:own",
+            # Cloud
             "cloud:connect",
-            "hygiene:view", "hygiene:execute",
-            "approval:approve",
-            "governance:team",
+            # Hygiene
+            "hygiene:view", "hygiene:scan", "hygiene:view_costs",
+            "hygiene:execute", "hygiene:authorize", "hygiene:tag",
+            # Governance
+            "approval:approve", "approval:reject", "policy:manage",
+            # Teams
+            "team:view", "team:invite", "team:remove_member",
+            "team:promote", "team:manage_members",
+            # Billing (read-only)
+            "billing:view_spend",
+            # Hibernation
+            "hibernation:view", "hibernation:manage", "hibernation:execute",
+            # Templates
+            "template:view", "template:manage",
+            # Audit
+            "audit:view",
+            # Security (read-only)
+            "auth:view_login_history",
+            # System health (read-only)
+            "system:view_health",
         ]
     },
     "Member": {
         "description": "View personal resources, request actions. Personal dashboard view.",
         "permissions": [
-            "dashboard:personal",
-            "cloud:connect_pending",
-            "hygiene:view", "hygiene:request",
+            # Compute (read-only)
+            "compute:view",
+            # Hygiene (view only)
+            "hygiene:view",
+            # Billing (view spend only)
+            "billing:view_spend",
+            # Hibernation (view only)
+            "hibernation:view",
+            # Templates (view only)
+            "template:view",
+            # Audit (view only)
+            "audit:view",
         ]
     }
 }
@@ -152,14 +203,14 @@ class RoleService:
         return count
 
     def seed_system_roles(self) -> int:
-        """Seed default system roles if they don't exist"""
+        """Seed default system roles — creates or fully reconciles permission assignments."""
         count = 0
         for role_name, role_data in DEFAULT_SYSTEM_ROLES.items():
             existing = self.db.query(Role).filter(
                 Role.name == role_name,
                 Role.type == RoleType.SYSTEM
             ).first()
-            
+
             if not existing:
                 role = Role(
                     name=role_name,
@@ -167,18 +218,29 @@ class RoleService:
                     description=role_data["description"],
                     organization_id=None  # System roles are global
                 )
-                
-                # Add permissions
-                for slug in role_data["permissions"]:
-                    perm = self.db.query(Permission).filter(Permission.slug == slug).first()
-                    if perm:
-                        role.permissions.append(perm)
-                
                 self.db.add(role)
+                self.db.flush()
                 count += 1
-        
+            else:
+                role = existing
+                # Reconcile: clear stale permissions and re-assign from definition
+                role.permissions.clear()
+                self.db.flush()
+
+            # Assign all permissions whose slugs exist in DB
+            assigned = 0
+            for slug in role_data["permissions"]:
+                perm = self.db.query(Permission).filter(Permission.slug == slug).first()
+                if perm:
+                    role.permissions.append(perm)
+                    assigned += 1
+                else:
+                    logger.warning(f"Permission slug '{slug}' not found — skipping for role '{role_name}'")
+
+            logger.info(f"Role '{role_name}': assigned {assigned}/{len(role_data['permissions'])} permissions")
+
         self.db.commit()
-        logger.info(f"Seeded {count} system roles")
+        logger.info(f"Seeded/reconciled {len(DEFAULT_SYSTEM_ROLES)} system roles")
         return count
 
     def list_permissions(self) -> List[Permission]:

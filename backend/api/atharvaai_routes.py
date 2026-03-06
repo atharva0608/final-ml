@@ -72,10 +72,10 @@ class BlacklistedPoolResponse(BaseModel):
 
 
 class RebalancingStatusResponse(BaseModel):
-    """Rebalancing action status."""
+    """Rebalancing action status with step timeline."""
     cluster_id: str
-    status: str  # "in_progress", "completed", "failed"
-    trigger: str  # "emergency" or "graceful"
+    status: str  # "in_progress", "waiting_agent", "completed", "failed"
+    trigger: str  # "emergency" or "graceful" or "auto_rebalance"
     source_pool: str  # instance_type:az
     target_pool: str  # instance_type:az
     started_at: str
@@ -83,6 +83,17 @@ class RebalancingStatusResponse(BaseModel):
     duration_seconds: Optional[int]
     nodes_affected: Optional[int]
     error_message: Optional[str]
+    # Step timeline — each key is present when that step completed
+    current_step: Optional[str]       # provisioning_spot_pool | cordoning_node | draining_pods |
+                                      # waiting_for_spot_node | old_node_terminating |
+                                      # optimization_complete | failed
+    step_1_spot_provisioning: Optional[str]   # ISO timestamp when NodePool patched
+    step_2_cordon: Optional[str]              # ISO timestamp when node cordoned
+    step_3_draining_pods: Optional[str]       # ISO timestamp when drain completed
+    step_4_new_node_joined: Optional[str]     # ISO timestamp when new SPOT node detected
+    step_5_old_node_terminated: Optional[str] # ISO timestamp when old OD node terminated
+    step_6_optimization_complete: Optional[str]  # ISO timestamp when fully done
+    instance_id: Optional[str]               # EC2 instance ID being migrated
 
 
 # Endpoints
@@ -447,6 +458,7 @@ async def get_rebalancing_status(
         # Convert to response models
         response = []
         for action in actions:
+            _meta = action.action_metadata or {}
             response.append(RebalancingStatusResponse(
                 cluster_id=action.cluster_id,
                 status=action.status,
@@ -457,7 +469,15 @@ async def get_rebalancing_status(
                 completed_at=action.completed_at.isoformat() if action.completed_at else None,
                 duration_seconds=action.duration_seconds,
                 nodes_affected=action.nodes_affected,
-                error_message=action.error_message
+                error_message=action.error_message,
+                current_step=_meta.get("current_step"),
+                step_1_spot_provisioning=_meta.get("step_1_spot_provisioning"),
+                step_2_cordon=_meta.get("step_2_cordon"),
+                step_3_draining_pods=_meta.get("step_3_draining_pods"),
+                step_4_new_node_joined=_meta.get("step_4_new_node_joined"),
+                step_5_old_node_terminated=_meta.get("step_5_old_node_terminated"),
+                step_6_optimization_complete=_meta.get("step_6_optimization_complete"),
+                instance_id=_meta.get("instance_id"),
             ))
 
         return response

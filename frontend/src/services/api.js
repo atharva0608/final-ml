@@ -533,4 +533,9 @@ export const poolRotationAPI = {
         api.post(`/api/v1/pool-rotation/force/${clusterId}`, region ? { region } : {}),
 };
 
+// ── Multi-Cluster Fleet API ─────────────────────────────────────────────
+export const multiClusterAPI = {
+    getSummary: () => api.get('/api/v1/multi-cluster/summary'),
+};
+
 export default api;

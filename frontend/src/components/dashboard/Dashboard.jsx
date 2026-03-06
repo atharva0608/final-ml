@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useDashboard } from '../../hooks/useDashboard';
-import { auditAPI, clusterAPI, accountsAPI, karpenterAPI, atharvaAiAPI, hibernationAPI, hygieneAPI, approvalsAPI, teamAPI, userAPI } from '../../services/api';
+import { auditAPI, clusterAPI, accountsAPI, karpenterAPI, atharvaAiAPI, hibernationAPI, hygieneAPI, approvalsAPI, teamAPI, userAPI, multiClusterAPI } from '../../services/api';
 import api from '../../services/api';
 import { useAuthStore, useHeaderStore } from '../../store/useStore';
 import toast from 'react-hot-toast';
@@ -275,6 +275,16 @@ export default function Dashboard() {
     roles: 3 // System default
   });
 
+  const [fleetData, setFleetData] = useState(null);
+  const [fleetLoading, setFleetLoading] = useState(true);
+
+  useEffect(() => {
+    multiClusterAPI.getSummary()
+      .then(res => setFleetData(res.data))
+      .catch(() => {})
+      .finally(() => setFleetLoading(false));
+  }, []);
+
   useEffect(() => {
     const fetchData = async () => {
       setDataLoading(true);
@@ -542,14 +552,98 @@ export default function Dashboard() {
               <KpiCard label="Total Nodes" value={clusters.reduce((acc, c) => acc + (c.nodes || c.node_count || 0), 0)} sub={`${clusters.length} clusters connected`} icon="⬡" color={C.teal} />
             </div>
 
-            {/* ── ROW 2: Forecast + Agent Status + Cluster Health ── */}
+            {/* ── ROW 2: Fleet Overview ── */}
+            <SectionLabel>Fleet Overview</SectionLabel>
+            <div className="mb-5">
+              <Card>
+                {fleetLoading ? (
+                  <div style={{ textAlign: 'center', color: C.subtle, padding: '24px 0', fontSize: 13 }}>Loading fleet data…</div>
+                ) : !fleetData ? (
+                  <div style={{ textAlign: 'center', color: C.subtle, padding: '24px 0', fontSize: 13 }}>No fleet data available</div>
+                ) : (
+                  <div>
+                    {/* Summary KPIs */}
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 12, marginBottom: 16 }}>
+                      {[
+                        { label: 'Active Clusters', value: fleetData.summary.active_clusters, color: C.teal },
+                        { label: 'Spot Nodes', value: fleetData.summary.spot_nodes, color: C.green },
+                        { label: 'OD Nodes', value: fleetData.summary.od_nodes, color: C.blue },
+                        { label: 'Spot Ratio', value: `${fleetData.summary.spot_ratio_pct}%`, color: C.purple },
+                        { label: 'Est. Monthly Savings', value: `$${fleetData.summary.monthly_savings_est.toFixed(0)}`, color: C.green },
+                      ].map(kpi => (
+                        <div key={kpi.label} style={{ background: '#f9fafb', borderRadius: 8, padding: '10px 12px', borderTop: `2px solid ${kpi.color}` }}>
+                          <div style={{ fontSize: 10, color: C.subtle, marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{kpi.label}</div>
+                          <div style={{ fontWeight: 700, fontSize: 18, color: kpi.color }}>{kpi.value}</div>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Per-cluster table */}
+                    <div style={{ overflowX: 'auto' }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                        <thead>
+                          <tr style={{ borderBottom: `1px solid ${C.border}` }}>
+                            {['Cluster', 'Region', 'Mode', 'Spot', 'OD', 'Spot %', 'Pending', 'Done 24h', 'Savings/mo'].map(h => (
+                              <th key={h} style={{ padding: '6px 10px', textAlign: 'left', fontWeight: 600, color: C.muted, whiteSpace: 'nowrap' }}>{h}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {fleetData.clusters.map(c => (
+                            <tr key={c.id}
+                                onClick={() => navigate(`/clusters/${c.id}`)}
+                                onMouseEnter={e => e.currentTarget.style.background = '#f9fafb'}
+                                onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                                style={{ borderBottom: `1px solid ${C.border}`, cursor: 'pointer', transition: 'background 0.1s' }}>
+                              <td style={{ padding: '7px 10px', fontWeight: 600 }}>{c.name}</td>
+                              <td style={{ padding: '7px 10px', color: C.muted }}>{c.region || '—'}</td>
+                              <td style={{ padding: '7px 10px' }}>
+                                {c.karpenter_mode ? (
+                                  <Badge color={c.karpenter_mode === 'auto' ? C.green : C.amber} bg={c.karpenter_mode === 'auto' ? C.greenLight : C.amberLight}>
+                                    {c.karpenter_mode === 'auto' ? 'Auto' : 'Insights'}
+                                  </Badge>
+                                ) : <span style={{ color: C.subtle }}>—</span>}
+                              </td>
+                              <td style={{ padding: '7px 10px', color: C.green, fontWeight: 600 }}>{c.spot_nodes}</td>
+                              <td style={{ padding: '7px 10px', color: C.blue }}>{c.od_nodes}</td>
+                              <td style={{ padding: '7px 10px' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                  <div style={{ flex: 1, height: 6, borderRadius: 3, background: C.border, overflow: 'hidden' }}>
+                                    <div style={{ width: `${c.spot_ratio_pct}%`, height: '100%', background: C.green, borderRadius: 3 }} />
+                                  </div>
+                                  <span style={{ fontSize: 11, color: C.muted, minWidth: 32 }}>{c.spot_ratio_pct}%</span>
+                                </div>
+                              </td>
+                              <td style={{ padding: '7px 10px' }}>
+                                {(c.pending_actions + c.in_progress_actions) > 0 ? (
+                                  <Badge color={C.amber} bg={C.amberLight}>{c.pending_actions + c.in_progress_actions}</Badge>
+                                ) : <span style={{ color: C.subtle }}>—</span>}
+                              </td>
+                              <td style={{ padding: '7px 10px', color: C.muted }}>{c.completed_actions_24h}</td>
+                              <td style={{ padding: '7px 10px', color: C.green, fontWeight: 600 }}>${c.monthly_savings_est.toFixed(0)}</td>
+                            </tr>
+                          ))}
+                          {fleetData.clusters.length === 0 && (
+                            <tr>
+                              <td colSpan={9} style={{ padding: '16px 10px', textAlign: 'center', color: C.subtle }}>No clusters connected</td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+              </Card>
+            </div>
+
+            {/* ── ROW 3: Forecast + Agent Status + Cluster Health ── */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-5">
               <SpendForecastWidget widgetKey="spend_forecast" />
               <AgentStatusWidget widgetKey="agent_status" />
               <ClusterHealthCard widgetKey="cluster_health" data={{ clusters }} />
             </div>
 
-            {/* ── ROW 3: Fleet Composition + Activity Feed ── */}
+            {/* ── ROW 4: Fleet Composition + Activity Feed ── */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-5">
               <FleetComposition widgetKey="fleet_composition" data={{}} />
               <div className="md:col-span-2">
@@ -557,7 +651,7 @@ export default function Dashboard() {
               </div>
             </div>
 
-            {/* ── ROW 4: Pending Approvals ── */}
+            {/* ── ROW 5: Pending Approvals ── */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
               <div className="md:col-span-3">
                 <PendingApprovalsCard widgetKey="pending_approvals" data={{ data: [] }} />

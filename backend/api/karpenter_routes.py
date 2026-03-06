@@ -255,32 +255,47 @@ def get_karpenter_config(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ) -> Dict[str, Any]:
-    """Get per-cluster Karpenter configuration (Redis-backed, falls back to defaults)."""
+    """Get per-cluster Karpenter configuration (Redis-backed, falls back to defaults).
+    DB is always the source of truth for the two automation toggles.
+    """
     import json as _json
+    cfg = {**_KARPENTER_CONFIG_DEFAULTS, "cluster_id": cluster_id}
+
+    # Layer 1: Redis-stored UI settings (strategy, families, etc.)
     try:
         from backend.core.redis_client import get_redis_client as _get_redis
-        _redis = _get_redis()
-        _stored = _redis.get(f"karpenter_config:{cluster_id}")
+        _stored = _get_redis().get(f"karpenter_config:{cluster_id}")
         if _stored:
-            stored_cfg = _json.loads(_stored)
-            # Merge with defaults so new fields are always present
-            cfg = {**_KARPENTER_CONFIG_DEFAULTS, **stored_cfg, "cluster_id": cluster_id}
-            return cfg
+            cfg.update(_json.loads(_stored))
     except Exception:
         pass
 
-    # Check karpenter_mode from DB to reflect current state
+    # Layer 2: DB overrides — always authoritative for automation toggles
     try:
+        from backend.models.cluster import ClusterOptimizationSettings
         cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
-        if cluster and cluster.karpenter_mode:
-            is_auto = cluster.karpenter_mode.value == "auto"
-            defaults = {**_KARPENTER_CONFIG_DEFAULTS, "cluster_id": cluster_id,
-                        "auto_rebalancing_enabled": is_auto}
-            return defaults
+        if cluster:
+            opt = cluster.optimization_settings
+            if opt is not None:
+                # auto_rebalancing_enabled = platform auto-rebalancer toggle
+                cfg["auto_rebalancing_enabled"] = bool(opt.auto_rebalance_enabled)
+                # auto_rightsizing_enabled = bin-pack + Karpenter rightsizing toggle
+                cfg["auto_rightsizing_enabled"] = bool(opt.auto_rightsizing_enabled)
+                # optimization_target: "spot" or "on_demand" — billing model for rightsizing
+                cfg["optimization_target"] = getattr(opt, 'optimization_target', 'spot') or 'spot'
+                # locked when both toggles ON (synergy mode)
+                cfg["optimization_target_locked"] = bool(
+                    opt.auto_rebalance_enabled and opt.auto_rightsizing_enabled
+                )
+            elif cluster.karpenter_mode:
+                # Fallback: infer rebalancing from karpenter_mode if no opt settings row yet
+                cfg["auto_rebalancing_enabled"] = cluster.karpenter_mode.value == "auto"
+                cfg["optimization_target"] = "spot"
+                cfg["optimization_target_locked"] = False
     except Exception:
         pass
 
-    return {**_KARPENTER_CONFIG_DEFAULTS, "cluster_id": cluster_id}
+    return cfg
 
 
 @router.post(
@@ -314,28 +329,109 @@ def update_karpenter_config(
     current_user: User = Depends(RequireAccess("EXECUTION")),
     db: Session = Depends(get_db)
 ) -> Dict[str, Any]:
-    """Patch cluster-level Karpenter settings (Redis-persisted), including mode."""
+    """Patch cluster-level Karpenter settings (Redis-persisted + DB-synced).
+
+    auto_rebalancing_enabled:
+        True  → karpenter_mode=auto  + ClusterOptimizationSettings.auto_rebalance_enabled=True
+                 The auto-rebalancer Celery task uses ML-ranked pools; our agent does the
+                 CORDON → DRAIN → TERMINATE sequence.
+        False → karpenter_mode=dry_run + auto_rebalance_enabled=False (task stops running)
+
+    auto_rightsizing_enabled:
+        True  → ClusterOptimizationSettings.auto_rightsizing_enabled=True
+                 Karpenter consolidation (WhenEmptyOrUnderutilized) handles bin-packing;
+                 ML pool ranking refreshes the NodePool every 30 min.
+        False → auto_rightsizing_enabled=False (nightly rightsizing worker skips cluster)
+    """
     import json as _json
+    from backend.models.cluster import ClusterOptimizationSettings
     logger.info(f"Updating Karpenter config for cluster {cluster_id}: {list(updates.keys())}")
 
-    # Handle auto_rebalancing_enabled → maps to karpenter_mode in DB
     auto_rebalancing = updates.get("auto_rebalancing_enabled")
-    if auto_rebalancing is not None or "mode" in updates:
+    auto_rightsizing = updates.get("auto_rightsizing_enabled")
+
+    # Fetch cluster once for all DB updates
+    cluster = None
+    if auto_rebalancing is not None or auto_rightsizing is not None or "mode" in updates:
         cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
         if not cluster:
             raise HTTPException(status_code=404, detail=f"Cluster {cluster_id} not found")
-        if auto_rebalancing is not None:
-            new_mode = "auto" if auto_rebalancing else "dry_run"
-        else:
-            new_mode = updates["mode"]
-        try:
-            cluster.karpenter_mode = KarpenterMode(new_mode)
-            db.commit()
-            logger.info(f"Karpenter mode switched to {new_mode} for cluster {cluster_id}")
-        except Exception:
-            pass  # Mode may not be set if Karpenter not deployed
 
-    # Persist all settings to Redis
+        # 1. Sync karpenter_mode (auto / dry_run)
+        if auto_rebalancing is not None or "mode" in updates:
+            new_mode = ("auto" if auto_rebalancing else "dry_run") if auto_rebalancing is not None else updates["mode"]
+            try:
+                cluster.karpenter_mode = KarpenterMode(new_mode)
+                logger.info(f"Karpenter mode → {new_mode} for cluster {cluster_id}")
+            except Exception:
+                pass  # Karpenter not deployed yet — mode stays None
+
+        # 2. Sync BOTH automation toggles to ClusterOptimizationSettings (the DB row
+        #    that Celery tasks actually read — this is the source of truth for tasks).
+        opt = cluster.optimization_settings
+        if opt is None:
+            opt = ClusterOptimizationSettings(cluster_id=cluster_id)
+            db.add(opt)
+        if auto_rebalancing is not None:
+            opt.auto_rebalance_enabled = bool(auto_rebalancing)
+            logger.info(
+                f"ClusterOptimizationSettings.auto_rebalance_enabled → {auto_rebalancing} "
+                f"for cluster {cluster_id} (auto-rebalancer task will {'run' if auto_rebalancing else 'skip'})"
+            )
+            # ── KARPENTER CONSOLIDATION CONFLICT PREVENTION ────────────────
+            # When ML auto-rebalancing is ON, disable Karpenter's native consolidation
+            # (WhenEmptyOrUnderutilized → WhenEmpty) to prevent conflicting provisioning.
+            if auto_rebalancing and cluster.karpenter_mode is not None:
+                try:
+                    from backend.models.agent_action import AgentAction, AgentActionType
+                    _disable_consol = AgentAction(
+                        cluster_id=cluster_id,
+                        action_type=AgentActionType.PATCH_KARPENTER_NODEPOOL,
+                        payload={
+                            "nodepool_name": "default",
+                            "consolidation_policy": "WhenEmpty",
+                            "reason": "ML rebalancing enabled — disabling native consolidation to prevent conflict",
+                        }
+                    )
+                    db.add(_disable_consol)
+                    logger.info(
+                        f"Queued PATCH_NODEPOOL to disable Karpenter consolidation for {cluster_id} "
+                        f"(ML rebalancing ON — consolidationPolicy → WhenEmpty)"
+                    )
+                except Exception as _consol_err:
+                    logger.warning(f"Failed to queue consolidation disable: {_consol_err}")
+        if auto_rightsizing is not None:
+            opt.auto_rightsizing_enabled = bool(auto_rightsizing)
+            logger.info(
+                f"ClusterOptimizationSettings.auto_rightsizing_enabled → {auto_rightsizing} "
+                f"for cluster {cluster_id}"
+            )
+
+        # ── OPTIMIZATION TARGET: spot / on_demand ─────────────────────────
+        optimization_target = updates.get("optimization_target")
+        if optimization_target is not None:
+            # Synergy mode: both toggles ON → force to spot
+            _rebal = opt.auto_rebalance_enabled if auto_rebalancing is None else bool(auto_rebalancing)
+            _rsizing = opt.auto_rightsizing_enabled if auto_rightsizing is None else bool(auto_rightsizing)
+            if _rebal and _rsizing:
+                optimization_target = "spot"  # force-lock
+                logger.info(
+                    f"Synergy mode active for {cluster_id}: optimization_target force-locked to 'spot'"
+                )
+            opt.optimization_target = optimization_target
+        elif auto_rebalancing is not None or auto_rightsizing is not None:
+            # When toggle state changes, auto-lock if entering synergy mode
+            _rebal = opt.auto_rebalance_enabled
+            _rsizing = opt.auto_rightsizing_enabled
+            if _rebal and _rsizing and getattr(opt, 'optimization_target', 'spot') != 'spot':
+                opt.optimization_target = "spot"
+                logger.info(
+                    f"Both toggles now ON for {cluster_id}: auto-locked optimization_target to 'spot'"
+                )
+
+        db.commit()
+
+    # 3. Persist full config to Redis (strategy, families, UI settings, etc.)
     try:
         from backend.core.redis_client import get_redis_client as _get_redis
         _redis = _get_redis()

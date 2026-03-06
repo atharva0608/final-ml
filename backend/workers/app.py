@@ -27,6 +27,7 @@ app = Celery(
         'backend.workers.tasks.pool_rotation_worker',  # NEW: Pool auto-rotation & fresh cache
         'backend.workers.tasks.control_plane_loop',  # NEW: 8-step control plane
         'backend.workers.tasks.maintain_warm_spare_worker',  # NEW: 24x7 warm spare maintenance
+        'backend.workers.tasks.sqs_consumer',               # NEW: SQS spot interrupt consumer
     ]
 )
 
@@ -171,5 +172,11 @@ app.conf.beat_schedule = {
     'warm-spare-maintain-every-5-mins': {
         'task': 'warm_spare.maintain_all_clusters',
         'schedule': 300.0,  # 5 minutes
+    },
+    # SQS INTERRUPT CONSUMER: Poll spot interruption queues (every 30 seconds)
+    # Triggers emergency rebalancing before the 2-minute spot interruption window closes
+    'sqs-interrupt-consumer-every-30-secs': {
+        'task': 'workers.sqs_consumer.poll_interruption_queues',
+        'schedule': 30.0,  # 30 seconds
     },
 }

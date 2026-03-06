@@ -145,7 +145,7 @@ class KarpenterService:
 
             # Build NodePool with ON-DEMAND capacity type
             nodepool_spec = {
-                "apiVersion": "karpenter.sh/v1beta1",
+                "apiVersion": "karpenter.sh/v1",
                 "kind": "NodePool",
                 "metadata": {
                     "name": nodepool_name,
@@ -180,11 +180,15 @@ class KarpenterService:
                                     "values": azs
                                 }
                             ],
-                            "nodeClassRef": {"name": "default"}
+                            "nodeClassRef": {
+                                "group": "karpenter.k8s.aws",
+                                "kind": "EC2NodeClass",
+                                "name": "default"
+                            }
                         }
                     },
                     "disruption": {
-                        "consolidationPolicy": "WhenUnderutilized",
+                        "consolidationPolicy": "WhenEmptyOrUnderutilized",
                         "expireAfter": "720h"
                     },
                     "limits": {"cpu": "1000", "memory": "1000Gi"}
@@ -193,16 +197,16 @@ class KarpenterService:
 
             # Apply NodePool update
             try:
-                custom_api.patch_namespaced_custom_object(
-                    group="karpenter.sh", version="v1beta1",
-                    namespace="karpenter", plural="nodepools",
+                custom_api.patch_cluster_custom_object(
+                    group="karpenter.sh", version="v1",
+                    plural="nodepools",
                     name=nodepool_name, body=nodepool_spec
                 )
             except ApiException as e:
                 if e.status == 404:
-                    custom_api.create_namespaced_custom_object(
-                        group="karpenter.sh", version="v1beta1",
-                        namespace="karpenter", plural="nodepools",
+                    custom_api.create_cluster_custom_object(
+                        group="karpenter.sh", version="v1",
+                        plural="nodepools",
                         body=nodepool_spec
                     )
                 else:
@@ -264,9 +268,9 @@ class KarpenterService:
             custom_api = client.CustomObjectsApi(api_client)
 
             try:
-                nodepool = custom_api.get_namespaced_custom_object(
-                    group="karpenter.sh", version="v1beta1",
-                    namespace="karpenter", plural="nodepools",
+                nodepool = custom_api.get_cluster_custom_object(
+                    group="karpenter.sh", version="v1",
+                    plural="nodepools",
                     name=nodepool_name
                 )
             except ApiException as e:
@@ -304,9 +308,9 @@ class KarpenterService:
                 }
             }
 
-            custom_api.patch_namespaced_custom_object(
-                group="karpenter.sh", version="v1beta1",
-                namespace="karpenter", plural="nodepools",
+            custom_api.patch_cluster_custom_object(
+                group="karpenter.sh", version="v1",
+                plural="nodepools",
                 name=nodepool_name, body=patch
             )
 
@@ -500,10 +504,9 @@ class KarpenterService:
         """
         try:
             custom_api = client.CustomObjectsApi(api_client)
-            nodepool = custom_api.get_namespaced_custom_object(
+            nodepool = custom_api.get_cluster_custom_object(
                 group="karpenter.sh",
-                version="v1beta1",
-                namespace="karpenter",
+                version="v1",
                 plural="nodepools",
                 name=nodepool_name
             )
@@ -531,10 +534,9 @@ class KarpenterService:
         try:
             custom_api = client.CustomObjectsApi(api_client)
             patch_body = {"spec": previous_state}
-            custom_api.patch_namespaced_custom_object(
+            custom_api.patch_cluster_custom_object(
                 group="karpenter.sh",
-                version="v1beta1",
-                namespace="karpenter",
+                version="v1",
                 plural="nodepools",
                 name=nodepool_name,
                 body=patch_body
@@ -681,7 +683,7 @@ class KarpenterService:
             custom_api = client.CustomObjectsApi(api_client)
 
             nodepool_spec = {
-                "apiVersion": "karpenter.sh/v1beta1",
+                "apiVersion": "karpenter.sh/v1",
                 "kind": "NodePool",
                 "metadata": {
                     "name": nodepool_name,
@@ -699,10 +701,14 @@ class KarpenterService:
                                 {"key": "node.kubernetes.io/instance-type", "operator": "In", "values": instance_types},
                                 {"key": "topology.kubernetes.io/zone", "operator": "In", "values": azs}
                             ],
-                            "nodeClassRef": {"name": "default"}
+                            "nodeClassRef": {
+                                "group": "karpenter.k8s.aws",
+                                "kind": "EC2NodeClass",
+                                "name": "default"
+                            }
                         }
                     },
-                    "disruption": {"consolidationPolicy": "WhenUnderutilized", "expireAfter": "720h"},
+                    "disruption": {"consolidationPolicy": "WhenEmptyOrUnderutilized", "expireAfter": "720h"},
                     "limits": {"cpu": "1000", "memory": "1000Gi"}
                 }
             }
@@ -711,18 +717,18 @@ class KarpenterService:
             current_state = self._get_nodepool_state(api_client, nodepool_name)
 
             try:
-                custom_api.get_namespaced_custom_object(
-                    group="karpenter.sh", version="v1beta1",
-                    namespace="karpenter", plural="nodepools", name=nodepool_name
+                custom_api.get_cluster_custom_object(
+                    group="karpenter.sh", version="v1",
+                    plural="nodepools", name=nodepool_name
                 )
                 logger.info(f"Updating existing NodePool '{nodepool_name}' with retry logic")
 
                 # Retry loop for PATCH operations
                 for attempt in range(self.MAX_PATCH_RETRIES + 1):
                     try:
-                        custom_api.patch_namespaced_custom_object(
-                            group="karpenter.sh", version="v1beta1",
-                            namespace="karpenter", plural="nodepools",
+                        custom_api.patch_cluster_custom_object(
+                            group="karpenter.sh", version="v1",
+                            plural="nodepools",
                             name=nodepool_name, body=nodepool_spec
                         )
                         logger.info(f"NodePool PATCH succeeded on attempt {attempt + 1}")
@@ -747,9 +753,9 @@ class KarpenterService:
             except ApiException as e:
                 if e.status == 404:
                     logger.info(f"Creating new NodePool '{nodepool_name}'")
-                    custom_api.create_namespaced_custom_object(
-                        group="karpenter.sh", version="v1beta1",
-                        namespace="karpenter", plural="nodepools",
+                    custom_api.create_cluster_custom_object(
+                        group="karpenter.sh", version="v1",
+                        plural="nodepools",
                         body=nodepool_spec
                     )
                     return False
@@ -770,9 +776,9 @@ class KarpenterService:
             api_client = self._get_k8s_client(cluster)
             custom_api = client.CustomObjectsApi(api_client)
 
-            nodepool = custom_api.get_namespaced_custom_object(
-                group="karpenter.sh", version="v1beta1",
-                namespace="karpenter", plural="nodepools", name=nodepool_name
+            nodepool = custom_api.get_cluster_custom_object(
+                group="karpenter.sh", version="v1",
+                plural="nodepools", name=nodepool_name
             )
 
             requirements = nodepool.get('spec', {}).get('template', {}).get('spec', {}).get('requirements', [])

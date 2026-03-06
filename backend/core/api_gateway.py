@@ -442,6 +442,10 @@ app.include_router(optimizer_coordinator_router, prefix="/api/v1")
 from backend.api.pool_rotation_routes import router as pool_rotation_router
 app.include_router(pool_rotation_router, prefix="/api/v1")
 
+# Multi-Cluster Fleet Summary routes
+from backend.api.multi_cluster_routes import router as multi_cluster_router
+app.include_router(multi_cluster_router, prefix="/api/v1")
+
 # Pod Metrics & Right-Sizing routes
 from backend.api.pod_metrics_routes import router as pod_metrics_router
 app.include_router(pod_metrics_router, prefix="/api/v1")

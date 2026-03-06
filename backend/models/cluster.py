@@ -135,6 +135,10 @@ class ClusterOptimizationSettings(Base):
     conservative_mode_enabled = Column(Boolean, default=True)
     manual_approval_required = Column(Boolean, default=False)
     target_spot_exposure_pct = Column(Integer, default=100)
+    # Billing model preference for right-sizing: "spot" or "on_demand".
+    # When both auto_rebalance_enabled AND auto_rightsizing_enabled are True
+    # (synergy mode), API force-locks this to "spot".
+    optimization_target = Column(String(20), default="spot")
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     cluster = relationship("Cluster", back_populates="optimization_settings")

@@ -105,6 +105,8 @@ const OptimizationSettingsTab = ({ cluster }) => {
   const [settings, setSettings] = useState({
     auto_rebalance_enabled: false,
     auto_rightsizing_enabled: false,
+    optimization_target: 'spot',
+    optimization_target_locked: false,
     cooldown_override_minutes: 300,
     conservative_mode_enabled: true,
     manual_approval_required: false
@@ -120,6 +122,8 @@ const OptimizationSettingsTab = ({ cluster }) => {
             ...prev,
             auto_rebalance_enabled: res.data.automation_controls?.auto_rebalance_enabled ?? false,
             auto_rightsizing_enabled: res.data.automation_controls?.auto_rightsizing_enabled ?? false,
+            optimization_target: res.data.automation_controls?.optimization_target ?? 'spot',
+            optimization_target_locked: res.data.automation_controls?.optimization_target_locked ?? false,
             conservative_mode_enabled: res.data.automation_controls?.conservative_mode_enabled ?? true,
             manual_approval_required: res.data.automation_controls?.manual_approval_required ?? false,
             cooldown_override_minutes: res.data.automation_controls?.cooldown_override_minutes ?? 300,
@@ -181,8 +185,10 @@ const OptimizationSettingsTab = ({ cluster }) => {
           background: optimizationMode.bg,
           border: `1.5px solid ${optimizationMode.border}`,
         }}>
-          <div style={{ width: 10, height: 10, borderRadius: "50%", background: optimizationMode.color, flexShrink: 0,
-            boxShadow: optimizationMode.label !== 'DISABLED' ? `0 0 6px ${optimizationMode.color}80` : 'none' }} />
+          <div style={{
+            width: 10, height: 10, borderRadius: "50%", background: optimizationMode.color, flexShrink: 0,
+            boxShadow: optimizationMode.label !== 'DISABLED' ? `0 0 6px ${optimizationMode.color}80` : 'none'
+          }} />
           <div style={{ flex: 1 }}>
             <span style={{ fontSize: 12, fontWeight: 700, color: optimizationMode.color, letterSpacing: "0.04em" }}>{optimizationMode.label}</span>
             <span style={{ fontSize: 11, color: '#6b7280', marginLeft: 10 }}>{optimizationMode.desc}</span>
@@ -216,6 +222,36 @@ const OptimizationSettingsTab = ({ cluster }) => {
             checked={settings.auto_rightsizing_enabled}
             onChange={(val) => updateSetting('auto_rightsizing_enabled', val)}
           />
+        </div>
+
+        <div style={{ height: 1, background: C.border, margin: "18px 0" }} />
+
+        {/* Optimization Target — Spot vs On-Demand */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18 }}>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: C.text }}>Optimization Target</div>
+            <div style={{ fontSize: 11, color: C.subtle, marginTop: 4 }}>
+              {settings.optimization_target_locked
+                ? 'Locked to Spot — both ML Rebalancing and Right-Sizing are active (Synergy Mode)'
+                : 'Choose the billing model for right-sized node replacements'}
+            </div>
+          </div>
+          <select
+            value={settings.optimization_target}
+            disabled={settings.optimization_target_locked}
+            onChange={(e) => updateSetting('optimization_target', e.target.value)}
+            style={{
+              padding: "6px 10px", borderRadius: 6,
+              border: `1px solid ${C.border}`,
+              background: settings.optimization_target_locked ? '#f9fafb' : C.surface,
+              color: settings.optimization_target_locked ? C.subtle : C.text,
+              fontSize: 12, outline: "none", cursor: settings.optimization_target_locked ? 'not-allowed' : 'pointer',
+              minWidth: 120, fontFamily: 'inherit',
+            }}
+          >
+            <option value="spot">Spot</option>
+            <option value="on_demand">On-Demand</option>
+          </select>
         </div>
 
         <div style={{ height: 1, background: C.border, margin: "18px 0" }} />
@@ -1367,7 +1403,7 @@ const NoAgentDetail = ({ cluster, onClose }) => {
         setShowDeleteModal(false);
         if (onClose) onClose();
         // Trigger background re-discovery so the cluster reappears as fresh
-        clusterAPI.discover().catch(() => {});
+        clusterAPI.discover().catch(() => { });
         // Refresh list after a short delay to pick up re-discovered cluster
         setTimeout(() => window.dispatchEvent(new Event('refresh-clusters')), 3000);
         setTimeout(() => window.dispatchEvent(new Event('refresh-clusters')), 8000);

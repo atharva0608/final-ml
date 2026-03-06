@@ -29,6 +29,7 @@ from backend.api.karpenter_routes import router as karpenter_router
 from backend.api.node_template_routes import router as node_template_router
 from backend.api.optimizer_coordinator_routes import router as optimizer_coordinator_router
 from backend.api.pool_rotation_routes import router as pool_rotation_router
+from backend.api.multi_cluster_routes import router as multi_cluster_router
 
 # Tag Management Routes
 from backend.api.tag_policy_routes import router as tag_policy_router
@@ -65,6 +66,7 @@ api_router.include_router(karpenter_router)
 api_router.include_router(node_template_router)
 api_router.include_router(optimizer_coordinator_router)
 api_router.include_router(pool_rotation_router)
+api_router.include_router(multi_cluster_router)
 
 # Tag Management
 api_router.include_router(tag_policy_router)
