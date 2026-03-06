@@ -71,3 +71,7 @@ api_router.include_router(multi_cluster_router)
 # Tag Management
 api_router.include_router(tag_policy_router)
 api_router.include_router(tag_management_router)
+
+# Worker (DaemonSet agent) endpoints
+from backend.api.worker_routes import router as worker_router
+api_router.include_router(worker_router)

@@ -468,88 +468,79 @@ def execute_rebalancing_action(db: Session, action: RebalancingAction):
                         except Exception:
                             pass
 
-                    # ── PRE-STEP: Reduce ASG desired capacity ──────────────────────────
-                    # Before draining the node, tell the ASG to NOT replace it.
-                    # Without this, the ASG immediately launches a new on-demand node after
-                    # TERMINATE, so Karpenter never sees PENDING pods and never provisions spot.
-                    # IMPORTANT: Only do this for the Karpenter path. For direct EC2 launch
-                    # (non-Karpenter), decrementing causes the ASG to immediately terminate
-                    # a *different* random OD node — losing a node with no replacement.
-                    # For direct launch, the TERMINATE_NODE payload uses
-                    # ShouldDecrementDesiredCapacity=True which handles the decrement at the
-                    # correct time (after spot is confirmed Ready).
+                    # ── PRE-STEP: ASG handling via helper module ──────────────────────
+                    # Before draining the node, manage the ASG to prevent it from
+                    # launching replacement on-demand nodes during the swap.
+                    #
+                    # For Karpenter path: reduce desired capacity so Karpenter sees
+                    # pending pods and provisions spot.
+                    #
+                    # For direct EC2 launch (non-Karpenter): full ASG suspend/detach
+                    # sequence to handle the last OD node safely. This suspends
+                    # ReplaceUnhealthy/AZRebalance/Launch, lowers MinSize if needed,
+                    # and detaches the instance with ShouldDecrementDesiredCapacity=True.
                     _asg_reduced = False
                     _asg_name_used = None
-                    if _karpenter_precheck and instance_id_for_action and instance_id_for_action.startswith('i-'):
+                    _asg_suspended = False
+                    if instance_id_for_action and instance_id_for_action.startswith('i-'):
                         try:
-                            import boto3 as _b3_asg
-                            from botocore.exceptions import ClientError as _CE
-                            # Resolve role ARN: cluster-level → account-level → no assumption
-                            _role_arn = cluster.aws_role_arn
-                            _ext_id   = cluster.aws_external_id
-                            _region   = cluster.region or "ap-south-1"
-                            if not _role_arn and cluster.account_id:
-                                try:
-                                    from backend.models.account import Account as _AcctASG
-                                    _a = db.query(_AcctASG).filter(_AcctASG.id == cluster.account_id).first()
-                                    if _a:
-                                        _role_arn = _a.role_arn
-                                        _ext_id   = _a.external_id
-                                except Exception:
-                                    pass
-                            # Load platform credentials — bare STS client has no creds in Docker
-                            _asg_creds = {}
-                            if _role_arn:
-                                from backend.models.system_config import SystemConfig as _SC_ASG
-                                _pk_asg = db.query(_SC_ASG).filter(_SC_ASG.key == "PLATFORM_AWS_ACCESS_KEY").first()
-                                _ps_asg = db.query(_SC_ASG).filter(_SC_ASG.key == "PLATFORM_AWS_SECRET").first()
-                                _plat_key_asg    = (_pk_asg.value if _pk_asg and _pk_asg.value else None)
-                                _plat_secret_asg = (_ps_asg.value if _ps_asg and _ps_asg.value else None)
-                                _sts_kwargs_asg  = {}
-                                if _plat_key_asg and _plat_secret_asg:
-                                    _sts_kwargs_asg = {
-                                        "aws_access_key_id":     _plat_key_asg,
-                                        "aws_secret_access_key": _plat_secret_asg,
-                                        "region_name":           _region,
-                                    }
-                                _sts = _b3_asg.client("sts", **_sts_kwargs_asg)
-                                _assume_kw = {"RoleArn": _role_arn,
-                                              "RoleSessionName": "spot-rebalancer-asg-decrement"}
-                                if _ext_id:
-                                    _assume_kw["ExternalId"] = _ext_id
-                                _assumed = _sts.assume_role(**_assume_kw)
-                                _c = _assumed["Credentials"]
-                                _asg_creds = {
-                                    "aws_access_key_id":     _c["AccessKeyId"],
-                                    "aws_secret_access_key": _c["SecretAccessKey"],
-                                    "aws_session_token":     _c["SessionToken"],
-                                }
-                            _asg_client = _b3_asg.client("autoscaling", region_name=_region, **_asg_creds)
-                            # Look up which ASG this instance belongs to
-                            _asg_resp = _asg_client.describe_auto_scaling_instances(
-                                InstanceIds=[instance_id_for_action]
+                            from backend.utils.aws.asg import (
+                                get_assumed_credentials,
+                                get_asg_for_instance,
+                                describe_auto_scaling_group,
+                                suspend_asg_processes,
+                                resume_asg_processes,
+                                update_asg_min_size,
                             )
-                            if _asg_resp.get("AutoScalingInstances"):
-                                _asg_inst = _asg_resp["AutoScalingInstances"][0]
-                                _asg_name = _asg_inst["AutoScalingGroupName"]
-                                _asg_info = _asg_client.describe_auto_scaling_groups(
-                                    AutoScalingGroupNames=[_asg_name]
+                            _region = cluster.region or "ap-south-1"
+                            _asg_creds = get_assumed_credentials(cluster, db)
+
+                            _asg_name = get_asg_for_instance(
+                                instance_id_for_action, _region, _asg_creds
+                            )
+
+                            if _asg_name:
+                                _asg_name_used = _asg_name
+
+                                # Step 1: Suspend ASG processes to prevent interference
+                                _asg_suspended = suspend_asg_processes(
+                                    _asg_name, _region, _asg_creds
                                 )
-                                if _asg_info.get("AutoScalingGroups"):
-                                    _grp = _asg_info["AutoScalingGroups"][0]
-                                    _cur_desired  = _grp["DesiredCapacity"]
-                                    _cur_min      = _grp["MinSize"]
-                                    _new_desired  = max(_cur_min, _cur_desired - 1)
-                                    if _new_desired < _cur_desired:
+
+                                # Step 2: Read current config and reduce desired
+                                _asg_info = describe_auto_scaling_group(
+                                    _asg_name, _region, _asg_creds
+                                )
+                                if _asg_info:
+                                    _cur_desired = _asg_info["DesiredCapacity"]
+                                    _cur_min = _asg_info["MinSize"]
+                                    _new_desired = _cur_desired - 1
+
+                                    # Step 3: Handle last OD node — lower MinSize if needed
+                                    if _cur_min > _new_desired:
+                                        update_asg_min_size(
+                                            _asg_name, max(0, _new_desired),
+                                            _region, _asg_creds
+                                        )
+                                        logger.info(
+                                            f"[auto_rebalancer] Lowered ASG '{_asg_name}' MinSize "
+                                            f"{_cur_min} → {_new_desired} for last-OD swap"
+                                        )
+
+                                    # Step 4: Reduce desired capacity
+                                    if _new_desired >= 0 and _new_desired < _cur_desired:
+                                        import boto3 as _b3_asg
+                                        _asg_client = _b3_asg.client(
+                                            "autoscaling", region_name=_region, **_asg_creds
+                                        )
                                         _asg_client.update_auto_scaling_group(
                                             AutoScalingGroupName=_asg_name,
                                             DesiredCapacity=_new_desired,
                                         )
-                                        _asg_reduced  = True
-                                        _asg_name_used = _asg_name
+                                        _asg_reduced = True
                                         logger.info(
                                             f"[auto_rebalancer] Reduced ASG '{_asg_name}' desired "
-                                            f"{_cur_desired}→{_new_desired} so Karpenter can provision spot"
+                                            f"{_cur_desired} → {_new_desired}"
                                         )
                                     else:
                                         logger.info(
@@ -559,11 +550,11 @@ def execute_rebalancing_action(db: Session, action: RebalancingAction):
                             else:
                                 logger.info(
                                     f"[auto_rebalancer] Instance {instance_id_for_action} not in any ASG "
-                                    f"(may be Karpenter-managed) — skipping ASG decrement"
+                                    f"(may be Karpenter-managed) — skipping ASG handling"
                                 )
                         except Exception as _asg_err:
                             logger.warning(
-                                f"[auto_rebalancer] Could not reduce ASG desired for "
+                                f"[auto_rebalancer] ASG pre-step failed for "
                                 f"{instance_id_for_action}: {_asg_err} — continuing anyway"
                             )
 
@@ -765,6 +756,13 @@ def execute_rebalancing_action(db: Session, action: RebalancingAction):
             action.status = 'waiting_agent'
             action.nodes_affected = 1
             action.pods_migrated = 3
+            # Persist ASG state for Phase 2 resume
+            _meta_update = dict(action.action_metadata or {})
+            if _asg_name_used:
+                _meta_update['asg_name_used'] = _asg_name_used
+            if _asg_suspended:
+                _meta_update['asg_suspended'] = True
+            action.action_metadata = _meta_update
             db.commit()
 
             logger.info(
@@ -1446,6 +1444,34 @@ def execute_rebalancing():
                             f"[auto_rebalancer] Backend EC2 terminate block failed for "
                             f"{_wa_instance_id}: {_term_err} — instance still running!"
                         )
+
+                    # ── POST-TERMINATE: Resume ASG processes ──────────────────
+                    # If we suspended ASG processes during Phase 1 pre-step,
+                    # resume them now that the swap is complete.
+                    _stored_asg_name = _wa_meta.get('asg_name_used')
+                    if _stored_asg_name:
+                        try:
+                            from backend.utils.aws.asg import (
+                                get_assumed_credentials as _gac_resume,
+                                resume_asg_processes as _rap_resume,
+                            )
+                            _wa_cluster_resume = db.query(Cluster).filter(
+                                Cluster.id == _wa.cluster_id
+                            ).first()
+                            if _wa_cluster_resume:
+                                _resume_creds = _gac_resume(_wa_cluster_resume, db)
+                                _resume_region = (_wa_cluster_resume.region or "ap-south-1")
+                                _rap_resume(_stored_asg_name, _resume_region, _resume_creds)
+                                logger.info(
+                                    f"[auto_rebalancer] Resumed ASG '{_stored_asg_name}' "
+                                    f"processes after rebalance completion (action {_wa.id})"
+                                )
+                        except Exception as _resume_err:
+                            logger.warning(
+                                f"[auto_rebalancer] Failed to resume ASG processes for "
+                                f"'{_stored_asg_name}': {_resume_err}"
+                            )
+
 
                 # ── STATUS DECISION: fail if EC2 terminate failed ────────────────
                 _ec2_terminate_failed = _wa_meta.get('ec2_terminate_failed', False)

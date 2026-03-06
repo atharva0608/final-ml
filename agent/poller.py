@@ -1,4 +1,5 @@
 import logging
+import os
 import time
 import requests
 import threading
@@ -9,19 +10,46 @@ logger = logging.getLogger(__name__)
 class SpotPoller:
     """
     Polls AWS Instance Metadata Service for Spot Termination Warnings (2-minute warning).
+    When a termination notice is detected, it:
+    1. Notifies the backend (POST /api/v1/worker/spot-interruption)
+    2. Triggers the actuator's cordon/drain safeguards
     """
     IMDS_URL = "http://169.254.169.254/latest/meta-data/spot/instance-action"
+    IMDS_INSTANCE_ID_URL = "http://169.254.169.254/latest/meta-data/instance-id"
 
-    def __init__(self, actuator, interval=5):
+    def __init__(self, actuator, interval=5, backend_url=None, api_key=None,
+                 cluster_id=None, node_name=None):
         """
         Args:
             actuator: ActionActuator instance to trigger drain/cordon
             interval: Check interval in seconds (default: 5)
+            backend_url: Backend API URL for spot-interruption notification
+            api_key: API key for backend auth
+            cluster_id: Cluster ID for this agent
+            node_name: Name of this node
         """
         self.actuator = actuator
         self.interval = interval
         self.running = False
         self.termination_detected = False
+        self.backend_url = backend_url or os.getenv('BACKEND_URL', '')
+        self.api_key = api_key or os.getenv('API_KEY', '')
+        self.cluster_id = cluster_id or os.getenv('CLUSTER_ID', '')
+        self.node_name = node_name or os.getenv('NODE_NAME', '')
+        self._instance_id = None
+
+    def _get_instance_id(self):
+        """Fetch instance ID from IMDS (cached after first call)."""
+        if self._instance_id:
+            return self._instance_id
+        try:
+            resp = requests.get(self.IMDS_INSTANCE_ID_URL, timeout=1)
+            if resp.status_code == 200:
+                self._instance_id = resp.text.strip()
+                return self._instance_id
+        except Exception:
+            pass
+        return ""
 
     def check_termination_notice(self):
         """
@@ -46,7 +74,6 @@ class SpotPoller:
                 
         except requests.exceptions.RequestException:
             # IMDS might not be reachable (e.g. not on AWS, or network issue)
-            # Log only once per minute to avoid spamming if running locally
             pass
         return None
 
@@ -62,11 +89,41 @@ class SpotPoller:
                 notice = self.check_termination_notice()
                 if notice:
                     self.termination_detected = True
+                    self._notify_backend(notice)
                     self.handle_termination(notice)
             
             time.sleep(self.interval)
         
         logger.info("SpotPoller stopped")
+
+    def _notify_backend(self, notice):
+        """
+        POST spot interruption alert to backend so it can create an
+        emergency RebalancingAction. This is faster than SQS.
+        """
+        if not self.backend_url:
+            logger.warning("[SpotPoller] No BACKEND_URL configured — skipping notification")
+            return
+
+        instance_id = self._get_instance_id()
+        payload = {
+            "cluster_id": self.cluster_id,
+            "node_name": self.node_name,
+            "instance_id": instance_id,
+            "action": notice.get("action", "terminate"),
+            "termination_time": notice.get("time"),
+        }
+
+        try:
+            url = f"{self.backend_url.rstrip('/')}/api/v1/worker/spot-interruption"
+            headers = {"X-API-Key": self.api_key, "Content-Type": "application/json"}
+            resp = requests.post(url, json=payload, headers=headers, timeout=5)
+            if resp.status_code == 200:
+                logger.info(f"[SpotPoller] Backend notified of spot interruption: {resp.json()}")
+            else:
+                logger.warning(f"[SpotPoller] Backend notification failed ({resp.status_code}): {resp.text}")
+        except Exception as e:
+            logger.error(f"[SpotPoller] Failed to notify backend: {e}")
 
     def handle_termination(self, notice):
         """
@@ -78,18 +135,14 @@ class SpotPoller:
         logger.critical(f"⚠️ IMMEDIATE ACTION REQUIRED: Spot Instance terminating at {action_time} (Action: {action_id})")
         
         # Trigger Actuator Safeguards
-        # 1. Cordon Node (Prevent new pods)
-        # 2. Drain Node (Evict existing pods)
         try:
-            # We assume actuator has a method for this. if not, we'll need to add it.
-            # Using a generic 'handle_interruption' or calling cordon/drain directly.
             if hasattr(self.actuator, 'handle_spot_interruption'):
                 self.actuator.handle_spot_interruption(notice)
             else:
                 logger.warning("Actuator missing 'handle_spot_interruption' method. Implementing basic fallback.")
-                # We will implement this in the actuator next.
         except Exception as e:
             logger.error(f"Failed to execute termination safeguards: {e}")
 
     def stop(self):
         self.running = False
+
