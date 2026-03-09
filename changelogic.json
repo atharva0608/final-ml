@@ -1,0 +1,529 @@
+[
+    {
+        "task_id": "T1",
+        "description": "Add global Spot Optimizer constants block to backend/core/config.py (\u00a71)",
+        "files": [
+            "backend/core/config.py"
+        ],
+        "current_logic": "`config.py` (210 lines) defines a Pydantic `Settings` class with environment-variable-backed fields (DB, Redis, JWT, CORS, logging, etc.) and a `settings = Settings()` singleton at line 162. There are NO spot optimizer constants \u2014 no GLOBAL_CACHE_SIZE, no risk tier thresholds, no cooldown values, no capacity score divisor. All such values are currently hardcoded as magic numbers in individual service files.",
+        "change_instructions": "1. After line 162 (the `settings = Settings()` singleton), add the full constants block from \u00a71 of changes.md:\n   ```python\n   # \u2500\u2500 Spot Optimizer Global Constants \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n   GLOBAL_CACHE_SIZE: int = 500\n   GLOBAL_CACHE_TTL: int = 3600\n   CAPACITY_SCORE_DIVISOR: int = 4\n   RISK_TIER_THRESHOLDS: list = [0.05, 0.10, 0.15, 0.20]\n   MAX_FAMILY_SHARE: float = 0.40\n   PRICE_SPIKE_FACTOR: float = 1.60\n   LAUNCH_FAILURE_RATIO_THRESHOLD: float = 0.30\n   REGION_MARKET_HEALTH_TIER1_THRESHOLD: int = 100\n   GLOBAL_POOL_LOCK_TTL: int = 120\n   SPOT_PRICE_STALENESS_WARN_SECS: int = 1800\n   SPOT_ADVISOR_STALENESS_DAYS: int = 45\n   DEFAULT_INTERRUPTION_RATE_PCT: float = 15.0\n   CREDENTIAL_CACHE_TTL_BUFFER_SECS: int = 300\n   MAX_CONCURRENT_ASSUME_ROLE: int = 50\n   MAX_CONCURRENT_REGION_CALLS: int = 3\n   ORPHAN_INSTANCE_TIMEOUT_MIN: int = 15\n   EMERGENCY_DEDUP_TTL_SECS: int = 600\n   REBALANCE_BLACKLIST_TIER_HOURS: list = [1, 6, 24]\n   CLUSTER_COOLDOWN_MINUTES: int = 60\n   EMERGENCY_COOLDOWN_MINUTES: int = 120\n   NODE_FAILURE_COOLDOWN_MINUTES: int = 30\n   POOL_TERMINATION_BLACKLIST_HOURS: int = 24\n   RESIZE_COOLDOWN_HOURS: int = 6\n   DRY_RUN_CANDIDATE_LIMIT: int = 3\n   REBALANCE_THRESHOLD: int = 3\n   ```\n2. These should be module-level constants, NOT fields inside the `Settings` class (they are not loaded from environment).\n3. Add a comment explaining these centralise magic numbers across all services.",
+        "dependencies": [],
+        "acceptance_criteria": "All 24+ constants are importable via `from backend.core.config import GLOBAL_CACHE_SIZE` etc. Existing Settings class and its usage are unchanged."
+    },
+    {
+        "task_id": "T2",
+        "description": "Add standardised Redis key helpers and cache freshness utility to backend/core/redis_client.py (\u00a73)",
+        "files": [
+            "backend/core/redis_client.py"
+        ],
+        "current_logic": "`redis_client.py` is only 26 lines with two functions: `get_redis_client()` (returns `redis.from_url(...)`) and `get_redis()` (FastAPI dependency yielding a client). There are NO key-name helpers, NO standardised key generation functions, and NO cache freshness checking utility. All Redis keys are currently hardcoded as f-strings throughout the codebase.",
+        "change_instructions": "1. Keep existing `get_redis_client()` and `get_redis()` functions.\n2. Add all 20 key-name helper functions from \u00a73 of changes.md:\n   - `key_global_pool_rankings(region)`, `key_cluster_pools(cluster_id)`, `key_cluster_cooldown(cluster_id)`, `key_node_failure_cooldown(cluster_id, node_name)`, `key_blacklist_global(pool_key)`, `key_risky_pools(region)`, `key_az_pressure(region, az)`, `key_family_usage(cluster_id)`, `key_pool_launch_failures(pool_key)`, `key_pool_launch_attempts(pool_key)`, `key_region_market_health(region)`, `key_degraded_region(region)`, `key_cache_builder_lock(region)`, `key_rebalance_lock(cluster_id)`, `key_emergency_seen(instance_id)`, `key_emergency_in_progress(cluster_id)`, `key_substitute_launching(cluster_id)`, `key_cluster_floor(cluster_id)`, `key_credential_cache(account_id)`, `key_rebalance_events(region, instance_type, az)`\n3. Add `read_cached_data(redis_key, staleness_threshold_secs=1800)` utility function per \u00a73.\n4. Add required imports: `json`, `datetime` from datetime, `timezone` from datetime.",
+        "dependencies": [],
+        "acceptance_criteria": "All 20 key functions return the correct formatted string. `read_cached_data` returns `{'data': ..., 'low_confidence': True/False}` based on age. All functions importable from `backend.core.redis_client`."
+    },
+    {
+        "task_id": "T3",
+        "description": "Add degraded region marking, staleness tracking, and semaphore to pricing_collector.py (\u00a72.1)",
+        "files": [
+            "backend/scrapers/pricing_collector.py"
+        ],
+        "current_logic": "`pricing_collector.py` (18329 bytes) has functions `collect_spot_prices()` and `collect_ondemand_prices()` that call AWS APIs. It currently does NOT mark regions as degraded on persistent failures, does NOT track `last_updated` timestamps, does NOT implement a per-region semaphore, and does NOT add exponential backoff with Tenacity.",
+        "change_instructions": "1. Add `_mark_region_degraded(region)` function: `redis_client.setex(f'degraded:region:{region}', 1800, '1')`.\n2. Add `_is_region_degraded(region) -> bool`: checks if degraded key exists.\n3. Add `_update_spot_price_timestamp(region)`: stores ISO timestamp in `spot_prices_updated:{region}` with 7200s TTL.\n4. In `collect_spot_prices()` \u2014 wrap the `describe_spot_price_history` call with Tenacity retry:\n   ```python\n   from tenacity import retry, stop_after_attempt, wait_exponential_jitter\n   @retry(stop=stop_after_attempt(3), wait=wait_exponential_jitter(initial=1, max=10))\n   def _fetch_spot_prices_page(ec2_client, params):\n       return ec2_client.describe_spot_price_history(**params)\n   ```\n5. Add pagination loop: always continue while `NextToken` is present:\n   ```python\n   all_prices = []\n   next_token = None\n   while True:\n       params = {...}\n       if next_token: params['NextToken'] = next_token\n       response = _fetch_spot_prices_page(ec2_client, params)\n       all_prices.extend(response['SpotPriceHistory'])\n       next_token = response.get('NextToken')\n       if not next_token: break\n   ```\n6. After 3 consecutive failures for a region, call `_mark_region_degraded(region)`. Reset counter on success.\n7. After successful fetch, call `_update_spot_price_timestamp(region)`.\n8. Add semaphore: `_region_semaphore = threading.Semaphore(MAX_CONCURRENT_REGION_CALLS)` \u2014 acquire before calling AWS, release after.\n9. Import `SPOT_PRICE_STALENESS_WARN_SECS`, `MAX_CONCURRENT_REGION_CALLS` from `backend.core.config`.\n10. Add `tenacity` to requirements.txt if not present.",
+        "dependencies": [
+            "T1",
+            "T2"
+        ],
+        "acceptance_criteria": "After 3 consecutive failures for a region, `degraded:region:{region}` key is set in Redis. Spot price timestamps are stored. Pagination handles all pages. Semaphore limits concurrent region calls."
+    },
+    {
+        "task_id": "T4",
+        "description": "Add credential caching with semaphore to cluster_service.py (\u00a72.2)",
+        "files": [
+            "backend/services/cluster_service.py"
+        ],
+        "current_logic": "`cluster_service.py` (58626 bytes) handles cluster operations. STS AssumeRole calls for client credentials are NOT cached in Redis \u2014 each call makes a fresh STS request. There is no `get_client_credentials()` function with Redis caching and semaphore-limited concurrency.",
+        "change_instructions": "1. Add `get_client_credentials(account_id, role_arn)` function from \u00a72.2 of changes.md.\n2. Use Redis key `credential_cache:{account_id}` with TTL = (expiry - CREDENTIAL_CACHE_TTL_BUFFER_SECS).\n3. Add `_assume_role_semaphore = asyncio.Semaphore(MAX_CONCURRENT_ASSUME_ROLE)` module-level.\n4. Import `CREDENTIAL_CACHE_TTL_BUFFER_SECS`, `MAX_CONCURRENT_ASSUME_ROLE` from config.\n5. Import `key_credential_cache` from redis_client.\n6. Ensure existing STS credential paths in cluster_service use this new function.",
+        "dependencies": [
+            "T1",
+            "T2"
+        ],
+        "acceptance_criteria": "Second call with same `account_id` returns cached credentials without STS call. Credentials refresh proactively before expiry buffer. Semaphore limits concurrent AssumeRole calls to 50."
+    },
+    {
+        "task_id": "T5",
+        "description": "Create spot_advisor_rates model and align scraper with fallback chain (\u00a72.3, \u00a712.1)",
+        "files": [
+            "backend/models/spot_advisor_rates.py",
+            "backend/scrapers/spot_advisor_scraper.py"
+        ],
+        "current_logic": "`spot_advisor_scraper.py` (13249 bytes) scrapes AWS Spot Advisor and stores data, but `backend/models/spot_advisor_rates.py` does NOT exist. A dedicated SQLAlchemy model for the `spot_advisor_rates` table is needed. The scraper may not implement the fallback chain (exact match \u2192 family average \u2192 15% default) or the 45-day staleness check.",
+        "change_instructions": "1. Create `backend/models/spot_advisor_rates.py` with SQLAlchemy model:\n   ```python\n   class SpotAdvisorRate(Base):\n       __tablename__ = 'spot_advisor_rates'\n       id = Column(String(36), primary_key=True, default=lambda: str(uuid4()))\n       region = Column(String(20), nullable=False, index=True)\n       instance_type = Column(String(50), nullable=False, index=True)\n       interruption_rate_category = Column(String(10))  # '<5%', '5-10%', etc.\n       interruption_rate_pct = Column(Float, nullable=False)  # numeric value\n       scraped_at = Column(DateTime, default=datetime.utcnow)\n       valid_from = Column(Date, nullable=False)\n       __table_args__ = (UniqueConstraint('region', 'instance_type', 'valid_from'),)\n   ```\n2. In `spot_advisor_scraper.py`, update `scrape_spot_advisor_data()` to:\n   a. After parsing JSON, store each row into `spot_advisor_rates` table using the new model.\n   b. Keep existing Redis caching for fast lookups.\n3. Implement `get_interruption_rate(region, instance_type, db) -> float` function with 3-step fallback chain:\n   ```python\n   def get_interruption_rate(region, instance_type, db):\n       # Step 1: Exact match\n       exact = db.query(SpotAdvisorRate).filter_by(region=region, instance_type=instance_type).order_by(SpotAdvisorRate.valid_from.desc()).first()\n       if exact: return exact.interruption_rate_pct\n       # Step 2: Family average\n       family = instance_type.split('.')[0]  # e.g. 'm5' from 'm5.xlarge'\n       avg = db.query(func.avg(SpotAdvisorRate.interruption_rate_pct)).filter(SpotAdvisorRate.region==region, SpotAdvisorRate.instance_type.like(f'{family}.%')).scalar()\n       if avg: return float(avg)\n       # Step 3: Default\n       return DEFAULT_INTERRUPTION_RATE_PCT  # 15.0\n   ```\n4. Add staleness check: if latest `valid_from` > 45 days ago, `logger.critical(f'Spot Advisor data is {age} days stale')`.\n5. Schedule to run daily at 02:00 UTC (Celery beat entry added in T26).\n6. Import `DEFAULT_INTERRUPTION_RATE_PCT`, `SPOT_ADVISOR_STALENESS_DAYS` from config.",
+        "dependencies": [
+            "T1"
+        ],
+        "acceptance_criteria": "Model is importable. Scraper stores to `spot_advisor_rates` table. Fallback chain returns family average or 15% when exact match missing. CRITICAL log fires if data > 45 days stale."
+    },
+    {
+        "task_id": "T6",
+        "description": "Add risk tier assignment and capacity score helpers to pool_ranking_service.py (\u00a74.1, \u00a74.2)",
+        "files": [
+            "backend/services/pool_ranking_service.py"
+        ],
+        "current_logic": "`pool_ranking_service.py` (76980 bytes) handles pool ranking. It may have existing scoring logic but does NOT have dedicated `assign_risk_tier(interruption_rate_pct)` or `compute_capacity_score(vcpu, memory_gb)` functions that use the centralised RISK_TIER_THRESHOLDS and CAPACITY_SCORE_DIVISOR constants from config.",
+        "change_instructions": "1. Add `assign_risk_tier(interruption_rate_pct: float) -> int` function:\n   ```python\n   def assign_risk_tier(interruption_rate_pct: float) -> int:\n       rate = interruption_rate_pct / 100.0\n       thresholds = RISK_TIER_THRESHOLDS  # [0.05, 0.10, 0.15, 0.20]\n       if rate < thresholds[0]: return 1\n       if rate < thresholds[1]: return 2\n       if rate < thresholds[2]: return 3\n       if rate < thresholds[3]: return 4\n       return 5  # excluded\n   ```\n2. Add `compute_capacity_score(vcpu: int, memory_gb: float) -> float`:\n   `return vcpu + (memory_gb / CAPACITY_SCORE_DIVISOR)`  # CAPACITY_SCORE_DIVISOR=4\n3. Add `filter_pools_with_dry_run(pools, region, session) -> list` from \u00a75.2:\n   - For top `DRY_RUN_CANDIDATE_LIMIT` pools, check Redis cache `dry_run:{region}:{az}:{instance_type}`.\n   - If cached 'pass' \u2192 include; if cached 'fail' \u2192 skip.\n   - Otherwise call `dry_run_launch()` from `fleet.py`, cache result in Redis with 300s TTL.\n   - Return validated pools + remaining untested pools.\n4. Add `report_launch_attempt(pool_key: str)` and `report_launch_failure(pool_key: str)` functions:\n   ```python\n   def report_launch_attempt(pool_key: str):\n       redis_client.incr(key_pool_launch_attempts(pool_key))\n       redis_client.expire(key_pool_launch_attempts(pool_key), 86400)  # 24h window\n   def report_launch_failure(pool_key: str):\n       redis_client.incr(key_pool_launch_failures(pool_key))\n       redis_client.expire(key_pool_launch_failures(pool_key), 86400)\n       attempts = int(redis_client.get(key_pool_launch_attempts(pool_key)) or 1)\n       failures = int(redis_client.get(key_pool_launch_failures(pool_key)) or 0)\n       if attempts > 0 and (failures / attempts) > LAUNCH_FAILURE_RATIO_THRESHOLD:\n           blacklist_pool_temporary(pool_key, ttl_seconds=3600)  # 1 hour\n   def blacklist_pool_temporary(pool_key: str, ttl_seconds: int = 3600):\n       redis_client.setex(key_blacklist_global(pool_key), ttl_seconds, '1')\n   ```\n5. Import constants from `backend.core.config` and key helpers from `backend.core.redis_client`.\n6. Import `dry_run_launch` from `backend.utils.aws.fleet` for the dry-run filter.",
+        "dependencies": [
+            "T1",
+            "T2"
+        ],
+        "acceptance_criteria": "`assign_risk_tier(2.5)` returns 1, `assign_risk_tier(7.5)` returns 2, `assign_risk_tier(22.0)` returns 5. `compute_capacity_score(4, 16)` returns 8.0. Dry-run filter caches results for 5 minutes."
+    },
+    {
+        "task_id": "T7",
+        "description": "Create cache_builder.py \u2014 global pool ranking cache builder task (\u00a74.3)",
+        "files": [
+            "backend/workers/tasks/cache_builder.py"
+        ],
+        "current_logic": "File does NOT exist. The global pool ranking cache is either built inline during requests or by `global_pool_cache_service.py` (7254 bytes). \u00a74.3 specifies a dedicated Celery task that periodically rebuilds the cache per region with distributed locking.",
+        "change_instructions": "1. Create `backend/workers/tasks/cache_builder.py`.\n2. Implement `build_global_pool_cache(region: str, db) -> None` from \u00a74.3:\n   a. Acquire distributed lock: `redis_client.set(key_cache_builder_lock(region), '1', nx=True, ex=GLOBAL_POOL_LOCK_TTL)`. If fails, return (another worker building).\n   b. Fetch pools: call `_fetch_pools_with_prices_and_risk(region, db)` which:\n      - Queries spot prices from DB/Redis for the region.\n      - For each pool, calls `get_interruption_rate(region, instance_type, db)` from T5.\n      - Looks up vCPU/memory from instance catalog or `_INSTANCE_VCPU_MEM` dict.\n      - Returns list of dicts: {instance_type, az, spot_price, od_price, interruption_rate_pct, vcpu, memory_gb}.\n   c. Tier assignment: `tier = assign_risk_tier(pool['interruption_rate_pct'])`. Skip tier 5 (>20%).\n   d. Sort within tiers: `key=lambda p: (p['spot_price'], -compute_capacity_score(p['vcpu'], p['memory_gb']))`.\n   e. Select up to `GLOBAL_CACHE_SIZE` (500) pools across tiers 1\u21922\u21923\u21924.\n   f. Store payload in Redis: `{data: [...], last_updated: ISO, region: str, tier_counts: {1: N, 2: N, ...}}`.\n   g. Market health alert: if tier-1 count < `REGION_MARKET_HEALTH_TIER1_THRESHOLD` (100), log warning.\n   h. Release lock in `finally` block.\n3. Register as Celery task with `@shared_task(name='build_global_pool_cache')`.\n4. Import from `pool_ranking_service.py`, `redis_client`, `config`.",
+        "dependencies": [
+            "T1",
+            "T2",
+            "T6"
+        ],
+        "acceptance_criteria": "Cache builder creates `global_pool_rankings:{region}` key in Redis with correct structure. Lock prevents concurrent builds. Tier-1 low-count triggers warning log."
+    },
+    {
+        "task_id": "T8",
+        "description": "Rewrite DecisionEngine.rank_for_node (decision_engine.py) with new pipeline (\u00a75)",
+        "files": [
+            "backend/core/decision_engine.py"
+        ],
+        "current_logic": "`decision_engine.py` (781 lines) has `DecisionEngine` class with `evaluate_action_plan()` method \u2014 a 15-step pipeline checking cooldowns, pool cooldown, node classification, global rankings, capacity forecast, risk ceiling, EV comparison, blacklist, diversity, template filters, etc. The method is called `evaluate_action_plan`, NOT `rank_for_node`. It does NOT have: circuit breaker HALT check, region degradation check, explicit double-gate (risk < current AND price < current), trade-off relaxation, tier fallback, or dry-run capacity validation. It uses `OPTIMIZATION_PROFILES` (COST_FIRST, BALANCED, RELIABILITY).",
+        "change_instructions": "1. Add `rank_for_node(self, cluster_id, node_info, region) -> list` method to `DecisionEngine`:\n   Step 1: Circuit breaker check \u2014 `if CircuitBreaker(redis).get_state(cluster_id) == 'HALT': return []`\n   Step 2: Region degradation \u2014 `if redis.exists(key_degraded_region(region)): logger.warning(...); return []`\n   Step 3: Load global pool cache \u2014 `data = read_cached_data(key_global_pool_rankings(region))`. If None, call `build_global_pool_cache(region, db)` synchronously then re-read.\n   Step 4: Derive floor from `node_info` (vCPU, memory, allowed families, AZs) or node template.\n   Step 5: Apply filters via `_apply_filters(pools, node_info, cluster_id)`:\n     - Remove blacklisted pools (`key_blacklist_global(pool_key)` exists).\n     - Remove non-compliant pools (wrong family, AZ, insufficient vCPU/memory).\n     - Remove price-shocked pools (`price_shock` flag).\n     - Apply AZ pressure penalty: read `key_az_pressure(region, az)`, add risk penalty.\n     - Apply family saturation penalty: read `key_family_usage(cluster_id)`, penalize families > `MAX_FAMILY_SHARE`.\n   Step 6: Double-gate via `_apply_double_gate(pools, current_price, current_risk)`: keep only pools where `spot_price < current_price AND risk < current_risk`.\n   Step 7: Trade-off relaxation via `_relax_with_trade_off(pools, current_price, current_risk, trade_off_pct)`: if double-gate returns empty, allow up to `trade_off_percentage`% more expensive but strictly safer.\n   Step 8: Tier expansion via `_relax_with_tier_expansion(all_pools, current_tier)`: expand from tier N to N+1 and repeat filters. Loop 1\u21922\u21923\u21924.\n   Step 9: Dry-run check \u2014 `filter_pools_with_dry_run(pools[:DRY_RUN_CANDIDATE_LIMIT], region, session)` from T6.\n   Step 10: Return final ranked list.\n2. Add helper methods:\n   - `_apply_double_gate(pools, current_price, current_risk) -> list`\n   - `_relax_with_trade_off(original_pools, current_price, current_risk, trade_off_pct) -> list`\n   - `_relax_with_tier_expansion(all_pools, current_tier, filters_fn) -> list`\n   - `_apply_filters(pools, node_info, cluster_id) -> list`\n3. Import: `CircuitBreaker`, `key_degraded_region`, `key_global_pool_rankings`, `read_cached_data`, `key_blacklist_global`, `key_az_pressure`, `key_family_usage`, `build_global_pool_cache`, `filter_pools_with_dry_run`, `MAX_FAMILY_SHARE`, `DRY_RUN_CANDIDATE_LIMIT`.\n4. Keep existing `evaluate_action_plan()` for backward compatibility.",
+        "dependencies": [
+            "T1",
+            "T2",
+            "T6",
+            "T7"
+        ],
+        "acceptance_criteria": "rank_for_node returns empty list when circuit breaker is HALT. Returns empty on degraded region. Double-gate filters correctly. Trade-off slider relaxes price constraint. Tier fallback expands risk ceiling. Dry-run filters top candidates."
+    },
+    {
+        "task_id": "T9",
+        "description": "Create fleet.py \u2014 EC2 Fleet API launch helper with fallback (\u00a76.1)",
+        "files": [
+            "backend/utils/aws/fleet.py"
+        ],
+        "current_logic": "File does NOT exist. `backend/utils/aws/` has `asg.py` (9040 bytes) and `dry_run.py` (4674 bytes) but no `fleet.py`. Currently `auto_rebalancer.py` uses `_launch_spot_instance_direct()` calling `ec2.run_instances()` directly. \u00a76.1 specifies a Fleet API wrapper with `launch_via_fleet_api()` and `dry_run_launch()` functions.",
+        "change_instructions": "1. Create `backend/utils/aws/fleet.py`.\n2. Implement `launch_via_fleet_api(ec2_client, launch_template_id, overrides, subnet_id, tags, action_id)` that:\n   - Calls `ec2.create_fleet(Type='instant', SpotOptions.AllocationStrategy='capacity-optimized-prioritized')`.\n   - Provides up to 5 prioritized overrides.\n   - Uses `ClientToken` (UUID) for idempotency.\n   - Tags instance with `spot-optimizer:action-id` and `spot-optimizer:status=pending`.\n   - Fallback: if Fleet API fails, call `ec2.run_instances()` with top-1 candidate.\n   - Returns instance ID or None.\n3. Implement `dry_run_launch(region, instance_type, az, session) -> bool` that:\n   - Calls `ec2.run_instances(DryRun=True)` to validate capacity.\n   - Returns True if DryRunOperation error (capacity available), False otherwise.\n4. Add exponential backoff retry decorator (Tenacity or manual).",
+        "dependencies": [
+            "T1"
+        ],
+        "acceptance_criteria": "Fleet API launch tags instance with action ID. ClientToken provides idempotency. Fallback to run_instances works. dry_run_launch correctly interprets DryRunOperation error as success."
+    },
+    {
+        "task_id": "T10",
+        "description": "Enhance asg.py with suspend/resume, min-size, and detach functions (\u00a76.1)",
+        "files": [
+            "backend/utils/aws/asg.py"
+        ],
+        "current_logic": "`asg.py` (9040 bytes) has existing ASG helper functions. \u00a76.1 specifies these idempotent functions must be present: `suspend_asg_processes`, `resume_asg_processes`, `lower_min_size`, `restore_min_size`, `detach_instance_from_asg`, `get_asg_for_instance`. Some may already exist \u2014 verify and add missing ones.",
+        "change_instructions": "1. Verify and add if missing:\n   - `suspend_asg_processes(asg_client, asg_name, processes=['ReplaceUnhealthy', 'AZRebalance', 'Launch'])`\n   - `resume_asg_processes(asg_client, asg_name, processes=[...])` \u2014 must be idempotent\n   - `lower_min_size(asg_client, asg_name)` \u2014 temporarily lower by 1, return original\n   - `restore_min_size(asg_client, asg_name, original_min)` \u2014 restore after detach\n   - `detach_instance_from_asg(asg_client, asg_name, instance_id, decrement=True)`\n   - `get_asg_for_instance(asg_client, instance_id)` \u2014 returns ASG name or None\n2. Make all operations idempotent (no error on double-call).\n3. Add logging for each operation.\n4. Add retry via Tenacity or manual exponential backoff.",
+        "dependencies": [],
+        "acceptance_criteria": "All 6 functions exist and are callable. Operations are idempotent. Logging tracks each ASG change."
+    },
+    {
+        "task_id": "T11",
+        "description": "Rewrite ExecutionController with 13-step pipeline and rollback tracking (\u00a76.2)",
+        "files": [
+            "backend/services/execution_controller.py"
+        ],
+        "current_logic": "`execution_controller.py` (251 lines) exists but is marked DEPRECATED in its docstring: '\u26a0\ufe0f DEPRECATED \u2014 THIS CLASS IS DEAD CODE. DO NOT USE IN NEW FEATURES.' It has `ExecutionController` class with a 6-step pipeline (dry-run, provision, wait, drain, verify, terminate) but uses injected adapters and is not called from production code. \u00a76.2 requires a full rewrite with 13-step pipeline, rollback tracking state, and integration with circuit breaker.",
+        "change_instructions": "1. Remove DEPRECATED header from `execution_controller.py`.\n2. Rewrite `ExecutionController` class with constructor:\n   ```python\n   def __init__(self, cluster_id: str, action_id: str = None):\n       self.cluster_id = cluster_id\n       self.action_id = action_id or str(uuid.uuid4())\n       self._asg_name: Optional[str] = None\n       self._asg_suspended: bool = False\n       self._new_instance_id: Optional[str] = None\n       self._old_instance_id: Optional[str] = None\n       self._old_node_name: Optional[str] = None\n       self._asg_min_lowered: bool = False\n       self._old_min_size: Optional[int] = None\n       self._region: Optional[str] = None\n       self._session = None\n   ```\n3. `execute_replacement(candidate_node, top_pools, bypass_double_gate, db)` \u2014 13 steps:\n   Step 1: Concurrency lock \u2014 `redis.set(key_rebalance_lock(cluster_id), nx=True, ex=600)`. If fails, return skipped.\n   Step 2: Select node \u2014 pick candidate from `candidate_node` or via Decision Engine.\n   Step 3: Get ranked pools \u2014 via `DecisionEngine.rank_for_node()`. If `bypass_double_gate`, skip double-gate filter.\n   Step 4: ASG detection \u2014 `get_asg_for_instance(ec2, old_instance_id)`. If found, store `_asg_name`.\n   Step 5: Suspend ASG \u2014 `suspend_asg_processes(asg_client, _asg_name)`. Set `_asg_suspended=True`.\n   Step 6: Launch replacement \u2014 `launch_via_fleet_api(ec2, ..., top_pools[:5])`. Call `report_launch_attempt(pool_key)`. On failure call `report_launch_failure(pool_key)`. Fallback to `ec2.run_instances()`. Store `_new_instance_id`. Tag with `spot-optimizer:action-id` and `spot-optimizer:status=pending`.\n   Step 7: Wait for node Ready \u2014 poll for `node_joined:{new_instance_id}` in Redis (up to 10 min). If timeout \u2192 rollback.\n   Step 8: Cordon+Drain old node \u2014 create `AgentAction(CORDON_NODE)` then `AgentAction(DRAIN_NODE)`. Wait for completion.\n   Step 9: Pod readiness verification \u2014 check all pods have moved to new node and are Running.\n   Step 10: ASG min-size/detach \u2014 `lower_min_size()`, `detach_instance_from_asg()`. Store `_asg_min_lowered=True`.\n   Step 11: Terminate old instance \u2014 `ec2.terminate_instances(InstanceIds=[_old_instance_id])`.\n   Step 12: Resume ASG \u2014 `resume_asg_processes(asg_client, _asg_name)`, `restore_min_size()`.\n   Step 13: Cleanup \u2014 set cluster cooldown, update Instance DB records (old=terminated, new=running), log action.\n4. `rollback()` \u2014 idempotent:\n   - If `_asg_suspended`: `resume_asg_processes()`.\n   - If `_asg_min_lowered`: `restore_min_size()`.\n   - If `_old_node_name`: uncordon old node via AgentAction.\n   - If `_new_instance_id`: terminate new instance.\n   - Call `circuit_breaker.record_rollback(cluster_id)` to increment failure counter.\n5. Import from `asg.py`, `fleet.py`, `circuit_breaker`, `decision_engine`, `redis_client`, `config`.",
+        "dependencies": [
+            "T9",
+            "T10"
+        ],
+        "acceptance_criteria": "ExecutionController starts with concurrency lock and ends with cooldown. Rollback is triggered on any step failure. Circuit breaker counter incremented on rollback. ASG processes are always resumed."
+    },
+    {
+        "task_id": "T12",
+        "description": "Modify auto_rebalancer.py to delegate to ExecutionController (\u00a76.3)",
+        "files": [
+            "backend/workers/tasks/auto_rebalancer.py"
+        ],
+        "current_logic": "`auto_rebalancer.py` (123429 bytes, ~2200 lines) contains the full rebalancing flow inline with `execute_rebalancing_action()` and `execute_rebalancing()`. It directly handles launch, ASG operations, drain, terminate, etc. \u00a76.3 specifies that the actual replacement should be delegated to `ExecutionController`, and the auto_rebalancer should only handle lock acquisition, cooldown check, and error handling.",
+        "change_instructions": "1. Add concurrency lock check at start using `key_rebalance_lock(cluster_id)` with NX + 600s TTL.\n2. Add cluster cooldown check using `key_cluster_cooldown(cluster_id)`.\n3. Create `ExecutionController(cluster_id=cluster_id)` and call `controller.execute_replacement()`.\n4. Wrap in try/except \u2014 on exception, call `controller.rollback()` then re-raise.\n5. Always release lock in `finally` block.\n6. Keep existing `execute_rebalancing_action()` for backward compatibility but refactor to use ExecutionController internally.\n7. Import from `backend.services.execution_controller`, `backend.core.redis_client`.",
+        "dependencies": [
+            "T2",
+            "T11"
+        ],
+        "acceptance_criteria": "Auto-rebalancer acquires lock before starting. Returns 'skipped' if lock held or cooldown active. Delegates replacement to ExecutionController. Lock is released in all cases."
+    },
+    {
+        "task_id": "T13",
+        "description": "Update emergency_rebalancer.py to use ExecutionController with bypass_double_gate (\u00a76.4)",
+        "files": [
+            "backend/workers/tasks/emergency_rebalancer.py"
+        ],
+        "current_logic": "`emergency_rebalancer.py` (9235 bytes) handles spot interruption events. It currently has its own emergency rebalancing logic. \u00a76.4 specifies it should use `ExecutionController` with `bypass_double_gate=True` and override cooldowns.",
+        "change_instructions": "1. Modify the emergency rebalancer task to:\n   - Override cooldowns: delete cluster cooldown key before starting.\n   - Create `ExecutionController(cluster_id=cluster_id)`.\n   - Call `controller.execute_replacement(bypass_double_gate=True)`.\n   - After completion, set 2-hour emergency cooldown.\n2. Keep standby activation logic if cluster has `maintain_standby` enabled.\n3. Import `ExecutionController` and `EMERGENCY_COOLDOWN_MINUTES` from config.\n4. Blacklist terminated pool for 24 hours after emergency.",
+        "dependencies": [
+            "T1",
+            "T11"
+        ],
+        "acceptance_criteria": "Emergency rebalancer overrides cooldowns. Uses ExecutionController with bypass. Sets 2-hour cooldown after completion. Blacklists terminated pool."
+    },
+    {
+        "task_id": "T14",
+        "description": "Create emergency_event_processor.py \u2014 event dispatcher with deduplication (\u00a77.1)",
+        "files": [
+            "backend/services/emergency_event_processor.py"
+        ],
+        "current_logic": "File does NOT exist. Event processing is currently inline in `sqs_consumer.py` (11046 bytes) and `termination_monitor.py` (10073 bytes). \u00a77.1 specifies a dedicated dispatcher with Redis-based deduplication.",
+        "change_instructions": "1. Create `backend/services/emergency_event_processor.py`.\n2. Implement `EmergencyEventProcessor` class:\n   ```python\n   class EmergencyEventProcessor:\n       def __init__(self, redis_client=None):\n           self.redis = redis_client or get_redis_client()\n       \n       def process(self, event_type: str, instance_id: str, node_name: str,\n                   cluster_id: str, region: str, az: str, instance_type: str) -> dict:\n           # Deduplication\n           dedup_key = key_emergency_seen(instance_id)\n           if self.redis.exists(dedup_key):\n               return {'status': 'duplicate', 'instance_id': instance_id}\n           self.redis.setex(dedup_key, EMERGENCY_DEDUP_TTL_SECS, '1')  # 600s\n           \n           if event_type == 'termination':\n               from backend.services.emergency_handler import handle_termination\n               return handle_termination(instance_id, cluster_id, region, instance_type, az, node_name)\n           elif event_type == 'rebalance':\n               from backend.services.rebalance_tracker import track_rebalance_event\n               return track_rebalance_event(region, instance_type, az)\n           else:\n               logger.warning(f'Unknown event type: {event_type}')\n               return {'status': 'unknown_event_type'}\n   ```\n3. Import key helpers from `redis_client` and `EMERGENCY_DEDUP_TTL_SECS` from config.\n4. Add logging for all event processing.",
+        "dependencies": [
+            "T1",
+            "T2"
+        ],
+        "acceptance_criteria": "Duplicate events within 10 minutes are ignored. Termination events route to handler. Rebalance events route to tracker. All dedup keys have correct TTL."
+    },
+    {
+        "task_id": "T15",
+        "description": "Create emergency_handler.py \u2014 termination event handling with standby activation (\u00a77.1)",
+        "files": [
+            "backend/services/emergency_handler.py"
+        ],
+        "current_logic": "File does NOT exist. Termination handling is currently spread across `emergency_rebalancer.py` and `termination_monitor.py`. \u00a77.1 specifies a dedicated handler that manages cluster emergency locks, standby activation, floor setting, and blacklisting.",
+        "change_instructions": "1. Create `backend/services/emergency_handler.py`.\n2. Implement `handle_termination(instance_id, cluster_id, region, instance_type, az, node_name) -> dict`:\n   ```python\n   def handle_termination(instance_id, cluster_id, region, instance_type, az, node_name):\n       redis = get_redis_client()\n       lock_key = key_emergency_in_progress(cluster_id)\n       # Acquire emergency lock (NX + 300s TTL to prevent stale locks)\n       if not redis.set(lock_key, instance_id, nx=True, ex=300):\n           return {'status': 'concurrent_emergency', 'cluster_id': cluster_id}\n       try:\n           db = next(get_db())\n           cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()\n           pool_key = f'{instance_type}:{az}'\n           \n           # Check if standby available\n           if _has_standby(cluster_id, redis):\n               # Standby path: uncordon standby, drain interrupted node, terminate\n               _activate_standby(cluster_id, node_name, db, redis)\n               # Schedule replacement standby async\n               from backend.workers.tasks.maintain_warm_spare_worker import maintain_warm_spare_single_cluster\n               maintain_warm_spare_single_cluster.apply_async(args=[cluster_id, region], countdown=10)\n           else:\n               # Direct replacement via ExecutionController\n               controller = ExecutionController(cluster_id=cluster_id)\n               controller.execute_replacement(bypass_double_gate=True, db=db)\n           \n           # Always: blacklist, set floor, set cooldown\n           BlacklistService(redis).blacklist_pool(instance_type, az, region, reason='spot_termination')\n           redis.setex(key_cluster_floor(cluster_id), 86400, json.dumps({'instance_type': instance_type, 'az': az}))\n           redis.setex(key_cluster_cooldown(cluster_id), EMERGENCY_COOLDOWN_MINUTES * 60, '1')\n           return {'status': 'handled', 'path': 'standby' if _has_standby(...) else 'direct'}\n       finally:\n           redis.delete(lock_key)\n   ```\n3. Add `_has_standby(cluster_id, redis)` and `_activate_standby(cluster_id, node_name, db, redis)` helpers.\n4. Import from `blacklist_service`, `substitute_manager`, `execution_controller`, config keys.",
+        "dependencies": [
+            "T1",
+            "T2",
+            "T11",
+            "T14"
+        ],
+        "acceptance_criteria": "Concurrent emergencies on same cluster are prevented by lock. Standby is activated when available. Pool is blacklisted for 24h. Cluster floor is set. 2-hour cooldown is applied."
+    },
+    {
+        "task_id": "T16",
+        "description": "Create rebalance_tracker.py \u2014 event counting with decay-based blacklisting (\u00a77.1)",
+        "files": [
+            "backend/services/rebalance_tracker.py"
+        ],
+        "current_logic": "File does NOT exist. Rebalance event tracking is partially done in existing code but \u00a77.1 specifies a dedicated tracker with Redis sorted sets and tiered blacklisting (1h, 6h, 24h decay).",
+        "change_instructions": "1. Create `backend/services/rebalance_tracker.py`.\n2. Implement `track_rebalance_event(region, instance_type, az)` function:\n   a. Increment per-pool event count in Redis sorted set `rebalance:events:{region}:{instance_type}:{az}` with current timestamp as score.\n   b. If count in last hour >= `REBALANCE_THRESHOLD` (3), apply decay-based blacklisting:\n      - First breach \u2192 blacklist 1 hour.\n      - Second breach within 24 hours \u2192 blacklist 6 hours.\n      - Third breach \u2192 blacklist 24 hours.\n   c. Increase pool's risk multiplier.\n3. Use `REBALANCE_BLACKLIST_TIER_HOURS` from config.\n4. Add `get_rebalance_event_count(region, instance_type, az, window_seconds=3600)` helper.",
+        "dependencies": [
+            "T1",
+            "T2"
+        ],
+        "acceptance_criteria": "Events are tracked in Redis sorted sets. Threshold triggers blacklisting at correct tier (1h \u2192 6h \u2192 24h). Risk multiplier increases after breach."
+    },
+    {
+        "task_id": "T17",
+        "description": "Modify termination_monitor.py to delegate to EmergencyEventProcessor (\u00a77.2)",
+        "files": [
+            "backend/workers/tasks/termination_monitor.py"
+        ],
+        "current_logic": "`termination_monitor.py` (10073 bytes) listens for SQS messages and agent HTTP notifications. It currently handles events inline \u2014 creating RebalancingActions in DB and triggering emergency_rebalancer. \u00a77.2 specifies replacing inline handling with calls to `emergency_event_processor.process()`.",
+        "change_instructions": "1. Import `EmergencyEventProcessor` from `backend.services.emergency_event_processor`.\n2. Replace inline event handling logic with `EmergencyEventProcessor().process(event_type, ...)` calls.\n3. Keep SQS polling and message parsing logic.\n4. Keep fallback path for when Redis is unavailable.\n5. Ensure event deduplication is handled by the processor, not inline.",
+        "dependencies": [
+            "T14"
+        ],
+        "acceptance_criteria": "Termination monitor delegates all event processing to EmergencyEventProcessor. No inline DB inserts or emergency_rebalancer.delay() calls remain (those are in the handler now)."
+    },
+    {
+        "task_id": "T18",
+        "description": "Add spot-interruption and rebalance-recommendation agent endpoints (\u00a77.3)",
+        "files": [
+            "backend/api/agent_routes.py"
+        ],
+        "current_logic": "`agent_routes.py` (8224 bytes) has agent-facing endpoints. \u00a77.3 specifies adding `POST /spot-interruption` and `POST /rebalance-recommendation` endpoints that the Node Agent calls when IMDS detects events.",
+        "change_instructions": "1. Add `POST /spot-interruption` endpoint:\n   - Accepts payload with instance_id, node_name, cluster_id, region, az, instance_type.\n   - Calls `EmergencyEventProcessor().process('termination', ...)`.\n   - Returns result.\n2. Add `POST /rebalance-recommendation` endpoint:\n   - Same payload format.\n   - Calls `EmergencyEventProcessor().process('rebalance', ...)`.\n   - Returns result.\n3. Add Pydantic models for request/response.\n4. Import `EmergencyEventProcessor`.",
+        "dependencies": [
+            "T14"
+        ],
+        "acceptance_criteria": "Both endpoints accept POST requests with correct payload. Events are routed to EmergencyEventProcessor. Responses include processing result."
+    },
+    {
+        "task_id": "T19",
+        "description": "Enhance circuit_breaker.py with admin API integration and risk multiplier in Decision Engine (\u00a78)",
+        "files": [
+            "backend/services/circuit_breaker.py",
+            "backend/api/admin_routes.py"
+        ],
+        "current_logic": "`circuit_breaker.py` (239 lines) already implements the NORMAL\u2192CONSERVATIVE\u2192HALT state machine with `CircuitBreaker` class, `record_rollback()`, `get_state()`, `get_full_status()`, `reset()`, `record_success()`, `check_and_auto_recover()`, and `_risk_multiplier()`. `admin_routes.py` (11768 bytes) has existing admin endpoints. \u00a78 specifies adding admin API endpoints and ensuring integration with Decision Engine.",
+        "change_instructions": "1. In `circuit_breaker.py`: verify existing implementation matches \u00a78:\n   - `record_rollback(cluster_id)` \u2014 increments `cb:rollback_count:{cluster_id}`, transitions NORMAL\u2192CONSERVATIVE (2 rollbacks in 1h) or CONSERVATIVE\u2192HALT (3 rollbacks in 1h).\n   - `get_state(cluster_id)` \u2014 returns 'NORMAL'/'CONSERVATIVE'/'HALT' string.\n   - `get_risk_multiplier(cluster_id)` \u2014 NORMAL=1.0, CONSERVATIVE=1.5, HALT=\u221e.\n   - `reset(cluster_id)` \u2014 sets state to NORMAL, clears rollback counter.\n   - `record_success(cluster_id)` \u2014 increments success counter for auto-recovery.\n   - `check_and_auto_recover(cluster_id)` \u2014 after 5 successes, transition CONSERVATIVE\u2192NORMAL.\n   - If any function missing, add it.\n2. In `admin_routes.py`, add two endpoints:\n   a. `GET /admin/circuit-breakers`:\n      ```python\n      @router.get('/circuit-breakers', summary='List all circuit breaker states')\n      def list_circuit_breakers(current_user=Depends(require_super_admin), db=Depends(get_db)):\n          from backend.services.circuit_breaker import CircuitBreaker\n          redis = get_redis_client()\n          cb = CircuitBreaker(redis)\n          clusters = db.query(Cluster).filter(Cluster.agent_installed == True).all()\n          return [{'cluster_id': c.id, 'cluster_name': c.name, **cb.get_full_status(c.id)} for c in clusters]\n      ```\n   b. `POST /admin/circuit-breakers/{cluster_id}/reset`:\n      ```python\n      @router.post('/circuit-breakers/{cluster_id}/reset')\n      def reset_circuit_breaker(cluster_id: str, current_user=Depends(require_super_admin)):\n          cb = CircuitBreaker(get_redis_client())\n          cb.reset(cluster_id)\n          return {'status': 'reset', 'cluster_id': cluster_id, 'new_state': 'NORMAL'}\n      ```\n3. Import `CircuitBreaker`, `get_redis_client`, `Cluster`.",
+        "dependencies": [
+            "T2"
+        ],
+        "acceptance_criteria": "Admin can list all circuit breaker states and reset individual breakers. Decision Engine uses risk multiplier from circuit breaker."
+    },
+    {
+        "task_id": "T20",
+        "description": "Enhance recovery_monitor.py with orphan instance detection via tags and ORPHAN_INSTANCE_TIMEOUT_MIN (\u00a79)",
+        "files": [
+            "backend/workers/tasks/recovery_monitor.py"
+        ],
+        "current_logic": "`recovery_monitor.py` (174 lines) exists and runs every 60 seconds. It checks DB instances against AWS state (DescribeInstances). If an instance is terminated in AWS but 'running' in DB, it triggers emergency_rebalancer. \u00a79 specifies also checking for orphaned instances tagged `spot-optimizer:status=pending` but launched >15 minutes ago with no node join. Currently uses static AWS credentials from DB `SystemConfig` table.",
+        "change_instructions": "1. Add orphan detection logic after existing DB-vs-AWS sync:\n   ```python\n   # Orphan detection \u2014 \u00a79\n   ORPHAN_TIMEOUT = ORPHAN_INSTANCE_TIMEOUT_MIN * 60  # 15 min in seconds\n   orphan_resp = ec2.describe_instances(Filters=[\n       {'Name': 'tag:spot-optimizer:status', 'Values': ['pending']},\n       {'Name': 'instance-state-name', 'Values': ['running']},\n   ])\n   for reservation in orphan_resp.get('Reservations', []):\n       for inst in reservation.get('Instances', []):\n           launch_time = inst['LaunchTime']\n           age_secs = (datetime.utcnow() - launch_time.replace(tzinfo=None)).total_seconds()\n           if age_secs > ORPHAN_TIMEOUT:\n               iid = inst['InstanceId']\n               # Check Redis for node_joined confirmation\n               if not redis_client.exists(f'node_joined:{iid}'):\n                   logger.warning(f'[recovery] Orphan detected: {iid} (age={age_secs:.0f}s, no node_joined key)')\n                   ec2.terminate_instances(InstanceIds=[iid])\n                   # Record in DB\n                   _record_orphan_termination(db, cluster, iid)\n   ```\n2. Add `_record_orphan_termination(db, cluster, instance_id)` helper that creates a RebalancingAction with trigger='orphan_cleanup'.\n3. Update Celery beat frequency from 60s to 300s (5 min) as specified in \u00a79.\n4. Import `ORPHAN_INSTANCE_TIMEOUT_MIN` from config.\n5. Ensure AWS credentials use the same STS assume-role pattern as existing code.",
+        "dependencies": [
+            "T1"
+        ],
+        "acceptance_criteria": "Recovery monitor detects orphaned instances older than 15 minutes. Orphans without `node_joined` key are terminated. Results are logged and recorded in DB."
+    },
+    {
+        "task_id": "T21",
+        "description": "Verify agent_actions DB mechanism and ensure create_agent_action exists in cluster_service.py (\u00a710.1)",
+        "files": [
+            "backend/services/cluster_service.py",
+            "backend/models/agent_action.py"
+        ],
+        "current_logic": "`agent_action.py` model (3923 bytes) exists. `cluster_service.py` (58626 bytes) handles cluster operations. \u00a710.1 explicitly decides to keep using the existing `agent_actions` DB table (NOT CRDs). Node Agent already polls `/api/v1/actions/pending`. Need to verify `create_agent_action()` exists in cluster_service.",
+        "change_instructions": "1. Verify `create_agent_action(node_name, action_type, payload, cluster_id)` exists in `cluster_service.py`.\n   - If it exists, verify it creates an AgentAction record with status=PENDING.\n   - If missing, add it.\n2. Verify the `AgentAction` model in `agent_action.py` has columns: node_name, action_type (enum: CORDON_NODE, UNCORDON_NODE, DRAIN_NODE, TERMINATE_NODE, PATCH_CONTAINER_RESOURCES), payload (JSON), status (PENDING/IN_PROGRESS/COMPLETED/FAILED), result (JSON).\n3. Ensure `ExecutionController` (T11) can call `create_agent_action()` for cordon/drain steps.",
+        "dependencies": [],
+        "acceptance_criteria": "`create_agent_action()` creates a PENDING record in the agent_actions table. The existing Node Agent HTTP polling picks it up without any code changes."
+    },
+    {
+        "task_id": "T22",
+        "description": "Update Helm chart DaemonSet, ConfigMap, and ClusterRole for IMDS polling (\u00a710.2, \u00a710.4)",
+        "files": [
+            "charts/spot-optimizer-agent/templates/daemonset.yaml",
+            "charts/spot-optimizer-agent/templates/configmap.yaml",
+            "charts/spot-optimizer-agent/templates/clusterrole.yaml"
+        ],
+        "current_logic": "Helm chart files exist. \u00a710.2 and \u00a710.4 specify adding environment variables for IMDS polling intervals, backend endpoints for spot-interruption and rebalance-recommendation reporting, and ensuring Node Agent has permissions for pods/eviction and nodes patch.",
+        "change_instructions": "1. In `daemonset.yaml`, add these env vars to the `spot-agent` container:\n   ```yaml\n   - name: IMDS_POLL_INTERVAL_SECONDS\n     value: '5'\n   - name: IMDS_TERMINATION_URL\n     value: 'http://169.254.169.254/latest/meta-data/spot/termination-time'\n   - name: IMDS_REBALANCE_URL\n     value: 'http://169.254.169.254/latest/meta-data/events/recommendations/rebalance'\n   - name: SPOT_INTERRUPTION_ENDPOINT\n     value: '/api/v1/agent/spot-interruption'\n   - name: REBALANCE_RECOMMENDATION_ENDPOINT\n     value: '/api/v1/agent/rebalance-recommendation'\n   ```\n2. In `configmap.yaml`, add:\n   ```yaml\n   data:\n     IMDS_POLL_INTERVAL: '5'\n     AGENT_POLL_INTERVAL: '15'  # HTTP action polling fallback interval\n   ```\n3. In `clusterrole.yaml`, verify these rules exist (add if missing):\n   ```yaml\n   - apiGroups: ['']\n     resources: ['pods/eviction']\n     verbs: ['create']\n   - apiGroups: ['']\n     resources: ['nodes']\n     verbs: ['get', 'list', 'patch', 'update']\n   ```",
+        "dependencies": [
+            "T18"
+        ],
+        "acceptance_criteria": "Helm template renders with correct env vars. IMDS poll interval is configurable. ClusterRole has pods/eviction create permission."
+    },
+    {
+        "task_id": "T23",
+        "description": "Add Karpenter detection and NodePool patch methods to karpenter_service.py (\u00a711)",
+        "files": [
+            "backend/services/karpenter_service.py",
+            "backend/api/karpenter_routes.py"
+        ],
+        "current_logic": "`karpenter_service.py` (33265 bytes) has extensive Karpenter integration. `karpenter_routes.py` (82552 bytes) has Karpenter API endpoints. \u00a711 specifies adding `detect_karpenter_in_cluster(cluster_id, db)` and `patch_node_pool_allowed_types(...)` methods, plus a new `GET /detect/{cluster_id}` route.",
+        "change_instructions": "1. In `karpenter_service.py`, add if missing:\n   - `detect_karpenter_in_cluster(cluster_id, db)` \u2014 checks for NodePool CRD.\n   - `patch_node_pool_allowed_types(cluster_id, instance_types, db)` \u2014 updates NodePool instance-type requirement.\n2. In `karpenter_routes.py`, add:\n   - `GET /detect/{cluster_id}` \u2014 Returns whether Karpenter is installed in the cluster.\n3. In `ExecutionController` (T11), add Karpenter launch strategy:\n   - If `karpenter_mode='delegate'` and Karpenter detected \u2192 patch NodePool and wait.\n   - Otherwise \u2192 direct Fleet API launch.",
+        "dependencies": [
+            "T11"
+        ],
+        "acceptance_criteria": "Karpenter detection returns true/false. NodePool patch updates allowed instance types. ExecutionController uses Karpenter when configured."
+    },
+    {
+        "task_id": "T24",
+        "description": "Create new DB models: optimizer_proposal.py, substitute_nodes.py (\u00a712.1)",
+        "files": [
+            "backend/models/optimizer_proposal.py",
+            "backend/models/substitute_nodes.py"
+        ],
+        "current_logic": "Neither model file exists. `substitute_state.py` (1026 bytes) exists but is different from `substitute_nodes.py`. \u00a712.1 specifies creating `optimizer_proposals` and `substitute_nodes` tables. `circuit_breaker_state.py` (2319 bytes) already exists. `instance_catalog.py` (5954 bytes) already exists.",
+        "change_instructions": "1. Create `backend/models/optimizer_proposal.py`:\n   - Columns: id (UUID PK), cluster_id (FK), node_name, current_instance_type, proposed_instance_type, proposed_az, estimated_savings, risk_delta, status (PENDING/APPROVED/REJECTED/EXECUTED), created_at, executed_at.\n2. Create `backend/models/substitute_nodes.py`:\n   - Columns: id (UUID PK), cluster_id (FK), instance_id, instance_type, az, state (LAUNCHING/READY/PROMOTING/TERMINATED), node_name, created_at, promoted_at.\n3. Register both models in `backend/models/__init__.py`.\n4. Verify `circuit_breaker_state.py` and `instance_catalog.py` already exist (they do).",
+        "dependencies": [],
+        "acceptance_criteria": "Both models are importable and create correct table schemas. Foreign keys to clusters table work."
+    },
+    {
+        "task_id": "T25",
+        "description": "Generate Alembic migration scripts for new tables and volume cleanup (\u00a712.1, \u00a712.2)",
+        "files": [
+            "backend/alembic/versions/xxxx_add_spot_advisor_rates.py",
+            "backend/alembic/versions/xxxx_add_optimizer_proposals.py",
+            "backend/alembic/versions/xxxx_add_substitute_nodes.py",
+            "backend/alembic/versions/xxxx_cleanup_volume_tables.py"
+        ],
+        "current_logic": "Alembic is referenced in `backend/models/base.py` line 75 but migration directory may need verification. \u00a712.2 is critical: remove volume_metrics and volume_recommendations tables (DROP IF EXISTS), delete `backend/models/volume_models.py` if present. Grep shows NO `volume_models.py` file and NO volume references in `rightsizing_service.py` \u2014 volume cleanup may be a no-op but migration should still be created defensively.",
+        "change_instructions": "1. Verify `backend/alembic/` directory exists. If not, `alembic init backend/alembic`.\n2. Generate migration for `spot_advisor_rates` table (from T5 model).\n3. Generate migration for `optimizer_proposals` table (from T24 model).\n4. Generate migration for `substitute_nodes` table (from T24 model).\n5. Create defensive volume cleanup migration:\n   ```python\n   def upgrade():\n       op.execute('DROP TABLE IF EXISTS volume_metrics CASCADE')\n       op.execute('DROP TABLE IF EXISTS volume_recommendations CASCADE')\n   ```\n6. Delete `backend/models/volume_models.py` if it exists (grep shows it does NOT exist).\n7. Clean `rightsizing_service.py` of any volume references (grep shows NONE \u2014 no-op).\n8. Test: `alembic upgrade head` runs without errors.",
+        "dependencies": [
+            "T5",
+            "T24"
+        ],
+        "acceptance_criteria": "All migration files exist. `alembic upgrade head` creates new tables. Volume tables are dropped if present. No volume model files remain."
+    },
+    {
+        "task_id": "T26",
+        "description": "Add Celery beat schedule entries for new periodic tasks (\u00a713)",
+        "files": [
+            "backend/workers/app.py"
+        ],
+        "current_logic": "The Celery worker app is defined in `backend/workers/app.py`. The backend also has `backend/scheduler.py` using APScheduler with 6 jobs. \u00a713 specifies adding new Celery beat entries for: recovery-monitor-scan (5 min), global-pool-cache-{region} (hourly), spot-advisor-scrape-daily (2AM), instance-catalog-refresh-daily (3AM), ondemand-price-refresh (12h), spot-price-ingest (10 min), circuit-breaker-audit-log (10 min). Also add `pricing` and `monitoring` queue routing.",
+        "change_instructions": "1. In `backend/workers/app.py`, add these new beat schedule entries (preserving existing):\n   ```python\n   # Recovery Monitor \u2014 scan for orphaned instances\n   'recovery-monitor-scan-every-5-mins': {\n       'task': 'recovery_monitor.scan_orphans',\n       'schedule': 300.0,  # 5 minutes\n   },\n   # Global Pool Cache \u2014 rebuild per region\n   'global-pool-cache-rebuild-hourly': {\n       'task': 'cache_builder.build_global_pool_cache',\n       'schedule': 3600.0,  # 1 hour\n   },\n   # Spot Advisor Scrape \u2014 daily at 02:00 UTC\n   'spot-advisor-scrape-daily': {\n       'task': 'scrapers.spot_advisor.scrape',\n       'schedule': crontab(minute=0, hour=2),\n   },\n   # Instance Catalog Refresh \u2014 daily at 03:00 UTC\n   'instance-catalog-refresh-daily-3am': {\n       'task': 'workers.instance_catalog.refresh_catalog',\n       'schedule': crontab(minute=0, hour=3),\n   },\n   # On-Demand Price Refresh \u2014 every 12 hours\n   'ondemand-price-refresh-12h': {\n       'task': 'workers.pricing.refresh_ondemand',\n       'schedule': 43200.0,\n   },\n   # Spot Price Ingest \u2014 every 10 minutes (per region)\n   'spot-price-ingest-every-10-mins': {\n       'task': 'workers.pricing.ingest_spot_prices',\n       'schedule': 600.0,\n   },\n   # Circuit Breaker Audit Log \u2014 every 10 minutes\n   'circuit-breaker-audit-every-10-mins': {\n       'task': 'circuit_breaker.audit_log',\n       'schedule': 600.0,\n   },\n   ```\n2. Add queue routing:\n   ```python\n   app.conf.task_routes = {\n       'workers.pricing.*': {'queue': 'pricing'},\n       'scrapers.*': {'queue': 'pricing'},\n       'recovery_monitor.*': {'queue': 'monitoring'},\n       'circuit_breaker.*': {'queue': 'monitoring'},\n   }\n   ```\n3. Import `crontab` from `celery.schedules`.\n4. Verify no duplicate schedules between app.py beat and APScheduler scheduler.py.",
+        "dependencies": [
+            "T7",
+            "T20"
+        ],
+        "acceptance_criteria": "All 7 new beat entries are registered. Queue routing directs pricing tasks to `pricing` queue. No duplicate schedules with APScheduler. Existing entries preserved."
+    },
+    {
+        "task_id": "T27",
+        "description": "Add AZ pressure badges to InterruptionHeatmap.jsx (\u00a714.1)",
+        "files": [
+            "frontend/src/components/atharvaai/InterruptionHeatmap.jsx"
+        ],
+        "current_logic": "`InterruptionHeatmap.jsx` displays a heatmap of interruption rates across AZs. It currently does NOT show AZ pressure badges (numeric overlay showing event frequency). \u00a714.1 specifies adding small numeric badges to each cell using data from the enhanced `/volatility/status` endpoint.",
+        "change_instructions": "1. Add a small numeric badge to each heatmap cell showing AZ pressure value.\n2. Fetch AZ pressure data from the `/volatility/status` endpoint (already exists in `atharvaai_routes.py`).\n3. Display badge with styling: small, positioned top-right of cell, color-coded (green < 3, yellow 3-5, red > 5).\n4. If AZ pressure data is unavailable, don't show badge.",
+        "dependencies": [],
+        "acceptance_criteria": "Heatmap cells show numeric AZ pressure badge when data available. Badge color changes based on pressure level."
+    },
+    {
+        "task_id": "T28",
+        "description": "Add circuit breaker status section to AdminHealth.jsx (\u00a714.2)",
+        "files": [
+            "frontend/src/components/admin/AdminHealth.jsx"
+        ],
+        "current_logic": "`AdminHealth.jsx` exists in the admin components. It does NOT display circuit breaker states. \u00a714.2 specifies adding a section listing all clusters with their circuit breaker state and rollback count, fetched from `/admin/circuit-breakers`.",
+        "change_instructions": "1. Add a new section titled 'Circuit Breaker Status'.\n2. Fetch data from `GET /admin/circuit-breakers` (added in T19).\n3. Display table with columns: Cluster Name, State (NORMAL/CONSERVATIVE/HALT with color badges), Rollback Count, Last Failure.\n4. Add a 'Reset' button per row that calls `POST /admin/circuit-breakers/{id}/reset`.\n5. Auto-refresh every 30 seconds.",
+        "dependencies": [
+            "T19"
+        ],
+        "acceptance_criteria": "Admin can see all circuit breaker states. Reset button resets to NORMAL. Table auto-refreshes."
+    },
+    {
+        "task_id": "T29",
+        "description": "Add Blacklist indicator and Price Shock signal columns to PoolRankings.jsx (\u00a714.3)",
+        "files": [
+            "frontend/src/components/atharvaai/PoolRankings.jsx"
+        ],
+        "current_logic": "`PoolRankings.jsx` displays pool ranking data in a table. It currently does NOT have 'Blacklist' or 'Signal' columns. \u00a714.3 specifies adding: Blacklist (\u25cf dot indicator), Signal (\u26a1 for price shock).",
+        "change_instructions": "1. Add 'Blacklist' column: show red \u25cf dot if pool is blacklisted (from enriched pool rankings endpoint).\n2. Add 'Signal' column: show \u26a1 icon if pool has `price_shock: true`.\n3. Enrich the data fetch to include blacklist and signal information.\n4. Style the indicators with appropriate colors (red for blacklist, yellow for price shock).",
+        "dependencies": [],
+        "acceptance_criteria": "Pool rankings table shows Blacklist and Signal columns. Indicators display correctly based on data."
+    },
+    {
+        "task_id": "T30",
+        "description": "Add trade-off slider and Karpenter mode selector to ClusterList.jsx (\u00a714.4)",
+        "files": [
+            "frontend/src/components/clusters/ClusterList.jsx"
+        ],
+        "current_logic": "`ClusterList.jsx` has an OptimizationSettingsTab for cluster configuration. It does NOT have a trade-off percentage slider or Karpenter mode selector. \u00a714.4 specifies adding: slider (0-50%) and mode selector (direct/delegate).",
+        "change_instructions": "1. In OptimizationSettingsTab, add a range slider for `trade_off_percentage` (0-50%, default 20%), with label showing current value.\n2. If Karpenter is detected for the cluster, add a mode selector dropdown with options: 'direct' and 'delegate'.\n3. Use `karpenterAPI.detectKarpenter(clusterId)` to check Karpenter availability.\n4. Save changes via existing cluster settings update API.\n5. Style consistently with existing form controls.",
+        "dependencies": [],
+        "acceptance_criteria": "Trade-off slider adjusts from 0-50% and saves to cluster settings. Karpenter mode selector shows only when Karpenter detected."
+    },
+    {
+        "task_id": "T31",
+        "description": "Add circuit breaker state badge to AutoRebalanceAuditCard.jsx (\u00a714.5)",
+        "files": [
+            "frontend/src/components/atharvaai/AutoRebalanceAuditCard.jsx"
+        ],
+        "current_logic": "`AutoRebalanceAuditCard.jsx` displays rebalancing status. It does NOT show circuit breaker state. \u00a714.5 specifies adding a state badge (NORMAL/CONSERVATIVE/HALT) next to the cluster name.",
+        "change_instructions": "1. Fetch circuit breaker state for each cluster from the enriched status endpoint or `/admin/circuit-breakers`.\n2. Display a color-coded badge next to the cluster name: green=NORMAL, yellow=CONSERVATIVE, red=HALT.\n3. Tooltip on hover shows rollback count and time in state.",
+        "dependencies": [
+            "T19"
+        ],
+        "acceptance_criteria": "Badge shows correct state with color coding. Tooltip displays rollback details."
+    },
+    {
+        "task_id": "T32",
+        "description": "Add new API client methods to frontend api.js (\u00a714.6)",
+        "files": [
+            "frontend/src/services/api.js"
+        ],
+        "current_logic": "`api.js` contains API client methods for various backend endpoints. \u00a714.6 specifies adding: `adminAPI.getCircuitBreakers()`, `adminAPI.resetCircuitBreaker(clusterId)`, `atharvaaiAPI.getVolatilityStatusEnriched(region)`, `karpenterAPI.detectKarpenter(clusterId)`.",
+        "change_instructions": "1. Add `adminAPI.getCircuitBreakers()` \u2192 `GET /admin/circuit-breakers`.\n2. Add `adminAPI.resetCircuitBreaker(clusterId)` \u2192 `POST /admin/circuit-breakers/{clusterId}/reset`.\n3. Add `atharvaaiAPI.getVolatilityStatusEnriched(region)` \u2192 `GET /api/v1/atharvaai/volatility/status?enriched=true&region={region}`.\n4. Add `karpenterAPI.detectKarpenter(clusterId)` \u2192 `GET /api/v1/karpenter/detect/{clusterId}`.\n5. Follow existing patterns for error handling and authentication headers.",
+        "dependencies": [],
+        "acceptance_criteria": "All 4 new API methods are callable and return promises. URLs match backend endpoint patterns."
+    },
+    {
+        "task_id": "T33",
+        "description": "Enrich pool rankings and volatility endpoints in atharvaai_routes.py (\u00a714.3, \u00a714.1 backend support)",
+        "files": [
+            "backend/api/atharvaai_routes.py"
+        ],
+        "current_logic": "`atharvaai_routes.py` (59382 bytes) has pool rankings and volatility endpoints. They do NOT include blacklist status, price shock signals, or AZ pressure in their responses. \u00a714.3 and \u00a714.1 require enriched responses.",
+        "change_instructions": "1. In `atharvaai_routes.py`, modify the pool rankings endpoint response:\n   For each pool object in the response, add two new fields:\n   ```python\n   pool_key = f'{pool.instance_type}:{pool.az}'\n   pool_data['blacklisted'] = bool(redis_client.exists(key_blacklist_global(pool_key)))\n   pool_data['price_shock'] = _detect_price_shock(pool.spot_price, pool.instance_type, pool.az, region)\n   ```\n   Where `_detect_price_shock()` checks if current price > `PRICE_SPIKE_FACTOR` \u00d7 1-hour average:\n   ```python\n   def _detect_price_shock(current_price, instance_type, az, region):\n       avg_key = f'spot:price_avg_1h:{region}:{instance_type}:{az}'\n       avg_raw = redis_client.get(avg_key)\n       if not avg_raw: return False\n       avg = float(avg_raw)\n       return current_price > (avg * PRICE_SPIKE_FACTOR)  # 1.6x\n   ```\n2. In the volatility status endpoint, add AZ pressure data:\n   ```python\n   az_pressure = {}\n   for az in ['a', 'b', 'c', 'd']:\n       count = redis_client.get(key_az_pressure(region, f'{region}{az}'))\n       if count: az_pressure[f'{region}{az}'] = int(count)\n   response['az_pressure'] = az_pressure\n   ```\n3. Import key helpers from `redis_client` and `PRICE_SPIKE_FACTOR` from config.",
+        "dependencies": [
+            "T1",
+            "T2"
+        ],
+        "acceptance_criteria": "Pool rankings response includes blacklist and price_shock fields per pool. Volatility response includes az_pressure data."
+    },
+    {
+        "task_id": "T34",
+        "description": "Create testing infrastructure \u2014 conftest.py, AWS mocks, Redis mocks",
+        "files": [
+            "backend/tests/conftest.py",
+            "backend/tests/mocks/__init__.py",
+            "backend/tests/mocks/aws_mock.py",
+            "backend/tests/mocks/redis_mock.py"
+        ],
+        "current_logic": "`backend/tests/` exists with only `test_integration_hardening.py` (6689 bytes). There are no shared fixtures, no AWS mocks, no Redis mocks. Many task acceptance criteria mention unit tests but there is no infrastructure to write them.",
+        "change_instructions": "1. Create `backend/tests/conftest.py`:\n   - `db_session` fixture \u2014 SQLAlchemy test session with rollback.\n   - `redis_client` fixture \u2014 fakeredis.FakeRedis instance.\n   - `sample_cluster` fixture \u2014 pre-populated Cluster model.\n   - `sample_pools` fixture \u2014 pre-populated pool data (mix of tiers).\n2. Create `backend/tests/mocks/aws_mock.py`:\n   - Stubbed `boto3.client('ec2')` for describe_instances, run_instances, create_fleet, describe_spot_price_history.\n   - Stubbed `boto3.client('autoscaling')` for ASG operations.\n   - Stubbed `boto3.client('sts')` for AssumeRole.\n3. Create `backend/tests/mocks/redis_mock.py`:\n   - Wrapper around fakeredis with pre-populated test keys.\n4. Add `pytest`, `fakeredis` to dev dependencies.",
+        "dependencies": [],
+        "acceptance_criteria": "conftest.py provides fixtures. `pytest backend/tests/conftest.py` imports without errors. Mock stubs are callable and return sensible defaults."
+    },
+    {
+        "task_id": "T35",
+        "description": "Create Orchestrator Deployment Helm template (M1 \u2014 \u00a710.3, \u00a710.4)",
+        "files": [
+            "charts/spot-optimizer-agent/templates/orchestrator-deployment.yaml",
+            "charts/spot-optimizer-agent/values.yaml"
+        ],
+        "current_logic": "The Helm chart (`charts/spot-optimizer-agent/`) currently has only a DaemonSet (`daemonset.yaml`, 67 lines) for the Node Agent. It deploys a `spot-agent` pod on every node with env vars: HOST_PROC, NODE_NAME, API_KEY (from Secret), BACKEND_URL, BACKEND_WS_URL, CLUSTER_ID (from ConfigMap). There is NO Orchestrator Deployment \u2014 the architecture described in changes.md \u00a710.3 splits the agent into two components: a **Node Agent (DaemonSet)** for per-node IMDS polling and a **singleton Orchestrator (Deployment)** that receives launch commands, copies source node attributes, launches via fleet.py, and confirms node-join. The Orchestrator Deployment template is entirely absent. `values.yaml` has image config, serviceAccount config, and namespace but no orchestrator-specific values (replica count, IRSA role ARN, resource limits, etc.).",
+        "change_instructions": "1. Create `charts/spot-optimizer-agent/templates/orchestrator-deployment.yaml`:\n   - `apiVersion: apps/v1`, `kind: Deployment` with `replicas: 1` (singleton).\n   - Labels: `app: spot-orchestrator`, `component: orchestrator`.\n   - Pod spec with `serviceAccountName: {{ .Values.orchestrator.serviceAccount.name }}`.\n   - IRSA annotation: `eks.amazonaws.com/role-arn: {{ .Values.orchestrator.irsaRoleArn }}`.\n   - Container `orchestrator` using `{{ .Values.orchestrator.image.repository }}:{{ .Values.orchestrator.image.tag }}`.\n   - Env vars: BACKEND_URL, BACKEND_WS_URL, CLUSTER_ID (from ConfigMap), API_KEY (from Secret), AWS_REGION (from ConfigMap), ORCHESTRATOR_MODE=true.\n   - Resources: requests cpu=200m, memory=256Mi; limits cpu=1000m, memory=1Gi.\n   - Liveness/readiness probes on /healthz port 8080.\n2. Update `values.yaml` to add `orchestrator:` section with:\n   - `enabled: true`\n   - `image.repository`, `image.tag`, `image.pullPolicy`\n   - `serviceAccount.name: spot-orchestrator`\n   - `irsaRoleArn: \"\"` (user must fill in)\n   - `resources` block\n   - Add comment documenting the required IAM policy (ec2:RunInstances, ec2:CreateFleet, ec2:DescribeInstances, ec2:TerminateInstances, autoscaling:*, sts:AssumeRole).\n3. Wrap the Deployment template in `{{- if .Values.orchestrator.enabled }}`.",
+        "dependencies": [
+            "T22"
+        ],
+        "acceptance_criteria": "Running `helm template` with orchestrator.enabled=true renders a valid Deployment manifest with IRSA annotations, correct env vars, and singleton replica. With orchestrator.enabled=false, no Deployment is rendered. values.yaml documents the required IAM policy."
+    },
+    {
+        "task_id": "T36",
+        "description": "Add WebSocket server endpoint for Orchestrator real-time communication (M2 \u2014 \u00a710.3)",
+        "files": [
+            "backend/api/websocket_routes.py",
+            "backend/main.py"
+        ],
+        "current_logic": "There is NO `websocket_routes.py` file anywhere in the codebase. The Orchestrator is expected to maintain a persistent WebSocket connection for real-time command delivery (launch, cordon, drain, terminate) and progress reporting. `installer_routes.py` (line 48) generates a `BACKEND_WS_URL` for the agent config, and `daemonset.yaml` (line 50-54) mounts it as an env var \u2014 but no server-side WebSocket handler exists. `agent_routes.py` (line 177) has a comment about 'HTTP fallback for agents without persistent WebSocket' confirming WebSocket is the primary channel but is unimplemented. `backend/main.py` registers routers via `app.include_router()` \u2014 the new WebSocket router must be added here.",
+        "change_instructions": "1. Create `backend/api/websocket_routes.py`:\n   - Import FastAPI `WebSocket`, `WebSocketDisconnect`, `APIRouter`.\n   - Create `router = APIRouter(prefix='/ws', tags=['websocket'])`.\n   - Add `@router.websocket('/cluster/{cluster_id}')` endpoint:\n     a. **Authentication**: Accept `api_key` as query param or first message. Validate against the cluster's stored API key in DB.\n     b. **Connection registry**: Store active connections in a module-level dict `_active_connections: Dict[str, WebSocket]` keyed by cluster_id.\n     c. **Heartbeat**: Send `{\"type\": \"ping\"}` every 30 seconds. Expect `{\"type\": \"pong\"}` within 10 seconds or disconnect.\n     d. **Command delivery**: When backend creates an AgentAction, check if cluster_id has an active WebSocket. If yes, push `{\"type\": \"command\", \"action_id\": ..., \"action_type\": ..., \"payload\": ...}` immediately.\n     e. **Result reporting**: Accept `{\"type\": \"result\", \"action_id\": ..., \"status\": \"completed\"|\"failed\", \"output\": ...}` messages and update the AgentAction record in DB.\n     f. **Disconnect cleanup**: Remove from `_active_connections` on disconnect.\n   - Add helper function `async def push_command_to_cluster(cluster_id, action_data)` that checks for active WebSocket and sends command. Returns True if sent, False if no connection (caller should fall back to HTTP polling).\n   - Add helper `def is_cluster_connected(cluster_id) -> bool`.\n2. In `backend/main.py`, add `from backend.api.websocket_routes import router as ws_router` and `app.include_router(ws_router)`.\n3. Handle WebSocketDisconnect gracefully with logging.",
+        "dependencies": [
+            "T21"
+        ],
+        "acceptance_criteria": "WebSocket endpoint accepts connections at `/ws/cluster/{cluster_id}`. Authentication rejects invalid API keys. Active connections are tracked. Commands can be pushed via `push_command_to_cluster()`. Results update AgentAction records. Disconnects are cleaned up. Heartbeat keeps connection alive."
+    },
+    {
+        "task_id": "T37",
+        "description": "Add HTTP fallback endpoints for Orchestrator polling (M3 \u2014 \u00a710.3)",
+        "files": [
+            "backend/api/agent_routes.py"
+        ],
+        "current_logic": "`agent_routes.py` already has endpoints for the Node Agent: `POST /spot-interruption` (line ~177 references WebSocket fallback in a comment), `GET /actions/pending` (polls for pending AgentActions), `POST /actions/{action_id}/result` (reports action completion). However, there are NO dedicated Orchestrator HTTP fallback endpoints for: (1) fetching pending launch/replacement commands specifically for the Orchestrator role, and (2) reporting command results with richer metadata (new instance ID, node join status). The existing `/actions/pending` returns ALL pending actions for a cluster \u2014 Orchestrator needs filtered results for orchestrator-specific action types (LAUNCH_INSTANCE, CREATE_FLEET, TERMINATE_INSTANCE) vs node-agent types (CORDON, DRAIN, INSTALL_KARPENTER).",
+        "change_instructions": "1. In `agent_routes.py`, add:\n   a. `GET /orchestrator/{cluster_id}/pending-commands`:\n      - Authenticate via API key header.\n      - Query `agent_actions` table for `cluster_id` where `status = PENDING` and `action_type IN ('LAUNCH_INSTANCE', 'CREATE_FLEET', 'TERMINATE_INSTANCE', 'PATCH_KARPENTER_NODEPOOL')`.\n      - Return list of actions with id, type, payload.\n      - This is the HTTP fallback \u2014 Orchestrator calls this every 15 seconds when WebSocket is unavailable.\n   b. `POST /orchestrator/{cluster_id}/command-result`:\n      - Accept `action_id`, `status` (completed/failed), `output` dict (may include `new_instance_id`, `error_message`).\n      - Update the AgentAction record: set status, completed_at, output.\n      - If status=completed and action was LAUNCH_INSTANCE, set Redis key `node_launched:{output.new_instance_id}` with TTL 1800s for tracking.\n      - Return acknowledgment.\n2. Add Pydantic models `OrchestratorCommandResult` for the request body.\n3. Ensure API key authentication matches the cluster's stored key.",
+        "dependencies": [
+            "T21",
+            "T36"
+        ],
+        "acceptance_criteria": "GET /orchestrator/{cluster_id}/pending-commands returns only orchestrator-relevant pending actions. POST /orchestrator/{cluster_id}/command-result updates AgentAction status and sets tracking Redis keys. Both endpoints require valid API key. 15-second polling works as WebSocket fallback."
+    },
+    {
+        "task_id": "T38",
+        "description": "Add node-joined endpoint for new node registration confirmation (M4 \u2014 \u00a79, \u00a76.2, \u00a710.3)",
+        "files": [
+            "backend/api/worker_routes.py"
+        ],
+        "current_logic": "`worker_routes.py` (246 lines) has 4 endpoints: `POST /worker/spot-interruption` (creates emergency RebalancingAction), `POST /worker/register-node` (upserts WorkerRegistration), `POST /worker/heartbeat` (updates heartbeat timestamp), `POST /worker/node-metrics` (stores NodeMetric). There is NO `/worker/node-joined` endpoint. The Recovery Monitor (`recovery_monitor.py`, \u00a79) checks Redis for `node_joined:{instance_id}` to confirm new nodes have joined Kubernetes \u2014 if this key is absent after 15 minutes, the instance is considered orphaned and terminated. The ExecutionController (`execution_controller.py`, \u00a76.2) also relies on this key to confirm replacement node readiness before proceeding with Phase 2 (CORDON\u2192DRAIN\u2192TERMINATE old node). Without this endpoint, neither orphan detection nor replacement verification can work.",
+        "change_instructions": "1. Add Pydantic model `NodeJoinedRequest`:\n   ```python\n   class NodeJoinedRequest(BaseModel):\n       cluster_id: str\n       instance_id: str\n       node_name: str\n       instance_type: Optional[str] = None\n       az: Optional[str] = None\n       lifecycle: Optional[str] = None  # 'spot' or 'on-demand'\n   ```\n2. Add endpoint `POST /worker/node-joined`:\n   a. Accept `NodeJoinedRequest` body.\n   b. Write Redis key `node_joined:{instance_id}` with value = JSON of `{node_name, cluster_id, joined_at, instance_type, az, lifecycle}` and TTL = 86400 (24 hours).\n   c. Also update the Instance record in DB if it exists: set `state = 'running'`, `node_name = req.node_name`.\n   d. Log at INFO level: `[worker] Node joined: {node_name} (instance={instance_id}, cluster={cluster_id})`.\n   e. Check if there's a pending RebalancingAction with `status='waiting_agent'` for this cluster where the `action_metadata.new_ec2_instance_id` matches \u2014 if found, this confirms Phase 1 completion and Phase 2 can proceed.\n   f. Return `{\"status\": \"confirmed\", \"node_name\": req.node_name, \"instance_id\": req.instance_id}`.\n3. Import `get_redis_client` from `backend.core.redis_client`.\n4. Handle errors with proper HTTP 500 responses.",
+        "dependencies": [
+            "T20",
+            "T10"
+        ],
+        "acceptance_criteria": "POST /worker/node-joined sets Redis key `node_joined:{instance_id}` with 24h TTL. Recovery Monitor can check this key to distinguish joined nodes from orphans. ExecutionController can verify replacement readiness. Instance DB record is updated if present. Endpoint returns confirmation response."
+    },
+    {
+        "task_id": "T39",
+        "description": "Add launch failure reporting and auto-blacklisting \u2014 report_launch_attempt/failure in pool_ranking_service.py, integrate into ExecutionController (\u00a74, \u00a76)",
+        "files": [
+            "backend/services/pool_ranking_service.py",
+            "backend/services/execution_controller.py"
+        ],
+        "current_logic": "`pool_ranking_service.py` (76980 bytes) handles pool ranking with `rank_pools_for_size()` and other methods. It does NOT have `report_launch_attempt()` or `report_launch_failure()` functions. There are no Redis counters tracking pool-level launch success/failure rates. `execution_controller.py` (currently being rewritten in T11) launches instances via Fleet API or RunInstances but does NOT report failure metrics back to the ranking system. Redis key helpers `key_pool_launch_failures(pool_key)` and `key_pool_launch_attempts(pool_key)` are defined in T2 but not yet used. The `LAUNCH_FAILURE_RATIO_THRESHOLD` constant (0.30 = 30%) is added in T1 but not consumed. Without this feedback loop, the system will repeatedly try launching in pools that consistently fail, wasting time and API calls.",
+        "change_instructions": "1. In `pool_ranking_service.py`, add three functions:\n   ```python\n   from backend.core.redis_client import get_redis_client, key_pool_launch_attempts, key_pool_launch_failures, key_blacklist_global\n   from backend.core.config import LAUNCH_FAILURE_RATIO_THRESHOLD\n   \n   def report_launch_attempt(pool_key: str) -> None:\n       '''Record that a launch was attempted for this pool. Called before every Fleet API / RunInstances call.'''\n       redis = get_redis_client()\n       redis.incr(key_pool_launch_attempts(pool_key))   # pool_launch_attempts:{itype}:{az}\n       redis.expire(key_pool_launch_attempts(pool_key), 86400)  # 24-hour rolling window\n   \n   def report_launch_failure(pool_key: str) -> None:\n       '''Record that a launch failed. If failure ratio exceeds threshold, temporarily blacklist the pool.'''\n       redis = get_redis_client()\n       redis.incr(key_pool_launch_failures(pool_key))   # pool_launch_failures:{itype}:{az}\n       redis.expire(key_pool_launch_failures(pool_key), 86400)\n       # Check failure ratio\n       attempts = int(redis.get(key_pool_launch_attempts(pool_key)) or 1)\n       failures = int(redis.get(key_pool_launch_failures(pool_key)) or 0)\n       if attempts >= 3 and (failures / attempts) > LAUNCH_FAILURE_RATIO_THRESHOLD:  # > 30%\n           blacklist_pool_temporary(pool_key, ttl_seconds=3600)  # 1-hour blacklist\n           logger.warning(f'Pool {pool_key} auto-blacklisted: {failures}/{attempts} failures ({failures/attempts*100:.0f}%) exceeds {LAUNCH_FAILURE_RATIO_THRESHOLD*100:.0f}% threshold')\n   \n   def blacklist_pool_temporary(pool_key: str, ttl_seconds: int = 3600) -> None:\n       '''Temporarily blacklist a pool (default 1 hour). Used by launch failure auto-blacklisting.'''\n       redis = get_redis_client()\n       redis.setex(key_blacklist_global(pool_key), ttl_seconds, '1')\n       # Also add to region-specific risky_pools set for backward compat\n       parts = pool_key.split(':')\n       if len(parts) >= 2:\n           redis.sadd('risky_pools', pool_key)\n   ```\n2. In `execution_controller.py` (T11), integrate into Step 6 (launch replacement):\n   ```python\n   from backend.services.pool_ranking_service import report_launch_attempt, report_launch_failure\n   \n   # Before launching:\n   pool_key = f'{target_instance_type}:{target_az}'\n   report_launch_attempt(pool_key)\n   \n   # After launch attempt:\n   new_id = launch_via_fleet_api(ec2, ..., overrides, ...)\n   if not new_id:\n       report_launch_failure(pool_key)\n       # Try next pool in the ranked list...\n   ```\n3. In `auto_rebalancer.py` (T12): if using the existing `_launch_spot_instance_direct()` path, add the same `report_launch_attempt/failure` calls around the RunInstances call.\n4. In the Decision Engine's filter step (T8), the existing `key_blacklist_global` check will automatically exclude pools that have been auto-blacklisted by this mechanism.\n5. Requirements: `attempts >= 3` minimum sample size before auto-blacklisting to avoid false positives from transient errors.",
+        "dependencies": [
+            "T1",
+            "T2",
+            "T6",
+            "T11"
+        ],
+        "acceptance_criteria": "1. `report_launch_attempt('m5.xlarge:us-east-1a')` increments `pool_launch_attempts:m5.xlarge:us-east-1a` in Redis with 24h TTL.\n2. `report_launch_failure('m5.xlarge:us-east-1a')` increments failure counter and checks ratio.\n3. After 4 attempts with 2 failures (50% > 30% threshold), the pool is auto-blacklisted for 1 hour via `blacklist:global:m5.xlarge:us-east-1a`.\n4. Auto-blacklisted pools are excluded by Decision Engine's blacklist filter (T8 Step 5).\n5. After 1 hour, the temporary blacklist expires and the pool becomes eligible again.\n6. ExecutionController calls `report_launch_attempt` before every launch and `report_launch_failure` on Fleet API / RunInstances failure.\n7. Minimum 3 attempts required before auto-blacklisting to prevent false positives."
+    }
+]
