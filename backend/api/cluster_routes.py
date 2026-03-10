@@ -241,6 +241,9 @@ def delete_cluster(
         return {"status": "success", "message": "Cluster already deleted"}
     except ValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Cluster {cluster_id} DB deletion failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Cluster deletion failed: {str(e)}")
 
 @router.post("/install-script", response_model=InstallScriptResponse)
 def generate_install_script(

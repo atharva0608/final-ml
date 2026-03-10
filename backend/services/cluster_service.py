@@ -725,6 +725,28 @@ class ClusterService:
         except Exception:
             pass
 
+        # Agent actions (has FK ondelete=CASCADE but must be explicit to avoid
+        # SQLAlchemy identity-map conflicts when passive_deletes=True is set)
+        try:
+            from backend.models.agent_action import AgentAction
+            self.db.query(AgentAction).filter(AgentAction.cluster_id == cluster_id).delete(synchronize_session=False)
+        except Exception:
+            pass
+
+        # Daily cluster stats
+        try:
+            from backend.models.daily_cluster_stats import DailyClusterStat
+            self.db.query(DailyClusterStat).filter(DailyClusterStat.cluster_id == cluster_id).delete(synchronize_session=False)
+        except Exception:
+            pass
+
+        # Cluster template mappings
+        try:
+            from backend.models.node_template import ClusterTemplateMapping
+            self.db.query(ClusterTemplateMapping).filter(ClusterTemplateMapping.cluster_id == cluster_id).delete(synchronize_session=False)
+        except Exception:
+            pass
+
         # Clear Redis warm spare & substitute state for this cluster
         try:
             from backend.core.redis_client import get_redis_client

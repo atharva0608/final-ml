@@ -92,8 +92,13 @@ app = FastAPI(
 # Custom middleware to ensure CORS headers on all responses (including errors)
 @app.middleware("http")
 async def add_cors_headers(request: Request, call_next):
-    """Ensure CORS headers are present on all responses, including errors"""
-    response = await call_next(request)
+    """Ensure CORS headers are present on all responses, including 500 errors"""
+    from fastapi.responses import JSONResponse as _JR
+    try:
+        response = await call_next(request)
+    except Exception:
+        # Unhandled exception reached ASGI level — return 500 with CORS headers
+        response = _JR({"detail": "Internal Server Error"}, status_code=500)
 
     # Get origin from request
     origin = request.headers.get("origin")

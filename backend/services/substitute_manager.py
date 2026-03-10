@@ -28,26 +28,110 @@ logger = logging.getLogger(__name__)
 
 # Compact vcpu/memory lookup for common instance types used during substitute selection.
 # Used to call PoolRankingService.rank_pools_for_size() with the right size constraints.
+# If an instance type is missing, the system falls back to AWS DescribeInstanceTypes at runtime.
 _INSTANCE_VCPU_MEM: dict = {
+    # T3 / T3a / T4g burstable
     "t3.nano": (2, 0.5), "t3.micro": (2, 1), "t3.small": (2, 2), "t3.medium": (2, 4),
     "t3.large": (2, 8), "t3.xlarge": (4, 16), "t3.2xlarge": (8, 32),
     "t3a.micro": (2, 1), "t3a.small": (2, 2), "t3a.medium": (2, 4), "t3a.large": (2, 8),
     "t3a.xlarge": (4, 16), "t3a.2xlarge": (8, 32),
     "t4g.nano": (2, 0.5), "t4g.micro": (2, 1), "t4g.small": (2, 2), "t4g.medium": (2, 4),
     "t4g.large": (2, 8), "t4g.xlarge": (4, 16), "t4g.2xlarge": (8, 32),
+    # M5 / M5a (Intel/AMD gen5)
     "m5.large": (2, 8), "m5.xlarge": (4, 16), "m5.2xlarge": (8, 32), "m5.4xlarge": (16, 64),
-    "m5a.large": (2, 8), "m5a.xlarge": (4, 16), "m5a.2xlarge": (8, 32),
-    "m6i.large": (2, 8), "m6i.xlarge": (4, 16), "m6i.2xlarge": (8, 32),
-    "m6a.large": (2, 8), "m6a.xlarge": (4, 16), "m6a.2xlarge": (8, 32),
+    "m5.8xlarge": (32, 128), "m5.12xlarge": (48, 192), "m5.16xlarge": (64, 256), "m5.24xlarge": (96, 384),
+    "m5a.large": (2, 8), "m5a.xlarge": (4, 16), "m5a.2xlarge": (8, 32), "m5a.4xlarge": (16, 64),
+    "m5a.8xlarge": (32, 128), "m5a.12xlarge": (48, 192), "m5a.16xlarge": (64, 256), "m5a.24xlarge": (96, 384),
+    # M6i / M6a / M6g (gen6)
+    "m6i.large": (2, 8), "m6i.xlarge": (4, 16), "m6i.2xlarge": (8, 32), "m6i.4xlarge": (16, 64),
+    "m6i.8xlarge": (32, 128), "m6i.12xlarge": (48, 192), "m6i.16xlarge": (64, 256), "m6i.24xlarge": (96, 384), "m6i.32xlarge": (128, 512),
+    "m6a.large": (2, 8), "m6a.xlarge": (4, 16), "m6a.2xlarge": (8, 32), "m6a.4xlarge": (16, 64),
+    "m6a.8xlarge": (32, 128), "m6a.12xlarge": (48, 192), "m6a.16xlarge": (64, 256), "m6a.24xlarge": (96, 384), "m6a.48xlarge": (192, 768),
     "m6g.medium": (1, 4), "m6g.large": (2, 8), "m6g.xlarge": (4, 16), "m6g.2xlarge": (8, 32),
+    "m6g.4xlarge": (16, 64), "m6g.8xlarge": (32, 128), "m6g.12xlarge": (48, 192), "m6g.16xlarge": (64, 256),
+    # M7i / M7a / M7g (gen7 — latest)
+    "m7i.large": (2, 8), "m7i.xlarge": (4, 16), "m7i.2xlarge": (8, 32), "m7i.4xlarge": (16, 64),
+    "m7i.8xlarge": (32, 128), "m7i.12xlarge": (48, 192), "m7i.16xlarge": (64, 256), "m7i.24xlarge": (96, 384), "m7i.48xlarge": (192, 768),
+    "m7i-flex.large": (2, 8), "m7i-flex.xlarge": (4, 16), "m7i-flex.2xlarge": (8, 32), "m7i-flex.4xlarge": (16, 64), "m7i-flex.8xlarge": (32, 128),
+    "m7a.large": (2, 8), "m7a.xlarge": (4, 16), "m7a.2xlarge": (8, 32), "m7a.4xlarge": (16, 64),
+    "m7a.8xlarge": (32, 128), "m7a.12xlarge": (48, 192), "m7a.16xlarge": (64, 256), "m7a.24xlarge": (96, 384), "m7a.48xlarge": (192, 768),
+    "m7g.medium": (1, 4), "m7g.large": (2, 8), "m7g.xlarge": (4, 16), "m7g.2xlarge": (8, 32),
+    "m7g.4xlarge": (16, 64), "m7g.8xlarge": (32, 128), "m7g.12xlarge": (48, 192), "m7g.16xlarge": (64, 256),
+    # C5 / C5a (gen5 compute)
     "c5.large": (2, 4), "c5.xlarge": (4, 8), "c5.2xlarge": (8, 16), "c5.4xlarge": (16, 32),
-    "c6i.large": (2, 4), "c6i.xlarge": (4, 8), "c6i.2xlarge": (8, 16),
-    "c6a.large": (2, 4), "c6a.xlarge": (4, 8), "c6a.2xlarge": (8, 16),
+    "c5.9xlarge": (36, 72), "c5.12xlarge": (48, 96), "c5.18xlarge": (72, 144), "c5.24xlarge": (96, 192),
+    "c5a.large": (2, 4), "c5a.xlarge": (4, 8), "c5a.2xlarge": (8, 16), "c5a.4xlarge": (16, 32),
+    "c5a.8xlarge": (32, 64), "c5a.12xlarge": (48, 96), "c5a.16xlarge": (64, 128), "c5a.24xlarge": (96, 192),
+    # C6i / C6a / C6g (gen6 compute)
+    "c6i.large": (2, 4), "c6i.xlarge": (4, 8), "c6i.2xlarge": (8, 16), "c6i.4xlarge": (16, 32),
+    "c6i.8xlarge": (32, 64), "c6i.12xlarge": (48, 96), "c6i.16xlarge": (64, 128), "c6i.24xlarge": (96, 192), "c6i.32xlarge": (128, 256),
+    "c6a.large": (2, 4), "c6a.xlarge": (4, 8), "c6a.2xlarge": (8, 16), "c6a.4xlarge": (16, 32),
+    "c6a.8xlarge": (32, 64), "c6a.12xlarge": (48, 96), "c6a.16xlarge": (64, 128), "c6a.24xlarge": (96, 192), "c6a.48xlarge": (192, 384),
     "c6g.medium": (1, 2), "c6g.large": (2, 4), "c6g.xlarge": (4, 8), "c6g.2xlarge": (8, 16),
-    "r5.large": (2, 16), "r5.xlarge": (4, 32), "r5.2xlarge": (8, 64),
-    "r6i.large": (2, 16), "r6i.xlarge": (4, 32), "r6i.2xlarge": (8, 64),
-    "r6g.large": (2, 16), "r6g.xlarge": (4, 32), "r6g.2xlarge": (8, 64),
+    "c6g.4xlarge": (16, 32), "c6g.8xlarge": (32, 64), "c6g.12xlarge": (48, 96), "c6g.16xlarge": (64, 128),
+    # C7i / C7a / C7g (gen7 compute — latest)
+    "c7i.large": (2, 4), "c7i.xlarge": (4, 8), "c7i.2xlarge": (8, 16), "c7i.4xlarge": (16, 32),
+    "c7i.8xlarge": (32, 64), "c7i.12xlarge": (48, 96), "c7i.16xlarge": (64, 128), "c7i.24xlarge": (96, 192), "c7i.48xlarge": (192, 384),
+    "c7i-flex.large": (2, 4), "c7i-flex.xlarge": (4, 8), "c7i-flex.2xlarge": (8, 16), "c7i-flex.4xlarge": (16, 32), "c7i-flex.8xlarge": (32, 64),
+    "c7a.large": (2, 4), "c7a.xlarge": (4, 8), "c7a.2xlarge": (8, 16), "c7a.4xlarge": (16, 32),
+    "c7a.8xlarge": (32, 64), "c7a.12xlarge": (48, 96), "c7a.16xlarge": (64, 128), "c7a.24xlarge": (96, 192), "c7a.48xlarge": (192, 384),
+    "c7g.medium": (1, 2), "c7g.large": (2, 4), "c7g.xlarge": (4, 8), "c7g.2xlarge": (8, 16),
+    "c7g.4xlarge": (16, 32), "c7g.8xlarge": (32, 64), "c7g.12xlarge": (48, 96), "c7g.16xlarge": (64, 128),
+    # R5 / R5a (gen5 memory)
+    "r5.large": (2, 16), "r5.xlarge": (4, 32), "r5.2xlarge": (8, 64), "r5.4xlarge": (16, 128),
+    "r5.8xlarge": (32, 256), "r5.12xlarge": (48, 384), "r5.16xlarge": (64, 512), "r5.24xlarge": (96, 768),
+    "r5a.large": (2, 16), "r5a.xlarge": (4, 32), "r5a.2xlarge": (8, 64), "r5a.4xlarge": (16, 128),
+    "r5a.8xlarge": (32, 256), "r5a.12xlarge": (48, 384), "r5a.16xlarge": (64, 512), "r5a.24xlarge": (96, 768),
+    # R6i / R6a / R6g (gen6 memory)
+    "r6i.large": (2, 16), "r6i.xlarge": (4, 32), "r6i.2xlarge": (8, 64), "r6i.4xlarge": (16, 128),
+    "r6i.8xlarge": (32, 256), "r6i.12xlarge": (48, 384), "r6i.16xlarge": (64, 512), "r6i.24xlarge": (96, 768), "r6i.32xlarge": (128, 1024),
+    "r6a.large": (2, 16), "r6a.xlarge": (4, 32), "r6a.2xlarge": (8, 64), "r6a.4xlarge": (16, 128),
+    "r6a.8xlarge": (32, 256), "r6a.12xlarge": (48, 384), "r6a.16xlarge": (64, 512), "r6a.24xlarge": (96, 768), "r6a.48xlarge": (192, 1536),
+    "r6g.large": (2, 16), "r6g.xlarge": (4, 32), "r6g.2xlarge": (8, 64), "r6g.4xlarge": (16, 128),
+    "r6g.8xlarge": (32, 256), "r6g.12xlarge": (48, 384), "r6g.16xlarge": (64, 512),
+    # R7i / R7a / R7g (gen7 memory — latest)
+    "r7i.large": (2, 16), "r7i.xlarge": (4, 32), "r7i.2xlarge": (8, 64), "r7i.4xlarge": (16, 128),
+    "r7i.8xlarge": (32, 256), "r7i.12xlarge": (48, 384), "r7i.16xlarge": (64, 512), "r7i.24xlarge": (96, 768), "r7i.48xlarge": (192, 1536),
+    "r7a.large": (2, 16), "r7a.xlarge": (4, 32), "r7a.2xlarge": (8, 64), "r7a.4xlarge": (16, 128),
+    "r7a.8xlarge": (32, 256), "r7a.12xlarge": (48, 384), "r7a.16xlarge": (64, 512), "r7a.24xlarge": (96, 768), "r7a.48xlarge": (192, 1536),
+    "r7g.medium": (1, 8), "r7g.large": (2, 16), "r7g.xlarge": (4, 32), "r7g.2xlarge": (8, 64),
+    "r7g.4xlarge": (16, 128), "r7g.8xlarge": (32, 256), "r7g.12xlarge": (48, 384), "r7g.16xlarge": (64, 512),
+    # X2 high-memory
+    "x2idn.16xlarge": (64, 1024), "x2idn.24xlarge": (96, 1536), "x2idn.32xlarge": (128, 2048),
+    "x2iedn.xlarge": (4, 128), "x2iedn.2xlarge": (8, 256), "x2iedn.4xlarge": (16, 512),
+    "x2iedn.8xlarge": (32, 1024), "x2iedn.16xlarge": (64, 2048), "x2iedn.24xlarge": (96, 3072), "x2iedn.32xlarge": (128, 4096),
 }
+
+
+def _lookup_instance_specs_aws(instance_type: str, cluster, db) -> tuple:
+    """
+    Fallback: call AWS DescribeInstanceTypes when the instance type is not in
+    _INSTANCE_VCPU_MEM.  Returns (vcpu, memory_gb). Falls back to (2, 8) on
+    any error so substitute selection is never fully blocked.
+    """
+    try:
+        import boto3 as _b3
+        from backend.utils.aws.asg import get_assumed_credentials as _gac
+        _creds = _gac(cluster, db)
+        _region = cluster.region or "ap-south-1"
+        _sess = _b3.Session(
+            aws_access_key_id=_creds.get("AccessKeyId"),
+            aws_secret_access_key=_creds.get("SecretAccessKey"),
+            aws_session_token=_creds.get("SessionToken"),
+        )
+        _ec2 = _sess.client("ec2", region_name=_region)
+        _resp = _ec2.describe_instance_types(InstanceTypes=[instance_type])
+        _info = _resp["InstanceTypes"][0]
+        _vcpu = _info["VCpuInfo"]["DefaultVCpus"]
+        _mem_mib = _info["MemoryInfo"]["SizeInMiB"]
+        _mem_gb = round(_mem_mib / 1024, 1)
+        logger.info(f"[SubstituteManager] AWS lookup {instance_type}: {_vcpu} vCPU / {_mem_gb} GB")
+        return (_vcpu, _mem_gb)
+    except Exception as _err:
+        logger.warning(
+            f"[SubstituteManager] AWS spec lookup failed for {instance_type}: {_err} — using 2 vCPU / 8 GB fallback"
+        )
+        return (2, 8)
 
 
 class SubstituteState(str, Enum):
@@ -241,11 +325,19 @@ class SubstituteManager:
         classification = classifications.get(target_node_name) if classifications else None
         
         if classification != NodeStatus.STATELESS_ELIGIBLE:
-            return {
-                "success": False,
-                "state": self.get_state(cluster_id).value,
-                "message": f"Target node is {classification.value if getattr(classification, 'value', None) else classification}, must be STATELESS_ELIGIBLE"
-            }
+            # Soft warning — don't hard-block when classification is unresolved or
+            # workload inspector hasn't run yet. Hard-block only for explicitly STATEFUL nodes.
+            _cls_val = classification.value if getattr(classification, 'value', None) else str(classification)
+            if _cls_val in ("STATEFUL", "stateful"):
+                return {
+                    "success": False,
+                    "state": self.get_state(cluster_id).value,
+                    "message": f"Target node is stateful — substitute deployment requires explicit approval"
+                }
+            logger.warning(
+                f"[SubstituteManager] Node {target_node_name} classification is {_cls_val} "
+                f"(not STATELESS_ELIGIBLE) — proceeding with caution"
+            )
 
         # Set PREWARMING state
         timeout_seconds = self.PREWARMING_TIMEOUT_MINUTES * 60
@@ -365,34 +457,67 @@ class SubstituteManager:
             if target_specs:
                 target_vcpu, target_mem = target_specs
             else:
-                # Default: assume 2 vCPU / 8 GB (m5.large equivalent)
-                target_vcpu, target_mem = 2, 8
+                # Try AWS DescribeInstanceTypes as fallback before using hardcoded default
+                target_vcpu, target_mem = _lookup_instance_specs_aws(
+                    target_node.instance_type, cluster, self.db
+                )
+
+            # Build cluster-wide diversity distribution for enforcer
+            from backend.services.diversity_enforcer import DiversityEnforcer as _DE
+            _de = _DE()
+            _cluster_dist: dict = {}
+            _total_nodes = 0
+            try:
+                _all_instances = self.db.query(Instance).filter(
+                    Instance.cluster_id == cluster.id,
+                    Instance.state == "running",
+                ).all()
+                _total_nodes = len(_all_instances)
+                for _inst in _all_instances:
+                    if _inst.instance_type:
+                        _fam = _inst.instance_type.split(".")[0]
+                        _cluster_dist[f"family:{_fam}"] = _cluster_dist.get(f"family:{_fam}", 0) + 1
+                    if _inst.availability_zone:
+                        _az_k = f"az:{_inst.availability_zone}"
+                        _cluster_dist[_az_k] = _cluster_dist.get(_az_k, 0) + 1
+            except Exception as _de_err:
+                logger.warning(f"[SubstituteManager] Could not build diversity distribution: {_de_err}")
 
             try:
                 from backend.services.pool_ranking_service import PoolRankingService
                 _svc = PoolRankingService(self.db, self.redis)
-                # Fetch extra candidates so we have enough after AZ filtering
+                # Fetch extra candidates so we have enough after diversity + AZ filtering
                 ranked = _svc.rank_pools_for_size(
                     vcpu=target_vcpu,
                     memory_gb=float(target_mem),
                     region=region,
-                    limit=self.MAX_CANDIDATES * 4
+                    limit=self.MAX_CANDIDATES * 6
                 )
                 seen_azs: set = set()
                 for scored_pool in ranked:
                     p = scored_pool.pool
-                    # Exclude same AZ and already-seen AZs for diversification
-                    if p.az != target_az and p.az not in seen_azs:
-                        candidates.append({
-                            "instance_type": p.instance_type,
-                            "az": p.az,
-                            "lifecycle": "spot",
-                            "spot_price": p.spot_price,
-                            "risk_score": round(scored_pool.risk_probability, 3),
-                        })
-                        seen_azs.add(p.az)
-                        if len(candidates) >= self.MAX_CANDIDATES:
-                            break
+                    # Skip same AZ as target
+                    if p.az == target_az or p.az in seen_azs:
+                        continue
+                    # Diversity check — validate family/AZ ratio cluster-wide
+                    _passes, _reason = _de.check_candidate(
+                        {"instance_type": p.instance_type, "az": p.az},
+                        _cluster_dist,
+                        _total_nodes,
+                    )
+                    if not _passes:
+                        logger.debug(f"[SubstituteManager] Candidate {p.instance_type}/{p.az} rejected by diversity: {_reason}")
+                        continue
+                    candidates.append({
+                        "instance_type": p.instance_type,
+                        "az": p.az,
+                        "lifecycle": "spot",
+                        "spot_price": p.spot_price,
+                        "risk_score": round(scored_pool.risk_probability, 3),
+                    })
+                    seen_azs.add(p.az)
+                    if len(candidates) >= self.MAX_CANDIDATES:
+                        break
             except Exception as e:
                 logger.warning(
                     f"ML pool ranking failed for substitute selection "
@@ -493,7 +618,7 @@ class SubstituteManager:
         except ClientError as e:
             error_code = e.response["Error"]["Code"]
 
-            # DryRunOperation means the request would succeed
+            # DryRunOperation means the request would succeed (expected path)
             if error_code == "DryRunOperation":
                 logger.info(
                     f"DryRun validation passed: {candidate['instance_type']} "
@@ -501,7 +626,18 @@ class SubstituteManager:
                 )
                 return True
 
-            # Any other error means validation failed
+            # UnauthorizedOperation on DryRun means the IAM role lacks ec2:RunInstances
+            # permission — treat as a pass so we don't silently block all candidates.
+            # The actual launch will fail loudly if the permission is truly absent.
+            if error_code == "UnauthorizedOperation":
+                logger.warning(
+                    f"DryRun UnauthorizedOperation for {candidate['instance_type']} — "
+                    f"IAM may be missing ec2:RunInstances; assuming valid and proceeding"
+                )
+                return True
+
+            # Any other error (e.g. InvalidAMI, InsufficientCapacity) means the candidate
+            # genuinely cannot launch.
             logger.warning(
                 f"DryRun validation failed: {candidate['instance_type']} "
                 f"in {candidate['az']} - {error_code}"
@@ -707,11 +843,53 @@ class SubstituteManager:
         if not instances:
             return None
 
+        # Pre-fetch AWS specs for any instance types missing from the local dict
+        # (single batch call instead of one per instance to keep latency low)
+        unknown_types = {i.instance_type for i in instances if i.instance_type and i.instance_type not in _INSTANCE_VCPU_MEM}
+        _aws_specs_cache: dict = {}
+        if unknown_types:
+            try:
+                cluster_obj = self.db.query(Cluster).filter(Cluster.id == cluster_id).first()
+                if cluster_obj:
+                    import boto3 as _b3wsp
+                    from backend.utils.aws.asg import get_assumed_credentials as _gac_wsp
+                    _creds_wsp = _gac_wsp(cluster_obj, self.db)
+                    _region_wsp = cluster_obj.region or "ap-south-1"
+                    _sess_wsp = _b3wsp.Session(
+                        aws_access_key_id=_creds_wsp.get("AccessKeyId"),
+                        aws_secret_access_key=_creds_wsp.get("SecretAccessKey"),
+                        aws_session_token=_creds_wsp.get("SessionToken"),
+                    )
+                    _ec2_wsp = _sess_wsp.client("ec2", region_name=_region_wsp)
+                    _resp_wsp = _ec2_wsp.describe_instance_types(InstanceTypes=list(unknown_types))
+                    for _it in _resp_wsp.get("InstanceTypes", []):
+                        _t = _it["InstanceTypeInfo"] if "InstanceTypeInfo" in _it else _it
+                        _itype = _t.get("InstanceType") or _it.get("InstanceType")
+                        _vc = (_t.get("VCpuInfo") or {}).get("DefaultVCpus") or (_it.get("VCpuInfo") or {}).get("DefaultVCpus")
+                        _mm = (_t.get("MemoryInfo") or {}).get("SizeInMiB") or (_it.get("MemoryInfo") or {}).get("SizeInMiB")
+                        if _itype and _vc and _mm:
+                            _aws_specs_cache[_itype] = (_vc, round(_mm / 1024, 1))
+            except Exception as _wsp_err:
+                logger.warning(f"[find_max_node_specs] AWS batch lookup failed: {_wsp_err}")
+
         best = None
         best_score = 0
         for inst in instances:
-            specs = _INSTANCE_VCPU_MEM.get(inst.instance_type)
+            specs = _INSTANCE_VCPU_MEM.get(inst.instance_type) or _aws_specs_cache.get(inst.instance_type)
             if not specs:
+                # Last resort: parse size suffix to estimate (prevents complete skip)
+                try:
+                    _parts = (inst.instance_type or "").split(".")
+                    _suffix = _parts[-1] if _parts else ""
+                    _size_map = {"nano": (2, 0.5), "micro": (2, 1), "small": (2, 2), "medium": (2, 4),
+                                 "large": (2, 8), "xlarge": (4, 16), "2xlarge": (8, 32), "4xlarge": (16, 64),
+                                 "8xlarge": (32, 128), "12xlarge": (48, 192), "16xlarge": (64, 256),
+                                 "24xlarge": (96, 384), "32xlarge": (128, 512), "48xlarge": (192, 768)}
+                    specs = _size_map.get(_suffix)
+                except Exception:
+                    pass
+            if not specs:
+                logger.warning(f"[find_max_node_specs] Cannot determine specs for {inst.instance_type} — skipping this node")
                 continue
             vcpu, mem = specs
             score = vcpu * mem

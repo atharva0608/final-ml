@@ -64,7 +64,7 @@ class OptimizerCoordinator:
     # Timing thresholds (per problems.md)
     STABILIZATION_HOURS = 1  # Wait 1 hour before rightsizing evaluation
     RIGHTSIZING_EVAL_INTERVAL_HOURS = 24  # Evaluate rightsizing once per day
-    MIN_SAVINGS_DELTA_PCT = 10.0  # Minimum 10% EV improvement required
+    MIN_SAVINGS_DELTA_PCT = 3.0  # Minimum 3% EV improvement required (lowered from 10%)
 
     def __init__(self, db: Session, redis: Redis):
         self.db = db
@@ -440,7 +440,7 @@ class OptimizerCoordinator:
                     ev_result["best_ev_delta_pct"] = 100.0
                 
                 ev_result["sufficient_improvement"] = (
-                    best_ev > 0 and (best_ev - baseline_ev) / max(abs(baseline_ev), 1) >= 0.10
+                    best_ev > 0 and (best_ev - baseline_ev) / max(abs(baseline_ev), 1) >= (self.MIN_SAVINGS_DELTA_PCT / 100)
                 )
                 ev_result["recommended_option"] = (
                     "A" if pool_ev >= rightsizing_ev and pool_ev > 0

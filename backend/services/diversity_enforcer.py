@@ -6,8 +6,7 @@ Enforces family and AZ diversity constraints for Decision Engine v3.
 Prevents clusters from becoming too concentrated in single families or AZs.
 """
 
-from redis import Redis
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 import logging
 
 logger = logging.getLogger(__name__)
@@ -23,7 +22,7 @@ class DiversityEnforcer:
     - NO_DOWNTIME_FIRST: max_family_ratio=0.3, max_az_ratio=0.4
     """
 
-    def __init__(self, redis: Redis):
+    def __init__(self, redis=None):
         self.redis = redis
 
     def check_candidate(
@@ -104,12 +103,12 @@ class DiversityEnforcer:
             # Fail open on errors — don't block operations
             return (True, "")
 
-    def get_cluster_diversity(self, cluster_id: str) -> Dict:
+    def get_cluster_diversity(self, cluster_id: str, db=None) -> Dict:
         """
         Get current cluster diversity distribution for UI gauge.
 
-        This would typically query the database to count nodes by family/AZ.
-        For now, returns a structure that UI can consume.
+        Queries running instances from the DB when a session is provided.
+        Falls back to empty structure (safe default) when db is not available.
 
         Returns:
             {
@@ -120,19 +119,52 @@ class DiversityEnforcer:
                 "az_percentages": {"us-east-1a": 0.53, "us-east-1b": 0.47, ...}
             }
         """
-        # This would need DB integration to fetch actual cluster nodes
-        # For now, return stub structure
-        logger.warning(
-            f"get_cluster_diversity({cluster_id}) called but not yet integrated with DB"
-        )
+        if db is None:
+            return {
+                "total_nodes": 0,
+                "family_distribution": {},
+                "az_distribution": {},
+                "family_percentages": {},
+                "az_percentages": {},
+            }
 
-        return {
-            "total_nodes": 0,
-            "family_distribution": {},
-            "az_distribution": {},
-            "family_percentages": {},
-            "az_percentages": {}
-        }
+        try:
+            from backend.models.instance import Instance
+            instances = db.query(Instance).filter(
+                Instance.cluster_id == cluster_id,
+                Instance.state == "running",
+            ).all()
+
+            family_dist: Dict[str, int] = {}
+            az_dist: Dict[str, int] = {}
+            total = len(instances)
+
+            for inst in instances:
+                if inst.instance_type:
+                    fam = inst.instance_type.split(".")[0]
+                    family_dist[fam] = family_dist.get(fam, 0) + 1
+                if inst.availability_zone:
+                    az_dist[inst.availability_zone] = az_dist.get(inst.availability_zone, 0) + 1
+
+            family_pct = {k: round(v / total, 4) for k, v in family_dist.items()} if total else {}
+            az_pct = {k: round(v / total, 4) for k, v in az_dist.items()} if total else {}
+
+            return {
+                "total_nodes": total,
+                "family_distribution": family_dist,
+                "az_distribution": az_dist,
+                "family_percentages": family_pct,
+                "az_percentages": az_pct,
+            }
+        except Exception as e:
+            logger.error(f"get_cluster_diversity({cluster_id}) DB query failed: {e}")
+            return {
+                "total_nodes": 0,
+                "family_distribution": {},
+                "az_distribution": {},
+                "family_percentages": {},
+                "az_percentages": {},
+            }
 
     def compute_distribution_from_nodes(self, nodes: list) -> Dict:
         """
@@ -186,6 +218,8 @@ class DiversityEnforcer:
         """
         cluster_pools_key = f"cluster_pools:{cluster_id}"
         try:
+            if not self.redis:
+                return pools
             in_use = self.redis.smembers(cluster_pools_key)
             if not in_use:
                 return pools
@@ -230,6 +264,8 @@ class DiversityEnforcer:
         cluster_pools_key = f"cluster_pools:{cluster_id}"
         pool_key = f"{instance_type}:{az}"
         try:
+            if not self.redis:
+                return
             if add:
                 self.redis.sadd(cluster_pools_key, pool_key)
                 logger.debug(f"Added {pool_key} to cluster_pools:{cluster_id}")

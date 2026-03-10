@@ -56,7 +56,7 @@ from backend.services.blacklist_service import BlacklistService
 OPTIMIZATION_PROFILES = {
     "COST_FIRST": {
         "risk_ceiling": 0.25,              # Accept up to 25% risk
-        "delta_threshold": 0.03,           # 3% EV improvement required
+        "delta_threshold": 0.02,           # 2% EV improvement required (lowered from 3%)
         "max_family_ratio": 0.4,           # Max 40% in single family
         "max_az_ratio": 0.5,               # Max 50% in single AZ
         "capacity_freshness_min": 80,      # Capacity data must be <80 min old
@@ -65,7 +65,7 @@ OPTIMIZATION_PROFILES = {
     },
     "BALANCED": {
         "risk_ceiling": 0.20,              # Accept up to 20% risk
-        "delta_threshold": 0.05,           # 5% EV improvement required
+        "delta_threshold": 0.03,           # 3% EV improvement required (lowered from 5%)
         "max_family_ratio": 0.4,
         "max_az_ratio": 0.5,
         "capacity_freshness_min": 80,
@@ -74,7 +74,7 @@ OPTIMIZATION_PROFILES = {
     },
     "NO_DOWNTIME_FIRST": {
         "risk_ceiling": 0.10,              # Accept up to 10% risk
-        "delta_threshold": 0.08,           # 8% EV improvement required
+        "delta_threshold": 0.04,           # 4% EV improvement required (lowered from 8%)
         "max_family_ratio": 0.3,           # Max 30% in single family
         "max_az_ratio": 0.4,               # Max 40% in single AZ
         "capacity_freshness_min": 80,
