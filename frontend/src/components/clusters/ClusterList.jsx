@@ -109,7 +109,10 @@ const OptimizationSettingsTab = ({ cluster }) => {
     optimization_target_locked: false,
     cooldown_override_minutes: 300,
     conservative_mode_enabled: true,
-    manual_approval_required: false
+    manual_approval_required: false,
+    maintain_standby: false,
+    failure_cooldown_minutes: 30,
+    diversify_pools: false
   });
 
   useEffect(() => {
@@ -121,6 +124,9 @@ const OptimizationSettingsTab = ({ cluster }) => {
           setSettings(prev => ({
             ...prev,
             auto_rebalance_enabled: res.data.automation_controls?.auto_rebalance_enabled ?? false,
+            maintain_standby: res.data.automation_controls?.maintain_standby ?? false,
+            failure_cooldown_minutes: res.data.automation_controls?.failure_cooldown_minutes ?? 30,
+            diversify_pools: res.data.automation_controls?.diversify_pools ?? false,
             auto_rightsizing_enabled: res.data.automation_controls?.auto_rightsizing_enabled ?? false,
             optimization_target: res.data.automation_controls?.optimization_target ?? 'spot',
             optimization_target_locked: res.data.automation_controls?.optimization_target_locked ?? false,
@@ -209,6 +215,53 @@ const OptimizationSettingsTab = ({ cluster }) => {
             onChange={(val) => updateSetting('auto_rebalance_enabled', val)}
           />
         </div>
+
+        {settings.auto_rebalance_enabled && (
+          <div style={{ marginLeft: 24, paddingLeft: 16, borderLeft: `2px solid ${C.border}`, display: "flex", flexDirection: "column", gap: 16, marginBottom: 18 }}>
+
+            {/* Maintain Standby Node */}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 500, color: C.text }}>Maintain Warm Standby</div>
+                <div style={{ fontSize: 11, color: C.subtle, marginTop: 2 }}>Keep 1 pre-warmed spot node to instantly replace failing instances</div>
+              </div>
+              <ToggleSwitch
+                checked={settings.maintain_standby}
+                onChange={(val) => updateSetting('maintain_standby', val)}
+              />
+            </div>
+
+            {/* Diversify Pools */}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 500, color: C.text }}>Diversify Spot Pools</div>
+                <div style={{ fontSize: 11, color: C.subtle, marginTop: 2 }}>Spread pods across multiple instance sizes to lower interruption risk</div>
+              </div>
+              <ToggleSwitch
+                checked={settings.diversify_pools}
+                onChange={(val) => updateSetting('diversify_pools', val)}
+              />
+            </div>
+
+            {/* Failure Cooldown */}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 500, color: C.text }}>Failure Cooldown</div>
+                <div style={{ fontSize: 11, color: C.subtle, marginTop: 2 }}>Pause optimization after a failed instance replacement</div>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <input
+                  type="number"
+                  value={settings.failure_cooldown_minutes}
+                  onChange={(e) => updateSetting('failure_cooldown_minutes', parseInt(e.target.value) || 30)}
+                  style={{ width: 60, padding: "6px 8px", borderRadius: 6, border: `1px solid ${C.border}`, background: C.surface, color: C.text, fontSize: 12, outline: "none" }}
+                />
+                <span style={{ fontSize: 11, color: C.muted }}>min</span>
+              </div>
+            </div>
+
+          </div>
+        )}
 
         <div style={{ height: 1, background: C.border, margin: "18px 0" }} />
 
@@ -630,7 +683,7 @@ const NodeTreemap = ({ nodes }) => {
 const SpotRing = ({ pct, size = 72 }) => {
   const r = (size - 8) / 2;
   const circ = 2 * Math.PI * r;
-  const dash = (pct / 100) * circ;
+  const dash = ((isNaN(pct) ? 0 : pct) / 100) * circ;
   return (
     <svg width={size} height={size} style={{ display: "block" }}>
       <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="#f0f0f0" strokeWidth={7} />
@@ -881,6 +934,32 @@ const ClusterDetail = ({ cluster, onClose }) => {
                 type="button"
               >Install Agent</button>
             )}
+          {(cluster.agent_installed === 'Y' || cluster.agent_installed === true) && (
+            <button
+              onClick={() => {
+                toast.loading(`Updating agent on ${cluster.name}...`, { id: 'update-agent' });
+                clusterAPI.updateAgent(cluster.id)
+                  .then(() => {
+                    toast.success(`Agent update queued for ${cluster.name}. DaemonSet + Orchestrator will be refreshed in ~30s.`, { id: 'update-agent', duration: 5000 });
+                  })
+                  .catch((error) => {
+                    toast.error('Failed to update agent: ' + (error.response?.data?.detail || error.message), { id: 'update-agent' });
+                  });
+              }}
+              style={{
+                padding: "7px 14px",
+                borderRadius: 9,
+                background: "transparent",
+                border: "1px solid #2563eb",
+                color: "#2563eb",
+                fontSize: 12,
+                fontWeight: 600,
+                cursor: "pointer",
+                fontFamily: "inherit",
+              }}
+              type="button"
+            >Update Agent</button>
+          )}
           <button
             onClick={() => {
               toast.loading('Refreshing cluster data...', { id: 'refresh' });
@@ -1514,10 +1593,16 @@ export default function ClustersPage() {
   }, []);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("All");
+  const [tradeOff, setTradeOff] = useState(20);
+  const [karpenterModeFilter, setKarpenterModeFilter] = useState("ALL");
 
   const [refreshing, setRefreshing] = useState(false);
   const [nodeDetails, setNodeDetails] = useState({});
   const [rightsizingData, setRightsizingData] = useState({});
+
+  // Ref so the node-details interval can access the latest mappedClusters
+  // without being in the effect dependency array (avoids infinite fetch loop).
+  const mappedClustersRef = useRef([]);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -1710,54 +1795,71 @@ export default function ClustersPage() {
     });
   }, [clusters, nodeDetails, rightsizingData]);
 
-  // Fetch detailed nodes when a cluster is selected
+  // Keep ref in sync so the interval below always reads the latest mapped clusters
+  // without triggering a re-run of the node-details effect on every render.
   useEffect(() => {
-    if (selected && !nodeDetails[selected]) {
-      const selectedCluster = mappedClusters.find(c => c.id === selected);
-      if (selectedCluster && selectedCluster.agentInstalled) {
-        Promise.all([
-          clusterAPI.getNodesDetailed(selected),
-          clusterAPI.getWarmSpareStatus(selected).catch(() => null),
-        ]).then(([nodesRes, subRes]) => {
-          const data = { ...nodesRes.data };
-          // Only inject warm spare node when it is ACTUALLY spinning up (PREWARMING) or
-          // already running and ready to swap (ACTIVE). READY means a candidate pool was
-          // pre-selected by DryRun — no actual EC2 instance is running yet, so don't show it.
-          const sub = subRes?.data;
-          if (sub && sub.is_warm_spare && sub.state && ['PREWARMING', 'ACTIVE'].includes(sub.state)) {
-            const spareNode = {
-              instance_id: 'warm-spare',
-              node_name: 'Warm Spare',
-              instance_type: sub.spare_instance_type || 'spot',
-              lifecycle: 'spot',
-              classification: 'WARM_SPARE',
-              cpu_utilization_pct: 0,
-              memory_utilization_pct: 0,
-              cpu_capacity_cores: sub.target_vcpu || 2,
-              memory_capacity_gb: sub.target_memory_gb || 4,
-              pod_count: 0,
-              status: sub.state === 'READY' ? 'ready' : 'prewarming',
-              _isWarmSpare: true,
-              _spareState: sub.state,
-              _spareAz: sub.spare_az,
-              _sparePrice: sub.spot_price_hourly,
-            };
-            data.nodes = [...(data.nodes || []), spareNode];
-          }
-          setNodeDetails(prev => ({ ...prev, [selected]: data }));
-        }).catch((err) => {
-          console.error('Failed to fetch node details:', err);
-        });
+    mappedClustersRef.current = mappedClusters;
+  });
+
+  // Fetch detailed nodes when a cluster is selected, then refresh every 60s for live metrics
+  const fetchNodeDetailsForCluster = (clusterId, clusterList) => {
+    const selectedCluster = clusterList.find(c => c.id === clusterId);
+    if (!selectedCluster || !selectedCluster.agentInstalled) return;
+    Promise.all([
+      clusterAPI.getNodesDetailed(clusterId),
+      clusterAPI.getWarmSpareStatus(clusterId).catch(() => null),
+    ]).then(([nodesRes, subRes]) => {
+      const data = { ...nodesRes.data };
+      // Only inject warm spare node when it is ACTUALLY spinning up (PREWARMING) or
+      // already running and ready to swap (ACTIVE). READY means a candidate pool was
+      // pre-selected by DryRun — no actual EC2 instance is running yet, so don't show it.
+      const sub = subRes?.data;
+      if (sub && sub.is_warm_spare && sub.state && ['PREWARMING', 'ACTIVE'].includes(sub.state)) {
+        const spareNode = {
+          instance_id: 'warm-spare',
+          node_name: 'Warm Spare',
+          instance_type: sub.spare_instance_type || 'spot',
+          lifecycle: 'spot',
+          classification: 'WARM_SPARE',
+          cpu_utilization_pct: 0,
+          memory_utilization_pct: 0,
+          cpu_capacity_cores: sub.target_vcpu || 2,
+          memory_capacity_gb: sub.target_memory_gb || 4,
+          pod_count: 0,
+          status: sub.state === 'READY' ? 'ready' : 'prewarming',
+          _isWarmSpare: true,
+          _spareState: sub.state,
+          _spareAz: sub.spare_az,
+          _sparePrice: sub.spot_price_hourly,
+        };
+        data.nodes = [...(data.nodes || []), spareNode];
       }
-    }
-  }, [selected, mappedClusters]);
+      setNodeDetails(prev => ({ ...prev, [clusterId]: data }));
+    }).catch((err) => {
+      console.error('Failed to fetch node details:', err);
+    });
+  };
+
+  useEffect(() => {
+    if (!selected) return;
+    // Use the ref so this effect only re-runs when `selected` changes,
+    // not every time mappedClusters recomputes (which caused an infinite loop).
+    fetchNodeDetailsForCluster(selected, mappedClustersRef.current);
+    const interval = setInterval(() => {
+      fetchNodeDetailsForCluster(selected, mappedClustersRef.current);
+    }, 60000); // 60s — daemon set now reports every 1 min
+    return () => clearInterval(interval);
+  }, [selected]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const filtered = useMemo(() =>
     mappedClusters.filter(c => {
       const matchSearch = c.name.toLowerCase().includes(search.toLowerCase()) || c.region.toLowerCase().includes(search.toLowerCase());
       const matchStatus = statusFilter === "All" || (c.status.toLowerCase() === statusFilter.toLowerCase().replace(" ", "-"));
-      return matchSearch && matchStatus;
-    }), [mappedClusters, search, statusFilter]);
+      const matchKarpenter = karpenterModeFilter === "ALL"
+        || (karpenterModeFilter === "KARPENTER" && c.karpenter_mode)
+        || (karpenterModeFilter === "LEGACY" && !c.karpenter_mode);
+      return matchSearch && matchStatus && matchKarpenter;
+    }), [mappedClusters, search, statusFilter, karpenterModeFilter]);
 
   // Set selected if not set and we have clusters
   useEffect(() => {
@@ -1919,6 +2021,44 @@ export default function ClustersPage() {
                   fontSize: 10, cursor: "pointer", fontFamily: "inherit", fontWeight: statusFilter === f ? 600 : 400,
                 }}>{f}</button>
             ))}
+          </div>
+
+          {/* Trade-off slider */}
+          <div style={{ padding: "0 12px 10px" }}>
+            <div style={{ fontSize: 10, fontWeight: 600, color: C.subtle, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>
+              Risk / Savings Trade-off: {tradeOff}
+            </div>
+            <input
+              type="range"
+              min={0}
+              max={50}
+              value={tradeOff}
+              onChange={e => setTradeOff(Number(e.target.value))}
+              style={{ width: "100%", accentColor: C.accent, cursor: "pointer" }}
+            />
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 9, color: C.subtle, marginTop: 2 }}>
+              <span>Conservative</span>
+              <span>Aggressive</span>
+            </div>
+          </div>
+
+          {/* Karpenter mode selector */}
+          <div style={{ padding: "0 12px 10px" }}>
+            <div style={{ fontSize: 10, fontWeight: 600, color: C.subtle, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>
+              Karpenter Mode
+            </div>
+            <select
+              value={karpenterModeFilter}
+              onChange={e => setKarpenterModeFilter(e.target.value)}
+              style={{
+                width: "100%", padding: "5px 8px", borderRadius: 7, border: `1px solid ${C.border}`,
+                background: C.surface, color: C.text, fontSize: 11, fontFamily: "inherit", cursor: "pointer",
+              }}
+            >
+              <option value="ALL">All</option>
+              <option value="KARPENTER">Karpenter</option>
+              <option value="LEGACY">Legacy (non-Karpenter)</option>
+            </select>
           </div>
 
           {/* List */}

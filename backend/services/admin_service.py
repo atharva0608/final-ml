@@ -127,7 +127,7 @@ class AdminService:
         thirty_days_ago = datetime.utcnow() - timedelta(days=30)
         recent_signups = self.db.query(User).filter(and_(User.role.in_(target_roles), User.created_at >= thirty_days_ago)).count()
         total_clusters = self.db.query(Cluster).count()
-        active_clusters = self.db.query(Cluster).filter(Cluster.status.in_(['ACTIVE', 'DISCOVERED'])).count()
+        active_clusters = self.db.query(Cluster).filter(Cluster.status == 'ACTIVE').count()
         total_instances = self.db.query(Instance).count()
         running_instances = self.db.query(Instance).count()
         spot_instances = self.db.query(Instance).filter(Instance.lifecycle == InstanceLifecycle.SPOT).count()

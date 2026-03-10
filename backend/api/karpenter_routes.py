@@ -154,6 +154,9 @@ class KarpenterApplyRequest(BaseModel):
     """For manually applying a Karpenter dry-run recommendation."""
     recommended_type: str
     reason: Optional[str] = None
+    is_stateful: bool = False          # True → queue CORDON+DRAIN+TERMINATE for stateful OD resize
+    instance_id: Optional[str] = None  # EC2 instance id (from frontend node.name / instance_id)
+    spot_pool: Optional[Dict[str, Any]] = None  # Best spot pool (stateless only)
 
 
 class KarpenterBatchApplyRequest(BaseModel):
@@ -287,6 +290,17 @@ def get_karpenter_config(
                 cfg["optimization_target_locked"] = bool(
                     opt.auto_rebalance_enabled and opt.auto_rightsizing_enabled
                 )
+                # diversify_pools — DB is authoritative (auto_rebalancer reads from DB)
+                cfg["diversify_pools"] = bool(getattr(opt, 'diversify_pools', False))
+                # stateful rightsizing fields
+                cfg["auto_stateful_rightsizing_enabled"] = bool(
+                    getattr(opt, 'auto_stateful_rightsizing_enabled', False)
+                )
+            # Load StatefulRules for stateful policy fields
+            sf = cluster.stateful_rules
+            if sf:
+                cfg["stateful_require_approval"] = bool(sf.require_approval)
+                cfg["stateful_max_downscale_pct"] = int(sf.max_downscale_percent or 25)
             elif cluster.karpenter_mode:
                 # Fallback: infer rebalancing from karpenter_mode if no opt settings row yet
                 cfg["auto_rebalancing_enabled"] = cluster.karpenter_mode.value == "auto"
@@ -406,6 +420,35 @@ def update_karpenter_config(
                 f"ClusterOptimizationSettings.auto_rightsizing_enabled → {auto_rightsizing} "
                 f"for cluster {cluster_id}"
             )
+
+        # ── SYNC diversify_pools to DB (auto_rebalancer reads from DB, not Redis) ──
+        _diversify = updates.get("diversify_pools")
+        if _diversify is not None and opt is not None:
+            opt.diversify_pools = bool(_diversify)
+            logger.info(f"ClusterOptimizationSettings.diversify_pools → {_diversify} for {cluster_id}")
+
+        # ── SYNC auto_stateful_rightsizing_enabled ──────────────────────────────
+        _auto_stateful = updates.get("auto_stateful_rightsizing_enabled")
+        if _auto_stateful is not None and opt is not None:
+            opt.auto_stateful_rightsizing_enabled = bool(_auto_stateful)
+            logger.info(
+                f"ClusterOptimizationSettings.auto_stateful_rightsizing_enabled → "
+                f"{_auto_stateful} for {cluster_id}"
+            )
+
+        # ── SYNC StatefulRules (require_approval + max_downscale_percent) ──────
+        _sf_req = updates.get("stateful_require_approval")
+        _sf_max = updates.get("stateful_max_downscale_pct")
+        if _sf_req is not None or _sf_max is not None:
+            from backend.models.cluster import StatefulRules
+            sf_rules = cluster.stateful_rules
+            if sf_rules is None:
+                sf_rules = StatefulRules(cluster_id=cluster_id)
+                db.add(sf_rules)
+            if _sf_req is not None:
+                sf_rules.require_approval = bool(_sf_req)
+            if _sf_max is not None:
+                sf_rules.max_downscale_percent = int(_sf_max)
 
         # ── OPTIMIZATION TARGET: spot / on_demand ─────────────────────────
         optimization_target = updates.get("optimization_target")
@@ -988,18 +1031,142 @@ def apply_karpenter_recommendation(
     """
     logger.info(f"Applying Karpenter recommendation {recommendation_id} by user {current_user.id}")
 
-    # In production, this would:
-    # 1. Validate the recommendation still applies (nodes haven't changed)
-    # 2. Trigger the Karpenter action (consolidation, right-sizing, etc.)
-    # 3. Update the recommendation status to "applied"
-    # 4. Monitor the action and report back
+    # ── STATEFUL PATH: queue CORDON → DRAIN → TERMINATE for OD node resize ──
+    if payload.is_stateful:
+        from backend.models.instance import Instance
+        from backend.models.agent_action import AgentAction, AgentActionType
+        from backend.models.cluster import StatefulRules
+
+        inst_id = payload.instance_id or recommendation_id.replace("rec-", "")
+        # Look up instance by instance_id (EC2 id) or by DB id
+        inst = db.query(Instance).filter(Instance.instance_id == inst_id).first()
+        if inst is None:
+            inst = db.query(Instance).filter(Instance.id == inst_id).first()
+
+        if inst is None:
+            raise HTTPException(status_code=404, detail=f"Instance {inst_id} not found")
+
+        cluster_id = inst.cluster_id
+
+        # Check require_approval gate
+        sf_rules = db.query(StatefulRules).filter(StatefulRules.cluster_id == cluster_id).first()
+        if sf_rules and sf_rules.require_approval:
+            return {
+                "recommendation_id": recommendation_id,
+                "status": "pending_approval",
+                "instance_id": inst_id,
+                "recommended_type": payload.recommended_type,
+                "message": (
+                    "Stateful resize requires manual approval (require_approval=True). "
+                    "Disable 'Require Approval' in Configuration → Stateful Node Policy to apply directly."
+                ),
+            }
+
+        # Queue CORDON → DRAIN → TERMINATE
+        cordon_action = AgentAction(
+            cluster_id=cluster_id,
+            action_type=AgentActionType.CORDON_NODE,
+            payload={
+                "instance_id": inst_id,
+                "node_name": inst.node_name,
+                "stateful_resize": True,
+                "reason": f"stateful_rightsizing: {inst.instance_type} → {payload.recommended_type}",
+            },
+        )
+        drain_action = AgentAction(
+            cluster_id=cluster_id,
+            action_type=AgentActionType.DRAIN_NODE,
+            payload={
+                "instance_id": inst_id,
+                "node_name": inst.node_name,
+                "ignore_daemonsets": True,
+                "grace_period_seconds": 120,
+                "stateful_resize": True,
+            },
+        )
+        terminate_action = AgentAction(
+            cluster_id=cluster_id,
+            action_type=AgentActionType.TERMINATE_NODE,
+            payload={
+                "instance_id": inst_id,
+                "node_name": inst.node_name,
+                "recommended_type": payload.recommended_type,
+                "stateful_resize": True,
+                "decrement_asg": True,
+                "reason": f"stateful_rightsizing: {inst.instance_type} → {payload.recommended_type}",
+            },
+        )
+        db.add(cordon_action)
+        db.add(drain_action)
+        db.add(terminate_action)
+        db.commit()
+
+        logger.info(
+            f"Queued CORDON+DRAIN+TERMINATE for stateful node {inst_id} "
+            f"({inst.instance_type} → {payload.recommended_type}) on cluster {cluster_id}"
+        )
+        return {
+            "recommendation_id": recommendation_id,
+            "status": "queued",
+            "action": "stateful_resize",
+            "instance_id": inst_id,
+            "recommended_type": payload.recommended_type,
+            "message": (
+                f"CORDON → DRAIN → TERMINATE queued for {inst_id}. "
+                f"After termination the ASG will launch a replacement node. "
+                f"Update your launch template to {payload.recommended_type} for the new node to be right-sized."
+            ),
+            "applied_by": current_user.email,
+            "applied_at": datetime.utcnow().isoformat(),
+        }
+
+    # ── STATELESS / DEFAULT PATH ─────────────────────────────────────────────
+    # Queue a PATCH_KARPENTER_NODEPOOL action with the recommended type so Karpenter
+    # provisions a replacement node, then rely on the auto_rebalancer for CORDON+DRAIN+TERMINATE.
+    from backend.models.instance import Instance
+    from backend.models.agent_action import AgentAction, AgentActionType
+
+    inst_id = payload.instance_id or recommendation_id.replace("rec-", "")
+    inst = db.query(Instance).filter(Instance.instance_id == inst_id).first()
+    if inst is None:
+        inst = db.query(Instance).filter(Instance.id == inst_id).first()
+
+    if inst:
+        cluster_id = inst.cluster_id
+        cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+        _karpenter_active = cluster and cluster.karpenter_mode is not None
+
+        if _karpenter_active:
+            # Karpenter cluster: patch nodepool with recommended type
+            action = AgentAction(
+                cluster_id=cluster_id,
+                action_type=AgentActionType.PATCH_KARPENTER_NODEPOOL,
+                payload={
+                    "instance_types": [payload.recommended_type],
+                    "spot_pool": payload.spot_pool,
+                    "reason": f"manual_recommendation_apply: {inst.instance_type} → {payload.recommended_type}",
+                    "nodepool_name": "default",
+                },
+            )
+            db.add(action)
+            db.commit()
+            return {
+                "recommendation_id": recommendation_id,
+                "status": "queued",
+                "action": "patch_nodepool",
+                "instance_id": inst_id,
+                "recommended_type": payload.recommended_type,
+                "spot_pool": payload.spot_pool,
+                "message": f"NodePool update queued — Karpenter will provision {payload.recommended_type}.",
+                "applied_by": current_user.email,
+                "applied_at": datetime.utcnow().isoformat(),
+            }
 
     return {
         "recommendation_id": recommendation_id,
         "status": "applying",
         "action": "consolidation",
         "estimated_completion_seconds": 120,
-        "affected_instances": ["i-0abc123", "i-0abc124"],
         "message": f"Applying recommendation: {payload.recommended_type}",
         "applied_by": current_user.email,
         "applied_at": datetime.utcnow().isoformat(),
@@ -1639,12 +1806,20 @@ def get_karpenter_install_status(
     ).order_by(AgentAction.created_at.desc()).first()
 
     if not latest:
+        # Fall back to cluster.karpenter_mode column as source of truth.
+        # Clusters migrated manually (or whose agent action records were lost)
+        # still report the correct state via the DB column.
+        from backend.models.cluster import Cluster as _Cluster
+        _cl = db.query(_Cluster).filter(_Cluster.id == cluster_id).first()
+        _mode = getattr(_cl, "karpenter_mode", None)
+        _installed = _mode is not None and str(_mode).upper() != "NONE"
         return {
             "cluster_id": cluster_id,
-            "karpenter_installed": False,
+            "karpenter_installed": _installed,
             "last_action": None,
-            "status": "unknown",
-            "message": "No install/uninstall action found for this cluster",
+            "status": "active" if _installed else "unknown",
+            "message": "Karpenter active (mode={})".format(_mode) if _installed
+                       else "No install/uninstall action found for this cluster",
         }
 
     action_type = latest.action_type.value
@@ -1937,3 +2112,245 @@ async def get_nodegroup_spot_status(
         "nodegroup_name": nodegroup_name,
         **result,
     }
+
+
+@router.get("/detect/{cluster_id}", summary="Detect if Karpenter is installed in a cluster")
+def detect_karpenter(
+    cluster_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Detect whether Karpenter is installed in the specified cluster.
+    Returns detected=true/false and karpenter_mode.
+    """
+    try:
+        from backend.services.karpenter_service import KarpenterService
+        svc = KarpenterService(db_session=db)
+        result = svc.detect_karpenter_in_cluster(cluster_id, db)
+        return result
+    except Exception as e:
+        logger.error(f"[karpenter] detect endpoint failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ─── Native Spot (No-Karpenter) helpers ──────────────────────────────────────
+
+def _resolve_role_arn(cluster, db):
+    """Return (role_arn, external_id) from cluster or its parent account."""
+    role_arn = getattr(cluster, 'aws_role_arn', None)
+    ext_id   = getattr(cluster, 'aws_external_id', None)
+    if not role_arn and getattr(cluster, 'account_id', None):
+        try:
+            from backend.models.account import Account
+            acct = db.query(Account).filter(Account.id == cluster.account_id).first()
+            if acct:
+                role_arn = getattr(acct, 'role_arn', None)
+                ext_id   = getattr(acct, 'external_id', None)
+        except Exception:
+            pass
+    return role_arn, ext_id
+
+
+def _build_assumed_session(plat_key: str, plat_secret: str, role_arn: Optional[str],
+                            ext_id: Optional[str], region: Optional[str]):
+    """Build a boto3 Session using platform creds + optional cross-account role assumption."""
+    import boto3 as _b3
+    _region = region or "ap-south-1"
+    if role_arn:
+        sts = _b3.client("sts",
+                         aws_access_key_id=plat_key,
+                         aws_secret_access_key=plat_secret,
+                         region_name=_region)
+        kw: Dict[str, Any] = {"RoleArn": role_arn, "RoleSessionName": "spot-optimizer-native-spot"}
+        if ext_id:
+            kw["ExternalId"] = ext_id
+        creds = sts.assume_role(**kw)["Credentials"]
+        return _b3.Session(
+            aws_access_key_id=creds["AccessKeyId"],
+            aws_secret_access_key=creds["SecretAccessKey"],
+            aws_session_token=creds["SessionToken"],
+            region_name=_region,
+        )
+    return _b3.Session(
+        aws_access_key_id=plat_key,
+        aws_secret_access_key=plat_secret,
+        region_name=_region,
+    )
+
+
+def _auto_detect_nodegroup(cluster_name: str, boto_session, region: Optional[str]) -> Optional[str]:
+    """List EKS nodegroups and return the first one."""
+    try:
+        eks = boto_session.client("eks", region_name=region or "ap-south-1")
+        resp = eks.list_nodegroups(clusterName=cluster_name)
+        groups = resp.get("nodegroups", [])
+        return groups[0] if groups else None
+    except Exception:
+        return None
+
+
+def _load_platform_session(cluster, db) -> tuple:
+    """Return (plat_key, plat_secret, boto_session) or raise HTTPException."""
+    from backend.models.system_config import SystemConfig
+    _pk = db.query(SystemConfig).filter(SystemConfig.key == "PLATFORM_AWS_ACCESS_KEY").first()
+    _ps = db.query(SystemConfig).filter(SystemConfig.key == "PLATFORM_AWS_SECRET").first()
+    plat_key    = _pk.value if _pk and _pk.value else None
+    plat_secret = _ps.value if _ps and _ps.value else None
+    if not plat_key:
+        raise HTTPException(
+            status_code=400,
+            detail="Platform AWS credentials not configured. Add PLATFORM_AWS_ACCESS_KEY to system_configs."
+        )
+    role_arn, ext_id = _resolve_role_arn(cluster, db)
+    session = _build_assumed_session(plat_key, plat_secret, role_arn, ext_id,
+                                     getattr(cluster, 'region', None))
+    return plat_key, plat_secret, session
+
+
+# ─── Native Spot Endpoints ────────────────────────────────────────────────────
+
+@router.get(
+    "/native-spot/status/{cluster_id}",
+    summary="Get native ASG spot status for a non-Karpenter cluster",
+    description=(
+        "Returns whether MixedInstancesPolicy spot is enabled on the cluster's managed nodegroup. "
+        "For clusters that cannot or should not install Karpenter."
+    ),
+)
+def get_native_spot_status(
+    cluster_id: str,
+    nodegroup_name: Optional[str] = Query(None, description="Nodegroup name; auto-detected if omitted"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+    if not cluster:
+        raise HTTPException(status_code=404, detail=f"Cluster {cluster_id} not found")
+
+    try:
+        _, _, session = _load_platform_session(cluster, db)
+    except HTTPException:
+        return {"spot_enabled": False, "error": "Platform AWS credentials not configured", "cluster_id": cluster_id}
+
+    ng_name = nodegroup_name or _auto_detect_nodegroup(
+        getattr(cluster, 'name', cluster_id), session, getattr(cluster, 'region', None)
+    )
+    if not ng_name:
+        return {
+            "spot_enabled": False,
+            "error": "Could not detect nodegroup — pass nodegroup_name explicitly",
+            "cluster_id": cluster_id,
+        }
+
+    from backend.services.spot_asg_service import SpotASGService
+    svc = SpotASGService(db)
+    result = svc.get_nodegroup_spot_status(
+        session, getattr(cluster, 'name', cluster_id), ng_name, getattr(cluster, 'region', None)
+    )
+    result["nodegroup_name"] = ng_name
+    result["cluster_id"] = cluster_id
+    return result
+
+
+@router.post(
+    "/native-spot/enable/{cluster_id}",
+    summary="Enable native ASG spot on a non-Karpenter cluster",
+    description=(
+        "Updates the EKS managed nodegroup's ASG to use MixedInstancesPolicy "
+        "(1 on-demand base + configurable spot %). No Karpenter, IAM roles, or SQS needed."
+    ),
+)
+def enable_native_spot(
+    cluster_id: str,
+    payload: Dict[str, Any] = {},
+    current_user: User = Depends(RequireAccess("EXECUTION")),
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+    if not cluster:
+        raise HTTPException(status_code=404, detail=f"Cluster {cluster_id} not found")
+
+    _, _, session = _load_platform_session(cluster, db)
+
+    ng_name = payload.get("nodegroup_name") or _auto_detect_nodegroup(
+        getattr(cluster, 'name', cluster_id), session, getattr(cluster, 'region', None)
+    )
+    if not ng_name:
+        raise HTTPException(status_code=400, detail="Could not detect nodegroup — pass nodegroup_name in body")
+
+    spot_pct      = int(payload.get("spot_percentage", 70))
+    od_base       = int(payload.get("on_demand_base", 1))
+
+    from backend.services.spot_asg_service import SpotASGService
+    svc = SpotASGService(db)
+    result = svc.enable_spot_on_nodegroup(
+        session,
+        cluster_name=getattr(cluster, 'name', cluster_id),
+        nodegroup_name=ng_name,
+        region=getattr(cluster, 'region', None) or "ap-south-1",
+        on_demand_base_capacity=od_base,
+        spot_percentage=spot_pct,
+    )
+
+    if result.get("success"):
+        # Turn on auto-rebalancing — the auto_rebalancer already handles non-Karpenter
+        # clusters via _launch_spot_instance_direct()
+        from backend.models.cluster import ClusterOptimizationSettings
+        opt = cluster.optimization_settings
+        if opt is None:
+            opt = ClusterOptimizationSettings(cluster_id=cluster_id)
+            db.add(opt)
+        opt.auto_rebalance_enabled = True
+        db.commit()
+        logger.info(
+            f"Native spot enabled on cluster {cluster_id} nodegroup {ng_name}; "
+            f"auto_rebalance_enabled=True"
+        )
+
+    result["cluster_id"] = cluster_id
+    result["nodegroup_name"] = ng_name
+    return result
+
+
+@router.post(
+    "/native-spot/revert/{cluster_id}",
+    summary="Revert a non-Karpenter cluster to 100% on-demand",
+    description="Sets OnDemandPercentageAboveBaseCapacity=100. Existing spot nodes drain naturally.",
+)
+def revert_native_spot(
+    cluster_id: str,
+    payload: Dict[str, Any] = {},
+    current_user: User = Depends(RequireAccess("EXECUTION")),
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+    if not cluster:
+        raise HTTPException(status_code=404, detail=f"Cluster {cluster_id} not found")
+
+    _, _, session = _load_platform_session(cluster, db)
+
+    ng_name = payload.get("nodegroup_name") or _auto_detect_nodegroup(
+        getattr(cluster, 'name', cluster_id), session, getattr(cluster, 'region', None)
+    )
+    if not ng_name:
+        raise HTTPException(status_code=400, detail="Could not detect nodegroup — pass nodegroup_name in body")
+
+    from backend.services.spot_asg_service import SpotASGService
+    svc = SpotASGService(db)
+    result = svc.revert_to_on_demand(
+        session,
+        cluster_name=getattr(cluster, 'name', cluster_id),
+        nodegroup_name=ng_name,
+        region=getattr(cluster, 'region', None) or "ap-south-1",
+    )
+
+    if result.get("success"):
+        opt = cluster.optimization_settings
+        if opt:
+            opt.auto_rebalance_enabled = False
+            db.commit()
+
+    result["cluster_id"] = cluster_id
+    result["nodegroup_name"] = ng_name
+    return result

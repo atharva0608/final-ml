@@ -814,3 +814,72 @@ class KarpenterService:
         except Exception as e:
             logger.error(f"Failed to get NodePool status: {e}")
             return {'status': 'error', 'nodepool_name': nodepool_name, 'error': str(e)}
+
+    def detect_karpenter_in_cluster(self, cluster_id: str, db) -> dict:
+        """
+        Detect if Karpenter is installed in a cluster by checking for NodePool CRD
+        via an agent action. Uses Redis cache to avoid repeated checks.
+        """
+        try:
+            from backend.core.redis_client import get_redis_client
+            import json as _json
+
+            redis = get_redis_client()
+            cache_key = f"karpenter:detected:{cluster_id}"
+            cached = redis.get(cache_key)
+            if cached:
+                return _json.loads(cached)
+
+            # Check via AgentAction result or settings
+            from backend.models.cluster import Cluster
+            cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+            if not cluster:
+                return {'detected': False, 'reason': 'cluster_not_found'}
+
+            # Check karpenter_mode in cluster settings
+            settings = cluster.settings or {}
+            karpenter_mode = settings.get('karpenter_mode', 'none')
+            detected = karpenter_mode not in ('none', 'disabled', None, '')
+
+            result = {
+                'detected': detected,
+                'cluster_id': cluster_id,
+                'karpenter_mode': karpenter_mode,
+            }
+            redis.setex(cache_key, 300, _json.dumps(result))
+            return result
+
+        except Exception as e:
+            logger.error(f"[karpenter] detect_karpenter_in_cluster failed: {e}")
+            return {'detected': False, 'error': str(e)}
+
+    def patch_node_pool_allowed_types(self, cluster_id: str, instance_types: list, db) -> dict:
+        """
+        Update NodePool instance-type requirements with a new allowed list.
+        Creates a PATCH_KARPENTER_NODEPOOL AgentAction.
+        """
+        try:
+            from backend.models.agent_action import AgentAction, AgentActionType, AgentActionStatus
+            from backend.models.base import generate_uuid
+
+            action = AgentAction(
+                id=generate_uuid(),
+                cluster_id=cluster_id,
+                action_type=AgentActionType.PATCH_KARPENTER_NODEPOOL,
+                payload={
+                    "instance_types": instance_types,
+                    "reason": "ml_ranking_update",
+                },
+                status=AgentActionStatus.PENDING,
+            )
+            db.add(action)
+            db.commit()
+
+            return {
+                'status': 'queued',
+                'action_id': action.id,
+                'instance_types': instance_types,
+            }
+        except Exception as e:
+            logger.error(f"[karpenter] patch_node_pool_allowed_types failed: {e}")
+            return {'status': 'error', 'error': str(e)}

@@ -1,19 +1,21 @@
 import React, { useEffect, useState } from 'react';
 import { Card } from '../shared';
-import { FiSliders, FiCheckCircle, FiAlertTriangle, FiArrowUpRight, FiActivity, FiInbox } from 'react-icons/fi';
-import api, { clusterAPI } from '../../services/api';
+import { FiSliders, FiCheckCircle, FiAlertTriangle, FiArrowUpRight, FiActivity, FiInbox, FiShield } from 'react-icons/fi';
+import api, { clusterAPI, adminAPI } from '../../services/api';
 
 const AutoRebalanceAuditCard = ({ clusterId, initialEnabled = false }) => {
     const [decisions, setDecisions] = useState([]);
     const [loading, setLoading] = useState(true);
     const [isEnabled, setIsEnabled] = useState(initialEnabled);
     const [toggling, setToggling] = useState(false);
+    const [cbState, setCbState] = useState(null);
 
     useEffect(() => {
         fetchAuditLog();
         // Fetch current cluster state
         if (clusterId) {
             fetchClusterState();
+            fetchCbState();
         }
     }, [clusterId]);
 
@@ -25,6 +27,17 @@ const AutoRebalanceAuditCard = ({ clusterId, initialEnabled = false }) => {
             }
         } catch (error) {
             console.error("Failed to fetch cluster state:", error);
+        }
+    };
+
+    const fetchCbState = async () => {
+        try {
+            const res = await adminAPI.getCircuitBreakers();
+            const breakers = res.data?.circuit_breakers || [];
+            const match = breakers.find(b => b.cluster_id === clusterId);
+            if (match) setCbState(match.state);
+        } catch (_) {
+            // Circuit breaker data unavailable
         }
     };
 
@@ -127,6 +140,16 @@ const AutoRebalanceAuditCard = ({ clusterId, initialEnabled = false }) => {
                 <div className="flex items-center gap-2">
                     <div className={`w-2 h-2 rounded-full ${isEnabled ? 'bg-green-500 animate-pulse' : 'bg-gray-300'}`}></div>
                     <h3 className="font-semibold text-gray-800">Auto-Rebalancer History</h3>
+                    {cbState && (
+                        <span className={`inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-semibold rounded-full ${
+                            cbState === 'NORMAL' ? 'bg-green-100 text-green-700' :
+                            cbState === 'CONSERVATIVE' ? 'bg-yellow-100 text-yellow-700' :
+                            'bg-red-100 text-red-700'
+                        }`}>
+                            <FiShield className="w-2.5 h-2.5" />
+                            CB: {cbState}
+                        </span>
+                    )}
                 </div>
             </div>
 

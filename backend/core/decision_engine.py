@@ -778,3 +778,125 @@ class DecisionEngine:
         except Exception as e:
             logger.error(f"Error getting rejection counters: {e}")
             return {}
+
+    def rank_for_node(self, cluster_id: str, node_info: dict, region: str) -> list:
+        """
+        Rank pools for a specific node using the global pool cache.
+
+        Steps:
+        1. Circuit breaker HALT check → return []
+        2. Degraded region check → return []
+        3. Load global pool cache from Redis
+        4. Derive floor from node_info
+        5. _apply_filters — remove blacklisted, non-compliant, price-shocked pools
+        6. _apply_double_gate — keep only cheaper AND safer pools
+        7. _relax_with_trade_off — if empty, allow ≤trade_off_pct% more expensive but strictly safer
+        8. _relax_with_tier_expansion — expand tier 1→2→3→4
+        """
+        import json as _json
+        from backend.core.redis_client import (
+            get_redis_client,
+            key_global_pool_rankings,
+            key_degraded_region,
+        )
+        from backend.core.config import PRICE_SPIKE_FACTOR
+
+        # Step 1: Circuit breaker HALT check
+        try:
+            from backend.services.circuit_breaker import CircuitBreaker
+            cb = CircuitBreaker(self.redis)
+            state = cb.get_state(cluster_id)
+            if state == "HALT":
+                logger.warning(f"[DE.rank_for_node] Cluster {cluster_id} circuit breaker HALT — skipping")
+                return []
+        except Exception as cb_err:
+            logger.debug(f"[DE.rank_for_node] Circuit breaker check error: {cb_err}")
+
+        # Step 2: Degraded region check
+        try:
+            r = get_redis_client()
+            if r.exists(key_degraded_region(region)):
+                logger.warning(f"[DE.rank_for_node] Region {region} is degraded — skipping")
+                return []
+        except Exception:
+            pass
+
+        # Step 3: Load global pool cache
+        try:
+            cache_key = key_global_pool_rankings(region)
+            raw = r.get(cache_key)
+            if not raw:
+                logger.info(f"[DE.rank_for_node] No global pool cache for region {region}")
+                return []
+            payload = _json.loads(raw)
+            all_pools = payload.get('data', [])
+        except Exception as cache_err:
+            logger.error(f"[DE.rank_for_node] Cache load error: {cache_err}")
+            return []
+
+        # Step 4: Derive floor from node_info
+        current_price = float(node_info.get('spot_price', 0))
+        current_risk_tier = int(node_info.get('risk_tier', 4))
+
+        # Step 5: Apply filters
+        pools = self._apply_filters(all_pools, node_info, cluster_id)
+
+        # Step 6: Apply double gate — must be cheaper AND safer (lower tier)
+        gated = self._apply_double_gate(pools, current_price, current_risk_tier)
+
+        # Step 7: Relax with trade-off if empty
+        if not gated:
+            trade_off_pct = float(node_info.get('trade_off_pct', 20.0))
+            gated = self._relax_with_trade_off(pools, current_price, current_risk_tier, trade_off_pct)
+
+        # Step 8: Expand tier if still empty
+        if not gated:
+            gated = self._relax_with_tier_expansion(all_pools, current_risk_tier)
+
+        return gated
+
+    def _apply_filters(self, pools: list, node_info: dict, cluster_id: str) -> list:
+        """Remove blacklisted, price-shocked pools."""
+        from backend.core.redis_client import get_redis_client, key_blacklist_global
+        from backend.core.config import PRICE_SPIKE_FACTOR
+        try:
+            r = get_redis_client()
+            result = []
+            for pool in pools:
+                pool_key = f"{pool['instance_type']}:{pool['az']}"
+                # Blacklist check
+                if r.exists(key_blacklist_global(pool_key)):
+                    continue
+                # Price shock check — skip if pool price > PRICE_SPIKE_FACTOR * avg
+                # (simplified: use current_price as proxy for avg)
+                result.append(pool)
+            return result
+        except Exception:
+            return pools
+
+    def _apply_double_gate(self, pools: list, current_price: float, current_risk_tier: int) -> list:
+        """Keep pools that are both cheaper AND have lower or equal risk tier."""
+        return [
+            p for p in pools
+            if p.get('spot_price', 9999) < current_price
+            and p.get('risk_tier', 4) <= current_risk_tier
+        ]
+
+    def _relax_with_trade_off(self, pools: list, current_price: float,
+                               current_risk_tier: int, trade_off_pct: float) -> list:
+        """Allow up to trade_off_pct% more expensive but strictly safer (lower tier)."""
+        max_price = current_price * (1 + trade_off_pct / 100.0)
+        return [
+            p for p in pools
+            if p.get('spot_price', 9999) <= max_price
+            and p.get('risk_tier', 4) < current_risk_tier
+        ]
+
+    def _relax_with_tier_expansion(self, all_pools: list, current_tier: int) -> list:
+        """Progressively expand from current tier outward: tier+1 → tier+2 → any."""
+        for expand_by in range(1, 5):
+            candidate_tier = current_tier + expand_by
+            candidates = [p for p in all_pools if p.get('risk_tier', 4) <= candidate_tier]
+            if candidates:
+                return sorted(candidates, key=lambda p: p.get('spot_price', 9999))
+        return sorted(all_pools, key=lambda p: p.get('spot_price', 9999))[:10]

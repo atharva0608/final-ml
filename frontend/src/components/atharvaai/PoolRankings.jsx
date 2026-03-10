@@ -35,6 +35,7 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
     const [activeTab, setActiveTab] = useState('market'); // 'market', 'node', 'cluster'
     const [autoRefresh, setAutoRefresh] = useState(false);
     const [nodeRecommendations, setNodeRecommendations] = useState([]);
+    const [eligiblePoolsCount, setEligiblePoolsCount] = useState(0);
     const [clusterImpact, setClusterImpact] = useState(null);
     const [nodeViewLoading, setNodeViewLoading] = useState(false);
     const [clusterViewLoading, setClusterViewLoading] = useState(false);
@@ -171,10 +172,15 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
             try {
                 setNodeViewLoading(true);
                 const nodeRes = await atharvaaiAPI.getNodeRecommendations(clusterId);
-                setNodeRecommendations(nodeRes.data || []);
+                const nodeData = nodeRes.data || {};
+                // Backend now returns { recommendations: [...], eligible_pools_count: N }
+                const recs = Array.isArray(nodeData) ? nodeData : (nodeData.recommendations || []);
+                setNodeRecommendations(recs);
+                setEligiblePoolsCount(nodeData.eligible_pools_count ?? recs.length);
             } catch (err) {
                 console.debug('Node recommendations endpoint pending:', err.message);
                 setNodeRecommendations([]);
+                setEligiblePoolsCount(0);
             } finally {
                 setNodeViewLoading(false);
             }
@@ -404,7 +410,9 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
                                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Interruption</th>
                                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">ML Score</th>
                                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Health</th>
-                                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Used By Cluster</th>
+                                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Blacklist</th>
+                                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Signal</th>
+
                             </tr>
                         </thead>
                         <tbody className="bg-white divide-y divide-gray-200">
@@ -451,14 +459,23 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
                                         {getHealthBadge(pool.is_flagged)}
                                     </td>
                                     <td className="px-4 py-3 whitespace-nowrap">
-                                        {(() => {
-                                            const usedCount = nodeRecommendations.filter(r => r.current_type === pool.instance_type).length;
-                                            if (usedCount > 0) {
-                                                return <span className="px-2 py-0.5 inline-flex text-xs font-semibold rounded-full bg-indigo-100 text-indigo-800">{usedCount} node{usedCount > 1 ? 's' : ''}</span>;
-                                            }
-                                            return <span className="text-gray-400 text-xs">—</span>;
-                                        })()}
+                                        {pool.blacklisted ? (
+                                            <span className="inline-flex items-center gap-1">
+                                                <span className="w-2.5 h-2.5 rounded-full bg-red-500 inline-block"></span>
+                                                <span className="text-xs text-red-600 font-semibold">Blacklisted</span>
+                                            </span>
+                                        ) : (
+                                            <span className="text-xs text-gray-400">—</span>
+                                        )}
                                     </td>
+                                    <td className="px-4 py-3 whitespace-nowrap">
+                                        {pool.price_shock ? (
+                                            <span className="text-base" title="Price shock detected">&#9889;</span>
+                                        ) : (
+                                            <span className="text-xs text-gray-400">—</span>
+                                        )}
+                                    </td>
+
                                 </tr>
                             ))}
                         </tbody>
@@ -479,44 +496,43 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
                     {/* Top Summary Cards — computed from nodeRecommendations */}
                     {(() => {
                         const totalNodes = nodeRecommendations.length;
-                        const eligibleNodes = nodeRecommendations.filter(r => r.status === 'ELIGIBLE').length;
-                        const statelessNodes = nodeRecommendations.filter(r => r.status !== 'HIGH_UTILIZATION' && r.status !== 'SYSTEM_PROTECTED').length;
-                        const atRiskNodes = nodeRecommendations.filter(r => r.status === 'AT_RISK').length;
+                        const statelessNodes = nodeRecommendations.filter(r => r.workload_type === 'stateless').length;
+                        const atRiskNodes = nodeRecommendations.filter(r => r.risk_score > 0.60).length;
                         // Projected monthly savings: hourly cost × savings% × 720 hours
                         const projSavings = nodeRecommendations
-                            .filter(r => r.status === 'ELIGIBLE')
                             .reduce((sum, r) => sum + (r.current_cost || 0) * ((r.projected_savings_pct || 0) / 100) * 720, 0);
                         return (
                             <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
                                 <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
                                     <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Total Nodes</h4>
                                     <p className="mt-2 text-2xl font-bold text-gray-900">
-                                        {nodeViewLoading ? '…' : totalNodes > 0 ? totalNodes : '0'}
+                                        {nodeViewLoading ? '\u2026' : totalNodes > 0 ? totalNodes : '0'}
                                     </p>
                                 </div>
                                 <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
                                     <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Stateless</h4>
                                     <p className="mt-2 text-2xl font-bold text-gray-900">
-                                        {nodeViewLoading ? '…' : statelessNodes}
+                                        {nodeViewLoading ? '\u2026' : statelessNodes}
                                     </p>
                                 </div>
                                 <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
-                                    <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Eligible</h4>
+                                    <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Total Pools</h4>
                                     <p className="mt-2 text-2xl font-bold text-indigo-600">
-                                        {nodeViewLoading ? '…' : eligibleNodes}
+                                        {nodeViewLoading ? '\u2026' : eligiblePoolsCount}
                                     </p>
+                                    <p className="text-xs text-gray-400 mt-1">after node filter</p>
                                 </div>
                                 <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
                                     <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">At Risk</h4>
                                     <p className="mt-2 text-2xl font-bold text-orange-500">
-                                        {nodeViewLoading ? '…' : atRiskNodes}
+                                        {nodeViewLoading ? '\u2026' : atRiskNodes}
                                     </p>
                                     <p className="text-xs text-gray-400 mt-1">risk &gt; 60%</p>
                                 </div>
                                 <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
                                     <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Proj. Savings</h4>
                                     <p className="mt-2 text-2xl font-bold text-green-600">
-                                        {nodeViewLoading ? '$…' : projSavings > 0 ? `$${Math.round(projSavings)}/mo` : '$0/mo'}
+                                        {nodeViewLoading ? '$\u2026' : projSavings > 0 ? `$${Math.round(projSavings)}/mo` : '$0/mo'}
                                     </p>
                                 </div>
                             </div>
@@ -525,7 +541,7 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
 
                     {/* Table */}
                     <div className="bg-white shadow-md rounded-lg overflow-x-auto">
-                        <table className="w-full min-w-[1000px] divide-y divide-gray-200 text-sm">
+                        <table className="w-full min-w-[900px] divide-y divide-gray-200 text-sm">
                             <thead className="bg-gray-50">
                                 <tr>
                                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Node Name</th>
@@ -534,9 +550,7 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
                                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Target Pool</th>
                                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Proj. Savings</th>
                                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Risk Score</th>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Confidence</th>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Action</th>
+                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Interruption Rate</th>
                                 </tr>
                             </thead>
                             <tbody className="bg-white divide-y divide-gray-200">
@@ -552,16 +566,21 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
                                             </td>
                                             <td className="px-4 py-3 text-green-600 font-semibold">{rec.projected_savings_pct}%</td>
                                             <td className="px-4 py-3 text-blue-600 font-bold">{rec.risk_score}</td>
-                                            <td className="px-4 py-3 text-gray-500">{rec.confidence}</td>
-                                            <td className="px-4 py-3 font-medium">{rec.status}</td>
                                             <td className="px-4 py-3">
-                                                <button className="text-indigo-600 hover:text-indigo-900 font-medium">Schedule</button>
+                                                <span className={`px-2 py-0.5 inline-flex text-xs font-semibold rounded-full ${rec.interruption_rate === '<5%' ? 'bg-green-100 text-green-800' :
+                                                        rec.interruption_rate === '5–10%' ? 'bg-blue-100 text-blue-800' :
+                                                            rec.interruption_rate === '10–15%' ? 'bg-yellow-100 text-yellow-800' :
+                                                                rec.interruption_rate === '15–20%' ? 'bg-orange-100 text-orange-800' :
+                                                                    'bg-red-100 text-red-800'
+                                                    }`}>
+                                                    {rec.interruption_rate || '—'}
+                                                </span>
                                             </td>
                                         </tr>
                                     ))
                                 ) : (
                                     <tr>
-                                        <td colSpan="9" className="px-4 py-12 text-center text-gray-500">
+                                        <td colSpan="7" className="px-4 py-12 text-center text-gray-500">
                                             {nodeViewLoading ? (
                                                 <div className="flex flex-col items-center">
                                                     <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600 mb-4"></div>
@@ -823,7 +842,7 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
                         <div className="mt-3 text-xs text-indigo-700 flex items-start">
                             <FiInfo className="mr-1 mt-0.5 shrink-0" />
                             <span>
-                                Current cluster nodes: <strong>{clusterInfo.primaryInstanceType}</strong> ({clusterInfo.primaryLifecycle}) in <strong>{clusterInfo.region}</strong>. Rankings include same-family and Graviton alternatives.
+                                Savings baseline: <strong>{clusterInfo.primaryInstanceType}</strong> ({clusterInfo.primaryLifecycle}) in <strong>{clusterInfo.region}</strong>. Rankings show best spot pools including same-family and Graviton alternatives.
                             </span>
                         </div>
                     )}

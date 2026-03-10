@@ -151,6 +151,12 @@ class CircuitBreaker:
 
         return self.get_full_status(cluster_id)
 
+    def get_risk_multiplier(self, cluster_id: str) -> float:
+        """Return the current risk multiplier for a cluster."""
+        state = self.get_state(cluster_id)
+        minutes_in_state = self._get_minutes_in_state(cluster_id)
+        return self._risk_multiplier(state, minutes_in_state)
+
     def reset(self, cluster_id: str, reason: str = "manual_reset") -> dict:
         """Admin: force reset to NORMAL."""
         self._set_state(cluster_id, "NORMAL")

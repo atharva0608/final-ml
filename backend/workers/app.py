@@ -1,4 +1,5 @@
 from celery import Celery
+from celery.schedules import crontab
 import os
 
 app = Celery(
@@ -28,6 +29,12 @@ app = Celery(
         'backend.workers.tasks.control_plane_loop',  # NEW: 8-step control plane
         'backend.workers.tasks.maintain_warm_spare_worker',  # NEW: 24x7 warm spare maintenance
         'backend.workers.tasks.sqs_consumer',               # NEW: SQS spot interrupt consumer
+        'backend.workers.tasks.cache_warmer',                # DE: Pre-warm pool rankings
+        'backend.workers.tasks.dry_run_refresher',           # DE: Refresh dry-run cache
+        'backend.workers.tasks.standby',                     # EE: Launch standby node
+        'backend.workers.tasks.emergency_rebalancer',        # EE: Standby-aware emergency
+        'backend.workers.tasks.recovery_monitor',            # EE: Detect orphaned instances
+        'backend.workers.tasks.daily_stats_aggregator',      # Multi-Cluster: Rollup stats
     ]
 )
 
@@ -85,6 +92,11 @@ app.conf.beat_schedule = {
     # Resource Pricing Refresh (Daily) - Updates individual resource costs in Redis cache
     'resource-pricing-refresh-daily': {
         'task': 'workers.pricing.refresh_all_resource_prices',
+        'schedule': 86400.0,  # 24 hours
+    },
+    # Multi-Cluster Daily Aggregation (Daily) - Rolls up cluster stats
+    'multi-cluster-daily-stats': {
+        'task': 'backend.workers.tasks.daily_stats_aggregator.aggregate_daily_stats',
         'schedule': 86400.0,  # 24 hours
     },
     # Hibernation Scheduler (Every 1 minute) - Checks schedules and triggers sleep/wake actions
@@ -179,4 +191,61 @@ app.conf.beat_schedule = {
         'task': 'workers.sqs_consumer.poll_interruption_queues',
         'schedule': 30.0,  # 30 seconds
     },
+    # DE: Cache Warmer (hourly) - Pre-compute rankings for common profiles
+    'de-cache-warmer-hourly': {
+        'task': 'cache_warmer',
+        'schedule': 3600.0,  # 1 hour
+    },
+    # DE: Dry-Run Refresher (5 min) - Refresh capacity status for top pools
+    'de-dryrun-refresher-every-5-mins': {
+        'task': 'dry_run_refresher',
+        'schedule': 300.0,  # 5 minutes
+    },
+    # EE: Recovery Monitor (60 sec) - Detect orphaned instances and trigger recovery
+    'ee-recovery-monitor-every-60-secs': {
+        'task': 'recovery_monitor',
+        'schedule': 60.0,  # 60 seconds
+    },
+    # Orphan instance scan (every 5 minutes)
+    'recovery-monitor-scan-every-5-mins': {
+        'task': 'backend.workers.tasks.recovery_monitor.scan_orphans',
+        'schedule': 300.0,
+    },
+    # Global pool cache rebuild (every hour)
+    'global-pool-cache-rebuild-hourly': {
+        'task': 'build_global_pool_cache',
+        'schedule': 3600.0,
+    },
+    # Spot advisor scrape (daily at 2 AM UTC)
+    'spot-advisor-scrape-daily': {
+        'task': 'scrapers.spot_advisor.scrape',
+        'schedule': crontab(minute=0, hour=2),
+    },
+    # Instance catalog refresh (daily at 3 AM UTC)
+    'instance-catalog-refresh-daily-3am': {
+        'task': 'workers.instance_catalog.refresh_catalog',
+        'schedule': crontab(minute=0, hour=3),
+    },
+    # On-demand price refresh (every 12 hours)
+    'ondemand-price-refresh-12h': {
+        'task': 'workers.pricing.refresh_ondemand',
+        'schedule': 43200.0,
+    },
+    # Spot price ingest (every 10 minutes)
+    'spot-price-ingest-every-10-mins': {
+        'task': 'workers.pricing.ingest_spot_prices',
+        'schedule': 600.0,
+    },
+    # Circuit breaker audit (every 10 minutes)
+    'circuit-breaker-audit-every-10-mins': {
+        'task': 'circuit_breaker.audit_log',
+        'schedule': 600.0,
+    },
+}
+
+app.conf.task_routes = {
+    'workers.pricing.*': {'queue': 'pricing'},
+    'scrapers.*': {'queue': 'pricing'},
+    'backend.workers.tasks.recovery_monitor.*': {'queue': 'monitoring'},
+    'circuit_breaker.*': {'queue': 'monitoring'},
 }

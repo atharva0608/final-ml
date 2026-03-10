@@ -60,6 +60,8 @@ class PoolRankingResponse(BaseModel):
     is_flagged: bool  # Flagged by global blacklist
     spot_advisor_rank: int  # 0-5 (AWS interruption frequency)
     timestamp: str
+    blacklisted: bool = False  # Temporarily blacklisted due to launch failures / terminations
+    price_shock: bool = False  # Detected rapid spot price spike (>30% in 1h)
 
 
 class BlacklistedPoolResponse(BaseModel):
@@ -271,6 +273,16 @@ async def get_pool_rankings(
                 risk_probability=scored_pool.risk_probability
             )
 
+            # Check per-pool blacklist and price shock signals from Redis
+            pool_key = f"{scored_pool.pool.instance_type}:{scored_pool.pool.az}"
+            try:
+                is_blacklisted = bool(redis.exists(f"blacklist:pool:{pool_key}"))
+                price_shock_val = redis.get(f"price_shock:{pool_key}")
+                has_price_shock = price_shock_val is not None
+            except Exception:
+                is_blacklisted = False
+                has_price_shock = False
+
             rankings.append(PoolRankingResponse(
                 instance_type=scored_pool.pool.instance_type,
                 az=scored_pool.pool.az,
@@ -288,7 +300,9 @@ async def get_pool_rankings(
                 rank=scored_pool.rank,
                 is_flagged=scored_pool.is_flagged,
                 spot_advisor_rank=scored_pool.pool.spot_advisor_rank,
-                timestamp=scored_pool.timestamp.isoformat()
+                timestamp=scored_pool.timestamp.isoformat(),
+                blacklisted=is_blacklisted,
+                price_shock=has_price_shock,
             ))
 
         return {
@@ -1083,6 +1097,23 @@ async def get_volatility_status(db: Session = Depends(get_db)):
         # Determine system status
         system_status = "active" if baseline_count > 0 else "inactive"
 
+        # Build az_pressure map from Redis (key: az_pressure:{az} → float)
+        az_pressure = {}
+        try:
+            _redis = get_redis_client()
+            az_pressure_keys = _redis.keys("az_pressure:*") or []
+            for k in az_pressure_keys:
+                k_str = k.decode('utf-8') if isinstance(k, bytes) else k
+                az_name = k_str.replace("az_pressure:", "")
+                val = _redis.get(k)
+                if val is not None:
+                    try:
+                        az_pressure[az_name] = float(val)
+                    except (ValueError, TypeError):
+                        pass
+        except Exception:
+            pass
+
         return {
             "baseline_count": baseline_count,
             "latest_baseline_date": latest.isoformat() if latest else None,
@@ -1090,6 +1121,7 @@ async def get_volatility_status(db: Session = Depends(get_db)):
             "regions_covered": regions_covered,
             "system_status": system_status,
             "regime": "NORMAL", # Required by frontend UI
+            "az_pressure": az_pressure,
             "timestamp": datetime.utcnow().isoformat()
         }
     except Exception as e:
@@ -1116,52 +1148,57 @@ async def get_node_recommendations(
     from backend.services.pool_ranking_service import PoolRankingService, NodeTemplate
     from backend.services.workload_inspector import WorkloadInspector, NodeStatus
     from backend.core.redis_client import get_redis_client
+    from backend.services.dynamic_instance_helpers import bulk_get_hourly_prices, bulk_get_vcpu_counts, bulk_get_memory_gb
 
     cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
     if not cluster:
         raise HTTPException(status_code=404, detail="Cluster not found")
 
     region = getattr(cluster, 'region', None) or 'ap-south-1'
-    instances = db.query(Instance).filter(Instance.cluster_id == cluster_id).all()
 
-    # On-demand hourly pricing reference (accurate ap-south-1 $/hr)
-    INSTANCE_HOURLY = {
-        "t3.micro": 0.0116, "t3.small": 0.0232, "t3.medium": 0.0464,
-        "t3.large": 0.0928, "t3.xlarge": 0.1856, "t3.2xlarge": 0.3712,
-        "t3a.micro": 0.0104, "t3a.small": 0.0209, "t3a.medium": 0.0418,
-        "t3a.large": 0.0836, "t3a.xlarge": 0.1672, "t3a.2xlarge": 0.3344,
-        "t4g.micro": 0.0092, "t4g.small": 0.0184, "t4g.medium": 0.0368,
-        "t4g.large": 0.0736, "t4g.xlarge": 0.1472, "t4g.2xlarge": 0.2944,
-        "m5.large": 0.096, "m5.xlarge": 0.192, "m5.2xlarge": 0.384,
-        "m5.4xlarge": 0.768, "m6i.large": 0.096, "m6i.xlarge": 0.192,
-        "c5.large": 0.085, "c5.xlarge": 0.170, "c5.2xlarge": 0.340,
-        "c6i.large": 0.085, "c6a.large": 0.0765,
-        "r5.large": 0.126, "r5.xlarge": 0.252, "r5.2xlarge": 0.504,
-        "c6g.medium": 0.034, "c6g.large": 0.068, "c6g.xlarge": 0.136,
-        "m6g.medium": 0.038, "m6g.large": 0.077, "m6g.xlarge": 0.154,
-    }
+    # Only running instances; deduplicate by K8s node hostname so that
+    # real EC2 records (i-xxxx) and daemon-set placeholders (ip-xxx-xxx)
+    # for the same physical node are collapsed to one entry.
+    _all_instances = db.query(Instance).filter(
+        Instance.cluster_id == cluster_id,
+        Instance.state == 'running',
+    ).all()
+    _seen: dict = {}
+    for _inst in _all_instances:
+        # Normalise key: use short hostname so 'ip-192-168-3-201' and
+        # 'ip-192-168-3-201.ap-south-1.compute.internal' both map to the same key.
+        _key = (_inst.node_name or _inst.instance_id or '').split('.')[0]
+        _existing = _seen.get(_key)
+        if _existing is None:
+            _seen[_key] = _inst
+        else:
+            _is_real = _inst.instance_id and _inst.instance_id.startswith('i-')
+            _ex_real = _existing.instance_id and _existing.instance_id.startswith('i-')
+            if _is_real and not _ex_real:
+                # Prefer real EC2 record; carry over utilisation from placeholder if available
+                if _existing.cpu_util is not None and _inst.cpu_util is None:
+                    _inst.cpu_util = _existing.cpu_util
+                    _inst.memory_util = _existing.memory_util
+                _seen[_key] = _inst
+            elif _ex_real and not _is_real:
+                # Keep existing real record; update util if placeholder has fresher data
+                if _inst.cpu_util is not None and (_existing.cpu_util is None or _existing.cpu_util == 0):
+                    _existing.cpu_util = _inst.cpu_util
+                    _existing.memory_util = _inst.memory_util
+    instances = list(_seen.values())
 
-    # vCPU count by instance type — used for size-comparable pool matching
-    VCPU_COUNT = {
-        "t3.micro": 2, "t3.small": 2, "t3.medium": 2, "t3.large": 2,
-        "t3.xlarge": 4, "t3.2xlarge": 8,
-        "t3a.micro": 2, "t3a.small": 2, "t3a.medium": 2, "t3a.large": 2,
-        "t3a.xlarge": 4, "t3a.2xlarge": 8,
-        "t4g.micro": 2, "t4g.small": 2, "t4g.medium": 2, "t4g.large": 2,
-        "t4g.xlarge": 4, "t4g.2xlarge": 8,
-        "m5.large": 2, "m5.xlarge": 4, "m5.2xlarge": 8, "m5.4xlarge": 16,
-        "m6i.large": 2, "m6i.xlarge": 4, "m6i.2xlarge": 8, "m6i.4xlarge": 16,
-        "m6g.medium": 1, "m6g.large": 2, "m6g.xlarge": 4, "m6g.2xlarge": 8,
-        "c5.large": 2, "c5.xlarge": 4, "c5.2xlarge": 8, "c5.4xlarge": 16,
-        "c6i.large": 2, "c6i.xlarge": 4, "c6i.2xlarge": 8, "c6i.4xlarge": 16,
-        "c6a.large": 2, "c6a.xlarge": 4,
-        "c6g.medium": 1, "c6g.large": 2, "c6g.xlarge": 4, "c6g.2xlarge": 8,
-        "r5.large": 2, "r5.xlarge": 4, "r5.2xlarge": 8, "r5.4xlarge": 16,
-        "r6i.large": 2, "r6i.xlarge": 4, "r6i.2xlarge": 8,
-    }
+    # Collect all unique instance types from the cluster nodes
+    _all_instance_types = list({(inst.instance_type or "m5.large") for inst in instances})
+
+    # Dynamically fetch on-demand pricing (AWS API → DB → hardcoded fallback)
+    redis = get_redis_client()
+    INSTANCE_HOURLY = bulk_get_hourly_prices(db, redis, _all_instance_types, region)
+
+    # Dynamically fetch vCPU & Memory limits (InstanceCatalog DB → hardcoded fallback)
+    VCPU_COUNT = bulk_get_vcpu_counts(db, _all_instance_types, region)
+    MEM_GB_MAP = bulk_get_memory_gb(db, _all_instance_types, region)
 
     # ── Get real ML pool rankings for this cluster's region ───────────────
-    redis = get_redis_client()
     top_pools = []
     try:
         ranking_svc = PoolRankingService(db, redis)
@@ -1176,6 +1213,19 @@ async def get_node_recommendations(
         )
     except Exception as _e:
         logger.warning(f"Pool rankings unavailable for node-recommendations: {_e}")
+
+    # Total eligible pools after filter (used by UI summary card)
+    eligible_pools_count = len(top_pools)
+
+    # ── Load cluster strategy for risk/savings tradeoff ────────────────────
+    from backend.models.cluster import OptimizationStrategy
+    strategy = cluster.optimization_strategy_profile
+    risk_tradeoff_pct = (strategy.risk_savings_tradeoff_pct if strategy else 20) or 20
+    risk_ceiling = ((strategy.risk_ceiling_percent if strategy else 25) or 25) / 100.0
+
+    # ── Sort pools risk-first (lowest risk → highest), savings as tiebreaker ──
+    if top_pools:
+        top_pools.sort(key=lambda p: (p.risk_probability, -p.predicted_savings))
 
     # ── Get cached workload classification (stateless vs stateful) ────────
     inspector = WorkloadInspector(redis)
@@ -1206,7 +1256,22 @@ async def get_node_recommendations(
 
         node_name = node["instance_id"]
         on_demand_hourly = INSTANCE_HOURLY.get(instance_type, 0.096)
+        
+        # Original Provisioned Limits
         current_vcpu = VCPU_COUNT.get(instance_type, 2)
+        current_mem = MEM_GB_MAP.get(instance_type, 8.0)
+        
+        # Real-time Telemetry bounds (with safety floor)
+        cpu_util_pct = max(10.0, node["cpu_util"])
+        mem_util_pct = max(10.0, node["memory_util"])
+        
+        # Required compute: actual current usage + 25% safety headroom margin
+        required_vcpu_exact = (current_vcpu * (cpu_util_pct / 100.0)) * 1.25
+        required_mem_exact = (current_mem * (mem_util_pct / 100.0)) * 1.25
+        
+        # Minimum absolute values to avoid extreme micro-sizing
+        required_vcpu = max(1.0, required_vcpu_exact)
+        required_mem = max(2.0, required_mem_exact)
 
         # ── Workload type from WorkloadInspector cache ────────────────────
         cached_status = node_classification.get(node_name)
@@ -1217,26 +1282,42 @@ async def get_node_recommendations(
         else:
             workload_type = "stateless"
 
-        # ── Select size-comparable target pool with instance-type diversity ──
-        target_type = instance_type
+        # ── Select safest sized target pool with diversity ──────
+        target_type = instance_type  # default: no better pool found
         target_az = az
-        spot_price_hourly = on_demand_hourly * 0.30
-        spot_savings_pct = 70
+        spot_price_hourly = on_demand_hourly  # default: no savings
+        spot_savings_pct = 0                  # default: no savings (not hardcoded 70%)
         risk_score = float(node["risk_score"]) if node.get("risk_score") is not None else 0.25
 
-        if not is_already_spot and top_pools:
-            chosen_pool = None
+        # Maximum price we'll accept: current OD price + tradeoff% headroom
+        max_acceptable_price = on_demand_hourly * (1.0 + risk_tradeoff_pct / 100.0)
 
-            # Pass 1: size-comparable (vCPU ±2x) + genuinely cheaper than current OD + unused type
+        chosen_pool = None  # reset per node
+        if not is_already_spot and top_pools:
+
+            # Pass 1: Fits required compute + within price ceiling + below risk ceiling + unused type
             for pool in top_pools:
                 if pool.pool.instance_type in used_types:
                     continue
-                pool_vcpu = VCPU_COUNT.get(pool.pool.instance_type, 2)
-                if not (pool_vcpu <= current_vcpu * 2 and pool_vcpu >= max(1, current_vcpu // 2)):
+                
+                pool_vcpu = pool.pool.vcpu
+                pool_mem = pool.pool.memory_gb
+                
+                # Dynamic Rightsizing check: Does the pool fit the required load?
+                # And prevents upscaling to incredibly large nodes if usage is low
+                fits_load = (pool_vcpu >= required_vcpu) and (pool_mem >= required_mem)
+                not_too_large = (pool_vcpu <= current_vcpu * 2.5) and (pool_mem <= current_mem * 2.5)
+                
+                if not (fits_load and not_too_large):
                     continue
-                # Only pick if this spot pool is actually cheaper than running current node OD
+
+                # Risk gate: reject pools above risk ceiling
+                if pool.risk_probability > risk_ceiling:
+                    continue
+                
+                # Price gate: spot price must be below max acceptable
                 if pool.pool.spot_price > 0:
-                    if pool.pool.spot_price < on_demand_hourly * 0.90:  # ≥10% cheaper
+                    if pool.pool.spot_price <= max_acceptable_price:
                         chosen_pool = pool
                         break
                 else:
@@ -1245,26 +1326,25 @@ async def get_node_recommendations(
                         chosen_pool = pool
                         break
 
-            # Pass 2: size-comparable unused type (relax price constraint)
+            # Pass 2: Relax price constraint, keep risk ceiling + load fit
             if chosen_pool is None:
                 for pool in top_pools:
                     if pool.pool.instance_type in used_types:
                         continue
-                    pool_vcpu = VCPU_COUNT.get(pool.pool.instance_type, 2)
-                    if pool_vcpu <= current_vcpu * 2 and pool_vcpu >= max(1, current_vcpu // 2):
+                    if pool.risk_probability > risk_ceiling:
+                        continue
+                    
+                    pool_vcpu = pool.pool.vcpu
+                    pool_mem = pool.pool.memory_gb
+                    
+                    if (pool_vcpu >= required_vcpu and pool_mem >= required_mem) and (pool_vcpu <= current_vcpu * 2.5 and pool_mem <= current_mem * 2.5):
                         chosen_pool = pool
                         break
 
-            # Pass 3: any unused type
-            if chosen_pool is None:
-                for pool in top_pools:
-                    if pool.pool.instance_type not in used_types:
-                        chosen_pool = pool
-                        break
-
-            # Pass 4: all types exhausted — wrap around from top
-            if chosen_pool is None and top_pools:
-                chosen_pool = top_pools[len(used_types) % len(top_pools)]
+            # NOTE: Pass 3 / Pass 4 removed — they ignored size constraints and caused
+            # upsizing (e.g. recommending r5.xlarge for a t3.medium node).
+            # If no same-size-or-smaller spot pool fits the constraints, we leave
+            # target_type = instance_type (node is already optimal / no suitable spot pool).
 
             if chosen_pool:
                 used_types.add(chosen_pool.pool.instance_type)
@@ -1288,18 +1368,27 @@ async def get_node_recommendations(
                     spot_savings_pct = round(chosen_pool.predicted_savings * 100)
 
         cpu_util = float(node.get("cpu_util") or 0.0)
-        confidence = f"{max(50, round((1.0 - risk_score) * 100))}%"
 
-        if is_already_spot:
-            status = "SPOT"
-        elif workload_type == "system":
-            status = "SYSTEM_PROTECTED"
-        elif risk_score > 0.60:
-            status = "AT_RISK"
-        elif cpu_util > 80:
-            status = "HIGH_UTILIZATION"
+        # Interruption rate from spot_advisor_rank: 0=<5%, 1=5-10%, 2=10-15%, 3=15-20%, 4=>20%
+        INTERRUPTION_LABELS = {0: "<5%", 1: "5–10%", 2: "10–15%", 3: "15–20%", 4: ">20%"}
+        try:
+            interruption_rank = int(chosen_pool.pool.spot_advisor_rank) if chosen_pool and hasattr(chosen_pool.pool, 'spot_advisor_rank') and chosen_pool.pool.spot_advisor_rank is not None else None
+        except Exception:
+            interruption_rank = None
+        if interruption_rank is not None:
+            interruption_rate = INTERRUPTION_LABELS.get(interruption_rank, f"{interruption_rank}")
         else:
-            status = "ELIGIBLE"
+            # Estimate from risk_score: 0-0.2 → <5%, 0.2-0.4 → 5-10%, etc.
+            if risk_score < 0.2:
+                interruption_rate = "<5%"
+            elif risk_score < 0.4:
+                interruption_rate = "5–10%"
+            elif risk_score < 0.6:
+                interruption_rate = "10–15%"
+            elif risk_score < 0.8:
+                interruption_rate = "15–20%"
+            else:
+                interruption_rate = ">20%"
 
         recommendations.append({
             "node_name": node_name,
@@ -1308,14 +1397,16 @@ async def get_node_recommendations(
             "target_type": target_type if not is_already_spot else instance_type,
             "target_az": target_az,
             "target_spot_price": round(spot_price_hourly, 4),
-            "projected_savings_pct": spot_savings_pct if status == "ELIGIBLE" else 0,
+            "projected_savings_pct": spot_savings_pct,
             "risk_score": round(risk_score, 3),
-            "confidence": confidence,
-            "status": status,
+            "interruption_rate": interruption_rate,
             "workload_type": workload_type,
         })
 
-    return recommendations
+    return {
+        "recommendations": recommendations,
+        "eligible_pools_count": eligible_pools_count,
+    }
 
 
 @router.get("/clusters/{cluster_id}/impact")
@@ -1334,6 +1425,9 @@ async def get_cluster_impact(
     if not cluster:
         raise HTTPException(status_code=404, detail="Cluster not found")
 
+    from backend.services.dynamic_instance_helpers import bulk_get_hourly_prices
+    from backend.core.redis_client import get_redis_client
+
     instances = db.query(Instance).filter(Instance.cluster_id == cluster_id).all()
 
     _impact_nodes = [
@@ -1348,15 +1442,10 @@ async def get_cluster_impact(
 
     total = len(_impact_nodes)
 
-    # On-demand hourly pricing by instance type
-    INSTANCE_HOURLY = {
-        "t3.micro": 0.0104, "t3.small": 0.0208, "t3.medium": 0.0416,
-        "t3.large": 0.0832, "t3.xlarge": 0.1664, "t3.2xlarge": 0.3328,
-        "m5.large": 0.096, "m5.xlarge": 0.192, "m5.2xlarge": 0.384,
-        "m5.4xlarge": 0.768, "c5.large": 0.085, "c5.xlarge": 0.17,
-        "c5.2xlarge": 0.34, "r5.large": 0.126, "r5.xlarge": 0.252,
-        "c6g.large": 0.068, "c6g.xlarge": 0.136, "m6i.large": 0.096,
-    }
+    # Dynamically fetch on-demand pricing (AWS API → DB → hardcoded fallback)
+    _all_impact_types = list({n["instance_type"] for n in _impact_nodes})
+    redis = get_redis_client()
+    INSTANCE_HOURLY = bulk_get_hourly_prices(db, redis, _all_impact_types, cluster.region or 'ap-south-1')
 
     # Helper: reliably detect SPOT lifecycle regardless of enum vs string
     def _is_spot_lifecycle(inst) -> bool:

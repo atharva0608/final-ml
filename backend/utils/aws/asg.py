@@ -191,6 +191,44 @@ def detach_instance_from_asg(
         return False
 
 
+def lower_min_size(asg_client, asg_name: str) -> int:
+    """
+    Decrement ASG MinSize by 1. Returns original min size.
+    Idempotent — safe to call even if already at 0.
+    """
+    try:
+        resp = asg_client.describe_auto_scaling_groups(AutoScalingGroupNames=[asg_name])
+        groups = resp.get("AutoScalingGroups", [])
+        if not groups:
+            logger.warning(f"[asg] lower_min_size: ASG '{asg_name}' not found")
+            return 0
+        original_min = groups[0]["MinSize"]
+        new_min = max(0, original_min - 1)
+        asg_client.update_auto_scaling_group(
+            AutoScalingGroupName=asg_name,
+            MinSize=new_min,
+        )
+        logger.info(f"[asg] Lowered ASG '{asg_name}' MinSize {original_min} → {new_min}")
+        return original_min
+    except Exception as e:
+        logger.error(f"[asg] lower_min_size failed for '{asg_name}': {e}")
+        return 0
+
+
+def restore_min_size(asg_client, asg_name: str, original_min: int):
+    """
+    Restore ASG MinSize to original_min. Idempotent.
+    """
+    try:
+        asg_client.update_auto_scaling_group(
+            AutoScalingGroupName=asg_name,
+            MinSize=original_min,
+        )
+        logger.info(f"[asg] Restored ASG '{asg_name}' MinSize → {original_min}")
+    except Exception as e:
+        logger.error(f"[asg] restore_min_size failed for '{asg_name}': {e}")
+
+
 def handle_last_od_node_asg(
     instance_id: str,
     region: str,

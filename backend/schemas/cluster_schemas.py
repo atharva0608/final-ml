@@ -361,10 +361,15 @@ class InstallScriptResponse(BaseModel):
 class AutomationControlsSchema(BaseModel):
     auto_rebalance_enabled: bool = False
     auto_rightsizing_enabled: bool = False
+    instance_aware_rightsizing: bool = False
     cooldown_override_minutes: Optional[int] = None
     conservative_mode_enabled: bool = True
     manual_approval_required: bool = False
     target_spot_exposure_pct: int = 100
+    
+    maintain_standby: bool = False
+    diversify_pools: bool = False
+    failure_cooldown_minutes: int = 30
 
 class OptimizationStrategySchema(BaseModel):
     strategy_type: str = "BALANCED"
@@ -373,6 +378,7 @@ class OptimizationStrategySchema(BaseModel):
     volatility_tolerance_percent: int = 20
     migration_penalty_multiplier: float = 1.5
     diversity_strictness_level: str = "Medium"
+    risk_savings_tradeoff_pct: int = 20
 
 class StatelessRulesSchema(BaseModel):
     instance_diversification_enabled: bool = True

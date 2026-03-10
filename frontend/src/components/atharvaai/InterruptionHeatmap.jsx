@@ -7,9 +7,11 @@ const InterruptionHeatmap = () => {
     const [heatmapData, setHeatmapData] = useState([]);
     const [loading, setLoading] = useState(true);
     const [selectedFamily, setSelectedFamily] = useState('ALL');
+    const [azPressure, setAzPressure] = useState({});
 
     useEffect(() => {
         fetchHeatmap();
+        fetchAzPressure();
     }, []);
 
     const fetchHeatmap = async () => {
@@ -22,6 +24,23 @@ const InterruptionHeatmap = () => {
         } finally {
             setLoading(false);
         }
+    };
+
+    const fetchAzPressure = async () => {
+        try {
+            const response = await api.get('/api/v1/atharvaai/volatility/status');
+            const status = response.data || {};
+            setAzPressure(status.az_pressure || {});
+        } catch (error) {
+            // AZ pressure data unavailable — don't show badges
+        }
+    };
+
+    const getAzPressureBadgeColor = (pressure) => {
+        if (pressure === undefined || pressure === null) return null;
+        if (pressure < 3) return 'bg-green-500';
+        if (pressure <= 5) return 'bg-yellow-400';
+        return 'bg-red-500';
     };
 
     const getRiskColor = (count) => {
@@ -117,6 +136,10 @@ const InterruptionHeatmap = () => {
                                 <div className="flex-1 flex gap-[1px] h-full">
                                     {hours.map((h) => {
                                         const count = getCellData(dIdx, h);
+                                        // AZ pressure: use the first AZ key available for this hour
+                                        const azKey = Object.keys(azPressure)[h % Math.max(Object.keys(azPressure).length, 1)];
+                                        const pressureVal = azKey ? azPressure[azKey] : undefined;
+                                        const badgeColor = getAzPressureBadgeColor(pressureVal);
                                         return (
                                             <div
                                                 key={h}
@@ -125,7 +148,14 @@ const InterruptionHeatmap = () => {
                                                 {count > 0 && (
                                                     <div className="opacity-0 group-hover:opacity-100 absolute bottom-full left-1/2 -translate-x-1/2 mb-1 px-2 py-1 bg-gray-900 text-white text-[10px] rounded pointer-events-none whitespace-nowrap z-10 transition-opacity">
                                                         {day} {h}:00 - {count} interruptions
+                                                        {pressureVal !== undefined && ` | AZ pressure: ${pressureVal}`}
                                                     </div>
+                                                )}
+                                                {badgeColor && pressureVal !== undefined && (
+                                                    <span
+                                                        className={`absolute top-0 right-0 w-1.5 h-1.5 rounded-full ${badgeColor}`}
+                                                        style={{ fontSize: '8px' }}
+                                                    />
                                                 )}
                                             </div>
                                         );

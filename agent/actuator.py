@@ -1018,16 +1018,71 @@ class ActionActuator:
                     # ASG terminate with ShouldDecrementDesiredCapacity=True:
                     # - Terminates the instance AND reduces ASG desired count
                     # - ASG won't relaunch a replacement on-demand node
-                    # - Pods go PENDING → Karpenter provisions a spot node instead
+                    # This is the ONLY place DesiredCapacity is decremented — it runs
+                    # after drain is complete and the replacement spot is healthy.
                     try:
                         asg = _boto3.client("autoscaling", region_name=region)
+
+                        # If MinSize == DesiredCapacity, AWS will reject the decrement.
+                        # We must lower MinSize first so the decrement can proceed.
+                        # This is safe here because the spot node is already running —
+                        # the cluster has full capacity even at MinSize-1.
+                        asg_name = payload.get("asg_name")
+                        if not asg_name:
+                            # Look up ASG for this instance
+                            try:
+                                _resp = asg.describe_auto_scaling_instances(
+                                    InstanceIds=[instance_id]
+                                )
+                                _items = _resp.get("AutoScalingInstances", [])
+                                if _items:
+                                    asg_name = _items[0].get("AutoScalingGroupName")
+                            except Exception:
+                                pass
+
+                        if asg_name:
+                            try:
+                                _asg_desc = asg.describe_auto_scaling_groups(
+                                    AutoScalingGroupNames=[asg_name]
+                                ).get("AutoScalingGroups", [{}])[0]
+                                _cur_desired = _asg_desc.get("DesiredCapacity", 1)
+                                _cur_min     = _asg_desc.get("MinSize", 0)
+                                _new_min     = max(0, _cur_min - 1)
+                                _new_desired = max(_new_min, _cur_desired - 1)
+
+                                if _cur_min >= _cur_desired:
+                                    # MinSize would block decrement — lower it first
+                                    asg.update_auto_scaling_group(
+                                        AutoScalingGroupName=asg_name,
+                                        MinSize=_new_min,
+                                    )
+                                    logger.info(
+                                        f"Lowered ASG '{asg_name}' MinSize {_cur_min}→{_new_min} "
+                                        f"so desired decrement can proceed"
+                                    )
+                                # Explicitly set DesiredCapacity first (before instance terminate)
+                                # so ASG doesn't try to replace the terminating instance
+                                asg.update_auto_scaling_group(
+                                    AutoScalingGroupName=asg_name,
+                                    DesiredCapacity=_new_desired,
+                                )
+                                logger.info(
+                                    f"Set ASG '{asg_name}' DesiredCapacity "
+                                    f"{_cur_desired}→{_new_desired} before termination"
+                                )
+                            except Exception as _asg_pre_err:
+                                logger.warning(
+                                    f"ASG pre-decrement update failed for '{asg_name}': "
+                                    f"{_asg_pre_err} — proceeding with terminate"
+                                )
+
                         asg.terminate_instance_in_auto_scaling_group(
                             InstanceId=instance_id,
                             ShouldDecrementDesiredCapacity=True
                         )
                         logger.info(
                             f"Terminated EC2 instance {instance_id} via ASG "
-                            f"(desired capacity decremented — Karpenter will provision spot)"
+                            f"(desired capacity decremented — spot node already running)"
                         )
                         return {
                             "success":     True,

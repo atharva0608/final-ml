@@ -21,6 +21,7 @@ class AgentActionType(enum.Enum):
     UNINSTALL_KARPENTER = "UNINSTALL_KARPENTER"
     PATCH_CONTAINER_RESOURCES = "PATCH_CONTAINER_RESOURCES"  # Right-sizing: update CPU/memory requests+limits
     TERMINATE_NODE = "TERMINATE_NODE"  # Terminate EC2 instance after drain so Karpenter sees Pending pods
+    UNCORDON_NODE = "UNCORDON_NODE"  # Uncordon a node (e.g., activate standby during emergency)
 
 
 class AgentActionStatus(enum.Enum):

@@ -131,14 +131,26 @@ class ClusterOptimizationSettings(Base):
     cluster_id = Column(String, ForeignKey("clusters.id"), primary_key=True)
     auto_rebalance_enabled = Column(Boolean, default=False)
     auto_rightsizing_enabled = Column(Boolean, default=False)
+    auto_stateful_rightsizing_enabled = Column(Boolean, default=False)
     cooldown_override_minutes = Column(Integer, nullable=True)
     conservative_mode_enabled = Column(Boolean, default=True)
     manual_approval_required = Column(Boolean, default=False)
     target_spot_exposure_pct = Column(Integer, default=100)
+    
+    # New platform v3.5 properties
+    maintain_standby = Column(Boolean, default=False)
+    diversify_pools = Column(Boolean, default=False)
+    failure_cooldown_minutes = Column(Integer, default=30)
+    
     # Billing model preference for right-sizing: "spot" or "on_demand".
     # When both auto_rebalance_enabled AND auto_rightsizing_enabled are True
     # (synergy mode), API force-locks this to "spot".
     optimization_target = Column(String(20), default="spot")
+
+    # Instance-Aware Rightsizing: when True, only generate recommendations
+    # if a better spot pool exists (double gate: risk < current AND price < OD).
+    instance_aware_rightsizing = Column(Boolean, default=False)
+
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     cluster = relationship("Cluster", back_populates="optimization_settings")
@@ -152,6 +164,7 @@ class OptimizationStrategy(Base):
     volatility_tolerance_percent = Column(Integer, default=20)
     migration_penalty_multiplier = Column(Float, default=1.5)
     diversity_strictness_level = Column(String, default="Medium")
+    risk_savings_tradeoff_pct = Column(Integer, default=20)  # Accept pool up to X% more expensive if safer
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     cluster = relationship("Cluster", back_populates="optimization_strategy_profile")

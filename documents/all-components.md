@@ -1,1138 +1,995 @@
-# All UI Components — Complete Frontend Inventory
+# Complete Platform Component Inventory
 
-> **Format:** Section → Subsection → 7-column table
->
-> **Data Source Legend:** `Real API` · `Hardcoded (FAKE)` · `Computed` · `Props` · `N/A`
->
-> **Last Updated:** 2026-03-01 — Exhaustive re-audit: all line counts re-verified via `wc -l`, backend logic cross-referenced against logic.md 2026-03-01 audit, Decision Engine corrected to 14-step pipeline, 15+ line count discrepancies fixed
->
-> **Total:** 141 JSX + 17 JS + 2 CSS = **160 frontend files** (line counts verified 2026-03-01)
+> **Generated**: 2026-03-06 | **Source**: Codebase structural analysis  
+> **Frontend**: React (CRA) · **Backend**: FastAPI + Celery · **DB**: PostgreSQL + Redis
 
 ---
 
-## 1. Dashboard (15 files)
+## Architecture Overview
 
-### 1.1 Overview Tab
+```
+frontend/src/
+├── App.js                    # Router (30+ routes)
+├── services/api.js           # Axios client (25+ API modules)
+├── store/useStore.js          # Zustand auth store
+├── components/               # 22 directories, 139 files
+│   ├── dashboard/            # Fleet overview widgets
+│   ├── clusters/             # Cluster management
+│   ├── atharvaai/            # ML engine UI
+│   ├── right-sizing/         # Karpenter rightsizing
+│   ├── hibernation/          # Schedule management
+│   ├── cleanup/              # Resource hygiene
+│   ├── settings/             # Org settings & tags
+│   ├── admin/                # Super-admin panel
+│   ├── auth/                 # Login/Signup
+│   ├── governance/           # Permission gates & JIT
+│   ├── policies/             # Optimization policies
+│   ├── approvals/            # Ticket & access modals
+│   ├── onboarding/           # AWS setup wizard
+│   ├── shared/               # Reusable primitives
+│   ├── ri/                   # Reserved Instance analysis
+│   ├── s3/                   # S3 tiering
+│   ├── rds/                  # RDS analysis
+│   ├── transfer/             # Data Transfer analysis
+│   ├── audit/                # Audit log viewer
+│   ├── teams/                # Team management tabs
+│   ├── optimizer/            # Optimizer coordinator
+│   └── layout/               # MainLayout shell
+└── pages/                    # 8 page-level components
 
-| UI Element | Type | What It Does | Data Source | API Endpoint | Backend Logic | File Name |
-|---|---|---|---|---|---|---|
-| Monthly Spend KPI | Card | Total monthly cost + trend | Real API | `GET /api/v1/metrics/dashboard` | MetricsService.get_dashboard_kpis | Dashboard.jsx |
-| Net Savings KPI | Card | Estimated savings + rate % | Real API | `GET /api/v1/metrics/dashboard` | MetricsService | Dashboard.jsx |
-| Spot Ratio KPI | Card | Optimization rate % | Real API | `GET /api/v1/metrics/dashboard` | MetricsService | Dashboard.jsx |
-| Total Nodes KPI | Card | Node count + cluster count | Real API | `GET /api/v1/clusters` | ClusterService | Dashboard.jsx |
-| Spend Forecast | Widget | MTD + Projected EOM spend | Real API | `GET /api/v1/metrics/cost/timeseries` | MetricsService | widgets/SpendForecastWidget.jsx |
-| Agent Status | Widget | Agent heartbeat monitor | Real API | `GET /api/v1/clusters` | ClusterService | widgets/AgentStatusWidget.jsx |
-| Cluster Health | Widget | Cluster health cards | Props | — | — | widgets/ClusterHealthCard.jsx |
-| Fleet Composition | Widget | Spot vs On-Demand pie | Real API | `GET /api/v1/metrics/instances` | MetricsService | widgets/FleetComposition.jsx |
-| Activity Feed | Widget | Recent 5 audit entries | Props | — | — | widgets/ActivityFeed.jsx |
-| Pending Approvals | Widget | Pending JIT count | Real API | `GET /api/v1/approvals/?status=PENDING` | ApprovalService | widgets/PendingApprovalsCard.jsx |
-
-### 1.2 Cost Intelligence Tab
-
-| UI Element | Type | What It Does | Data Source | API Endpoint | Backend Logic | File Name |
-|---|---|---|---|---|---|---|
-| Right-Sizing Feature Card | Card | 4 KPIs (overprov count, top savings, clusters, last rec) + CTA | Real API | `GET /api/v1/karpenter/recommendations` | KarpenterService | Dashboard.jsx L576–602 |
-| AtharvaAI Feature Card | Card | 4 KPIs (ML status, pools ranked, top score, regions) + CTA | Real API | `GET /api/v1/atharvaai/status/global`, `GET /api/v1/atharvaai/health` | GlobalPoolCacheService, AtharvaAI HealthCheck | Dashboard.jsx L604–636 |
-| Hibernation Feature Card | Card | 4 KPIs (hours slept, savings, active schedules, clusters) + CTA | Real API | `GET /api/v1/hibernation/savings/history`, `GET /api/v1/hibernation/schedules`, `GET /api/v1/hibernation/status/active` | HibernationService | Dashboard.jsx L638–669 |
-| Hygiene Stats Banner | Banner | 4 KPIs (safe-to-delete, orphaned, potential savings, last scan) | Real API | `GET /api/v1/hygiene/scan/{account_id}` | HygieneService | Dashboard.jsx L672–701 |
-| RI Health Card | Mini Card | RI utilization CTA | Real API | `GET /api/v1/ri/overview` | RIAnalysisService | Dashboard.jsx (inline) |
-| S3 Health Card | Mini Card | S3 tiering savings CTA | Real API | `GET /api/v1/s3/overview` | S3TieringService | Dashboard.jsx (inline) |
-| RDS Health Card | Mini Card | RDS Multi-AZ savings CTA | Real API | `GET /api/v1/rds/overview` | RDSAnalysisService | Dashboard.jsx (inline) |
-| Data Transfer Card | Mini Card | Transfer cost CTA | Real API | `GET /api/v1/transfer/overview` | TransferService | Dashboard.jsx (inline) |
-
-### 1.3 Infrastructure Tab
-
-| UI Element | Type | What It Does | Data Source | API Endpoint | Backend Logic | File Name |
-|---|---|---|---|---|---|---|
-| Total Cost KPI | Card | Cluster total cost | Real API | `GET /api/v1/metrics/dashboard` | MetricsService | Dashboard.jsx |
-| Total Nodes KPI | Card | Node count (spot/OD) | Computed | `clusters.reduce()` from `GET /api/v1/clusters` | — | Dashboard.jsx |
-| vCPU/Memory KPIs | Cards | Capacity stats | Computed | `clusters.reduce()` from `GET /api/v1/clusters` | — | Dashboard.jsx |
-| Clusters Card | Card | Cluster list + Discover | Real API | `GET /api/v1/clusters` | ClusterService | Dashboard.jsx |
-
-### 1.4 Governance Tab
-
-| UI Element | Type | What It Does | Data Source | API Endpoint | Backend Logic | File Name |
-|---|---|---|---|---|---|---|
-| Pending Requests KPI | Card | Pending approval count | Real API | `GET /api/v1/approvals/?status=PENDING` | ApprovalService | Dashboard.jsx L398 |
-| Active Grants KPI | Card | Active JIT access count | Real API | `GET /api/v1/approvals/active-window` | ApprovalService | Dashboard.jsx L399 |
-| Awaiting Consent KPI | Card | Team invite count | Real API | `GET /api/v1/teams/invites` | TeamService | Dashboard.jsx L405 |
-| Governance Features rows | Card | Tagging/Automation/Approvals CTAs | N/A (navigation only) | — | — | Dashboard.jsx |
-| Teams & Members rows | Card | Members/Teams/Roles counts | Real API | `GET /api/v1/teams/`, `GET /api/v1/roles` | TeamService, RoleService | Dashboard.jsx L418–434 |
-
-### 1.5 Dashboard Widgets & Config
-
-| UI Element | Type | What It Does | Data Source | API Endpoint | Backend Logic | File Name |
-|---|---|---|---|---|---|---|
-| CostKPICard | Widget | Monthly spend + trend arrow | Real API | `GET /api/v1/metrics/dashboard` | MetricsService | widgets/CostKPICard.jsx |
-| SavingsKPICard | Widget | Net savings % | Real API | `GET /api/v1/metrics/dashboard` | MetricsService | widgets/SavingsKPICard.jsx |
-| SavingsChart | Widget | Cost bar chart (30d) | Real API | `GET /api/v1/metrics/cost/timeseries` | MetricsService | widgets/SavingsChart.jsx |
-| PlatformHealthCard | Widget | Uptime (SUPER_ADMIN) | Real API | `GET /api/v1/admin/health` | AdminService | widgets/PlatformHealthCard.jsx |
-| TenantListCard | Widget | Org list (SUPER_ADMIN) | Real API | `GET /api/v1/admin/clients` | AdminService | widgets/TenantListCard.jsx |
-| Widget Registry | Config | Widget metadata map | N/A | — | — | dashboard/widgetRegistry.js |
-| Role Defaults | Config | Default layouts per role | N/A | — | — | dashboard/roleDefaults.js |
-| Widget Exports | Config | Central widget barrel | N/A | — | — | dashboard/widgets/index.js |
+backend/
+├── api/                      # 44 FastAPI route files
+├── services/                 # 65 service modules
+├── models/                   # SQLAlchemy models
+├── schemas/                  # Pydantic schemas
+├── workers/                  # Celery tasks
+└── core/                     # Auth, config, DB
+```
 
 ---
 
-## 2. AtharvaAI Optimizer (14 files, AtharvaAiPage.jsx = 122 lines, PoolRankings.jsx = 847 lines)
+## 1. Authentication & Onboarding
 
-> **Sidebar:** COST INTELLIGENCE › AtharvaAI Optimizer › Dashboard | Decision Engine v3 | Pool Rankings | Interruption Heatmap | Rebalancing
+### 1.1 Auth Components
 
-### 2.1 Dashboard Sub-Tab (`/atharva-ai?tab=dashboard`)
+| UI Element | Type | Label | Action | API Endpoint | Method | Backend Route | Service | File |
+|---|---|---|---|---|---|---|---|---|
+| Email input | Input | Email | User enters email | — | — | — | — | `auth/Login.jsx` |
+| Password input | Input | Password | User enters password | — | — | — | — | `auth/Login.jsx` |
+| Login button | Button | Sign In | Submit credentials | `/api/v1/auth/login` | POST | `auth_routes.py` | `auth_service.py` | `auth/Login.jsx` |
+| Signup form | Form | Create Account | Register new user | `/api/v1/auth/signup` | POST | `auth_routes.py` | `auth_service.py` | `auth/Signup.jsx` |
+| Invitation banner | Banner | Accept/Decline | Respond to org invite | `/api/v1/auth/invitation-response` | POST | `auth_routes.py` | `auth_service.py` | `auth/InviteAcceptance.jsx` |
 
-| UI Element | Type | What It Does | Data Source | API Endpoint | Backend Logic | File Name |
-|---|---|---|---|---|---|---|
-| AtharvaAiPage | Page | 5-tab ML optimizer layout | Real API | `GET /api/v1/clusters` | ClusterService | pages/AtharvaAiPage.jsx |
-| Global Rankings | Card | Top cross-region target pools (85 lines) | Real API | `GET /api/v1/atharvaai/rankings/global` | GlobalPoolCacheService (65-min TTL, top 100 global cache → 50 per rank call) | atharvaai/GlobalRankingsCard.jsx |
-| Blacklist Monitor | Card | ML pool backoffs & saturation | Real API | `GET /api/v1/atharvaai/blacklist/status` | BlacklistService (tiered TTL: 6h/12h/24h+backoff, cascade at 70%) | atharvaai/BlacklistMonitorCard.jsx |
-| Auto Rebalance Audit | Timeline | Rebalancing audit log | Real API | `GET /api/v1/atharvaai/rebalancing/status` | auto_rebalancer.py (Emergency 90s / Graceful 10min) | atharvaai/AutoRebalanceAuditCard.jsx |
-| Volatility Banner | Banner | Global Volatility/Regime warn | Real API | `GET /api/v1/atharvaai/volatility/{id}` | EventMonitor.detect_volatility_regime (75th percentile, 2h TTL) | layout/MainLayout.jsx (inline logic) |
+**Dependencies**: `useAuthStore` (Zustand), `authAPI` → `auth_routes.py` → `auth_service.py` → `users` table
 
-### 2.2 Decision Engine v3 Sub-Tab (`/atharva-ai?tab=decision-engine-v3`)
+### 1.2 Onboarding Wizard
 
-| UI Element | Type | What It Does | Data Source | API Endpoint | Backend Logic | File Name |
-|---|---|---|---|---|---|---|
-| Decision Engine V3 Dashboard | Dashboard | 14-step pipeline visualizer + observability metrics (667 lines) | Real API | `GET /api/v1/atharvaai/decision-engine/state`, `/metrics` | DecisionEngine (14-step pipeline: cooldown→pricing→classification→3-layer risk ceiling→diversity→delta) | atharvaai/DecisionEngineV3Dashboard.jsx |
-| Optimization Mode Selector | Selector | Cost/Balanced/ZeroDowntime mode picker | Real API | `PATCH /api/v1/atharvaai/optimization-mode/{cluster_id}` | DecisionEngine (3 profiles: COST_FIRST/BALANCED/NO_DOWNTIME_FIRST) | atharvaai/OptimizationModeSelector.jsx |
-| Diversity Gauge | Gauge | Pool diversity visualization | Real API | `GET /api/v1/atharvaai/diversity/{cluster_id}` | DiversityEnforcer (max_family_ratio 30-40%, max_az_ratio 40-50%) | atharvaai/DiversityGauge.jsx |
-| Global Intelligence Panel | Panel | Region-wide spot intelligence summary (150 lines) | Real API | `GET /api/v1/atharvaai/global-intelligence/{region}` | GlobalPoolCacheService (65-min TTL, top 100 global → filter by template) | atharvaai/GlobalIntelligencePanel.jsx |
-| Workload Classification Panel | Panel | Stateless/Stateful node classification | Real API | `GET /api/v1/atharvaai/workload-classification/{cluster_id}` | WorkloadInspector (5 categories: SYSTEM_PROTECTED/STATEFUL/DRAIN_UNSAFE/STATELESS_ELIGIBLE) | atharvaai/WorkloadClassificationPanel.jsx |
+| UI Element | Type | Label | Action | API Endpoint | Method | Backend Route | Service | File |
+|---|---|---|---|---|---|---|---|---|
+| Welcome screen | Card | Welcome | Navigate to next step | — | — | — | — | `onboarding/WelcomeStep.jsx` |
+| AWS mode selector | Dropdown | Access Mode | Choose FULL/READ_ONLY | — | — | — | — | `onboarding/ConnectStep.jsx` |
+| CloudFormation link | Button | Launch Stack | Open AWS console | `/api/v1/onboarding/aws-link` | GET | `onboarding_routes.py` | `onboarding_service.py` | `onboarding/ConnectStep.jsx` |
+| Role ARN input | Input | Role ARN | Enter AWS IAM role | — | — | — | — | `onboarding/ConnectStep.jsx` |
+| Verify button | Button | Verify Connection | Validate ARN | `/api/v1/onboarding/verify` | POST | `onboarding_routes.py` | `onboarding_service.py` | `onboarding/VerifyStep.jsx` |
+| Skip button | Button | Skip | Skip onboarding | `/api/v1/onboarding/skip` | POST | `onboarding_routes.py` | `onboarding_service.py` | `onboarding/ConnectStep.jsx` |
+| Success screen | Card | All Set! | Navigate to dashboard | — | — | — | — | `onboarding/SuccessStep.jsx` |
 
-### 2.3 Pool Rankings Sub-Tab (`/atharva-ai?tab=rankings`) — PoolRankings.jsx, 848 lines
-
-| UI Element | Type | What It Does | Data Source | API Endpoint | Backend Logic | File Name |
-|---|---|---|---|---|---|---|
-| Internal Tab Navigation | Tabs | Market View / Node View / Cluster Impact | Local State | — | — | PoolRankings.jsx L342 |
-| Market View Table | Table | Spot pools ranked by ML | Real API | `POST /api/v1/atharvaai/rankings` | PoolRankingService | PoolRankings.jsx L419 |
-| **Node View Top KPIs** | Cards | Total/Stateless/Eligible/Savings | Computed | `GET /api/v1/atharvaai/node-recommendations/{id}` | right_sizing.py | PoolRankings.jsx L508 |
-| **Node View Cooldown** | KPI | Nodes in cooldown period | **Hardcoded (0)** | — | — | PoolRankings.jsx L528 |
-| Node Recommendations | Table | Per-node optimization recs | Real API | `GET /api/v1/atharvaai/node-recommendations/{id}` | right_sizing.py | PoolRankings.jsx L542 |
-| **Cluster View KPIs** | Cards | Cost/Savings/Exposure | Computed | `reduce()` over `nodeRecommendations` | — | PoolRankings.jsx L605 |
-| Cluster Impact Charts | Charts | AZ / Family / Spot vs OD distributions | Real API | `GET /api/v1/atharvaai/cluster-impact/{id}` | ClusterImpactAnalyzer | PoolRankings.jsx L651 |
-| Cluster Impact Table | Table | Aggregated pool impact | Real API | `GET /api/v1/atharvaai/cluster-impact/{id}` | ClusterImpactAnalyzer | PoolRankings.jsx L759 |
-| Pool Rankings CSS | Styles | Table styles | N/A | — | — | atharvaai/PoolRankings.css |
-
-### 2.4 Interruption Heatmap Sub-Tab (`/atharva-ai?tab=heatmap`)
-
-| UI Element | Type | What It Does | Data Source | API Endpoint | Backend Logic | File Name |
-|---|---|---|---|---|---|---|
-| Interruption Heatmap | Calendar | 30-day interruption frequency (159 lines) | Real API | `GET /api/v1/atharvaai/heatmap/{cluster_id}` | atharvaai_routes.get_interruption_heatmap (aggregates TerminationEvent data by day×hour). Also feeds from termination_monitor.py (316 lines, EventBridge+DaemonSet detection, 12h blacklist TTL) | atharvaai/InterruptionHeatmap.jsx |
-| Volatility Monitor | Card | Regional volatility signal display (52 lines) | Real API | `GET /api/v1/atharvaai/volatility/{id}` | EventMonitor | atharvaai/VolatilityMonitor.jsx |
-
-### 2.5 Rebalancing Sub-Tab (`/atharva-ai?tab=rebalancing`)
-
-| UI Element | Type | What It Does | Data Source | API Endpoint | Backend Logic | File Name |
-|---|---|---|---|---|---|---|
-| Rebalancing Timeline | Timeline | Sub-hour precision chart (125 lines) | Real API | `GET /api/v1/atharvaai/rebalancing/timeline` | auto_rebalancer.py (cordon→drain→Karpenter reschedule) | atharvaai/RebalancingTimeline.jsx |
-
-### 2.6 Shared / Config
-
-| UI Element | Type | What It Does | Data Source | API Endpoint | Backend Logic | File Name |
-|---|---|---|---|---|---|---|
-| AtharvaAI Index | Export | Central barrel export | N/A | — | — | atharvaai/index.js |
+**Dependencies**: `onboardingAPI` → `onboarding_routes.py` → `onboarding_service.py` → `organizations`, `aws_accounts` tables
 
 ---
 
-## 3. Right-Sizing (1 file, 1,057 lines — RightSizingDashboard.jsx)
+## 2. Dashboard (Fleet Overview)
 
-> **Sidebar:** COST INTELLIGENCE › Right-Sizing › Karpenter | Optimization History | Configuration | Savings Tracker
->
-> **Backend pipeline**: `RightSizingService.generate_recommendations()` → `_analyze_controller()` → phase-aware buffer → P99 floor → confidence gate → cost estimation → `OptimizerCoordinator` proposal creation
->
-> **Tabs (4):** `karpenter` (default) · `history` · `config` · `savings` — controlled via URL `?tab=` param
+### 2.1 Main Dashboard
 
-### 3.1 Karpenter Tab (`/right-sizing?tab=karpenter`) — Main View
+| UI Element | Type | Label | Action | API Endpoint | Method | Backend Route | Service | File |
+|---|---|---|---|---|---|---|---|---|
+| Cost KPI card | Card | Total Monthly Cost | Display spend metric | `/api/v1/metrics/dashboard` | GET | `metrics_routes.py` | `metrics_service.py` | `widgets/CostKPICard.jsx` |
+| Savings KPI card | Card | Total Savings | Display savings metric | `/api/v1/metrics/dashboard` | GET | `metrics_routes.py` | `metrics_service.py` | `widgets/SavingsKPICard.jsx` |
+| Savings bar chart | Chart | Savings by Category | Visualize savings breakdown | `/api/v1/metrics/dashboard` | GET | `metrics_routes.py` | `metrics_service.py` | `widgets/SavingsChart.jsx` |
+| Fleet composition pie | Chart | Fleet Composition | Show instance type mix | `/api/v1/clusters` | GET | `cluster_routes.py` | `cluster_service.py` | `widgets/FleetComposition.jsx` |
+| Activity feed | List | Recent Activity | Show recent events | `/api/v1/audit/logs` | GET | `audit_routes.py` | `audit_service.py` | `widgets/ActivityFeed.jsx` |
+| Cluster health cards | Card grid | Cluster Health | Show cluster status | `/api/v1/clusters` | GET | `cluster_routes.py` | `cluster_service.py` | `widgets/ClusterHealthCard.jsx` |
+| Platform health | Card | Platform Health | Show system status | `/api/v1/admin/health` | GET | `admin_routes.py` | `admin_service.py` | `widgets/PlatformHealthCard.jsx` |
+| Pending approvals | Card | Pending Approvals | Show awaiting actions | `/api/v1/approvals/` | GET | `approval_routes.py` | `approval_service.py` | `widgets/PendingApprovalsCard.jsx` |
+| Agent status | Card | Agent Status | Show DaemonSet health | `/api/v1/admin/agent-fleet` | GET | `admin_routes.py` | `admin_service.py` | `widgets/AgentStatusWidget.jsx` |
+| Spend forecast | Chart | Spend Forecast | Predict future costs | `/api/v1/metrics/cost/timeseries` | GET | `metrics_routes.py` | `metrics_service.py` | `widgets/SpendForecastWidget.jsx` |
+| Trends chart | Area Chart | Fleet Trends | 30-day savings & spot trends | `/api/v1/multi-cluster/trends` | GET | `multi_cluster_routes.py` | `DailyClusterStat` model | `widgets/TrendsChart.jsx` |
+| Tenant list | Table | Tenants | Show organizations | `/api/v1/admin/organizations` | GET | `admin_routes.py` | `admin_service.py` | `widgets/TenantListCard.jsx` |
+| Widget config | Modal | Customize Dashboard | Toggle widget visibility | `/api/v1/users/me/preferences` | PATCH | `user_routes.py` | — | `Dashboard.jsx` |
+| Access request modal | Modal | Request Access | Request feature access | `/api/v1/approvals/jit-request` | POST | `approval_routes.py` | `approval_service.py` | `approvals/AccessRequestModal.jsx` |
 
-| UI Element | Type | What It Does | Data Source | API Endpoint | Backend Logic | File Name |
-|---|---|---|---|---|---|---|
-| Cluster Selector | Dropdown | Select cluster | Real API | `GET /api/v1/clusters` | ClusterService | RightSizingDashboard.jsx L869 |
-| Auto Mode Banner | Banner | Shows auto-rightsizing on/off status | Real API | `GET /api/v1/clusters/{id}/optimization-settings` → `automation_controls.auto_rightsizing_enabled` | ClusterService | RightSizingDashboard.jsx L57–78 |
-| **Cluster Overview** (5 KPIs) | Card | Total Nodes · Stateless · Stateful · Eligible for Resize · In Cooldown | Computed | from `karpenterAPI.getRecommendations()` counts | — | RightSizingDashboard.jsx L81–143 |
-| **Exposure Snapshot** (3 charts) | Card | Spot vs OD Gauge · AZ Distribution Pie · Instance Family Bar | **Hardcoded (FAKE)** — static CSS visuals (60%→78%, conic-gradient, bar heights) | — | — | RightSizingDashboard.jsx L113–140 |
-| **Guard & Stability Panel** (6 KPIs) | Card | Rollbacks (24h) · Guard Triggers · Circuit Breaker · Max Concurrent · Currently Running · Queue Length + Safety Score | **Hardcoded (FAKE)** — static values (98/100, 0, 2, HEALTHY, 5, 1, 3) | — | — | RightSizingDashboard.jsx L146–183 |
-| **Stateless Nodes Section** | Table | Node recommendations with CPU/Mem, Bin-Packed Size, Optimal Action, Best Spot Pool, Savings, EV%, Status, Apply button | Real API | `GET /api/v1/karpenter/recommendations/{cluster_id}` → filter `node_type=stateless` | KarpenterService | RightSizingDashboard.jsx L298–478 |
-| Stateless Detail Drawer | Modal | Top candidates, diversification check, headroom/volatility, capacity DryRun, Apply button | Real API | from recommendation data | KarpenterService | RightSizingDashboard.jsx L187–231 |
-| Apply Recommendation | Action | Apply single resize + optional spot migration | Real API | `POST /api/v1/karpenter/apply-recommendation/{id}` | KarpenterService | RightSizingDashboard.jsx L449 |
-| Apply All Eligible | Button | Batch apply all eligible stateless resizes | Real API | `POST /api/v1/karpenter/apply-recommendation/{id}` (per node) | KarpenterService | RightSizingDashboard.jsx L315 |
-| **Stateful Nodes Section** | Table | Node recommendations with CPU/Mem, Recommended, OD Savings, Policy Status | Real API | `GET /api/v1/karpenter/recommendations/{cluster_id}` → filter `node_type=stateful` | KarpenterService | RightSizingDashboard.jsx L483–573 |
-| Stateful Proposal Modal | Modal | Manual resize submission for On-Demand stateful nodes | Real API | `POST /api/v1/karpenter/apply-recommendation/{id}` with `is_stateful: true` | KarpenterService | RightSizingDashboard.jsx L234–294 |
-| Execution Timeline | Info bar | Recent execution steps | **Hardcoded (FAKE)** — static text (14:30, 14:32, 14:35) | — | — | RightSizingDashboard.jsx L468–474 |
-
-### 3.2 Optimization History Tab (`/right-sizing?tab=history`)
-
-| UI Element | Type | What It Does | Data Source | API Endpoint | Backend Logic | File Name |
-|---|---|---|---|---|---|---|
-| Execution Plan Table | Table | Pending rightsizing proposals (Order, Node, Action, Duration, Rollback, Savings, Status) | Real API | `GET /api/v1/karpenter/execution-plan/{cluster_id}` | KarpenterService | RightSizingDashboard.jsx L903–956 |
-
-### 3.3 Configuration Tab (`/right-sizing?tab=config`)
-
-| UI Element | Type | What It Does | Data Source | API Endpoint | Backend Logic | File Name |
-|---|---|---|---|---|---|---|
-| **KarpenterConfigPanel** | Panel | Full config form (strategy + instance families + stateful policy) | Real API | `GET /api/v1/karpenter/config/{cluster_id}` | KarpenterService | RightSizingDashboard.jsx L577–729 |
-| Optimization Strategy | Radio | balanced / cost-first / performance-first | Real API | `PUT /api/v1/karpenter/config/{cluster_id}` | KarpenterService | RightSizingDashboard.jsx L639–646 |
-| Spot Target % | Slider | 0–100% target spot percentage | Real API | `PUT /api/v1/karpenter/config/{cluster_id}` | KarpenterService | RightSizingDashboard.jsx L650–656 |
-| Buffer % (Safety Headroom) | Number | % above P95 usage for bin-packing | Real API | `PUT /api/v1/karpenter/config/{cluster_id}` | KarpenterService | RightSizingDashboard.jsx L658–664 |
-| Allowed Instance Families | Multi-select | m5/m6i/c5/c6i/t3/t4g/c6g/m6g toggle chips | Real API | `PUT /api/v1/karpenter/config/{cluster_id}` | KarpenterService | RightSizingDashboard.jsx L670–682 |
-| Consolidation Toggle | Toggle | Auto-consolidate underutilized nodes + threshold | Real API | `PUT /api/v1/karpenter/config/{cluster_id}` | KarpenterService | RightSizingDashboard.jsx L684–692 |
-| Stateful Node Policy | Panel | Max Downscale %, Spot Migration (always disabled), OD Rightsizing toggle | Real API | `PUT /api/v1/karpenter/config/{cluster_id}` | KarpenterService | RightSizingDashboard.jsx L695–720 |
-| Mode Switch | Action | Saves config + switches karpenter mode (auto/dry_run) + updates cluster settings | Real API | `PUT /api/v1/karpenter/config`, `PATCH /api/v1/karpenter/mode/{id}`, `PUT /api/v1/clusters/{id}/optimization-settings` | KarpenterService, ClusterService | RightSizingDashboard.jsx L603–616 |
-
-### 3.4 Savings Tracker Tab (`/right-sizing?tab=savings`)
-
-| UI Element | Type | What It Does | Data Source | API Endpoint | Backend Logic | File Name |
-|---|---|---|---|---|---|---|
-| Resizes this Month KPI | Card | Count of resizes in current month | Real API | `GET /api/v1/karpenter/history/{cluster_id}` → `kpis.resizes_this_month` | KarpenterService | RightSizingDashboard.jsx L987–988 |
-| Net Savings Generated KPI | Card | Monthly net savings from resizes | Real API | `GET /api/v1/karpenter/history/{cluster_id}` → `kpis.net_savings_monthly` | KarpenterService | RightSizingDashboard.jsx L990–993 |
-| Success Rate KPI | Card | % successful resize operations | Real API | `GET /api/v1/karpenter/history/{cluster_id}` → `kpis.success_rate_pct` | KarpenterService | RightSizingDashboard.jsx L994–997 |
-| Action History Table | Table | Past resize actions (Executed At, Node, Before, After, Time Taken, Savings, Status) | Real API | `GET /api/v1/karpenter/history/{cluster_id}` → `history[]` | KarpenterService | RightSizingDashboard.jsx L1000–1044 |
+**Dependencies**: `Dashboard.jsx` → `metricAPI`, `clusterAPI`, `auditAPI`, `multiClusterAPI` → `metrics_routes.py`, `cluster_routes.py`, `audit_routes.py`, `multi_cluster_routes.py`  
+**State**: `widgetRegistry.js`, `roleDefaults.js`, `useAuthStore`
 
 ---
 
-## 4. Resource Hygiene (10 files)
+## 3. Cluster Management
 
-### 4.1 Main Dashboard (CleanupDashboard.jsx, 1,074 lines)
+### 3.1 Cluster List & Details
 
-| UI Element | Type | What It Does | Data Source | API Endpoint | Backend Logic | File Name |
-|---|---|---|---|---|---|---|
-| FilterPanel | Panel | Account/Region selectors + Scan button | Props | `GET /api/v1/accounts`, `GET /api/v1/hygiene/scan/{account_id}` | AccountService, HygieneService | cleanup/layout/FilterPanel.jsx (Top bar) |
-| Sidebar (inline) | Nav | Resource type filter (7 Categories, 25 types) | Computed from scan data | — | — | CleanupDashboard.jsx L112–218 |
-| KPI Card — Total Discovered Cost | Card | Sum of ALL discovered resources count + cost | Real API | `GET /api/v1/hygiene/total-cost` | HygieneService | CleanupDashboard.jsx |
-| KPI Card — Potential Savings | Card | Estimated waste cost + % recoverable | Real API | `GET /api/v1/hygiene/scan` | HygieneService | CleanupDashboard.jsx |
-| KPI Card — Untagged Resources | Card | Count of untagged resources | Computed | `r.missingTags.length > 0` | — | CleanupDashboard.jsx |
-| KPI Card — Tag Health | Card | Percentage of tagged/compliant resources | Computed | `1 - UNTAGGED / allResources.length` | — | CleanupDashboard.jsx |
-| Ring Gauge | Chart | Savings/Tag % circular visualization | Computed | — | — | CleanupDashboard.jsx L407–427 |
-| Spark Bars | Chart | Visualization trend bars | Computed (fallback data if empty L743) | — | — | CleanupDashboard.jsx L429–443 |
-| Resource Table (inline) | Table | Resource list with checkboxes, status, actions | Real API / Computed | from scan data | — | CleanupDashboard.jsx L221–389 |
-| Bulk Action Dropdowns | Action bar | Authorize / Delete / Unauthorize | Real API | `POST /api/v1/hygiene/execute` | HygieneService | CleanupDashboard.jsx L545+ |
-| Remediation Wizard buttons | Buttons | Open RI/S3/RDS/Tags wizards | N/A | — | — | CleanupDashboard.jsx |
-| Cleanup Sidebar | Nav | Legacy sidebar (unused) | Props | — | — | cleanup/layout/CleanupSidebar.jsx |
-| Hero Metrics Panel | Banner | KPI summary (unused) | Props | — | — | cleanup/summary/HeroMetricsPanel.jsx |
-| Savings Gauge | Chart | Circular gauge (unused) | Props | — | — | cleanup/summary/SavingsGauge.jsx |
-| Resource Table (standalone) | Table | Resource list (unused) | Props | — | — | cleanup/tables/ResourceTable.jsx |
+| UI Element | Type | Label | Action | API Endpoint | Method | Backend Route | Service | File |
+|---|---|---|---|---|---|---|---|---|
+| Cluster table | Table | Clusters | List all clusters | `/api/v1/clusters` | GET | `cluster_routes.py` | `cluster_service.py` | `clusters/ClusterList.jsx` |
+| Search input | Input | Search clusters | Filter cluster list | — (client-side) | — | — | — | `clusters/ClusterList.jsx` |
+| Delete cluster btn | Button | Delete | Remove cluster | `/api/v1/clusters/{id}` | DELETE | `cluster_routes.py` | `cluster_service.py` | `clusters/ClusterDeleteModal.jsx` |
+| Disconnect agent btn | Button | Disconnect | Disconnect agent | `/api/v1/clusters/{id}/agent/disconnect` | POST | `cluster_routes.py` | `cluster_service.py` | `clusters/ClusterDisconnectModal.jsx` |
+| Cluster detail panel | Panel | Cluster Details | Show full cluster info | `/api/v1/clusters/{id}` | GET | `cluster_routes.py` | `cluster_service.py` | `clusters/ClusterDetails.jsx` |
+| Node list table | Table | Nodes | Show cluster nodes | `/api/v1/clusters/{id}/nodes/detailed` | GET | `cluster_routes.py` | `cluster_service.py` | `clusters/NodeList.jsx` |
+| Node group breakdown | Chart | Node Groups | Breakdown by group | `/api/v1/clusters/{id}/nodes` | GET | `cluster_routes.py` | `cluster_service.py` | `clusters/NodeGroupBreakdown.jsx` |
+| Utilization sparkline | Chart | CPU/Mem Utilization | Inline utilization graph | `/api/v1/clusters/{id}/utilization` | GET | `cluster_routes.py` | `cluster_service.py` | `clusters/ClusterUtilizationSparkline.jsx` |
+| Health timeline | Timeline | Health Events | Show health history | `/api/v1/clusters/{id}` | GET | `cluster_routes.py` | `cluster_service.py` | `clusters/ClusterHealthTimeline.jsx` |
+| Spot ratio gauge | Gauge | Spot Ratio | Spot vs OD ratio | `/api/v1/clusters/{id}` | GET | `cluster_routes.py` | `cluster_service.py` | `clusters/SpotRatioGauge.jsx` |
+| Policy gap alert | Alert | Policy Gap | Show missing policies | — (derived) | — | — | — | `clusters/PolicyGapAlert.jsx` |
+| Node template tab | Tab | Node Templates | Assign templates | `/api/v1/clusters/{id}/node-template/active` | GET | `node_template_routes.py` | `template_service.py` | `clusters/NodeTemplateTab.jsx` |
 
-### 4.2 Wizards
+### 3.2 Optimization Settings (within ClusterList)
 
-| UI Element | Type | What It Does | Data Source | API Endpoint | Backend Logic | File Name |
-|---|---|---|---|---|---|---|
-| Bulk Tag Wizard | Modal wizard | 3-step tag workflow (592 lines) | Real API | `POST /api/v1/hygiene/action` | HygieneService | cleanup/BulkTagWizard.jsx |
-| RI Wizard | Modal wizard | RI waste remediation (150 lines) | Real API | `GET /api/v1/ri/overview` | RIAnalysisService | cleanup/wizards/RIWizard.jsx |
-| S3 Wizard | Modal wizard | S3 tiering wizard (188 lines) | Real API | `GET /api/v1/s3/overview` | S3TieringService | cleanup/wizards/S3Wizard.jsx |
-| RDS Wizard | Modal wizard | RDS Multi-AZ wizard (157 lines) | Real API | `GET /api/v1/rds/overview` | RDSAnalysisService | cleanup/wizards/RDSWizard.jsx |
+| UI Element | Type | Label | Action | API Endpoint | Method | Backend Route | Service | File |
+|---|---|---|---|---|---|---|---|---|
+| Auto-rebalance toggle | Toggle | Auto Rebalance | Enable/disable auto-rebalance | `/api/v1/clusters/{id}/optimization-settings` | PUT | `cluster_routes.py` | `cluster_service.py` | `clusters/ClusterList.jsx` |
+| Auto-rightsizing toggle | Toggle | Auto Rightsizing | Enable/disable rightsizing | `/api/v1/clusters/{id}/optimization-settings` | PUT | `cluster_routes.py` | `cluster_service.py` | `clusters/ClusterList.jsx` |
+| Maintain standby toggle | Toggle | Maintain Standby | Keep warm spare nodes | `/api/v1/clusters/{id}/optimization-settings` | PUT | `cluster_routes.py` | `cluster_service.py` | `clusters/ClusterList.jsx` |
+| Diversify pools toggle | Toggle | Diversify Spot Pools | Spread across pools | `/api/v1/clusters/{id}/optimization-settings` | PUT | `cluster_routes.py` | `cluster_service.py` | `clusters/ClusterList.jsx` |
+| Failure cooldown input | Input | Failure Cooldown (min) | Set cooldown minutes | `/api/v1/clusters/{id}/optimization-settings` | PUT | `cluster_routes.py` | `cluster_service.py` | `clusters/ClusterList.jsx` |
+| Save settings btn | Button | Save | Persist settings | `/api/v1/clusters/{id}/optimization-settings` | PUT | `cluster_routes.py` | `cluster_service.py` | `clusters/ClusterList.jsx` |
 
----
-
-## 5. Hibernation (28 files)
-
-> **Sidebar:** COST INTELLIGENCE › Hibernation
-> **Component:** `HibernationDashboardNew.jsx` (1,132 lines)
-> **Layout:** Unified single-page dashboard with a 2-column grid.
-
-### 5.1 Main Dashboard View
-
-| UI Element | Type | What It Does | Data Source | API Endpoint | Backend Logic | File Name |
-|---|---|---|---|---|---|---|
-| Top Bar Actions | Buttons | Emergency Wake All / New Schedule | N/A | — | — | HibernationDashboardNew.jsx L988 |
-| Live Progress Banner | Banner | Polls active execution status every 2s | Real API | `GET /api/v1/hibernation/status/active` | HibernationService.get_active_hibernation_status | HibernationDashboardNew.jsx L86–156 |
-| **KPI Strip** (4 Cards) | Cards | Saved This Month · Sleep Hours / Week · Est. Savings % · Schedules Active/Paused | Computed | `calculateStats()` from `GET /api/v1/hibernation/schedules` response | — | HibernationDashboardNew.jsx L1024–1054 |
-
-### 5.2 Column 1: Scheduling Management
-
-| UI Element | Type | What It Does | Data Source | API Endpoint | Backend Logic | File Name |
-|---|---|---|---|---|---|---|
-| Schedule Form | Form | Create/Edit schedule (name, strategy, clusters, schedule matrix, timezone) | Real API | `POST/PUT /api/v1/hibernation/schedules` | HibernationService | HibernationDashboardNew.jsx L433–616 |
-| Strategy Selector | Radio Cards | 3 strategy cards (Namespace Sleep, Node Drain, Full Cluster) | Hardcoded `STRATEGIES[]` | — | HibernationService (NAMESPACE_SLEEP 80%, NUCLEAR 99%, SNAPSHOT_RESTORE 90%) | HibernationDashboardNew.jsx L393–431 |
-| Schedule Matrix | Grid | 7-day × 24-hour drag-to-paint sleep grid (168 cells) | Props | — | — | hibernation/ScheduleMatrix.jsx (204 lines) |
-| Active Schedules List | List | All created schedules | Real API | `GET /api/v1/hibernation/schedules` | HibernationService | HibernationDashboardNew.jsx L1069 |
-| Toggle Schedule | Switch | Enable/disable schedule | Real API | `PATCH /api/v1/hibernation/schedules/{id}` | HibernationService | HibernationDashboardNew.jsx (via ScheduleItem) |
-| Delete Schedule | Button | Delete with confirmation | Real API | `DELETE /api/v1/hibernation/schedules/{id}` | HibernationService | HibernationDashboardNew.jsx (via ScheduleItem) |
-
-### 5.3 Column 2: Reporting & Controls
-
-| UI Element | Type | What It Does | Data Source | API Endpoint | Backend Logic | File Name |
-|---|---|---|---|---|---|---|
-| **Savings Report** | Dashboard | Monthly/weekly savings with charts | Real API | `GET /api/v1/hibernation/savings/history` | HibernationService.get_savings_history | HibernationDashboardNew.jsx L158–382 |
-| Audit History widget | Card | Last 5 executions + auto-refresh 30s | Real API | `GET /api/v1/audit/logs?resource_type=HIBERNATION` | AuditService | hibernation/AuditHistory.jsx |
-| Emergency Controls | Panel | Wake-all / Sleep-now per cluster | Real API | `POST /api/v1/hibernation/emergency/*` | HibernationService + hibernation_worker.py | hibernation/EmergencyControls.jsx |
-
-### 5.4 Other Hibernation Files
-
-| UI Element | Type | What It Does | Data Source | API Endpoint | Backend Logic | File Name |
-|---|---|---|---|---|---|---|
-| Schedule Calendar | Calendar | Visual calendar view (302 lines) | Props | — | — | hibernation/ScheduleCalendar.jsx |
-| Unified Schedule Grid | Grid | Alternate 168-hour grid (346 lines) | Props | — | — | hibernation/UnifiedScheduleGrid.jsx |
-| Schedule Builder | Builder | Schedule creation UI | Props | — | — | hibernation/ScheduleBuilder.jsx |
-| Schedule Modal | Modal | Create schedule dialog | Real API | `POST /api/v1/hibernation/schedules` | HibernationService.create_schedule (matrix validation + conflict detection) | hibernation/ScheduleModal.jsx |
-| Conflict Detection Modal | Modal | Schedule overlap detection | Computed | — | — | hibernation/ConflictDetectionModal.jsx |
-| Status Banner | Banner | Live execution status | Real API | `GET /api/v1/hibernation/status/active` | HibernationService | hibernation/StatusBanner.jsx |
-| Strategy Selector (standalone) | Cards | 3 strategy cards (standalone version) | Props | — | — | hibernation/StrategySelector.jsx |
-| Validation Panel | Panel | Pre-execution validation checks | Props | — | — | hibernation/ValidationPanel.jsx |
-| Notification Settings | Form | Email/Slack config | Real API | `GET/PUT /api/v1/hibernation/notifications` | HibernationService | hibernation/NotificationSettings.jsx |
-| Hibernation Wizard | Wizard | 3-step setup (411 lines) | Real API | `POST /api/v1/hibernation/setup` | HibernationService | hibernation/HibernationWizard.jsx |
-| Cost Analytics Dashboard | Dashboard | Savings analytics (481 lines) | Real API | `GET /api/v1/hibernation/savings/history` | HibernationService | hibernation/CostAnalyticsDashboard.jsx |
-| Cost Analytics (alt) | Component | Alternate cost analysis view | Props | — | — | hibernation/CostAnalytics.jsx |
-| Emergency Controls (standalone) | Panel | Standalone emergency panel | Real API | `POST /api/v1/hibernation/emergency/*` | HibernationService | hibernation/EmergencyControls.jsx |
-| Execution History | Page | Full audit trail | Real API | `GET /api/v1/hibernation/audit-logs` | HibernationService | hibernation/ExecutionHistory.jsx |
-| Hibernation Type Card | Card | Strategy info display card | Props | — | — | hibernation/HibernationTypeCard.jsx |
-| Dashboard Tab | Tab | Dashboard sub-tab view | Props | — | — | hibernation/DashboardTab.jsx |
-| Cluster Overview | Component | Cluster summary display | Props | — | — | hibernation/ClusterOverview.jsx |
-| Hibernation Header | Component | Page header bar | Props | — | — | hibernation/HibernationHeader.jsx |
-| History Log | Component | History log viewer | Props | — | — | hibernation/HistoryLog.jsx |
-| Multi Timezone | Component | Multi-timezone support | Props | — | — | hibernation/MultiTimezone.jsx |
-| Advanced Configuration | Component | Advanced settings panel | Props | — | — | hibernation/AdvancedConfiguration.jsx |
-| Time Based Rules | Component | Time-based rule config | Props | — | — | hibernation/TimeBasedRules.jsx |
-| Index barrel | Export | Re-exports HibernationDashboard | N/A | — | — | hibernation/index.js |
+**Dependencies**: `clusterAPI`, `karpenterAPI`, `nodeTemplateAPI` → `cluster_routes.py`, `karpenter_routes.py`, `node_template_routes.py` → `cluster_service.py`, `karpenter_service.py`
 
 ---
 
-## 6. Clusters (12 files, ClusterList.jsx = 1,615 lines)
+## 4. AtharvaAI (ML Engine)
 
-> **Sidebar:** INFRASTRUCTURE › Clusters
+| UI Element | Type | Label | Action | API Endpoint | Method | Backend Route | Service | File |
+|---|---|---|---|---|---|---|---|---|
+| Pool rankings table | Table | ML Pool Rankings | Show ranked pools | `/api/v1/atharvaai/pools/rankings` | POST | `atharvaai_routes.py` | `pool_ranking_service.py` | `atharvaai/PoolRankings.jsx` |
+| Global rankings card | Card | Global Rankings | Fleet-wide pool scores | `/api/v1/atharvaai/pools/rankings` | POST | `atharvaai_routes.py` | `pool_ranking_service.py` | `atharvaai/GlobalRankingsCard.jsx` |
+| Blacklist monitor | Card | Risky Pools | Show blacklisted pools | `/api/v1/atharvaai/blacklist` | GET | `atharvaai_routes.py` | `blacklist_service.py` | `atharvaai/BlacklistMonitorCard.jsx` |
+| Auto-rebalance audit | Card | Rebalance History | Recent rebalance actions | `/api/v1/atharvaai/rebalancing/status` | GET | `atharvaai_routes.py` | `cluster_service.py` | `atharvaai/AutoRebalanceAuditCard.jsx` |
+| Rebalancing timeline | Timeline | Migration Progress | Live migration steps | `/api/v1/atharvaai/rebalancing/status` | GET | `atharvaai_routes.py` | `cluster_service.py` | `atharvaai/RebalancingTimeline.jsx` |
+| Volatility monitor | Card | Spot Volatility | Interruption rates | `/api/v1/atharvaai/volatility/status` | GET | `atharvaai_routes.py` | `pool_ranking_service.py` | `atharvaai/VolatilityMonitor.jsx` |
+| Interruption heatmap | Heatmap | Interruption Heatmap | AZ risk visualization | `/api/v1/atharvaai/volatility/status` | GET | `atharvaai_routes.py` | `pool_ranking_service.py` | `atharvaai/InterruptionHeatmap.jsx` |
+| Diversity gauge | Gauge | Pool Diversity | Instance type diversity | `/api/v1/atharvaai/v3/diversity/{id}` | GET | `atharvaai_routes.py` | `diversity_enforcer.py` | `atharvaai/DiversityGauge.jsx` |
+| Optimization mode | Selector | Optimization Mode | Switch balanced/cost/perf | `/api/v1/atharvaai/v3/cluster/{id}/optimization-mode` | PUT | `atharvaai_routes.py` | `cluster_service.py` | `atharvaai/OptimizationModeSelector.jsx` |
+| Global intel panel | Panel | Global Intelligence | Region-wide insights | `/api/v1/atharvaai/v3/global-intelligence/status` | GET | `atharvaai_routes.py` | `pool_ranking_service.py` | `atharvaai/GlobalIntelligencePanel.jsx` |
+| Workload classifier | Panel | Workload Classification | Stateless/Stateful tags | `/api/v1/atharvaai/v3/workload-status/{id}` | GET | `atharvaai_routes.py` | `workload_inspector.py` | `atharvaai/WorkloadClassificationPanel.jsx` |
+| DE v3 dashboard | Dashboard | Decision Engine | Full DE metrics | Multiple v3 endpoints | GET | `atharvaai_routes.py` | `decision_engine_service.py` | `atharvaai/DecisionEngineV3Dashboard.jsx` |
 
-### 6.1 Master-Detail View
-
-| UI Element | Type | What It Does | Data Source | API Endpoint | Backend Logic | File Name |
-|---|---|---|---|---|---|---|
-| Clusters Page container | Page | Master-detail layout | Real API | `GET /api/v1/clusters` | ClusterService | clusters/ClusterList.jsx |
-| Cluster List (left panel) | List | Cluster cards with status dots | Real API | `GET /api/v1/clusters` | ClusterService | ClusterList.jsx L375–460 |
-| Discover Clusters button | Button | Trigger AWS discovery | Real API | `POST /api/v1/clusters/discover` | ClusterService | ClusterList.jsx L943 |
-| Cluster Detail (right panel) | Detail | Full cluster info, 3 sections | Real API | `GET /api/v1/clusters/{id}` | ClusterService | ClusterList.jsx L471–788 |
-| KPI Strip (4 cards) | Cards | Cost, Nodes, CPU %, Memory % | Computed from cluster data | — | — | ClusterList.jsx |
-| Node Treemap | Visualization | Grid of node blocks (paginated 20/page) | Props from cluster.nodes | — | — | ClusterList.jsx L119–349 |
-| Spot Ring gauge | Chart | Spot/On-Demand/Fallback ratio ring | Props | — | — | ClusterList.jsx L351–373 |
-| No-Agent Detail | Card | CTA for installing agent | Props | — | — | ClusterList.jsx L790–817 |
-
-### 6.2 Sub-Components
-
-| UI Element | Type | What It Does | Data Source | API Endpoint | Backend Logic | File Name |
-|---|---|---|---|---|---|---|
-| Delete Modal | Modal | Delete with pre-checks | Real API | `DELETE /api/v1/clusters/{id}` | ClusterService | clusters/ClusterDeleteModal.jsx |
-| Disconnect Modal | Modal | Disconnect confirm | Real API | `POST /api/v1/clusters/{id}/disconnect` | ClusterService | clusters/ClusterDisconnectModal.jsx |
-| Cluster Details (standalone) | Modal | Detail modal (alt) | Real API | `GET /api/v1/clusters/{id}` | ClusterService | clusters/ClusterDetails.jsx |
-| • Optimization Mode Selector | Dropdown | Cost / Balanced / Zero Downtime | Real API | `PATCH /api/v1/clusters/{id}` | ClusterService | clusters/ClusterDetails.jsx |
-| • Stateless Workload Classification | Badge | ML-driven workload risk tag | Real API | `GET /api/v1/clusters/{id}/classification` | WorkloadInspector (SYSTEM_PROTECTED/STATEFUL_PROTECTED/DRAIN_UNSAFE/STATELESS_ELIGIBLE) | clusters/ClusterDetails.jsx |
-| • Substitute Engine Status | Card | Prewarming state tracking | Real API | `GET /api/v1/substitute/status/{cluster_id}` | SubstituteManager (5-state: IDLE→PREWARMING→READY→ACTIVE→RELEASING) | clusters/ClusterDetails.jsx |
-| • Cooldown Status Widget | Widget | Active cooldown timeline | Real API | `GET /api/v1/cooldown/{cluster_id}` | CooldownController (5 cooldown types: cluster 60m / pool 120m / resize 6h / switch 30m / substitute 2h) | clusters/ClusterDetails.jsx |
-| • Circuit Breaker Panel | Panel | Active interruption blocks | Real API | `GET /api/v1/execution/status/{cluster_id}` | CircuitBreaker state machine (NORMAL→CONSERVATIVE→HALT; ≥2 rollbacks/1h → CONSERVATIVE, ≥3 → HALT, 30min stable → recover, 2h decay → NORMAL; risk multiplier: HALT=2.0, CONSERVATIVE=1.3×exp(-t/120min)) + KarpenterService circuit breaker (>10 failures/10min) | clusters/ClusterDetails.jsx |
-| Health Timeline | Timeline | Health history | Props | — | — | clusters/ClusterHealthTimeline.jsx |
-| Utilization Sparkline | Chart | Inline sparkline | Props | — | — | clusters/ClusterUtilizationSparkline.jsx |
-| Node List | Table | Node management | Real API | `GET /api/v1/clusters/{id}/nodes` | ClusterService | clusters/NodeList.jsx |
-| Node Group Breakdown | View | Node group view | Props | — | — | clusters/NodeGroupBreakdown.jsx |
-| Policy Gap Alert | Alert | Policy violation alerts | Props | — | — | clusters/PolicyGapAlert.jsx |
-| Spot Ratio Gauge | Gauge | Spot vs OD gauge | Props | — | — | clusters/SpotRatioGauge.jsx |
-| Node Template Tab | Tab | View/assign global templates to cluster | Real API | `GET /api/v1/templates`, `POST /api/v1/templates/assign` | NodeTemplateService | clusters/NodeTemplateTab.jsx |
+**Dependencies**: `atharvaaiAPI`, `decisionEngineAPI` → `atharvaai_routes.py` → `pool_ranking_service.py`, `blacklist_service.py`, `diversity_enforcer.py`, `workload_inspector.py`
 
 ---
 
-## 7. Node Templates (4 files)
+## 5. Right-Sizing Dashboard
 
-> **Sidebar:** COST INTELLIGENCE › Node Templates
+| UI Element | Type | Label | Action | API Endpoint | Method | Backend Route | Service | File |
+|---|---|---|---|---|---|---|---|---|
+| Cluster selector | Dropdown | Select Cluster | Switch cluster context | `/api/v1/clusters` | GET | `cluster_routes.py` | `cluster_service.py` | `right-sizing/RightSizingDashboard.jsx` |
+| Auto-mode banner | Banner | Auto ON/OFF | Show automation status | `/api/v1/clusters/{id}/optimization-settings` | GET | `cluster_routes.py` | `cluster_service.py` | `RightSizingDashboard.jsx` |
+| Cluster overview cards | Card grid | Total/Stateless/Stateful | Node counts | `/api/v1/karpenter/recommendations` | GET | `karpenter_routes.py` | `karpenter_service.py` | `RightSizingDashboard.jsx` |
+| Exposure gauges | Charts | Spot/AZ/Family | Distribution gauges | — (derived from recs) | — | — | — | `RightSizingDashboard.jsx` |
+| Guard panel | Card | Guard & Stability | Rollbacks, triggers, circuit | — (hardcoded safety) | — | — | — | `RightSizingDashboard.jsx` |
+| Stateless nodes table | Table | Stateless Nodes | View/apply recommendations | `/api/v1/karpenter/recommendations` | GET | `karpenter_routes.py` | `rightsizing_service.py` | `RightSizingDashboard.jsx` |
+| Apply button | Button | Apply/Optimize | Apply single recommendation | `/api/v1/karpenter/apply-recommendation/{id}` | POST | `karpenter_routes.py` | `karpenter_service.py` | `RightSizingDashboard.jsx` |
+| Apply all button | Button | Apply All Eligible | Batch apply recommendations | — (iterative) | — | — | — | `RightSizingDashboard.jsx` |
+| Stateless detail modal | Modal | Node Details | Show candidates, checks | — (derived) | — | — | — | `RightSizingDashboard.jsx` |
+| Stateful nodes table | Table | Stateful Nodes | View OD resize proposals | `/api/v1/karpenter/recommendations` | GET | `karpenter_routes.py` | `rightsizing_service.py` | `RightSizingDashboard.jsx` |
+| Request approval btn | Button | Request Approval | Submit stateful resize | `/api/v1/karpenter/apply-recommendation/{id}` | POST | `karpenter_routes.py` | `karpenter_service.py` | `RightSizingDashboard.jsx` |
+| Execution plan table | Table | Execution Plan | List pending proposals | `/api/v1/optimizer/proposals/{id}` | GET | `optimizer_coordinator_routes.py` | `optimizer_coordinator.py` | `RightSizingDashboard.jsx` |
+| Approve proposal btn | Button | Approve | Approve proposal | `/api/v1/optimizer/proposals/{id}/approve` | POST | `optimizer_coordinator_routes.py` | `optimizer_coordinator.py` | `RightSizingDashboard.jsx` |
+| Reject proposal btn | Button | Reject | Reject proposal | `/api/v1/optimizer/proposals/{id}/reject` | POST | `optimizer_coordinator_routes.py` | `optimizer_coordinator.py` | `RightSizingDashboard.jsx` |
+| History table | Table | Action History | Past resize actions | `/api/v1/karpenter/history` | GET | `karpenter_routes.py` | `karpenter_service.py` | `RightSizingDashboard.jsx` |
+| Savings KPIs | Cards | Resizes/Savings/Rate | Month-to-date KPIs | `/api/v1/karpenter/history` | GET | `karpenter_routes.py` | `karpenter_service.py` | `RightSizingDashboard.jsx` |
+| Karpenter config panel | Form | Configuration | Strategy, families, toggles | `/api/v1/karpenter/config` | PATCH | `karpenter_routes.py` | `karpenter_service.py` | `RightSizingDashboard.jsx` |
+| Strategy selector | Button group | Optimization Strategy | balanced/cost/performance | `/api/v1/karpenter/config` | PATCH | `karpenter_routes.py` | `karpenter_service.py` | `RightSizingDashboard.jsx` |
+| Spot target slider | Slider | Spot Target % | Set spot percentage | `/api/v1/karpenter/config` | PATCH | `karpenter_routes.py` | `karpenter_service.py` | `RightSizingDashboard.jsx` |
+| Instance family chips | Toggle chips | Instance Families | Enable/disable families | `/api/v1/karpenter/config` | PATCH | `karpenter_routes.py` | `karpenter_service.py` | `RightSizingDashboard.jsx` |
+| Diversify pools toggle | Toggle | Diversify Pools | Spread across pools | `/api/v1/karpenter/config` | PATCH | `karpenter_routes.py` | `karpenter_service.py` | `RightSizingDashboard.jsx` |
+| Rebalancing timeline | Timeline | Active Migrations | Live migration steps | `/api/v1/atharvaai/rebalancing/status` | GET | `atharvaai_routes.py` | `cluster_service.py` | `atharvaai/RebalancingTimeline.jsx` |
 
-### 7.1 Enterprise Template Registry (pages/NodeTemplates.jsx, 930 lines)
-
-| UI Element | Type | What It Does | Data Source | API Endpoint | Backend Logic | File Name |
-|---|---|---|---|---|---|---|
-| Node Templates Page | Page | Enterprise control plane for global templates | Real API | `GET /api/v1/templates` | NodeTemplateService | pages/NodeTemplates.jsx |
-| Template Grid | Grid | Template cards with version badges | Real API | `GET /api/v1/templates` | NodeTemplateService | NodeTemplates.jsx |
-| Create Template | Modal | New template with constraint editor | Real API | `POST /api/v1/templates` | NodeTemplateService | NodeTemplates.jsx L41 |
-| Template Detail Modal | Modal | Version history + constraint view + candidate preview | Real API | `GET /api/v1/templates/{id}/versions` | NodeTemplateService | NodeTemplates.jsx L79 |
-| Constraint Editor | Form | vCPU/memory bounds, family allow/exclude, AZ selection | Props | — | — | NodeTemplates.jsx |
-| Candidate Pool Simulator | Table | Preview instances matching constraints | Real API | `POST /api/v1/templates/validate` | NodeTemplateService | NodeTemplates.jsx L97 |
-| Promote Version | Button | Promote new version of constraints | Real API | `POST /api/v1/templates/{id}/versions` | NodeTemplateService | NodeTemplates.jsx L115 |
-
-### 7.2 Legacy Template Files
-
-> **⚠️ NOTE**: The following files (`templates/TemplateBuilder.jsx`, `templates/TemplateList.jsx`) were previously documented but do **NOT exist** in the codebase. They have been removed from this inventory. The Node Templates functionality lives entirely in `pages/NodeTemplates.jsx` and `clusters/NodeTemplateTab.jsx`.
-
----
-
-## 8. Approvals (pages/Approvals.jsx, 505 lines + 3 components)
-
-> **Sidebar:** GOVERNANCE › Approvals
-
-| UI Element | Type | What It Does | Data Source | API Endpoint | Backend Logic | File Name |
-|---|---|---|---|---|---|---|
-| Approvals Page | Page | 3-tab approval manager | Real API | `GET /api/v1/approvals/` | ApprovalService | pages/Approvals.jsx |
-| My Requests tab | Tab | User's own JIT requests | Real API | `GET /api/v1/approvals/?filter=mine` | ApprovalService | Approvals.jsx L153 |
-| Received tab | Tab | Requests pending approval | Real API | `GET /api/v1/approvals/?filter=received` | ApprovalService | Approvals.jsx |
-| All Requests tab | Tab | All org-wide requests | Real API | `GET /api/v1/approvals/` | ApprovalService | Approvals.jsx |
-| Approve action | Button | Approve JIT request | Real API | `POST /api/v1/approvals/{id}/approve` | ApprovalService | Approvals.jsx L50 |
-| Revoke action | Button | Revoke active grant | Real API | `POST /api/v1/approvals/{id}/revoke` | ApprovalService | Approvals.jsx L66 |
-| Reject action | Button | Reject request | Real API | `POST /api/v1/approvals/{id}/reject` | ApprovalService | Approvals.jsx L82 |
-| Active JIT Banner | Banner | Active JIT grant indicator | Real API | `GET /api/v1/approvals/active-window` | ApprovalService | governance/ActiveJITBanner.jsx |
-| Ticket Request Modal | Modal | Full ticket creation form (672 lines) | Real API | `POST /api/v1/approvals/jit-request` | ApprovalService | approvals/TicketRequestModal.jsx |
-| Access Request Modal | Modal | Quick JIT access request | Real API | `POST /api/v1/approvals/jit-request` | ApprovalService | approvals/AccessRequestModal.jsx |
-| JIT Request Modal | Modal | JIT elevation form | Real API | `POST /api/v1/approvals/jit-request` | ApprovalService | governance/JITRequestModal.jsx |
-| Risk Badge | Badge | Risk level indicator | Props | — | — | shared/RiskBadge.jsx |
+**Dependencies**: `clusterAPI`, `karpenterAPI`, `atharvaaiAPI`, `optimizerCoordinatorAPI` → `cluster_routes.py`, `karpenter_routes.py`, `atharvaai_routes.py`, `optimizer_coordinator_routes.py` → `cluster_service.py`, `karpenter_service.py`, `rightsizing_service.py`, `optimizer_coordinator.py`
 
 ---
 
-## 9. Tag Governance (TagGovernancePage.jsx, 1,560 lines + 2 wrappers)
+## 6. Hibernation Management
 
-> **Sidebar:** GOVERNANCE › Tag Governance › Governance Policies | Tag Templates | Scoring Engine | Automation Rules | Compliance Monitor
+| UI Element | Type | Label | Action | API Endpoint | Method | Backend Route | Service | File |
+|---|---|---|---|---|---|---|---|---|
+| Cluster overview cards | Card grid | Overview | Cluster hibernation stats | `/api/v1/hibernation/schedules` | GET | `hibernation_routes.py` | `hibernation_service.py` | `hibernation/ClusterOverview.jsx` |
+| Dashboard tab | Tab | Dashboard | Summary view | `/api/v1/hibernation/schedules` | GET | `hibernation_routes.py` | `hibernation_service.py` | `hibernation/DashboardTab.jsx` |
+| Schedule calendar | Calendar | Schedule Calendar | Visual calendar view | `/api/v1/hibernation/schedules` | GET | `hibernation_routes.py` | `hibernation_service.py` | `hibernation/ScheduleCalendar.jsx` |
+| Schedule matrix | Grid | Schedule Matrix | Weekly hour matrix | `/api/v1/hibernation/schedules` | GET | `hibernation_routes.py` | `hibernation_service.py` | `hibernation/ScheduleMatrix.jsx` |
+| Schedule builder | Form | Schedule Builder | Create/edit schedule | `/api/v1/hibernation/schedules` | POST | `hibernation_routes.py` | `hibernation_service.py` | `hibernation/ScheduleBuilder.jsx` |
+| Schedule modal | Modal | Create Schedule | Full schedule form | `/api/v1/hibernation/schedules` | POST/PUT | `hibernation_routes.py` | `hibernation_service.py` | `hibernation/ScheduleModal.jsx` |
+| Hibernation wizard | Wizard | Setup Wizard | Guided schedule setup | `/api/v1/hibernation/schedules` | POST | `hibernation_routes.py` | `hibernation_service.py` | `hibernation/HibernationWizard.jsx` |
+| Strategy selector | Radio group | Strategy | Choose hibernation strategy | `/api/v1/hibernation/strategies` | GET | `hibernation_routes.py` | `hibernation_service.py` | `hibernation/StrategySelector.jsx` |
+| Hibernation type card | Card | Type Selection | Full/Partial/Custom | — | — | — | — | `hibernation/HibernationTypeCard.jsx` |
+| Status banner | Banner | Status | Current hibernation state | `/api/v1/hibernation/schedules` | GET | `hibernation_routes.py` | `hibernation_service.py` | `hibernation/StatusBanner.jsx` |
+| Header | Header | Hibernation | Title + cluster selector | `/api/v1/clusters` | GET | `cluster_routes.py` | `cluster_service.py` | `hibernation/HibernationHeader.jsx` |
+| Emergency controls | Panel | Emergency Controls | Force wake/sleep | `/api/v1/hibernation/schedules/{id}/override` | POST | `hibernation_routes.py` | `hibernation_service.py` | `hibernation/EmergencyControls.jsx` |
+| Time-based rules | Form | Time Rules | Define schedule rules | — | — | — | — | `hibernation/TimeBasedRules.jsx` |
+| Multi-timezone | Panel | Timezone Config | Set timezone for schedule | — | — | — | — | `hibernation/MultiTimezone.jsx` |
+| Unified schedule grid | Grid | Schedule Grid | Full schedule view | `/api/v1/hibernation/schedules` | GET | `hibernation_routes.py` | `hibernation_service.py` | `hibernation/UnifiedScheduleGrid.jsx` |
+| Validation panel | Panel | Validation | Schedule validation | — | — | — | — | `hibernation/ValidationPanel.jsx` |
+| Conflict detection modal | Modal | Conflict Detection | Overlapping schedule warn | — (client-side) | — | — | — | `hibernation/ConflictDetectionModal.jsx` |
+| Advanced config | Panel | Advanced | Drain settings, grace | — | — | — | — | `hibernation/AdvancedConfiguration.jsx` |
+| Cost analytics | Chart | Cost Savings | Hibernation savings | `/api/v1/metrics/cost` | GET | `metrics_routes.py` | `metrics_service.py` | `hibernation/CostAnalytics.jsx` |
+| Cost analytics dashboard | Dashboard | Cost Dashboard | Full cost analytics | `/api/v1/billing/costs/summary` | GET | `billing_routes.py` | — | `hibernation/CostAnalyticsDashboard.jsx` |
+| Execution history | Table | History | Past hibernation events | `/api/v1/audit/logs` | GET | `audit_routes.py` | `audit_service.py` | `hibernation/ExecutionHistory.jsx` |
+| Audit history | Table | Audit | Detailed change log | `/api/v1/audit/logs` | GET | `audit_routes.py` | `audit_service.py` | `hibernation/AuditHistory.jsx` |
+| History log | List | History Log | Quick event log | — | — | — | — | `hibernation/HistoryLog.jsx` |
+| Notification settings | Form | Notifications | Alert preferences | — | — | — | — | `hibernation/NotificationSettings.jsx` |
+| HibernationDashboardNew | Page | Hibernation | Main hibernation page | Multiple | GET/POST | `hibernation_routes.py` | `hibernation_service.py` | `hibernation/HibernationDashboardNew.jsx` |
+| Hibernation scheduler | Form | Scheduler | Full scheduler | `/api/v1/hibernation/schedules` | POST/PUT | `hibernation_routes.py` | `hibernation_service.py` | `hibernation/HibernationScheduler.jsx` |
 
-### 9.1 Governance Policies Tab (`/tagging-policies?tab=policies`)
-
-| UI Element | Type | What It Does | Data Source | API Endpoint | Backend Logic | File Name |
-|---|---|---|---|---|---|---|
-| Policies list | Table | All defined tag policies | Real API | `GET /api/v1/governance/policies` | GovernanceService | TagGovernancePage.jsx |
-| Policy Row | Row | Policy with toggle/edit/delete | Props | — | — | TagGovernancePage.jsx L358–408 |
-| Policy Create/Edit Modal | Modal | Full policy editor (conditions, actions, scope) | Real API | `POST/PUT /api/v1/governance/policies` | GovernanceService | TagGovernancePage.jsx L410–488 |
-
-### 9.2 Tag Templates Tab (`/tagging-policies?tab=templates`)
-
-| UI Element | Type | What It Does | Data Source | API Endpoint | Backend Logic | File Name |
-|---|---|---|---|---|---|---|
-| Tag Templates grid | Grid | Tag template cards | Real API | `GET /api/v1/governance/tag-templates` | TagManagementService | TagGovernancePage.jsx |
-| Template Card | Card | Template with tags + scope badge | Props | — | — | TagGovernancePage.jsx L594–673 |
-| Template Builder wizard | Full page | 3-step builder for tag templates | Real API | `POST /api/v1/governance/tag-templates` | TagManagementService | TagGovernancePage.jsx L675–948 |
-
-### 9.3 Scoring Engine Tab (`/tagging-policies?tab=scoring`)
-
-| UI Element | Type | What It Does | Data Source | API Endpoint | Backend Logic | File Name |
-|---|---|---|---|---|---|---|
-| Score Donut chart | Donut | Org-wide compliance score (0-100) | Real API | `GET /api/v1/governance/scoring` | TagScoringService | TagGovernancePage.jsx L158–177 |
-| Compliance Bar | Bar | Per-resource compliance % | Computed | — | — | TagGovernancePage.jsx L179–190 |
-| Tag Heatmap | Grid | Tag coverage by resource type | Computed | — | — | TagGovernancePage.jsx L192–202 |
-
-### 9.4 Automation Rules Tab (`/tagging-policies?tab=automation`)
-
-| UI Element | Type | What It Does | Data Source | API Endpoint | Backend Logic | File Name |
-|---|---|---|---|---|---|---|
-| Automation rules list | Table | Auto-tagging rules | Real API | `GET /api/v1/governance/automation` | TagAutomationService | TagGovernancePage.jsx |
-| New Automation Rule modal | Modal | Create rule with triggers + tag actions | Real API | `POST /api/v1/governance/automation` | TagAutomationService | TagGovernancePage.jsx L1201–1313 |
-| Run Autopilot button | Button | One-click tag automation | Real API | `POST /api/v1/governance/run-autopilot` | TagAutomationService | TagGovernancePage.jsx |
-
-### 9.5 Compliance Monitor Tab (`/tagging-policies?tab=monitor`)
-
-| UI Element | Type | What It Does | Data Source | API Endpoint | Backend Logic | File Name |
-|---|---|---|---|---|---|---|
-| Drift Monitor | Dashboard | Real-time compliance drift | Real API | `GET /api/v1/governance/drift` | TagComplianceService | TagGovernancePage.jsx |
-| Compliance Timeline | Timeline | Historical compliance changes | Real API | `GET /api/v1/governance/timeline` | TagComplianceService | TagGovernancePage.jsx |
-
-### 9.6 Wrappers
-
-| UI Element | Type | What It Does | Data Source | API Endpoint | Backend Logic | File Name |
-|---|---|---|---|---|---|---|
-| TagPoliciesManager | Wrapper | Thin redirect to TagGovernancePage (16 lines) | N/A | — | — | settings/TagPoliciesManager.jsx |
-| ~~TagTemplateManager~~ | ~~Manager~~ | ~~Standalone template CRUD~~ | ~~Real API~~ | — | — | ⚠️ **GHOST** — `settings/TagTemplateManager.jsx` does NOT exist. Template CRUD handled inline by TagGovernancePage.jsx §9.2 |
-| GovernanceSettings | Manager | Automation toggles (253 lines) | Real API | `GET /api/v1/governance/policies` | GovernanceService | settings/GovernanceSettings.jsx |
-| Tag Policies List | Table | Tag policy listing | Real API | `GET /api/v1/policies` | PolicyService | settings/TagPoliciesList.jsx |
+**Dependencies**: `hibernationAPI`, `clusterAPI`, `billingAPI` → `hibernation_routes.py` → `hibernation_service.py` → `hibernation_schedules` table
 
 ---
 
-## 10. Automation (`/automation-settings`)
+## 7. Resource Hygiene (Cleanup)
 
-> **Sidebar:** GOVERNANCE › Automation
+| UI Element | Type | Label | Action | API Endpoint | Method | Backend Route | Service | File |
+|---|---|---|---|---|---|---|---|---|
+| Cleanup dashboard | Page | Resource Hygiene | Main cleanup page | `/api/v1/hygiene/scan/{accountId}` | GET | `hygiene_routes.py` | `hygiene_service.py` | `cleanup/CleanupDashboard.jsx` |
+| Hero metrics panel | Cards | Summary | Waste/savings metrics | `/api/v1/hygiene/total-cost` | GET | `hygiene_routes.py` | `hygiene_service.py` | `cleanup/summary/HeroMetricsPanel.jsx` |
+| Savings gauge | Gauge | Savings Gauge | Visual savings donut | — (derived) | — | — | — | `cleanup/summary/SavingsGauge.jsx` |
+| Resource table | Table | Resources | Wasteful resource list | `/api/v1/hygiene/scan/{id}` | GET | `hygiene_routes.py` | `hygiene_service.py` | `cleanup/tables/ResourceTable.jsx` |
+| Cleanup sidebar | Sidebar | Categories | Resource type filter | `/api/v1/hygiene/cost-services` | GET | `hygiene_routes.py` | `hygiene_service.py` | `cleanup/layout/CleanupSidebar.jsx` |
+| Filter panel | Panel | Filters | Region/type filters | — (client-side) | — | — | — | `cleanup/layout/FilterPanel.jsx` |
+| Delete/cleanup button | Button | Clean Up | Execute cleanup action | `/api/v1/hygiene/action` | POST | `hygiene_routes.py` | `hygiene_service.py` | `cleanup/CleanupDashboard.jsx` |
+| Bulk tag wizard | Wizard | Bulk Tag | Tag multiple resources | — | — | — | — | `cleanup/BulkTagWizard.jsx` |
+| RDS wizard | Wizard | RDS Cleanup | RDS-specific cleanup | `/api/v1/hygiene/scan/{id}` | GET | `hygiene_routes.py` | `hygiene_service.py` | `cleanup/wizards/RDSWizard.jsx` |
+| RI wizard | Wizard | RI Analysis | RI cleanup wizard | `/api/v1/hygiene/scan/{id}` | GET | `hygiene_routes.py` | `hygiene_service.py` | `cleanup/wizards/RIWizard.jsx` |
+| S3 wizard | Wizard | S3 Tiering | S3 tier wizard | `/api/v1/hygiene/scan/{id}` | GET | `hygiene_routes.py` | `hygiene_service.py` | `cleanup/wizards/S3Wizard.jsx` |
 
-| UI Element | Type | What It Does | Data Source | API Endpoint | Backend Logic | File Name |
-|---|---|---|---|---|---|---|
-| Governance Settings | Page | Autopilot rules & governance automation toggles | Real API | `GET /api/v1/governance/policies` | GovernanceService | settings/GovernanceSettings.jsx |
-
----
-
-## 11. Teams & Members (3 tab components + 2 page files)
-
-> **Sidebar:** ORGANIZATION › Teams & Members
-
-| UI Element | Type | What It Does | Data Source | API Endpoint | Backend Logic | File Name |
-|---|---|---|---|---|---|---|
-| Teams Page | Page | 3-tab layout | Real API | Multiple | — | pages/Teams.jsx |
-| Members Tab | Tab | Member list + invite + remove (167 lines) | Real API | `GET /api/v1/organization/members` | OrganizationService | teams/MembersTab.jsx |
-| Invite Member form | Form | Name + email + role selector | Real API | `POST /api/v1/organization/invitations` | OrganizationService | MembersTab.jsx L267 |
-| Teams Tab | Tab | Team cards + create team | Real API | `GET /api/v1/teams/` | TeamService | teams/TeamsTab.jsx |
-| Roles & Policies Tab | Tab | Role CRUD + permission matrix | Real API | `GET /api/v1/roles` | RoleService | teams/RolesPoliciesTopTab.jsx |
-| Create Role modal | Modal | Role name + description + permissions | Real API | `POST /api/v1/roles` | RoleService | RolesPoliciesTopTab.jsx L111 |
-| Team Details Page | Page | Team members + governance + analytics (462 lines) | Real API | `GET /api/v1/teams/{id}` | TeamService | pages/TeamDetails.jsx |
-| Member Permissions Modal | Modal | Edit member permissions | Real API | `PUT /api/v1/permissions/{id}` | PermissionService | settings/MemberPermissionsModal.jsx |
-| Team Governance | Page | Team-level governance settings | Real API | `GET /api/v1/teams/` | TeamService | settings/TeamGovernance.jsx |
+**Dependencies**: `hygieneAPI`, `accountAPI` → `hygiene_routes.py` → `hygiene_service.py` → AWS Cost Explorer + resource APIs
 
 ---
 
-## 12. Audit Logs (AuditLog.jsx, 453 lines)
+## 8. Settings & Tag Governance
 
-> **Sidebar:** SYSTEM › Audit Logs
+### 8.1 Settings
 
-| UI Element | Type | What It Does | Data Source | API Endpoint | Backend Logic | File Name |
-|---|---|---|---|---|---|---|
-| Audit Log Page | Page | Filterable audit trail | Real API | `GET /api/v1/audit/logs` | AuditService | audit/AuditLog.jsx |
-| Event Type Filter | Dropdown | 16 event types (login, cluster.created, schedule.toggled, etc.) | Hardcoded event list L11–33 | — | — | AuditLog.jsx |
-| Diff Viewer Modal | Modal | Before/after JSON diff | Computed (calculates diff) | — | — | AuditLog.jsx L83–98 |
-| Export CSV | Button | Download filtered logs as CSV | Real API | `GET /api/v1/audit/export` | AuditService | AuditLog.jsx L121 |
-| Clear Filters | Button | Reset all filters | Computed | — | — | AuditLog.jsx L146 |
-| Event Badge | Badge | Color-coded event type badge | Computed | — | — | AuditLog.jsx L158 |
+| UI Element | Type | Label | Action | API Endpoint | Method | Backend Route | Service | File |
+|---|---|---|---|---|---|---|---|---|
+| Settings page | Page | Settings | Main settings container | Multiple | GET | Multiple | Multiple | `settings/Settings.jsx` |
+| Account settings | Tab | Account | Profile & org info | `/api/v1/auth/me` | GET | `auth_routes.py` | `auth_service.py` | `settings/AccountSettings.jsx` |
+| Cloud integrations | Tab | Integrations | AWS account mgmt | `/api/v1/accounts` | GET | `account_routes.py` | `account_service.py` | `settings/CloudIntegrations.jsx` |
+| Team management | Tab | Team Members | Invite/remove members | `/api/v1/organization/members` | GET | `organization_routes.py` | `organization_service.py` | `settings/TeamManagement.jsx` |
+| Team governance | Tab | Team Governance | Team-level policies | `/api/v1/teams/{id}/governance` | PUT | `team_routes.py` | `team_service.py` | `settings/TeamGovernance.jsx` |
+| Member permissions modal | Modal | Permissions | Edit member permissions | `/api/v1/users/{id}/permissions` | POST | `user_routes.py` | — | `settings/MemberPermissionsModal.jsx` |
+| Governance settings | Page | Automation Settings | Autopilot & approvals | `/api/v1/governance/policies` | GET/PATCH | `governance_routes.py` | `governance_service.py` | `settings/GovernanceSettings.jsx` |
+| Governance manager | Component | Governance | Governance wrapper | — | — | — | — | `settings/GovernanceManager.jsx` |
 
----
+### 8.2 Tag Governance
 
-## 13. Settings (Settings.jsx, 219 lines + 3 tab components)
+| UI Element | Type | Label | Action | API Endpoint | Method | Backend Route | Service | File |
+|---|---|---|---|---|---|---|---|---|
+| Tag governance page | Page | Tag Governance | Full tag mgmt page | Multiple tag APIs | GET/POST | Multiple tag routes | Multiple tag services | `settings/TagGovernancePage.jsx` |
+| Tag policies list | Table | Tag Policies | List tag policies | `/api/v1/tags/policies/` | GET | `tag_policy_routes.py` | `tag_policy_service.py` | `settings/TagPoliciesList.jsx` |
+| Tag policies manager | Page | Tagging Policies | Tag policy CRUD | `/api/v1/tags/policies/` | GET/POST/PUT/DELETE | `tag_policy_routes.py` | `tag_policy_service.py` | `settings/TagPoliciesManager.jsx` |
 
-> **Sidebar:** SYSTEM › Settings
-
-### 13.1 Account Settings Tab (AccountSettings.jsx, 378 lines)
-
-| UI Element | Type | What It Does | Data Source | API Endpoint | Backend Logic | File Name |
-|---|---|---|---|---|---|---|
-| Profile Section | Form | Name + email update | Real API | `PUT /api/v1/auth/profile` | AuthService | settings/AccountSettings.jsx |
-| Password Change | Form | Current + new + confirm password | Real API | `POST /api/v1/auth/change-password` | AuthService | AccountSettings.jsx L63 |
-| Preferences | Form | Timezone, theme, notifications | Real API | `PUT /api/v1/users/me/preferences` | UserService | AccountSettings.jsx L97 |
-
-### 13.2 Cloud Integrations Tab (CloudIntegrations.jsx, 500 lines)
-
-| UI Element | Type | What It Does | Data Source | API Endpoint | Backend Logic | File Name |
-|---|---|---|---|---|---|---|
-| Connection Info | Card | External ID + Account ID for AWS | Real API | `GET /api/v1/organization/connection-info` | AuthService | settings/CloudIntegrations.jsx |
-| Regenerate External ID | Button | Generate new external ID | Real API | `POST /api/v1/organization/connection-info/regenerate` | AuthService | CloudIntegrations.jsx L60 |
-| Connected Accounts list | List | AWS accounts with status | Real API | `GET /api/v1/accounts` | AccountService | CloudIntegrations.jsx L76 |
-| Add Account form | Form | Role ARN input | Real API | `POST /api/v1/accounts` | AccountService | CloudIntegrations.jsx L88 |
-| Validate Account | Button | Test AWS connection | Real API | `POST /api/v1/accounts/{id}/validate` | AccountService | CloudIntegrations.jsx L117 |
-| Delete Account | Button | Remove AWS account | Real API | `DELETE /api/v1/accounts/{id}` | AccountService | CloudIntegrations.jsx L164 |
-
-### 13.3 Billing Tab (inline BillingTab, 147 lines)
-
-| UI Element | Type | What It Does | Data Source | API Endpoint | Backend Logic | File Name |
-|---|---|---|---|---|---|---|
-| Billing Status | Card | Plan, status, period | Real API | `GET /api/v1/billing/status` | BillingService | Settings.jsx L76 |
-| Usage Summary | Card | Clusters, members, scans | Real API | `GET /api/v1/billing/costs/summary` | BillingService | Settings.jsx |
-| Manage Billing | Button | Opens Stripe portal | Real API | `POST /api/v1/billing/create-portal-session` | BillingService | Settings.jsx L116 |
+**Dependencies**: `authAPI`, `accountAPI`, `organizationAPI`, `teamAPI`, `governanceAPI`, `tagPolicyAPI`, `tagTemplateAPI`, `tagAutomationAPI`, `tagScoringAPI`, `tagComplianceAPI`
 
 ---
 
-## 14. Admin Panel (9 files, SUPER_ADMIN only)
+## 9. Policies & Governance
 
-| UI Element | Type | What It Does | Data Source | API Endpoint | Backend Logic | File Name |
-|---|---|---|---|---|---|---|
-| Admin Dashboard | Container | Tab routing for admin | N/A | — | — | admin/AdminDashboard.jsx |
-| Admin Clients | Page | Client/tenant CRUD | Real API | `GET /api/v1/admin/clients` | AdminService | admin/AdminClients.jsx |
-| Admin Organizations | Page | Organization management | Real API | `GET /api/v1/admin/organizations` | AdminService | admin/AdminOrganizations.jsx |
-| Admin Health | Page | Platform health & ML Inference Status | Real API | `GET /api/v1/admin/health` | AdminService + SystemMonitor | admin/AdminHealth.jsx |
-| Admin Config | Page | System config K/V editor | Real API | `GET /api/v1/admin/config` | AdminService | admin/AdminConfig.jsx |
-| Admin Billing | Page | Billing + usage | Real API | `GET /api/v1/admin/billing` | AdminService | admin/AdminBilling.jsx |
-| Admin Experiments | Page | Experiment lab | Real API | `GET /api/v1/lab/experiments` | LabService | admin/AdminExperiments.jsx |
-| Platform Settings | Page | Platform config | Real API | `GET /api/v1/admin/config` | AdminService | admin/PlatformSettings.jsx |
-| Admin Overview | Page | Admin overview | Computed | — | — | admin/AdminOverview.jsx |
-
----
-
-## 16. Optimizer Coordinator Dashboard (1 file, OptimizerCoordinatorDashboard.jsx = 694 lines)
-
-> **Sidebar:** COST INTELLIGENCE › Optimizer Coordinator
->
-> **Backend pipeline**: `OptimizerCoordinator` phase state machine (INITIAL_POOL → STABILIZATION → RIGHTSIZING → COMBINED → EXECUTION → COOLDOWN) + trust phases (Phase 0/1/2)
-
-| UI Element | Type | What It Does | Data Source | API Endpoint | Backend Logic | File Name |
-|---|---|---|---|---|---|---|
-| Optimizer Coordinator Dashboard | Dashboard | Unified optimizer status + proposals viewer | Real API | `GET /api/v1/optimizer/status/{cluster_id}` | OptimizerCoordinator (phase state machine, combined EV) | optimizer/OptimizerCoordinatorDashboard.jsx |
-| Trust Phase Panel | Panel | Phase 0/1/2 progression display | Real API | `GET /api/v1/optimizer/trust-phase/{cluster_id}` | OptimizerCoordinator.get_cluster_trust_phase (0-30min/30min-2h/>2h) | OptimizerCoordinatorDashboard.jsx |
-| Rightsizing Proposals Table | Table | Proposals with approve/reject actions | Real API | `GET /api/v1/optimizer/proposals/{cluster_id}` | RightSizingService + OptimizerCoordinator | OptimizerCoordinatorDashboard.jsx |
-| EV Comparison Panel | Panel | 3-option EV comparison (current/new/do nothing) | Real API | `GET /api/v1/optimizer/ev-comparison/{proposal_id}` | scoring.compute_combined_expected_value (3-option model) | OptimizerCoordinatorDashboard.jsx |
-| Resize Guard Status | Card | Resize circuit breaker state | Real API | `GET /api/v1/optimizer/resize-guard/{cluster_id}` | resize_guard_worker.py (failure_count_24h tracking) | OptimizerCoordinatorDashboard.jsx |
-| Circuit Breaker Status | Card | Execution failure tracking | Real API | `GET /api/v1/optimizer/circuit-breaker/{cluster_id}` | CircuitBreaker (NORMAL→CONSERVATIVE→HALT, ≥2 rollbacks/1h, risk multiplier 1.3×exp(-t/120min) in CONSERVATIVE, 2.0 in HALT) + KarpenterService (>10 failures/10min) | OptimizerCoordinatorDashboard.jsx |
-| Approve Proposal | Button | Approve rightsizing proposal | Real API | `POST /api/v1/optimizer/proposals/{id}/approve` | OptimizerCoordinator → ActionExecutor | OptimizerCoordinatorDashboard.jsx |
-| Reject Proposal | Button | Reject with reason | Real API | `POST /api/v1/optimizer/proposals/{id}/reject` | OptimizerCoordinator | OptimizerCoordinatorDashboard.jsx |
+| UI Element | Type | Label | Action | API Endpoint | Method | Backend Route | Service | File |
+|---|---|---|---|---|---|---|---|---|
+| Policy config page | Page | Policies | Create/edit policies | `/api/v1/policies` | GET/POST/PUT | `policy_routes.py` | `policy_service.py` | `policies/PolicyConfig.jsx` |
+| Policy toggle | Toggle | Enable/Disable | Toggle policy active | `/api/v1/policies/{id}/toggle` | POST | `policy_routes.py` | `policy_service.py` | `policies/PolicyConfig.jsx` |
+| Permission matrix | Table | Permissions | Feature-role matrix | `/api/v1/permissions/feature-registry` | GET | `permission_routes.py` | `permission_service.py` | `policies/PermissionMatrix.jsx` |
+| Cleanup policies | Tab | Cleanup Policies | Resource cleanup rules | `/api/v1/policies` | GET | `policy_routes.py` | `policy_service.py` | `policies/CleanupPolicies.jsx` |
+| Permission gate | Wrapper | — | Feature access guard | `/api/v1/permissions/check` | POST | `permission_routes.py` | `permission_service.py` | `governance/PermissionGate.jsx` |
+| Protected button | Button | — | Permission-gated action | `/api/v1/permissions/check` | POST | `permission_routes.py` | `permission_service.py` | `governance/ProtectedButton.jsx` |
+| Active JIT banner | Banner | Active Access | Show JIT access status | `/api/v1/approvals/my-jit-approvals` | GET | `approval_routes.py` | `approval_service.py` | `governance/ActiveJITBanner.jsx` |
+| JIT request modal | Modal | Request Access | JIT access form | `/api/v1/approvals/jit-request` | POST | `approval_routes.py` | `approval_service.py` | `governance/JITRequestModal.jsx` |
 
 ---
 
+## 10. Approvals
+
+| UI Element | Type | Label | Action | API Endpoint | Method | Backend Route | Service | File |
+|---|---|---|---|---|---|---|---|---|
+| Approvals page | Page | Approvals | List all approvals | `/api/v1/approvals/` | GET | `approval_routes.py` | `approval_service.py` | `pages/Approvals.jsx` |
+| Approve button | Button | Approve | Approve request | `/api/v1/approvals/{id}/approve` | POST | `approval_routes.py` | `approval_service.py` | `pages/Approvals.jsx` |
+| Reject button | Button | Reject | Reject request | `/api/v1/approvals/{id}/reject` | POST | `approval_routes.py` | `approval_service.py` | `pages/Approvals.jsx` |
+| Revoke button | Button | Revoke | Revoke access | `/api/v1/approvals/{id}/revoke` | POST | `approval_routes.py` | `approval_service.py` | `pages/Approvals.jsx` |
+| Ticket request modal | Modal | Create Ticket | Submit approval request | `/api/v1/approvals/` | POST | `approval_routes.py` | `approval_service.py` | `approvals/TicketRequestModal.jsx` |
+| Access request modal | Modal | Request Access | Feature access request | `/api/v1/approvals/jit-request` | POST | `approval_routes.py` | `approval_service.py` | `approvals/AccessRequestModal.jsx` |
+
 ---
 
-## 17. Other Components
+## 11. Admin Panel (SUPER_ADMIN)
 
-### Auth (3 files)
+| UI Element | Type | Label | Action | API Endpoint | Method | Backend Route | Service | File |
+|---|---|---|---|---|---|---|---|---|
+| Admin dashboard | Page | Admin Dashboard | Platform overview | `/api/v1/admin/dashboard` | GET | `admin_routes.py` | `admin_service.py` | `admin/AdminDashboard.jsx` |
+| Admin overview | Tab | Overview | Summary stats | `/api/v1/admin/stats` | GET | `admin_routes.py` | `admin_service.py` | `admin/AdminOverview.jsx` |
+| Client management | Page | Clients | Manage users | `/api/v1/admin/clients` | GET | `admin_routes.py` | `admin_service.py` | `admin/AdminClients.jsx` |
+| Toggle client | Button | Enable/Disable | Toggle client status | `/api/v1/admin/clients/{id}/toggle` | POST | `admin_routes.py` | `admin_service.py` | `admin/AdminClients.jsx` |
+| Reset password | Button | Reset Password | Force password reset | `/api/v1/admin/clients/{id}/reset-password` | POST | `admin_routes.py` | `admin_service.py` | `admin/AdminClients.jsx` |
+| Organization mgmt | Page | Organizations | Manage orgs | `/api/v1/admin/organizations` | GET | `admin_routes.py` | `admin_service.py` | `admin/AdminOrganizations.jsx` |
+| Toggle org | Button | Enable/Disable | Toggle org status | `/api/v1/admin/organizations/{id}/toggle` | POST | `admin_routes.py` | `admin_service.py` | `admin/AdminOrganizations.jsx` |
+| Impersonate btn | Button | Impersonate | Login as org | `/api/v1/admin/impersonate` | POST | `admin_routes.py` | `admin_service.py` | `admin/AdminOrganizations.jsx` |
+| Health monitor | Page | System Health | Backend health checks | `/api/v1/admin/health` | GET | `admin_routes.py` | `admin_service.py` | `admin/AdminHealth.jsx` |
+| Experiments lab | Page | Experiments | A/B test management | `/api/v1/lab/experiments` | GET/POST | `lab_routes.py` | `lab_service.py` | `admin/AdminExperiments.jsx` |
+| Platform config | Page | Configuration | Feature flags | — | — | — | — | `admin/AdminConfig.jsx` |
+| Platform settings | Tab | Settings | Platform-level config | — | — | — | — | `admin/PlatformSettings.jsx` |
+| Billing dashboard | Page | Billing | Billing overview | `/api/v1/admin/billing` | GET | `admin_routes.py` | `admin_service.py` | `admin/AdminBilling.jsx` |
 
-| UI Element | Type | What It Does | Data Source | API Endpoint | Backend Logic | File Name |
-|---|---|---|---|---|---|---|
-| Login | Form | Login form with email/password | Real API | `POST /api/v1/auth/login` | AuthService | auth/Login.jsx |
-| Signup | Form | Registration form | Real API | `POST /api/v1/auth/signup` | AuthService | auth/Signup.jsx |
-| Invite Acceptance | Form | Accept org invite | Real API | `POST /api/v1/auth/invitation-response` | AuthService | auth/InviteAcceptance.jsx |
+**Dependencies**: `adminAPI`, `experimentsAPI`, `billingAPI` → `admin_routes.py`, `lab_routes.py`, `billing_routes.py` → `admin_service.py`, `lab_service.py`
 
-### Onboarding (4 files)
+---
 
-| UI Element | Type | What It Does | Data Source | API Endpoint | Backend Logic | File Name |
-|---|---|---|---|---|---|---|
-| Welcome Step | Step | Welcome screen with overview | N/A | — | — | onboarding/WelcomeStep.jsx |
-| Connect Step | Step | AWS role ARN entry | Real API | `GET /api/v1/onboarding/aws-link` | OnboardingService | onboarding/ConnectStep.jsx |
-| Verify Step | Step | Connection verification polling | Real API | `POST /api/v1/onboarding/verify` | OnboardingService | onboarding/VerifyStep.jsx |
-| Success Step | Step | Success confirmation + next steps | N/A | — | — | onboarding/SuccessStep.jsx |
+## 12. Teams & Roles
 
-### Governance (4 files)
+| UI Element | Type | Label | Action | API Endpoint | Method | Backend Route | Service | File |
+|---|---|---|---|---|---|---|---|---|
+| Teams page | Page | Teams | List all teams | `/api/v1/teams/` | GET | `team_routes.py` | `team_service.py` | `pages/Teams.jsx` |
+| Create team btn | Button | Create Team | Create new team | `/api/v1/teams/` | POST | `team_routes.py` | `team_service.py` | `pages/Teams.jsx` |
+| Team details page | Page | Team Details | Team detail + members | `/api/v1/teams/{id}` | GET | `team_routes.py` | `team_service.py` | `pages/TeamDetails.jsx` |
+| Members tab | Tab | Members | Team member list | `/api/v1/teams/{id}` | GET | `team_routes.py` | `team_service.py` | `teams/MembersTab.jsx` |
+| Teams tab | Tab | Teams | Teams overview | `/api/v1/teams/` | GET | `team_routes.py` | `team_service.py` | `teams/TeamsTab.jsx` |
+| Roles & policies tab | Tab | Roles & Policies | Role management | `/api/v1/roles` | GET | `role_routes.py` | `role_service.py` | `teams/RolesPoliciesTopTab.jsx` |
+| Roles page | Page | Roles | Full RBAC management | `/api/v1/roles` | GET/POST/PUT/DELETE | `role_routes.py` | `role_service.py` | `pages/Roles.jsx` |
+| Invite member btn | Button | Invite | Invite team member | `/api/v1/teams/{id}/invite` | POST | `team_routes.py` | `team_service.py` | `pages/TeamDetails.jsx` |
 
-| UI Element | Type | What It Does | Data Source | API Endpoint | Backend Logic | File Name |
-|---|---|---|---|---|---|---|
-| Permission Gate | HOC | RBAC wrapper | Computed | `GET /api/v1/permissions/check` | PermissionService | governance/PermissionGate.jsx |
-| Protected Button | Button | Button with perm check | Computed | — | — | governance/ProtectedButton.jsx |
-| JIT Request Modal | Modal | JIT elevation form | Real API | `POST /api/v1/approvals/jit-request` | ApprovalService | governance/JITRequestModal.jsx |
-| Active JIT Banner | Banner | Active grant indicator | Real API | `GET /api/v1/approvals/active-window` | ApprovalService | governance/ActiveJITBanner.jsx |
+---
 
-### Policies (3 files)
+## 13. Cost Analysis Pages
 
-| UI Element | Type | What It Does | Data Source | API Endpoint | Backend Logic | File Name |
-|---|---|---|---|---|---|---|
-| Policy Config | Form | Spot policy config (26 settings) | Real API | `GET/PUT /api/v1/policies/{id}` | PolicyService | policies/PolicyConfig.jsx |
-| Permission Matrix | Grid | Permission grid editor | Real API | `GET /api/v1/roles/permissions` | RoleService | policies/PermissionMatrix.jsx |
-| Cleanup Policies | Page | Cleanup policy config | Real API | `GET /api/v1/policies` | PolicyService | policies/CleanupPolicies.jsx |
+| UI Element | Type | Label | Action | API Endpoint | Method | Backend Route | Service | File |
+|---|---|---|---|---|---|---|---|---|
+| Account analytics | Page | Account Analytics | Per-account cost view | `/api/v1/metrics/accounts/{id}/summary` | GET | `metrics_routes.py` | `metrics_service.py` | `pages/AccountAnalytics.jsx` |
+| RI analysis | Page | RI Analysis | Reserved Instance recs | `/api/v1/ri/` | GET | `ri_routes.py` | `ri_analysis_service.py` | `ri/RIAnalysis.jsx` |
+| RI health card | Card | RI Utilization | RI utilization gauge | `/api/v1/ri/` | GET | `ri_routes.py` | `ri_analysis_service.py` | `ri/RIHealthCard.jsx` |
+| S3 analysis | Page | S3 Tiering | S3 tier recommendations | `/api/v1/s3/` | GET | `s3_routes.py` | `s3_tiering_service.py` | `s3/S3Analysis.jsx` |
+| RDS analysis | Page | RDS Analysis | RDS recommendations | `/api/v1/rds/` | GET | `rds_routes.py` | `rds_analysis_service.py` | `rds/RDSAnalysis.jsx` |
+| RDS health card | Card | RDS Health | RDS metrics | `/api/v1/rds/` | GET | `rds_routes.py` | `rds_analysis_service.py` | `rds/RDSHealthCard.jsx` |
+| Transfer analysis | Page | Data Transfer | Transfer cost analysis | `/api/v1/transfer/` | GET | `transfer_routes.py` | `transfer_service.py` | `transfer/TransferAnalysis.jsx` |
 
-### Cost Health Checks (8 files)
+---
 
-| UI Element | Type | What It Does | Data Source | API Endpoint | Backend Logic | File Name |
-|---|---|---|---|---|---|---|
-| RI Analysis + Health Card | Dashboard + Card | RI analysis | Real API | `GET /api/v1/ri/overview` | RIAnalysisService | ri/RIAnalysis.jsx, ri/RIHealthCard.jsx |
-| S3 Analysis + Health Card | Dashboard + Card | S3 tiering | Real API | `GET /api/v1/s3/overview` | S3TieringService | s3/S3Analysis.jsx, s3/S3HealthCard.jsx |
-| RDS Analysis + Health Card | Dashboard + Card | RDS Multi-AZ | Real API | `GET /api/v1/rds/overview` | RDSAnalysisService | rds/RDSAnalysis.jsx, rds/RDSHealthCard.jsx |
-| Transfer Analysis + Health Card | Dashboard + Card | Data transfer costs | Real API | `GET /api/v1/transfer/overview` | TransferService | transfer/TransferAnalysis.jsx, transfer/TransferHealthCard.jsx |
+## 14. Node Templates
 
-### Shared Design System (12 files)
+| UI Element | Type | Label | Action | API Endpoint | Method | Backend Route | Service | File |
+|---|---|---|---|---|---|---|---|---|
+| Templates page | Page | Node Templates | Global template registry | `/api/v1/node-templates` | GET | `node_template_routes.py` | `template_service.py` | `pages/NodeTemplates.jsx` |
+| Create template btn | Button | Create Template | New template form | `/api/v1/node-templates` | POST | `node_template_routes.py` | `template_service.py` | `pages/NodeTemplates.jsx` |
+| Delete template btn | Button | Delete | Remove template | `/api/v1/node-templates/{id}` | DELETE | `node_template_routes.py` | `template_service.py` | `pages/NodeTemplates.jsx` |
+| Version list | Table | Versions | Template versions | `/api/v1/node-templates/{id}/versions` | GET | `node_template_routes.py` | `template_service.py` | `pages/NodeTemplates.jsx` |
+| Validate btn | Button | Validate | Check template | `/api/v1/node-templates/validate` | POST | `node_template_routes.py` | `template_service.py` | `pages/NodeTemplates.jsx` |
 
-| UI Element | Type | What It Does | Data Source | API Endpoint | Backend Logic | File Name |
-|---|---|---|---|---|---|---|
-| Notification Panel | Panel | Global slide-over notifications | Real API | Multiple (`hygiene`, `karpenter`, `approvals`, `atharvaai`, `hibernation`) | Multiple Services | shared/NotificationPanel.jsx |
-| NCard | Card | Individual notification card | Props | — | — | shared/NotificationPanel.jsx |
-| FilterTab | Tab | Filter notifications by category | Props | — | — | shared/NotificationPanel.jsx |
-| Notification Components | Components | `DrainBar`, `ApprovalRow`, `SavingsRow`, etc. | Props | — | — | shared/NotificationPanel.jsx |
-| Button | Primitive | Button with variants (primary/outline/danger) | N/A | — | — | shared/Button.jsx |
-| Card | Primitive | Container card wrapper | N/A | — | — | shared/Card.jsx |
-| Badge | Primitive | Color-coded badge/tag | N/A | — | — | shared/Badge.jsx |
-| Input | Primitive | Form input with label/error | N/A | — | — | shared/Input.jsx |
-| Dropdown | Primitive | Select dropdown | N/A | — | — | shared/Dropdown.jsx |
-| Switch | Primitive | Toggle switch | N/A | — | — | shared/Switch.jsx |
-| GaugeChart | Primitive | Circular gauge chart | N/A | — | — | shared/GaugeChart.jsx |
-| StatsCard | Primitive | KPI stats card with trend | N/A | — | — | shared/StatsCard.jsx |
-| EmptyState | Primitive | Empty state placeholder | N/A | — | — | shared/EmptyState.jsx |
-| RiskBadge | Primitive | Risk level indicator badge | N/A | — | — | shared/RiskBadge.jsx |
-| Shared Index | Export | Central barrel export | N/A | — | — | shared/index.js |
+---
 
-### Layout (1 file)
+## 15. Shared / Reusable Components
 
-| UI Element | Type | What It Does | Data Source | API Endpoint | Backend Logic | File Name |
-|---|---|---|---|---|---|---|
-| MainLayout | Layout | Sidebar + content wrapper + Notification Bell | Real API | `GET /api/v1/clusters` (sidebar) | ClusterService | layout/MainLayout.jsx |
+| Component | Type | Props | Used By | File |
+|---|---|---|---|---|
+| Button | Button | variant, size, onClick, disabled | All sections | `shared/Button.jsx` |
+| Card | Container | children, style | Dashboard, Clusters, Settings | `shared/Card.jsx` |
+| Input | Input | label, value, onChange, type | Auth, Settings, Forms | `shared/Input.jsx` |
+| Badge | Badge | color, children | Tables, Lists | `shared/Badge.jsx` |
+| Switch | Toggle | checked, onChange | Settings, Policies | `shared/Switch.jsx` |
+| Dropdown | Select | options, value, onChange | Filters, Forms | `shared/Dropdown.jsx` |
+| EmptyState | Placeholder | message, icon | Tables, Lists | `shared/EmptyState.jsx` |
+| StatsCard | Card | title, value, trend | Dashboard, Analytics | `shared/StatsCard.jsx` |
+| GaugeChart | Chart | value, max, label | Cleanup, Clusters | `shared/GaugeChart.jsx` |
+| RiskBadge | Badge | level (low/med/high) | AtharvaAI, Pools | `shared/RiskBadge.jsx` |
+| NotificationPanel | Panel | — | Layout | `shared/NotificationPanel.jsx` |
 
-### Pages (8 files — 4 already documented inline above, 4 listed here)
+---
 
-| UI Element | Type | What It Does | Data Source | API Endpoint | Backend Logic | File Name |
-|---|---|---|---|---|---|---|
-| Account Analytics | Page | AWS account cost analytics (145 lines) | Real API | `GET /api/v1/metrics/accounts/{id}` | MetricsService | pages/AccountAnalytics.jsx |
-| Node Templates | Page | Enterprise template control plane (930 lines) | Real API | `GET /api/v1/templates`, `POST /api/v1/templates/validate` | NodeTemplateService | pages/NodeTemplates.jsx |
-| Onboarding | Page | 4-step new user wizard (109 lines) | Real API | `GET /api/v1/onboarding/state` | OnboardingService | pages/Onboarding.jsx |
-| Roles | Page | Role management + permission matrix (122 lines) | Real API | `GET /api/v1/roles` | RoleService | pages/Roles.jsx |
+## 16. Layout & Global
 
-> **Also documented inline:** `pages/Approvals.jsx` (§8), `pages/Teams.jsx` + `pages/TeamDetails.jsx` (§11), `pages/AtharvaAiPage.jsx` (§2)
-
-### Infrastructure & Utilities (11 files)
-
-| File | Type | What It Does | Dependencies |
+| Component | Type | Responsibility | File |
 |---|---|---|---|
-| `App.js` | Router | Root component — route definitions, auth guard, lazy loading | React Router, MainLayout, all pages |
-| `index.js` | Entry | ReactDOM.render entry point | App.js |
-| `index.css` | Styles | Global CSS — design tokens, reset, dark mode variables | — |
-| `services/api.js` | Service | Axios instance + all API endpoint functions (527 lines — cluster, karpenter, hygiene, atharvaai, governance, billing, admin) | Axios |
-| `services/hibernationApi.js` | Service | Hibernation-specific API functions (schedules CRUD, savings, emergency) | Axios |
-| `hooks/useAuth.js` | Hook | Auth context — login/logout state, token management, role check | api.js |
-| `hooks/useDashboard.js` | Hook | Dashboard data fetching + widget state management | api.js |
-| `hooks/usePermission.js` | Hook | RBAC permission check — `hasPermission(action, resource)` | useAuth |
-| `store/useStore.js` | Store | Global Zustand store — clusters, selectedCluster, notifications | Zustand |
-| `store/useAtharvaStore.js` | Store | AtharvaAI-specific state — rankings, mode, volatility | Zustand |
-| `store/useHibernationStore.js` | Store | Hibernation state — schedules, active status, savings | Zustand |
-| `utils/formatters.js` | Utility | Number/date/currency formatting helpers | — |
+| MainLayout | Shell | Sidebar + header + content | `layout/MainLayout.jsx` |
+| App.js | Router | Route definitions + auth guards | `App.js` |
+| ProtectedRoute | Guard | Auth-required wrapper | `App.js` |
+| AdminRoute | Guard | SUPER_ADMIN wrapper | `App.js` |
+| PublicRoute | Guard | Redirect if authenticated | `App.js` |
+| PermissionGate | Guard | Feature-level access control | `governance/PermissionGate.jsx` |
 
 ---
 
-## 18. UNUSED / DUPLICATE / UNWIRED — Cleanup Audit
+## 17. Multi-Cluster Fleet
 
-### 18.1 🔴 ORPHAN Components (No Import Found)
+| UI Element | Type | Label | Action | API Endpoint | Method | Backend Route | Service | File |
+|---|---|---|---|---|---|---|---|---|
+| Fleet summary | Card | Fleet Summary | Aggregated fleet metrics | `/api/v1/multi-cluster/summary` | GET | `multi_cluster_routes.py` | DB queries | `dashboard/Dashboard.jsx` |
+| Fleet actions | Feed | Fleet Actions | Recent fleet actions | `/api/v1/multi-cluster/actions` | GET | `multi_cluster_routes.py` | `rebalancing_actions` table | `dashboard/Dashboard.jsx` |
+| Fleet trends chart | Area Chart | Fleet Trends | 30-day trends | `/api/v1/multi-cluster/trends` | GET | `multi_cluster_routes.py` | `DailyClusterStat` model | `dashboard/widgets/TrendsChart.jsx` |
 
-| Component | Lines | Category | Recommendation | Reason |
-|-----------|-------|----------|----------------|--------|
-| **settings/TeamManagement.jsx** | 795 | LEGACY | 🗑️ DELETE | Superseded by `teams/MembersTab.jsx` + `TeamsTab.jsx` |
-| **settings/GovernanceManager.jsx** | 62 | DUPLICATE | 🗑️ DELETE | Overlaps with GovernanceSettings.jsx |
-| **approvals/ActiveWindowBanner.jsx** | — | DUPLICATE | 🗑️ DELETE | Duplicate of governance/ActiveJITBanner.jsx |
-| **hibernation/HibernationScheduler.jsx** | 622 | ORPHAN | 🔌 WIRE UP | May be intended for schedule tab |
-| **hibernation/HibernationWizard.jsx** | 411 | ORPHAN | 🔌 WIRE UP | Setup wizard not routed |
-| **hibernation/UnifiedScheduleGrid.jsx** | 346 | ORPHAN | 🔌 WIRE UP | Alternate schedule grid |
-| **hibernation/DashboardTab.jsx** | 162 | ORPHAN | 🔌 WIRE UP | Dashboard sub-tab |
-| **hibernation/ClusterOverview.jsx** | 135 | ORPHAN | 🔌 WIRE UP | Cluster summary |
-| **hibernation/HibernationHeader.jsx** | 120 | ORPHAN | 🔌 WIRE UP | Header |
-| **hibernation/HistoryLog.jsx** | 103 | ORPHAN | 🔌 WIRE UP | History log |
-| **hibernation/MultiTimezone.jsx** | 97 | ORPHAN | 🔌 WIRE UP | Timezone support |
-| **hibernation/AdvancedConfiguration.jsx** | 84 | ORPHAN | 🔌 WIRE UP | Advanced settings |
-| **hibernation/TimeBasedRules.jsx** | 135 | ORPHAN | 🔌 WIRE UP | Time rules |
-| **clusters/ClusterDetails.jsx** | 1,161 | ORPHAN | 🔌 WIRE UP | Detail modal (inline version exists in ClusterList) |
-| **clusters/ClusterDeleteModal.jsx** | 126 | ORPHAN | 🔌 WIRE UP | Delete modal |
-| **clusters/ClusterDisconnectModal.jsx** | 128 | ORPHAN | 🔌 WIRE UP | Disconnect modal |
-| **clusters/ClusterUtilizationSparkline.jsx** | 50 | ORPHAN | 🔌 WIRE UP | Sparkline |
-| **clusters/PolicyGapAlert.jsx** | 28 | ORPHAN | 🔌 WIRE UP | Policy alerts |
-| **clusters/SpotRatioGauge.jsx** | 54 | ORPHAN | 🔌 WIRE UP | Gauge (inline version in ClusterList) |
-| **cleanup/layout/CleanupSidebar.jsx** | 289 | ORPHAN | 🔌 WIRE UP | Sidebar (inline version in CleanupDashboard) |
-| **cleanup/summary/HeroMetricsPanel.jsx** | 139 | ORPHAN | 🔌 WIRE UP | KPI panel (inline version in CleanupDashboard) |
-
-**Summary: 21 orphans. 3 DELETE (duplicates). 18 WIRE UP.**
-
-### 18.2 ⚠️ FAKE Data in Production Code
-
-| Component | What Was Fake | Status | Resolution |
-|-----------|-------------|--------|------------|
-| RightSizingDashboard.jsx | `const CLUSTERS = [...]` 4 hardcoded clusters | ✅ RESOLVED | Now uses `clusterAPI.listClusters()` |
-| RightSizingDashboard.jsx | `const RECOMMENDATIONS = {...}` 8 hardcoded recs | ✅ RESOLVED | Now uses `karpenterAPI.getRecommendations()` |
-| RightSizingDashboard.jsx | `const BINPACK_DATA = {...}` hardcoded binpack | ✅ RESOLVED | Now uses `karpenterAPI.getStats()` |
-| RightSizingDashboard.jsx | `const ACTIVITY = [...]` 5 hardcoded events | ✅ RESOLVED | Mock fallback removed, empty array on error |
-| RightSizingDashboard.jsx | `const HISTORY_EVENTS = [...]` 7-day fake | ✅ RESOLVED | Now uses `karpenterAPI.getStats('week')` |
-| RightSizingDashboard.jsx | KPI strips, CPU gauges, 7-day benefits table | ✅ RESOLVED | Wired to `karpenterAPI.getStats('week')` |
-| RightSizingDashboard.jsx | Activity fallback to mock | ✅ RESOLVED | Empty array on error |
-| RightSizingDashboard.jsx | History chart mock fallback | ✅ RESOLVED | Empty array on error |
-| TagGovernancePage.jsx | `const preview = [...]` fake resources | ✅ RESOLVED | Now uses `tagScoringAPI.preview()` |
-| TagGovernancePage.jsx | `const resources = [...]` monitor list & KPIs | ✅ RESOLVED | Now uses `tagComplianceAPI.listResources()` |
-| TeamsTab.jsx | Hardcoded `$4,820` / `$1,446` stats on TeamCard | ✅ RESOLVED | Wired to real API `team` properties |
-| CleanupDashboard.jsx | Sparkline fallback values | 🟢 KEPT | Intentional graceful degradation |
-
-### 18.3 🔴 Backend Endpoints NOT Called from Frontend
-
-| Endpoint | Route File | Recommendation |
-|----------|-----------|----------------|
-| `GET /api/v1/hygiene/discover` | hygiene_routes.py | 🔌 WIRE UP |
-| `GET /api/v1/hygiene/cost-services` | hygiene_routes.py | 🔌 WIRE UP |
-| `GET /api/v1/atharvaai/health` | atharvaai_routes.py | 🔌 WIRE UP |
-| `GET /api/v1/atharvaai/blacklist/check` | atharvaai_routes.py | Internal only |
-| `POST /api/v1/clusters/{id}/fallback` | cluster_routes.py | 🔌 WIRE UP |
-| `POST /api/v1/clusters/{id}/costs` | cluster_routes.py | 🔌 WIRE UP |
-| `POST /api/v1/onboarding/reset` | onboarding_routes.py | 🔌 WIRE UP |
-| `POST /api/v1/onboarding/authorize` | onboarding_routes.py | 🔌 WIRE UP |
-| `GET /api/v1/health/system` | health_routes.py | 🔌 WIRE UP |
-| `POST /api/v1/s3/analyze` | s3_routes.py | 🔌 WIRE UP |
-| `POST /api/v1/rds/analyze` | rds_routes.py | 🔌 WIRE UP |
-| `GET /api/v1/optimizer/status/{cluster_id}` | optimizer_coordinator_routes.py | 🔌 WIRE UP |
-| `GET /api/v1/pool-rotation/status/{cluster_id}` | pool_rotation_routes.py | 🔌 WIRE UP |
-| `POST /api/v1/pool-rotation/force/{cluster_id}` | pool_rotation_routes.py | 🔌 WIRE UP |
-
-### 18.4 Frontend API Calls with No Backend Route
-
-| Frontend Call | Status |
-|---------------|--------|
-| `GET /api/v1/admin/agent-fleet` | ❌ Missing |
-| `GET /api/v1/admin/dashboard` | ❌ Missing |
-| `GET /api/v1/admin/stats` | ❌ Missing |
-| `GET /api/v1/billing/create-portal-session` | ❌ Missing |
-| `GET /api/v1/billing/costs/summary` | ❌ Missing |
-| `GET /api/v1/billing/status` | ❌ Missing |
+**Dependencies**: `multiClusterAPI` → `multi_cluster_routes.py` → `daily_cluster_stats`, `rebalancing_actions`, `clusters`, `instances` tables  
+**Background**: `aggregate_daily_stats` Celery task runs via `daily_stats_aggregator.py` on beat schedule
 
 ---
 
-**Total: 141 JSX + 17 JS + 2 CSS = 160 files · Orphans: 18 (3 DELETE, 15 WIRE UP) · Ghost Files Removed: 5 · Fake Data: 0 (7 resolved, 1 kept) · Unused Backend: 14 · Missing Backend: 6**
+## API Client Module Index (`frontend/src/services/api.js`)
 
----
-
-## 19. Backend Remediation Patches (2026-02-26)
-
-The following backend integration fixes and metric-lag enhancements were applied. These affect the backend logic referenced in the tables above:
-
-| Fix | File Modified | Backend Logic Affected | Impact |
-|-----|--------------|----------------------|--------|
-| FIX 1: Template Enforcement | `rightsizing_service.py` | `RightSizingService.create_rightsizing_proposals` | Proposals now filtered against cluster's active Node Template constraints (vCPU/memory bounds, family allow/exclude) |
-| FIX 3: Proposal Freeze | `optimizer_coordinator.py` | `OptimizerCoordinator.can_run_pool_optimization` | Pool optimization blocked while rightsizing proposal is pending evaluation |
-| FIX 4: Substitute Cooldown | `substitute_manager.py` | `SubstituteManager.promote_substitute` | 2-hour cooldown recorded after substitute promotion to prevent churn |
-| FIX 5: Pricing Freshness | `decision_engine.py` | `DecisionEngine.evaluate_action_plan` | Pricing data staleness check (>15 min) blocks pool evaluations unless emergency |
-| ENH 2: Confidence Gate | `rightsizing_service.py` | `RightSizingService._analyze_controller` | LOW confidence recommendations blocked; high CPU volatility skipped |
-| ENH 3: P99 Fallback Floor | `rightsizing_service.py` | `RightSizingService._analyze_controller` | Proposed size must exceed P99 × 1.3 to handle burst workloads |
-| ENH 6: Metric Freshness | `rightsizing_service.py` | `RightSizingService.generate_recommendations` | Rightsizing skipped if latest metric timestamp > 5 min stale |
-| ENH 8: Volatility Buffer | `rightsizing_service.py` | `RightSizingService._analyze_controller` | Safety buffer dynamically increased to 35% during volatile spot markets |
-
----
-
-## 20. Sub-Element Appendix — Buttons, Dropdowns, Toggles, Table Columns, Badges
-
-> Every interactive micro-element extracted by reading the actual JSX. Organised by parent component.
-
----
-
-### 20.1 PoolRankings.jsx (847 lines)
-
-**Tabs (3):**
-| Tab | State Value | Icon |
-|---|---|---|
-| Market View | `market` | FiGlobe |
-| Node-Specific View | `node` | FiServer |
-| Cluster Impact View | `cluster` | FiPieChart |
-
-**Buttons & Controls:**
-| Element | Type | Line | Action |
+| Module | Prefix | Backend Route File | Primary Service |
 |---|---|---|---|
-| Refresh | Button | L322 | `loadData() + fetchBlacklist()` |
-| Auto-refresh (30s) | Checkbox | L330 | Sets 30s interval polling |
-
-**Market View Table Columns (9):**
-`Rank` · `Instance Type` · `AZ` · `vCPU / Mem` · `Spot Price` · `Interruption` · `ML Score` · `Health` · `Used By Cluster`
-
-**Node-Specific View — Summary Cards (5):**
-`Total Nodes` · `Stateless` · `Eligible` · `In Cooldown` · `Proj. Savings`
-
-**Node-Specific View Table Columns (9):**
-`Node Name` · `Current Type` · `Current Cost` · `Target Pool` · `Proj. Savings` · `Risk Score` · `Confidence` · `Status` · `Action (Schedule button)`
-
-**Cluster Impact View — Summary Cards (4):**
-`Current Cost` · `Projected Cost` · `Estimated Savings` · `Spot Exposure`
-
-**Cluster Impact View — Chart Placeholders (3):**
-`AZ Distribution (Pie)` · `Instance Family Distribution (Bar)` · `Spot vs On-Demand Ratio (Gauge)`
-
-**Cluster Impact View Table Columns (7):**
-`Target Pool` · `Eligible Nodes` · `Avg Savings` · `Total Savings` · `Avg Risk` · `Health` · `Cluster Usage`
-
-**Badges & Indicators:**
-| Badge | Logic | Colors |
-|---|---|---|
-| Rank Badge | Gold (#1), Green (≤3), Gray (>3) | bg-yellow-100, bg-green-100, bg-gray-100 |
-| Interruption Badge | 5-tier: <5%, 5-10%, 10-15%, 15-20%, >20% | green/blue/yellow/orange/red |
-| Health Badge | `getHealthBadge(is_flagged)` | green=Healthy, red=Unstable |
-| Region Badge | Inline blue pill | bg-blue-100 |
-| Template Badge | Green with lock icon (FiLock) | text-green-700 |
-| Strategy Badge | Active Strategy + Risk Ceiling + Min Savings | bg-indigo-50 |
-| Capacity Validated | FiCheckCircle per row | text-blue-500 |
-| Flagged Warning | FiAlertTriangle per row if `is_flagged` | text-red-600 |
-
-**Alerts:**
-| Alert | Condition | Style |
-|---|---|---|
-| Blacklist Alert | `blacklist.length > 0` | bg-red-50, shows TTL badges per pool |
-| Execution Safety Banner | Hidden by default (`hidden` css class) | bg-orange-50 |
-| Error Alert | `error !== null` | bg-red-50 |
-| No Cluster Selected | `!clusterId` | text-center empty state |
-| Empty State (Market) | `pools.length === 0` | text-center empty state |
-
-**Legend Panel** (Market tab only): ML Score, Interruption, Validated descriptions + current cluster info + template info.
+| `authAPI` | `/api/v1/auth/` | `auth_routes.py` | `auth_service.py` |
+| `clusterAPI` | `/api/v1/clusters/` | `cluster_routes.py` | `cluster_service.py` |
+| `accountAPI` | `/api/v1/accounts/` | `account_routes.py` | `account_service.py` |
+| `adminAPI` | `/api/v1/admin/` | `admin_routes.py` | `admin_service.py` |
+| `metricAPI` | `/api/v1/metrics/` | `metrics_routes.py` | `metrics_service.py` |
+| `optimizationAPI` | `/api/v1/optimization/` | `optimization_routes.py` | `rightsizing_service.py` |
+| `policyAPI` | `/api/v1/policies/` | `policy_routes.py` | `policy_service.py` |
+| `hibernationAPI` | `/api/v1/hibernation/` | `hibernation_routes.py` | `hibernation_service.py` |
+| `auditAPI` | `/api/v1/audit/` | `audit_routes.py` | `audit_service.py` |
+| `templateAPI` | `/api/v1/templates/` | `node_template_routes.py` | `template_service.py` |
+| `nodeTemplateAPI` | `/api/v1/node-templates/` | `node_template_routes.py` | `template_service.py` |
+| `experimentsAPI` | `/api/v1/lab/` | `lab_routes.py` | `lab_service.py` |
+| `onboardingAPI` | `/api/v1/onboarding/` | `onboarding_routes.py` | `onboarding_service.py` |
+| `organizationAPI` | `/api/v1/organization/` | `organization_routes.py` | `organization_service.py` |
+| `teamAPI` | `/api/v1/teams/` | `team_routes.py` | `team_service.py` |
+| `userAPI` | `/api/v1/users/` | `user_routes.py` | — |
+| `billingAPI` | `/api/v1/billing/` | `billing_routes.py` | — |
+| `hygieneAPI` | `/api/v1/hygiene/` | `hygiene_routes.py` | `hygiene_service.py` |
+| `atharvaaiAPI` | `/api/v1/atharvaai/` | `atharvaai_routes.py` | `pool_ranking_service.py` |
+| `approvalsAPI` | `/api/v1/approvals/` | `approval_routes.py` | `approval_service.py` |
+| `governanceAPI` | `/api/v1/governance/` | `governance_routes.py` | `governance_service.py` |
+| `rolesAPI` | `/api/v1/roles/` | `role_routes.py` | `role_service.py` |
+| `permissionAPI` | `/api/v1/permissions/` | `permission_routes.py` | `permission_service.py` |
+| `karpenterAPI` | `/api/v1/karpenter/` | `karpenter_routes.py` | `karpenter_service.py` |
+| `tagPolicyAPI` | `/api/v1/tags/policies/` | `tag_policy_routes.py` | `tag_policy_service.py` |
+| `tagTemplateAPI` | `/api/v1/tags/templates/` | `tag_management_routes.py` | `tag_management_service.py` |
+| `tagAutomationAPI` | `/api/v1/tags/automation/` | `tag_automation_routes.py` | `tag_automation_service.py` |
+| `tagScoringAPI` | `/api/v1/tags/scoring/` | `tag_scoring_routes.py` | `tag_scoring_service.py` |
+| `tagComplianceAPI` | `/api/v1/tags/compliance/` | `tag_compliance_routes.py` | `tag_compliance_service.py` |
+| `decisionEngineAPI` | `/api/v1/atharvaai/v3/` | `atharvaai_routes.py` | `decision_engine_service.py` |
+| `optimizerCoordinatorAPI` | `/api/v1/optimizer/` | `optimizer_coordinator_routes.py` | `optimizer_coordinator.py` |
+| `poolRotationAPI` | `/api/v1/pool-rotation/` | `pool_rotation_routes.py` | `pool_rotation_service.py` |
+| `multiClusterAPI` | `/api/v1/multi-cluster/` | `multi_cluster_routes.py` | — |
 
 ---
 
-### 20.2 DecisionEngineV3Dashboard.jsx (667 lines)
+## Backend Service Dependency Map
 
-**Automation Controls (2 toggles):**
-| Toggle | State Key | API Call |
+| Service | Key Dependencies | Database Tables |
 |---|---|---|
-| Auto-Rightsizing | `config.rightsizing` | `PATCH /api/v1/clusters/{id}` → `rightsizing_enabled` |
-| Auto-Rebalancing (Spot) | `config.autoRebalance` | `PATCH /api/v1/clusters/{id}` → `auto_rebalance_enabled` |
-
-**Optimization Mode Selector** (embedded `<OptimizationModeSelector>` component):
-3 modes: `COST_FIRST` · `BALANCED` · `NO_DOWNTIME_FIRST`
-
-**Effective Configuration Panel (6 KPIs):**
-`Stateful Spot` · `Active Template` · `Risk Strategy` · `Target Spot Exposure %` · `Substitute Mode` · `Auto-Rebalance Mode (ON/OFF with green pulse)`
-
-**Execution Pipeline Precedence Diagram (3 numbered steps):**
-1. Cluster Policy → Global Overrides & Targets
-2. Node Template → Hardware & Capacity Constraints
-3. Optimization Strategy → Risk vs Cost Math Scoring
-
-**Custom EV Controls (5 inputs — only visible in CUSTOM mode):**
-| Input | Type | Config Key |
-|---|---|---|
-| Risk Ceiling % | Number | `optimization_strategy.risk_ceiling_percent` |
-| Minimum Savings % | Number | `optimization_strategy.min_savings_percent` |
-| Volatility Tolerance % | Number | `optimization_strategy.volatility_tolerance_percent` |
-| Migration Penalty Multiplier | Number (step 0.1) | `optimization_strategy.migration_penalty_multiplier` |
-| Diversity Strictness Level | Dropdown (Low/Medium/High) | `optimization_strategy.diversity_strictness_level` |
-
-**Stateless Optimization Rules (6 controls):**
-| Control | Type | Config Key |
-|---|---|---|
-| Instance Diversification | Toggle | `stateless_rules.instance_diversification_enabled` |
-| Substitute Strategy | Dropdown (PREWARMED/ON_DEMAND) | `stateless_rules.substitute_strategy` |
-| Respect PDBs | Toggle | `stateless_rules.respect_pdb_enabled` |
-| Max Rebalances per 24h | Number | `stateless_rules.max_rebalances_per_24h` |
-| Resize Headroom Multiplier | Number (step 0.1) | `stateless_rules.resize_headroom_multiplier` |
-| Volatility Safety Multiplier | Number (step 0.05) | `stateless_rules.volatility_safety_multiplier` |
-
-**Stateful Optimization Rules (5 controls):**
-| Control | Type | Config Key |
-|---|---|---|
-| Allow Manual Resize | Toggle | `stateful_rules.manual_resize_allowed` |
-| Show On-Demand Savings Only | Toggle | `stateful_rules.show_ondemand_only` |
-| Block Spot for Stateful | Toggle (disabled, always ON) | `stateful_rules.block_spot_for_stateful` |
-| Require Approval Always | Toggle (disabled, always ON) | `stateful_rules.require_approval` |
-| Maximum Downscale % | Number | `optimization_strategy.risk_ceiling_percent` |
-
-**Bottom Bar:** Save Optimization Rules button (`saving ? "Saving..." : "Save Optimization Rules"`)
+| `auth_service.py` | JWT, bcrypt | `users`, `organizations` |
+| `cluster_service.py` | AWS EC2/EKS, agent comms | `clusters`, `instances`, `cluster_optimization_settings` |
+| `karpenter_service.py` | cluster_service, pool_ranking | `karpenter_configs`, `karpenter_recommendations` |
+| `pool_ranking_service.py` | ML model (ONNX), AWS Spot API | `pool_rankings`, `spot_volatility_cache` |
+| `blacklist_service.py` | pool_ranking_service | `blacklisted_pools` |
+| `rightsizing_service.py` | karpenter_service, metrics | `instances`, `pod_metrics` |
+| `optimizer_coordinator.py` | karpenter_service, guardrail | `optimizer_proposals` |
+| `hibernation_service.py` | cluster_service, scheduler | `hibernation_schedules` |
+| `hygiene_service.py` | AWS Cost Explorer, EC2, S3, RDS | `hygiene_scans`, `waste_resources` |
+| `metrics_service.py` | cluster_service, billing | `metrics_snapshots` |
+| `admin_service.py` | all services | `users`, `organizations` |
+| `policy_service.py` | cluster_service | `optimization_policies` |
+| `approval_service.py` | permission_service | `approvals`, `jit_access` |
+| `permission_service.py` | role_service | `permissions`, `feature_registry` |
+| `role_service.py` | — | `roles`, `role_permissions` |
+| `team_service.py` | organization_service | `teams`, `team_members` |
+| `organization_service.py` | auth_service | `organizations`, `org_members` |
+| `onboarding_service.py` | AWS STS/CloudFormation | `organizations`, `aws_accounts` |
+| `lab_service.py` | cluster_service | `experiments` |
+| `audit_service.py` | — | `audit_logs` |
+| `decision_engine_service.py` | pool_ranking, cooldown | `decision_logs` |
+| `diversity_enforcer.py` | cluster_service | `instances` |
+| `workload_inspector.py` | cluster_service | `instances`, `pod_metrics` |
+| `substitute_manager.py` | karpenter_service, cluster | `substitute_nodes` |
+| `pool_rotation_service.py` | pool_ranking_service | `pool_configs` |
+| `tag_policy_service.py` | — | `tag_policies` |
+| `tag_management_service.py` | — | `tag_templates` |
+| `tag_automation_service.py` | tag_policy_service | `tag_automation_rules` |
+| `tag_scoring_service.py` | tag_policy_service | `tag_scores` |
+| `tag_compliance_service.py` | tag_policy_service | `tag_compliance` |
+| `ri_analysis_service.py` | AWS CE | `ri_recommendations` |
+| `s3_tiering_service.py` | AWS S3 | `s3_tiering_recs` |
+| `rds_analysis_service.py` | AWS RDS | `rds_recommendations` |
+| `transfer_service.py` | AWS CE | `transfer_analysis` |
 
 ---
 
-### 20.3 ClusterDetails.jsx (1,161 lines)
+## Component Hierarchy Diagram
 
-**Tabs (4):** `Overview` · `Optimization Settings` · `Node Template` · `Activity Log`
-
-**Header Buttons:**
-| Button | Action | API |
-|---|---|---|
-| Instant Rebalance | `clusterAPI.optimize(clusterId)` | `POST /api/v1/clusters/{id}/optimize` |
-| Refresh | `fetchClusterDetails()` | Parallel fetch 11 endpoints |
-| Close (✕) | `onClose()` callback | — |
-
-**Overview Tab — Status Card (4 fields):**
-`Status Badge` · `Cluster ID (truncated)` · `Created Date` · `Last Heartbeat`
-
-**Utilization Card (5 KPIs):**
-`CPU Utilization %` · `Memory Utilization %` · `Pod Count` · `Node Count` · `Avg CPU/Mem per pod`
-
-**Workload Classification Card:**
-`Type Badge (STATELESS/STATEFUL/MIXED)` · `PVC Pods (x/total)` · `StatefulSet Pods (x/total)` · `Analysis text` · `Spot Optimization recommendation badge`
-
-**Node Details — Expandable Table (7 columns per pod):**
-`Pod Name (mono)` · `Namespace` · `Controller (Badge)` · `CPU (millicores)` · `Memory (MB)` · `Storage (PVC badge)` · `Type (Stateful/Stateless badge)`
-
-Each node header shows: `Instance Type` · `Lifecycle Badge (spot/on-demand)` · `Classification Badge` · `AZ` · `CPU %` · `Memory %` · `Pod Count` · `Expand Arrow (▶/▼)`
-
-**Cluster Metrics Card (7 KPIs):**
-`Total Instances` · `Spot Instances` · `On-Demand` · `Spot Ratio %` · `Monthly Cost` · `Estimated Savings` · `Avg CPU`
-
-**Decision Engine State Panel:**
-| Sub-element | Type | States |
-|---|---|---|
-| Optimization Mode | Dropdown | COST_FIRST / BALANCED / NO_DOWNTIME_FIRST |
-| Workload Capability | Badge | STATELESS (green) / STATEFUL (red) / UNKNOWN (gray) |
-| Substitute Engine | Badge | IDLE / PREWARMING (yellow + countdown) / ACTIVE (green + pool target) |
-| Circuit Breaker | Badge + Button | CLOSED (green) / OPEN (red) + "Resume Ops" button |
-| Cooldown Enforcer | Status Card | Duration (min) · Last Switch (time) · Status: LOCKED/READY |
-
-**Optimization Policy Card (6 fields):**
-`Spot Target %` · `Node Range (min-max)` · `Target CPU %` · `Target Memory %` · `Fallback (Enabled/Disabled)` · `Diversification (Enabled/Disabled)` · (or) `Configure Policy button`
-
-**Hibernation Schedule Card (6 fields):**
-`Strategy` · `Timezone` · `Pre-warm Minutes` · `Active Hours (x/168)` · `Last Action` · `Last Action At` · `Edit Schedule button`
-
----
-
-### 20.4 ClusterList.jsx (1,615 lines) — Inline Micro-Components
-
-**Inline Component Definitions:**
-| Component | Lines | Purpose |
-|---|---|---|
-| ToggleSwitch | L79–98 | Custom toggle (green=on, border=off) |
-| OptimizationSettingsTab | L101–242 | 5-toggle settings panel (inline in ClusterList) |
-| MiniBar | L244–254 | CPU/Memory utilization progress bar |
-| Tag | L257–266 | Tinted badge with neutral text |
-| MetricBox | L268–280 | Labeled metric card |
-| NodeTreemap | L285–557 | Paginated (20/page) node bubble visualization |
-| SpotRing | L561–582 | SVG donut chart for spot ratio |
-| ClusterListItem | L584–669 | Cluster card in sidebar list |
-| ClusterDetail | L680–end | Detail panel for selected cluster |
-| SectionHeader | L671–678 | Styled section label |
-
-**OptimizationSettingsTab — 5 Controls:**
-| Control | Type | API Field |
-|---|---|---|
-| Auto Rebalance (ML Spot Optimization) | ToggleSwitch | `automation_controls.auto_rebalance_enabled` |
-| Auto Right-Sizing | ToggleSwitch | `automation_controls.auto_rightsizing_enabled` |
-| Cooldown Duration Override | Number input (seconds) | `automation_controls.cooldown_override_minutes` |
-| Conservative Mode (Fresh Cluster Protection) | ToggleSwitch | `automation_controls.conservative_mode_enabled` |
-| Manual Approval Required (RBAC) | ToggleSwitch | `automation_controls.manual_approval_required` |
-
-**NodeTreemap Features:**
-- Utilization Legend: Critical ≥85% (red) · High 65–84% (amber) · Healthy 30–64% (green) · Low <30% (blue)
-- Node size: Large (≥64GB), Medium (≥32GB), Small (<32GB)
-- Hover tooltip portal: Name · Type · Instance · Workload · CPU · Memory · Pods · Age · Ready
-- Pagination: Prev/Next buttons + page number buttons
-- Node type breakdown strip: spot · fallback · on-demand counts
-
-**ClusterDetail Header Buttons:**
-| Button | Condition | Action |
-|---|---|---|
-| Install Agent | `agent_installed === 'N'` and status is `no-agent`/`DISCOVERED` | `clusterAPI.autoInstallAgent(id)` |
-| Refresh | Always visible | `refresh-clusters` event |
-| Disconnect | `agent_installed === 'Y'` | `clusterAPI.disconnectAgent(id)` with confirm |
-| Remove | Always visible | `clusterAPI.deleteCluster(id)` with confirm |
+```
+App.js
+├── PublicRoute
+│   ├── Login
+│   └── Signup
+├── ProtectedRoute
+│   ├── Onboarding (WelcomeStep → ConnectStep → VerifyStep → SuccessStep)
+│   └── MainLayout
+│       ├── Dashboard (CostKPI, SavingsKPI, SavingsChart, FleetComposition,
+│       │    ActivityFeed, ClusterHealth, PlatformHealth, PendingApprovals,
+│       │    AgentStatus, SpendForecast, TrendsChart, TenantList)
+│       ├── ClusterList → ClusterDetails (NodeList, NodeGroupBreakdown,
+│       │    SpotRatioGauge, UtilizationSparkline, HealthTimeline, NodeTemplateTab)
+│       ├── RightSizingDashboard (AutoModeBanner, ClusterHealthExposureBar,
+│       │    ResizeGuardPanel, StatelessSection, StatefulSection,
+│       │    KarpenterConfigPanel, RebalancingTimeline)
+│       ├── HibernationDashboard (Header, StatusBanner, ScheduleCalendar,
+│       │    ScheduleMatrix, HibernationWizard, EmergencyControls,
+│       │    CostAnalytics, ExecutionHistory, NotificationSettings)
+│       ├── CleanupDashboard (HeroMetrics, SavingsGauge, ResourceTable,
+│       │    CleanupSidebar, FilterPanel, BulkTagWizard)
+│       ├── AtharvaAiPage (PoolRankings, GlobalRankings, BlacklistMonitor,
+│       │    AutoRebalanceAudit, VolatilityMonitor, InterruptionHeatmap,
+│       │    DiversityGauge, DecisionEngineV3Dashboard)
+│       ├── PolicyConfig (CleanupPolicies, PermissionMatrix)
+│       ├── Settings (AccountSettings, CloudIntegrations, TeamManagement,
+│       │    GovernanceSettings, TagGovernancePage)
+│       ├── Approvals
+│       ├── AuditLog
+│       ├── Teams → TeamDetails (MembersTab, TeamsTab, RolesPoliciesTopTab)
+│       ├── Roles
+│       ├── NodeTemplates
+│       ├── RIAnalysis, S3Analysis, RDSAnalysis, TransferAnalysis
+│       ├── AccountAnalytics
+│       └── AdminRoute
+│           ├── AdminDashboard (AdminOverview)
+│           ├── AdminClients
+│           ├── AdminOrganizations
+│           ├── AdminHealth
+│           ├── AdminExperiments
+│           ├── AdminConfig (PlatformSettings)
+│           └── AdminBilling
+└── PermissionGate (wraps most routes)
+    └── ProtectedButton, ActiveJITBanner, JITRequestModal
+```
 
 ---
 
-### 20.5 Dashboard.jsx (853 lines) — Inline Micro-Components
+*Total: **139 component files** · **8 page files** · **25+ API modules** · **44 backend routes** · **65 backend services***
 
-**Inline Component Definitions:**
-| Component | Lines | Purpose |
+---
+
+## 18. Optimizer Coordinator Dashboard
+
+| UI Element | Type | Label | Action | API Endpoint | Method | Backend Route | Service | File |
+|---|---|---|---|---|---|---|---|---|
+| Optimizer status panel | Panel | Optimizer Status | Show evaluation state | `/api/v1/optimizer/status/{id}` | GET | `optimizer_coordinator_routes.py` | `optimizer_coordinator.py` | `optimizer/OptimizerCoordinatorDashboard.jsx` |
+| Trigger evaluation btn | Button | Trigger Evaluation | Run optimization cycle | `/api/v1/optimizer/evaluate/{id}` | POST | `optimizer_coordinator_routes.py` | `optimizer_coordinator.py` | `optimizer/OptimizerCoordinatorDashboard.jsx` |
+| Proposals table | Table | Proposals | List proposals | `/api/v1/optimizer/proposals/{id}` | GET | `optimizer_coordinator_routes.py` | `optimizer_coordinator.py` | `optimizer/OptimizerCoordinatorDashboard.jsx` |
+| Approve proposal btn | Button | Approve | Approve a proposal | `/api/v1/optimizer/proposals/{id}/approve` | POST | `optimizer_coordinator_routes.py` | `optimizer_coordinator.py` | `optimizer/OptimizerCoordinatorDashboard.jsx` |
+| Reject proposal btn | Button | Reject | Reject a proposal | `/api/v1/optimizer/proposals/{id}/reject` | POST | `optimizer_coordinator_routes.py` | `optimizer_coordinator.py` | `optimizer/OptimizerCoordinatorDashboard.jsx` |
+| EV comparison panel | Panel | Expected Value | Before/after comparison | `/api/v1/optimizer/comparison/{id}` | GET | `optimizer_coordinator_routes.py` | `optimizer_coordinator.py` | `optimizer/OptimizerCoordinatorDashboard.jsx` |
+| Trust phase indicator | Badge | Trust Phase | Show Observer/Advisor/Auto | `/api/v1/optimizer/trust-phase/{id}` | GET | `optimizer_coordinator_routes.py` | `optimizer_coordinator.py` | `optimizer/OptimizerCoordinatorDashboard.jsx` |
+| Resize guard status | Panel | Resize Guard | Show guard state | `/api/v1/optimizer/resize-guard/{id}` | GET | `optimizer_coordinator_routes.py` | `optimizer_coordinator.py` | `optimizer/OptimizerCoordinatorDashboard.jsx` |
+| Circuit breaker status | Panel | Circuit Breaker | Show breaker state | `/api/v1/optimizer/circuit-breaker/{id}` | GET | `optimizer_coordinator_routes.py` | `optimizer_coordinator.py` | `optimizer/OptimizerCoordinatorDashboard.jsx` |
+| Initialize cluster btn | Button | Initialize | Set up cluster optimizer | `/api/v1/optimizer/initialize/{id}` | POST | `optimizer_coordinator_routes.py` | `optimizer_coordinator.py` | `optimizer/OptimizerCoordinatorDashboard.jsx` |
+
+**Dependencies**: `optimizerCoordinatorAPI` → `optimizer_coordinator_routes.py` → `optimizer_coordinator.py` → `optimizer_proposals`, `clusters` tables
+
+---
+
+## 19. Dashboard Health Cards (Missing Widgets)
+
+| UI Element | Type | Label | Action | API Endpoint | Method | Backend Route | Service | File |
+|---|---|---|---|---|---|---|---|---|
+| S3 health card | Card | S3 Storage Health | S3 tiering summary | `/api/v1/s3/overview` | GET | `s3_routes.py` | `s3_tiering_service.py` | `s3/S3HealthCard.jsx` |
+| Refresh S3 btn | Button | ↻ | Refresh S3 data | `/api/v1/s3/overview` | GET | `s3_routes.py` | `s3_tiering_service.py` | `s3/S3HealthCard.jsx` |
+| View S3 details btn | Button | View Details | Navigate to S3 analysis | — (navigate) | — | — | — | `s3/S3HealthCard.jsx` |
+| Optimize S3 btn | Button | Optimize | Navigate to S3 analysis | — (navigate) | — | — | — | `s3/S3HealthCard.jsx` |
+| Transfer health card | Card | Data Transfer Health | Transfer cost summary | `/api/v1/transfer/overview` | GET | `transfer_routes.py` | `transfer_service.py` | `transfer/TransferHealthCard.jsx` |
+| Refresh transfer btn | Button | ↻ | Refresh transfer data | `/api/v1/transfer/overview` | GET | `transfer_routes.py` | `transfer_service.py` | `transfer/TransferHealthCard.jsx` |
+| View transfer btn | Button | View Details | Navigate to transfer analysis | — (navigate) | — | — | — | `transfer/TransferHealthCard.jsx` |
+
+---
+
+## 20. Backend-Only Routes (No Direct UI Component)
+
+These backend route files serve internal/agent/system functions without a dedicated frontend component:
+
+| Backend Route File | Prefix | Purpose | Service | Consumers |
+|---|---|---|---|---|
+| `agent_routes.py` | `/api/v1/agent/` | DaemonSet agent heartbeat & reporting | `agent_service.py` | Agent DaemonSet (not UI) |
+| `ai_agent_routes.py` | `/api/v1/ai-agent/` | AI-driven remediation agent | `chaos_testing_service.py` | Automated backend agent |
+| `decision_routes.py` | `/api/v1/decision/` | Decision engine logs & status | `decision_engine_service.py` | `decisionEngineAPI` in `api.js` |
+| `health_routes.py` | `/api/v1/health` | Liveness/readiness probe | — | Docker/K8s health checks |
+| `installer_routes.py` | `/api/v1/installer/` | Agent installer script generation | `agent_injector.py` | Onboarding flow (indirect) |
+| `pod_metrics_routes.py` | `/api/v1/pod-metrics/` | Pod-level CPU/memory metrics | `rightsizing_service.py` | `optimizationAPI` in `api.js` |
+| `worker_routes.py` | `/api/v1/worker/` | Agent-reported metrics ingestion | `cluster_service.py` | Agent DaemonSet (not UI) |
+
+---
+
+## 21. State Management & Utilities
+
+### Zustand Stores
+
+| Store | File | State Managed | Used By |
+|---|---|---|---|
+| `useAuthStore` | `store/useStore.js` | `user`, `accessToken`, `isAuthenticated`, `login()`, `logout()` | `App.js`, all ProtectedRoutes |
+| `useAtharvaStore` | `store/useAtharvaStore.js` | AtharvaAI panel state, selected cluster, cache | AtharvaAI components |
+| `useHibernationStore` | `store/useHibernationStore.js` | Hibernation wizard state, selected schedule | Hibernation components |
+
+### Custom Hooks
+
+| Hook | File | Purpose | Used By |
+|---|---|---|---|
+| `useDashboard` | `hooks/useDashboard.js` | Dashboard data fetching & widget state | `Dashboard.jsx` |
+| `usePermission` | `hooks/usePermission.js` | Permission checking helper | `PermissionGate.jsx`, `ProtectedButton.jsx` |
+
+### Utility Modules
+
+| Utility | File | Functions | Used By |
+|---|---|---|---|
+| `formatters` | `utils/formatters.js` | `formatCurrency()`, `formatDate()`, `formatBytes()` | Multiple components |
+
+---
+
+## 22. Barrel Re-export Index Files
+
+| File | Exports | Purpose |
 |---|---|---|
-| Badge | L46–55 | Pill badge with color |
-| Dot | L57–62 | Status dot |
-| SectionLabel | L64–70 | Uppercase section title |
-| EmptyChip | L72–80 | Empty state inline chip |
-| Sparkline | L83–93 | SVG polyline sparkline |
-| KpiCard | L96–131 | KPI metric card with trend arrow |
-| Card | L134–150 | Section card wrapper |
-| HealthMiniCard | L153–174 | Health check card (RI/S3/RDS/Transfer) |
-| FeatureRow | L177–200 | Governance feature list item |
-
-**Tabs (4):** `Overview` · `Cost Intelligence` · `Infrastructure` · `Governance`
-
-**Overview Tab Elements:**
-- 4 KPI Cards: `Monthly Spend` · `Net Savings` · `Spot Ratio` · `Total Nodes`
-- 3 Widgets: `SpendForecastWidget` · `AgentStatusWidget` · `ClusterHealthCard`
-- `FleetComposition` + `ActivityFeed` widgets
-- `PendingApprovalsCard`
-- Onboarding banner + `Connect AWS Account →` button (shown when no accounts + non-super-admin)
-
-**Cost Intelligence Tab Elements:**
-- 3 Feature Cards (Right-Sizing / AtharvaAI / Hibernation) — each has 4 KPI stats + navigation button
-- Resource Hygiene card: 4 KPIs (`Safe to Delete` · `Orphaned` · `Potential Savings` · `Last Scan`) + `Run Scan →` button
-- 4 Health Mini Cards: `RI Health` · `S3 Health` · `RDS Health` · `Data Transfer` — each with `Analyze →` CTA
-
-**Infrastructure Tab Elements:**
-- 4 KPI Cards: `Total Cost` · `Total Nodes` · `Total vCPU` · `Total Memory`
-- Clusters card with `Discover` + `View all →` buttons
-- Node Templates card with `Manage →` + `+ Create Template` buttons
-
-**Governance Tab Elements:**
-- 3 KPI Cards: `Pending Requests` · `Active Grants` · `Awaiting Consent`
-- Governance Features list: `Tagging Policies` · `Automation Settings` · `Approvals`
-- Teams & Members list: `Members` · `Teams` · `Roles & Policies`
+| `atharvaai/index.js` | All AtharvaAI components | Single import point for AtharvaAI |
+| `dashboard/widgets/index.js` | All dashboard widget components | Single import for dashboard widgets |
+| `hibernation/index.js` | `HibernationDashboard` (from `HibernationDashboardNew`) | Entry point for hibernation section |
+| `shared/index.js` | `Button`, `Card`, `Input`, `Badge`, `Switch`, `Dropdown`, `EmptyState`, `StatsCard`, `GaugeChart`, `RiskBadge` | Shared component library export |
 
 ---
 
-### 20.6 OptimizerCoordinatorDashboard.jsx (694 lines)
+## Complete File Count Summary
 
-**Cards (6 sections):**
-
-**1. Optimization Status Card (3 KPIs + Timeline):**
-| KPI | States |
-|---|---|
-| Current Phase | Badge: Pool Optimization (blue) / Stabilization (yellow) / Rightsizing Eval (purple) / Combined Execution (indigo) / Cooldown (gray) |
-| Pool Optimization | Ready (green) / Blocked (gray) + reason text |
-| Rightsizing Evaluation | Ready (green) / Blocked (gray) + reason text |
-
-**Phase Timeline** — 5-step visual: `Pool Optimization → Stabilization → Rightsizing Eval → Combined Execution → Cooldown` (active phase highlighted with blue border)
-
-**2. Cooldown Status Card (3 action types):**
-`resize` · `pool_switch` · `substitute` — each shows remaining minutes or "Ready"
-
-**3. Progressive Trust Phase Card (4 KPIs):**
-`Current Phase (0/1/2)` · `Cluster Age (hours)` · `Safety Buffer %` · `Min Samples` + status info banner
-
-**4. Post-Resize Guard Card (3 KPIs):**
-`Guard Status (Monitoring/Inactive)` · `Recent Executions (last 2h)` · `Active Proposals being monitored` + Health check rules: CPU >85%, Pod restarts 2x baseline, Memory pressure >5 events
-
-**5. Resize Circuit Breaker Card (3 KPIs + Alerts):**
-| KPI | States |
-|---|---|
-| Status | OPEN (red bg) / CLOSED (green bg) |
-| Failures (24h) | count / threshold — turns red when at threshold |
-| Auto Reset | 24h when open, N/A when closed |
-
-Alerts: Red warning when OPEN, Yellow caution when failures > 0 but not open
-
-**6. Rightsizing Proposals Card:**
-- Refresh button
-- Proposal list — each shows: `Status Badge (PENDING/APPROVED/REJECTED/EXECUTED)` · `Created date` · `Current → Proposed instance type` · `Savings $/mo` · `Savings %` · `Rejection reason` · `Execute button (APPROVED only)`
-
-**EV Comparison Panel (3 options):**
-| Option | Fields | Highlight |
+| Category | Count | Location |
 |---|---|---|
-| Option A (Pool optimization) | Hourly cost, Savings, Risk %, EV | Blue border if recommended |
-| Option B (Rightsizing) | Hourly cost, Savings, Risk %, EV | Blue border if recommended |
-| Option C (Baseline) | Hourly cost, No change, Risk %, EV | Blue border if recommended |
-
-**Action Buttons (approval flow):**
-- `Approve & Execute` button (FiCheck icon) — for PENDING proposals
-- `Reject` button (FiX icon) — prompts for rejection reason
-- `Close (✕)` — dismiss EV comparison
-
----
-
-### 20.7 HibernationDashboardNew.jsx — Key Sub-Elements
-
-**Tabs:** `Schedules` · `History` · `Savings`
-
-**Schedule Card Sub-Elements:**
-- Toggle per schedule (active/inactive)
-- Edit button per schedule
-- Delete button per schedule
-- Weekly matrix grid (168 hour cells: 24h × 7 days) with click-to-toggle
-- Strategy dropdown (`namespace_sleep` / `node_scale_down` / `combined`)
-- Timezone select dropdown
-- Pre-warm minutes number input
-- Save Schedule button
-- Cancel button
-
-**History Tab:**
-- Execution history table columns: `Timestamp` · `Action (Hibernate/Wake)` · `Strategy` · `Status (Badge)` · `Duration` · `Savings`
-- Live Progress Banner (during active execution)
-
-**Savings Tab:**
-- Savings report KPIs: `Total Saved` · `Avg per Schedule` · `Non-Business Hours Covered %`
-- Savings history chart placeholder
+| Frontend Components (`.jsx`) | 139 | `frontend/src/components/` |
+| Frontend Pages (`.jsx`) | 8 | `frontend/src/pages/` |
+| Barrel Index Files (`.js`) | 4 | Various `index.js` |
+| Dashboard Utility (`.js`) | 2 | `roleDefaults.js`, `widgetRegistry.js` |
+| Zustand Stores (`.js`) | 3 | `frontend/src/store/` |
+| Custom Hooks (`.js`) | 2 | `frontend/src/hooks/` |
+| Utility Modules (`.js`) | 1 | `frontend/src/utils/` |
+| API Client (`.js`) | 1 | `frontend/src/services/api.js` |
+| App Entry (`.js`) | 2 | `App.js`, `index.js` |
+| **Frontend Total** | **162** | |
+| Backend Route Files (`.py`) | 44 | `backend/api/` |
+| Backend Services (`.py`) | 65 | `backend/services/` |
+| Backend Models | 65 | `backend/models/` |
+| Backend Schemas | 26 | `backend/schemas/` |
+| Backend Workers | 37 | `backend/workers/` |
+| **Backend Total** | **237** | |
+| **Grand Total** | **399** | |
 
 ---
 
-### 20.8 Right-Sizing Components — Key Sub-Elements
+## APPENDIX A: Internal Sub-Components & Subsection Breakdown
 
-**RightSizingDashboard.jsx:**
-- Cluster selector dropdown
-- Time range selector (24h / 7d / 30d)
-- Recommendation table columns: `Controller` · `Namespace` · `Kind` · `Current CPU` · `Recommended CPU` · `Current Memory` · `Recommended Memory` · `Savings` · `Confidence Badge` · `Action (Apply)`
-- Apply button per row
-- Apply All button
-- Refresh button
-
-**EVDelta.jsx:**
-- EV delta visualization bars (current vs proposed)
-- Savings percentage badge per controller
-
-**InstanceFallbackChain.jsx:**
-- Fallback chain table: `Priority` · `Instance Type` · `Status` · `Price` · `TTL`
-- Override button
-
-**KarpenterModeToggle.jsx:**
-- Mode toggle: `Insights Only (dry-run)` vs `Auto-Optimize`
-- Mode description text
-- Confirmation modal on mode switch
+This appendix documents every inline sub-component, tab, panel, and nested UI element defined inside the major component files but not exported as standalone files.
 
 ---
 
-### 20.9 Admin Components — Key Sub-Elements
+### A.1 Dashboard (`Dashboard.jsx` — 969 lines)
 
-**AdminDashboard.jsx:**
-- System health KPI cards: `Active Clusters` · `Healthy Agents` · `API Latency` · `Error Rate`
-- Recent audit log table
+**Tabs**: Overview (default), Widget Configuration
 
-**AdminHealth.jsx:**
-- Service status list: each service shows name + status badge (healthy/degraded/down)
-- Database connection pool status
-- Memory usage gauge
-- CPU usage gauge
+**Inline Sub-Components:**
 
-**AdminClients.jsx:**
-- Client list table: `Name` · `Organization` · `Status Badge` · `Clusters` · `Last Active`
-- Add Client button
-- Edit/Delete action buttons per row
+| Sub-Component | Type | Purpose | Lines |
+|---|---|---|---|
+| `Badge` | Display | Colored label chip | L46–56 |
+| `Dot` | Display | Status dot indicator | L58–63 |
+| `SectionLabel` | Display | Uppercase section header | L65–71 |
+| `EmptyChip` | Display | Empty state placeholder | L73–81 |
+| `Sparkline` | Chart | SVG mini line chart | L83–94 |
+| `KpiCard` | Card | Main KPI metric with trend | L96–132 |
+| `Card` | Container | Section wrapper with title | L134–151 |
+| `HealthMiniCard` | Card | RI/S3/RDS/Transfer mini card | L153–175 |
+| `FeatureRow` | Row | Optimization feature status row | L177–201 |
 
-**AdminBilling.jsx:**
-- Billing summary cards
-- Invoice table: `Date` · `Amount` · `Status` · `Download` button
+**Dashboard Layout Sections:**
+1. **KPI Row** — 4x `KpiCard` (Total cost, Total savings, Cluster count, Active agents)
+2. **Feature Status** — `FeatureRow` items (Spot Optimization, Auto-Rebalancing, Right-Sizing, Hibernation)
+3. **Health Mini Cards** — `HealthMiniCard` items (RI Analysis, S3 Tiering, RDS Analysis, Data Transfer)
+4. **Fleet Composition** — `FleetComposition` widget (pie chart)
+5. **Savings Chart** — `SavingsChart` widget (bar chart)
+6. **Trends Chart** — `TrendsChart` widget (area chart, multi-cluster)
+7. **Cluster Health** — `ClusterHealthCard` grid
+8. **Platform Health** — `PlatformHealthCard`
+9. **Pending Approvals** — `PendingApprovalsCard`
+10. **Activity Feed** — `ActivityFeed` (combined audit logs + multi-cluster actions)
+11. **Agent Status** — `AgentStatusWidget`
+12. **Tenant List** — `TenantListCard` (admin-only)
+13. **Spend Forecast** — `SpendForecastWidget`
 
 ---
 
-### 20.10 Settings & Other Components — Key Sub-Elements
+### A.2 Clusters (`ClusterList.jsx` — 2011 lines)
 
-**Settings.jsx:**
-- Profile section: email, name display
-- Notification preferences toggles
-- API key management (reveal/regenerate)
-- Theme toggle (if present)
+**Tabs/Views**: Cluster List View → Cluster Detail Panel (slide-in)
 
-**Shared Components (shared/):**
-- `Button.jsx`: variants = `primary` / `outline` / `ghost` / `danger`, sizes = `sm` / `md` / `lg`, supports `icon` prop, `loading` state
-- `Card.jsx`: wrapper with border/shadow, optional `title` prop
-- `Badge.jsx`: colors = `green` / `blue` / `yellow` / `red` / `purple` / `gray` / `indigo`, sizes = `sm` / `lg`
-- `Modal.jsx`: overlay + centered content + close button
-- `Input.jsx`: text/number/password with label + error state
+**Inline Sub-Components:**
 
-**Dashboard Widgets (dashboard/widgets/):**
-- `ActivityFeed.jsx`: action log list with status dot (success/error/info)
-- `AgentStatusWidget.jsx`: agent connection status + count
-- `ClusterHealthCard.jsx`: cluster health summary
-- `FleetComposition.jsx`: fleet stats visualization
-- `PendingApprovalsCard.jsx`: pending approval list
-- `SpendForecastWidget.jsx`: projected spend chart
+| Sub-Component | Type | Purpose | Lines |
+|---|---|---|---|
+| `ToggleSwitch` | Toggle | Animated on/off switch | L81–101 |
+| `OptimizationSettingsTab` | Panel | Settings for auto-rebalance/rightsizing/standby/diversify/cooldown | L103–360 |
+| `MiniBar` | Chart | Inline utilization bar | L362–372 |
+| `Tag` | Display | Tinted tag/badge chip | L374–384 |
+| `MetricBox` | Card | Labeled metric with icon | L386–398 |
+| `NodeTreemap` | Visualization | Treemap grid of cluster nodes (paginated, 20/page) | L403–680 |
+| `SpotRing` | Chart | SVG donut showing spot ratio | L682–704 |
+| `ClusterListItem` | Row | Single cluster row with sparkline | L706–791 |
+| `SectionHeader` | Display | Section heading | L793–800 |
+| `ClusterDetail` | Panel | Full cluster detail (connected agent) | L802–1445 |
+| `NoAgentDetail` | Panel | Cluster detail (no agent) | L1447–1555 |
+| `ClustersPage` | Page | Main clusters page with list + detail | L1557–2011 |
 
-**AtharvaAI Additional Components:**
-- `OptimizationModeSelector.jsx`: 3-mode radio card selector (COST_FIRST / BALANCED / NO_DOWNTIME_FIRST) with descriptions + save
-- `AutoRebalanceAuditCard.jsx`: audit entries table + status badges
-- `RebalancingTimeline.jsx`: timeline event list with action badges
-- `InterruptionHeatmap.jsx`: heatmap grid (instance type × AZ) with color intensity
-- `GlobalPoolCache.jsx`: cache hit/miss stats + pool list table + TTL badges
-- `WorkloadClassificationView.jsx`: classification badge + pod breakdown
-- `VolatilityMonitor.jsx`: real-time volatility feed + regime badges
+**ClusterDetail Internal Sections:**
+1. **Header** — Cluster name, status, region, agent version
+2. **Metrics Row** — CPU utilization, Memory utilization, Node count, Spot ratio (SpotRing)
+3. **Node Treemap** — Visual grid of all nodes with type coloring
+4. **Optimization Settings Tab** — Toggle switches (auto-rebalance, auto-rightsizing, maintain-standby, diversify-pools, failure-cooldown)
+5. **Actions Bar** — Optimize, Fallback, Disconnect, Delete buttons
 
-**Cluster Additional Components:**
-- `NodeList.jsx`: node table with status/type/utilization per node
-- `NodeGroupBreakdown.jsx`: node group cards with instance counts
-- `ClusterHealthTimeline.jsx`: health event timeline
-- `NodeTemplateTab.jsx`: node template CRUD — create/edit/delete forms with fields: Name, Architectures multi-select, vCPU min/max, Memory min/max, Allowed Families multi-select, Excluded Types list, Allowed Zones checkboxes
+**OptimizationSettingsTab Subsections:**
+1. **Auto-Rebalance Toggle** — Enable/disable with description
+2. **Auto-Rightsizing Toggle** — Enable/disable with description
+3. **Maintain Standby Toggle** — Keep warm spare nodes
+4. **Diversify Spot Pools Toggle** — Spread across instance pools
+5. **Failure Cooldown Input** — Minutes input (0–120)
+6. **Node Template Selector** — Active template mapping display
+
+---
+
+### A.3 Cluster Details (`ClusterDetails.jsx` — 1312 lines)
+
+**Tabs**: Overview, Nodes, Configuration, Node Templates, Health
+
+| Tab | Sub-Component | API Used | Content |
+|---|---|---|---|
+| Overview | Inline metrics | `clusterAPI.getCluster` | Status, utilization, savings, spot ratio |
+| Nodes | `NodeList` | `clusterAPI.getNodesDetailed` | Sortable node table with types |
+| Nodes | `NodeGroupBreakdown` | `clusterAPI.getNodes` | Pie chart by node group |
+| Configuration | `PolicyConfig` inline | `policyAPI.getPolicy` | Per-cluster policy settings |
+| Node Templates | `NodeTemplateTab` | `nodeTemplateAPI.getActiveMapping` | Template assignment |
+| Health | `ClusterHealthTimeline` | `clusterAPI.getCluster` | Health event timeline |
+
+**Action Buttons:**
+- Optimize → `clusterAPI.optimize(id)`
+- Fallback → `clusterAPI.fallback(id)`
+- Disconnect Agent → `clusterAPI.disconnectAgent(id)`
+- Remove Agent → `clusterAPI.removeAgent(id)`
+- Mode Selector → `clusterAPI.updateCluster(id, data)`
+
+---
+
+### A.4 Right-Sizing (`RightSizingDashboard.jsx` — 1169 lines)
+
+**Tabs**: Live View (default), History, Configuration
+
+**Inline Sub-Components:**
+
+| Sub-Component | Type | Purpose | Lines |
+|---|---|---|---|
+| `Card` | Container | Section wrapper | L36–40 |
+| `SectionLabel` | Display | Section header | L42–46 |
+| `Badge` | Display | Status/count badge | L48–54 |
+| `AutoModeBanner` | Banner | Shows auto-rebalance + auto-rightsizing ON/OFF | L59–112 |
+| `ClusterHealthExposureBar` | Panel | 4-column card (Total/Stateless/Stateful/Eligible nodes) | L114–177 |
+| `ResizeGuardMonitoringPanel` | Panel | Guard & stability metrics (rollbacks, triggers, circuit) | L179–218 |
+| `StatelessDetailedDrawer` | Modal | Node detail with candidates, readiness checks, apply | L220–265 |
+| `StatefulProposalModal` | Modal | OD resize proposal flow with approval | L267–328 |
+| `StatelessSection` | Table | Stateless nodes table with Apply buttons | L331–513 |
+| `StatefulSection` | Table | Stateful nodes table with Request Approval | L516–608 |
+| `KarpenterConfigPanel` | Form | Full config panel (strategy, spot%, families, toggles) | L610–778 |
+| `KarpenterConfigPanel.ToggleSwitch` | Toggle | Inline toggle for config | L653–657 |
+| `KarpenterConfigPanel.ToggleRow` | Row | Label + description + toggle | L659–667 |
+
+**Live View Subsections:**
+1. **Auto Mode Banner** — Shows automation status
+2. **Cluster Health & Exposure** — Node count cards with change indicators
+3. **Guard Panel** — Rollbacks, emergency triggers, circuit breaker
+4. **Stateless Nodes Table** — Sortable table with per-node Apply button + Apply All
+5. **Stateful Nodes Table** — Table with Request Approval workflow
+
+**History Tab Subsections:**
+1. **Savings KPIs** — Total resizes, total savings, success rate cards
+2. **Execution Plan Table** — Proposals from optimizer with Approve/Reject buttons
+3. **Action History Table** — Past resize actions with timestamps
+
+**Configuration Tab Subsections:**
+1. **Strategy Selector** — Balanced/Cost/Performance button group
+2. **Spot Target Slider** — Percentage selector (0–100%)
+3. **Instance Families** — Togglable chip list (m5, c5, r5, etc.)
+4. **Feature Toggles** — Diversify pools, AZ awareness, graviton preference
+
+---
+
+### A.5 AtharvaAI (`AtharvaAiPage.jsx` — 123 lines)
+
+**Tabs** (via URL `?tab=`):
+
+| Tab | URL Param | Components Rendered |
+|---|---|---|
+| Dashboard (default) | `dashboard` | `BlacklistMonitorCard`, `AutoRebalanceAuditCard`, `InterruptionHeatmap`, `RebalancingTimeline`, `PoolRankings` |
+| Rankings | `rankings` | `PoolRankings` only |
+| Heatmap | `heatmap` | `InterruptionHeatmap` only |
+| Rebalancing | `rebalancing` | `AutoRebalanceAuditCard`, `RebalancingTimeline` |
+| Decision Engine v3 | `decision-engine-v3` | `DecisionEngineV3Dashboard` |
+
+---
+
+### A.6 Hibernation (`HibernationDashboardNew.jsx` — 1124 lines)
+
+**Tabs**: Dashboard, Schedules, Calendar, Wizard, Emergency, Analytics, History, Notifications, Settings
+
+| Tab | Content | Key Sub-Components |
+|---|---|---|
+| Dashboard | Summary metrics + quick actions | `DashboardTab`, `ClusterOverview` |
+| Schedules | Schedule list with toggle/edit/delete | `UnifiedScheduleGrid`, `ScheduleModal` |
+| Calendar | Visual week/month calendar | `ScheduleCalendar` |
+| Wizard | Guided setup flow | `HibernationWizard`, `HibernationTypeCard`, `StrategySelector`, `ScheduleBuilder` |
+| Emergency | Force wake/sleep controls | `EmergencyControls`, `StatusBanner` |
+| Analytics | Cost savings analytics | `CostAnalytics`, `CostAnalyticsDashboard` |
+| History | Past execution log | `ExecutionHistory`, `AuditHistory`, `HistoryLog` |
+| Notifications | Alert preferences | `NotificationSettings` |
+| Settings | Advanced config | `AdvancedConfiguration`, `TimeBasedRules`, `MultiTimezone`, `ValidationPanel` |
+
+---
+
+### A.7 Cleanup (`CleanupDashboard.jsx` — 1123 lines)
+
+**Layout**: Sidebar + Main Content
+
+**Inline Sub-Components:**
+
+| Sub-Component | Type | Purpose | Lines |
+|---|---|---|---|
+| `StatusPill` | Display | Resource status colored pill | L47–62 |
+| `SectionLabel` | Display | Section header | L64–71 |
+| `KpiCard` | Card | Summary metric card | L73–87 |
+| `Checkbox` | Input | Selectable checkbox with indeterminate | L89–109 |
+| `Sidebar` | Navigation | Resource category sidebar | L111–218 |
+| `ResourceTable` | Table | Main resource table with selection | L220–389 |
+| `AnimatedNum` | Display | Animated number counter | L391–405 |
+| `RingGauge` | Chart | SVG ring/donut gauge | L407–427 |
+| `SparkBars` | Chart | Mini bar chart | L429–442 |
+
+**Main Page Sections:**
+1. **Account Selector** — Dropdown to select AWS account
+2. **Summary KPIs** — Total waste, potential savings, resources scanned, compliance %
+3. **Sidebar Categories** — Unattached Volumes, Idle IPs, Old Snapshots, Unused SGs, etc.
+4. **Resource Table** — Filtered by category, with status pills, bulk select, action buttons
+5. **Action Bar** — Delete/Cleanup/Tag/Export buttons for selected resources
+6. **Wizard Modals** — `RDSWizard`, `RIWizard`, `S3Wizard` slide-in panels
+
+---
+
+### A.8 Settings (`Settings.jsx` — 220 lines)
+
+**Tabs**: Account, Integrations, Billing
+
+| Tab | Component | Key Elements |
+|---|---|---|
+| Account | `AccountSettings` | Profile form, password change, org info, connection info |
+| Integrations | `CloudIntegrations` | AWS account list, add account, validate, set default |
+| Billing | `BillingTab` (inline) | Plan info, usage metrics, manage billing portal button |
+
+**`AccountSettings` Subsections:**
+- Profile info (name, email)
+- Change Password form
+- Organization details
+- Connection Info (org ID, API key)
+
+**`CloudIntegrations` Subsections:**
+- AWS Accounts table
+- Add Account modal
+- Validate button per account
+- Set Default button per account
+
+---
+
+### A.9 Tag Governance (`TagGovernancePage.jsx` — 1561 lines)
+
+**Tabs/Sidebar Sections:**
+
+| Section | Content | API Module |
+|---|---|---|
+| Policies | Tag policy CRUD with enforce/audit modes | `tagPolicyAPI` |
+| Templates | Key templates (required keys + defaults) | `tagTemplateAPI` |
+| Automation | Auto-tagging rules and schedules | `tagAutomationAPI` |
+| Scoring | Tag health scores per resource/account | `tagScoringAPI` |
+| Compliance | Compliance reports and violation lists | `tagComplianceAPI` |
+
+**Inline Sub-Components (20+):**
+
+| Sub-Component | Type | Purpose |
+|---|---|---|
+| `Ico` | Icon | SVG icon renderer |
+| `Badge` | Display | Variant-colored badge |
+| `Toggle` | Input | On/off toggle switch |
+| `Btn` | Button | Primary/secondary/ghost button |
+| `Input` | Input | Label + hint + error form input |
+| `Select` | Input | Dropdown select |
+| `Card` | Container | Section card |
+| `InfoBanner` | Alert | Blue/yellow info banner |
+| `Modal` | Modal | Full modal with header/footer |
+| `ScoreDonut` | Chart | SVG donut score visualization |
+| `ComplianceBar` | Chart | Compliance percentage bar |
+
+---
+
+### A.10 Approvals (`Approvals.jsx` — 506 lines)
+
+**Tabs** (client-side filter):
+
+| Tab | Filter | Content |
+|---|---|---|
+| Pending | `status == pending` | Tickets awaiting approval/rejection |
+| Active | `status == approved` | Currently active JIT access grants |
+| History | `status in [rejected, expired, revoked]` | Past decisions |
+| Outgoing | `requester == currentUser` | User's own requests |
+
+**Action Buttons per Tab:**
+- Pending: Approve, Reject
+- Active: Revoke
+- Outgoing: Cancel (if pending)
+
+---
+
+### A.11 Team Details (`TeamDetails.jsx` — 463 lines)
+
+**Tabs:**
+
+| Tab | Content | API |
+|---|---|---|
+| Members | Member list with roles, invite, remove | `teamAPI.get(id)` |
+| Analytics | Team cost/savings metrics, charts | `metricsAPI.getTeamSummary(id)` |
+| Governance | Team-level governance config | `teamAPI.updateGovernance(id, config)` |
+
+**Members Tab Subsections:**
+- Member table (name, email, role, last active)
+- Invite form (email, role dropdown)
+- Remove member button (with confirmation)
+
+---
+
+### A.12 Governance Settings (`GovernanceSettings.jsx` — 254 lines)
+
+**Sections** (no tabs, single scroll page):
+
+| Section | Toggle/Control | API |
+|---|---|---|
+| Auto-Rightsizing | Enable/Disable toggle + mode (Insights/Auto) | `governance/policies` PATCH |
+| Auto-Rebalancing | Enable/Disable toggle + aggressiveness slider | `governance/policies` PATCH |
+| Hibernation Automation | Enable/Disable toggle | `governance/policies` PATCH |
+| Approval Requirements | Require approval for destructive actions toggle | `governance/policies` PATCH |
+| Cost Threshold | Dollar amount threshold for auto-approval | `governance/policies` PATCH |
+
+---
+
+### A.13 Admin Components Internal Sections
+
+**AdminOverview (`AdminOverview.jsx`):**
+- Platform Stats Cards (Total orgs, Total users, Active clusters, Monthly revenue)
+- Agent Fleet status grid
+- Recent activity feed
+
+**AdminClients (`AdminClients.jsx`):**
+- Search + filter bar
+- Client table (name, email, org, status, last login)
+- Actions: Toggle status, Reset password, Impersonate
+
+**AdminOrganizations (`AdminOrganizations.jsx`):**
+- Organization table with pagination
+- Actions: Toggle org, View details, Impersonate
+
+**AdminHealth (`AdminHealth.jsx`):**
+- Backend service health grid
+- Database connection status
+- Redis connection status
+- Worker queue depths
+
+**AdminExperiments (`AdminExperiments.jsx`):**
+- Experiment list table
+- Create experiment form
+- Start/Stop buttons
+- Results panel
+
+**AdminBilling (`AdminBilling.jsx`):**
+- Revenue summary cards
+- Organization billing breakdown table
+- Stripe portal integration
+
+**AdminConfig (`AdminConfig.jsx`) / PlatformSettings:**
+- Feature flags table with toggles
+- System configuration parameters

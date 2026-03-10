@@ -1,14 +1,12 @@
 """
-Seed data migration - Default users and templates
+Seed data migration - Default admin user and node templates
 
 Revision ID: 002
 Revises: 001
-Create Date: 2025-12-31 12:51:00
+Create Date: 2026-03-07
 
 """
 from alembic import op
-import sqlalchemy as sa
-from datetime import datetime
 import uuid
 
 # revision identifiers, used by Alembic.
@@ -21,18 +19,18 @@ depends_on = None
 def upgrade() -> None:
     # Create default super admin user
     # Password: "admin123" (should be changed immediately in production)
-    # Hash generated with bcrypt
     admin_id = str(uuid.uuid4())
     op.execute(f"""
         INSERT INTO users (id, email, password_hash, role, created_at, updated_at)
         VALUES (
             '{admin_id}',
             'admin@spotoptimizer.com',
-            '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewY5PqgZ1y6zGjWG',
+            '$2b$12$N17vanzmiH1SCRRjRQjEzeipKGRondLrG0QRiDId1wgcjL0m0KKv.',
             'SUPER_ADMIN',
             NOW(),
             NOW()
         )
+        ON CONFLICT (email) DO NOTHING
     """)
 
     # Create default node templates for the admin user
@@ -84,7 +82,7 @@ def upgrade() -> None:
     ]
 
     for template in templates:
-        families_str = '{' + ','.join(template['families']) + '}'
+        families_str = "ARRAY[" + ", ".join(f"'{f}'" for f in template['families']) + "]"
         op.execute(f"""
             INSERT INTO node_templates (
                 id, user_id, name, families, architecture,
@@ -95,7 +93,7 @@ def upgrade() -> None:
                 '{template['id']}',
                 '{template['user_id']}',
                 '{template['name']}',
-                ARRAY{families_str},
+                {families_str},
                 '{template['architecture']}',
                 '{template['strategy']}',
                 '{template['disk_type']}',

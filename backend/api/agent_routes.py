@@ -156,11 +156,14 @@ async def agent_heartbeat(
     
     # Update heartbeat timestamp
     cluster.last_heartbeat = datetime.utcnow()
-    
-    # Ensure status is ACTIVE if receiving heartbeats
-    if cluster.status != ClusterStatus.ACTIVE:
-        cluster.status = ClusterStatus.ACTIVE
-        cluster.agent_installed = "Y"
+
+    # Self-heal: always mark ACTIVE + agent_installed=Y when a live heartbeat arrives.
+    # The old condition (only if status != ACTIVE) left the cluster stuck at
+    # agent_installed='N' after node-termination events where deregister() fired but
+    # new agent pods couldn't recover because status was back to ACTIVE while
+    # agent_installed stayed 'N'.
+    cluster.status = ClusterStatus.ACTIVE
+    cluster.agent_installed = "Y"
     
     db.commit()
     
@@ -275,4 +278,152 @@ async def submit_action_result(
         f"(type={action.action_type.value})"
     )
 
-    return {"success": True, "action_id": action_id, "status": action.status.value}
+
+# ── T18: Spot Interruption + Rebalance Recommendation Endpoints ─────────────
+
+import logging as _logging
+_t18_logger = _logging.getLogger(__name__)
+
+
+class SpotInterruptionRequest(BaseModel):
+    instance_id: str
+    node_name: str
+    cluster_id: str
+    region: str
+    az: str
+    instance_type: str
+
+
+@router.post("/spot-interruption")
+async def handle_spot_interruption(request: SpotInterruptionRequest):
+    """
+    Receive a spot interruption notice from agent/IMDS polling.
+    Delegates to EmergencyEventProcessor for deduplication and handling.
+    """
+    try:
+        from backend.services.emergency_event_processor import EmergencyEventProcessor
+        processor = EmergencyEventProcessor()
+        result = processor.process(
+            event_type='termination',
+            instance_id=request.instance_id,
+            node_name=request.node_name,
+            cluster_id=request.cluster_id,
+            region=request.region,
+            az=request.az,
+            instance_type=request.instance_type,
+        )
+        return result
+    except Exception as e:
+        _t18_logger.error(f"[agent] spot-interruption processing failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/rebalance-recommendation")
+async def handle_rebalance_recommendation(request: SpotInterruptionRequest):
+    """
+    Receive a rebalance recommendation event from agent/IMDS polling.
+    Delegates to EmergencyEventProcessor for rebalance tracking.
+    """
+    try:
+        from backend.services.emergency_event_processor import EmergencyEventProcessor
+        processor = EmergencyEventProcessor()
+        result = processor.process(
+            event_type='rebalance',
+            instance_id=request.instance_id,
+            node_name=request.node_name,
+            cluster_id=request.cluster_id,
+            region=request.region,
+            az=request.az,
+            instance_type=request.instance_type,
+        )
+        return result
+    except Exception as e:
+        _t18_logger.error(f"[agent] rebalance-recommendation processing failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Orchestrator command endpoints ────────────────────────────────────────────
+
+class OrchestratorCommandResult(BaseModel):
+    """Result reported back by the in-cluster orchestrator after executing a command."""
+    action_id: str
+    cluster_id: str
+    success: bool
+    result: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
+    executed_at: Optional[str] = None
+
+
+@router.get("/orchestrator/{cluster_id}/pending-commands")
+async def get_pending_commands(
+    cluster_id: str,
+    db: Session = Depends(get_db),
+):
+    """
+    Return a list of PENDING AgentActions for the given cluster.
+    Called by the orchestrator (not the DaemonSet agent) to poll for work.
+    """
+    from backend.models.agent_action import AgentAction, AgentActionStatus
+    from datetime import datetime as _dt
+
+    pending = (
+        db.query(AgentAction)
+        .filter(
+            AgentAction.cluster_id == cluster_id,
+            AgentAction.status == AgentActionStatus.PENDING,
+        )
+        .order_by(AgentAction.created_at)
+        .limit(20)
+        .all()
+    )
+
+    commands = []
+    for action in pending:
+        commands.append({
+            "action_id": action.id,
+            "action_type": action.action_type.value if hasattr(action.action_type, "value") else str(action.action_type),
+            "payload": action.payload or {},
+            "created_at": action.created_at.isoformat() if action.created_at else None,
+        })
+        # Mark as PICKED_UP so we don't re-deliver
+        action.status = AgentActionStatus.PICKED_UP
+        action.picked_up_at = _dt.utcnow()
+
+    if pending:
+        db.commit()
+
+    return {"cluster_id": cluster_id, "commands": commands, "count": len(commands)}
+
+
+@router.post("/orchestrator/{cluster_id}/command-result")
+async def report_command_result(
+    cluster_id: str,
+    result: OrchestratorCommandResult,
+    db: Session = Depends(get_db),
+):
+    """
+    Receive the execution result of a previously issued orchestrator command.
+    Updates the AgentAction status to COMPLETED or FAILED.
+    """
+    from backend.models.agent_action import AgentAction, AgentActionStatus
+    from datetime import datetime as _dt
+
+    if result.cluster_id != cluster_id:
+        raise HTTPException(status_code=400, detail="cluster_id mismatch in path vs body")
+
+    action = db.query(AgentAction).filter(AgentAction.id == result.action_id).first()
+    if not action:
+        raise HTTPException(status_code=404, detail=f"AgentAction {result.action_id} not found")
+
+    action.status = AgentActionStatus.COMPLETED if result.success else AgentActionStatus.FAILED
+    action.completed_at = _dt.fromisoformat(result.executed_at) if result.executed_at else _dt.utcnow()
+    action.result = result.result
+    action.error_message = result.error if not result.success else None
+    db.commit()
+
+    return {
+        "action_id": result.action_id,
+        "cluster_id": cluster_id,
+        "status": action.status.value,
+        "recorded_at": _dt.utcnow().isoformat(),
+    }

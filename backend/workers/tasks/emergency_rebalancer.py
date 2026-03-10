@@ -1,0 +1,277 @@
+"""
+Emergency Rebalancer — Standby-Aware Spot Interruption Handler
+================================================================
+
+Dedicated Celery task for handling spot interruptions with a
+standby-first strategy:
+
+1. If a standby node is available → UNCORDON it, drain the interrupted
+   node, terminate it, and launch a new standby.
+2. If no standby → fall back to normal emergency launch (launch new
+   spot, wait for it, drain interrupted node).
+
+Triggered by:
+- SQS messages from EventBridge (spot interruption warning)
+- Direct HTTP calls from the agent (metadata polling)
+- recovery_monitor task (orphaned instance detection)
+"""
+
+from datetime import datetime, timedelta
+from backend.core.logger import logger
+from backend.workers.app import app
+from backend.core.config import EMERGENCY_COOLDOWN_MINUTES
+
+
+@app.task(name="emergency_rebalancer", bind=True, max_retries=1)
+def emergency_rebalancer(
+    self,
+    cluster_id: str,
+    instance_id: str,
+    reason: str = "spot_interruption",
+):
+    """
+    Handle spot interruption with standby-first strategy.
+
+    Args:
+        cluster_id: Cluster ID
+        instance_id: Instance DB ID of the interrupted node
+        reason: "spot_interruption" or "recovery"
+    """
+    from backend.models.base import get_db, generate_uuid
+    from backend.models.cluster import Cluster
+    from backend.models.instance import Instance
+    from backend.models.agent_action import AgentAction, AgentActionType, AgentActionStatus
+    from backend.models.rebalancing_action import RebalancingAction
+    from backend.core.redis_client import get_redis_client, key_cluster_cooldown, key_blacklist_global, key_rebalance_lock
+
+    db = next(get_db())
+    redis = get_redis_client()
+
+    # Override cooldowns — emergency takes priority
+    redis.delete(key_cluster_cooldown(cluster_id))
+    redis.delete(key_rebalance_lock(cluster_id))
+    logger.info(f"[emergency] Cleared cooldowns for cluster {cluster_id} (emergency override)")
+
+    try:
+        cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+        interrupted = db.query(Instance).filter(Instance.id == instance_id).first()
+
+        if not cluster or not interrupted:
+            logger.error(
+                f"[emergency] Cluster {cluster_id} or instance {instance_id} not found"
+            )
+            return {"status": "error", "message": "not_found"}
+
+        logger.info(
+            f"[emergency] Handling {reason} for {interrupted.node_name} "
+            f"({interrupted.instance_type}) in cluster {cluster.name}"
+        )
+
+        # Report termination to DE (blacklist the pool) and set 24h global blacklist
+        pool_key = f"{interrupted.instance_type}:{interrupted.az}"
+        try:
+            from backend.services.decision_engine_service import DecisionEngineService
+            de = DecisionEngineService(db, redis)
+            de.report_termination(pool_key=pool_key, region=cluster.region or "ap-south-1")
+        except Exception as de_err:
+            logger.warning(f"[emergency] DE report_termination failed: {de_err}")
+
+        # Blacklist terminated pool for 24 hours
+        from backend.core.config import POOL_TERMINATION_BLACKLIST_HOURS
+        redis.setex(key_blacklist_global(pool_key), POOL_TERMINATION_BLACKLIST_HOURS * 3600, '1')
+        logger.info(f"[emergency] Blacklisted pool {pool_key} for {POOL_TERMINATION_BLACKLIST_HOURS}h")
+
+        # Create rebalancing action record
+        action = RebalancingAction(
+            id=generate_uuid(),
+            cluster_id=cluster_id,
+            source_instance_id=interrupted.instance_id,
+            source_instance_type=interrupted.instance_type,
+            source_az=interrupted.az,
+            status="in_progress",
+            action_type="emergency",
+            trigger_reason=reason,
+            created_at=datetime.utcnow(),
+        )
+        db.add(action)
+        db.commit()
+
+        # Check cluster settings for standby
+        settings = cluster.settings or {}
+        auto_rebalance = settings.get("auto_rebalance", {})
+        maintain_standby = auto_rebalance.get("maintain_standby", False)
+
+        if maintain_standby:
+            standby = _find_ready_standby(db, cluster_id)
+            if standby:
+                logger.info(
+                    f"[emergency] Using standby {standby.node_name} "
+                    f"({standby.instance_type}) for failover"
+                )
+                return _execute_standby_failover(
+                    db, redis, cluster, interrupted, standby, action
+                )
+
+        # Fallback: no standby — normal emergency flow
+        logger.info(
+            f"[emergency] No standby available for {cluster.name}, "
+            f"using normal emergency flow"
+        )
+        return _execute_normal_emergency(db, redis, cluster, interrupted, action)
+
+        # Set 2-hour emergency cooldown after completion
+        redis.setex(
+            key_cluster_cooldown(cluster_id),
+            EMERGENCY_COOLDOWN_MINUTES * 60,
+            '1'
+        )
+        logger.info(f"[emergency] Set {EMERGENCY_COOLDOWN_MINUTES}min cooldown for cluster {cluster_id}")
+
+    except Exception as e:
+        logger.error(f"[emergency] Failed for cluster {cluster_id}: {e}")
+        db.rollback()
+        return {"status": "error", "error": str(e)}
+    finally:
+        db.close()
+
+
+def _find_ready_standby(db, cluster_id: str):
+    """Find a running standby node."""
+    from backend.models.instance import Instance
+    return db.query(Instance).filter(
+        Instance.cluster_id == cluster_id,
+        Instance.standby == True,
+        Instance.state == "running",
+    ).first()
+
+
+def _execute_standby_failover(db, redis, cluster, interrupted, standby, action):
+    """
+    Execute the standby-first failover path.
+
+    1. UNCORDON standby
+    2. CORDON interrupted node
+    3. DRAIN interrupted node
+    4. Terminate interrupted node
+    5. Mark standby as no longer standby
+    6. Launch a new standby asynchronously
+    """
+    from backend.models.agent_action import AgentAction, AgentActionType, AgentActionStatus
+    from backend.models.base import generate_uuid
+
+    try:
+        # 1. Uncordon standby
+        uncordon_action = AgentAction(
+            id=generate_uuid(),
+            cluster_id=cluster.id,
+            action_type=AgentActionType.UNCORDON_NODE,
+            payload={"node_name": standby.node_name, "reason": "standby_activated"},
+            status=AgentActionStatus.PENDING,
+        )
+        db.add(uncordon_action)
+        db.commit()
+        logger.info(f"[emergency] Created UNCORDON for standby {standby.node_name}")
+
+        # 2. Cordon interrupted node
+        cordon_action = AgentAction(
+            id=generate_uuid(),
+            cluster_id=cluster.id,
+            action_type=AgentActionType.CORDON_NODE,
+            payload={"node_name": interrupted.node_name},
+            status=AgentActionStatus.PENDING,
+        )
+        db.add(cordon_action)
+        db.commit()
+
+        # 3. Drain interrupted node
+        drain_action = AgentAction(
+            id=generate_uuid(),
+            cluster_id=cluster.id,
+            action_type=AgentActionType.DRAIN_NODE,
+            payload={
+                "node_name": interrupted.node_name,
+                "grace_period": 30,
+                "ignore_daemonsets": True,
+            },
+            status=AgentActionStatus.PENDING,
+        )
+        db.add(drain_action)
+        db.commit()
+        logger.info(f"[emergency] Created CORDON+DRAIN for {interrupted.node_name}")
+
+        # 4. Mark interrupted as terminating
+        interrupted.state = "terminating"
+        db.commit()
+
+        # 5. Mark standby as no longer standby (now active)
+        standby.standby = False
+        db.commit()
+        logger.info(f"[emergency] Standby {standby.node_name} activated as normal node")
+
+        # 6. Update action record
+        action.target_instance_type = standby.instance_type
+        action.target_az = standby.az
+        action.status = "completed"
+        action.completed_at = datetime.utcnow()
+        db.commit()
+
+        # 7. Launch a new standby asynchronously
+        from backend.workers.tasks.standby import launch_standby_node
+        launch_standby_node.delay(cluster.id)
+        logger.info(f"[emergency] Triggered new standby launch for {cluster.name}")
+
+        # Update cluster_pools in Redis
+        try:
+            pool_key = f"{standby.instance_type}:{standby.az}"
+            redis.sadd(f"cluster_pools:{cluster.id}", pool_key)
+        except Exception:
+            pass
+
+        return {
+            "status": "ok",
+            "method": "standby_failover",
+            "standby_node": standby.node_name,
+            "interrupted_node": interrupted.node_name,
+        }
+
+    except Exception as e:
+        logger.error(f"[emergency] Standby failover failed: {e}")
+        db.rollback()
+        return {"status": "error", "method": "standby_failover", "error": str(e)}
+
+
+def _execute_normal_emergency(db, redis, cluster, interrupted, action):
+    """
+    Execute normal emergency flow (no standby available).
+
+    Creates a RebalancingAction with 'emergency' type that the
+    auto_rebalancer will pick up and handle (bypassing the double gate).
+    """
+    try:
+        # The action record was already created with status='in_progress'
+        # and action_type='emergency'. The auto_rebalancer will detect this
+        # and handle it with priority (bypass double gate checks).
+
+        action.status = "pending"
+        action.action_metadata = {
+            "emergency": True,
+            "bypass_double_gate": True,
+            "triggered_at": datetime.utcnow().isoformat(),
+        }
+        db.commit()
+
+        logger.info(
+            f"[emergency] Created emergency rebalancing action {action.id} "
+            f"for {interrupted.node_name} in {cluster.name} (normal flow)"
+        )
+        return {
+            "status": "ok",
+            "method": "normal_emergency",
+            "action_id": action.id,
+            "interrupted_node": interrupted.node_name,
+        }
+
+    except Exception as e:
+        logger.error(f"[emergency] Normal emergency flow failed: {e}")
+        db.rollback()
+        return {"status": "error", "method": "normal_emergency", "error": str(e)}

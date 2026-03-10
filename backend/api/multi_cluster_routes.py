@@ -169,3 +169,95 @@ def get_multi_cluster_summary(
         clusters=fleet_items,
         generated_at=datetime.utcnow().isoformat(),
     )
+
+
+@router.get("/actions")
+def get_multi_cluster_actions(
+    limit: int = 50,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Fleet-wide recent rebalancing/optimization actions
+    """
+    from backend.models.cluster import Cluster
+    from backend.models.rebalancing_action import RebalancingAction
+    from backend.models.account import Account
+
+    org_id = current_user.organization_id
+
+    # Join RebalancingAction -> Cluster -> Account to securely fetch org-wide actions
+    actions_q = (
+        db.query(RebalancingAction, Cluster.name.label("cluster_name"))
+        .join(Cluster, RebalancingAction.cluster_id == Cluster.id)
+        .join(Account, Cluster.account_id == Account.id)
+        .filter(Account.organization_id == org_id)
+        .order_by(RebalancingAction.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+
+    result = []
+    for action, cname in actions_q:
+        result.append({
+            "id": action.id,
+            "cluster_id": action.cluster_id,
+            "cluster_name": cname,
+            "status": action.status,
+            "trigger": action.trigger,
+            "target_node": getattr(action, 'target_node_name', None),
+            "created_at": action.created_at.isoformat() if action.created_at else None,
+            "completed_at": action.completed_at.isoformat() if action.completed_at else None,
+        })
+    return {"actions": result}
+
+
+@router.get("/trends")
+def get_multi_cluster_trends(
+    days: int = 30,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Fleet-wide aggregated daily trends: total_nodes, spot_nodes, cost, savings.
+    """
+    from backend.models.cluster import Cluster
+    from backend.models.account import Account
+    from backend.models.daily_cluster_stats import DailyClusterStat
+    from sqlalchemy import func
+
+    org_id = current_user.organization_id
+    since_date = datetime.utcnow().date() - timedelta(days=days)
+
+    # Query DailyClusterStat grouped by date
+    trends_q = (
+        db.query(
+            DailyClusterStat.date_stamp,
+            func.sum(DailyClusterStat.total_cost).label('total_cost'),
+            func.sum(DailyClusterStat.total_savings).label('total_savings'),
+            func.sum(DailyClusterStat.spot_nodes).label('spot_nodes'),
+            func.sum(DailyClusterStat.total_nodes).label('total_nodes'),
+        )
+        .join(Cluster, DailyClusterStat.cluster_id == Cluster.id)
+        .join(Account, Cluster.account_id == Account.id)
+        .filter(Account.organization_id == org_id)
+        .filter(DailyClusterStat.date_stamp >= since_date)
+        .group_by(DailyClusterStat.date_stamp)
+        .order_by(DailyClusterStat.date_stamp.asc())
+        .all()
+    )
+
+    series = []
+    for t in trends_q:
+        date_str = t.date_stamp.isoformat() if t.date_stamp else ""
+        spot_pct = round((t.spot_nodes / t.total_nodes) * 100, 1) if t.total_nodes and t.total_nodes > 0 else 0.0
+        series.append({
+            "date": date_str,
+            "cost": float(t.total_cost or 0),
+            "savings": float(t.total_savings or 0),
+            "spot_nodes": int(t.spot_nodes or 0),
+            "total_nodes": int(t.total_nodes or 0),
+            "spot_ratio_pct": spot_pct
+        })
+
+    return {"trends": series}

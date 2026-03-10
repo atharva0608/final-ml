@@ -34,7 +34,7 @@ class OptimizationRequest(BaseModel):
     force_refresh: bool = False
 
 
-class Optimization Response(BaseModel):
+class OptimizationResponse(BaseModel):
     """Response model for optimization"""
     cluster_id: str
     status: str

@@ -79,6 +79,14 @@ from backend.models.chaos_experiment import ChaosExperiment, ChaosExperimentType
 # Hygiene/Cleanup Models
 from backend.models.hygiene_policy import HygienePolicy
 
+# Multi-Cluster Dashboard Aggregation
+from backend.models.daily_cluster_stats import DailyClusterStat
+
+# Spot Optimizer New Models
+from backend.models.spot_advisor_rates import SpotAdvisorRate
+from backend.models.optimizer_proposal import OptimizerProposal, ProposalStatus
+from backend.models.substitute_nodes import SubstituteNode, SubstituteNodeState
+
 __all__ = [
     "User",
     "Organization",
@@ -159,4 +167,12 @@ __all__ = [
     "ChaosExperimentStatus",
     # Hygiene/Cleanup
     "HygienePolicy",
+    # Multi-Cluster Dashboard Aggregation
+    "DailyClusterStat",
+    # Spot Optimizer New Models
+    "SpotAdvisorRate",
+    "OptimizerProposal",
+    "ProposalStatus",
+    "SubstituteNode",
+    "SubstituteNodeState",
 ]

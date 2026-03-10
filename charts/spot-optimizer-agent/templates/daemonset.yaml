@@ -57,6 +57,22 @@ spec:
                 configMapKeyRef:
                   name: spot-agent-config
                   key: CLUSTER_ID
+            - name: IMDS_POLL_INTERVAL_SECONDS
+              value: "5"
+            - name: IMDS_TERMINATION_URL
+              value: "http://169.254.169.254/latest/meta-data/spot/termination-time"
+            - name: IMDS_REBALANCE_URL
+              value: "http://169.254.169.254/latest/meta-data/events/recommendations/rebalance"
+            - name: SPOT_INTERRUPTION_ENDPOINT
+              valueFrom:
+                configMapKeyRef:
+                  name: spot-agent-config
+                  key: BACKEND_URL
+            - name: REBALANCE_RECOMMENDATION_ENDPOINT
+              valueFrom:
+                configMapKeyRef:
+                  name: spot-agent-config
+                  key: BACKEND_URL
           resources:
             requests:
               cpu: 100m

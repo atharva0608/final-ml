@@ -16,6 +16,7 @@ class SpotPoller:
     """
     IMDS_URL = "http://169.254.169.254/latest/meta-data/spot/instance-action"
     IMDS_INSTANCE_ID_URL = "http://169.254.169.254/latest/meta-data/instance-id"
+    IMDS_REBALANCE_URL = "http://169.254.169.254/latest/meta-data/events/recommendations/rebalance"
 
     def __init__(self, actuator, interval=5, backend_url=None, api_key=None,
                  cluster_id=None, node_name=None):
@@ -32,6 +33,7 @@ class SpotPoller:
         self.interval = interval
         self.running = False
         self.termination_detected = False
+        self.rebalance_notified = False
         self.backend_url = backend_url or os.getenv('BACKEND_URL', '')
         self.api_key = api_key or os.getenv('API_KEY', '')
         self.cluster_id = cluster_id or os.getenv('CLUSTER_ID', '')
@@ -77,6 +79,20 @@ class SpotPoller:
             pass
         return None
 
+    def check_rebalance_recommendation(self):
+        """Check IMDS for EC2 rebalance recommendation (precursor to termination)."""
+        try:
+            response = requests.get(self.IMDS_REBALANCE_URL, timeout=1)
+            if response.status_code == 200:
+                data = response.json()
+                logger.info(f"[SpotPoller] Rebalance recommendation received: {data}")
+                return data
+            elif response.status_code == 404:
+                return None
+        except requests.exceptions.RequestException:
+            pass
+        return None
+
     def run(self):
         """
         Main polling loop.
@@ -91,7 +107,13 @@ class SpotPoller:
                     self.termination_detected = True
                     self._notify_backend(notice)
                     self.handle_termination(notice)
-            
+
+            if not self.rebalance_notified and not self.termination_detected:
+                rec = self.check_rebalance_recommendation()
+                if rec:
+                    self.rebalance_notified = True
+                    self._notify_rebalance(rec)
+
             time.sleep(self.interval)
         
         logger.info("SpotPoller stopped")
@@ -124,6 +146,26 @@ class SpotPoller:
                 logger.warning(f"[SpotPoller] Backend notification failed ({resp.status_code}): {resp.text}")
         except Exception as e:
             logger.error(f"[SpotPoller] Failed to notify backend: {e}")
+
+    def _notify_rebalance(self, notice):
+        """POST rebalance recommendation to backend so it can proactively migrate this node."""
+        if not self.backend_url:
+            return
+        instance_id = self._get_instance_id()
+        payload = {
+            "cluster_id": self.cluster_id,
+            "node_name": self.node_name,
+            "instance_id": instance_id,
+            "action": "rebalance",
+            "termination_time": notice.get("noticeTime"),
+        }
+        try:
+            url = f"{self.backend_url.rstrip('/')}/api/v1/worker/rebalance-recommendation"
+            headers = {"X-API-Key": self.api_key, "Content-Type": "application/json"}
+            resp = requests.post(url, json=payload, headers=headers, timeout=5)
+            logger.info(f"[SpotPoller] Rebalance recommendation sent to backend ({resp.status_code})")
+        except Exception as e:
+            logger.error(f"[SpotPoller] Failed to notify rebalance: {e}")
 
     def handle_termination(self, notice):
         """

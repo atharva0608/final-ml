@@ -7,8 +7,14 @@ metadata:
     app.kubernetes.io/instance: {{ .Release.Name }}
 rules:
 - apiGroups: [""]
-  resources: ["nodes", "pods", "pods/eviction", "namespaces", "services", "configmaps"]
+  resources: ["nodes"]
+  verbs: ["get", "list", "watch", "patch", "update"]
+- apiGroups: [""]
+  resources: ["pods", "namespaces", "services", "configmaps"]
   verbs: ["get", "list", "watch", "patch", "update", "delete"]
+- apiGroups: [""]
+  resources: ["pods/eviction"]
+  verbs: ["get", "list", "watch", "create"]
 - apiGroups: ["apps"]
   resources: ["deployments", "replicasets", "daemonsets", "statefulsets"]
   verbs: ["get", "list", "watch"]

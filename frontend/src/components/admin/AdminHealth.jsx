@@ -10,10 +10,11 @@ import {
   FiRefreshCw,
   FiCpu,
   FiHardDrive,
+  FiShield,
 } from 'react-icons/fi';
 import toast from 'react-hot-toast';
 import { formatNumber } from '../../utils/formatters';
-import { api, atharvaAiAPI } from '../../services/api';
+import { api, atharvaAiAPI, adminAPI } from '../../services/api';
 
 
 const AdminHealth = () => {
@@ -22,10 +23,23 @@ const AdminHealth = () => {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [autoRefresh, setAutoRefresh] = useState(false);
+  const [circuitBreakers, setCircuitBreakers] = useState([]);
+  const [cbLoading, setCbLoading] = useState(true);
+  const [cbResetting, setCbResetting] = useState({});
 
   useEffect(() => {
     fetchHealth();
+    fetchCircuitBreakers();
   }, []);
+
+  useEffect(() => {
+    if (!autoRefresh) return;
+    const interval = setInterval(() => {
+      fetchHealth();
+      fetchCircuitBreakers();
+    }, 30000);
+    return () => clearInterval(interval);
+  }, [autoRefresh]);
 
   const fetchHealth = async () => {
     if (!loading) setRefreshing(true);
@@ -60,8 +74,41 @@ const AdminHealth = () => {
   };
 
 
+  const fetchCircuitBreakers = async () => {
+    setCbLoading(true);
+    try {
+      const res = await adminAPI.getCircuitBreakers();
+      setCircuitBreakers(res.data?.circuit_breakers || []);
+    } catch (err) {
+      console.error('Failed to fetch circuit breakers:', err);
+    } finally {
+      setCbLoading(false);
+    }
+  };
+
+  const handleResetCircuitBreaker = async (clusterId) => {
+    setCbResetting(prev => ({ ...prev, [clusterId]: true }));
+    try {
+      await adminAPI.resetCircuitBreaker(clusterId);
+      toast.success(`Circuit breaker reset for ${clusterId}`);
+      fetchCircuitBreakers();
+    } catch (err) {
+      toast.error(`Failed to reset circuit breaker: ${err.message}`);
+    } finally {
+      setCbResetting(prev => ({ ...prev, [clusterId]: false }));
+    }
+  };
+
+  const getCbStateBadge = (state) => {
+    if (state === 'NORMAL') return 'bg-green-100 text-green-800';
+    if (state === 'CONSERVATIVE') return 'bg-yellow-100 text-yellow-800';
+    if (state === 'HALT') return 'bg-red-100 text-red-800';
+    return 'bg-gray-100 text-gray-700';
+  };
+
   const handleRefresh = () => {
     fetchHealth();
+    fetchCircuitBreakers();
     toast.success('Health data refreshed');
   };
 
@@ -405,6 +452,72 @@ const AdminHealth = () => {
           <div className="text-center py-8 text-gray-500">
             <FiCheckCircle className="w-12 h-12 text-green-500 mx-auto mb-3" />
             <p>No incidents reported</p>
+          </div>
+        )}
+      </Card>
+
+      {/* Circuit Breaker Status */}
+      <Card>
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-2">
+            <FiShield className="w-5 h-5 text-indigo-600" />
+            <h3 className="text-lg font-semibold text-gray-900">Circuit Breaker Status</h3>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            icon={<FiRefreshCw className={cbLoading ? 'animate-spin' : ''} />}
+            onClick={fetchCircuitBreakers}
+            disabled={cbLoading}
+          >
+            Refresh
+          </Button>
+        </div>
+        {cbLoading ? (
+          <div className="flex justify-center py-6">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600"></div>
+          </div>
+        ) : circuitBreakers.length === 0 ? (
+          <div className="text-center py-6 text-gray-500">
+            <FiCheckCircle className="w-10 h-10 text-green-400 mx-auto mb-2" />
+            <p className="text-sm">All circuit breakers nominal</p>
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[600px] divide-y divide-gray-200 text-sm">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Cluster</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">State</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Rollback Count</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Failure Count</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Action</th>
+                </tr>
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-200">
+                {circuitBreakers.map((cb) => (
+                  <tr key={cb.cluster_id} className="hover:bg-gray-50">
+                    <td className="px-4 py-3 font-medium text-gray-900">{cb.cluster_name || cb.cluster_id}</td>
+                    <td className="px-4 py-3">
+                      <span className={`px-2 py-0.5 inline-flex text-xs font-semibold rounded-full ${getCbStateBadge(cb.state)}`}>
+                        {cb.state || 'NORMAL'}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-gray-700">{cb.rollback_count ?? 0}</td>
+                    <td className="px-4 py-3 text-gray-700">{cb.failure_count ?? 0}</td>
+                    <td className="px-4 py-3">
+                      <button
+                        onClick={() => handleResetCircuitBreaker(cb.cluster_id)}
+                        disabled={cbResetting[cb.cluster_id]}
+                        className="px-3 py-1 text-xs bg-indigo-600 text-white rounded hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {cbResetting[cb.cluster_id] ? 'Resetting...' : 'Reset'}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         )}
       </Card>

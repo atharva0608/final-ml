@@ -25,6 +25,13 @@ from backend.models.termination_event import TerminationEvent
 from backend.models.rebalancing_action import RebalancingAction
 from backend.core.redis_client import get_redis_client
 
+# Import EmergencyEventProcessor for centralized event handling
+try:
+    from backend.services.emergency_event_processor import EmergencyEventProcessor
+    _emergency_processor_available = True
+except ImportError:
+    _emergency_processor_available = False
+
 
 def cleanup_expired_blacklist(redis_client, db: Session):
     """Remove expired entries from global blacklist."""
@@ -122,13 +129,39 @@ def detect_termination_notice(
 
         # 3. Trigger emergency rebalancing if cluster_id provided
         rebalancing_triggered = False
+        emergency_result = None
+
         if cluster_id:
-            rebalancing_triggered = trigger_emergency_rebalancing(
-                db=db,
-                cluster_id=cluster_id,
-                source_pool=pool_key,
-                termination_event_id=termination_event.id
-            )
+            # Delegate to EmergencyEventProcessor if available, otherwise fallback
+            if _emergency_processor_available and instance_id:
+                try:
+                    processor = EmergencyEventProcessor()
+                    emergency_result = processor.process(
+                        event_type='termination',
+                        instance_id=instance_id,
+                        node_name=node_name or '',
+                        cluster_id=cluster_id,
+                        region=region,
+                        az=az,
+                        instance_type=instance_type,
+                    )
+                    rebalancing_triggered = emergency_result.get('status') in ('handled', 'ok')
+                except Exception as proc_err:
+                    logger.warning(f"[termination_monitor] EmergencyEventProcessor failed: {proc_err}")
+                    # Fallback to legacy path
+                    rebalancing_triggered = trigger_emergency_rebalancing(
+                        db=db,
+                        cluster_id=cluster_id,
+                        source_pool=pool_key,
+                        termination_event_id=termination_event.id,
+                    )
+            else:
+                rebalancing_triggered = trigger_emergency_rebalancing(
+                    db=db,
+                    cluster_id=cluster_id,
+                    source_pool=pool_key,
+                    termination_event_id=termination_event.id,
+                )
 
             # Update termination event action
             if rebalancing_triggered:
@@ -142,6 +175,7 @@ def detect_termination_notice(
             'ttl_hours': 12,
             'termination_event_id': termination_event.id,
             'rebalancing_triggered': rebalancing_triggered,
+            'emergency_result': emergency_result,
             'message': f'Pool {pool_key} flagged globally for 12 hours'
         }
 
@@ -210,75 +244,65 @@ def trigger_emergency_rebalancing(
     termination_event_id: int
 ) -> bool:
     """
-    Triggers emergency rebalancing (90 seconds) for a cluster.
+    Triggers emergency rebalancing for a cluster.
 
-    Creates a rebalancing_actions record with 'in_progress' status.
-    The actual rebalancing is performed by auto_rebalancer.py worker.
-
-    Args:
-        db: Database session
-        cluster_id: Cluster to rebalance
-        source_pool: Pool being terminated (e.g., 'm5.xlarge:aps1-az1')
-        termination_event_id: Reference to termination event
-
-    Returns:
-        True if rebalancing action created, False otherwise
+    Dispatches to the dedicated emergency_rebalancer task which handles
+    standby-first failover. Also creates a DB record for tracking.
     """
     try:
-        from backend.services.pool_ranking_service import PoolRankingService
-        from backend.core.redis_client import get_redis_client
+        # Find the interrupted instance
+        from backend.models.instance import Instance
+        parts = source_pool.split(":")
+        instance_type = parts[0] if parts else ""
+        az = parts[1] if len(parts) > 1 else ""
 
-        # Get ML-ranked safe pools (excluding flagged pool)
-        ranking_service = PoolRankingService(db, get_redis_client())
+        interrupted_instance = db.query(Instance).filter(
+            Instance.cluster_id == cluster_id,
+            Instance.instance_type == instance_type,
+            Instance.state == "running",
+        ).first()
 
-        # Simple template for emergency rebalancing (fast!)
-        from backend.services.pool_ranking_service import NodeTemplate
-        node_template = NodeTemplate(
-            architecture=['amd64', 'arm64'],
-            vcpu_range=(2, 16),
-            memory_range=(4, 64),
-            allowed_families=None,  # All families
-            allowed_sizes=None,  # All sizes
-            allowed_azs=None,  # All AZs
-            excluded_instance_types=[]
-        )
+        if interrupted_instance:
+            # Dispatch to emergency_rebalancer (standby-aware)
+            from backend.workers.tasks.emergency_rebalancer import emergency_rebalancer
+            emergency_rebalancer.delay(
+                cluster_id=cluster_id,
+                instance_id=interrupted_instance.id,
+                reason="spot_interruption",
+            )
+            logger.info(
+                f"Emergency rebalancer dispatched for {cluster_id} "
+                f"(instance {interrupted_instance.id})"
+            )
+            return True
 
-        # Get top safe pool
-        ranked_pools = ranking_service.rank_pools(
-            node_template=node_template,
-            region='ap-south-1',  # TODO: Get from cluster
-            limit=1
-        )
+        # Fallback: Report termination to DE for blacklisting
+        try:
+            from backend.services.decision_engine_service import DecisionEngineService
+            from backend.core.redis_client import get_redis_client
+            de = DecisionEngineService(db, get_redis_client())
+            de.report_termination(pool_key=source_pool)
+        except Exception as de_err:
+            logger.warning(f"DE report_termination fallback failed: {de_err}")
 
-        if not ranked_pools or len(ranked_pools) == 0:
-            logger.error(f"No safe pools available for emergency rebalancing (cluster: {cluster_id})")
-            return False
-
-        target_pool = f"{ranked_pools[0].pool.instance_type}:{ranked_pools[0].pool.az}"
-
-        # Create rebalancing action record
+        # Create rebalancing action record (legacy path)
         rebalancing_action = RebalancingAction(
             cluster_id=cluster_id,
             trigger='emergency',
             source_pool=source_pool,
-            target_pool=target_pool,
+            target_pool='pending',
             status='in_progress',
             started_at=datetime.utcnow(),
             action_metadata={
                 'termination_event_id': termination_event_id,
-                'ml_score': ranked_pools[0].final_score,
-                'target_savings_pct': ranked_pools[0].savings_pct
+                'emergency': True,
+                'bypass_double_gate': True,
             }
         )
-
         db.add(rebalancing_action)
         db.commit()
 
-        logger.info(f"Emergency rebalancing triggered: {cluster_id} ({source_pool} → {target_pool})")
-
-        # TODO: Trigger actual Kubernetes node drain + provision
-        # This would be done by auto_rebalancer.py worker
-
+        logger.info(f"Emergency rebalancing triggered: {cluster_id} ({source_pool})")
         return True
 
     except Exception as e:

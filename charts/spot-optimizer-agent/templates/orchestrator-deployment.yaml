@@ -1,0 +1,67 @@
+{{- if .Values.orchestrator.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spot-orchestrator
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: spot-orchestrator
+spec:
+  replicas: {{ .Values.orchestrator.replicaCount }}
+  selector:
+    matchLabels:
+      app: spot-orchestrator
+  template:
+    metadata:
+      labels:
+        app: spot-orchestrator
+    spec:
+      serviceAccountName: {{ .Values.serviceAccount.name }}
+      containers:
+        - name: orchestrator
+          image: "{{ .Values.orchestrator.image.repository }}:{{ .Values.orchestrator.image.tag }}"
+          imagePullPolicy: {{ .Values.orchestrator.image.pullPolicy }}
+          ports:
+            - containerPort: {{ .Values.orchestrator.port }}
+              name: http
+          env:
+            - name: CLUSTER_ID
+              valueFrom:
+                configMapKeyRef:
+                  name: spot-agent-config
+                  key: CLUSTER_ID
+            - name: BACKEND_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: spot-agent-config
+                  key: BACKEND_URL
+            - name: BACKEND_WS_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: spot-agent-config
+                  key: BACKEND_WS_URL
+            - name: API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: spot-agent-secret
+                  key: API_KEY
+          resources:
+            requests:
+              cpu: {{ .Values.orchestrator.resources.requests.cpu }}
+              memory: {{ .Values.orchestrator.resources.requests.memory }}
+            limits:
+              cpu: {{ .Values.orchestrator.resources.limits.cpu }}
+              memory: {{ .Values.orchestrator.resources.limits.memory }}
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: {{ .Values.orchestrator.port }}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: {{ .Values.orchestrator.port }}
+            initialDelaySeconds: 15
+            periodSeconds: 20
+{{- end }}

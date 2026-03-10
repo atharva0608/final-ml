@@ -25,7 +25,7 @@ Dependencies:
 
 import logging
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from typing import Dict, Any, List, Optional
 import json
 
@@ -35,6 +35,7 @@ from sqlalchemy import and_
 from backend.models.base import get_db
 from backend.models.pricing import SpotAdvisorData
 from backend.core.redis_client import get_redis_client
+from backend.core.config import DEFAULT_INTERRUPTION_RATE_PCT, SPOT_ADVISOR_STALENESS_DAYS
 
 logger = logging.getLogger(__name__)
 
@@ -416,6 +417,62 @@ def refresh_cache_for_region(
     finally:
         if db:
             db.close()
+
+
+def get_interruption_rate(region: str, instance_type: str, db: Session) -> float:
+    """
+    Get interruption rate percentage for an instance type in a region.
+
+    3-step fallback chain:
+    1. Exact match (region + instance_type) in spot_advisor_rates table
+    2. Family average (e.g., m5 family average for m5.large)
+    3. DEFAULT_INTERRUPTION_RATE_PCT (15.0)
+
+    Also checks staleness: if latest valid_from > SPOT_ADVISOR_STALENESS_DAYS old, logs CRITICAL.
+    """
+    try:
+        from backend.models.spot_advisor_rates import SpotAdvisorRate
+        from sqlalchemy import func
+
+        # Step 1: Exact match
+        exact = db.query(SpotAdvisorRate).filter(
+            SpotAdvisorRate.region == region,
+            SpotAdvisorRate.instance_type == instance_type,
+        ).order_by(SpotAdvisorRate.valid_from.desc()).first()
+
+        if exact:
+            # Staleness check
+            if exact.valid_from:
+                age_days = (date.today() - exact.valid_from).days
+                if age_days > SPOT_ADVISOR_STALENESS_DAYS:
+                    logger.critical(
+                        f"[spot_advisor] Data for {instance_type}/{region} is {age_days} days old "
+                        f"(threshold: {SPOT_ADVISOR_STALENESS_DAYS} days)"
+                    )
+            return exact.interruption_rate_pct
+
+        # Step 2: Family average (prefix before first dot, e.g. "m5" from "m5.large")
+        family = instance_type.split('.')[0]
+        family_rates = db.query(
+            func.avg(SpotAdvisorRate.interruption_rate_pct)
+        ).filter(
+            SpotAdvisorRate.region == region,
+            SpotAdvisorRate.instance_type.like(f'{family}.%'),
+        ).scalar()
+
+        if family_rates is not None:
+            return float(family_rates)
+
+        # Step 3: Default
+        logger.warning(
+            f"[spot_advisor] No data for {instance_type} in {region}, using default "
+            f"{DEFAULT_INTERRUPTION_RATE_PCT}%"
+        )
+        return DEFAULT_INTERRUPTION_RATE_PCT
+
+    except Exception as e:
+        logger.error(f"[spot_advisor] get_interruption_rate error: {e}")
+        return DEFAULT_INTERRUPTION_RATE_PCT
 
 
 # Celery task wrapper (if using Celery)

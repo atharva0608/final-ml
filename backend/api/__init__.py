@@ -75,3 +75,8 @@ api_router.include_router(tag_management_router)
 # Worker (DaemonSet agent) endpoints
 from backend.api.worker_routes import router as worker_router
 api_router.include_router(worker_router)
+
+# Decision Engine endpoints
+from backend.api.decision_routes import router as decision_router
+api_router.include_router(decision_router)
+

@@ -31,6 +31,12 @@ _KEY_AZ_PRESSURE     = "propagator:az_pressure:{region}:{az}"
 _KEY_POOL_EVENTS     = "propagator:events:{region}:{az}:{instance_type}"
 _KEY_AFFECTED_COUNT  = "propagator:affected_count:{region}:{az}:{instance_type}"
 
+# ─── Metrics keys (Prometheus-style counters) ────────────────────
+_KEY_METRICS_EVENTS_TOTAL     = "propagator:metrics:events_total"
+_KEY_METRICS_SYSTEMIC_TOTAL   = "propagator:metrics:systemic_total"
+_KEY_METRICS_POOLS_AFFECTED   = "propagator:metrics:pools_affected"
+_KEY_METRICS_CLUSTERS_AFFECTED = "propagator:metrics:clusters_affected"
+
 # Systemic threshold: if >=3 clusters impacted → systemic (escalate)
 SYSTEMIC_CLUSTER_THRESHOLD = 3
 
@@ -127,6 +133,23 @@ class InstabilityPropagator:
                 f"{instance_type} in {az}/{region} — cluster {cluster_id}"
             )
 
+        # ── METRICS INSTRUMENTATION ──────────────────────────────────
+        try:
+            pool_id = f"{region}:{az}:{instance_type}"
+            metrics_pipe = self.redis.pipeline()
+            # Counter: total events recorded
+            metrics_pipe.incr(_KEY_METRICS_EVENTS_TOTAL)
+            # Counter: total systemic events detected
+            if is_systemic:
+                metrics_pipe.incr(_KEY_METRICS_SYSTEMIC_TOTAL)
+            # Set: unique pools with active pressure
+            metrics_pipe.sadd(_KEY_METRICS_POOLS_AFFECTED, pool_id)
+            # Set: unique clusters impacted
+            metrics_pipe.sadd(_KEY_METRICS_CLUSTERS_AFFECTED, cluster_id)
+            metrics_pipe.execute()
+        except Exception as metrics_err:
+            logger.warning(f"[InstabilityPropagator] Metrics update failed (non-fatal): {metrics_err}")
+
         return result
 
     def get_pool_pressure(
@@ -188,3 +211,45 @@ class InstabilityPropagator:
             self.redis.delete(
                 key_template.format(region=region, az=az, instance_type=instance_type)
             )
+
+    # ─── Observability ───────────────────────────────────────────────
+
+    def get_metrics(self) -> Dict:
+        """
+        Return Prometheus-style metrics counters for cross-cluster
+        instability propagation.
+
+        Returns:
+            Dict with:
+                events_total: int — total interruption events recorded
+                systemic_total: int — total systemic (multi-cluster) events
+                pools_affected: int — unique pools with active pressure
+                clusters_affected: int — unique clusters impacted
+        """
+        try:
+            pipe = self.redis.pipeline()
+            pipe.get(_KEY_METRICS_EVENTS_TOTAL)
+            pipe.get(_KEY_METRICS_SYSTEMIC_TOTAL)
+            pipe.scard(_KEY_METRICS_POOLS_AFFECTED)
+            pipe.scard(_KEY_METRICS_CLUSTERS_AFFECTED)
+            results = pipe.execute()
+
+            def _int(v):
+                if v is None:
+                    return 0
+                return int(v.decode() if isinstance(v, bytes) else v)
+
+            return {
+                "events_total": _int(results[0]),
+                "systemic_total": _int(results[1]),
+                "pools_affected": _int(results[2]),
+                "clusters_affected": _int(results[3]),
+            }
+        except Exception as e:
+            logger.warning(f"[InstabilityPropagator] Failed to read metrics: {e}")
+            return {
+                "events_total": 0,
+                "systemic_total": 0,
+                "pools_affected": 0,
+                "clusters_affected": 0,
+            }

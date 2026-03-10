@@ -165,3 +165,77 @@ class DiversityEnforcer:
 
         distribution["total"] = len(nodes)
         return distribution
+
+    def filter_by_cluster_pools(
+        self,
+        pools: list,
+        cluster_id: str,
+    ) -> list:
+        """
+        Remove pools already in use by the cluster.
+
+        Uses Redis set `cluster_pools:{cluster_id}` to track which pools
+        are currently active. Pools are identified by "instance_type:az" keys.
+
+        Args:
+            pools: List of pool dicts with "instance_type" and "az" keys
+            cluster_id: Cluster ID
+
+        Returns:
+            Filtered list of pools not already in use
+        """
+        cluster_pools_key = f"cluster_pools:{cluster_id}"
+        try:
+            in_use = self.redis.smembers(cluster_pools_key)
+            if not in_use:
+                return pools
+
+            in_use_str = {
+                m.decode() if isinstance(m, bytes) else m
+                for m in in_use
+            }
+            filtered = []
+            for p in pools:
+                pool_key = f"{p.get('instance_type')}:{p.get('az')}"
+                if pool_key not in in_use_str:
+                    filtered.append(p)
+
+            logger.info(
+                f"Diversity filter: {len(pools)} → {len(filtered)} "
+                f"after removing {len(in_use_str)} in-use pools"
+            )
+            return filtered
+        except Exception as e:
+            logger.error(f"Error in filter_by_cluster_pools: {e}")
+            return pools
+
+    def update_cluster_pools(
+        self,
+        cluster_id: str,
+        instance_type: str,
+        az: str,
+        add: bool = True,
+    ):
+        """
+        Add or remove a pool from the cluster's active pool set.
+
+        Called when instances are added to or removed from the cluster.
+
+        Args:
+            cluster_id: Cluster ID
+            instance_type: EC2 instance type
+            az: Availability zone
+            add: True to add, False to remove
+        """
+        cluster_pools_key = f"cluster_pools:{cluster_id}"
+        pool_key = f"{instance_type}:{az}"
+        try:
+            if add:
+                self.redis.sadd(cluster_pools_key, pool_key)
+                logger.debug(f"Added {pool_key} to cluster_pools:{cluster_id}")
+            else:
+                self.redis.srem(cluster_pools_key, pool_key)
+                logger.debug(f"Removed {pool_key} from cluster_pools:{cluster_id}")
+        except Exception as e:
+            logger.error(f"Error updating cluster_pools: {e}")
+

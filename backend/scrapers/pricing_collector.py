@@ -28,8 +28,9 @@ Dependencies:
 """
 
 import logging
+import threading
 import boto3
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, List, Optional, Tuple
 from decimal import Decimal
 import json
@@ -42,8 +43,43 @@ from sqlalchemy import and_, desc
 from backend.models.base import get_db
 from backend.models.pricing import SpotPriceHistory, OnDemandPricing
 from backend.core.redis_client import get_redis_client
+from backend.core.config import MAX_CONCURRENT_REGION_CALLS
 
 logger = logging.getLogger(__name__)
+
+# Module-level semaphore to limit concurrent region calls
+_region_semaphore = threading.Semaphore(MAX_CONCURRENT_REGION_CALLS)
+
+
+def _mark_region_degraded(region: str):
+    """Mark a region as degraded in Redis for 30 minutes."""
+    try:
+        redis_client = get_redis_client()
+        redis_client.setex(f'degraded:region:{region}', 1800, '1')
+    except Exception as e:
+        logger.warning(f"[SVC-PRICE-01] Failed to mark region {region} degraded: {e}")
+
+
+def _is_region_degraded(region: str) -> bool:
+    """Check if a region is currently marked as degraded."""
+    try:
+        redis_client = get_redis_client()
+        return bool(redis_client.exists(f'degraded:region:{region}'))
+    except Exception:
+        return False
+
+
+def _update_spot_price_timestamp(region: str):
+    """Store ISO timestamp of last successful spot price collection for region."""
+    try:
+        redis_client = get_redis_client()
+        redis_client.setex(
+            f'spot_prices_updated:{region}',
+            7200,
+            datetime.now(timezone.utc).isoformat()
+        )
+    except Exception as e:
+        logger.warning(f"[SVC-PRICE-01] Failed to update spot price timestamp for {region}: {e}")
 
 # AWS regions to monitor
 AWS_REGIONS = [
@@ -147,76 +183,98 @@ def collect_region_spot_prices(
         "cache_keys_set": 0
     }
 
-    try:
-        # Create EC2 client for this region
-        ec2_client = boto3.client('ec2', region_name=region)
+    with _region_semaphore:
+        try:
+            # Create EC2 client for this region
+            ec2_client = boto3.client('ec2', region_name=region)
 
-        # Query current Spot prices (last hour)
-        # Note: describe_spot_price_history returns prices from newest to oldest
-        response = ec2_client.describe_spot_price_history(
-            StartTime=datetime.utcnow() - timedelta(hours=1),
-            ProductDescriptions=[PRODUCT_DESCRIPTION],
-            MaxResults=10000  # Maximum allowed
-        )
+            # Query current Spot prices with pagination
+            spot_prices = []
+            next_token = None
+            consecutive_failures = 0
 
-        spot_prices = response.get('SpotPriceHistory', [])
+            while True:
+                try:
+                    kwargs = {
+                        'StartTime': datetime.utcnow() - timedelta(hours=1),
+                        'ProductDescriptions': [PRODUCT_DESCRIPTION],
+                        'MaxResults': 1000,
+                    }
+                    if next_token:
+                        kwargs['NextToken'] = next_token
 
-        # Group by instance type + AZ, keep only latest price
-        latest_prices = {}
-        for price_entry in spot_prices:
-            instance_type = price_entry['InstanceType']
-            az = price_entry['AvailabilityZone']
-            key = f"{instance_type}:{az}"
+                    response = ec2_client.describe_spot_price_history(**kwargs)
+                    spot_prices.extend(response.get('SpotPriceHistory', []))
+                    consecutive_failures = 0
 
-            # Keep only the newest price (already sorted newest first)
-            if key not in latest_prices:
-                latest_prices[key] = price_entry
+                    next_token = response.get('NextToken')
+                    if not next_token:
+                        break
+                except ClientError as page_err:
+                    consecutive_failures += 1
+                    logger.warning(f"[SVC-PRICE-01] Page error for {region}: {page_err}")
+                    if consecutive_failures >= 3:
+                        _mark_region_degraded(region)
+                        raise
+                    break
 
-        # Store in database and cache
-        for key, price_entry in latest_prices.items():
-            instance_type = price_entry['InstanceType']
-            az = price_entry['AvailabilityZone']
-            price = Decimal(price_entry['SpotPrice'])
-            timestamp = price_entry['Timestamp']
+            # Group by instance type + AZ, keep only latest price
+            latest_prices = {}
+            for price_entry in spot_prices:
+                instance_type = price_entry['InstanceType']
+                az = price_entry['AvailabilityZone']
+                key = f"{instance_type}:{az}"
 
-            # Store in database for historical tracking
-            spot_price_record = SpotPriceHistory(
-                instance_type=instance_type,
-                availability_zone=az,
-                region=region,
-                price=price,
-                timestamp=timestamp,
-                product_description=PRODUCT_DESCRIPTION
+                # Keep only the newest price (already sorted newest first)
+                if key not in latest_prices:
+                    latest_prices[key] = price_entry
+
+            # Store in database and cache
+            for key, price_entry in latest_prices.items():
+                instance_type = price_entry['InstanceType']
+                az = price_entry['AvailabilityZone']
+                price = Decimal(price_entry['SpotPrice'])
+                timestamp = price_entry['Timestamp']
+
+                # Store in database for historical tracking
+                spot_price_record = SpotPriceHistory(
+                    instance_type=instance_type,
+                    availability_zone=az,
+                    region=region,
+                    price=price,
+                    timestamp=timestamp,
+                    product_description=PRODUCT_DESCRIPTION
+                )
+                db.add(spot_price_record)
+                stats["prices_collected"] += 1
+
+                # Cache in Redis for fast lookup
+                cache_key = f"spot_price:{region}:{az}:{instance_type}"
+                cache_value = json.dumps({
+                    "price": str(price),
+                    "timestamp": timestamp.isoformat()
+                })
+
+                # Cache with 10-minute TTL (prices update every 5 min, so 10 min is safe)
+                redis_client.setex(cache_key, 600, cache_value)
+                stats["cache_keys_set"] += 1
+
+            db.commit()
+            _update_spot_price_timestamp(region)
+
+            logger.info(
+                f"[SVC-PRICE-01] Stored {stats['prices_collected']} prices for {region}"
             )
-            db.add(spot_price_record)
-            stats["prices_collected"] += 1
 
-            # Cache in Redis for fast lookup
-            cache_key = f"spot_price:{region}:{az}:{instance_type}"
-            cache_value = json.dumps({
-                "price": str(price),
-                "timestamp": timestamp.isoformat()
-            })
+            return stats
 
-            # Cache with 10-minute TTL (prices update every 5 min, so 10 min is safe)
-            redis_client.setex(cache_key, 600, cache_value)
-            stats["cache_keys_set"] += 1
+        except ClientError as e:
+            logger.error(f"[SVC-PRICE-01] AWS API error for {region}: {str(e)}")
+            raise
 
-        db.commit()
-
-        logger.info(
-            f"[SVC-PRICE-01] Stored {stats['prices_collected']} prices for {region}"
-        )
-
-        return stats
-
-    except ClientError as e:
-        logger.error(f"[SVC-PRICE-01] AWS API error for {region}: {str(e)}")
-        raise
-
-    except Exception as e:
-        logger.error(f"[SVC-PRICE-01] Unexpected error for {region}: {str(e)}")
-        raise
+        except Exception as e:
+            logger.error(f"[SVC-PRICE-01] Unexpected error for {region}: {str(e)}")
+            raise
 
 
 def get_current_spot_price(

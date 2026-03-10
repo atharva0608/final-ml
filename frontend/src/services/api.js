@@ -87,6 +87,7 @@ export const clusterAPI = {
     verifyConnection: (clusterId) => api.post(`/api/v1/clusters/verify/${clusterId}`),
     updateResourceCosts: (clusterId, costs) => api.post(`/api/v1/clusters/${clusterId}/costs`, costs),
     autoInstallAgent: (clusterId) => api.post(`/api/v1/clusters/${clusterId}/auto-install`),
+    updateAgent: (clusterId) => api.post(`/api/v1/clusters/${clusterId}/update-agent`),
     discover: () => api.post('/api/v1/clusters/discover'),
     toggleAutoRebalance: (clusterId, enabled) => api.patch(`/api/v1/clusters/${clusterId}/auto-rebalance`, null, { params: { enabled } }),
     getUtilization: (clusterId) => api.get(`/api/v1/clusters/${clusterId}/utilization`),
@@ -127,6 +128,8 @@ export const adminAPI = {
     getBilling: () => api.get('/api/v1/admin/billing'),
     getOrganization: (id) => api.get(`/api/v1/admin/organizations/${id}`),
     getAgentFleet: () => api.get('/api/v1/admin/agent-fleet'),
+    getCircuitBreakers: () => api.get('/api/v1/admin/circuit-breakers'),
+    resetCircuitBreaker: (clusterId) => api.post(`/api/v1/admin/circuit-breakers/${clusterId}/reset`),
 };
 
 export const metricAPI = {
@@ -344,6 +347,9 @@ export const atharvaaiAPI = {
 
     // Cluster Impact (To be implemented in backend)
     getClusterImpact: (clusterId) => api.get(`/api/v1/atharvaai/clusters/${clusterId}/impact`),
+
+    // Enriched volatility status (includes az_pressure map)
+    getVolatilityStatusEnriched: () => api.get('/api/v1/atharvaai/volatility/status'),
 };
 export const cleanupAPI = hygieneAPI;
 
@@ -426,6 +432,20 @@ export const karpenterAPI = {
     installKarpenter: (clusterId, data = {}) => api.post(`/api/v1/karpenter/clusters/${clusterId}/install`, data),
     uninstallKarpenter: (clusterId) => api.delete(`/api/v1/karpenter/clusters/${clusterId}/install`),
     getInstallStatus: (clusterId) => api.get(`/api/v1/karpenter/clusters/${clusterId}/install-status`),
+
+    // Detect whether Karpenter is installed in-cluster
+    detectKarpenter: (clusterId) => api.get(`/api/v1/karpenter/detect/${clusterId}`),
+};
+
+// ── Native Spot (No-Karpenter) — ASG MixedInstancesPolicy ────────────────────
+export const nativeSpotAPI = {
+    getStatus: (clusterId, nodegroupName = null) =>
+        api.get(`/api/v1/karpenter/native-spot/status/${clusterId}`,
+                { params: nodegroupName ? { nodegroup_name: nodegroupName } : {} }),
+    enable: (clusterId, opts = {}) =>
+        api.post(`/api/v1/karpenter/native-spot/enable/${clusterId}`, opts),
+    revert: (clusterId, opts = {}) =>
+        api.post(`/api/v1/karpenter/native-spot/revert/${clusterId}`, opts),
 };
 
 // ── Tag Governance APIs ──────────────────────────────────────────────────────
@@ -536,6 +556,9 @@ export const poolRotationAPI = {
 // ── Multi-Cluster Fleet API ─────────────────────────────────────────────
 export const multiClusterAPI = {
     getSummary: () => api.get('/api/v1/multi-cluster/summary'),
+    getActions: (limit = 50) => api.get('/api/v1/multi-cluster/actions', { params: { limit } }),
+    getTrends: (days = 30) => api.get('/api/v1/multi-cluster/trends', { params: { days } }),
 };
+
 
 export default api;

@@ -1,7 +1,7 @@
 """
 Instance model - EC2 Instances
 """
-from sqlalchemy import Column, String, DateTime, ForeignKey, Float, Integer, Enum as SQLEnum, Index
+from sqlalchemy import Column, String, DateTime, ForeignKey, Float, Integer, Boolean, Enum as SQLEnum, Index
 from sqlalchemy.orm import relationship
 from datetime import datetime
 import enum
@@ -49,6 +49,12 @@ class Instance(Base):
     
     # Architecture (amd64, arm64)
     architecture = Column(String(20), nullable=True, default="amd64")
+
+    # Node name in Kubernetes (e.g., "ip-10-0-1-234.ec2.internal")
+    node_name = Column(String(255), nullable=True, index=True)
+
+    # Standby flag: True = hot standby node (cordoned, ready for emergency activation)
+    standby = Column(Boolean, nullable=False, default=False, index=True)
 
     # Timestamps
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)

@@ -91,35 +91,94 @@ async def receive_metrics_batch(
 
         logger.info(f"Totals - CPU cap={total_cpu_capacity}, usage={total_cpu_usage}, Mem cap={total_mem_capacity}, usage={total_mem_usage}")
 
-        # Update individual instance CPU/memory utilization
+        # Upsert Instance records from live node metrics.
+        # This is the authoritative path: if the daemon set reports a node as
+        # running, it IS running regardless of what the DB previously said.
         from datetime import timedelta
-        from ..models.instance import Instance
+        from ..models.instance import Instance, InstanceLifecycle
+        from ..models.base import generate_uuid
 
         for node in node_metrics:
             node_name = node.get("node_name")
+            if not node_name:
+                continue
+
             cpu_cap = node.get("cpu_capacity_millicores", 0)
             cpu_use = node.get("cpu_usage_millicores", 0)
             mem_cap = node.get("memory_capacity_bytes", 0)
             mem_use = node.get("memory_usage_bytes", 0)
 
-            # Calculate utilization percentages
             cpu_util_pct = round((cpu_use / cpu_cap) * 100, 2) if cpu_cap > 0 else 0
             mem_util_pct = round((mem_use / mem_cap) * 100, 2) if mem_cap > 0 else 0
 
-            # Find instance by node name (match against instance_id or tags)
-            # Node names are typically like ip-192-168-50-10.ec2.internal
-            # Try to match with instance by looking for instances in this cluster
-            instances = db.query(Instance).filter(
-                Instance.cluster_id == cluster_id
-            ).all()
+            # Extract instance metadata from K8s node labels
+            labels = node.get("labels", {})
+            instance_type = (
+                labels.get("node.kubernetes.io/instance-type")
+                or labels.get("beta.kubernetes.io/instance-type")
+                or "unknown"
+            )
+            az = (
+                labels.get("topology.kubernetes.io/zone")
+                or labels.get("failure-domain.beta.kubernetes.io/zone")
+                or "unknown"
+            )
+            # EKS sets lifecycle=spot for spot nodes; anything else is on-demand
+            lc_label = (
+                labels.get("eks.amazonaws.com/capacityType")
+                or labels.get("node.kubernetes.io/lifecycle")
+                or ""
+            ).lower()
+            if "spot" in lc_label:
+                lifecycle = InstanceLifecycle.SPOT
+            else:
+                lifecycle = InstanceLifecycle.ON_DEMAND
 
-            # Update the instance if we can match it
-            # For now, update all instances equally (since we might not have exact mapping)
-            # In production, you'd match by instance_id from node metadata
-            for instance in instances:
-                instance.cpu_util = cpu_util_pct
-                instance.memory_util = mem_util_pct
-                logger.info(f"Updated instance {instance.instance_id}: CPU={cpu_util_pct}%, Mem={mem_util_pct}%")
+            # Short ID: use first DNS label (e.g. "ip-192-168-3-201") to fit VARCHAR(20)
+            short_id = node_name.split('.')[0][:20]
+
+            # Try to match existing instance by node_name OR short instance_id
+            inst = db.query(Instance).filter(
+                Instance.cluster_id == cluster_id,
+                (Instance.node_name == node_name) | (Instance.instance_id == short_id),
+            ).first()
+
+            if inst:
+                # Mark as running (daemon set is reporting it — it's alive)
+                inst.state = "running"
+                inst.cpu_util = cpu_util_pct
+                inst.memory_util = mem_util_pct
+                if instance_type and instance_type != "unknown":
+                    inst.instance_type = instance_type
+                if az and az != "unknown":
+                    inst.az = az
+                inst.lifecycle = lifecycle
+                if not inst.node_name:
+                    inst.node_name = node_name
+                inst.updated_at = datetime.utcnow()
+                logger.info(f"Updated instance {inst.instance_id} ({node_name}): CPU={cpu_util_pct}%, Mem={mem_util_pct}%")
+            else:
+                # No record — create one. The daemon set is the source of truth.
+                # Use short hostname as instance_id placeholder (VARCHAR(20) safe).
+                # Real EC2 instance ID will be updated when register-node is called.
+                new_inst = Instance(
+                    id=generate_uuid(),
+                    cluster_id=cluster_id,
+                    instance_id=short_id,   # "ip-192-168-3-201" fits VARCHAR(20)
+                    node_name=node_name,
+                    instance_type=instance_type,
+                    az=az,
+                    lifecycle=lifecycle,
+                    state="running",
+                    cpu_util=cpu_util_pct,
+                    memory_util=mem_util_pct,
+                )
+                db.add(new_inst)
+                db.flush()  # make record visible to subsequent iterations in same request
+                logger.info(
+                    f"[metrics] Created Instance record for {node_name} (id={short_id}) "
+                    f"({instance_type}, {lifecycle}, {az}) — auto-registered from node metrics"
+                )
 
         # Insert pod metrics into database
         for pod in pod_metrics:

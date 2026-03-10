@@ -234,9 +234,9 @@ const SavingsReport = ({ schedules, savingsHistory, loading = false }) => {
 
               {/* Generate path for filled area */}
               <path
-                d={`M 0,${120 - ((trendData[0]?.value || 0) / maxValue) * 110} ${trendData.map((d, i) => {
+                d={`M 0,${120 - ((trendData[0]?.value || 0) / Math.max(maxValue, 1)) * 110} ${trendData.map((d, i) => {
                   const x = (i / Math.max(trendData.length - 1, 1)) * 600;
-                  const y = 120 - (d.value / maxValue) * 110;
+                  const y = 120 - (d.value / Math.max(maxValue, 1)) * 110;
                   return `L ${x},${y}`;
                 }).join(' ')} L 600,120 L 0,120 Z`}
                 fill="url(#savingsGradient)"
@@ -246,7 +246,7 @@ const SavingsReport = ({ schedules, savingsHistory, loading = false }) => {
               <polyline
                 points={trendData.map((d, i) => {
                   const x = (i / Math.max(trendData.length - 1, 1)) * 600;
-                  const y = 120 - (d.value / maxValue) * 110;
+                  const y = 120 - (d.value / Math.max(maxValue, 1)) * 110;
                   return `${x},${y}`;
                 }).join(' ')}
                 fill="none"
@@ -259,7 +259,7 @@ const SavingsReport = ({ schedules, savingsHistory, loading = false }) => {
               {/* Data points (dots) */}
               {trendData.map((d, i) => {
                 const x = (i / Math.max(trendData.length - 1, 1)) * 600;
-                const y = 120 - (d.value / maxValue) * 110;
+                const y = 120 - (d.value / Math.max(maxValue, 1)) * 110;
                 return (
                   <circle
                     key={i}

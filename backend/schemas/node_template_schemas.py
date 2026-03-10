@@ -35,7 +35,7 @@ class NodeTemplateCreate(BaseModel):
 class NodeTemplateRead(BaseModel):
     id: str
     name: str
-    scope: TemplateScope
+    scope: Optional[TemplateScope] = None
     created_by: Optional[str] = None
     created_at: datetime
     

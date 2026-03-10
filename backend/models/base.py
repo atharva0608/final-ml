@@ -72,8 +72,8 @@ def create_tables():
     from backend.models.invitation import OrganizationInvitation
     from backend.models.system_config import SystemConfig  # For Safe Mode & Platform Identity
 
-    # Create all tables
-    Base.metadata.create_all(bind=engine)
+    # Create all tables (Commented out to let Alembic handle migrations)
+    # Base.metadata.create_all(bind=engine)
 
 
 def seed_demo_data():
@@ -148,6 +148,7 @@ def seed_demo_data():
             demo_account = Account(
                 aws_account_id="123456789012",
                 organization_id=demo_org.id,
+                user_id=demo_user.id,
                 role_arn="arn:aws:iam::123456789012:role/SpotOptimizerRole",
                 status=AccountStatus.ACTIVE
             )

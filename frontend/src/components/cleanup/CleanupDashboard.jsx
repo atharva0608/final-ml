@@ -407,7 +407,7 @@ function AnimatedNum({ target, duration = 900 }) {
 function RingGauge({ pct, size = 60, stroke = 5, color }) {
   const r = (size - stroke) / 2;
   const circ = 2 * Math.PI * r;
-  const dash = (pct / 100) * circ;
+  const dash = ((isNaN(pct) ? 0 : pct) / 100) * circ;
   return (
     <svg width={size} height={size} style={{ display: "block", flexShrink: 0 }}>
       <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="#f3f4f6" strokeWidth={stroke} />

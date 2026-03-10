@@ -11,13 +11,17 @@ import sys
 # Add parent directory to path to import models
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-# Import all models for autogenerate to detect
+# Import all models dynamically to detect everything
+import pkgutil
+import importlib
+import backend.models
 from backend.models.base import Base
-from backend.models import (
-    User, Account, Cluster, Instance, NodeTemplate,
-    ClusterPolicy, HibernationSchedule, AuditLog, MLModel,
-    OptimizationJob, LabExperiment, AgentAction, APIKey
-)
+
+for _, module_name, _ in pkgutil.iter_modules(backend.models.__path__):
+    try:
+        importlib.import_module(f"backend.models.{module_name}")
+    except Exception as e:
+        print(f"Failed to import {module_name}: {e}")
 
 # Alembic Config object
 config = context.config

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { useSearchParams } from 'react-router-dom';
-import { clusterAPI, karpenterAPI, atharvaaiAPI } from "../../services/api";
+import { clusterAPI, karpenterAPI, atharvaaiAPI, optimizerCoordinatorAPI } from "../../services/api";
 import { toast } from "react-hot-toast";
 import { FiCheckCircle, FiAlertTriangle, FiAlertCircle, FiClock } from "react-icons/fi";
 import RebalancingTimeline from '../atharvaai/RebalancingTimeline';
@@ -265,7 +265,7 @@ function StatelessDetailedDrawer({ node, onClose, isAutoOn }) {
 }
 
 // Stateful Proposal Flow Modal
-function StatefulProposalModal({ node, onClose }) {
+function StatefulProposalModal({ node, onClose, requireApproval = true }) {
   if (!node) return null;
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.4)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -318,8 +318,8 @@ function StatefulProposalModal({ node, onClose }) {
                 onClose();
               }).catch(() => toast.error('Submit failed — check permissions'));
             }}
-            style={{ padding: "8px 16px", borderRadius: 6, border: "none", background: T.greyDark, color: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
-            Submit for Approval
+            style={{ padding: "8px 16px", borderRadius: 6, border: "none", background: requireApproval ? T.greyDark : T.primary, color: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
+            {requireApproval ? 'Submit for Approval' : 'Apply Resize Now'}
           </button>
         </div>
       </div>
@@ -380,6 +380,7 @@ function StatelessSection({ nodes, isAutoOn }) {
               <th style={{ padding: "12px 16px", color: T.textFaint, fontWeight: 600, fontSize: 11 }}>Savings</th>
               <th style={{ padding: "12px 16px", color: T.textFaint, fontWeight: 600, fontSize: 11 }}>EV</th>
               <th style={{ padding: "12px 16px", color: T.textFaint, fontWeight: 600, fontSize: 11 }}>Status</th>
+              <th style={{ padding: "12px 16px", color: T.textFaint, fontWeight: 600, fontSize: 11 }}>Actionable</th>
               <th style={{ padding: "12px 16px", color: T.textFaint, fontWeight: 600, fontSize: 11, textAlign: "right" }}>Action</th>
             </tr>
           </thead>
@@ -472,6 +473,15 @@ function StatelessSection({ nodes, isAutoOn }) {
                       <Badge color={T.green} bg={T.greenLight}>Ready</Badge>
                     )}
                   </td>
+                  <td style={{ padding: "12px 16px" }}>
+                    {n.is_actionable === false ? (
+                      <Badge color={T.textMuted} bg={T.bg} style={{ border: `1px solid ${T.border}` }}>No Better Pool</Badge>
+                    ) : n.is_actionable === true ? (
+                      <Badge color={T.green} bg={T.greenLight}>✓ Actionable</Badge>
+                    ) : (
+                      <span style={{ fontSize: 12, color: T.textFaint }}>—</span>
+                    )}
+                  </td>
                   <td style={{ padding: "12px 16px", textAlign: "right" }}>
                     {isAutoOn ? (
                       <span style={{ fontSize: 12, color: T.textFaint, fontStyle: "italic" }}>Auto-managed</span>
@@ -514,7 +524,7 @@ function StatelessSection({ nodes, isAutoOn }) {
 
 
 // Stateful Section (Grey Accent)
-function StatefulSection({ nodes }) {
+function StatefulSection({ nodes, requireApproval = true }) {
   const [selectedNode, setSelectedNode] = useState(null);
 
   const eligibleNodes = nodes.filter(n => n.savings > 0 && n.status !== "Blocked by Policy");
@@ -591,8 +601,8 @@ function StatefulSection({ nodes }) {
                   ) : (
                     <button
                       onClick={() => setSelectedNode(n)}
-                      style={{ padding: "6px 12px", background: T.amberLight, color: T.amber, border: `1px solid ${T.amberBorder}`, borderRadius: 6, fontSize: 12, fontWeight: 800, cursor: "pointer" }}>
-                      Request Approval
+                      style={{ padding: "6px 12px", background: requireApproval ? T.amberLight : T.primaryLight, color: requireApproval ? T.amber : T.primary, border: `1px solid ${requireApproval ? T.amberBorder : T.primary}`, borderRadius: 6, fontSize: 12, fontWeight: 800, cursor: "pointer" }}>
+                      {requireApproval ? 'Request Approval' : 'Propose Resize'}
                     </button>
                   )}
                 </td>
@@ -602,7 +612,7 @@ function StatefulSection({ nodes }) {
         </table>
       </Card>
 
-      <StatefulProposalModal node={selectedNode} onClose={() => setSelectedNode(null)} />
+      <StatefulProposalModal node={selectedNode} onClose={() => setSelectedNode(null)} requireApproval={requireApproval} />
     </div>
   );
 }
@@ -614,14 +624,18 @@ function KarpenterConfigPanel({ clusterId, initialConfig, onSaved }) {
   const [form, setForm] = useState({
     auto_rebalancing_enabled: initialConfig?.auto_rebalancing_enabled ?? false,
     auto_rightsizing_enabled: initialConfig?.auto_rightsizing_enabled ?? false,
+    instance_aware_rightsizing: initialConfig?.instance_aware_rightsizing ?? false,
     strategy: initialConfig?.strategy || 'balanced',
     spot_target_pct: initialConfig?.spot_target_pct ?? 75,
     buffer_pct: initialConfig?.buffer_pct ?? 30,
     instance_families: initialConfig?.instance_families || ['m5', 'm6i', 'c5', 'c6i', 't3', 't4g'],
     consolidation_enabled: initialConfig?.consolidation_enabled ?? true,
     consolidation_threshold: initialConfig?.consolidation_threshold ?? 80,
-    stateful_max_downscale_pct: initialConfig?.stateful_max_downscale_pct ?? 50,
+    stateful_max_downscale_pct: initialConfig?.stateful_max_downscale_pct ?? 25,
     stateful_od_rightsizing: initialConfig?.stateful_od_rightsizing ?? true,
+    auto_stateful_rightsizing_enabled: initialConfig?.auto_stateful_rightsizing_enabled ?? false,
+    stateful_require_approval: initialConfig?.stateful_require_approval ?? true,
+    diversify_pools: initialConfig?.diversify_pools ?? false,
   });
   const [saving, setSaving] = useState(false);
 
@@ -716,6 +730,7 @@ function KarpenterConfigPanel({ clusterId, initialConfig, onSaved }) {
 
           <div style={{ marginTop: 20 }}>
             <ToggleRow label="Consolidation" desc="Automatically consolidate underutilized nodes (Karpenter native)" field="consolidation_enabled" />
+            <ToggleRow label="Instance-Aware Mode" desc="Only show recommendations when a better spot pool exists (double-gate)" field="instance_aware_rightsizing" />
             {form.consolidation_enabled && (
               <div style={{ display: 'flex', alignItems: 'center', gap: 12, paddingTop: 12 }}>
                 <span style={{ fontSize: 13, color: T.textMuted }}>Trigger threshold:</span>
@@ -729,26 +744,58 @@ function KarpenterConfigPanel({ clusterId, initialConfig, onSaved }) {
         <Card style={{ padding: '24px' }}>
           <SectionLabel>Stateful Node Policy</SectionLabel>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px', background: T.bg, borderRadius: 8, border: `1px solid ${T.borderLight}` }}>
-              <div>
-                <div style={{ fontSize: 13, fontWeight: 600, color: T.text }}>Max Downscale</div>
-                <div style={{ fontSize: 11, color: T.textMuted }}>Maximum allowed instance size reduction per resize action</div>
+
+            {/* Max Downscale % — interactive slider */}
+            <div style={{ padding: '12px', background: T.bg, borderRadius: 8, border: `1px solid ${T.borderLight}` }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: T.text }}>Max Downscale %</div>
+                  <div style={{ fontSize: 11, color: T.textMuted }}>Maximum allowed instance size reduction per resize</div>
+                </div>
+                <span style={{ fontSize: 16, fontWeight: 700, color: T.amber }}>{form.stateful_max_downscale_pct}%</span>
               </div>
-              <span style={{ fontSize: 16, fontWeight: 700, color: T.amber }}>{form.stateful_max_downscale_pct}%</span>
+              <input
+                type="range" min="10" max="75" step="5"
+                value={form.stateful_max_downscale_pct}
+                onChange={e => set('stateful_max_downscale_pct', Number(e.target.value))}
+                style={{ width: '100%' }}
+              />
             </div>
+
+            {/* Auto Stateful Resize toggle */}
+            <ToggleRow
+              label="Auto Stateful Resize"
+              desc="Automatically resize stateful OD nodes when safe (max 1 per cluster per 48h, downsizes only)"
+              field="auto_stateful_rightsizing_enabled"
+            />
+
+            {/* Require Approval toggle */}
+            <ToggleRow
+              label="Require Approval"
+              desc="When OFF, stateful resizes execute immediately without ticket — Apply button becomes active"
+              field="stateful_require_approval"
+            />
+
+            {/* Spot Migration — always locked */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px', background: T.bg, borderRadius: 8, border: `1px solid ${T.borderLight}` }}>
               <div>
                 <div style={{ fontSize: 13, fontWeight: 600, color: T.text }}>Spot Migration</div>
-                <div style={{ fontSize: 11, color: T.textMuted }}>Stateful nodes are never migrated to spot</div>
+                <div style={{ fontSize: 11, color: T.textMuted }}>Stateful nodes are never migrated to spot (safety guarantee)</div>
               </div>
               <Badge color={T.red} bg={T.redLight}>Always Disabled</Badge>
             </div>
+          </div>
+        </Card>
+
+        <Card style={{ padding: '24px' }}>
+          <SectionLabel>Fleet Diversity</SectionLabel>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px', background: T.bg, borderRadius: 8, border: `1px solid ${T.borderLight}` }}>
               <div>
-                <div style={{ fontSize: 13, fontWeight: 600, color: T.text }}>On-Demand Rightsizing</div>
-                <div style={{ fontSize: 11, color: T.textMuted }}>Propose smaller OD instance via bin-packing (no spot)</div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: T.text }}>Diversify Pools</div>
+                <div style={{ fontSize: 11, color: T.textMuted }}>Spread spot instances across multiple pools to reduce risk</div>
               </div>
-              <ToggleSwitch value={form.stateful_od_rightsizing} onToggle={() => toggle('stateful_od_rightsizing')} />
+              <ToggleSwitch value={form.diversify_pools} onToggle={() => toggle('diversify_pools')} />
             </div>
           </div>
         </Card>
@@ -786,6 +833,8 @@ export default function RightSizingMonitoringDashboard() {
   // Karpenter config state
   const [karpenterConfig, setKarpenterConfig] = useState(null);
   const [configLoading, setConfigLoading] = useState(false);
+  // null = unknown, true = installed, false = not installed (native ASG mode)
+  const [karpenterInstalled, setKarpenterInstalled] = useState(null);
 
   // Active migrations timeline
   const [rebalancingActions, setRebalancingActions] = useState([]);
@@ -828,8 +877,8 @@ export default function RightSizingMonitoringDashboard() {
     if (selectedClusterId === "all" || !selectedClusterId) return;
     if (activeTab === 'history') {
       setExecutionLoading(true);
-      karpenterAPI.getExecutionPlan(selectedClusterId)
-        .then(res => setExecutionPlan(res.data?.plan || []))
+      optimizerCoordinatorAPI.listProposals(selectedClusterId)
+        .then(res => setExecutionPlan(res.data?.proposals || res.data?.items || []))
         .catch(() => setExecutionPlan([]))
         .finally(() => setExecutionLoading(false));
     } else if (activeTab === 'savings') {
@@ -859,6 +908,9 @@ export default function RightSizingMonitoringDashboard() {
       const isRebalance = c?.automation_controls?.auto_rebalance_enabled ?? false;
       setAutoState(isAuto);
       setRebalanceState(isRebalance);
+      // Detect Karpenter from cluster data — null karpenter_mode means native ASG mode
+      const clusterData = c?.cluster || clusters.find(cl => cl.id === selectedClusterId);
+      setKarpenterInstalled(clusterData?.karpenter_mode != null);
 
       // 2. Map real recommendations into stateless (spot) / stateful (on-demand) buckets.
       const rawRecs = recsRes.data?.recommendations || [];
@@ -884,6 +936,7 @@ export default function RightSizingMonitoringDashboard() {
             confidence: r.risk_prob != null ? Math.max(0, 100 - r.risk_prob) : 85,
             impact: r.impact || 'Neutral',
             is_upsize: r.is_upsize || false,                // over-utilised node needs scale-up
+            is_actionable: r.is_actionable ?? null,           // instance-aware: better pool exists?
             reason: r.reason || '',
             cooldown: false,
           }));
@@ -934,6 +987,24 @@ export default function RightSizingMonitoringDashboard() {
 
       {!loading && selectedClusterId !== "all" && (
         <>
+          {/* Non-Karpenter info banner */}
+          {karpenterInstalled === false && (
+            <div style={{
+              marginBottom: 16, padding: "12px 16px",
+              background: T.amberLight, border: `1px solid ${T.amberBorder}`,
+              borderRadius: 8, display: "flex", alignItems: "flex-start", gap: 10,
+            }}>
+              <span style={{ fontSize: 18 }}>⚡</span>
+              <div>
+                <strong style={{ fontSize: 13, color: T.amber }}>Native ASG Spot Mode</strong>
+                <span style={{ fontSize: 12, color: T.textMid, marginLeft: 8 }}>
+                  This cluster uses ASG MixedInstancesPolicy (no Karpenter). Spot savings and
+                  auto-rebalancing are handled via the existing nodegroup ASG — no extra infrastructure needed.
+                  Recommendations below still apply; use the <strong>Apply</strong> button on each node for manual resizing.
+                </span>
+              </div>
+            </div>
+          )}
           <AutoModeBanner isRebalanceOn={rebalanceState} isRightsizingOn={autoState} isLoading={loading} />
 
           {activeTab === 'karpenter' && (
@@ -954,7 +1025,10 @@ export default function RightSizingMonitoringDashboard() {
                   Apply button hidden when rebalancing is ON (handled automatically). */}
               <StatelessSection nodes={statelessNodes} isAutoOn={rebalanceState} />
 
-              <StatefulSection nodes={statefulNodes} />
+              <StatefulSection
+                nodes={statefulNodes}
+                requireApproval={karpenterConfig?.stateful_require_approval ?? true}
+              />
             </>
           )}
 
@@ -983,27 +1057,61 @@ export default function RightSizingMonitoringDashboard() {
                         <th style={{ padding: "12px 16px", color: T.textFaint, fontWeight: 600, fontSize: 11 }}>Node</th>
                         <th style={{ padding: "12px 16px", color: T.textFaint, fontWeight: 600, fontSize: 11 }}>Action</th>
                         <th style={{ padding: "12px 16px", color: T.textFaint, fontWeight: 600, fontSize: 11 }}>Est Duration</th>
-                        <th style={{ padding: "12px 16px", color: T.textFaint, fontWeight: 600, fontSize: 11 }}>Rollback Plan</th>
+                        <th style={{ padding: "12px 16px", color: T.textFaint, fontWeight: 600, fontSize: 11 }}>Summary</th>
                         <th style={{ padding: "12px 16px", color: T.textFaint, fontWeight: 600, fontSize: 11 }}>Monthly Savings</th>
                         <th style={{ padding: "12px 16px", color: T.textFaint, fontWeight: 600, fontSize: 11 }}>Status</th>
+                        <th style={{ padding: "12px 16px", color: T.textFaint, fontWeight: 600, fontSize: 11, textAlign: "right" }}>Actions</th>
                       </tr>
                     </thead>
                     <tbody>
                       {executionPlan.map((item, i) => (
-                        <tr key={item.proposal_id || i} style={{ borderBottom: i < executionPlan.length - 1 ? `1px solid ${T.borderLight}` : "none" }}>
-                          <td style={{ padding: "12px 16px", fontWeight: 600 }}>{item.order}</td>
-                          <td style={{ padding: "12px 16px", color: T.primary, fontWeight: 500 }}>{item.node}</td>
-                          <td style={{ padding: "12px 16px", color: T.text }}>{item.action}</td>
-                          <td style={{ padding: "12px 16px", color: T.textMid }}>{item.est_duration}</td>
-                          <td style={{ padding: "12px 16px", color: T.textMid }}>{item.rollback_plan}</td>
-                          <td style={{ padding: "12px 16px", color: T.green, fontWeight: 600 }}>${item.monthly_savings}/mo</td>
+                        <tr key={item.id || item.proposal_id || i} style={{ borderBottom: i < executionPlan.length - 1 ? `1px solid ${T.borderLight}` : "none" }}>
+                          <td style={{ padding: "12px 16px", fontWeight: 600 }}>{item.order || (i + 1)}</td>
+                          <td style={{ padding: "12px 16px", color: T.primary, fontWeight: 500 }}>{item.node || item.instance_id || 'Multiple'}</td>
+                          <td style={{ padding: "12px 16px", color: T.text }}>{item.action || item.action_type}</td>
+                          <td style={{ padding: "12px 16px", color: T.textMid }}>{item.est_duration || '5m'}</td>
+                          <td style={{ padding: "12px 16px", color: T.textMid }}>{item.rollback_plan || item.summary || '-'}</td>
+                          <td style={{ padding: "12px 16px", color: T.green, fontWeight: 600 }}>${item.monthly_savings || item.estimated_savings_monthly || 0}/mo</td>
                           <td style={{ padding: "12px 16px" }}>
                             <Badge
-                              color={item.status === 'APPROVED' ? T.primary : T.textMuted}
-                              bg={item.status === 'APPROVED' ? T.primaryLight : T.bg}
+                              color={(item.status === 'APPROVED' || item.status === 'approved') ? T.primary : T.textMuted}
+                              bg={(item.status === 'APPROVED' || item.status === 'approved') ? T.primaryLight : T.bg}
                             >
-                              {item.status === 'APPROVED' ? 'Next in line' : 'Pending'}
+                              {(item.status === 'APPROVED' || item.status === 'approved') ? 'Next in line' : item.status || 'Pending'}
                             </Badge>
+                          </td>
+                          <td style={{ padding: "12px 16px", textAlign: "right", whiteSpace: "nowrap" }}>
+                            {(!item.status || item.status.toLowerCase() === 'pending') && (
+                              <div style={{ display: "flex", gap: "8px", justifyContent: "flex-end" }}>
+                                <button
+                                  onClick={() => {
+                                    optimizerCoordinatorAPI.approveProposal((item.id || item.proposal_id))
+                                      .then(() => {
+                                        toast.success('Proposal approved');
+                                        setExecutionPlan(executionPlan.map(p => p.id === item.id ? { ...p, status: 'approved' } : p));
+                                      }).catch(err => toast.error('Failed to approve'));
+                                  }}
+                                  style={{ padding: "4px 8px", background: T.greenLight, color: T.green, border: `1px solid ${T.greenBorder}`, borderRadius: 4, fontSize: 11, fontWeight: 600, cursor: "pointer" }}
+                                >
+                                  Approve
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    const reason = prompt("Reason for rejection:");
+                                    if (reason) {
+                                      optimizerCoordinatorAPI.rejectProposal((item.id || item.proposal_id), reason)
+                                        .then(() => {
+                                          toast.error('Proposal rejected');
+                                          setExecutionPlan(executionPlan.filter(p => p.id !== item.id));
+                                        }).catch(err => toast.error('Failed to reject'));
+                                    }
+                                  }}
+                                  style={{ padding: "4px 8px", background: T.redLight, color: T.red, border: `1px solid ${T.redLight}`, borderRadius: 4, fontSize: 11, fontWeight: 600, cursor: "pointer" }}
+                                >
+                                  Reject
+                                </button>
+                              </div>
+                            )}
                           </td>
                         </tr>
                       ))}

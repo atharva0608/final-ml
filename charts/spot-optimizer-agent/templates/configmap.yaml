@@ -7,3 +7,7 @@ data:
   BACKEND_URL: {{ .Values.config.backendUrl | quote }}
   BACKEND_WS_URL: {{ .Values.config.backendUrl | replace "http" "ws" | replace "https" "wss" | quote }}
   CLUSTER_ID: {{ .Values.config.clusterId | quote }}
+  IMDS_POLL_INTERVAL: "5"
+  AGENT_POLL_INTERVAL: "15"
+  COLLECTION_INTERVAL: "60"
+  POD_METRICS_INTERVAL: "60"

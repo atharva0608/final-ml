@@ -43,7 +43,7 @@ class PodMetricsCollector:
         self.api_key = api_key
         self.cluster_id = cluster_id
         self.node_name = os.getenv('NODE_NAME')  # DaemonSet provides this
-        self.collection_interval = int(os.getenv('POD_METRICS_INTERVAL', '300'))  # 5 minutes default
+        self.collection_interval = int(os.getenv('POD_METRICS_INTERVAL', '60'))  # 1 minute default
         self.running = False
 
         # Initialize Kubernetes clients

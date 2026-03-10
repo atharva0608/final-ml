@@ -4,6 +4,8 @@ Cluster Service
 Business logic for cluster discovery, registration, and management
 """
 import boto3
+import threading
+import json
 from typing import List, Optional, Dict, Any
 
 import uuid
@@ -19,7 +21,7 @@ from backend.models.cluster import Cluster, ClusterStatus
 from backend.models.user import User
 from backend.models.instance import Instance, InstanceLifecycle
 from backend.schemas.cluster_schemas import (
-    ClusterCreate, ClusterUpdate, ClusterResponse, ClusterList, 
+    ClusterCreate, ClusterUpdate, ClusterResponse, ClusterList,
     AWSConnectRequest, AgentInstallCommand, ClusterFilter,
     InstallScriptRequest, InstallScriptResponse
 )
@@ -29,8 +31,69 @@ from backend.core.exceptions import (
 from backend.models.cluster import ClusterType, ClusterStatus
 from backend.core.validators import validate_cluster_name, validate_aws_region
 from backend.schemas.cluster_schemas import ClusterListItem
+from backend.core.config import CREDENTIAL_CACHE_TTL_BUFFER_SECS, MAX_CONCURRENT_ASSUME_ROLE
 
 logger = logging.getLogger(__name__)
+
+# Module-level semaphore — lazy init
+_assume_role_semaphore = None
+
+
+def _get_assume_role_semaphore():
+    global _assume_role_semaphore
+    if _assume_role_semaphore is None:
+        _assume_role_semaphore = threading.Semaphore(MAX_CONCURRENT_ASSUME_ROLE)
+    return _assume_role_semaphore
+
+
+def get_client_credentials(account_id: str, role_arn: str) -> dict:
+    """
+    Assume IAM role and return credentials, using Redis cache to avoid redundant STS calls.
+    Cache key: credential_cache:{account_id}, TTL = expiry - CREDENTIAL_CACHE_TTL_BUFFER_SECS.
+    """
+    from backend.core.redis_client import get_redis_client, key_credential_cache
+    redis_client = get_redis_client()
+    cache_key = key_credential_cache(account_id)
+
+    cached = redis_client.get(cache_key)
+    if cached:
+        try:
+            return json.loads(cached)
+        except Exception:
+            pass
+
+    semaphore = _get_assume_role_semaphore()
+    with semaphore:
+        # Double-check after acquiring semaphore
+        cached = redis_client.get(cache_key)
+        if cached:
+            try:
+                return json.loads(cached)
+            except Exception:
+                pass
+
+        sts = boto3.client('sts')
+        assumed = sts.assume_role(
+            RoleArn=role_arn,
+            RoleSessionName=f'spot-optimizer-{account_id[:8]}',
+        )
+        creds = assumed['Credentials']
+        result = {
+            'aws_access_key_id': creds['AccessKeyId'],
+            'aws_secret_access_key': creds['SecretAccessKey'],
+            'aws_session_token': creds['SessionToken'],
+        }
+
+        # Calculate TTL with buffer
+        expiry = creds['Expiration']
+        if hasattr(expiry, 'timestamp'):
+            ttl = int(expiry.timestamp() - datetime.utcnow().timestamp()) - CREDENTIAL_CACHE_TTL_BUFFER_SECS
+        else:
+            ttl = 3600 - CREDENTIAL_CACHE_TTL_BUFFER_SECS
+        if ttl > 0:
+            redis_client.setex(cache_key, ttl, json.dumps(result))
+
+        return result
 
 
 class ClusterService:
@@ -1250,11 +1313,37 @@ echo "✅ Agent successfully deployed!"
         if not cluster:
             raise ResourceNotFoundError("Cluster", cluster_id)
 
-        instances = self.db.query(Instance).filter(
-            Instance.cluster_id == cluster_id
+        # Only show RUNNING instances — terminated/shutting-down nodes must not appear in the UI
+        _all_instances = self.db.query(Instance).filter(
+            Instance.cluster_id == cluster_id,
+            Instance.state == 'running',
         ).all()
 
-        cutoff_time = datetime.utcnow() - timedelta(hours=2)
+        # Deduplicate: prefer real EC2 instances (instance_id starts with 'i-') over
+        # daemon-set placeholder records (instance_id starts with 'ip-').
+        # Key by the short hostname prefix so ip-x-y-z-w maps to the same slot as
+        # the real instance whose node_name = ip-x-y-z-w.region.internal.
+        _seen: dict = {}
+        for _inst in _all_instances:
+            _key = (_inst.node_name or '').split('.')[0] or _inst.instance_id
+            _existing = _seen.get(_key)
+            if _existing is None:
+                _seen[_key] = _inst
+            else:
+                _is_real = _inst.instance_id and _inst.instance_id.startswith('i-')
+                _ex_real = _existing.instance_id and _existing.instance_id.startswith('i-')
+                if _is_real and not _ex_real:
+                    # Transfer utilisation from placeholder before discarding it
+                    if _existing.cpu_util is not None and _inst.cpu_util is None:
+                        _inst.cpu_util = _existing.cpu_util
+                        _inst.memory_util = _existing.memory_util
+                    _seen[_key] = _inst
+        instances = list(_seen.values())
+
+        # Only use pod metrics that arrived in the last 3 minutes.
+        # Daemon set reports every 1 min; 3× window gives tolerance for slow pods.
+        # No fallback to all-time historical data — show nothing if daemon set is silent.
+        cutoff_time = datetime.utcnow() - timedelta(minutes=3)
 
         latest_subq = self.db.query(
             PodMetric.pod_name,
@@ -1271,22 +1360,6 @@ echo "✅ Agent successfully deployed!"
             (PodMetric.node_name == latest_subq.c.node_name) &
             (PodMetric.timestamp == latest_subq.c.max_ts)
         ).all()
-
-        if not recent_pods:
-            latest_subq2 = self.db.query(
-                PodMetric.pod_name,
-                PodMetric.node_name,
-                func.max(PodMetric.timestamp).label('max_ts')
-            ).filter(
-                PodMetric.cluster_id == cluster_id
-            ).group_by(PodMetric.pod_name, PodMetric.node_name).subquery()
-
-            recent_pods = self.db.query(PodMetric).join(
-                latest_subq2,
-                (PodMetric.pod_name == latest_subq2.c.pod_name) &
-                (PodMetric.node_name == latest_subq2.c.node_name) &
-                (PodMetric.timestamp == latest_subq2.c.max_ts)
-            ).all()
 
         pods_by_node: dict = {}
         for pod in recent_pods:
@@ -1352,6 +1425,31 @@ echo "✅ Agent successfully deployed!"
                 node_cpu_util_pct = float(inst.cpu_util) if inst.cpu_util is not None and inst.cpu_util > 0 else 0
                 node_mem_util_pct = float(inst.memory_util) if inst.memory_util is not None and inst.memory_util > 0 else 0
 
+                # Override with fresher data from node_metrics table if available (last 5 min)
+                try:
+                    from backend.models.node_metrics import NodeMetric as _NM
+                    from sqlalchemy import func as _func2
+                    _nm_cutoff = datetime.utcnow() - timedelta(minutes=5)
+                    _nm_filter = [_NM.cluster_id == cluster_id]
+                    if inst.instance_id:
+                        _nm_filter.append(_NM.instance_id == inst.instance_id)
+                    elif inst.node_name:
+                        _nm_filter.append(_NM.node_name == inst.node_name)
+                    else:
+                        _nm_filter = None
+                    if _nm_filter:
+                        _nm = self.db.query(_NM).filter(
+                            *_nm_filter,
+                            _NM.timestamp >= _nm_cutoff,
+                        ).order_by(_NM.timestamp.desc()).first()
+                        if _nm:
+                            if _nm.cpu_usage_millicores and _nm.cpu_capacity_millicores and _nm.cpu_capacity_millicores > 0:
+                                node_cpu_util_pct = round((_nm.cpu_usage_millicores / _nm.cpu_capacity_millicores) * 100, 2)
+                            if _nm.memory_usage_bytes and _nm.memory_capacity_bytes and _nm.memory_capacity_bytes > 0:
+                                node_mem_util_pct = round((_nm.memory_usage_bytes / _nm.memory_capacity_bytes) * 100, 2)
+                except Exception:
+                    pass
+
                 node_name = f"node-{idx}"
                 node_pods = []
                 if idx < len(pod_nodes_items):
@@ -1392,44 +1490,8 @@ echo "✅ Agent successfully deployed!"
                     "stateful_pod_count": len(stateful_pods),
                     "pods": node_pods
                 })
-        else:
-            for idx, (node_name, node_pods) in enumerate(pods_by_node.items()):
-                total_cpu_millicores = sum(p['cpu_usage_millicores'] for p in node_pods if p['cpu_usage_millicores'])
-                total_memory_mb = sum(p['memory_usage_mb'] for p in node_pods)
-
-                stateful_pods = [p for p in node_pods if p['is_stateful']]
-                if not node_pods:
-                    node_classification = "EMPTY"
-                elif not stateful_pods:
-                    node_classification = "STATELESS"
-                elif len(stateful_pods) == len(node_pods):
-                    node_classification = "STATEFUL"
-                else:
-                    node_classification = "MIXED"
-                
-                node_cpu_capacity_cores = 4
-                node_memory_capacity_gb = 16
-
-                node_cpu_util_pct = ((total_cpu_millicores / (node_cpu_capacity_cores * 1000)) * 100) if total_cpu_millicores else 0
-                node_mem_util_pct = ((total_memory_mb / (node_memory_capacity_gb * 1024)) * 100) if total_memory_mb else 0
-
-                nodes_detailed.append({
-                    "node_name": node_name,
-                    "instance_type": "Unknown",
-                    "lifecycle": "unknown",
-                    "availability_zone": "unknown",
-                    "status": "running",
-                    "classification": node_classification,
-                    "cpu_utilization_pct": round(node_cpu_util_pct, 2),
-                    "memory_utilization_pct": round(node_mem_util_pct, 2),
-                    "cpu_capacity_cores": node_cpu_capacity_cores,
-                    "memory_capacity_gb": node_memory_capacity_gb,
-                    "total_cpu_usage_millicores": total_cpu_millicores,
-                    "total_memory_usage_mb": round(total_memory_mb, 2),
-                    "pod_count": len(node_pods),
-                    "stateful_pod_count": len(stateful_pods),
-                    "pods": node_pods
-                })
+        # No else branch — if no running instances are in the DB we return an empty list.
+        # Fake "Unknown" nodes must not appear; only daemon-set-reported data is shown.
 
         if not nodes_detailed:
             return {
@@ -1470,3 +1532,38 @@ echo "✅ Agent successfully deployed!"
 def get_cluster_service(db: Session) -> ClusterService:
     """Get cluster service instance"""
     return ClusterService(db)
+
+
+def create_agent_action(
+    node_name: str,
+    action_type,
+    payload: dict,
+    cluster_id: str,
+    db: Session,
+) -> 'AgentAction':
+    """
+    Create an AgentAction record with status=PENDING.
+
+    Args:
+        node_name: Kubernetes node name (stored in payload)
+        action_type: AgentActionType enum value
+        payload: Action-specific payload dict
+        cluster_id: Cluster ID
+        db: Database session
+
+    Returns:
+        Created AgentAction instance
+    """
+    from backend.models.agent_action import AgentAction, AgentActionStatus
+    from backend.models.base import generate_uuid
+
+    action = AgentAction(
+        id=generate_uuid(),
+        cluster_id=cluster_id,
+        action_type=action_type,
+        payload={**(payload or {}), "node_name": node_name},
+        status=AgentActionStatus.PENDING,
+    )
+    db.add(action)
+    db.commit()
+    return action

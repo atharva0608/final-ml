@@ -1,7 +1,7 @@
 services:
   # PostgreSQL Database
   postgres:
-    image: postgres:13-alpine
+    image: timescale/timescaledb:latest-pg13
     container_name: spot-optimizer-postgres
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-spot_optimizer}
@@ -57,6 +57,7 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://localhost,http://localhost:80,http://localhost:8000}
       CORS_ALLOW_CREDENTIALS: ${CORS_ALLOW_CREDENTIALS:-True}
       BACKEND_PUBLIC_URL: ${BACKEND_PUBLIC_URL}
+      PYTHONPATH: /app
     ports:
       - "8000:8000"
     depends_on:
@@ -68,6 +69,7 @@ services:
       - app-network
     volumes:
       - ../backend:/app/backend
+      - ../migrations:/app/migrations
       - ../scripts:/app/scripts
       - ../config:/app/config
       - ../ml_model:/app/ml_model
@@ -96,6 +98,7 @@ services:
       AWS_REGION: ${AWS_REGION:-us-east-1}
       ENVIRONMENT: ${ENVIRONMENT:-development}
       BACKEND_PUBLIC_URL: ${BACKEND_PUBLIC_URL}
+      PYTHONPATH: /app
     depends_on:
       postgres:
         condition: service_healthy
@@ -107,6 +110,7 @@ services:
       - app-network
     volumes:
       - ../backend:/app/backend
+      - ../migrations:/app/migrations
       - ../scripts:/app/scripts
       - ../config:/app/config
       - ../ml_model:/app/ml_model
@@ -134,6 +138,7 @@ services:
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
       AWS_REGION: ${AWS_REGION:-us-east-1}
       ENVIRONMENT: ${ENVIRONMENT:-development}
+      PYTHONPATH: /app
     depends_on:
       postgres:
         condition: service_healthy
@@ -145,6 +150,7 @@ services:
       - app-network
     volumes:
       - ../backend:/app/backend
+      - ../migrations:/app/migrations
       - ../scripts:/app/scripts
       - ../config:/app/config
       - ../ml_model:/app/ml_model

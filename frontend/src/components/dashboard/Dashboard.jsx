@@ -13,6 +13,7 @@ import FleetComposition from './widgets/FleetComposition';
 import PendingApprovalsCard from './widgets/PendingApprovalsCard';
 import AgentStatusWidget from './widgets/AgentStatusWidget';
 import SpendForecastWidget from './widgets/SpendForecastWidget';
+import TrendsChart from './widgets/TrendsChart';
 
 // Access Modal
 import AccessRequestModal from '../approvals/AccessRequestModal';
@@ -83,7 +84,8 @@ const EmptyChip = ({ text }) => (
 const Sparkline = ({ data = [], color = C.blue, height = 32 }) => {
   const w = 80, h = height;
   if (!data.length) return <svg width={w} height={h} />;
-  const max = Math.max(...data, 1);
+  const maxVal = Math.max(...data);
+  const max = maxVal > 0 ? maxVal : 1; // Prevent NaN on 0 division
   const pts = data.map((v, i) => `${(i / (data.length - 1)) * w},${h - (v / max) * h}`).join(" ");
   return (
     <svg width={w} height={h} style={{ display: "block" }}>
@@ -281,7 +283,7 @@ export default function Dashboard() {
   useEffect(() => {
     multiClusterAPI.getSummary()
       .then(res => setFleetData(res.data))
-      .catch(() => {})
+      .catch(() => { })
       .finally(() => setFleetLoading(false));
   }, []);
 
@@ -291,13 +293,29 @@ export default function Dashboard() {
       try {
         const logsRes = await auditAPI.list({ limit: 5 });
         const logs = logsRes.data.logs || [];
-        setActivityFeed(logs.map(log => ({
+        const baseFeed = logs.map(log => ({
           id: log.id,
           action: log.event_name || log.event || log.action,
           resource: log.resource_id || log.resource_type || 'System',
           status: (log.status || log.outcome) === 'success' ? 'success' : (log.status || log.outcome) === 'error' ? 'error' : 'info',
           time: new Date(log.created_at || log.timestamp)
-        })));
+        }));
+
+        try {
+          const actsRes = await multiClusterAPI.getActions(5);
+          const acts = actsRes.data.actions || [];
+          const actFeed = acts.map(a => ({
+            id: a.id,
+            action: a.trigger === 'spot_interruption' ? 'Spot Interruption' : 'Optimization',
+            resource: a.cluster_name || a.cluster_id,
+            status: a.status === 'completed' ? 'success' : a.status === 'failed' ? 'error' : 'info',
+            time: new Date(a.created_at)
+          }));
+          const combined = [...actFeed, ...baseFeed].sort((a, b) => b.time - a.time).slice(0, 10);
+          setActivityFeed(combined);
+        } catch (e) {
+          setActivityFeed(baseFeed);
+        }
 
         const clustersRes = await clusterAPI.listClusters();
         setClusters(clustersRes.data.clusters || []);
@@ -591,10 +609,10 @@ export default function Dashboard() {
                         <tbody>
                           {fleetData.clusters.map(c => (
                             <tr key={c.id}
-                                onClick={() => navigate(`/clusters/${c.id}`)}
-                                onMouseEnter={e => e.currentTarget.style.background = '#f9fafb'}
-                                onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
-                                style={{ borderBottom: `1px solid ${C.border}`, cursor: 'pointer', transition: 'background 0.1s' }}>
+                              onClick={() => navigate(`/clusters/${c.id}`)}
+                              onMouseEnter={e => e.currentTarget.style.background = '#f9fafb'}
+                              onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                              style={{ borderBottom: `1px solid ${C.border}`, cursor: 'pointer', transition: 'background 0.1s' }}>
                               <td style={{ padding: '7px 10px', fontWeight: 600 }}>{c.name}</td>
                               <td style={{ padding: '7px 10px', color: C.muted }}>{c.region || '—'}</td>
                               <td style={{ padding: '7px 10px' }}>
@@ -638,8 +656,9 @@ export default function Dashboard() {
 
             {/* ── ROW 3: Forecast + Agent Status + Cluster Health ── */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-5">
-              <SpendForecastWidget widgetKey="spend_forecast" />
-              <AgentStatusWidget widgetKey="agent_status" />
+              <div className="md:col-span-2">
+                <TrendsChart widgetKey="trends_chart" />
+              </div>
               <ClusterHealthCard widgetKey="cluster_health" data={{ clusters }} />
             </div>
 

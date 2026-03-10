@@ -210,13 +210,14 @@ async def validation_exception_handler(
         path=request.url.path
     )
 
+    from fastapi.encoders import jsonable_encoder
     return JSONResponse(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-        content={
+        content=jsonable_encoder({
             "error": "ValidationError",
             "message": "Request validation failed",
             "details": exc.errors()
-        }
+        })
     )
 
 
@@ -477,6 +478,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 from typing import Dict
 
 # Store active connections: cluster_id -> WebSocket
+# NOTE: imported by backend.api.websocket_routes for push_command_to_cluster / is_cluster_connected
 active_connections: Dict[str, WebSocket] = {}
 
 async def _push_pending_actions(websocket: WebSocket, cluster_id: str):

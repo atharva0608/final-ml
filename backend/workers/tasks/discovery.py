@@ -355,19 +355,26 @@ def scan_account(account: Account, db: Session, redis_client) -> Dict[str, int]:
         # Run cleanup ONCE after all regions — avoids false-positives for cross-region clusters
         _cleanup_deleted_clusters(account, db, all_discovered_names)
 
-        # Scan EC2 instances in the account's primary region
-        region = account_region
-        if credentials:
-            ec2_client = boto3.client(
-                'ec2',
-                region_name=region,
-                aws_access_key_id=credentials['AccessKeyId'],
-                aws_secret_access_key=credentials['SecretAccessKey'],
-                aws_session_token=credentials['SessionToken']
-            )
-        else:
-            ec2_client = boto3.client('ec2', region_name=region)
-        instances_found = scan_ec2_instances(account, ec2_client, db)
+        # Scan EC2 instances across ALL regions we checked for EKS clusters
+        instances_found = 0
+        for scan_region in regions_to_scan:
+            try:
+                if credentials:
+                    ec2_client = boto3.client(
+                        'ec2',
+                        region_name=scan_region,
+                        aws_access_key_id=credentials['AccessKeyId'],
+                        aws_secret_access_key=credentials['SecretAccessKey'],
+                        aws_session_token=credentials['SessionToken']
+                    )
+                else:
+                    ec2_client = boto3.client('ec2', region_name=scan_region)
+                
+                count = scan_ec2_instances(account, ec2_client, db)
+                instances_found += count
+            except Exception as region_err:
+                logger.debug(f"[WORK-DISC-01] EC2 Region {scan_region} not accessible: {region_err}")
+                continue
 
         # Update account status
         if account.status == AccountStatus.SCANNING:
@@ -666,8 +673,11 @@ def scan_ec2_instances(account: Account, ec2_client, db: Session) -> int:
                     tags = instance_data.get('Tags', [])
                     cluster_name = None
                     for tag in tags:
-                        if tag.get('Key') == 'eks:cluster-name':
-                            cluster_name = tag.get('Value')
+                        if tag.get('Key') == 'eks:cluster-name' or tag.get('Key', '').startswith('kubernetes.io/cluster/'):
+                            if tag.get('Key') == 'eks:cluster-name':
+                                cluster_name = tag.get('Value')
+                            else:
+                                cluster_name = tag.get('Key').replace('kubernetes.io/cluster/', '')
                             break
 
                     cluster_id = None

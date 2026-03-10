@@ -21,3 +21,19 @@ serviceAccount:
   name: "spot-optimizer-agent"
 
 namespace: "spot-optimizer"
+
+orchestrator:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: atharva608/spot-optimizer-agent
+    tag: latest
+    pullPolicy: Always
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  port: 8080

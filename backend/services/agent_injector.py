@@ -34,6 +34,9 @@ class AgentInjectorService:
     """
 
     AGENT_IMAGE = "atharva608/spot-optimizer-agent:latest"
+    # NOTE: orchestrator image not yet published separately; using agent image
+    # with ROLE=orchestrator env var until atharva608/spot-optimizer-orchestrator is built.
+    ORCHESTRATOR_IMAGE = "atharva608/spot-optimizer-agent:latest"
     NAMESPACE = "spot-optimizer"
     
     # AWS policy for cluster admin access
@@ -1331,7 +1334,115 @@ class AgentInjectorService:
                     )
                 else:
                     raise
-            
+
+            # ── Orchestrator Deployment (singleton, 1 replica) ───────────
+            # Responsible for polling pending-commands and executing K8s
+            # actions (cordon/drain/patch-nodepool) inside the cluster.
+            orchestrator_deployment = k8s_client.V1Deployment(
+                metadata=k8s_client.V1ObjectMeta(
+                    name="spot-orchestrator",
+                    namespace=self.NAMESPACE,
+                    labels={"app": "spot-orchestrator"}
+                ),
+                spec=k8s_client.V1DeploymentSpec(
+                    replicas=1,
+                    selector=k8s_client.V1LabelSelector(
+                        match_labels={"app": "spot-orchestrator"}
+                    ),
+                    template=k8s_client.V1PodTemplateSpec(
+                        metadata=k8s_client.V1ObjectMeta(
+                            labels={"app": "spot-orchestrator"}
+                        ),
+                        spec=k8s_client.V1PodSpec(
+                            service_account_name="spot-agent-sa",
+                            containers=[
+                                k8s_client.V1Container(
+                                    name="orchestrator",
+                                    image=self.ORCHESTRATOR_IMAGE,
+                                    image_pull_policy="Always",
+                                    ports=[k8s_client.V1ContainerPort(container_port=8080, name="http")],
+                                    env=[
+                                        k8s_client.V1EnvVar(
+                                            name="CLUSTER_ID",
+                                            value_from=k8s_client.V1EnvVarSource(
+                                                config_map_key_ref=k8s_client.V1ConfigMapKeySelector(
+                                                    name="spot-agent-config",
+                                                    key="CLUSTER_ID"
+                                                )
+                                            )
+                                        ),
+                                        k8s_client.V1EnvVar(
+                                            name="BACKEND_URL",
+                                            value_from=k8s_client.V1EnvVarSource(
+                                                config_map_key_ref=k8s_client.V1ConfigMapKeySelector(
+                                                    name="spot-agent-config",
+                                                    key="BACKEND_URL"
+                                                )
+                                            )
+                                        ),
+                                        k8s_client.V1EnvVar(
+                                            name="BACKEND_WS_URL",
+                                            value_from=k8s_client.V1EnvVarSource(
+                                                config_map_key_ref=k8s_client.V1ConfigMapKeySelector(
+                                                    name="spot-agent-config",
+                                                    key="BACKEND_WS_URL"
+                                                )
+                                            )
+                                        ),
+                                        k8s_client.V1EnvVar(
+                                            name="API_KEY",
+                                            value_from=k8s_client.V1EnvVarSource(
+                                                secret_key_ref=k8s_client.V1SecretKeySelector(
+                                                    name="spot-agent-secret",
+                                                    key="API_KEY"
+                                                )
+                                            )
+                                        ),
+                                    ],
+                                    resources=k8s_client.V1ResourceRequirements(
+                                        requests={"cpu": "100m", "memory": "128Mi"},
+                                        limits={"cpu": "500m", "memory": "512Mi"}
+                                    ),
+                                    readiness_probe=k8s_client.V1Probe(
+                                        http_get=k8s_client.V1HTTPGetAction(
+                                            path="/healthz",
+                                            port=8080
+                                        ),
+                                        initial_delay_seconds=5,
+                                        period_seconds=10
+                                    ),
+                                    liveness_probe=k8s_client.V1Probe(
+                                        http_get=k8s_client.V1HTTPGetAction(
+                                            path="/healthz",
+                                            port=8080
+                                        ),
+                                        initial_delay_seconds=15,
+                                        period_seconds=20
+                                    ),
+                                )
+                            ]
+                        )
+                    )
+                )
+            )
+
+            try:
+                apps_v1.create_namespaced_deployment(
+                    namespace=self.NAMESPACE,
+                    body=orchestrator_deployment
+                )
+                logger.info("Orchestrator Deployment created successfully")
+            except k8s_client.exceptions.ApiException as e:
+                if e.status == 409:
+                    apps_v1.replace_namespaced_deployment(
+                        name="spot-orchestrator",
+                        namespace=self.NAMESPACE,
+                        body=orchestrator_deployment
+                    )
+                    logger.info("Orchestrator Deployment updated (already existed)")
+                else:
+                    logger.warning(f"Orchestrator Deployment creation failed (non-fatal): {e}")
+
             logger.info("Agent deployment created successfully")
 
         finally:

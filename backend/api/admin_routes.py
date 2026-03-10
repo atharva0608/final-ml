@@ -10,7 +10,7 @@ from typing import Optional
 from datetime import datetime, timedelta
 from backend.models.base import get_db
 from backend.models.user import User
-from backend.core.dependencies import get_current_user, require_super_admin
+from backend.core.dependencies import get_current_user, require_super_admin  # noqa: F401
 from backend.services.admin_service import get_admin_service
 from backend.schemas.admin_schemas import (
     ClientList,
@@ -340,3 +340,51 @@ def disconnect_platform(
 ):
     service = get_admin_service(db)
     return service.disconnect_platform(current_user)
+
+
+# ── T19: Circuit Breaker Admin Endpoints ─────────────────────────────────────
+
+@router.get("/circuit-breakers", summary="Get all cluster circuit breaker states")
+def get_circuit_breakers(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Return circuit breaker state for all clusters."""
+    try:
+        from backend.core.redis_client import get_redis_client
+        from backend.services.circuit_breaker import CircuitBreaker
+
+        from backend.models.cluster import Cluster as _Cluster
+        clusters = db.query(_Cluster).all()
+        redis = get_redis_client()
+        cb = CircuitBreaker(redis)
+
+        result = []
+        for cluster in clusters:
+            status = cb.get_full_status(cluster.id)
+            result.append({
+                "cluster_id": cluster.id,
+                "cluster_name": cluster.name,
+                **status,
+            })
+        return {"circuit_breakers": result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/circuit-breakers/{cluster_id}/reset", summary="Reset circuit breaker to NORMAL")
+def reset_circuit_breaker(
+    cluster_id: str,
+    current_user: User = Depends(require_super_admin),
+):
+    """Force reset a cluster's circuit breaker to NORMAL state."""
+    try:
+        from backend.core.redis_client import get_redis_client
+        from backend.services.circuit_breaker import CircuitBreaker
+
+        redis = get_redis_client()
+        cb = CircuitBreaker(redis)
+        result = cb.reset(cluster_id, reason=f"manual_reset_by_{current_user.email}")
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

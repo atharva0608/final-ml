@@ -88,6 +88,16 @@ class RightSizingService:
         if not cluster:
             raise ValueError(f"Cluster {cluster_id} not found")
 
+        # Check instance-aware mode from cluster settings
+        instance_aware = False
+        try:
+            opt_settings = cluster.optimization_settings
+            if opt_settings and getattr(opt_settings, 'instance_aware_rightsizing', False):
+                instance_aware = True
+                logger.info(f"Instance-aware rightsizing ENABLED for cluster {cluster_id}")
+        except Exception:
+            pass
+
         # ── METRIC FRESHNESS (ENH 6) ─────────────────────────────────
         # Reject rightsizing if latest metrics are stale (> 5 min lag)
         try:
@@ -154,6 +164,26 @@ class RightSizingService:
                 )
 
                 if recommendation:
+                    # Instance-aware filtering: check if a better spot pool exists
+                    if instance_aware:
+                        pool_exists, pool_info = self._check_better_pool_exists(
+                            cluster_id=cluster_id,
+                            recommended_cpu_m=recommendation.recommended_cpu_request_millicores,
+                            recommended_memory_mb=recommendation.recommended_memory_request_mb,
+                            region=getattr(cluster, 'region', 'us-east-1')
+                        )
+                        recommendation.is_actionable = pool_exists
+                        recommendation.best_pool = pool_info
+                        if not pool_exists:
+                            logger.info(
+                                f"Skipping {controller_info['controller_name']}: "
+                                f"instance-aware check — no better spot pool found"
+                            )
+                            continue  # Skip this recommendation
+                    else:
+                        recommendation.is_actionable = True
+                        recommendation.best_pool = None
+
                     recommendations.append(recommendation)
 
             except Exception as e:
@@ -795,6 +825,118 @@ class RightSizingService:
                 continue
 
         return proposal_ids
+    # ========================================================================
+    # INSTANCE-AWARE RIGHTSIZING — Double-Gate Pool Check
+    # ========================================================================
+
+    def _check_better_pool_exists(
+        self,
+        cluster_id: str,
+        recommended_cpu_m: int,
+        recommended_memory_mb: int,
+        region: str = "us-east-1"
+    ) -> tuple:
+        """
+        Check if a better spot pool exists for the recommended resource profile.
+
+        Double gate:
+          1. risk < ceiling (default 0.15)
+          2. spot price < on-demand price for equivalent instance
+
+        Args:
+            cluster_id: Cluster ID
+            recommended_cpu_m: Recommended CPU in millicores
+            recommended_memory_mb: Recommended memory in MB
+            region: AWS region
+
+        Returns:
+            (exists: bool, pool_info: dict | None)
+        """
+        try:
+            cache = GlobalPoolCacheService(self.db, self.redis)
+            blacklist_svc = BlacklistService(self.redis)
+
+            # Get global rankings for this region
+            global_rankings = cache.get_or_compute_global_rankings(region)
+            if not global_rankings:
+                logger.info(f"No global rankings available for region {region}")
+                return (False, None)
+
+            # Determine target instance size from recommended resources
+            target_vcpu = max(1, int(recommended_cpu_m / 1000))
+            target_memory_gb = max(1, int(recommended_memory_mb / 1024))
+
+            # Get on-demand price for equivalent size
+            od_hourly = self._estimate_instance_cost(target_vcpu, target_memory_gb, "m5")
+
+            # Risk ceiling: accept pools with risk < 15%
+            RISK_CEILING = 0.15
+
+            # Filter candidates: match resource profile, below risk ceiling,
+            # below on-demand price, not blacklisted
+            best_candidate = None
+            best_ev = -float('inf')
+
+            for pool in global_rankings:
+                pool_type = pool.get("instance_type", "")
+                pool_az = pool.get("az", "")
+                pool_risk = pool.get("risk_probability", 1.0)
+                pool_price = pool.get("spot_price", float('inf'))
+                pool_vcpu = pool.get("vcpus", 0)
+                pool_memory = pool.get("memory_gb", 0)
+
+                # Size gate: pool must fit the recommended workload
+                if pool_vcpu < target_vcpu or pool_memory < target_memory_gb:
+                    continue
+
+                # Don't over-provision by more than 2x
+                if pool_vcpu > target_vcpu * 2 or pool_memory > target_memory_gb * 2:
+                    continue
+
+                # Double gate #1: risk < ceiling
+                if pool_risk > RISK_CEILING:
+                    continue
+
+                # Double gate #2: spot price < on-demand price
+                if pool_price >= od_hourly:
+                    continue
+
+                # Blacklist check
+                if blacklist_svc.is_pool_blacklisted(pool_type, pool_az, region):
+                    continue
+
+                # Capacity check
+                if pool.get("capacity_status") == "unavailable":
+                    continue
+
+                # Select by highest expected savings (lowest price * lowest risk)
+                savings = od_hourly - pool_price
+                ev = savings * (1 - pool_risk)
+                if ev > best_ev:
+                    best_ev = ev
+                    best_candidate = {
+                        "instance_type": pool_type,
+                        "az": pool_az,
+                        "risk_score": round(pool_risk, 4),
+                        "spot_price": round(pool_price, 4),
+                        "od_price": round(od_hourly, 4),
+                        "predicted_savings_pct": round((1 - pool_price / od_hourly) * 100, 1) if od_hourly > 0 else 0,
+                        "ev": round(best_ev, 4),
+                    }
+
+            if best_candidate:
+                logger.info(
+                    f"Instance-aware: found better pool {best_candidate['instance_type']} "
+                    f"in {best_candidate['az']} — savings {best_candidate['predicted_savings_pct']}%"
+                )
+                return (True, best_candidate)
+            else:
+                logger.info(f"Instance-aware: no pool passes double gate for {target_vcpu}vCPU/{target_memory_gb}GB")
+                return (False, None)
+
+        except Exception as e:
+            logger.warning(f"Instance-aware pool check failed, defaulting to actionable: {e}")
+            return (True, None)  # Fail open — don't block recommendations on errors
 
     def _suggest_instance_type(self, vcpu: int, memory_gb: float) -> str:
         """

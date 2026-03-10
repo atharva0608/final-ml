@@ -92,65 +92,7 @@ def seed_demo_data():
         print("     5. Click 'Verify Connection'")
 
         # ==================== NODE TEMPLATES ====================
-        print("\n📋 Creating demo node templates...")
-
-        # Check if demo user already has templates
-        existing_templates = db.query(NodeTemplate).filter(
-            NodeTemplate.user_id == demo_user.id
-        ).count()
-
-        if existing_templates == 0:
-            from backend.models.node_template import TemplateStrategy, DiskType
-
-            # Default balanced template
-            balanced_template = NodeTemplate(
-                user_id=demo_user.id,
-                name="Balanced - General Purpose",
-                families=["t3", "t3a", "m5", "m5a", "m6i"],
-                architecture="x86_64",
-                strategy=TemplateStrategy.BALANCED,
-                disk_type=DiskType.GP3,
-                disk_size=100,
-                is_default="Y",
-                created_at=datetime.utcnow(),
-                updated_at=datetime.utcnow()
-            )
-            db.add(balanced_template)
-
-            # Compute optimized template
-            compute_template = NodeTemplate(
-                user_id=demo_user.id,
-                name="Compute Optimized",
-                families=["c5", "c5a", "c5n", "c6i", "c6a"],
-                architecture="x86_64",
-                strategy=TemplateStrategy.PERFORMANCE,
-                disk_type=DiskType.GP3,
-                disk_size=100,
-                is_default="N",
-                created_at=datetime.utcnow(),
-                updated_at=datetime.utcnow()
-            )
-            db.add(compute_template)
-
-            # Memory optimized template
-            memory_template = NodeTemplate(
-                user_id=demo_user.id,
-                name="Memory Optimized",
-                families=["r5", "r5a", "r5n", "r6i", "r6a"],
-                architecture="x86_64",
-                strategy=TemplateStrategy.BALANCED,
-                disk_type=DiskType.GP3,
-                disk_size=150,
-                is_default="N",
-                created_at=datetime.utcnow(),
-                updated_at=datetime.utcnow()
-            )
-            db.add(memory_template)
-            
-            db.commit()
-            print(f"  ✅ Created 3 demo node templates for {demo_email}")
-        else:
-            print(f"  ℹ️  Demo templates already exist ({existing_templates} templates)")
+        print("\n📋 Node Templates are now managed by base schema migrations...")
 
         # ==================== SUMMARY ====================
         print("\n" + "=" * 60)

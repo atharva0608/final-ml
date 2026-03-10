@@ -342,6 +342,42 @@ def auto_install_agent(
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/{cluster_id}/update-agent")
+def update_agent(
+    cluster_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Update an already-installed agent — idempotently re-deploys DaemonSet + Orchestrator Deployment.
+    Use this to add the Orchestrator Deployment to clusters that only have the DaemonSet.
+    """
+    from backend.services.agent_injector import AgentInjectorService
+    from backend.models.cluster import Cluster
+    from backend.models.account import Account
+
+    cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+    if not cluster:
+        raise HTTPException(status_code=404, detail="Cluster not found")
+    if not cluster.api_key:
+        raise HTTPException(status_code=400, detail="Cluster has no API key — install agent first")
+
+    account = db.query(Account).filter(Account.id == cluster.account_id).first()
+    if not account or not account.role_arn:
+        raise HTTPException(status_code=400, detail="No role ARN found for this cluster's account")
+
+    from backend.workers.tasks.agent_tasks import inject_agent_task
+    task = inject_agent_task.delay(cluster_id=cluster.id)
+
+    return {
+        "status": "accepted",
+        "message": "Agent update (DaemonSet + Orchestrator) started in background",
+        "task_id": str(task.id)
+    }
+
+
 @router.post("/{cluster_id}/fallback")
 def request_fallback_node(
     cluster_id: str,
@@ -651,10 +687,16 @@ def get_cluster_optimization_settings(
         "automation_controls": {
             "auto_rebalance_enabled": automation.auto_rebalance_enabled if automation else False,
             "auto_rightsizing_enabled": automation.auto_rightsizing_enabled if automation else False,
+            "instance_aware_rightsizing": automation.instance_aware_rightsizing if automation else False,
             "cooldown_override_minutes": automation.cooldown_override_minutes if automation else None,
             "conservative_mode_enabled": automation.conservative_mode_enabled if automation else True,
             "manual_approval_required": automation.manual_approval_required if automation else False,
-            "target_spot_exposure_pct": automation.target_spot_exposure_pct if automation else 100
+            "target_spot_exposure_pct": automation.target_spot_exposure_pct if automation else 100,
+            # Sub-toggles — required so the frontend doesn't overwrite them with stale defaults on save
+            "maintain_standby": automation.maintain_standby if automation else False,
+            "diversify_pools": automation.diversify_pools if automation else False,
+            "failure_cooldown_minutes": automation.failure_cooldown_minutes if automation else 30,
+            "optimization_target": automation.optimization_target if automation else "spot",
         },
         "optimization_strategy": {
             "strategy_type": strategy.strategy_type if strategy else "BALANCED",
@@ -662,7 +704,8 @@ def get_cluster_optimization_settings(
             "min_savings_percent": strategy.min_savings_percent if strategy else 15,
             "volatility_tolerance_percent": strategy.volatility_tolerance_percent if strategy else 20,
             "migration_penalty_multiplier": strategy.migration_penalty_multiplier if strategy else 1.5,
-            "diversity_strictness_level": strategy.diversity_strictness_level if strategy else "Medium"
+            "diversity_strictness_level": strategy.diversity_strictness_level if strategy else "Medium",
+            "risk_savings_tradeoff_pct": strategy.risk_savings_tradeoff_pct if strategy else 20
         },
         "stateless_rules": {
             "instance_diversification_enabled": stateless.instance_diversification_enabled if stateless else True,

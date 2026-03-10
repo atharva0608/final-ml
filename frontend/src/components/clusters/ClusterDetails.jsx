@@ -4,7 +4,7 @@
  */
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { clusterAPI, metricsAPI, policyAPI, hibernationAPI, decisionEngineAPI, karpenterAPI } from '../../services/api';
+import { clusterAPI, metricsAPI, policyAPI, hibernationAPI, decisionEngineAPI, karpenterAPI, nativeSpotAPI } from '../../services/api';
 import { Card, Button, Badge } from '../shared';
 import { FiX, FiRefreshCw, FiSettings, FiClock, FiCpu, FiHardDrive, FiDollarSign, FiActivity } from 'react-icons/fi';
 import toast from 'react-hot-toast';
@@ -30,6 +30,8 @@ const ClusterDetails = ({ clusterId, onClose }) => {
   const [workloadType, setWorkloadType] = useState(null);
   const [nodesDetailed, setNodesDetailed] = useState(null);
   const [expandedNodes, setExpandedNodes] = useState(new Set());
+  const [optSettings, setOptSettings] = useState(null);
+  const [savingOptSettings, setSavingOptSettings] = useState(false);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [optimizing, setOptimizing] = useState(false);
@@ -40,6 +42,8 @@ const ClusterDetails = ({ clusterId, onClose }) => {
   const [fallbackLoading, setFallbackLoading] = useState(false);
   const [karpenterInstallStatus, setKarpenterInstallStatus] = useState(null);
   const [karpenterActionLoading, setKarpenterActionLoading] = useState(false);
+  const [nativeSpotStatus, setNativeSpotStatus] = useState(null);
+  const [nativeSpotLoading, setNativeSpotLoading] = useState(false);
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -52,7 +56,7 @@ const ClusterDetails = ({ clusterId, onClose }) => {
     setLoading(true);
     try {
       // Fetch cluster data, metrics, policy, schedule, utilization, workload type, and detailed nodes in parallel
-      const [clusterRes, metricsRes, policyRes, scheduleRes, classRes, subRes, coolRes, execRes, utilRes, workloadRes, nodesRes] = await Promise.allSettled([
+      const [clusterRes, metricsRes, policyRes, scheduleRes, classRes, subRes, coolRes, execRes, utilRes, workloadRes, nodesRes, optRes] = await Promise.allSettled([
         clusterAPI.getCluster(clusterId),
         metricsAPI.getClusterMetrics(clusterId),
         policyAPI.getPolicy(clusterId),
@@ -64,6 +68,7 @@ const ClusterDetails = ({ clusterId, onClose }) => {
         clusterAPI.getUtilization(clusterId),
         clusterAPI.getWorkloadType(clusterId),
         clusterAPI.getNodesDetailed(clusterId),
+        clusterAPI.getOptimizationSettings(clusterId),
       ]);
 
       if (clusterRes.status === 'fulfilled') setCluster(clusterRes.value.data);
@@ -77,11 +82,23 @@ const ClusterDetails = ({ clusterId, onClose }) => {
       if (utilRes.status === 'fulfilled') setUtilization(utilRes.value.data);
       if (workloadRes.status === 'fulfilled') setWorkloadType(workloadRes.value.data);
       if (nodesRes.status === 'fulfilled') setNodesDetailed(nodesRes.value.data);
+      if (optRes.status === 'fulfilled') {
+        const c = optRes.value.data || {
+          optimization_strategy: { strategy_type: 'BALANCED', risk_ceiling_percent: 25, min_savings_percent: 15, risk_savings_tradeoff_pct: 20 }
+        };
+        setOptSettings(c);
+      }
 
       // Fetch Karpenter install status separately (non-critical)
       try {
         const karpenterRes = await karpenterAPI.getInstallStatus(clusterId);
         setKarpenterInstallStatus(karpenterRes.data);
+        // For non-Karpenter clusters: fetch native ASG spot status
+        if (!karpenterRes.data?.karpenter_installed) {
+          nativeSpotAPI.getStatus(clusterId)
+            .then(r => setNativeSpotStatus(r.data))
+            .catch(() => {});
+        }
       } catch (_) {
         // Not critical — ignore
       }
@@ -165,6 +182,29 @@ const ClusterDetails = ({ clusterId, onClose }) => {
     } finally {
       setAgentActionLoading(false);
     }
+  };
+
+  const handleSaveOptSettings = async () => {
+    if (!clusterId || !optSettings) return;
+    setSavingOptSettings(true);
+    try {
+      await clusterAPI.updateOptimizationSettings(clusterId, optSettings);
+      toast.success("Optimization settings saved successfully!");
+    } catch (err) {
+      toast.error("Failed to save optimization settings");
+    } finally {
+      setSavingOptSettings(false);
+    }
+  };
+
+  const handleOptConfigChange = (section, key, value) => {
+    setOptSettings(prev => ({
+      ...prev,
+      [section]: {
+        ...prev[section],
+        [key]: value
+      }
+    }));
   };
 
   const getStatusColor = (status) => {
@@ -645,13 +685,13 @@ const ClusterDetails = ({ clusterId, onClose }) => {
                       <div className="flex items-center justify-between">
                         <Badge color={
                           substituteStatus?.state === 'ACTIVE' ? 'green' :
-                          substituteStatus?.state === 'PREWARMING' ? 'yellow' :
-                          substituteStatus?.state === 'READY' ? 'blue' : 'gray'
+                            substituteStatus?.state === 'PREWARMING' ? 'yellow' :
+                              substituteStatus?.state === 'READY' ? 'blue' : 'gray'
                         }>
                           {substituteStatus?.state === 'READY' ? 'Candidate Ready' :
-                           substituteStatus?.state === 'PREWARMING' ? 'Spinning Up' :
-                           substituteStatus?.state === 'ACTIVE' ? 'Node Running' :
-                           substituteStatus?.state || 'IDLE'}
+                            substituteStatus?.state === 'PREWARMING' ? 'Spinning Up' :
+                              substituteStatus?.state === 'ACTIVE' ? 'Node Running' :
+                                substituteStatus?.state || 'IDLE'}
                         </Badge>
                         {substituteStatus?.state === 'PREWARMING' && substituteStatus?.countdown && (
                           <span className="text-xs font-mono text-orange-600">{substituteStatus.countdown}s left</span>
@@ -1004,12 +1044,12 @@ const ClusterDetails = ({ clusterId, onClose }) => {
                     <Badge
                       color={
                         karpenterInstallStatus?.karpenter_installed === true ? 'green' :
-                        karpenterInstallStatus?.karpenter_installed === null ? 'yellow' : 'gray'
+                          karpenterInstallStatus?.karpenter_installed === null ? 'yellow' : 'gray'
                       }
                       size="lg"
                     >
                       {karpenterInstallStatus?.karpenter_installed === true ? 'Installed' :
-                       karpenterInstallStatus?.karpenter_installed === null ? 'In Progress' : 'Not Installed'}
+                        karpenterInstallStatus?.karpenter_installed === null ? 'In Progress' : 'Not Installed'}
                     </Badge>
                   </div>
 
@@ -1061,8 +1101,8 @@ const ClusterDetails = ({ clusterId, onClose }) => {
                         className="text-sm px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                       >
                         {karpenterActionLoading ? 'Queuing...' :
-                         karpenterInstallStatus?.karpenter_installed === null ? 'Installing...' :
-                         'Install Karpenter'}
+                          karpenterInstallStatus?.karpenter_installed === null ? 'Installing...' :
+                            'Install Karpenter'}
                       </button>
                     </div>
                   ) : (
@@ -1097,6 +1137,97 @@ const ClusterDetails = ({ clusterId, onClose }) => {
                         {karpenterActionLoading ? 'Queuing...' : 'Uninstall Karpenter'}
                       </button>
                     </div>
+                  )}
+                </Card>
+              )}
+
+              {/* Native Spot (No Karpenter) — shown when agent connected but Karpenter not installed */}
+              {(cluster?.agent_installed === 'Y' || cluster?.agent_installed === true) &&
+               karpenterInstallStatus?.karpenter_installed === false && (
+                <Card>
+                  <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
+                    <FiDollarSign className="w-5 h-5 text-green-500" />
+                    Native Spot — No Karpenter Required
+                  </h3>
+                  <div className="mb-4 p-3 bg-amber-50 border border-amber-100 rounded-lg text-sm text-amber-800">
+                    <strong>How it works:</strong> Updates the existing EKS managed nodegroup's Auto Scaling Group
+                    to use a <strong>MixedInstancesPolicy</strong> — 1 on-demand base node is always kept; the rest
+                    run on spot using AWS's price-capacity-optimized strategy with multiple compatible instance types
+                    for interruption resilience.
+                    <br /><br />
+                    <strong>No new infrastructure needed</strong> — no IAM roles, SQS queues, or OIDC setup.
+                    Works on any EKS version with managed nodegroups.
+                  </div>
+
+                  {/* Current status */}
+                  <div className="flex items-center justify-between p-3 bg-gray-50 rounded-lg mb-4">
+                    <div>
+                      <div className="text-sm font-medium text-gray-900">ASG Spot Status</div>
+                      <div className="text-sm text-gray-500 mt-0.5">
+                        {nativeSpotStatus === null
+                          ? 'Checking...'
+                          : nativeSpotStatus.error
+                            ? `Unable to check: ${nativeSpotStatus.error}`
+                            : nativeSpotStatus.spot_enabled
+                              ? `Spot active — ${nativeSpotStatus.spot_percentage ?? 70}% spot, ${nativeSpotStatus.on_demand_base ?? 1} OD base (${nativeSpotStatus.nodegroup_name ?? ''})`
+                              : `Using 100% on-demand (${nativeSpotStatus.nodegroup_name ?? 'nodegroup'})`}
+                      </div>
+                    </div>
+                    <Badge
+                      color={nativeSpotStatus?.spot_enabled ? 'green' : 'gray'}
+                      size="lg"
+                    >
+                      {nativeSpotStatus?.spot_enabled ? 'Spot Active' : 'On-Demand Only'}
+                    </Badge>
+                  </div>
+
+                  {/* Action buttons */}
+                  {!nativeSpotStatus?.spot_enabled ? (
+                    <button
+                      disabled={nativeSpotLoading || nativeSpotStatus === null}
+                      onClick={async () => {
+                        setNativeSpotLoading(true);
+                        try {
+                          await nativeSpotAPI.enable(clusterId, { spot_percentage: 70, on_demand_base: 1 });
+                          toast.success(
+                            'Native spot enabled on nodegroup. AWS will gradually replace on-demand nodes with spot instances.'
+                          );
+                          // Refresh status
+                          const r = await nativeSpotAPI.getStatus(clusterId);
+                          setNativeSpotStatus(r.data);
+                        } catch (err) {
+                          toast.error('Failed to enable native spot: ' + (err.response?.data?.detail || err.message));
+                        } finally {
+                          setNativeSpotLoading(false);
+                        }
+                      }}
+                      className="text-sm px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg transition-colors disabled:opacity-50"
+                    >
+                      {nativeSpotLoading ? 'Enabling…' : 'Enable Native Spot (70% spot)'}
+                    </button>
+                  ) : (
+                    <button
+                      disabled={nativeSpotLoading}
+                      onClick={async () => {
+                        if (!window.confirm(
+                          'Revert to 100% on-demand? Existing spot nodes will NOT be immediately terminated — they drain naturally as on-demand replaces them.'
+                        )) return;
+                        setNativeSpotLoading(true);
+                        try {
+                          await nativeSpotAPI.revert(clusterId);
+                          toast.success('Reverted to on-demand. Existing spot nodes will drain naturally.');
+                          const r = await nativeSpotAPI.getStatus(clusterId);
+                          setNativeSpotStatus(r.data);
+                        } catch (err) {
+                          toast.error('Revert failed: ' + (err.response?.data?.detail || err.message));
+                        } finally {
+                          setNativeSpotLoading(false);
+                        }
+                      }}
+                      className="text-sm px-4 py-2 border border-red-400 text-red-700 rounded-lg hover:bg-red-50 transition-colors disabled:opacity-50"
+                    >
+                      {nativeSpotLoading ? 'Reverting…' : 'Revert to On-Demand'}
+                    </button>
                   )}
                 </Card>
               )}
@@ -1223,6 +1354,84 @@ const ClusterDetails = ({ clusterId, onClose }) => {
                   </div>
                 </div>
               </Card>
+
+              {/* Risk vs Savings Controls */}
+              {optSettings && (
+                <Card>
+                  <div className="flex items-center justify-between mb-6">
+                    <div>
+                      <h3 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
+                        <FiSliders className="w-5 h-5 text-indigo-600" />
+                        Risk vs Savings Controls
+                      </h3>
+                      <p className="text-sm text-gray-500 mt-1">
+                        Applied to Node Recommendations
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    {/* Risk/Savings Tradeoff Slider */}
+                    <div className="p-4 bg-gradient-to-br from-blue-50 to-indigo-50 rounded-xl border border-blue-200">
+                      <label className="block text-sm font-medium text-gray-900 mb-2">
+                        Risk/Savings Tradeoff
+                      </label>
+                      <div className="flex items-center gap-4">
+                        <input
+                          type="range"
+                          min="0"
+                          max="50"
+                          step="5"
+                          value={optSettings.optimization_strategy?.risk_savings_tradeoff_pct || 20}
+                          onChange={e => handleOptConfigChange("optimization_strategy", "risk_savings_tradeoff_pct", +e.target.value)}
+                          className="w-full h-2 bg-blue-200 rounded-lg appearance-none cursor-pointer accent-blue-600"
+                        />
+                        <span className="text-lg font-bold text-blue-700 min-w-[3rem] text-right">
+                          {optSettings.optimization_strategy?.risk_savings_tradeoff_pct || 20}%
+                        </span>
+                      </div>
+                      <p className="text-xs text-gray-500 mt-2">
+                        Accept a pool up to <strong>{optSettings.optimization_strategy?.risk_savings_tradeoff_pct || 20}%</strong> more expensive than the current on-demand price if it has significantly lower interruption risk. Set to 0% for cheapest-only.
+                      </p>
+                    </div>
+
+                    {/* Risk Ceiling Slider */}
+                    <div className="p-4 bg-gradient-to-br from-amber-50 to-orange-50 rounded-xl border border-amber-200">
+                      <label className="block text-sm font-medium text-gray-900 mb-2">
+                        Maximum Risk Ceiling
+                      </label>
+                      <div className="flex items-center gap-4">
+                        <input
+                          type="range"
+                          min="5"
+                          max="50"
+                          step="5"
+                          value={optSettings.optimization_strategy?.risk_ceiling_percent || 25}
+                          onChange={e => handleOptConfigChange("optimization_strategy", "risk_ceiling_percent", +e.target.value)}
+                          className="w-full h-2 bg-amber-200 rounded-lg appearance-none cursor-pointer accent-amber-600"
+                        />
+                        <span className="text-lg font-bold text-amber-700 min-w-[3rem] text-right">
+                          {optSettings.optimization_strategy?.risk_ceiling_percent || 25}%
+                        </span>
+                      </div>
+                      <p className="text-xs text-gray-500 mt-2">
+                        Reject any pool with risk score above <strong>{optSettings.optimization_strategy?.risk_ceiling_percent || 25}%</strong>. Lower values = safer but fewer candidates.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="mt-6 flex justify-end">
+                    <Button
+                      variant="primary"
+                      onClick={handleSaveOptSettings}
+                      loading={savingOptSettings}
+                      disabled={savingOptSettings}
+                    >
+                      Save Settings
+                    </Button>
+                  </div>
+                </Card>
+              )}
 
               {/* Render the Strategy and Rules Engine below */}
               <DecisionEngineV3Dashboard clusterId={clusterId} cluster={cluster} />

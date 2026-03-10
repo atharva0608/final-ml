@@ -155,6 +155,7 @@ class AccountService:
         account = Account(
             id=str(uuid.uuid4()),
             organization_id=organization_id,
+            user_id=requester.id,
             aws_account_id=aws_account_id,
             role_arn=role_arn,
             external_id=secure_external_id, # Persist the ID that was actually used
