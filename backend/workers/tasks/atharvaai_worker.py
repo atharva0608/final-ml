@@ -18,7 +18,7 @@ from backend.workers.app import app
 from backend.models.base import get_db
 from backend.core.redis_client import get_redis_client
 from backend.services.pool_ranking_service import PoolRankingService, NodeTemplate
-from backend.models.spot_price_history import SpotPriceHistory
+from backend.models.pricing import SpotPriceHistory
 
 logger = logging.getLogger(__name__)
 

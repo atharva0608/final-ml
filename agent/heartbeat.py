@@ -336,7 +336,11 @@ class HeartbeatSender:
 
         while self.running:
             try:
-                self.send_heartbeat()
+                success = self.send_heartbeat()
+                if not success:
+                    # Retry once after 5s on transient failure
+                    time.sleep(5)
+                    self.send_heartbeat()
             except Exception as e:
                 logger.error(f"Error in heartbeat loop: {e}", exc_info=True)
 

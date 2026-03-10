@@ -25,7 +25,6 @@ class Organization(Base):
     external_id = Column(String(36), unique=True, nullable=True) # Unique External ID for AWS Trust Policies
     billing_email = Column(String(255), nullable=True)
     stripe_customer_id = Column(String(255), nullable=True)
-    stripe_customer_id = Column(String(255), nullable=True)
     status = Column(String(50), default="active")
     
     # Governance & RBAC Settings

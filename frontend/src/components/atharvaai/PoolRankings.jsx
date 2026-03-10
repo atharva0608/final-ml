@@ -33,9 +33,11 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
     const [error, setError] = useState(null);
     const [blacklist, setBlacklist] = useState([]);
     const [activeTab, setActiveTab] = useState('market'); // 'market', 'node', 'cluster'
-    const [autoRefresh, setAutoRefresh] = useState(false);
+    const [autoRefresh, setAutoRefresh] = useState(true);
     const [nodeRecommendations, setNodeRecommendations] = useState([]);
     const [eligiblePoolsCount, setEligiblePoolsCount] = useState(0);
+    const [familyDistribution, setFamilyDistribution] = useState({});
+    const [diversifyEnabled, setDiversifyEnabled] = useState(false);
     const [clusterImpact, setClusterImpact] = useState(null);
     const [nodeViewLoading, setNodeViewLoading] = useState(false);
     const [clusterViewLoading, setClusterViewLoading] = useState(false);
@@ -177,6 +179,8 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
                 const recs = Array.isArray(nodeData) ? nodeData : (nodeData.recommendations || []);
                 setNodeRecommendations(recs);
                 setEligiblePoolsCount(nodeData.eligible_pools_count ?? recs.length);
+                setFamilyDistribution(nodeData.family_distribution || {});
+                setDiversifyEnabled(nodeData.diversify_enabled || false);
             } catch (err) {
                 console.debug('Node recommendations endpoint pending:', err.message);
                 setNodeRecommendations([]);
@@ -498,89 +502,217 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
                         const totalNodes = nodeRecommendations.length;
                         const statelessNodes = nodeRecommendations.filter(r => r.workload_type === 'stateless').length;
                         const atRiskNodes = nodeRecommendations.filter(r => r.risk_score > 0.60).length;
-                        // Projected monthly savings: hourly cost × savings% × 720 hours
                         const projSavings = nodeRecommendations
                             .reduce((sum, r) => sum + (r.current_cost || 0) * ((r.projected_savings_pct || 0) / 100) * 720, 0);
+                        const spotNodes = nodeRecommendations.filter(r => r.lifecycle === 'spot').length;
+                        const s2sCandidates = nodeRecommendations.filter(r => r.s2s_candidate).length;
                         return (
-                            <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+                            <div className="grid grid-cols-2 md:grid-cols-6 gap-4">
                                 <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
                                     <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Total Nodes</h4>
                                     <p className="mt-2 text-2xl font-bold text-gray-900">
-                                        {nodeViewLoading ? '\u2026' : totalNodes > 0 ? totalNodes : '0'}
+                                        {nodeViewLoading ? '…' : totalNodes > 0 ? totalNodes : '0'}
                                     </p>
+                                    {!nodeViewLoading && spotNodes > 0 && (
+                                        <p className="text-xs text-green-600 mt-1 font-medium">{spotNodes} spot</p>
+                                    )}
                                 </div>
                                 <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
                                     <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Stateless</h4>
                                     <p className="mt-2 text-2xl font-bold text-gray-900">
-                                        {nodeViewLoading ? '\u2026' : statelessNodes}
+                                        {nodeViewLoading ? '…' : statelessNodes}
                                     </p>
                                 </div>
                                 <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
-                                    <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Total Pools</h4>
+                                    <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Eligible Pools</h4>
                                     <p className="mt-2 text-2xl font-bold text-indigo-600">
-                                        {nodeViewLoading ? '\u2026' : eligiblePoolsCount}
+                                        {nodeViewLoading ? '…' : eligiblePoolsCount}
                                     </p>
                                     <p className="text-xs text-gray-400 mt-1">after node filter</p>
                                 </div>
                                 <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
                                     <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">At Risk</h4>
                                     <p className="mt-2 text-2xl font-bold text-orange-500">
-                                        {nodeViewLoading ? '\u2026' : atRiskNodes}
+                                        {nodeViewLoading ? '…' : atRiskNodes}
                                     </p>
                                     <p className="text-xs text-gray-400 mt-1">risk &gt; 60%</p>
+                                </div>
+                                {/* S2S Candidates card */}
+                                <div className={`p-4 rounded-lg shadow-sm border ${s2sCandidates > 0 ? 'bg-amber-50 border-amber-200' : 'bg-white border-gray-200'}`}>
+                                    <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
+                                        SPOT→SPOT
+                                        {diversifyEnabled && (
+                                            <span className="ml-1 px-1 py-0.5 text-xs rounded bg-indigo-100 text-indigo-700">Diversify ON</span>
+                                        )}
+                                    </h4>
+                                    <p className={`mt-2 text-2xl font-bold ${s2sCandidates > 0 ? 'text-amber-600' : 'text-gray-400'}`}>
+                                        {nodeViewLoading ? '…' : s2sCandidates}
+                                    </p>
+                                    <p className="text-xs text-gray-400 mt-1">
+                                        {s2sCandidates > 0 ? 'eligible to migrate' : 'all optimal'}
+                                    </p>
                                 </div>
                                 <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
                                     <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Proj. Savings</h4>
                                     <p className="mt-2 text-2xl font-bold text-green-600">
-                                        {nodeViewLoading ? '$\u2026' : projSavings > 0 ? `$${Math.round(projSavings)}/mo` : '$0/mo'}
+                                        {nodeViewLoading ? '$…' : projSavings > 0 ? `$${Math.round(projSavings)}/mo` : '$0/mo'}
                                     </p>
+                                    {!nodeViewLoading && spotNodes > 0 && (
+                                        <p className="text-xs text-gray-400 mt-1">incl. realized</p>
+                                    )}
                                 </div>
                             </div>
                         );
                     })()}
 
+                    {/* Family Distribution Bar — shown when diversify is ON or multiple families */}
+                    {!nodeViewLoading && Object.keys(familyDistribution).length > 0 && (
+                        <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
+                            <div className="flex items-center justify-between mb-3">
+                                <h4 className="text-xs font-semibold text-gray-600 uppercase tracking-wider">
+                                    Instance Family Distribution
+                                </h4>
+                                {diversifyEnabled && (
+                                    <span className="text-xs text-indigo-600 font-medium">
+                                        Diversify ON — 40% cap per family
+                                    </span>
+                                )}
+                            </div>
+                            <div className="space-y-2">
+                                {Object.entries(familyDistribution)
+                                    .sort((a, b) => b[1].count - a[1].count)
+                                    .map(([fam, info]) => {
+                                        const pct = info.pct;
+                                        const overCap = diversifyEnabled && pct > 40;
+                                        return (
+                                            <div key={fam} className="flex items-center gap-3">
+                                                <span className="w-16 text-xs font-mono font-medium text-gray-700 flex-shrink-0">{fam}</span>
+                                                <div className="flex-1 h-4 bg-gray-100 rounded-full overflow-hidden">
+                                                    <div
+                                                        className={`h-full rounded-full transition-all ${overCap ? 'bg-amber-400' : 'bg-indigo-400'}`}
+                                                        style={{ width: `${pct}%` }}
+                                                    />
+                                                </div>
+                                                <span className={`w-20 text-xs font-medium text-right flex-shrink-0 ${overCap ? 'text-amber-600' : 'text-gray-500'}`}>
+                                                    {info.count} node{info.count !== 1 ? 's' : ''} ({pct}%)
+                                                    {overCap && ' ⚠'}
+                                                </span>
+                                            </div>
+                                        );
+                                    })}
+                            </div>
+                            {diversifyEnabled && Object.values(familyDistribution).some(i => i.pct > 40) && (
+                                <p className="mt-2 text-xs text-amber-600">
+                                    ⚠ Families above 40% will trigger SPOT→SPOT rebalancing to restore diversity
+                                </p>
+                            )}
+                        </div>
+                    )}
+
                     {/* Table */}
                     <div className="bg-white shadow-md rounded-lg overflow-x-auto">
-                        <table className="w-full min-w-[900px] divide-y divide-gray-200 text-sm">
+                        <table className="w-full min-w-[1000px] divide-y divide-gray-200 text-sm">
                             <thead className="bg-gray-50">
                                 <tr>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Node Name</th>
+                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Node</th>
                                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Current Type</th>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Current Cost</th>
+                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Cost/hr</th>
+                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Action</th>
                                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Target Pool</th>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Proj. Savings</th>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Risk Score</th>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Interruption Rate</th>
+                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Savings</th>
+                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Risk</th>
+                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Interruption</th>
                                 </tr>
                             </thead>
                             <tbody className="bg-white divide-y divide-gray-200">
                                 {nodeRecommendations && nodeRecommendations.length > 0 ? (
-                                    nodeRecommendations.map((rec, idx) => (
-                                        <tr key={idx} className="hover:bg-gray-50">
-                                            <td className="px-4 py-3 font-medium text-gray-900">{rec.node_name}</td>
-                                            <td className="px-4 py-3 text-gray-500">{rec.current_type}</td>
-                                            <td className="px-4 py-3 text-gray-500">${rec.current_cost}/hr</td>
-                                            <td className="px-4 py-3">
-                                                <div className="font-medium text-gray-900">{rec.target_type}</div>
-                                                <div className="text-xs text-gray-400">{rec.target_az}</div>
+                                    nodeRecommendations.map((rec, idx) => {
+                                        const isSpot = rec.lifecycle === 'spot';
+                                        const isS2S = rec.s2s_candidate;
+                                        const rowBg = isS2S ? 'bg-amber-50' : isSpot ? 'bg-green-50' : '';
+                                        return (
+                                        <tr key={idx} className={`hover:bg-gray-50 ${rowBg}`}>
+                                            {/* Node name + lifecycle badge */}
+                                            <td className="px-4 py-3 font-medium text-gray-900">
+                                                <div>{rec.node_name}</div>
+                                                <div className="flex flex-wrap gap-1 mt-0.5">
+                                                    {isSpot ? (
+                                                        <span className="px-1.5 py-0.5 text-xs font-semibold rounded bg-green-100 text-green-700">SPOT</span>
+                                                    ) : (
+                                                        <span className="px-1.5 py-0.5 text-xs font-semibold rounded bg-blue-100 text-blue-700">ON-DEMAND</span>
+                                                    )}
+                                                </div>
                                             </td>
-                                            <td className="px-4 py-3 text-green-600 font-semibold">{rec.projected_savings_pct}%</td>
-                                            <td className="px-4 py-3 text-blue-600 font-bold">{rec.risk_score}</td>
+                                            {/* Current type + family badge */}
                                             <td className="px-4 py-3">
-                                                <span className={`px-2 py-0.5 inline-flex text-xs font-semibold rounded-full ${rec.interruption_rate === '<5%' ? 'bg-green-100 text-green-800' :
-                                                        rec.interruption_rate === '5–10%' ? 'bg-blue-100 text-blue-800' :
-                                                            rec.interruption_rate === '10–15%' ? 'bg-yellow-100 text-yellow-800' :
-                                                                rec.interruption_rate === '15–20%' ? 'bg-orange-100 text-orange-800' :
-                                                                    'bg-red-100 text-red-800'
-                                                    }`}>
+                                                <div className="text-gray-900">{rec.current_type}</div>
+                                                {rec.instance_family && (
+                                                    <span className="text-xs text-gray-400">{rec.instance_family} family</span>
+                                                )}
+                                            </td>
+                                            <td className="px-4 py-3 text-gray-500">${rec.current_cost}/hr</td>
+                                            {/* Action column */}
+                                            <td className="px-4 py-3">
+                                                {isS2S ? (
+                                                    <div>
+                                                        <span className="px-2 py-0.5 text-xs font-semibold rounded-full bg-amber-100 text-amber-800">
+                                                            SPOT→SPOT
+                                                        </span>
+                                                        {rec.s2s_trigger && (
+                                                            <div className="mt-0.5 text-xs text-amber-600 max-w-[160px] truncate" title={rec.s2s_trigger}>
+                                                                {rec.s2s_trigger.startsWith('diversify') ? '🔀 ' : '⚡ '}
+                                                                {rec.s2s_trigger}
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                ) : isSpot ? (
+                                                    <span className="px-2 py-0.5 text-xs font-semibold rounded-full bg-green-100 text-green-700">
+                                                        ✓ Optimal
+                                                    </span>
+                                                ) : (
+                                                    <span className="px-2 py-0.5 text-xs font-semibold rounded-full bg-indigo-100 text-indigo-700">
+                                                        OD→SPOT
+                                                    </span>
+                                                )}
+                                            </td>
+                                            {/* Target pool */}
+                                            <td className="px-4 py-3">
+                                                {isSpot && !isS2S ? (
+                                                    <span className="text-xs text-green-600 font-medium">—</span>
+                                                ) : (
+                                                    <>
+                                                        <div className="font-medium text-gray-900">{rec.target_type}</div>
+                                                        <div className="text-xs text-gray-400">{rec.target_az}</div>
+                                                    </>
+                                                )}
+                                            </td>
+                                            {/* Savings */}
+                                            <td className={`px-4 py-3 font-semibold ${rec.projected_savings_pct > 0 ? 'text-green-600' : 'text-gray-400'}`}>
+                                                {rec.projected_savings_pct > 0 ? `${rec.projected_savings_pct}%` : '—'}
+                                                {isSpot && rec.projected_savings_pct > 0 && (
+                                                    <span className="block text-xs text-green-500 font-normal">realized</span>
+                                                )}
+                                            </td>
+                                            {/* Risk */}
+                                            <td className="px-4 py-3 text-blue-600 font-bold">{rec.risk_score}</td>
+                                            {/* Interruption rate */}
+                                            <td className="px-4 py-3">
+                                                <span className={`px-2 py-0.5 inline-flex text-xs font-semibold rounded-full ${
+                                                    rec.interruption_rate === '<5%' ? 'bg-green-100 text-green-800' :
+                                                    rec.interruption_rate === '5–10%' ? 'bg-blue-100 text-blue-800' :
+                                                    rec.interruption_rate === '10–15%' ? 'bg-yellow-100 text-yellow-800' :
+                                                    rec.interruption_rate === '15–20%' ? 'bg-orange-100 text-orange-800' :
+                                                    'bg-red-100 text-red-800'
+                                                }`}>
                                                     {rec.interruption_rate || '—'}
                                                 </span>
                                             </td>
                                         </tr>
-                                    ))
+                                        );
+                                    })
                                 ) : (
                                     <tr>
-                                        <td colSpan="7" className="px-4 py-12 text-center text-gray-500">
+                                        <td colSpan="8" className="px-4 py-12 text-center text-gray-500">
                                             {nodeViewLoading ? (
                                                 <div className="flex flex-col items-center">
                                                     <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600 mb-4"></div>

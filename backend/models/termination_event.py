@@ -6,7 +6,7 @@ Tracks spot instance termination notices from:
 - Manual: User-initiated termination flags
 """
 
-from sqlalchemy import Column, Integer, String, DateTime, func
+from sqlalchemy import Column, Integer, String, DateTime, func, Index
 from sqlalchemy.dialects.postgresql import JSONB
 from backend.models.base import Base
 
@@ -15,6 +15,9 @@ class TerminationEvent(Base):
     """Spot instance termination event record."""
 
     __tablename__ = 'termination_events'
+    __table_args__ = (
+        Index('idx_termination_cluster_detected', 'cluster_id', 'detected_at'),
+    )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     instance_type = Column(String(50), nullable=False, index=True)

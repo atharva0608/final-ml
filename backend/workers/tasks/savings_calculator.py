@@ -52,9 +52,10 @@ def calculate_real_savings(self: Task):
         total_realized = 0.0
 
         for cluster in clusters:
-            # Get all instances for this cluster
+            # Get all RUNNING instances for this cluster (exclude terminated)
             instances = db.query(Instance).filter(
-                Instance.cluster_id == cluster.id
+                Instance.cluster_id == cluster.id,
+                Instance.state == 'running',
             ).all()
 
             if not instances:

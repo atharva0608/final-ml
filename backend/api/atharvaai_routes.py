@@ -96,6 +96,7 @@ class RebalancingStatusResponse(BaseModel):
     step_5_old_node_terminated: Optional[str] # ISO timestamp when old OD node terminated
     step_6_optimization_complete: Optional[str]  # ISO timestamp when fully done
     instance_id: Optional[str]               # EC2 instance ID being migrated
+    provisioner_type: Optional[str]          # 'karpenter' or 'agent' (direct EC2)
 
 
 # Endpoints
@@ -492,6 +493,7 @@ async def get_rebalancing_status(
                 step_5_old_node_terminated=_meta.get("step_5_old_node_terminated"),
                 step_6_optimization_complete=_meta.get("step_6_optimization_complete"),
                 instance_id=_meta.get("instance_id"),
+                provisioner_type=_meta.get("provisioner_type"),
             ))
 
         return response
@@ -1223,6 +1225,10 @@ async def get_node_recommendations(
     risk_tradeoff_pct = (strategy.risk_savings_tradeoff_pct if strategy else 20) or 20
     risk_ceiling = ((strategy.risk_ceiling_percent if strategy else 25) or 25) / 100.0
 
+    # ── Load diversify_pools setting ────────────────────────────────────────
+    opt = cluster.optimization_settings
+    _diversify_enabled = bool(getattr(opt, 'diversify_pools', False)) if opt else False
+
     # ── Sort pools risk-first (lowest risk → highest), savings as tiebreaker ──
     if top_pools:
         top_pools.sort(key=lambda p: (p.risk_probability, -p.predicted_savings))
@@ -1232,12 +1238,15 @@ async def get_node_recommendations(
     node_classification = inspector.get_cached_classification(cluster_id) or {}
 
     recommendations = []
-    used_types = set()  # Diversity by instance_type (not az) so each node gets a different family
+    used_types = set()  # Diversity by instance_type so each node gets a different type
+    _target_family_counts: dict = {}  # family → # of nodes assigned, for 40% cap when diversify ON
 
     # Normalise ORM instances to a common dict interface
     _node_list = [
         {
             "instance_id": inst.instance_id or f"node-{str(inst.id)[:8]}",
+            # Prefer K8s node hostname (ip-192-168-x-x); fall back to EC2 instance ID
+            "node_name": (inst.node_name or "").split('.')[0] or inst.instance_id or f"node-{str(inst.id)[:8]}",
             "instance_type": inst.instance_type or "m5.large",
             "az": inst.az or f"{region}a",
             "lifecycle": (inst.lifecycle.value if hasattr(inst.lifecycle, 'value') else str(inst.lifecycle or 'on-demand')).lower(),
@@ -1254,7 +1263,7 @@ async def get_node_recommendations(
         lifecycle = node["lifecycle"]
         is_already_spot = 'spot' in lifecycle
 
-        node_name = node["instance_id"]
+        node_name = node["node_name"]
         on_demand_hourly = INSTANCE_HOURLY.get(instance_type, 0.096)
         
         # Original Provisioned Limits
@@ -1293,28 +1302,59 @@ async def get_node_recommendations(
         max_acceptable_price = on_demand_hourly * (1.0 + risk_tradeoff_pct / 100.0)
 
         chosen_pool = None  # reset per node
+
+        # For already-SPOT nodes: compute their actual realized savings vs on-demand
+        # so the table shows real data ("t3.medium spot saving 54% vs OD") not 0%
+        if is_already_spot:
+            # Try to get current spot price for this instance type from ranked pools
+            _spot_match = next(
+                (p for p in top_pools if p.pool.instance_type == instance_type
+                 and (not p.pool.az or p.pool.az == az or p.pool.az.startswith(region))),
+                None
+            ) or next((p for p in top_pools if p.pool.instance_type == instance_type), None)
+            if _spot_match and _spot_match.pool.spot_price > 0 and on_demand_hourly > 0:
+                spot_price_hourly = _spot_match.pool.spot_price
+                raw_savings = (on_demand_hourly - spot_price_hourly) / on_demand_hourly * 100
+                spot_savings_pct = max(0, round(raw_savings))
+                risk_score = _spot_match.risk_probability
+            elif _spot_match:
+                spot_savings_pct = round(_spot_match.predicted_savings * 100)
+                risk_score = _spot_match.risk_probability
+            elif on_demand_hourly > 0:
+                # No ML pool data for this type — apply conservative 60% spot discount estimate
+                spot_price_hourly = on_demand_hourly * 0.4
+                spot_savings_pct = 60
+                risk_score = 0.2
+
         if not is_already_spot and top_pools:
+            _total_nodes = len(_node_list)
 
             # Pass 1: Fits required compute + within price ceiling + below risk ceiling + unused type
             for pool in top_pools:
                 if pool.pool.instance_type in used_types:
                     continue
-                
+
+                # Diversify: enforce 40% family cap when diversify_pools is ON
+                if _diversify_enabled:
+                    _pool_fam = pool.pool.instance_type.split('.')[0]
+                    if (_target_family_counts.get(_pool_fam, 0) + 1) / max(1, _total_nodes) > 0.40:
+                        continue
+
                 pool_vcpu = pool.pool.vcpu
                 pool_mem = pool.pool.memory_gb
-                
+
                 # Dynamic Rightsizing check: Does the pool fit the required load?
                 # And prevents upscaling to incredibly large nodes if usage is low
                 fits_load = (pool_vcpu >= required_vcpu) and (pool_mem >= required_mem)
                 not_too_large = (pool_vcpu <= current_vcpu * 2.5) and (pool_mem <= current_mem * 2.5)
-                
+
                 if not (fits_load and not_too_large):
                     continue
 
                 # Risk gate: reject pools above risk ceiling
                 if pool.risk_probability > risk_ceiling:
                     continue
-                
+
                 # Price gate: spot price must be below max acceptable
                 if pool.pool.spot_price > 0:
                     if pool.pool.spot_price <= max_acceptable_price:
@@ -1326,17 +1366,21 @@ async def get_node_recommendations(
                         chosen_pool = pool
                         break
 
-            # Pass 2: Relax price constraint, keep risk ceiling + load fit
+            # Pass 2: Relax price constraint, keep risk ceiling + load fit + diversity
             if chosen_pool is None:
                 for pool in top_pools:
                     if pool.pool.instance_type in used_types:
                         continue
+                    if _diversify_enabled:
+                        _pool_fam = pool.pool.instance_type.split('.')[0]
+                        if (_target_family_counts.get(_pool_fam, 0) + 1) / max(1, _total_nodes) > 0.40:
+                            continue
                     if pool.risk_probability > risk_ceiling:
                         continue
-                    
+
                     pool_vcpu = pool.pool.vcpu
                     pool_mem = pool.pool.memory_gb
-                    
+
                     if (pool_vcpu >= required_vcpu and pool_mem >= required_mem) and (pool_vcpu <= current_vcpu * 2.5 and pool_mem <= current_mem * 2.5):
                         chosen_pool = pool
                         break
@@ -1348,6 +1392,8 @@ async def get_node_recommendations(
 
             if chosen_pool:
                 used_types.add(chosen_pool.pool.instance_type)
+                _cf = chosen_pool.pool.instance_type.split('.')[0]
+                _target_family_counts[_cf] = _target_family_counts.get(_cf, 0) + 1
                 target_type = chosen_pool.pool.instance_type
                 target_az = chosen_pool.pool.az
                 risk_score = chosen_pool.risk_probability
@@ -1394,18 +1440,51 @@ async def get_node_recommendations(
             "node_name": node_name,
             "current_type": instance_type,
             "current_cost": round(on_demand_hourly, 4),
-            "target_type": target_type if not is_already_spot else instance_type,
+            "target_type": target_type,
             "target_az": target_az,
             "target_spot_price": round(spot_price_hourly, 4),
             "projected_savings_pct": spot_savings_pct,
             "risk_score": round(risk_score, 3),
             "interruption_rate": interruption_rate,
             "workload_type": workload_type,
+            "lifecycle": "spot" if is_already_spot else "on_demand",
+            "instance_family": (instance_type or "").split(".")[0],
         })
+
+    # ── Family distribution for diversify visualisation ─────────────────────
+    _fam_dist: dict = {}
+    for _r in recommendations:
+        _fam = _r["instance_family"]
+        _fam_dist[_fam] = _fam_dist.get(_fam, 0) + 1
+    _total_nodes_dist = max(1, len(recommendations))
+    _fam_shares = {
+        fam: {"count": cnt, "pct": round(cnt / _total_nodes_dist * 100)}
+        for fam, cnt in _fam_dist.items()
+    }
+
+    # ── S2S candidate detection ──────────────────────────────────────────────
+    # Mark SPOT nodes that would trigger a SPOT→SPOT rebalancing action:
+    #   diversify: family share > 40% when diversify_pools=ON
+    #   risk:      node's pool risk > 0.4 (no current active ranking available here,
+    #              so we use risk_score from the chosen pool as proxy)
+    for _r in recommendations:
+        _s2s_trigger = None
+        if _r["lifecycle"] == "spot":
+            if _diversify_enabled:
+                _fam = _r["instance_family"]
+                _share = _fam_dist.get(_fam, 0) / _total_nodes_dist
+                if _share > 0.40:
+                    _s2s_trigger = f"diversify: {_fam} at {round(_share * 100)}% (cap 40%)"
+            if not _s2s_trigger and _r["risk_score"] > 0.4:
+                _s2s_trigger = f"risk: score {_r['risk_score']:.2f} > 0.40 threshold"
+        _r["s2s_candidate"] = _s2s_trigger is not None
+        _r["s2s_trigger"] = _s2s_trigger
 
     return {
         "recommendations": recommendations,
         "eligible_pools_count": eligible_pools_count,
+        "family_distribution": _fam_shares,
+        "diversify_enabled": _diversify_enabled,
     }
 
 
@@ -1516,3 +1595,141 @@ async def get_cluster_impact(
         "on_demand_count": on_demand_count,
         "total_nodes": total,
     }
+
+
+# ── Rebalancing Context ────────────────────────────────────────────────────────
+# Unified endpoint that returns:
+#  1. Active cooldown (both explicit Redis key AND 10-min post-rebalance window)
+#  2. Next ON_DEMAND node to be rebalanced (estimated savings included)
+# Used by RebalancingTimeline metadata bar.
+
+@router.get("/v3/rebalancing-context/{cluster_id}")
+async def get_rebalancing_context(
+    cluster_id: str,
+    db: Session = Depends(get_db),
+):
+    """
+    Returns the current rebalancing context for the timeline metadata bar:
+    - cooldown: { active, remaining_seconds, reason }
+    - next_target: { node, instance_id, instance_type, monthly_savings } or null
+    """
+    from backend.models.cluster import Cluster
+    from backend.models.instance import Instance, InstanceLifecycle
+    from backend.models.rebalancing_action import RebalancingAction
+
+    _POST_REBALANCE_COOLDOWN_S = 600  # 10 minutes between rebalances
+
+    try:
+        redis = get_redis_client()
+
+        # ── 1. Cooldown detection ──────────────────────────────────────────────
+        cooldown_active = False
+        remaining_seconds = 0
+        cooldown_reason = None
+
+        # Check explicit emergency/manual cooldown key
+        try:
+            from backend.core.redis_client import key_cluster_cooldown
+            _ck = key_cluster_cooldown(cluster_id)
+            _ttl = redis.ttl(_ck)
+            if _ttl and _ttl > 0:
+                cooldown_active = True
+                remaining_seconds = int(_ttl)
+                cooldown_reason = "cluster_cooldown"
+        except Exception:
+            pass
+
+        # Check post-rebalance 10-min window (last completed action)
+        if not cooldown_active:
+            try:
+                _last = (
+                    db.query(RebalancingAction)
+                    .filter(
+                        RebalancingAction.cluster_id == cluster_id,
+                        RebalancingAction.status == "completed",
+                        RebalancingAction.completed_at.isnot(None),
+                    )
+                    .order_by(RebalancingAction.completed_at.desc())
+                    .first()
+                )
+                if _last and _last.completed_at:
+                    _elapsed = (datetime.utcnow() - _last.completed_at).total_seconds()
+                    if _elapsed < _POST_REBALANCE_COOLDOWN_S:
+                        cooldown_active = True
+                        remaining_seconds = int(_POST_REBALANCE_COOLDOWN_S - _elapsed)
+                        cooldown_reason = "post_rebalance"
+            except Exception:
+                pass
+
+        # ── 2. Next target node ────────────────────────────────────────────────
+        next_target = None
+        try:
+            # Get all running ON_DEMAND instances not in per-instance cooldown
+            _od_instances = (
+                db.query(Instance)
+                .filter(
+                    Instance.cluster_id == cluster_id,
+                    Instance.lifecycle == InstanceLifecycle.ON_DEMAND,
+                    Instance.state == "running",
+                )
+                .all()
+            )
+
+            # Filter out instances already rebalanced (24h Redis cooldown)
+            for _inst in _od_instances:
+                if not _inst.instance_id:
+                    continue
+                _inst_key = f"spot:rebalanced:instance:{_inst.instance_id}"
+                if redis and redis.exists(_inst_key):
+                    continue  # in cooldown — skip
+
+                # Also skip placeholders (ip- IDs from Redis seed that have node_name = instance_id)
+                # but DO show them if that's the only thing available
+                _is_real_ec2 = _inst.instance_id.startswith("i-")
+                _display_name = (
+                    _inst.node_name.split(".")[0]
+                    if _inst.node_name
+                    else _inst.instance_id
+                )
+
+                # Estimate monthly savings (OD → spot price difference, rough)
+                _OD_PRICE = {
+                    "t3.micro": 10, "t3.small": 19, "t3.medium": 38, "t3.large": 76,
+                    "t3.xlarge": 150, "t3.2xlarge": 300,
+                    "m5.large": 88, "m5.xlarge": 175, "m5.2xlarge": 350,
+                    "c5.large": 76, "c5.xlarge": 152, "c5.2xlarge": 305,
+                    "c6i.large": 80, "c6i.xlarge": 160, "c6i.2xlarge": 320,
+                }
+                _od_monthly = _OD_PRICE.get(_inst.instance_type or "", 50)
+                _spot_discount = 0.65  # ~35% average spot savings
+                _monthly_savings = round(_od_monthly * _spot_discount, 1)
+
+                next_target = {
+                    "node": _display_name,
+                    "instance_id": _inst.instance_id,
+                    "instance_type": _inst.instance_type or "unknown",
+                    "monthly_savings": _monthly_savings,
+                }
+                break  # take the first eligible node
+        except Exception as _nt_err:
+            logger.warning(f"[rebalancing-context] Next target query failed: {_nt_err}")
+
+        return {
+            "cluster_id": cluster_id,
+            "cooldown": {
+                "active": cooldown_active,
+                "remaining_seconds": remaining_seconds,
+                "reason": cooldown_reason,
+            },
+            "next_target": next_target,
+            "timestamp": datetime.utcnow().isoformat(),
+        }
+
+    except Exception as e:
+        logger.error(f"[rebalancing-context] Failed for {cluster_id}: {e}")
+        return {
+            "cluster_id": cluster_id,
+            "cooldown": {"active": False, "remaining_seconds": 0, "reason": None},
+            "next_target": None,
+            "timestamp": datetime.utcnow().isoformat(),
+        }

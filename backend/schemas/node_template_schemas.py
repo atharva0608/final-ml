@@ -30,7 +30,7 @@ class NodeTemplateCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=255) # reduced min_length from 3 to 1 to support simple names like "AA"
     scope: TemplateScope = TemplateScope.GLOBAL
     # For creation, we accept the initial constraints to immediately create Version 1
-    initial_constraints: NodeTemplateConstraints
+    initial_constraints: NodeTemplateConstraints = Field(default_factory=NodeTemplateConstraints)
 
 class NodeTemplateRead(BaseModel):
     id: str

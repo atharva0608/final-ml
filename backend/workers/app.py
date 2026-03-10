@@ -69,10 +69,10 @@ app.conf.beat_schedule = {
         'task': 'workers.cost.calculate_cluster_costs',
         'schedule': 900.0,
     },
-    # Savings Calculator (12 hours) - Calculates real potential and realized savings
-    'savings-calculator-every-12-hours': {
+    # Savings Calculator (30 min) - Calculates real potential and realized savings
+    'savings-calculator-every-30-mins': {
         'task': 'workers.savings.calculate_real_savings',
-        'schedule': 43200.0,
+        'schedule': 1800.0,
     },
     # Approval Cleanup (5 mins) - Marks expired approvals as EXPIRED
     'approval-cleanup-every-5-mins': {

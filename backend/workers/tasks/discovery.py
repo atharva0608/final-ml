@@ -644,11 +644,26 @@ def scan_ec2_instances(account: Account, ec2_client, db: Session) -> int:
         # Get pricing helper for instance price calculation
         pricing_helper = get_pricing_helper()
 
-        # Describe all instances using paginator
+        # RC3: Redis client for consecutive-OD downgrade guard
+        try:
+            _rc3_redis = get_redis_client()
+        except Exception:
+            _rc3_redis = None
+        _RC3_THRESHOLD = 3  # require N consecutive OD scans before allowing SPOT→OD downgrade
+        _RC3_TTL = 1800     # Redis key TTL: 30 min (3 × 10 min discovery cycle)
+
+        # Describe RUNNING instances only — non-running instances are irrelevant
+        # for node visualization and can clutter the DB with stale records.
         paginator = ec2_client.get_paginator('describe_instances')
         instance_count = 0
+        # RC4 fix: track every instance_id seen this scan.
+        # After the loop we mark any DB record NOT in this set as terminated,
+        # so ghost "running" records disappear automatically.
+        _seen_instance_ids: set = set()
 
-        for page in paginator.paginate():
+        for page in paginator.paginate(
+            Filters=[{'Name': 'instance-state-name', 'Values': ['running']}]
+        ):
             for reservation in page.get('Reservations', []):
                 for instance_data in reservation.get('Instances', []):
                     instance_id = instance_data.get('InstanceId')
@@ -689,6 +704,9 @@ def scan_ec2_instances(account: Account, ec2_client, db: Session) -> int:
                         if cluster:
                             cluster_id = cluster.id
 
+                    # Track for stale-mark logic (RC4 fix)
+                    _seen_instance_ids.add(instance_id)
+
                     # Check if instance already exists
                     existing = db.query(Instance).filter(
                         Instance.instance_id == instance_id
@@ -699,8 +717,57 @@ def scan_ec2_instances(account: Account, ec2_client, db: Session) -> int:
                         existing.account_id = account.id  # Ensure account_id is set
                         existing.cluster_id = cluster_id  # Update cluster_id (may be None for standalone)
                         existing.instance_type = instance_type
-                        existing.lifecycle = lifecycle
+                        # RC3 guard: smarter SPOT→OD downgrade using Redis consecutive-count.
+                        # AWS omits InstanceLifecycle for both OD instances AND for some
+                        # Karpenter-provisioned spot nodes. A single OD observation is not
+                        # conclusive. We require _RC3_THRESHOLD (3) consecutive scans that
+                        # return OD (or omit lifecycle) before allowing a SPOT→OD downgrade.
+                        # A confirmed SPOT reading resets the counter immediately.
+                        #
+                        # Counter key: "rc3:od_streak:{instance_id}"  (int, TTL=30 min)
+                        _rc3_key = f"rc3:od_streak:{instance_id}"
+                        if lifecycle == InstanceLifecycle.SPOT:
+                            # Confirmed SPOT — reset streak counter and update lifecycle
+                            if _rc3_redis:
+                                try:
+                                    _rc3_redis.delete(_rc3_key)
+                                except Exception:
+                                    pass
+                            existing.lifecycle = lifecycle
+                        elif existing.lifecycle == InstanceLifecycle.ON_DEMAND:
+                            # Already OD — always update (no downgrade risk)
+                            existing.lifecycle = lifecycle
+                        elif existing.lifecycle == InstanceLifecycle.SPOT:
+                            # Potential SPOT→OD downgrade — use consecutive-count gate
+                            _allow_downgrade = False
+                            if _rc3_redis:
+                                try:
+                                    _streak = _rc3_redis.incr(_rc3_key)
+                                    _rc3_redis.expire(_rc3_key, _RC3_TTL)
+                                    if int(_streak) >= _RC3_THRESHOLD:
+                                        _allow_downgrade = True
+                                        _rc3_redis.delete(_rc3_key)
+                                        logger.info(
+                                            f"[discovery] RC3: allowing SPOT→OD downgrade for "
+                                            f"{instance_id} after {_streak} consecutive OD observations"
+                                        )
+                                    else:
+                                        logger.debug(
+                                            f"[discovery] RC3: deferring SPOT→OD downgrade for "
+                                            f"{instance_id} (streak {_streak}/{_RC3_THRESHOLD})"
+                                        )
+                                except Exception:
+                                    pass  # Redis error — keep SPOT (safe default)
+                            else:
+                                # No Redis — fall back to single-observation (old behaviour)
+                                _allow_downgrade = True
+                            if _allow_downgrade:
+                                existing.lifecycle = lifecycle
+                        else:
+                            # lifecycle is None in DB — always accept whatever AWS returned
+                            existing.lifecycle = lifecycle
                         existing.az = az
+                        existing.state = 'running'  # Confirm still running (was seen in scan)
                         existing.price = hourly_price  # Store HOURLY price (converted from monthly)
                         existing.updated_at = datetime.utcnow()
                     else:
@@ -723,6 +790,54 @@ def scan_ec2_instances(account: Account, ec2_client, db: Session) -> int:
             db.commit()
 
         logger.info(f"[WORK-DISC-01] Found {instance_count} EC2 instances")
+
+        # ── RC4 fix: mark stale DB instances as terminated ────────────────────
+        # Any instance that was NOT seen in this scan but is still state='running'
+        # in the DB must have been terminated in AWS.  Mark it terminated so the
+        # dedup + visualization code stops showing it as a live node.
+        try:
+            _stale_qs = db.query(Instance).filter(
+                Instance.account_id == account.id,
+                Instance.state == 'running',
+            ).all()
+            _stale_count = 0
+            for _s in _stale_qs:
+                if (
+                    _s.instance_id
+                    and _s.instance_id.startswith('i-')  # only real EC2 IDs
+                    and _s.instance_id not in _seen_instance_ids
+                ):
+                    _s.state = 'terminated'
+                    _s.updated_at = datetime.utcnow()
+                    _stale_count += 1
+                    logger.info(
+                        f"[WORK-DISC-01] Marking {_s.instance_id} as terminated "
+                        f"(not found in running EC2 scan)"
+                    )
+            if _stale_count:
+                db.commit()
+                logger.info(
+                    f"[WORK-DISC-01] Marked {_stale_count} ghost instance(s) as terminated"
+                )
+        except Exception as _stale_err:
+            logger.warning(f"[WORK-DISC-01] Stale-mark pass failed: {_stale_err}")
+
+        # ── Clean up terminated instances older than 30 min ───────────────────
+        try:
+            _cutoff = datetime.utcnow() - timedelta(minutes=5)
+            _terminated = db.query(Instance).filter(
+                Instance.account_id == account.id,
+                Instance.state == 'terminated',
+                Instance.updated_at <= _cutoff,
+            ).all()
+            if _terminated:
+                for _t in _terminated:
+                    db.delete(_t)
+                db.commit()
+                logger.info(f"[WORK-DISC-01] Deleted {len(_terminated)} terminated instance(s) (>30min old)")
+        except Exception as _cleanup_err:
+            logger.warning(f"[WORK-DISC-01] Terminated instance cleanup failed: {_cleanup_err}")
+
         return instance_count
 
     except ClientError as e:

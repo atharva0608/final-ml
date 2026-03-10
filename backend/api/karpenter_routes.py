@@ -423,9 +423,14 @@ def update_karpenter_config(
 
         # ── SYNC diversify_pools to DB (auto_rebalancer reads from DB, not Redis) ──
         _diversify = updates.get("diversify_pools")
+        _diversify_was_enabled = False  # track for immediate re-trigger below
         if _diversify is not None and opt is not None:
+            _prev_diversify = bool(getattr(opt, 'diversify_pools', False))
             opt.diversify_pools = bool(_diversify)
             logger.info(f"ClusterOptimizationSettings.diversify_pools → {_diversify} for {cluster_id}")
+            # Flag when turning ON (False → True) so we can flush caches immediately
+            if bool(_diversify) and not _prev_diversify:
+                _diversify_was_enabled = True
 
         # ── SYNC auto_stateful_rightsizing_enabled ──────────────────────────────
         _auto_stateful = updates.get("auto_stateful_rightsizing_enabled")
@@ -484,6 +489,34 @@ def update_karpenter_config(
         _redis.set(_cfg_key, _json.dumps(_existing))
     except Exception as _e:
         logger.warning(f"Could not persist Karpenter config to Redis: {_e}")
+
+    # 4. Immediate re-evaluation when Diversify Spot Pools is turned ON.
+    #    Clear cooldown caches so the next auto_rebalancer cycle (≤15s) re-picks
+    #    pools using the diversity filter right away instead of waiting 30-65 min.
+    if _diversify_was_enabled:
+        try:
+            from backend.core.redis_client import get_redis_client as _get_redis_d
+            _redis_d = _get_redis_d()
+
+            # Clear Karpenter NodePool update cooldown so next cycle refreshes NodePool
+            # with diversity-filtered pool rankings immediately.
+            _np_cooldown_key = f"spot:karpenter:nodepool_updated:{cluster_id}"
+            _redis_d.delete(_np_cooldown_key)
+
+            # Clear the global ML pool ranking caches for this cluster's region
+            # so the next rank_pools_for_size() call recomputes fresh rankings.
+            # Two keys: tier-1 global cache (65-min TTL) + legacy per-request cache.
+            _cluster_region = cluster.region or "ap-south-1"
+            _redis_d.delete(f"global_pool_rankings:{_cluster_region}")
+            _redis_d.delete("atharvaai:pool_rankings")
+
+            logger.info(
+                f"[karpenter_routes] diversify_pools enabled for {cluster_id}: "
+                f"cleared NodePool cooldown + global ranking cache — "
+                f"next auto_rebalancer cycle will re-pick diverse pools immediately"
+            )
+        except Exception as _div_err:
+            logger.warning(f"[karpenter_routes] diversify_pools cache flush failed: {_div_err}")
 
     return {"cluster_id": cluster_id, "updated_fields": list(updates.keys()), "success": True}
 

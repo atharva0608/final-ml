@@ -1,10 +1,11 @@
-# Database Schema Audit — Complete Report
+# Database & Redis Schema Audit — Complete Report
 
 > **Database**: PostgreSQL (`spot_optimizer`)
 > **ORM**: SQLAlchemy (declarative_base)
 > **Connection**: `DATABASE_URL` env var, pool_size=20, max_overflow=10, pool_timeout=30
-> **Source**: Extracted from 65 model files in `backend/models/`
-> **Date**: 2026-03-06
+> **Cache/State**: Redis (single instance via `REDIS_URL`, default `redis://redis:6379/0`)
+> **Source**: Extracted from 67 model files in `backend/models/`
+> **Date**: 2026-03-10 (Updated)
 
 ---
 
@@ -19,12 +20,11 @@
 | **Total Foreign Keys** | 70+ |
 | **Primary Key Type** | UUID (`String(36)`, `generate_uuid()`) |
 | **Timestamp Pattern** | `created_at` + `updated_at` on most tables |
+| **Redis Key Patterns** | 46 unique patterns |
 
 ---
 
-## 2. Complete Schema Structure
-
-### 2.1 Entity Relationship Diagram
+## 2. Entity Relationship Diagram
 
 ```mermaid
 erDiagram
@@ -63,148 +63,768 @@ erDiagram
 
 ---
 
-## 3. Table Inventory (All 68 Tables)
+## 3. Complete Table Schema, Columns & CRUD Operations
 
-### 3.1 Core Identity & Auth (8 tables)
-
-| # | Table Name | Model File | PK | Key Columns | FKs To |
-|---|---|---|---|---|---|
-| 1 | `organizations` | `organization.py` | `id` (UUID) | name, slug, external_id, billing_email, stripe_customer_id, status, governance_config (JSON) | — |
-| 2 | `users` | `user.py` | `id` (UUID) | email, password_hash, role (ENUM), access_level (ENUM), status, full_name, preferences (JSON) | organizations, teams, roles |
-| 3 | `user_permissions` | `user.py` (Table) | composite(user_id, permission_id) | — | users, permissions |
-| 4 | `accounts` | `account.py` | `id` (UUID) | aws_account_id, role_arn, external_id, region, status (ENUM), sync_status, is_default | organizations, users |
-| 5 | `api_keys` | `api_key.py` | `id` (UUID) | key_hash, name, organization_id, last_used_at, is_active | organizations |
-| 6 | `teams` | `team.py` | `id` (UUID) | name, organization_id | organizations |
-| 7 | `roles` | `role.py` | `id` (UUID) | name, type (ENUM), organization_id, description, is_system | organizations |
-| 8 | `role_permissions` | `role.py` (Table) | composite(role_id, permission_id) | — | roles, permissions |
-| 9 | `permissions` | `permission.py` | `id` (UUID) | resource, action, description | — |
-| 10 | `organization_invitations` | `invitation.py` | `id` (UUID) | email, role, status, token, organization_id | organizations, users |
-
-### 3.2 Cluster Management (8 tables)
-
-| # | Table Name | Model File | PK | Key Columns | FKs To |
-|---|---|---|---|---|---|
-| 11 | `clusters` | `cluster.py` | `id` (String) | name, arn, region, status (ENUM), cluster_type (ENUM), karpenter_mode, karpenter_discovery_enabled, agent_version, optimization_mode, hibernation_state (JSON) | accounts |
-| 12 | `cluster_optimization_settings` | `cluster.py` | `cluster_id` (FK) | auto_rebalance_enabled, auto_rightsizing_enabled, maintain_standby, diversify_pools, failure_cooldown_min, optimization_target | clusters |
-| 13 | `optimization_strategy` | `cluster.py` | `cluster_id` (FK) | strategy_type, spot_target_percent, allowed_families (JSON), diversity_strictness_level | clusters |
-| 14 | `stateless_runtime_rules` | `cluster.py` | `cluster_id` (FK) | instance_diversification_enabled, spot_fallback_to_ondemand, max_spot_ratio, max_nodes_per_family, fresh_cluster_stabilization_minutes | clusters |
-| 15 | `stateful_rules` | `cluster.py` | `cluster_id` (FK) | manual_resize_allowed, show_ondemand_only, require_approval, max_downscale_percent | clusters |
-| 16 | `instances` | `instance.py` | `id` (UUID) | instance_id, instance_type, lifecycle, state, az, node_name, spot_price, ondemand_price | clusters, accounts |
-| 17 | `cluster_policies` | `cluster_policy.py` | `id` (UUID) | cluster_id, policy_type, settings (JSON) | clusters |
-| 18 | `cluster_cooldowns` | `cluster_cooldown.py` | `id` (UUID) | cluster_id, cooldown_type, expires_at | clusters |
-
-### 3.3 Metrics & Monitoring (5 tables)
-
-| # | Table Name | Model File | PK | Key Columns | FKs To |
-|---|---|---|---|---|---|
-| 19 | `cluster_metrics` | `cluster_metric.py` | `id` (UUID) | cluster_id, metric_type, metric_value (JSON), timestamp | clusters |
-| 20 | `pod_metrics` | `pod_metric.py` | `id` (UUID) | cluster_id, namespace, pod_name, node_name, controller_kind, controller_name, cpu_request_m, cpu_usage_m, memory_request_bytes, memory_usage_bytes | clusters |
-| 21 | `node_metrics` | `node_metrics.py` | `id` (UUID) | cluster_id, node_name, cpu_allocatable_m, cpu_usage_m, memory_allocatable_bytes, memory_usage_bytes | clusters |
-| 22 | `daily_cluster_stats` | `daily_cluster_stats.py` | `id` (UUID) | cluster_id, date_stamp, total_cost, total_savings, node_count, spot_percentage | clusters |
-| 23 | `audit_logs` | `audit_log.py` | `id` (UUID) | actor_id, action, resource_type, resource_id, details (JSON), timestamp, ip_address | — |
-
-### 3.4 Optimization Engine (9 tables)
-
-| # | Table Name | Model File | PK | Key Columns | FKs To |
-|---|---|---|---|---|---|
-| 24 | `optimization_jobs` | `optimization_job.py` | `id` (UUID) | cluster_id, status (ENUM), job_type, recommendation (JSON), savings_usd | clusters |
-| 25 | `optimizer_states` | `optimizer_state.py` | `id` (UUID) | cluster_id, phase (ENUM), phase_started_at, last_pool_optimization_at, last_rightsizing_check_at | clusters |
-| 26 | `rightsizing_proposals` | `rightsizing_proposal.py` | `id` (UUID) | cluster_id, controller_name, namespace, current_cpu, recommended_cpu, current_memory, recommended_memory, status, confidence, monthly_savings_usd | clusters |
-| 27 | `execution_state` | `execution_state.py` | `id` (UUID) | cluster_id, state (ENUM), action_type, source_pool, target_pool, started_at, last_transition_at, error_message, archived_at | clusters |
-| 28 | `substitute_states` | `substitute_state.py` | `id` (UUID) | cluster_id, state, instance_id, instance_type, az, provisioned_at, cost_per_hour | clusters |
-| 29 | `pool_cooldowns` | `pool_cooldown.py` | `id` (UUID) | pool_id, cooldown_type, expires_at | — |
-| 30 | `circuit_breaker_state` | `circuit_breaker_state.py` | `id` (UUID) | service_name, state, rollback_count, last_failure_at, state_entered_at | — |
-| 31 | `rebalancing_actions` | `rebalancing_action.py` | `id` (UUID) | cluster_id, action_type, status, source_nodes (JSON), target_pool, started_at, completed_at | clusters |
-| 32 | `termination_events` | `termination_event.py` | `id` (UUID) | cluster_id, instance_id, instance_type, az, detected_at, source, action_taken | clusters |
-
-### 3.5 ML & Intelligence (4 tables)
-
-| # | Table Name | Model File | PK | Key Columns | FKs To |
-|---|---|---|---|---|---|
-| 33 | `ml_models` | `ml_model.py` | `id` (UUID) | model_name, version, model_type, accuracy, training_date | — |
-| 34 | `model_registry` | `model_registry.py` | `id` (UUID) | model_version, model_type, feature_schema_version, metrics (JSON), is_active | — |
-| 35 | `family_hour_baselines` | `family_hour_baseline.py` | `id` (UUID) | instance_family, region, date, hour, mean_savings, std_savings, median_savings, sample_count | — |
-| 36 | `instance_catalog` | `instance_catalog.py` | `id` (UUID) | instance_type, region, vcpus, memory_gb, architecture, processor, current_generation, burstable, gpu_count | — |
-
-### 3.6 Pricing Data (3 tables)
-
-| # | Table Name | Model File | PK | Key Columns | FKs To |
-|---|---|---|---|---|---|
-| 37 | `spot_price_history` | `pricing.py` | `id` (UUID) | instance_type, az, region, spot_price, timestamp | — |
-| 38 | `ondemand_pricing` | `pricing.py` | `id` (UUID) | instance_type, region, price_per_hour | — |
-| 39 | `spot_advisor_data` | `pricing.py` | `id` (UUID) | instance_type, region, r_score, savings_pct, interruption_frequency | — |
-
-### 3.7 Hibernation (2 tables)
-
-| # | Table Name | Model File | PK | Key Columns | FKs To |
-|---|---|---|---|---|---|
-| 40 | `hibernation_schedules` | `hibernation_schedule.py` | `id` (UUID) | name, schedule_type, strategy, matrix, timezone, is_active, pre_warm_minutes, savings (JSON) | — |
-| 41 | `hibernation_schedule_clusters` | `hibernation_schedule_clusters.py` (Table) | composite | schedule_id, cluster_id | hibernation_schedules, clusters |
-
-### 3.8 Cost Analysis (5 tables)
-
-| # | Table Name | Model File | PK | Key Columns | FKs To |
-|---|---|---|---|---|---|
-| 42 | `daily_costs` | `billing.py` | `id` (UUID) | account_id, date, service_name, amount_usd, usage_quantity, usage_type | accounts |
-| 43 | `cost_explorer_sync_status` | `billing.py` | `id` (UUID) | account_id, last_sync_at, status, next_sync_at | accounts |
-| 44 | `ri_utilization` | `ri_utilization.py` | `id` (UUID) | organization_id, account_id, ri_id, instance_type, utilization_pct, unused_hours, potential_savings_monthly | organizations, accounts |
-| 45 | `s3_bucket_analysis` | `s3_analysis.py` | `id` (UUID) | organization_id, account_id, bucket_name, storage_class, size_gb, monthly_cost, lifecycle_status (JSON) | organizations, accounts |
-| 46 | `rds_instance_analysis` | `rds_analysis.py` | `id` (UUID) | organization_id, account_id, db_instance_id, instance_class, engine, multi_az, utilization (JSON) | organizations, accounts |
-| 47 | `savings_plan_utilization` | `savings_plan_utilization.py` | `id` (UUID) | organization_id, account_id, plan_id, commitment_amount, utilization_pct | organizations, accounts |
-| 48 | `data_transfer_analysis` | `transfer_analysis.py` | `id` (UUID) | organization_id, account_id, transfer_type, source_region, dest_region, monthly_cost | organizations, accounts |
-
-### 3.9 Tag Governance (6 tables)
-
-| # | Table Name | Model File | PK | Key Columns | FKs To |
-|---|---|---|---|---|---|
-| 49 | `tag_policies` | `tag_policy.py` | `id` (UUID) | organization_id, name, tag_key, enforcement_level (ENUM), is_active | organizations |
-| 50 | `auto_tag_rules` | `auto_tag_rule.py` | `id` (UUID) | organization_id, name, resource_types (JSON), conditions (JSON), tags_to_apply (JSON), run_mode (ENUM) | organizations |
-| 51 | `tag_templates` | `tag_template.py` | `id` (UUID) | organization_id, name, tags (JSON), is_default | organizations |
-| 52 | `tag_scoring_configs` | `tag_scoring_config.py` | `id` (UUID) | organization_id, weights (JSON), is_active | organizations |
-| 53 | `tag_automation_rules` | `tag_automation_rule.py` | `id` (UUID) | organization_id, name, trigger_type, action_type, is_enabled | organizations |
-| 54 | `tag_compliance_scores` | `tag_compliance_score.py` | `id` (UUID) | organization_id, resource_id, resource_type, score, status, violations (JSON) | organizations |
-| 55 | `tag_automation_logs` | `tag_automation_log.py` | `id` (UUID) | organization_id, rule_id, action, resources_affected, result | organizations, tag_automation_rules |
-
-### 3.10 Approvals & Governance (2 tables)
-
-| # | Table Name | Model File | PK | Key Columns | FKs To |
-|---|---|---|---|---|---|
-| 56 | `approvals` | `approval.py` | `id` (UUID) | user_id, organization_id, type (ENUM), status (ENUM), resource_id, reason, approver_id, parent_id | users, organizations, approvals (self-ref) |
-| 57 | `authorized_resources` | `authorized_resource.py` | `id` (UUID) | account_id, resource_type, resource_id, created_by_id | accounts, users |
-
-### 3.11 Agent & Worker (4 tables)
-
-| # | Table Name | Model File | PK | Key Columns | FKs To |
-|---|---|---|---|---|---|
-| 58 | `agent_actions` | `agent_action.py` | `id` (UUID) | cluster_id, action_type (ENUM), status (ENUM), payload (JSON), result (JSON), expires_at | clusters |
-| 59 | `agent_identities` | `agent_identity.py` | `id` (UUID) | cluster_id, agent_id, public_key, fingerprint, is_active, last_verified_at | clusters |
-| 60 | `worker_registrations` | `worker_registration.py` | `id` (UUID) | cluster_id, node_name, hostname, agent_version, last_heartbeat_at | clusters |
-| 61 | `node_templates` | `node_template.py` | `id` (UUID) | name, organization_id, architecture, vcpu_range (JSON), memory_range (JSON), allowed_families (JSON) | organizations |
-| 62 | `node_template_versions` | `node_template.py` | `id` (UUID) | template_id, version, spec (JSON) | node_templates |
-| 63 | `cluster_template_mappings` | `node_template.py` | composite | cluster_id, template_id | clusters, node_templates |
-
-### 3.12 Alerts & Security (4 tables)
-
-| # | Table Name | Model File | PK | Key Columns | FKs To |
-|---|---|---|---|---|---|
-| 64 | `alert_config` | `alert_config.py` | `id` (UUID) | organization_id, cluster_id, alert_type (ENUM), severity (ENUM), channel (ENUM), enabled, threshold (JSON) | organizations, clusters |
-| 65 | `alert_history` | `alert_history.py` | `id` (UUID) | organization_id, cluster_id, alert_type, severity, status (ENUM), message, fingerprint, resolved_at | organizations, clusters |
-| 66 | `credential_cache` | `credential_cache.py` | `id` (UUID) | user_id, account_id, role_arn, access_key_id (encrypted), secret_key (encrypted), session_token (encrypted), expires_at, is_active | users, accounts |
-
-### 3.13 System & Experiments (4 tables)
-
-| # | Table Name | Model File | PK | Key Columns | FKs To |
-|---|---|---|---|---|---|
-| 67 | `system_configs` | `system_config.py` | `id` (UUID) | key, value, description | — |
-| 68 | `platform_settings` | `platform_settings.py` | `id` (UUID) | key, value (JSON), updated_at | — |
-| 69 | `lab_experiments` | `lab_experiment.py` | `id` (UUID) | name, status, experiment_type, config (JSON), results (JSON), cluster_id | clusters |
-| 70 | `chaos_experiments` | `chaos_experiment.py` | `id` (UUID) | organization_id, cluster_id, type (ENUM), status (ENUM), config (JSON), results (JSON) | organizations, clusters |
-| -- | `onboarding_states` | `onboarding.py` | `id` (UUID) | user_id, current_step, completed_steps (JSON), is_complete | users |
-| -- | `cleanup_policies` | `hygiene_policy.py` | `id` (UUID) | organization_id, resource_type, policy_config (JSON), is_active | organizations |
+### 3.1 Core Identity & Auth
 
 ---
 
-## 4. Composite Indexes (53 Total)
+#### Table: `organizations`
+
+| Column | Type | Nullable | Default | Index |
+|---|---|---|---|---|
+| `id` | String(36) | NO | `generate_uuid()` | PK |
+| `name` | String(255) | NO | — | Yes |
+| `slug` | String(100) | YES | — | Unique |
+| `external_id` | String(64) | YES | — | — |
+| `billing_email` | String(255) | YES | — | — |
+| `stripe_customer_id` | String(255) | YES | — | — |
+| `status` | Enum(OrgStatus) | NO | `ACTIVE` | — |
+| `governance_config` | JSON | YES | — | — |
+| `created_at` | DateTime | NO | `utcnow` | — |
+| `updated_at` | DateTime | NO | `utcnow` | — |
+
+**CRUD Operations:**
+
+| Op | Count | Files |
+|---|---|---|
+| CREATE | 3 | `auth_service.py`, `admin_schemas.py`, `quick_fake_data.py` |
+| READ | 17 | `agents.py`, `admin_routes.py`, `governance_routes.py`, `report_worker.py`, `tag_automation_tasks.py` |
+| UPDATE | — | Via ORM commit in `admin_routes.py` |
+| DELETE | — | Not directly deleted |
+
+---
+
+#### Table: `users`
+
+| Column | Type | Nullable | Default | Index |
+|---|---|---|---|---|
+| `id` | String(36) | NO | `generate_uuid()` | PK |
+| `email` | String(255) | NO | — | Unique |
+| `password_hash` | String(255) | NO | — | — |
+| `role` | Enum(UserRole) | NO | `VIEWER` | — |
+| `access_level` | Enum(AccessLevel) | YES | `STANDARD` | — |
+| `status` | String(20) | NO | `active` | — |
+| `full_name` | String(255) | YES | — | — |
+| `preferences` | JSON | YES | — | — |
+| `organization_id` | FK→organizations | YES | — | Yes |
+| `team_id` | FK→teams | YES | — | — |
+| `role_id` | FK→roles | YES | — | — |
+| `created_at` | DateTime | NO | `utcnow` | — |
+| `updated_at` | DateTime | NO | `utcnow` | — |
+
+**CRUD Operations:**
+
+| Op | Count | Files |
+|---|---|---|
+| CREATE | 5 | `auth_service.py`, `organization_service.py`, `team_service.py` |
+| READ | 69 | `dependencies.py`, `admin_routes.py`, `team_routes.py`, `auth_service.py`, `cluster_service.py`, most route files (auth check) |
+| UPDATE | — | Via ORM: password change, role update, preferences |
+| DELETE | 1 | `team_service.py` |
+
+---
+
+#### Table: `accounts`
+
+| Column | Type | Nullable | Default | Index |
+|---|---|---|---|---|
+| `id` | String(36) | NO | `generate_uuid()` | PK |
+| `aws_account_id` | String(20) | NO | — | Unique |
+| `organization_id` | FK→organizations | NO | — | Yes |
+| `role_arn` | String(255) | YES | — | — |
+| `external_id` | String(64) | YES | — | — |
+| `region` | String(50) | YES | `us-east-1` | — |
+| `status` | Enum(AccountStatus) | NO | `ACTIVE` | Yes |
+| `sync_status` | Enum(SyncStatus) | YES | — | — |
+| `sync_error` | String(500) | YES | — | — |
+| `last_sync_at` | DateTime | YES | — | — |
+| `is_default` | Boolean | NO | False | — |
+| `created_at` | DateTime | NO | `utcnow` | — |
+| `updated_at` | DateTime | NO | `utcnow` | — |
+
+**CRUD Operations:**
+
+| Op | Count | Files |
+|---|---|---|
+| CREATE | 3 | `account_routes.py`, `auth_service.py`, `cluster_service.py` |
+| READ | 25 | `discovery.py`, `cluster_routes.py`, `admin_routes.py`, `account_routes.py`, `agent_injector.py` |
+| UPDATE | — | `discovery.py` (sync_status), `account_routes.py` |
+| DELETE | 1 | `account_routes.py` |
+
+---
+
+#### Table: `api_keys`
+
+| Column | Type | Nullable | Default | Index |
+|---|---|---|---|---|
+| `id` | String(36) | NO | `generate_uuid()` | PK |
+| `key_hash` | String(64) | NO | — | Unique |
+| `name` | String(100) | NO | — | — |
+| `organization_id` | FK→organizations | NO | — | Yes |
+| `last_used_at` | DateTime | YES | — | — |
+| `is_active` | Boolean | NO | True | — |
+| `created_at` | DateTime | NO | `utcnow` | — |
+
+**CRUD Operations:**
+
+| Op | Count | Files |
+|---|---|---|
+| CREATE | 1 | `api_key_routes.py` |
+| READ | 4 | `dependencies.py`, `api_key_routes.py` |
+| DELETE | 1 | `api_key_routes.py` |
+
+---
+
+#### Table: `permissions`
+
+| Column | Type | Nullable | Default | Index |
+|---|---|---|---|---|
+| `id` | String(36) | NO | `generate_uuid()` | PK |
+| `resource` | String(100) | NO | — | — |
+| `action` | String(50) | NO | — | — |
+| `description` | String(255) | YES | — | — |
+
+**CRUD Operations:**
+
+| Op | Count | Files |
+|---|---|---|
+| CREATE | 3 | `seed_rbac.py`, `seed_permissions.py`, `role_service.py` |
+| READ | 8 | `role_service.py`, `seed_rbac.py`, `seed_permissions.py` |
+
+---
+
+#### Table: `roles`
+
+| Column | Type | Nullable | Default | Index |
+|---|---|---|---|---|
+| `id` | String(36) | NO | `generate_uuid()` | PK |
+| `name` | String(100) | NO | — | — |
+| `type` | Enum(RoleType) | NO | `CUSTOM` | — |
+| `organization_id` | FK→organizations | YES | — | Yes |
+| `description` | String(255) | YES | — | — |
+| `is_system` | Boolean | NO | False | — |
+
+**CRUD:** CREATE: 23 (`seed_rbac.py`, `role_routes.py`), READ: 4 (`role_service.py`)
+
+---
+
+#### Table: `teams`
+
+| Column | Type | Nullable | Default | Index |
+|---|---|---|---|---|
+| `id` | String(36) | NO | `generate_uuid()` | PK |
+| `name` | String(100) | NO | — | — |
+| `organization_id` | FK→organizations | NO | — | Yes |
+
+**CRUD:** CREATE: 2, READ: 9 (`team_routes.py`, `team_service.py`)
+
+---
+
+#### Association Tables: `user_permissions`, `role_permissions`
+
+| Table | Columns | FKs |
+|---|---|---|
+| `user_permissions` | user_id, permission_id | users, permissions |
+| `role_permissions` | role_id, permission_id | roles, permissions |
+
+---
+
+### 3.2 Cluster Management
+
+---
+
+#### Table: `clusters`
+
+| Column | Type | Nullable | Default | Index |
+|---|---|---|---|---|
+| `id` | String | NO | — | PK |
+| `account_id` | FK→accounts | NO | — | Yes |
+| `name` | String(255) | NO | — | — |
+| `arn` | String(500) | YES | — | — |
+| `region` | String(50) | YES | — | — |
+| `status` | Enum(ClusterStatus) | NO | `PENDING` | — |
+| `cluster_type` | Enum(ClusterType) | YES | `EKS` | — |
+| `version` | String(20) | YES | — | — |
+| `endpoint` | String(500) | YES | — | — |
+| `ca_data` | Text | YES | — | — |
+| `api_key` | String(64) | YES | — | — |
+| `agent_installed` | String(1) | YES | `N` | — |
+| `agent_version` | String(20) | YES | — | — |
+| `last_heartbeat` | DateTime | YES | — | — |
+| `auto_rebalance_enabled` | Boolean | YES | False | — |
+| `karpenter_mode` | String(20) | YES | — | — |
+| `karpenter_discovery_enabled` | Boolean | YES | False | — |
+| `node_count` | Integer | YES | — | — |
+| `spot_count` | Integer | YES | — | — |
+| `on_demand_node_count` | Integer | YES | — | — |
+| `cpu_total` | Float | YES | — | — |
+| `mem_total` | Float | YES | — | — |
+| `cpu_usage_pct` | Float | YES | — | — |
+| `mem_usage_pct` | Float | YES | — | — |
+| `monthly_cost` | Float | YES | — | — |
+| `estimated_savings` | Float | YES | — | — |
+| `potential_savings_monthly` | Float | YES | — | — |
+| `realized_savings_monthly` | Float | YES | — | — |
+| `optimization_mode` | String(20) | YES | — | — |
+| `node_template_id` | FK→node_templates | YES | — | — |
+| `hibernation_state` | JSON | YES | — | — |
+| `inventory_summary` | JSON | YES | — | — |
+| `last_assessed` | DateTime | YES | — | — |
+| `last_cost_update` | DateTime | YES | — | — |
+| `created_at` | DateTime | NO | `utcnow` | — |
+| `updated_at` | DateTime | NO | `utcnow` | — |
+
+**CRUD Operations (the most heavily used table):**
+
+| Op | Count | Key Files |
+|---|---|---|
+| CREATE | 8 | `cluster_service.py` (register/connect), `discovery.py` (auto-discover) |
+| READ | 80+ | Nearly every route and service file. Key: `cluster_routes.py`, `cluster_service.py`, `atharvaai_routes.py`, `auto_rebalancer.py`, `karpenter_routes.py` |
+| UPDATE | — | `discovery.py` (cost/metadata update), `cluster_routes.py` (settings), `worker_routes.py` (heartbeat), `pod_metrics_routes.py` (utilization), `agent_service.py` |
+| DELETE | 3 | `cluster_routes.py`, `cluster_service.py`, `discovery.py` (cleanup) |
+
+---
+
+#### Table: `instances`
+
+| Column | Type | Nullable | Default | Index |
+|---|---|---|---|---|
+| `id` | String(36) | NO | `generate_uuid()` | PK |
+| `cluster_id` | FK→clusters | YES | — | Yes |
+| `account_id` | FK→accounts | YES | — | Yes |
+| `instance_id` | String(20) | NO | — | Unique |
+| `instance_type` | String(50) | NO | — | Yes |
+| `lifecycle` | Enum(SPOT/ON_DEMAND) | NO | — | Yes |
+| `az` | String(50) | NO | — | Yes |
+| `price` | Float | YES | — | — |
+| `cpu_util` | Float | YES | — | — |
+| `memory_util` | Float | YES | — | — |
+| `state` | String(20) | NO | `running` | Yes |
+| `status` | String(20) | YES | `READY` | — |
+| `status_message` | String(255) | YES | — | — |
+| `architecture` | String(20) | YES | `amd64` | — |
+| `node_name` | String(255) | YES | — | Yes |
+| `standby` | Boolean | NO | False | Yes |
+| `last_heartbeat` | DateTime | YES | — | — |
+| `created_at` | DateTime | NO | `utcnow` | — |
+| `updated_at` | DateTime | NO | `utcnow` | — |
+
+**Composite Indexes:** `idx_cluster_lifecycle`, `idx_cluster_instance_type`, `idx_account_state`
+
+**CRUD Operations:**
+
+| Op | Count | Key Files |
+|---|---|---|
+| CREATE | 5 | `discovery.py` (EC2 scan), `auto_rebalancer.py` (new spot instance), `standby.py` (warm spare) |
+| READ | 25+ | `cluster_service.py` (get_cluster_nodes_detailed, list_clusters), `auto_rebalancer.py`, `atharvaai_routes.py`, `worker_routes.py` (node-metrics), `karpenter_routes.py` |
+| UPDATE | — | `discovery.py` (lifecycle, type, price), `worker_routes.py` (cpu_util, memory_util via node-metrics), `auto_rebalancer.py` (state changes), `standby.py` (standby flag) |
+| DELETE | 5 | `cluster_routes.py` (agent removal), `cluster_service.py` (cluster delete), `discovery.py` (cleanup terminated >5min), `auto_rebalancer.py` (terminated instances) |
+
+**Data sources that WRITE lifecycle:**
+1. **Discovery Worker** (`discovery.py:658`) — reads `InstanceLifecycle` from AWS API, defaults to `on-demand`
+2. **Worker Routes** (`worker_routes.py:322`) — node-joined endpoint, sets lifecycle if agent sends it
+3. **Auto Rebalancer** (`auto_rebalancer.py`) — creates new instance records after Fleet API launch
+
+---
+
+#### Table: `cluster_optimization_settings`
+
+| Column | Type | Nullable | Default |
+|---|---|---|---|
+| `cluster_id` | FK→clusters | NO (PK) | — |
+| `auto_rebalance_enabled` | Boolean | YES | False |
+| `auto_rightsizing_enabled` | Boolean | YES | False |
+| `maintain_standby` | Boolean | YES | False |
+| `diversify_pools` | Boolean | YES | False |
+| `instance_aware_rightsizing` | Boolean | YES | False |
+| `cooldown_override_minutes` | Integer | YES | — |
+| `conservative_mode_enabled` | Boolean | YES | True |
+| `manual_approval_required` | Boolean | YES | False |
+| `target_spot_exposure_pct` | Integer | YES | 100 |
+| `failure_cooldown_minutes` | Integer | YES | 30 |
+| `optimization_target` | String(20) | YES | `spot` |
+
+**CRUD:** CREATE: 2 (`cluster_routes.py`), READ: 5 (`cluster_routes.py`, `auto_rebalancer.py`, `karpenter_routes.py`)
+
+---
+
+#### Table: `optimization_strategy`
+
+| Column | Type | Nullable | Default |
+|---|---|---|---|
+| `cluster_id` | FK→clusters | NO (PK) | — |
+| `strategy_type` | String(20) | YES | `BALANCED` |
+| `risk_ceiling_percent` | Integer | YES | 25 |
+| `min_savings_percent` | Integer | YES | 15 |
+| `volatility_tolerance_percent` | Integer | YES | 20 |
+| `migration_penalty_multiplier` | Float | YES | 1.5 |
+| `diversity_strictness_level` | String(20) | YES | `Medium` |
+| `risk_savings_tradeoff_pct` | Integer | YES | 20 |
+
+**CRUD:** CREATE: 2 (`cluster_routes.py`), READ: 5
+
+---
+
+### 3.3 Metrics & Monitoring
+
+---
+
+#### Table: `pod_metrics` ⚡ HIGH WRITE VOLUME
+
+| Column | Type | Nullable | Default | Index |
+|---|---|---|---|---|
+| `id` | String(36) | NO | `generate_uuid()` | PK |
+| `cluster_id` | FK→clusters | NO | — | Yes |
+| `namespace` | String(255) | YES | — | — |
+| `pod_name` | String(255) | NO | — | — |
+| `node_name` | String(255) | YES | — | — |
+| `controller_kind` | String(50) | YES | — | — |
+| `controller_name` | String(255) | YES | — | — |
+| `cpu_request_millicores` | Float | YES | — | — |
+| `cpu_usage_millicores` | Float | YES | — | — |
+| `cpu_utilization_pct` | Float | YES | — | — |
+| `memory_request_bytes` | BigInteger | YES | — | — |
+| `memory_usage_bytes` | BigInteger | YES | — | — |
+| `memory_utilization_pct` | Float | YES | — | — |
+| `pod_metadata` | JSON | YES | — | — |
+| `timestamp` | DateTime | NO | `utcnow` | — |
+
+**Composite Indexes:** `idx_pod_metric_cluster_time`, `idx_pod_metric_controller`, `idx_pod_metric_node_time`, `idx_pod_metric_pod_time`
+
+**CRUD Operations:**
+
+| Op | Count | Key Files |
+|---|---|---|
+| CREATE | 2 | `routers/metrics.py` (agent DaemonSet push), `pod_metrics_routes.py` (batch ingest) |
+| READ | 9 | `cluster_service.py` (get_cluster_nodes_detailed — 3min window), `pod_metrics_routes.py`, `rightsizing_service.py` (trend analysis) |
+| DELETE | 4 | `pod_metrics_cleanup.py` (TTL cleanup worker), `cluster_routes.py` (agent removal) |
+
+**⚠️ Est. ~288,000+ writes/day** (every pod, every minute, every cluster)
+
+---
+
+#### Table: `node_metrics` ⚡ HIGH WRITE VOLUME
+
+| Column | Type | Nullable | Default | Index |
+|---|---|---|---|---|
+| `id` | String(36) | NO | `generate_uuid()` | PK |
+| `cluster_id` | String(36) | NO | — | Yes |
+| `node_name` | String(255) | NO | — | Yes |
+| `instance_id` | String(20) | YES | — | — |
+| `instance_type` | String(50) | YES | — | — |
+| `az` | String(50) | YES | — | — |
+| `cpu_usage_millicores` | Float | YES | — | — |
+| `cpu_capacity_millicores` | Float | YES | — | — |
+| `memory_usage_bytes` | BigInteger | YES | — | — |
+| `memory_capacity_bytes` | BigInteger | YES | — | — |
+| `disk_usage_bytes` | BigInteger | YES | — | — |
+| `disk_capacity_bytes` | BigInteger | YES | — | — |
+| `timestamp` | DateTime | NO | `utcnow` | — |
+
+**Composite Indexes:** `idx_node_metric_cluster_ts`, `idx_node_metric_node_ts`
+
+**CRUD:** CREATE: 1 (`worker_routes.py`), READ: 2 (`cluster_service.py`, `karpenter_routes.py`), DELETE: 1 (cleanup worker)
+
+---
+
+#### Table: `cluster_metrics` ⚡ HIGH WRITE VOLUME
+
+| Column | Type | Nullable | Default |
+|---|---|---|---|
+| `id` | String(36) | NO | PK |
+| `cluster_id` | FK→clusters | NO | — |
+| `metric_type` | String(50) | NO | — |
+| `metric_value` | JSON | YES | — |
+| `timestamp` | DateTime | NO | `utcnow` |
+
+**Composite Indexes:** `idx_cluster_metric_cluster_time`, `idx_cluster_metric_type_time`, `idx_cluster_metric_cluster_type`
+
+**CRUD:** CREATE: 1 (`metrics.py`), READ: 2, DELETE: 1 (cleanup)
+
+---
+
+#### Table: `audit_logs`
+
+| Column | Type | Nullable | Default |
+|---|---|---|---|
+| `id` | String(36) | NO | PK |
+| `actor_id` | String(36) | YES | — |
+| `action` | String(100) | NO | — |
+| `resource_type` | String(50) | YES | — |
+| `resource_id` | String(36) | YES | — |
+| `details` | JSON | YES | — |
+| `ip_address` | String(45) | YES | — |
+| `timestamp` | DateTime | NO | `utcnow` |
+
+**Composite Indexes:** `idx_audit_timestamp_desc`, `idx_audit_actor_timestamp`, `idx_audit_resource_type_timestamp`
+
+**CRUD:** CREATE: 1 (`audit_service.py`), READ: 3 (`audit_routes.py`)
+
+---
+
+### 3.4 Optimization Engine
+
+---
+
+#### Table: `rebalancing_actions`
+
+| Column | Type | Nullable | Default |
+|---|---|---|---|
+| `id` | String(36) | NO | PK |
+| `cluster_id` | FK→clusters | NO | — |
+| `action_type` | String(50) | NO | — |
+| `status` | String(20) | NO | `pending` |
+| `source_nodes` | JSON | YES | — |
+| `target_pool` | String(100) | YES | — |
+| `new_instance_id` | String(20) | YES | — |
+| `savings_per_hour` | Float | YES | — |
+| `started_at` | DateTime | YES | — |
+| `completed_at` | DateTime | YES | — |
+| `error_message` | Text | YES | — |
+| `created_at` | DateTime | NO | `utcnow` |
+
+**CRUD Operations:**
+
+| Op | Count | Key Files |
+|---|---|---|
+| CREATE | 7 | `worker_routes.py` (agent reports), `auto_rebalancer.py` (auto-created), `emergency_rebalancer.py`, `sqs_consumer.py` |
+| READ | 14 | `multi_cluster_routes.py`, `atharvaai_routes.py` (status/history), `auto_rebalancer.py` (duplicate check) |
+| UPDATE | — | `auto_rebalancer.py` (status→completed/failed), `atharvaai_routes.py` |
+| DELETE | 1 | `cluster_service.py` (cluster deletion) |
+
+---
+
+#### Table: `execution_state`
+
+| Column | Type | Nullable | Default |
+|---|---|---|---|
+| `id` | String(36) | NO | PK |
+| `cluster_id` | FK→clusters | NO | — |
+| `state` | Enum(ExecutionPhase) | NO | — |
+| `action_type` | String(50) | YES | — |
+| `source_pool` | String(100) | YES | — |
+| `target_pool` | String(100) | YES | — |
+| `started_at` | DateTime | YES | — |
+| `last_transition_at` | DateTime | YES | — |
+| `error_message` | Text | YES | — |
+| `archived_at` | DateTime | YES | — |
+
+**Composite Indexes:** `idx_state_archived`, `idx_cluster_state`, `idx_active_executions`
+
+**CRUD:** CREATE: 3 (`action_executor.py`), READ: 11 (`execution_controller.py`, `atharvaai_routes.py`, `auto_rebalancer.py`), DELETE: 1
+
+---
+
+#### Table: `rightsizing_proposals`
+
+| Column | Type | Nullable | Default |
+|---|---|---|---|
+| `id` | String(36) | NO | PK |
+| `cluster_id` | FK→clusters | NO | — |
+| `controller_name` | String(255) | NO | — |
+| `namespace` | String(255) | YES | — |
+| `current_cpu` | Float | YES | — |
+| `recommended_cpu` | Float | YES | — |
+| `current_memory` | Float | YES | — |
+| `recommended_memory` | Float | YES | — |
+| `status` | String(20) | YES | `pending` |
+| `confidence` | Float | YES | — |
+| `monthly_savings_usd` | Float | YES | — |
+| `created_at` | DateTime | NO | `utcnow` |
+
+**CRUD:** CREATE: 1 (`rightsizing_service.py`), READ: 10 (`optimizer_coordinator_routes.py`, `karpenter_routes.py`, `resize_guard_worker.py`)
+
+---
+
+#### Table: `agent_actions`
+
+| Column | Type | Nullable | Default |
+|---|---|---|---|
+| `id` | String(36) | NO | PK |
+| `cluster_id` | FK→clusters | NO | — |
+| `action_type` | Enum(AgentActionType) | NO | — |
+| `status` | Enum(AgentActionStatus) | NO | `PENDING` |
+| `payload` | JSON | YES | — |
+| `result` | JSON | YES | — |
+| `expires_at` | DateTime | YES | — |
+| `created_at` | DateTime | NO | `utcnow` |
+| `updated_at` | DateTime | NO | `utcnow` |
+
+**Composite Indexes:** `idx_agent_action_cluster_status`, `idx_agent_action_expires`, `idx_agent_action_created`
+
+**CRUD:** CREATE: 5 (`cluster_service.py`, `karpenter_routes.py`, `auto_rebalancer.py`), READ: 16 (`agent_routes.py`, `karpenter_routes.py`, `auto_rebalancer.py`, `atharvaai_routes.py`), DELETE: 3
+
+---
+
+#### Table: `termination_events`
+
+| Column | Type | Nullable | Default |
+|---|---|---|---|
+| `id` | String(36) | NO | PK |
+| `cluster_id` | FK→clusters | NO | — |
+| `instance_id` | String(20) | YES | — |
+| `instance_type` | String(50) | YES | — |
+| `az` | String(50) | YES | — |
+| `detected_at` | DateTime | NO | `utcnow` |
+| `source` | String(50) | YES | — |
+| `action_taken` | String(50) | YES | — |
+
+**CRUD:** CREATE: 1 (`termination_monitor.py`), READ: via joined queries
+
+---
+
+#### Table: `optimizer_states`
+
+| Column | Type | Nullable | Default |
+|---|---|---|---|
+| `id` | String(36) | NO | PK |
+| `cluster_id` | FK→clusters | NO | — |
+| `phase` | Enum(OptimizerPhase) | NO | — |
+| `phase_started_at` | DateTime | YES | — |
+| `last_pool_optimization_at` | DateTime | YES | — |
+| `last_rightsizing_check_at` | DateTime | YES | — |
+
+**CRUD:** CREATE: 2 (`optimizer_coordinator.py`), READ: 5 (`optimizer_coordinator.py`, `optimizer_coordinator_routes.py`)
+
+---
+
+#### Table: `optimization_jobs`
+
+| Column | Type | Nullable | Default |
+|---|---|---|---|
+| `id` | String(36) | NO | PK |
+| `cluster_id` | FK→clusters | NO | — |
+| `status` | Enum(JobStatus) | NO | — |
+| `job_type` | String(50) | YES | — |
+| `recommendation` | JSON | YES | — |
+| `savings_usd` | Float | YES | — |
+| `created_at` | DateTime | NO | `utcnow` |
+
+**Composite Indexes:** `idx_optimization_cluster_status`, `idx_optimization_created_desc`
+
+**CRUD:** CREATE: 2, READ: 5, DELETE: 1
+
+---
+
+### 3.5 Worker & Agent
+
+---
+
+#### Table: `worker_registrations`
+
+| Column | Type | Nullable | Default |
+|---|---|---|---|
+| `id` | String(36) | NO | PK |
+| `cluster_id` | String(36) | NO | — |
+| `node_name` | String(255) | NO | — |
+| `instance_id` | String(20) | YES | — |
+| `instance_type` | String(50) | YES | — |
+| `az` | String(50) | YES | — |
+| `lifecycle` | String(20) | YES | — |
+| `hostname` | String(255) | YES | — |
+| `agent_version` | String(20) | YES | — |
+| `status` | String(20) | YES | `active` |
+| `last_heartbeat` | DateTime | YES | — |
+
+**Composite Indexes:** `idx_worker_reg_cluster_node` (Unique)
+
+**CRUD:** CREATE: 1 (`worker_routes.py:L162`), READ: 2 (`worker_routes.py:L146, L239`), UPDATE: heartbeat timestamp
+
+---
+
+### 3.6 Pricing Data
+
+---
+
+#### Table: `spot_price_history`
+
+| Column | Type | Nullable | Default |
+|---|---|---|---|
+| `id` | String(36) | NO | PK |
+| `instance_type` | String(50) | NO | — |
+| `az` | String(50) | NO | — |
+| `region` | String(50) | NO | — |
+| `spot_price` | Float | NO | — |
+| `timestamp` | DateTime | NO | `utcnow` |
+
+**CRUD:** CREATE: 3 (`pricing_collector.py`, `aws_pricing_service.py`, `atharvaai_worker.py`), READ: 5 (`ml_feature_service.py`, `pool_ranking_service.py`), DELETE: 1 (cleanup)
+
+---
+
+#### Table: `ondemand_pricing`
+
+| Column | Type | Nullable | Default |
+|---|---|---|---|
+| `id` | String(36) | NO | PK |
+| `instance_type` | String(50) | NO | — |
+| `region` | String(50) | NO | — |
+| `price_per_hour` | Float | NO | — |
+| `updated_at` | DateTime | NO | `utcnow` |
+
+**CRUD:** CREATE: 1 (`pricing_collector.py`), READ: 3
+
+---
+
+#### Table: `spot_advisor_data`
+
+| Column | Type | Nullable | Default |
+|---|---|---|---|
+| `id` | String(36) | NO | PK |
+| `instance_type` | String(50) | NO | — |
+| `region` | String(50) | NO | — |
+| `r_score` | Integer | YES | — |
+| `savings_pct` | Integer | YES | — |
+| `interruption_frequency` | String(20) | YES | — |
+
+**CRUD:** CREATE: 1 (`spot_advisor_scraper.py`), READ: 8 (`pool_ranking_service.py`, `ml_feature_service.py`, `spot_advisor_scraper.py`)
+
+---
+
+#### Table: `instance_catalog`
+
+| Column | Type | Nullable | Default |
+|---|---|---|---|
+| `id` | String(36) | NO | PK |
+| `instance_type` | String(50) | NO | — |
+| `region` | String(50) | NO | — |
+| `vcpus` | Integer | YES | — |
+| `memory_gb` | Float | YES | — |
+| `architecture` | String(20) | YES | — |
+| `processor` | String(100) | YES | — |
+| `current_generation` | Boolean | YES | — |
+| `burstable` | Boolean | YES | — |
+| `gpu_count` | Integer | YES | 0 |
+
+**Composite Indexes:** `idx_instance_type_region` (Unique), `idx_region_current_gen`, `idx_region_arch`, `idx_vcpus_memory`
+
+**CRUD:** CREATE: 1 (`instance_catalog_worker.py`), READ: 6 (`pool_ranking_service.py`, `rightsizing_service.py`, `karpenter_routes.py`)
+
+---
+
+### 3.7 Remaining Tables (Tag Governance, Cost Analysis, Alerts, etc.)
+
+These tables follow the same pattern. Key operations:
+
+| Table | CREATE | READ | DELETE | Primary Service |
+|---|---|---|---|---|
+| `tag_policies` | 2 | 9 | — | `tag_policy_routes.py`, `tag_policy_service.py` |
+| `tag_compliance_scores` | 1 | 5 | — | `tag_compliance_service.py` |
+| `tag_automation_rules` | 1 | 5 | — | `tag_automation_routes.py` |
+| `tag_automation_logs` | 2 | 1 | — | `tag_automation_service.py` |
+| `tag_scoring_configs` | 1 | 3 | — | `tag_scoring_routes.py` |
+| `alert_config` | 3 | 7 | — | `alert_routes.py` |
+| `alert_history` | 3 | 10 | — | `alert_service.py`, `redis_cache_manager.py` |
+| `daily_costs` | 1 | 8 | — | `billing_routes.py`, `cost_analysis_service.py` |
+| `ri_utilization` | 1 | 4 | — | `ri_analysis_service.py` |
+| `s3_bucket_analysis` | 1 | 2 | — | `s3_tiering_service.py` |
+| `rds_instance_analysis` | 1 | 2 | — | `rds_analysis_service.py` |
+| `daily_cluster_stats` | 1 | 3 | — | `atharvaai_worker.py` |
+| `hibernation_schedules` | 2 | 5 | 1 | `hibernation_service.py` |
+| `approvals` | 5 | 13 | — | `approval_service.py`, `approval_routes.py` |
+| `system_configs` | 2 | 62 | — | `admin_routes.py`, widely read (AWS keys, feature flags) |
+| `lab_experiments` | 2 | 8 | — | `lab_service.py` |
+| `chaos_experiments` | 2 | 6 | — | `chaos_testing_service.py` |
+| `credential_cache` | 2 | 5 | 2 | `credential_manager.py` |
+| `substitute_states` | 2 | 1 | 1 | `substitute_manager.py` |
+| `circuit_breaker_state` | 1 | 2 | — | `circuit_breaker.py` |
+
+---
+
+## 4. Redis Key Patterns — Complete Reference
+
+### 4.1 Optimization & Pool Management
+
+| Key Pattern | Operations | TTL | Producer | Consumer |
+|---|---|---|---|---|
+| `spot:pool_rotation_status:{cluster_id}` | get | ∞ | `pool_rotation_worker.py` | `cluster_routes.py` (cluster summary endpoint) |
+| `spot:spend_velocity:{cluster_id}` | get | ∞ | `atharvaai_worker.py` | `cluster_routes.py` (cluster summary) |
+| `spot:substitute:state:{cluster_id}` | get | ∞ | `substitute_manager.py` | `auto_rebalancer.py`, `pool_rotation_service.py`, `hibernation_worker.py` |
+| `spot:active_cluster_count` | get | ∞ | `control_plane_loop.py` | `atharvaai_routes.py`, `pool_ranking_service.py` |
+| `spot:dryrun_count:{region}` | get, incr, expire | 3600s (1h) | `pool_ranking_service.py` | `atharvaai_routes.py` |
+| `spot:trigger_eval:{cluster_id}` | setex | 300s (5m) | `atharvaai_routes.py` | `auto_rebalancer.py` |
+| `spot:cooldown:cluster:{cluster_id}` | delete | varies | `atharvaai_routes.py` | `cooldown_controller.py` |
+| `spot:cooldown:action:resize:{cluster_id}` | exists | varies | `cooldown_controller.py` | `auto_rebalancer.py` |
+| `spot:direct:launch_failed:{pool_key}` | setex | 120s (2m) | `auto_rebalancer.py` | `auto_rebalancer.py` |
+| `spot:rebalanced:instance:{instance_id}` | delete | ∞ | `auto_rebalancer.py` | `auto_rebalancer.py` |
+| `spot:node_classification:{cluster_id}` | get | ∞ | `workload_inspector.py` | `karpenter_routes.py` |
+| `spot:node_arch_constraints:{cluster_id}` | get | ∞ | `agent_service.py` | `auto_rebalancer.py` |
+| `spot:model_mismatch:{cluster_id}` | delete | ∞ | `auto_rebalancer.py` | `atharvaai_routes.py` |
+| `spot:volatility_regime:{region}` | get | ∞ | `pricing_collector.py` | `rightsizing_service.py` |
+| `spot:blacklist_ratio:{pool_key}` | set | ∞ | `blacklist_service.py` | `blacklist_service.py` |
+| `spot:blacklist_suspended:{pool_key}` | get, setex | 1800s (30m) | `blacklist_service.py` | `blacklist_service.py` |
+| `spot:metrics:substitute_retry` | incr | ∞ | `substitute_manager.py` | Monitoring |
+| `spot:metrics:dryrun_starvation_ratio` | incr | ∞ | `pool_ranking_service.py` | Monitoring |
+
+### 4.2 Pool Ranking & Blacklisting
+
+| Key Pattern | Operations | TTL | Producer | Consumer |
+|---|---|---|---|---|
+| `global_pool_rankings:{region}` | get, setex | 300s (5m) | `pool_ranking_service.py` | `auto_rebalancer.py`, `control_plane_loop.py`, `dry_run_refresher.py` |
+| `atharvaai:pool_rankings` | get | ∞ | `pool_ranking_service.py` | `dry_run_refresher.py` |
+| `blacklist:pool:{pool_key}` | exists | varies | `blacklist_service.py` | `atharvaai_routes.py`, `pool_ranking_service.py` |
+| `blacklist_failures:{pool_key}` | get, incr | 86400s (24h) | `pool_ranking_service.py` | `blacklist_service.py`, `pool_ranking_service.py` |
+| `blacklist_removal:{pool_key}` | delete | — | `blacklist_service.py` | — |
+| `risky_pools` | delete, expire | 86400s (24h) | `agent_service.py` | `chaos_testing_service.py` |
+| `risky_pool_meta:{pool_key}` | delete | — | `blacklist_service.py`, `termination_monitor.py` | — |
+
+### 4.3 ML & Model State
+
+| Key Pattern | Operations | TTL | Producer | Consumer |
+|---|---|---|---|---|
+| `atharvaai:ml_degraded` | get, set, delete | 600s (10m) | `pool_ranking_service.py` | `atharvaai_routes.py` |
+| `atharvaai:ml_fail_count` | get, incr, expire | 600s (10m) | `pool_ranking_service.py` | `atharvaai_routes.py` |
+| `model:update` | publish | — | `ml_model_server.py` | Redis Pub/Sub subscribers |
+
+### 4.4 Agent & Node Management
+
+| Key Pattern | Operations | TTL | Producer | Consumer |
+|---|---|---|---|---|
+| `node_joined:{instance_id}` | setex, exists | 7200s (2h) | `worker_routes.py` | `recovery_monitor.py` |
+| `ondemand_fallback:{cluster_id}` | exists, delete | ∞ | `karpenter_service.py` | `karpenter_service.py` |
+
+### 4.5 Chaos Testing
+
+| Key Pattern | Operations | TTL | Producer | Consumer |
+|---|---|---|---|---|
+| `chaos:karpenter_slow` | setex, delete | 300s (5m) | `chaos_testing_service.py` | `chaos_testing_service.py` |
+| `chaos:celery_crash` | setex, delete | 300s (5m) | `chaos_testing_service.py` | `chaos_testing_service.py` |
+| `chaos:db_connection_loss` | setex, delete | 300s (5m) | `chaos_testing_service.py` | `chaos_testing_service.py` |
+| `termination:notice:{instance_id}` | delete | — | `chaos_testing_service.py` | — |
+
+### 4.6 Pricing & Degradation
+
+| Key Pattern | Operations | TTL | Producer | Consumer |
+|---|---|---|---|---|
+| `degraded:region:{region}` | setex, exists | 1800s (30m) | `pricing_collector.py` | `pricing_collector.py` |
+| `price_shock:{region}` | get | ∞ | `pricing_collector.py` | `atharvaai_routes.py` |
+| `instance_catalog:last_refresh:{region}` | get | ∞ | `instance_catalog_worker.py` | `instance_catalog_worker.py` |
+| `resource_pricing:last_refresh` | get | ∞ | `resource_pricing_worker.py` | `resource_pricing_worker.py` |
+
+### 4.7 Alerting & Scheduling
+
+| Key Pattern | Operations | TTL | Producer | Consumer |
+|---|---|---|---|---|
+| `alert:last_sent:{fingerprint}` | get, setex | varies | `redis_cache_manager.py` | `redis_cache_manager.py` |
+| `event:{event_id}` | setex, exists | 3600s (1h) | `event_processor.py` | `event_processor.py` (dedup) |
+| `hibernation:scheduler_lock` | set, get, delete | 55s | `hibernation_worker.py` | `hibernation_worker.py` |
+
+### 4.8 Hygiene & Compliance
+
+| Key Pattern | Operations | TTL | Producer | Consumer |
+|---|---|---|---|---|
+| `tag_compliance:{org_id}` | delete | — | `tag_scoring_routes.py` | — |
+| `tag_heatmap:{org_id}` | get | ∞ | `tag_compliance_service.py` | `tag_compliance_routes.py` |
+
+### 4.9 Resize Guard
+
+| Key Pattern | Operations | TTL | Producer | Consumer |
+|---|---|---|---|---|
+| `resize:rollback_needed:{cluster_id}` | setex | 3600s (1h) | `resize_guard_worker.py` | `resize_guard_worker.py` |
+| `{cluster_id}:invocations` | incr, expire | 7200s (2h) | `resize_guard_worker.py` | `resize_guard_worker.py` |
+
+---
+
+## 5. Composite Indexes (53 Total)
 
 | Table | Index Name | Columns | Unique |
 |---|---|---|---|
@@ -264,9 +884,55 @@ erDiagram
 
 ---
 
-## 5. Security Audit — Sensitive Data Columns
+## 6. Data Flow Diagrams
 
-### 5.1 High-Risk Columns (passwords, tokens, keys)
+### 6.1 Instance Lifecycle Data Flow
+
+```mermaid
+flowchart TD
+    A[AWS EC2 API] -->|describe_instances| B[Discovery Worker<br/>discovery.py]
+    B -->|CREATE/UPDATE| C[(instances table)]
+    
+    D[Agent DaemonSet] -->|POST /worker/register-node| E[worker_routes.py]
+    E -->|CREATE| F[(worker_registrations)]
+    
+    D -->|POST /worker/node-metrics| G[worker_routes.py]
+    G -->|UPDATE cpu_util, memory_util| C
+    G -->|CREATE| H[(node_metrics)]
+    
+    D -->|POST /worker/node-joined| I[worker_routes.py]
+    I -->|UPDATE lifecycle, az, node_name| C
+    
+    J[Auto Rebalancer] -->|Fleet API launch| K[CREATE new Instance]
+    K --> C
+    
+    C -->|READ state='running'| L[cluster_service.py<br/>get_cluster_nodes_detailed]
+    L -->|JSON response| M[GET /clusters/:id/nodes/detailed]
+    M -->|fetch| N[ClusterList.jsx<br/>NodeTreemap]
+```
+
+### 6.2 Rebalancing Action Flow
+
+```mermaid
+flowchart TD
+    A[Auto Rebalancer Worker<br/>auto_rebalancer.py] -->|Every 15s| B{Cluster needs<br/>rebalancing?}
+    B -->|Yes| C[Decision Engine<br/>decision_engine.py]
+    C -->|Pool ranking| D[(Redis: global_pool_rankings)]
+    C -->|Check cooldown| E[(Redis: spot:cooldown:cluster:*)]
+    C -->|Check circuit breaker| F[(circuit_breaker_state table)]
+    C -->|Approved| G[CREATE rebalancing_action]
+    G --> H[(rebalancing_actions table)]
+    G -->|Execute| I[Action Executor<br/>action_executor.py]
+    I -->|CREATE| J[(execution_state table)]
+    I -->|Fleet API launch| K[AWS EC2]
+    K -->|Success| L[UPDATE Instance record]
+    L --> M[(instances table)]
+    K -->|Failure| N[UPDATE rebalancing_action status=failed]
+```
+
+---
+
+## 7. Security Audit — Sensitive Data Columns
 
 | Table | Column | Data Type | Risk Level | Protection |
 |---|---|---|---|---|
@@ -277,158 +943,74 @@ erDiagram
 | `credential_cache` | `session_token` | Text | 🔴 CRITICAL | ✅ Encrypted (Fernet AES) |
 | `api_keys` | `key_hash` | String | 🔴 CRITICAL | ✅ Hashed (SHA-256) |
 | `agent_identities` | `public_key` | Text | 🟡 Sensitive | ✅ Public key only |
-| `agent_identities` | `fingerprint` | String | 🟢 Low | ✅ Derived hash |
 | `accounts` | `role_arn` | String(255) | 🟡 Sensitive | ⚠️ Plain text |
 | `accounts` | `external_id` | String(64) | 🟡 Sensitive | ⚠️ Plain text |
 | `organizations` | `stripe_customer_id` | String(255) | 🟡 Sensitive | ⚠️ Plain text |
 | `organization_invitations` | `token` | String | 🟡 Sensitive | ⚠️ Plain text |
-
-### 5.2 Security Recommendations
-
-| # | Finding | Severity | Recommendation |
-|---|---|---|---|
-| 1 | `organizations.stripe_customer_id` defined **twice** (L28-29) | 🟡 Medium | Remove duplicate column definition |
-| 2 | Invitation tokens stored in plain text | 🟡 Medium | Hash tokens, store only hash |
-| 3 | `accounts.role_arn` in plain text | 🟢 Low | Acceptable (not a secret) |
-| 4 | `base.py` seeds `admin123` and `demo1234` passwords | 🔴 Critical | Remove hardcoded credentials from source |
-
----
-
-## 6. Data Quality Issues
-
-### 6.1 Duplicate Definitions
-
-| File | Issue | Details |
-|---|---|---|
-| `organization.py` L28-29 | **Duplicate column** | `stripe_customer_id` defined twice |
-| `pricing.py` | **Duplicate table** | `spot_price_history` defined in both `pricing.py` (L7) AND `spot_price_history.py` |
-| `__init__.py` L28 | **Duplicate import** | `SavingsPlanUtilization` imported twice |
-| `base.py` L69-70 | **Duplicate import** | `AgentAction` imported twice in `create_tables()` |
-
-### 6.2 Missing `create_tables()` Registrations
-
-The `create_tables()` function in `base.py` only registers 14 models, but the platform has **68 tables**. Most tables are created via `Base.metadata.create_all()` which auto-discovers all imported models in `__init__.py`, but the explicit list in `create_tables()` is incomplete and misleading.
-
-**Tables NOT in `create_tables()` but exist**:
-- All tag governance tables (6)
-- All alert tables (2)
-- All cost analysis tables (5)
-- All execution/coordinator tables (4)
-- credential_cache, chaos_experiments, daily_cluster_stats, etc.
-
-### 6.3 Schema Inconsistencies
-
-| Issue | Tables | Details |
-|---|---|---|
-| Mixed PK types | `clusters` uses `String` (no length), others use `String(36)` | Inconsistent PK sizing |
-| `nullable` inconsistency | Some FKs have `nullable=True`, others `nullable=False` for similar relationships | Review FK nullability |
-| Missing `ondelete` | Several FKs lack `ondelete` clause (e.g., `approvals.user_id`, `cluster_policies`) | Orphan rows possible |
-
----
-
-## 7. Potentially Unused Tables
-
-Based on code analysis (grep for table name usage in routes, services, and workers):
-
-| Table | Model File | Evidence | Verdict |
-|---|---|---|---|
-| `pool_cooldowns` | `pool_cooldown.py` | Cooldowns managed via Redis keys, not DB | ⚠️ **Likely unused** — Redis is primary |
-| `cluster_cooldowns` | `cluster_cooldown.py` | Cooldowns managed via Redis keys | ⚠️ **Likely unused** — Redis is primary |
-| `ml_models` | `ml_model.py` | `model_registry` is the newer replacement | ⚠️ **Legacy** — superseded by `model_registry` |
-| `spot_price_history` (models/spot_price_history.py) | `spot_price_history.py` | Duplicate of definition in `pricing.py` | ⚠️ **Duplicate file** |
+| `system_configs` | `PLATFORM_AWS_SECRET` | String | 🔴 CRITICAL | ⚠️ Plain text in DB |
 
 ---
 
 ## 8. Performance Analysis
 
-### 8.1 High-Write Tables (ordered by estimated write frequency)
+### 8.1 High-Write Tables
 
-| Table | Est. Writes/Day | Source | Retention Concern |
+| Table | Est. Writes/Day | Source | Retention |
 |---|---|---|---|
-| `pod_metrics` | ~288,000+ | Agent every 5 min per pod | 🔴 **HIGH** — needs partition/TTL |
-| `cluster_metrics` | ~28,800+ | Agent every 60s per cluster | 🔴 **HIGH** — needs partition/TTL |
-| `node_metrics` | ~28,800+ | Agent every 60s per node | 🔴 **HIGH** — needs partition/TTL |
+| `pod_metrics` | ~288,000+ | Agent every 1 min per pod | 🔴 Needs TTL cleanup |
+| `node_metrics` | ~28,800+ | Agent every 1 min per node | 🔴 Needs TTL cleanup |
+| `cluster_metrics` | ~28,800+ | Agent every 60s per cluster | 🔴 Needs TTL cleanup |
 | `spot_price_history` | ~2,880 | Pricing collector every 5 min | 🟡 Medium |
 | `audit_logs` | ~1,000+ | Every user/system action | 🟡 Medium |
-| `daily_costs` | ~100 | Daily cost import | 🟢 Low |
-| `family_hour_baselines` | ~168/week | Weekly baseline computation | 🟢 Low |
 
-### 8.2 Missing Indexes (Recommendations)
+### 8.2 Redis Memory Estimate
+
+| Category | Key Count | Avg Size | Total Est. |
+|---|---|---|---|
+| Pool rankings (per region) | 14 regions | ~50KB | ~700KB |
+| Cooldowns (per cluster) | N clusters × 3 | ~100B | ~N×300B |
+| Blacklists | ~100 pools | ~50B | ~5KB |
+| Node classifications | N clusters | ~1KB | ~N×1KB |
+| Metrics counters | ~20 | ~50B | ~1KB |
+| **Substitute state** | N clusters | ~500B | ~N×500B |
+
+### 8.3 Missing Indexes (Recommendations)
 
 | Table | Suggested Index | Reason |
 |---|---|---|
 | `rightsizing_proposals` | `(cluster_id, status)` | Frequent filter by cluster + status |
 | `approvals` | `(organization_id, status)` | Dashboard queries by org + pending |
-| `approvals` | `(user_id, status)` | User's approval requests |
-| `hibernation_schedules` | `(is_active)` | Worker filters active schedules every minute |
-| `substitute_states` | `(cluster_id, state)` | Substitute lifecycle queries |
-| `tag_policies` | `(organization_id, is_active)` | Active policy lookups |
+| `hibernation_schedules` | `(is_active)` | Worker filters active schedules |
 | `rebalancing_actions` | `(cluster_id, status)` | Rebalancing history queries |
 | `termination_events` | `(cluster_id, detected_at)` | Termination timeline queries |
-
-### 8.3 Tables with Most Indexes
-
-| Table | Index Count | Assessment |
-|---|---|---|
-| `pod_metrics` | 4 composite | ✅ Well-indexed for time-series queries |
-| `alert_history` | 5 composite | ✅ Well-indexed for alert management |
-| `alert_config` | 3 composite | ✅ Adequate |
-| `instance_catalog` | 4 composite | ✅ Well-indexed for pool ranking |
-| `daily_costs` | 3 composite | ✅ Appropriate for billing queries |
+| `substitute_states` | `(cluster_id, state)` | Substitute lifecycle queries |
 
 ---
 
-## 9. Relationship Summary
+## 9. Data Quality Issues
 
-### 9.1 Tables by FK Dependency Count
-
-| Table | Incoming FKs | Outgoing FKs | Role |
+| # | Issue | Severity | Location |
 |---|---|---|---|
-| `organizations` | 15+ | 0 | 🏢 Root entity |
-| `clusters` | 12+ | 1 (accounts) | 🔗 Central hub |
-| `users` | 5+ | 3 (org, team, role) | 👤 Auth entity |
-| `accounts` | 6+ | 2 (org, user) | ☁️ AWS bridge |
-
-### 9.2 Self-Referencing Tables
-
-| Table | Column | Purpose |
-|---|---|---|
-| `approvals` | `parent_id → approvals.id` | Approval chains |
+| 1 | `organizations.stripe_customer_id` defined **twice** | 🟡 Medium | `organization.py` L28-29 |
+| 2 | `spot_price_history` defined in both `pricing.py` AND `spot_price_history.py` | 🟡 Medium | Duplicate model file |
+| 3 | Duplicate `SavingsPlanUtilization` import | 🟢 Low | `__init__.py` L28 |
+| 4 | Duplicate `AgentAction` import in `create_tables()` | 🟢 Low | `base.py` L69-70 |
+| 5 | Hardcoded passwords `admin123`, `demo1234` in seed function | 🔴 Critical | `base.py` |
+| 6 | Mixed PK types (`String` vs `String(36)`) | 🟡 Medium | `cluster.py` uses bare `String` |
+| 7 | Several FKs lack `ondelete` clause | 🟡 Medium | Orphan rows possible |
+| 8 | `PLATFORM_AWS_SECRET` stored in plain text in `system_configs` | 🔴 Critical | `admin_routes.py` |
 
 ---
 
-## 10. Cleanup Recommendations
+## 10. Potentially Unused Tables
 
-### 10.1 Immediate Actions (Low Risk)
-
-| # | Action | Impact |
-|---|---|---|
-| 1 | Remove duplicate `stripe_customer_id` in `organization.py` L29 | Fix schema warning |
-| 2 | Remove duplicate `SavingsPlanUtilization` import in `__init__.py` L28 | Clean imports |
-| 3 | Remove duplicate `AgentAction` import in `base.py` L70 | Clean imports |
-| 4 | Remove duplicate `spot_price_history.py` model file | Eliminate confusion |
-| 5 | Remove hardcoded passwords from `base.py` seed function | Security fix |
-
-### 10.2 Medium-Term Actions
-
-| # | Action | Impact |
-|---|---|---|
-| 6 | Add `ondelete="CASCADE"` to FKs missing it | Prevent orphan rows |
-| 7 | Standardize PK column type to `String(36)` everywhere | Schema consistency |
-| 8 | Add missing indexes (see §8.2) | Query performance |
-| 9 | Implement data retention/partitioning for metrics tables | Storage management |
-| 10 | Evaluate removing `pool_cooldowns`/`cluster_cooldowns` DB tables if Redis-only | Reduce complexity |
-
-### 10.3 Long-Term Actions
-
-| # | Action | Impact |
-|---|---|---|
-| 11 | Implement TimescaleDB or table partitioning for `pod_metrics`, `cluster_metrics`, `node_metrics` | Handle time-series at scale |
-| 12 | Add DB-level constraints for ENUM columns instead of only ORM-level | Data integrity |
-| 13 | Consider read replicas for analytics queries on cost/metrics tables | Performance isolation |
-| 14 | Archive old `audit_logs`, `alert_history`, `optimization_jobs` records (>90 days) | Storage reduction |
-| 15 | Deprecate `ml_models` table in favor of `model_registry` | Schema simplification |
+| Table | Model File | Evidence | Verdict |
+|---|---|---|---|
+| `pool_cooldowns` | `pool_cooldown.py` | Cooldowns managed via Redis keys | ⚠️ Likely unused — Redis is primary |
+| `cluster_cooldowns` | `cluster_cooldown.py` | Cooldowns managed via Redis keys | ⚠️ Likely unused — Redis is primary |
+| `ml_models` | `ml_model.py` | `model_registry` is the newer replacement | ⚠️ Legacy |
+| `spot_price_history` (spot_price_history.py) | `spot_price_history.py` | Duplicate of definition in `pricing.py` | ⚠️ Duplicate file |
 
 ---
 
-*Total: **68 tables** · **53 composite indexes** · **70+ foreign keys** · **12 sensitive columns** · **4 duplicate definitions** · **8 missing indexes identified** · **15 cleanup recommendations***
+*Total: **68 tables** · **53 composite indexes** · **70+ foreign keys** · **46 Redis key patterns** · **12 sensitive columns** · **8 data quality issues** · **6 missing indexes***

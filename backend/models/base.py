@@ -67,7 +67,6 @@ def create_tables():
     from backend.models.optimization_job import OptimizationJob
     from backend.models.lab_experiment import LabExperiment
     from backend.models.agent_action import AgentAction
-    from backend.models.agent_action import AgentAction
     from backend.models.api_key import APIKey
     from backend.models.invitation import OrganizationInvitation
     from backend.models.system_config import SystemConfig  # For Safe Mode & Platform Identity
@@ -106,7 +105,7 @@ def seed_demo_data():
             # Create Admin User
             admin_user = User(
                 email=admin_email,
-                password_hash=hash_password("admin123"),
+                password_hash=hash_password(os.getenv("SEED_ADMIN_PASSWORD", str(uuid.uuid4()))),
                 role=UserRole.SUPER_ADMIN,
                 organization_id=admin_org.id,
                 # org_role=OrgRole.ORG_ADMIN,
@@ -114,7 +113,7 @@ def seed_demo_data():
             )
             db.add(admin_user)
             db.commit()
-            print(f"✅ Created default admin user: {admin_email} / admin123")
+            print(f"✅ Created default admin user: {admin_email} (password from SEED_ADMIN_PASSWORD env var)")
         
         # 2. Seed Demo Client
         demo_email = "demo@spotoptimizer.com"
@@ -135,7 +134,7 @@ def seed_demo_data():
             # Create Demo User
             demo_user = User(
                 email=demo_email,
-                password_hash=hash_password("demo1234"),
+                password_hash=hash_password(os.getenv("SEED_DEMO_PASSWORD", str(uuid.uuid4()))),
                 role=UserRole.CLIENT,
                 organization_id=demo_org.id,
                 # org_role=OrgRole.ORG_ADMIN,
@@ -155,7 +154,7 @@ def seed_demo_data():
             db.add(demo_account)
             
             db.commit()
-            print(f"✅ Created demo client user: {demo_email} / demo1234")
+            print(f"✅ Created demo client user: {demo_email} (password from SEED_DEMO_PASSWORD env var)")
 
     except Exception as e:
         print(f"⚠️  Failed to seed demo data: {e}")

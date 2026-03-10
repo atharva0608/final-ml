@@ -1,5 +1,5 @@
 
-from sqlalchemy import Column, String, DateTime, ForeignKey, Enum, Text, Integer, Boolean, JSON
+from sqlalchemy import Column, String, DateTime, ForeignKey, Enum, Text, Integer, Boolean, JSON, Index
 from sqlalchemy.orm import relationship
 from datetime import datetime, timezone
 import enum
@@ -36,17 +36,21 @@ class ReasonCategory(enum.Enum):
 
 class Approval(Base):
     __tablename__ = "approvals"
+    __table_args__ = (
+        Index('idx_approval_org_status', 'organization_id', 'status'),
+        Index('idx_approval_user_status', 'user_id', 'status'),
+    )
 
     id = Column(String(36), primary_key=True, default=generate_uuid, index=True)
 
-    user_id = Column(String, ForeignKey("users.id"), nullable=False)
-    organization_id = Column(String, ForeignKey("organizations.id"), nullable=False)
+    user_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    organization_id = Column(String, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False)
 
     # The approver (Team Lead or Admin). Null if self-approved or pending.
-    approver_id = Column(String, ForeignKey("users.id"), nullable=True)
+    approver_id = Column(String, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
 
     # For delegated grants hierarchy
-    parent_id = Column(String, ForeignKey("approvals.id"), nullable=True)
+    parent_id = Column(String, ForeignKey("approvals.id", ondelete="CASCADE"), nullable=True)
 
     type = Column(Enum(ApprovalType), default=ApprovalType.ACCESS_WINDOW)
 

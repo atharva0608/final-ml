@@ -27,7 +27,7 @@ class KarpenterMode(enum.Enum):
 class Cluster(Base):
     __tablename__ = "clusters"
 
-    id = Column(String, primary_key=True)
+    id = Column(String(36), primary_key=True)
     name = Column(String, index=True)
     account_id = Column(String, ForeignKey("accounts.id"), nullable=False)
     arn = Column(String, unique=True, index=True)

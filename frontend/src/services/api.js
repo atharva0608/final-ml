@@ -336,6 +336,9 @@ export const atharvaaiAPI = {
             params: clusterId ? { cluster_id: clusterId, limit } : { limit }
         }),
 
+    // Get rebalancing context: cooldown + next target (unified, works for non-Karpenter clusters)
+    getRebalancingContext: (clusterId) => api.get(`/api/v1/atharvaai/v3/rebalancing-context/${clusterId}`),
+
     // Health check
     getHealth: () => api.get('/api/v1/atharvaai/health'),
 

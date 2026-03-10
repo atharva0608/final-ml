@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Card } from '../shared';
-import { karpenterAPI, decisionEngineAPI, atharvaaiAPI } from '../../services/api';
+import { atharvaaiAPI } from '../../services/api';
 
 // Theme primitives to match the original layout
 const T = {
@@ -31,12 +31,12 @@ const T = {
 };
 
 const REBALANCE_STEPS = [
-    { key: 'step_1_spot_provisioning', label: 'Spot Pool Provisioned', desc: 'Karpenter NodePool updated with ML-ranked spot pools' },
-    { key: 'step_2_cordon', label: 'Node Cordoned', desc: 'No new pods schedule on the old on-demand node' },
+    { key: 'step_1_spot_provisioning', label: 'New Pool Provisioned', desc: 'Karpenter NodePool updated with ML-ranked spot pools' },
+    { key: 'step_2_cordon', label: 'Node Cordoned', desc: 'No new pods scheduled on the source node' },
     { key: 'step_3_draining_pods', label: 'Pods Draining', desc: 'Existing pods gracefully evicted to other nodes' },
-    { key: 'step_4_new_node_joined', label: 'New Spot Node Joined', desc: 'Karpenter provisioned a new spot instance and it joined the cluster' },
-    { key: 'step_5_old_node_terminated', label: 'Old Node Terminating', desc: 'Old on-demand EC2 instance terminated via ASG' },
-    { key: 'step_6_optimization_complete', label: 'Optimization Complete', desc: 'Node successfully migrated from on-demand to spot' },
+    { key: 'step_4_new_node_joined', label: 'New Node Joined', desc: 'Replacement spot node provisioned and joined the cluster' },
+    { key: 'step_5_old_node_terminated', label: 'Old Node Terminated', desc: 'Source EC2 instance terminated' },
+    { key: 'step_6_optimization_complete', label: 'Complete', desc: 'Node migration finished' },
 ];
 
 const STEP_CURRENT_MAP = {
@@ -75,19 +75,11 @@ const RebalancingTimeline = ({ clusterId, actions: externalActions }) => {
                 }
 
                 if (clusterId) {
-                    // Fetch real cooldown status (v3 API)
-                    const stateRes = await decisionEngineAPI.getStateMachine(clusterId).catch(() => ({ data: null }));
-                    if (stateRes.data && stateRes.data.cooldown) {
-                        setCooldownData(stateRes.data.cooldown);
-                    }
-
-                    // Fetch next node execution plan
-                    const execRes = await karpenterAPI.getExecutionPlan(clusterId).catch(() => ({ data: null }));
-                    if (execRes.data && execRes.data.plan && execRes.data.plan.length > 0) {
-                        // Find the first approved/eligible node from execution plan
-                        setNextNodeData(execRes.data.plan[0]);
-                    } else {
-                        setNextNodeData(null);
+                    // Fetch unified rebalancing context (cooldown + next target)
+                    const ctxRes = await atharvaaiAPI.getRebalancingContext(clusterId).catch(() => ({ data: null }));
+                    if (ctxRes.data) {
+                        setCooldownData(ctxRes.data.cooldown?.active ? ctxRes.data.cooldown : null);
+                        setNextNodeData(ctxRes.data.next_target || null);
                     }
                 }
             } catch (err) {
@@ -187,22 +179,56 @@ const RebalancingTimeline = ({ clusterId, actions: externalActions }) => {
             ) : (
                 visible.map((action, ai) => {
                     const currentStepIdx = STEP_CURRENT_MAP[action.current_step] ?? -1;
+                    const meta = action.action_metadata || {};
+                    const isS2S = meta.spot_to_spot === true;
+                    const s2sReason = meta.reason || null;
+                    const isDiversify = s2sReason && s2sReason.startsWith('diversify');
+                    const borderColor = isS2S ? '#f59e0b' : T.border;
 
                     return (
-                        <div key={ai} style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 10, padding: '16px 20px', marginBottom: 12, boxShadow: T.shadow }}>
+                    <div key={ai} style={{ background: T.surface, border: `1px solid ${borderColor}`, borderRadius: 10, padding: '16px 20px', marginBottom: 12, boxShadow: T.shadow }}>
                             {/* Header */}
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16 }}>
-                                <div>
+                                <div style={{ flex: 1, minWidth: 0 }}>
+                                    {/* Migration type badge */}
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                                        {isS2S ? (
+                                            <span style={{
+                                                fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 10,
+                                                background: '#fef3c7', color: '#d97706', letterSpacing: '0.05em',
+                                            }}>
+                                                {isDiversify ? '🔀 SPOT→SPOT (Diversify)' : '⚡ SPOT→SPOT (Risk)'}
+                                            </span>
+                                        ) : (
+                                            <span style={{
+                                                fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 10,
+                                                background: T.primaryLight, color: T.primary, letterSpacing: '0.05em',
+                                            }}>
+                                                ↑ OD→SPOT
+                                            </span>
+                                        )}
+                                    </div>
                                     <div style={{ fontSize: 13, fontWeight: 700, color: T.text }}>
                                         {action.source_pool} → {action.target_pool}
                                     </div>
                                     <div style={{ fontSize: 11, color: T.textMuted, marginTop: 2 }}>
-                                        {action.instance_id && <span style={{ fontFamily: 'monospace', background: T.bg, padding: '1px 6px', borderRadius: 3, marginRight: 8 }}>{action.instance_id}</span>}
+                                        {(meta.instance_id || action.instance_id) && (
+                                            <span style={{ fontFamily: 'monospace', background: T.bg, padding: '1px 6px', borderRadius: 3, marginRight: 8 }}>
+                                                {meta.instance_id || action.instance_id}
+                                            </span>
+                                        )}
                                         Started {action.started_at ? new Date(action.started_at).toLocaleTimeString() : '—'}
                                     </div>
+                                    {/* S2S reason line */}
+                                    {isS2S && s2sReason && (
+                                        <div style={{ fontSize: 11, color: '#92400e', marginTop: 4, padding: '3px 8px', background: '#fef3c7', borderRadius: 4, display: 'inline-block', maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                                            title={s2sReason}>
+                                            {s2sReason}
+                                        </div>
+                                    )}
                                 </div>
                                 <span style={{
-                                    fontSize: 11, fontWeight: 600, padding: '3px 10px', borderRadius: 12,
+                                    fontSize: 11, fontWeight: 600, padding: '3px 10px', borderRadius: 12, flexShrink: 0, marginLeft: 8,
                                     background: action.status === 'completed' ? T.greenLight : action.status === 'failed' ? T.redLight : T.amberLight,
                                     color: action.status === 'completed' ? T.green : action.status === 'failed' ? T.red : T.amber,
                                 }}>
@@ -263,10 +289,10 @@ const RebalancingTimeline = ({ clusterId, actions: externalActions }) => {
                             {/* Waiting for spot node warning text */}
                             {action.current_step === 'waiting_for_spot_node' && (
                                 <div style={{ marginTop: 12, padding: '8px 12px', background: T.amberLight, borderRadius: 6, fontSize: 12, color: T.amber, fontWeight: 500 }}>
-                                    ⏳ Waiting for Karpenter to provision a new spot node ({Math.round((action.spot_wait_elapsed_s || 0) / 60)} min elapsed, max 30 min)
+                                    ⏳ Waiting for {action.provisioner_type === 'karpenter' ? 'Karpenter' : 'agent'} to provision a new spot node ({Math.round((action.spot_wait_elapsed_s || 0) / 60)} min elapsed, max 30 min)
                                 </div>
                             )}
-                        </div>
+                    </div>
                     );
                 })
             )}

@@ -211,11 +211,12 @@ async def receive_metrics_batch(
             except Exception as e:
                 logger.warning(f"Error structuring pod metric: {e}")
 
-        # Query all instances in the cluster to calculate true total capacity
+        # Query only running instances in the cluster to calculate true total capacity
         instances = db.query(Instance).filter(
-            Instance.cluster_id == cluster_id
+            Instance.cluster_id == cluster_id,
+            Instance.state == 'running',
         ).all()
-        
+
         total_nodes = len(instances)
 
         # If no instances found, fall back to current batch count

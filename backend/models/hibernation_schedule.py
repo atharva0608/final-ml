@@ -1,6 +1,6 @@
 
 import enum
-from sqlalchemy import Column, String, DateTime, ForeignKey, Integer, Text, JSON
+from sqlalchemy import Column, String, DateTime, ForeignKey, Integer, Text, JSON, Index
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from backend.models.base import Base
@@ -22,6 +22,9 @@ class ScheduleType(str, enum.Enum):
 
 class HibernationSchedule(Base):
     __tablename__ = "hibernation_schedules"
+    __table_args__ = (
+        Index('idx_hibernation_is_active', 'is_active'),
+    )
 
     id = Column(String, primary_key=True)
     # cluster_id removed in favor of Many-to-Many relationship

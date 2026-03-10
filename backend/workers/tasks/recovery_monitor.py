@@ -110,11 +110,20 @@ def sync_instance_states(self):
                             for inst in res.get("Instances", []):
                                 aws_states[inst["InstanceId"]] = inst["State"]["Name"]
                     except Exception as e:
-                        # InvalidInstanceID.NotFound — treat missing as terminated
                         if "InvalidInstanceID" in str(e):
+                            # One or more IDs not found — re-query individually to identify which
                             for iid in batch_ids:
-                                if iid not in aws_states:
-                                    aws_states[iid] = "terminated"
+                                if iid in aws_states:
+                                    continue
+                                try:
+                                    r2 = ec2.describe_instances(InstanceIds=[iid])
+                                    for res2 in r2.get("Reservations", []):
+                                        for inst2 in res2.get("Instances", []):
+                                            aws_states[inst2["InstanceId"]] = inst2["State"]["Name"]
+                                    if iid not in aws_states:
+                                        aws_states[iid] = "terminated"  # Not returned = terminated
+                                except Exception:
+                                    aws_states[iid] = "terminated"  # Not found individually
                         else:
                             logger.warning(f"[recovery/sync] DescribeInstances failed for {cluster.name}: {e}")
 

@@ -122,9 +122,25 @@ async def register_node(req: RegisterNodeRequest):
     try:
         from backend.models.base import get_db
         from backend.models.worker_registration import WorkerRegistration
+        from backend.models.instance import Instance, InstanceLifecycle
 
         db = next(get_db())
         try:
+            # RC2 fix: resolve lifecycle from instances table when agent omits it.
+            # The agent (running inside the pod) may not always know its lifecycle;
+            # the instances table (populated by AWS discovery) is authoritative.
+            resolved_lifecycle = req.lifecycle
+            if not resolved_lifecycle and req.instance_id:
+                _inst_lc = db.query(Instance).filter(
+                    Instance.instance_id == req.instance_id
+                ).first()
+                if _inst_lc and _inst_lc.lifecycle:
+                    resolved_lifecycle = _inst_lc.lifecycle.value  # "spot" or "on-demand"
+                    logger.debug(
+                        f"[worker] Resolved lifecycle={resolved_lifecycle} for "
+                        f"{req.instance_id} from instances table"
+                    )
+
             # Upsert: update if exists, create if not
             existing = (
                 db.query(WorkerRegistration)
@@ -139,7 +155,7 @@ async def register_node(req: RegisterNodeRequest):
                 existing.instance_id = req.instance_id or existing.instance_id
                 existing.instance_type = req.instance_type or existing.instance_type
                 existing.az = req.az or existing.az
-                existing.lifecycle = req.lifecycle or existing.lifecycle
+                existing.lifecycle = resolved_lifecycle or existing.lifecycle
                 existing.status = "active"
                 existing.last_heartbeat = datetime.utcnow()
             else:
@@ -149,13 +165,50 @@ async def register_node(req: RegisterNodeRequest):
                     instance_id=req.instance_id,
                     instance_type=req.instance_type,
                     az=req.az,
-                    lifecycle=req.lifecycle,
+                    lifecycle=resolved_lifecycle,
                     status="active",
                 )
                 db.add(reg)
 
+            # RC2 fix: when the agent explicitly provides lifecycle AND instance_id,
+            # sync it back to the instances table if the record exists but has no lifecycle.
+            # This covers the window between agent start and first discovery scan.
+            if req.lifecycle and req.instance_id:
+                _lc_val = InstanceLifecycle.SPOT if req.lifecycle.lower() == "spot" else InstanceLifecycle.ON_DEMAND
+                _inst_sync = db.query(Instance).filter(
+                    Instance.instance_id == req.instance_id
+                ).first()
+                if _inst_sync:
+                    if _inst_sync.lifecycle is None:
+                        _inst_sync.lifecycle = _lc_val
+                        _inst_sync.node_name = _inst_sync.node_name or req.node_name
+                        logger.info(
+                            f"[worker] Synced lifecycle={req.lifecycle} to instances "
+                            f"table for {req.instance_id}"
+                        )
+                else:
+                    # No instance record yet — create a minimal one so node visualization
+                    # works before the discovery worker first runs.
+                    _new_inst = Instance(
+                        cluster_id=req.cluster_id,
+                        instance_id=req.instance_id,
+                        instance_type=req.instance_type,
+                        lifecycle=_lc_val,
+                        az=req.az,
+                        state="running",
+                        node_name=req.node_name,
+                    )
+                    db.add(_new_inst)
+                    logger.info(
+                        f"[worker] Pre-discovery instance record created for "
+                        f"{req.instance_id} lifecycle={req.lifecycle}"
+                    )
+
             db.commit()
-            logger.info(f"[worker] Node registered: {req.node_name} (cluster={req.cluster_id})")
+            logger.info(
+                f"[worker] Node registered: {req.node_name} "
+                f"(cluster={req.cluster_id}, lifecycle={resolved_lifecycle})"
+            )
             return {"status": "registered", "node_name": req.node_name}
 
         except Exception as e:

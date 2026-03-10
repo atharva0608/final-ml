@@ -5,7 +5,7 @@ Tracks auto-rebalancing actions triggered by:
 - Graceful: 10-minute proactive rebalancing to safer pools
 """
 
-from sqlalchemy import Column, Integer, String, DateTime, Text, func
+from sqlalchemy import Column, Integer, String, DateTime, Text, func, Index
 from sqlalchemy.dialects.postgresql import JSONB
 from backend.models.base import Base
 
@@ -14,6 +14,9 @@ class RebalancingAction(Base):
     """Auto-rebalancing action record."""
 
     __tablename__ = 'rebalancing_actions'
+    __table_args__ = (
+        Index('idx_rebalancing_cluster_status', 'cluster_id', 'status'),
+    )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     cluster_id = Column(String(100), nullable=False, index=True)

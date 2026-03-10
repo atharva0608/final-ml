@@ -747,11 +747,16 @@ def update_cluster_optimization_settings(
         raise HTTPException(status_code=404, detail="Cluster not found")
         
     # Automation Controls (partial update — only applied when section is present)
+    _diversify_just_enabled = False
     if settings.automation_controls is not None:
         if not cluster.optimization_settings:
             cluster.optimization_settings = ClusterOptimizationSettings(cluster_id=cluster_id)
+        _prev_diversify = bool(getattr(cluster.optimization_settings, 'diversify_pools', False))
         for k, v in settings.automation_controls.model_dump().items():
             setattr(cluster.optimization_settings, k, v)
+        _new_diversify = bool(getattr(cluster.optimization_settings, 'diversify_pools', False))
+        if _new_diversify and not _prev_diversify:
+            _diversify_just_enabled = True
 
     # Optimization Strategy
     if settings.optimization_strategy is not None:
@@ -775,7 +780,21 @@ def update_cluster_optimization_settings(
             setattr(cluster.stateful_rules, k, v)
         
     db.commit()
-    
+
+    # Immediate re-evaluation when Diversify Spot Pools is turned ON.
+    # Clear NodePool cooldown + global pool ranking caches so the next
+    # auto_rebalancer cycle (≤15s) re-picks diverse pools right away.
+    if _diversify_just_enabled:
+        try:
+            from backend.core.redis_client import get_redis_client as _grc_div
+            _redis_div = _grc_div()
+            _redis_div.delete(f"spot:karpenter:nodepool_updated:{cluster_id}")
+            _cluster_region = cluster.region or "ap-south-1"
+            _redis_div.delete(f"global_pool_rankings:{_cluster_region}")
+            _redis_div.delete("atharvaai:pool_rankings")
+        except Exception:
+            pass  # Non-fatal — rebalancer will pick up diversity on next natural cycle
+
     return get_cluster_optimization_settings(cluster_id=cluster_id, current_user=current_user, db=db)
 
 

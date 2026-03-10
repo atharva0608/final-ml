@@ -535,15 +535,20 @@ class ClusterService:
         # Convert to ClusterListItem schemas
         cluster_list_items = []
         for cluster in clusters:
-            # Count instances from instances table for accurate counts
-            total_instances = self.db.query(Instance).filter(Instance.cluster_id == cluster.id).count()
+            # Count only RUNNING instances — terminated/stopped nodes must not inflate totals
+            total_instances = self.db.query(Instance).filter(
+                Instance.cluster_id == cluster.id,
+                Instance.state == 'running',
+            ).count()
             spot_instances = self.db.query(Instance).filter(
                 Instance.cluster_id == cluster.id,
-                Instance.lifecycle == InstanceLifecycle.SPOT
+                Instance.lifecycle == InstanceLifecycle.SPOT,
+                Instance.state == 'running',
             ).count()
             on_demand_instances = self.db.query(Instance).filter(
                 Instance.cluster_id == cluster.id,
-                Instance.lifecycle == InstanceLifecycle.ON_DEMAND
+                Instance.lifecycle == InstanceLifecycle.ON_DEMAND,
+                Instance.state == 'running',
             ).count()
 
             cluster_list_items.append(ClusterListItem(
@@ -551,8 +556,11 @@ class ClusterService:
                 name=cluster.name,
                 region=cluster.region,
                 status=cluster.status.value,
-                node_count=total_instances or cluster.node_count or 0,
-                spot_count=spot_instances or cluster.spot_count or 0,
+                # RC7 fix: avoid stale fallback when DB clearly has data.
+                # `or` treats 0 as falsy so "0 spot instances" incorrectly fell back to
+                # the stale discovery teaser count.  Only fall back if DB found nothing at all.
+                node_count=total_instances if total_instances > 0 else (cluster.node_count or 0),
+                spot_count=spot_instances if total_instances > 0 else (cluster.spot_count or 0),
                 monthly_cost=float(cluster.monthly_cost or 0),
                 agent_installed=cluster.agent_installed == 'Y',
                 last_heartbeat=cluster.last_heartbeat,
@@ -1359,13 +1367,17 @@ echo "✅ Agent successfully deployed!"
                     if _existing.cpu_util is not None and _inst.cpu_util is None:
                         _inst.cpu_util = _existing.cpu_util
                         _inst.memory_util = _existing.memory_util
+                    # RC6 fix: also transfer lifecycle when real instance has no lifecycle set
+                    # (agent-registered placeholder may have lifecycle from heartbeat data)
+                    if _existing.lifecycle is not None and _inst.lifecycle is None:
+                        _inst.lifecycle = _existing.lifecycle
                     _seen[_key] = _inst
         instances = list(_seen.values())
 
-        # Only use pod metrics that arrived in the last 3 minutes.
-        # Daemon set reports every 1 min; 3× window gives tolerance for slow pods.
-        # No fallback to all-time historical data — show nothing if daemon set is silent.
-        cutoff_time = datetime.utcnow() - timedelta(minutes=3)
+        # RC5 fix: extend pod metrics freshness window from 3 → 10 minutes.
+        # Daemon set reports every 1 min; 10× window tolerates brief agent pauses
+        # or slow pod start-up without blanking out all utilisation data.
+        cutoff_time = datetime.utcnow() - timedelta(minutes=10)
 
         latest_subq = self.db.query(
             PodMetric.pod_name,
@@ -1439,7 +1451,13 @@ echo "✅ Agent successfully deployed!"
             for idx, inst in enumerate(instances):
                 instance_type = inst.instance_type or "Unknown"
                 lc_raw = inst.lifecycle
-                lifecycle = (lc_raw.value if hasattr(lc_raw, 'value') else str(lc_raw)).lower()
+                if lc_raw is None:
+                    lifecycle = "on-demand"
+                elif hasattr(lc_raw, 'value'):
+                    lifecycle = lc_raw.value.lower()
+                else:
+                    lc_str = str(lc_raw).lower()
+                    lifecycle = "on-demand" if lc_str in ('none', 'null', '') else lc_str
                 availability_zone = inst.az or "unknown"
                 node_cpu_capacity_cores = _VCPU_MAP.get(instance_type, 4)
                 node_memory_capacity_gb = _MEM_MAP.get(instance_type, 16)
@@ -1472,10 +1490,9 @@ echo "✅ Agent successfully deployed!"
                 except Exception:
                     pass
 
-                node_name = f"node-{idx}"
-                node_pods = []
-                if idx < len(pod_nodes_items):
-                    node_name, node_pods = pod_nodes_items[idx]
+                # Match pods by actual node_name, not by position index
+                node_name = inst.node_name or f"node-{idx}"
+                node_pods = pods_by_node.get(node_name, [])
 
                 if node_cpu_util_pct == 0 and node_pods:
                     total_cpu_millicores = sum(p['cpu_usage_millicores'] for p in node_pods if p['cpu_usage_millicores'])
@@ -1496,6 +1513,7 @@ echo "✅ Agent successfully deployed!"
                     node_classification = "MIXED"
 
                 nodes_detailed.append({
+                    "instance_id": inst.instance_id,
                     "node_name": node_name,
                     "instance_type": instance_type,
                     "lifecycle": lifecycle,

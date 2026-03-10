@@ -17,7 +17,7 @@ Statuses:
 - FAILED: Execution failed
 """
 
-from sqlalchemy import Column, String, DateTime, ForeignKey, Float, Integer, Enum as SQLEnum, JSON, Text
+from sqlalchemy import Column, String, DateTime, ForeignKey, Float, Integer, Enum as SQLEnum, JSON, Text, Index
 from sqlalchemy.orm import relationship
 from datetime import datetime
 import enum
@@ -42,6 +42,9 @@ class RightsizingProposal(Base):
     The coordinator evaluates proposals using combined EV calculation.
     """
     __tablename__ = "rightsizing_proposals"
+    __table_args__ = (
+        Index('idx_rightsizing_cluster_status', 'cluster_id', 'status'),
+    )
 
     id = Column(String, primary_key=True, default=lambda: f"rsprop_{datetime.utcnow().strftime('%Y%m%d%H%M%S%f')}")
     cluster_id = Column(String, ForeignKey("clusters.id"), nullable=False, index=True)

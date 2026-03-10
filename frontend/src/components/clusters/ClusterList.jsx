@@ -751,7 +751,7 @@ const ClusterListItem = ({ cluster, selected, onClick }) => {
         <span style={{ fontSize: 10, color: C.subtle, background: "#f0f1f3", padding: "2px 6px", borderRadius: 4 }}>
           {cluster.region}
         </span>
-        <span style={{ fontSize: 10, color: C.subtle }}>{cluster.nodes.total} nodes</span>
+        <span style={{ fontSize: 10, color: C.subtle }}>{cluster._nodeCountPending ? '…' : cluster.nodes.total} nodes</span>
         <span style={{ fontSize: 10, color: cluster.agentInstalled ? C.green : C.subtle, fontWeight: cluster.agentInstalled ? 600 : 400 }}>
           {cluster.agentInstalled ? "● Agent" : "○ No Agent"}
         </span>
@@ -1128,9 +1128,11 @@ const ClusterDetail = ({ cluster, onClose }) => {
             <div>
               <div style={{ fontSize: 11, color: C.muted, fontWeight: 500, marginBottom: 2 }}>Spot Ratio</div>
               <div style={{ fontSize: 13, fontWeight: 700, color: C.text }}>
-                {cluster.spotRatio >= 60 ? "Excellent" : cluster.spotRatio >= 30 ? "Moderate" : "Low"}
+                {cluster._nodeCountPending ? '…' : cluster.spotRatio >= 60 ? "Excellent" : cluster.spotRatio >= 30 ? "Moderate" : "Low"}
               </div>
-              <div style={{ fontSize: 11, color: C.subtle, marginTop: 3 }}>{cluster.nodes.spot} of {cluster.nodes.total} nodes spot</div>
+              <div style={{ fontSize: 11, color: C.subtle, marginTop: 3 }}>
+                {cluster._nodeCountPending ? '— of — nodes spot' : `${cluster.nodes.spot} of ${cluster.nodes.total} nodes spot`}
+              </div>
             </div>
           </div>
 
@@ -1147,7 +1149,7 @@ const ClusterDetail = ({ cluster, onClose }) => {
               { label: "On-Demand", count: cluster.nodes.onDemand, color: C.onDemandColor },
             ].map(nt => (
               <div key={nt.label} style={{ textAlign: "center" }}>
-                <div style={{ fontSize: 26, fontWeight: 800, color: C.text, letterSpacing: "-1px" }}>{nt.count}</div>
+                <div style={{ fontSize: 26, fontWeight: 800, color: C.text, letterSpacing: "-1px" }}>{nt.count === null ? '—' : nt.count}</div>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 5, marginTop: 2 }}>
                   <div style={{ width: 6, height: 6, borderRadius: "50%", background: nt.color }} />
                   <span style={{ fontSize: 11, color: C.muted }}>{nt.label}</span>
@@ -1543,7 +1545,7 @@ const NoAgentDetail = ({ cluster, onClose }) => {
       <div style={{ marginTop: 32, display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 10, width: "100%", maxWidth: 640 }}>
         <MetricBox label="Region" value={cluster.region} />
         <MetricBox label="K8s Version" value={cluster.k8sVersion} />
-        <MetricBox label="Total Nodes" value={cluster.nodes.total} />
+        <MetricBox label="Total Nodes" value={cluster._nodeCountPending ? '…' : cluster.nodes.total} />
         <MetricBox label="Est. Cost" value={`$${cluster.cost.monthly}/mo`} sub="on-demand pricing" />
         <MetricBox label="Est. Savings" value={`$${cluster.cost.potential || 0}/mo`} sub="potential" />
       </div>
@@ -1598,6 +1600,9 @@ export default function ClustersPage() {
 
   const [refreshing, setRefreshing] = useState(false);
   const [nodeDetails, setNodeDetails] = useState({});
+  // RC4 fix: track clusters whose first nodeDetails fetch is in-flight
+  // so we can show a loading indicator instead of stale summary counts.
+  const [nodeDetailsPending, setNodeDetailsPending] = useState(new Set());
   const [rightsizingData, setRightsizingData] = useState({});
 
   // Ref so the node-details interval can access the latest mappedClusters
@@ -1633,7 +1638,11 @@ export default function ClustersPage() {
   useEffect(() => {
     fetchData();
     window.addEventListener('refresh-clusters', handleRefresh);
-    return () => window.removeEventListener('refresh-clusters', handleRefresh);
+    const interval = setInterval(fetchData, 30000); // Keep agent heartbeat + cluster state fresh
+    return () => {
+      window.removeEventListener('refresh-clusters', handleRefresh);
+      clearInterval(interval);
+    };
   }, [fetchData, handleRefresh]);
 
   // Fetch rightsizing recommendations for all clusters (background, non-blocking)
@@ -1671,14 +1680,14 @@ export default function ClustersPage() {
 
       if (agentInstalled) {
         // Three-tier heartbeat freshness check:
-        //   < 45s  → healthy (agent running normally)
-        //   45s–5m → warning (degraded / slow heartbeat)
+        //   < 90s  → healthy (agent sends every 30s; allow 2 missed beats)
+        //   90s–5m → warning (degraded / slow heartbeat)
         //   > 5m   → offline (treat as no-agent; backend will auto-reset)
         if (c.last_heartbeat) {
           const lastHB = new Date(c.last_heartbeat);
           const now = Date.now();
           const ageMs = now - lastHB.getTime();
-          if (ageMs < 45 * 1000) {
+          if (ageMs < 90 * 1000) {
             agentHealthy = true;
             mappedStatus = "healthy";
           } else if (ageMs < 5 * 60 * 1000) {
@@ -1700,6 +1709,7 @@ export default function ClustersPage() {
       const totalNodes = c.node_count || 0;
       const spotNodes = c.spot_count || 0;
       const onDemandNodes = totalNodes - spotNodes;
+      // nodeListTotals will override these with accurate running counts once detailed data loads
 
       let lastSeenText = "Never";
       if (c.last_heartbeat) {
@@ -1710,6 +1720,8 @@ export default function ClustersPage() {
 
       // Get node details if available
       const clusterNodeDetails = nodeDetails[c.id];
+      // RC4 fix: is this cluster's first node-details fetch still in flight?
+      const _nodeCountPending = nodeDetailsPending.has(c.id);
       let nodeList = [];
 
       if (clusterNodeDetails && clusterNodeDetails.nodes) {
@@ -1717,13 +1729,18 @@ export default function ClustersPage() {
         nodeList = clusterNodeDetails.nodes.map((node, idx) => {
           // Calculate overall utilization (use the max of CPU and memory bottlenecks)
           const util = Math.round(Math.max(node.cpu_utilization_pct, node.memory_utilization_pct));
-          // Determine node type
-          let nodeType = "spot";
+          // Determine node type — default to on-demand when lifecycle is unknown/null
+          // (RC1 fix: previously defaulted to "spot", which caused OD nodes to appear as Spot
+          // whenever the backend returned null, "none", or any non-standard lifecycle value)
+          let nodeType = "on-demand";
           if (node._isWarmSpare) {
             nodeType = "warm-spare";
+          } else if (node.lifecycle === "spot") {
+            nodeType = "spot";
           } else if (node.lifecycle === "on-demand" || node.lifecycle === "on_demand") {
             nodeType = "on-demand";
           }
+          // null / undefined / "none" / unknown → stays "on-demand" (conservative)
 
           // Calculate age
           const ageText = "N/A"; // Could calculate from node timestamp if available
@@ -1765,13 +1782,35 @@ export default function ClustersPage() {
         agentHealthy,
         lastSeen: c.last_heartbeat ? lastSeenText : "Unknown",
         status: mappedStatus,
-        spotRatio: totalNodes > 0 ? Math.round((spotNodes / totalNodes) * 100) : 0,
-        nodes: {
-          total: totalNodes,
-          spot: spotNodes,
-          fallback: 0,
-          onDemand: onDemandNodes,
-        },
+        // If detailed node data is available, use it as the source of truth for counts.
+        // The summary API includes terminated instances in node_count; the detailed API
+        // only returns running instances which is what we want to display.
+        ...(nodeList.length > 0 ? {
+          spotRatio: Math.round((nodeList.filter(n => n.type === 'spot').length / nodeList.length) * 100),
+          nodes: {
+            total: nodeList.length,
+            spot: nodeList.filter(n => n.type === 'spot').length,
+            fallback: nodeList.filter(n => n.type === 'fallback').length,
+            onDemand: nodeList.filter(n => n.type === 'on-demand').length,
+          },
+          // RC4 fix: real data loaded — no pending flag needed
+          _nodeCountPending: false,
+        } : _nodeCountPending ? {
+          // RC4 fix: first fetch in flight — don't show stale summary counts.
+          // Render null so the UI can display a loading indicator instead.
+          spotRatio: null,
+          nodes: { total: null, spot: null, fallback: null, onDemand: null },
+          _nodeCountPending: true,
+        } : {
+          spotRatio: totalNodes > 0 ? Math.round((spotNodes / totalNodes) * 100) : 0,
+          nodes: {
+            total: totalNodes,
+            spot: spotNodes,
+            fallback: 0,
+            onDemand: onDemandNodes,
+          },
+          _nodeCountPending: false,
+        }),
         // Use real data from API if available, calculate actual usage from percentages
         cpu: { used: Math.round((c.cpu_total * Math.round(c.cpu_usage_pct))) / 100, total: c.cpu_total },
         memory: { used: Math.round((c.mem_total * Math.round(c.mem_usage_pct))) / 100, total: c.mem_total },
@@ -1793,7 +1832,7 @@ export default function ClustersPage() {
         agent_installed: c.agent_installed // Pass through for banner check
       };
     });
-  }, [clusters, nodeDetails, rightsizingData]);
+  }, [clusters, nodeDetails, nodeDetailsPending, rightsizingData]);
 
   // Keep ref in sync so the interval below always reads the latest mapped clusters
   // without triggering a re-run of the node-details effect on every render.
@@ -1805,6 +1844,15 @@ export default function ClustersPage() {
   const fetchNodeDetailsForCluster = (clusterId, clusterList) => {
     const selectedCluster = clusterList.find(c => c.id === clusterId);
     if (!selectedCluster || !selectedCluster.agentInstalled) return;
+    // RC4 fix: mark this cluster as pending ONLY on first fetch (no prior data)
+    setNodeDetailsPending(prev => {
+      if (!nodeDetails[clusterId]) {
+        const next = new Set(prev);
+        next.add(clusterId);
+        return next;
+      }
+      return prev;
+    });
     Promise.all([
       clusterAPI.getNodesDetailed(clusterId),
       clusterAPI.getWarmSpareStatus(clusterId).catch(() => null),
@@ -1835,8 +1883,12 @@ export default function ClustersPage() {
         data.nodes = [...(data.nodes || []), spareNode];
       }
       setNodeDetails(prev => ({ ...prev, [clusterId]: data }));
+      // RC4 fix: clear pending flag once real data has arrived
+      setNodeDetailsPending(prev => { const next = new Set(prev); next.delete(clusterId); return next; });
     }).catch((err) => {
       console.error('Failed to fetch node details:', err);
+      // Clear pending on error too so we don't show spinner forever
+      setNodeDetailsPending(prev => { const next = new Set(prev); next.delete(clusterId); return next; });
     });
   };
 
@@ -1847,9 +1899,17 @@ export default function ClustersPage() {
     fetchNodeDetailsForCluster(selected, mappedClustersRef.current);
     const interval = setInterval(() => {
       fetchNodeDetailsForCluster(selected, mappedClustersRef.current);
-    }, 60000); // 60s — daemon set now reports every 1 min
+    }, 15000); // 15s — real-time metrics polling
     return () => clearInterval(interval);
   }, [selected]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Re-fetch node details when clusters reload (e.g. after Refresh clears nodeDetails)
+  useEffect(() => {
+    if (!selected || clusters.length === 0) return;
+    if (!nodeDetails[selected]) {
+      fetchNodeDetailsForCluster(selected, mappedClustersRef.current);
+    }
+  }, [clusters, selected]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const filtered = useMemo(() =>
     mappedClusters.filter(c => {
@@ -1871,8 +1931,9 @@ export default function ClustersPage() {
   const cluster = filtered.find(c => c.id === selected) || mappedClusters[0] || null;
 
   // Summary stats for top bar
-  const totalNodes = mappedClusters.reduce((s, c) => s + c.nodes.total, 0);
-  const totalSpot = mappedClusters.reduce((s, c) => s + c.nodes.spot, 0);
+  // RC4 fix: null-safe reduce — pending clusters contribute 0 to the top-bar total
+  const totalNodes = mappedClusters.reduce((s, c) => s + (c.nodes.total ?? 0), 0);
+  const totalSpot = mappedClusters.reduce((s, c) => s + (c.nodes.spot ?? 0), 0);
   const totalCost = mappedClusters.reduce((s, c) => s + c.cost.monthly, 0);
   const totalSavings = mappedClusters.reduce((s, c) => s + c.cost.savings, 0);
   const withAgent = mappedClusters.filter(c => c.agentInstalled).length;

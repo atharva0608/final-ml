@@ -25,7 +25,6 @@ from backend.models.platform_settings import PlatformSettings
 from backend.models.organization import Organization
 from backend.models.rds_analysis import RDSInstanceAnalysis
 from backend.models.savings_plan_utilization import SavingsPlanUtilization
-from backend.models.savings_plan_utilization import SavingsPlanUtilization
 from backend.models.transfer_analysis import DataTransferAnalysis
 from backend.models.onboarding import OnboardingState
 

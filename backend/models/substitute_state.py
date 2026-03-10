@@ -6,7 +6,7 @@ Tracks substitute node state for safety fallback management.
 State machine: IDLE → PREWARMING → READY → ACTIVE → RELEASING → IDLE
 """
 
-from sqlalchemy import Column, String, DateTime, ForeignKey, Float
+from sqlalchemy import Column, String, DateTime, ForeignKey, Float, Index
 from datetime import datetime
 from backend.models.base import Base
 import uuid
@@ -18,6 +18,9 @@ def generate_uuid():
 
 class SubstituteState(Base):
     __tablename__ = "substitute_states"
+    __table_args__ = (
+        Index('idx_substitute_cluster_status', 'cluster_id', 'status'),
+    )
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
     cluster_id = Column(String(36), ForeignKey("clusters.id"), nullable=False, index=True)
