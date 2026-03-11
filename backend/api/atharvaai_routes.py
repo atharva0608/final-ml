@@ -393,12 +393,11 @@ def check_blacklisted_pool(
     Returns blacklisted status, risk score, reason, and TTL.
     Used by Right-Sizing to validate recommendations before showing to user.
     """
-    import redis
     import json
-    from backend.core.config import settings
 
     try:
-        r = redis.Redis.from_url(settings.REDIS_URL, decode_responses=True)
+        # Issue 16 fix: use shared connection pool instead of creating a new connection
+        r = get_redis_client()
         pool_key = f"{instance_type}:{az}"
 
         # Check if in risky_pools set
@@ -1560,7 +1559,10 @@ async def get_cluster_impact(
     from backend.services.dynamic_instance_helpers import bulk_get_hourly_prices
     from backend.core.redis_client import get_redis_client
 
-    instances = db.query(Instance).filter(Instance.cluster_id == cluster_id).all()
+    instances = db.query(Instance).filter(
+        Instance.cluster_id == cluster_id,
+        Instance.state.in_(['running', 'pending']),
+    ).all()
 
     _impact_nodes = [
         {

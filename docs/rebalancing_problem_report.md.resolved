@@ -1,0 +1,232 @@
+# Rebalancing System — Problem Report
+
+> Full codebase scan of the auto-rebalancing pipeline: backend logic, AWS integration, and UI.
+> **Files Scanned**: 8 files, ~5,000 lines of code.
+
+---
+
+## 🔴 Critical Issues
+
+### 1. Karpenter Timeout Allows Drain Without Replacement
+
+**File**: [auto_rebalancer.py](file:///Users/atharvapudale/Desktop/backend-ecc/Atharva%20Repo/github/final-ml/backend/workers/tasks/auto_rebalancer.py#L1443-L1449)
+
+When `_wa_karpenter_active = True` and the 30-minute spot wait times out **without** a new spot node joining, the code proceeds to create Phase 2 actions (CORDON → DRAIN → TERMINATE) anyway:
+
+```python
+elif _spot_wait_elapsed >= _SPOT_WAIT_TIMEOUT_S and _wa_karpenter_active:
+    # Proceeds with drain (Karpenter should provision after)
+```
+
+**Impact**: If Karpenter can't provision (quota limits, no capacity), the OD node is drained and terminated with **no replacement**, causing workload downtime.
+
+---
+
+### 2. ASG Left Suspended on Unhandled Exceptions
+
+**File**: [auto_rebalancer.py](file:///Users/atharvapudale/Desktop/backend-ecc/Atharva%20Repo/github/final-ml/backend/workers/tasks/auto_rebalancer.py#L906-L912)
+
+The outer `except Exception` at L906 catches all errors and marks the action failed, but **does not call `resume_asg_processes()`**. If the ASG was suspended at L624 and any exception occurs before the post-terminate resume at L1852, the ASG stays frozen indefinitely.
+
+```python
+except Exception as e:
+    action.status = 'failed'   # ← ASG still suspended!
+    action.error_message = str(e)
+    db.commit()
+```
+
+**Impact**: Frozen ASG prevents the cluster from auto-scaling or self-healing.
+
+---
+
+### 3. `_newest_spot` Variable Used Outside Its Scope
+
+**File**: [auto_rebalancer.py](file:///Users/atharvapudale/Desktop/backend-ecc/Atharva%20Repo/github/final-ml/backend/workers/tasks/auto_rebalancer.py#L1910)
+
+```python
+_replacement_node_name = _wa_meta.get('replacement_node_name') or (
+    _newest_spot.node_name if '_newest_spot' in dir() and _newest_spot else None
+)
+```
+
+Uses `'_newest_spot' in dir()` as a presence check — this is unreliable. If the variable was defined in a different scope iteration, it may hold stale data from a **previous** [_wa](file:///Users/atharvapudale/Desktop/backend-ecc/Atharva%20Repo/github/final-ml/backend/services/execution_controller.py#330-337) action.
+
+**Impact**: Wrong node gets the `do-not-disrupt` annotation removed, allowing Karpenter to terminate the actual replacement.
+
+---
+
+## 🟠 High Priority Issues
+
+### 4. Hardcoded `pods_migrated = 3`
+
+**File**: [auto_rebalancer.py](file:///Users/atharvapudale/Desktop/backend-ecc/Atharva%20Repo/github/final-ml/backend/workers/tasks/auto_rebalancer.py#L879)
+
+```python
+action.pods_migrated = 3  # Always reports 3
+```
+
+The actual pod count is never read from drain results or K8s. UI and audit logs always show "3 pods migrated" regardless of reality.
+
+---
+
+### 5. Hardcoded Price `0.096` for New Instances
+
+**File**: [auto_rebalancer.py L172](file:///Users/atharvapudale/Desktop/backend-ecc/Atharva%20Repo/github/final-ml/backend/workers/tasks/auto_rebalancer.py#L172) and [L1061](file:///Users/atharvapudale/Desktop/backend-ecc/Atharva%20Repo/github/final-ml/backend/workers/tasks/auto_rebalancer.py#L1061)
+
+When creating Instance records (both in [_sync_instance_state_from_aws](file:///Users/atharvapudale/Desktop/backend-ecc/Atharva%20Repo/github/final-ml/backend/workers/tasks/auto_rebalancer.py#31-264) and [_seed_instances_from_redis](file:///Users/atharvapudale/Desktop/backend-ecc/Atharva%20Repo/github/final-ml/backend/workers/tasks/auto_rebalancer.py#980-1090)):
+```python
+price=0.096,  # hardcoded
+```
+
+**Impact**: Cost calculations, savings reports, and ROI dashboards are inaccurate.
+
+---
+
+### 6. Instance ID Truncated to 20 Chars
+
+**File**: [auto_rebalancer.py](file:///Users/atharvapudale/Desktop/backend-ecc/Atharva%20Repo/github/final-ml/backend/workers/tasks/auto_rebalancer.py#L163)
+
+```python
+safe_iid = aws_iid[:20]  # AWS instance IDs are 19 chars (i-xxxxxxxxxxxxxxxxx)
+```
+
+The `Instance.instance_id` column is `VARCHAR(20)` — a database constraint that should be widened instead.
+
+---
+
+### 7. No Spot Max-Price Cap on Direct Launch
+
+**File**: [auto_rebalancer.py](file:///Users/atharvapudale/Desktop/backend-ecc/Atharva%20Repo/github/final-ml/backend/workers/tasks/auto_rebalancer.py#L393-L396)
+
+```python
+"SpotOptions": {"SpotInstanceType": "one-time"},
+# No MaxPrice set
+```
+
+Without `MaxPrice`, AWS charges up to the OD price during spot price spikes.
+
+---
+
+### 8. `step_6_optimization_complete` Only Set on Success Path
+
+**File**: [auto_rebalancer.py](file:///Users/atharvapudale/Desktop/backend-ecc/Atharva%20Repo/github/final-ml/backend/workers/tasks/auto_rebalancer.py#L1903-L1904)
+
+The UI timeline has 6 steps, but `step_6` is only set on `completed` status. Failed actions show an incomplete timeline with no final indicator.
+
+---
+
+## 🟡 Medium Priority Issues
+
+### 9. UI Step Data Read From Top-Level Response Fields
+
+**File**: [RebalancingTimeline.jsx L242](file:///Users/atharvapudale/Desktop/backend-ecc/Atharva%20Repo/github/final-ml/frontend/src/components/atharvaai/RebalancingTimeline.jsx#L242)
+
+```jsx
+const done = Boolean(action[step.key]);
+```
+
+The API serializes step timestamps from `action_metadata` into top-level response fields. If any step key is null/missing, the timeline silently shows empty dots with no error indication.
+
+---
+
+### 10. [trigger_graceful_rebalancing()](file:///Users/atharvapudale/Desktop/backend-ecc/Atharva%20Repo/github/final-ml/backend/workers/tasks/auto_rebalancer.py#914-978) Doesn't Set `instance_id` in Metadata
+
+**File**: [auto_rebalancer.py L914-L977](file:///Users/atharvapudale/Desktop/backend-ecc/Atharva%20Repo/github/final-ml/backend/workers/tasks/auto_rebalancer.py#L914-L977)
+
+Creates a [RebalancingAction](file:///Users/atharvapudale/Desktop/backend-ecc/Atharva%20Repo/github/final-ml/backend/models/rebalancing_action.py#13-38) with `status='in_progress'` but `action_metadata` only has `reason` and `initiated_by` — no `instance_id`. The execution path requires `instance_id` to identify which node to drain.
+
+---
+
+### 11. Duplicate AWS Credential Resolution (6× Copy-Paste)
+
+**Files**: [auto_rebalancer.py](file:///Users/atharvapudale/Desktop/backend-ecc/Atharva%20Repo/github/final-ml/backend/workers/tasks/auto_rebalancer.py) L38-48, L284-301, L1722-1733; [emergency_rebalancer.py](file:///Users/atharvapudale/Desktop/backend-ecc/Atharva%20Repo/github/final-ml/backend/workers/tasks/emergency_rebalancer.py); [execution_controller.py](file:///Users/atharvapudale/Desktop/backend-ecc/Atharva%20Repo/github/final-ml/backend/services/execution_controller.py)
+
+The STS assume-role pattern is duplicated ~6 times with slightly different variable names and error handling. Should be extracted to a shared helper.
+
+---
+
+### 12. JSONB `contains()` Queries Are PostgreSQL-Specific
+
+**File**: [auto_rebalancer.py L1231](file:///Users/atharvapudale/Desktop/backend-ecc/Atharva%20Repo/github/final-ml/backend/workers/tasks/auto_rebalancer.py#L1231)
+
+```python
+_AA0.payload.contains({"rebalancing_action_id": _wa.id})
+```
+
+Relies on PostgreSQL's `@>` JSONB operator. Will break on other databases.
+
+---
+
+### 13. `redis.keys()` Pattern Scan in Production Code
+
+**File**: [auto_rebalancer.py L1015](file:///Users/atharvapudale/Desktop/backend-ecc/Atharva%20Repo/github/final-ml/backend/workers/tasks/auto_rebalancer.py#L1015)
+
+```python
+_keys = _redis.keys(_pattern)  # O(N) scan, blocks Redis
+```
+
+Should use `SCAN` iterator for production safety.
+
+---
+
+### 14. [ExecutionController](file:///Users/atharvapudale/Desktop/backend-ecc/Atharva%20Repo/github/final-ml/backend/services/execution_controller.py#75-360) Adapter Methods Are Stubs
+
+**File**: [execution_controller.py L302-L359](file:///Users/atharvapudale/Desktop/backend-ecc/Atharva%20Repo/github/final-ml/backend/services/execution_controller.py#L302-L359)
+
+All methods ([_drain_node](file:///Users/atharvapudale/Desktop/backend-ecc/Atharva%20Repo/github/final-ml/backend/services/execution_controller.py#338-343), [_terminate_node](file:///Users/atharvapudale/Desktop/backend-ecc/Atharva%20Repo/github/final-ml/backend/services/execution_controller.py#355-360), etc.) call `self.k8s_client` or `self.aws_client` without null checks. Default is `None` → `AttributeError`.
+
+---
+
+### 15. [AutoRebalanceAuditCard](file:///Users/atharvapudale/Desktop/backend-ecc/Atharva%20Repo/github/final-ml/frontend/src/components/atharvaai/AutoRebalanceAuditCard.jsx#6-257) Missing `deferred` Status Badge
+
+**File**: [AutoRebalanceAuditCard.jsx L111-L140](file:///Users/atharvapudale/Desktop/backend-ecc/Atharva%20Repo/github/final-ml/frontend/src/components/atharvaai/AutoRebalanceAuditCard.jsx#L111-L140)
+
+[getStatusBadge()](file:///Users/atharvapudale/Desktop/backend-ecc/Atharva%20Repo/github/final-ml/frontend/src/components/atharvaai/AutoRebalanceAuditCard.jsx#111-141) has no case for `"deferred"` — a valid backend status. Deferred actions render with default/fallback styling.
+
+---
+
+### 16. Separate Redis Connection in `/blacklist/check`
+
+**File**: [atharvaai_routes.py L396-L401](file:///Users/atharvapudale/Desktop/backend-ecc/Atharva%20Repo/github/final-ml/backend/api/atharvaai_routes.py#L396-L401)
+
+Creates its own `redis.Redis.from_url()` instead of using the shared `get_redis_client()` pool.
+
+---
+
+## 🟢 Low / Informational
+
+### 17. Hardcoded `architecture='amd64'` on Seeded Instances
+
+**File**: [auto_rebalancer.py L1070](file:///Users/atharvapudale/Desktop/backend-ecc/Atharva%20Repo/github/final-ml/backend/workers/tasks/auto_rebalancer.py#L1070) — Graviton (arm64) instances wrongly classified.
+
+### 18. Non-Deterministic [_infer_type()](file:///Users/atharvapudale/Desktop/backend-ecc/Atharva%20Repo/github/final-ml/backend/workers/tasks/auto_rebalancer.py#1004-1011) Mapping
+
+**File**: [auto_rebalancer.py L996-L1010](file:///Users/atharvapudale/Desktop/backend-ecc/Atharva%20Repo/github/final-ml/backend/workers/tasks/auto_rebalancer.py#L996-L1010) — Both `t3.large` and `m5.large` match [(2, 8.0)](file:///Users/atharvapudale/Desktop/backend-ecc/Atharva%20Repo/github/final-ml/backend/models/base.py#35-48).
+
+### 19. Timeline Polls Every 15s Even When Idle
+
+**File**: [RebalancingTimeline.jsx L93](file:///Users/atharvapudale/Desktop/backend-ecc/Atharva%20Repo/github/final-ml/frontend/src/components/atharvaai/RebalancingTimeline.jsx#L93) — Should back off to 60s+ when no active migrations.
+
+### 20. Child Table FKs Still Use `String` Without Length
+
+**File**: [cluster.py L131, L160, L174, L190](file:///Users/atharvapudale/Desktop/backend-ecc/Atharva%20Repo/github/final-ml/backend/models/cluster.py#L131) — [ClusterOptimizationSettings](file:///Users/atharvapudale/Desktop/backend-ecc/Atharva%20Repo/github/final-ml/backend/models/cluster.py#129-157), [OptimizationStrategy](file:///Users/atharvapudale/Desktop/backend-ecc/Atharva%20Repo/github/final-ml/backend/models/cluster.py#158-171), [StatelessRuntimeRules](file:///Users/atharvapudale/Desktop/backend-ecc/Atharva%20Repo/github/final-ml/backend/models/cluster.py#172-187), [StatefulRules](file:///Users/atharvapudale/Desktop/backend-ecc/Atharva%20Repo/github/final-ml/backend/models/cluster.py#188-199) use bare `String`.
+
+### 21. Misleading Error for Direct EC2 Timeout
+
+**File**: [auto_rebalancer.py L1459-L1461](file:///Users/atharvapudale/Desktop/backend-ecc/Atharva%20Repo/github/final-ml/backend/workers/tasks/auto_rebalancer.py#L1459-L1461) — Says "Install Karpenter" even when the direct EC2 launch was used.
+
+### 22. Emergency Rebalancer `instance_id` Parameter Ambiguity
+
+**File**: [emergency_rebalancer.py L25-L30](file:///Users/atharvapudale/Desktop/backend-ecc/Atharva%20Repo/github/final-ml/backend/workers/tasks/emergency_rebalancer.py#L25-L30) — Callers may pass DB PK or AWS EC2 ID.
+
+---
+
+## Summary
+
+| Priority | Count | Key Theme |
+|----------|-------|-----------|
+| 🔴 Critical | 3 | Drain without replacement, frozen ASG, stale variable scope |
+| 🟠 High | 5 | Hardcoded values, no spot price cap, incomplete UI timeline |
+| 🟡 Medium | 8 | Code duplication, stubs, PostgreSQL dependency, Redis anti-pattern |
+| 🟢 Low | 6 | Architecture assumptions, minor FK inconsistencies, polling waste |
+| **Total** | **22** | |

@@ -169,7 +169,7 @@ def _sync_instance_state_from_aws(db: Session, cluster: Cluster):
                         instance_type=aws_itype or "t3.medium",
                         lifecycle=real_lifecycle,
                         az=aws_az or f"{cluster.region or 'ap-south-1'}a",
-                        price=0.096,
+                        price=0.0,  # real price populated by pricing_collector worker
                         state='running',
                         status='READY',
                         architecture='amd64',
@@ -374,12 +374,22 @@ def _launch_spot_instance_direct(
         # Try each instance type in priority order; skip on capacity errors
         for _itype in (target_instance_types or ["t3.medium"])[:6]:
             try:
+                # Use NetworkInterfaces instead of top-level SubnetId/SecurityGroupIds
+                # so we can explicitly set AssociatePublicIpAddress=False.
+                # EKS worker nodes must use private IPs only — they communicate via
+                # VPC CNI and should never be reachable from the internet directly.
+                # Using top-level SubnetId inherits the subnet's MapPublicIpOnLaunch
+                # setting (True for public subnets), assigning a spurious public IP.
                 _run_kwargs = {
-                    "ImageId":       _ami_id,
-                    "InstanceType":  _itype,
+                    "ImageId":      _ami_id,
+                    "InstanceType": _itype,
                     "MinCount": 1, "MaxCount": 1,
-                    "SubnetId":      _target_subnet,
-                    "SecurityGroupIds": _sg_ids,
+                    "NetworkInterfaces": [{
+                        "DeviceIndex": 0,
+                        "SubnetId": _target_subnet,
+                        "Groups": _sg_ids,
+                        "AssociatePublicIpAddress": False,
+                    }],
                     "InstanceMarketOptions": {
                         "MarketType": "spot",
                         "SpotOptions": {"SpotInstanceType": "one-time"},
@@ -866,7 +876,25 @@ def execute_rebalancing_action(db: Session, action: RebalancingAction):
             # when all 4 associated AgentActions reach COMPLETED/FAILED status.
             action.status = 'waiting_agent'
             action.nodes_affected = 1
-            action.pods_migrated = 3
+            # Issue 4 fix: count real pods from pod_metrics instead of hardcoded 3.
+            # Phase 2 hasn't run yet so this is a pre-drain estimate; updated to 0 if no data.
+            try:
+                from backend.models.pod_metric import PodMetric
+                _target_node_inst = db.query(Instance).filter(
+                    Instance.instance_id == instance_id_for_action
+                ).first()
+                _target_node_name = _target_node_inst.node_name if _target_node_inst else None
+                if _target_node_name:
+                    from datetime import timedelta
+                    _recent_cutoff = datetime.utcnow() - timedelta(minutes=10)
+                    action.pods_migrated = db.query(PodMetric.pod_name).filter(
+                        PodMetric.node_name == _target_node_name,
+                        PodMetric.timestamp >= _recent_cutoff,
+                    ).distinct().count()
+                else:
+                    action.pods_migrated = 0
+            except Exception:
+                action.pods_migrated = 0
             # Persist ASG state for Phase 2 resume
             _meta_update = dict(action.action_metadata or {})
             if _asg_name_used:
@@ -895,6 +923,26 @@ def execute_rebalancing_action(db: Session, action: RebalancingAction):
 
         except Exception as e:
             logger.error(f"Failed to execute rebalancing action {action.id}: {e}")
+            # Resume ASG if it was suspended before the exception.
+            # action_metadata is committed immediately after ASG suspend, so we can read it here.
+            _err_meta = dict(action.action_metadata or {})
+            if _err_meta.get('asg_suspended') and _err_meta.get('asg_name_used'):
+                try:
+                    from backend.utils.aws.asg import resume_asg_processes as _rasp_err
+                    from backend.utils.aws.asg import get_assumed_credentials as _gac_err
+                    from backend.models.system_config import SystemConfig as _SC_err
+                    _cl_err = db.query(Cluster).filter(Cluster.id == action.cluster_id).first()
+                    if _cl_err:
+                        _rgn_err = _cl_err.region or "ap-south-1"
+                        _pk_err = db.query(_SC_err).filter(_SC_err.key == "PLATFORM_AWS_ACCESS_KEY").first()
+                        _ps_err = db.query(_SC_err).filter(_SC_err.key == "PLATFORM_AWS_SECRET").first()
+                        if _pk_err and _ps_err:
+                            _base_err = {"aws_access_key_id": _pk_err.value, "aws_secret_access_key": _ps_err.value}
+                            _creds_err = _gac_err(_cl_err.aws_role_arn, _rgn_err, **_base_err) if _cl_err.aws_role_arn else _base_err
+                            _rasp_err(_err_meta['asg_name_used'], _rgn_err, _creds_err)
+                            logger.info(f"[auto_rebalancer] Resumed ASG '{_err_meta['asg_name_used']}' after exception on action {action.id}")
+                except Exception as _asg_resume_err:
+                    logger.error(f"[auto_rebalancer] Failed to resume ASG '{_err_meta.get('asg_name_used')}' after exception: {_asg_resume_err}")
             action.status = 'failed'
             action.completed_at = datetime.utcnow()
             action.duration_seconds = int((action.completed_at - action.started_at).total_seconds()) if action.started_at else 0
@@ -905,7 +953,8 @@ def trigger_graceful_rebalancing(
     cluster_id: str,
     source_pool: str,
     target_pool: str,
-    reason: str = "proactive_optimization"
+    reason: str = "proactive_optimization",
+    instance_id: str = None,
 ) -> Dict:
     """
     Triggers graceful rebalancing (10 minutes) for a cluster.
@@ -937,7 +986,8 @@ def trigger_graceful_rebalancing(
             started_at=datetime.utcnow(),
             action_metadata={
                 'reason': reason,
-                'initiated_by': 'system'
+                'initiated_by': 'system',
+                **({"instance_id": instance_id} if instance_id else {}),
             }
         )
 
@@ -1002,7 +1052,8 @@ def _seed_instances_from_redis(db: Session, cluster) -> list:
     _redis = _grc()
     _pattern = f"metrics:node:{cluster.id}:*"
     try:
-        _keys = _redis.keys(_pattern)
+        # Issue 13 fix: use scan_iter instead of keys() — avoids O(N) blocking scan
+        _keys = list(_redis.scan_iter(_pattern))
     except Exception:
         return []
 
@@ -1048,7 +1099,7 @@ def _seed_instances_from_redis(db: Session, cluster) -> list:
                 instance_type=itype,
                 lifecycle=InstanceLifecycle.ON_DEMAND,
                 az=f"{cluster.region or 'ap-south-1'}a",
-                price=0.096,
+                price=0.0,  # real price populated by pricing_collector worker
                 cpu_util=round(
                     _data.get('cpu_usage_millicores', 0) / max(cpu_mc, 1) * 100, 1
                 ),
@@ -1342,6 +1393,11 @@ def execute_rebalancing():
                             if _newest_spot.instance_id and not _wa_meta.get('replacement_spot_instance_id'):
                                 _wa_meta['replacement_spot_instance_id'] = _newest_spot.instance_id
                                 _wa.action_metadata = _wa_meta
+                            # Issue 3 fix: store node_name in metadata so we don't rely on
+                            # _newest_spot variable which may hold stale data from a prior loop iteration
+                            if _newest_spot.node_name and not _wa_meta.get('replacement_spot_node_name'):
+                                _wa_meta['replacement_spot_node_name'] = _newest_spot.node_name
+                                _wa.action_metadata = _wa_meta
                         elif _spot_age_s >= _SPOT_STABILIZE_S and not _newest_spot.node_name:
                             logger.debug(
                                 f"[auto_rebalancer] Action {_wa.id}: new spot EC2 up "
@@ -1405,10 +1461,11 @@ def execute_rebalancing():
                             # onto it.  The annotation is removed after Phase 2 completes.
                             if _newest_spot and _newest_spot.node_name:
                                 try:
-                                    _kp_annotate = AgentAction(
+                                    from backend.models.agent_action import AgentAction as _AA_ANN, AgentActionType as _AAT_ANN, AgentActionStatus as _AAS_ANN
+                                    _kp_annotate = _AA_ANN(
                                         cluster_id=_wa.cluster_id,
-                                        action_type=AgentActionType.LABEL_NODE,
-                                        status=AgentActionStatus.PENDING,
+                                        action_type=_AAT_ANN.LABEL_NODE,
+                                        status=_AAS_ANN.PENDING,
                                         payload={
                                             "node_name": _newest_spot.node_name,
                                             "labels": {},
@@ -1431,10 +1488,37 @@ def execute_rebalancing():
                                     )
                         elif _spot_wait_elapsed >= _SPOT_WAIT_TIMEOUT_S and _wa_karpenter_active:
                             # Karpenter timeout: Karpenter was supposed to provision but didn't.
-                            # Proceed anyway since Karpenter may provision after drain frees capacity.
+                            # Safety check: only proceed if other nodes exist to absorb workloads.
+                            # Draining without any running replacement onto a single-node cluster
+                            # causes guaranteed downtime — fail cleanly instead.
+                            _other_running = db.query(Instance).filter(
+                                Instance.cluster_id == _wa.cluster_id,
+                                Instance.state == 'running',
+                                Instance.instance_id != _wa_instance_id,
+                            ).count()
+                            if _other_running == 0:
+                                logger.error(
+                                    f"[auto_rebalancer] Action {_wa.id}: Karpenter timeout AND "
+                                    f"no other nodes in cluster — refusing to drain last node "
+                                    f"without a replacement."
+                                )
+                                _wa.status = 'failed'
+                                _wa.error_message = (
+                                    "Karpenter spot provisioning timed out and no other cluster "
+                                    "nodes exist. Drain aborted to prevent workload downtime. "
+                                    "Check Karpenter logs and EC2 spot capacity for this region."
+                                )
+                                _wa.completed_at = datetime.utcnow()
+                                _wa.duration_seconds = int(
+                                    (_wa.completed_at - _wa.started_at).total_seconds()
+                                ) if _wa.started_at else 0
+                                db.commit()
+                                continue
+                            # Other nodes exist — pods can reschedule if Karpenter doesn't provision.
                             logger.warning(
                                 f"[auto_rebalancer] Action {_wa.id}: Karpenter spot wait timeout "
-                                f"({int(_spot_wait_elapsed)}s). Proceeding with drain (Karpenter should provision after)."
+                                f"({int(_spot_wait_elapsed)}s) but {_other_running} other node(s) "
+                                f"available. Proceeding with drain — Karpenter should provision after."
                             )
                         elif _spot_wait_elapsed >= _SPOT_WAIT_TIMEOUT_S and not _wa_karpenter_active:
                             # No Karpenter + no spot node = nothing will ever provision a replacement.
@@ -1447,7 +1531,8 @@ def execute_rebalancing():
                             _wa.status = 'failed'
                             _wa.error_message = (
                                 "Spot wait timeout: no replacement spot node joined the cluster. "
-                                "Install Karpenter to enable automatic spot provisioning."
+                                "Check spot capacity availability in this region/AZ, or enable "
+                                "Karpenter for automatic spot provisioning with fallback logic."
                             )
                             _wa.completed_at = datetime.utcnow()
                             _wa.duration_seconds = int(
@@ -1874,6 +1959,9 @@ def execute_rebalancing():
                 )
                 if _failed > 0:
                     _wa_meta['current_step'] = 'failed'
+                    # Issue 8b fix: always set step_6 timestamp so UI timeline shows final marker
+                    # even for failed actions (prevents incomplete/empty timeline dots)
+                    _wa_meta['step_6_optimization_complete'] = datetime.utcnow().isoformat()
                     _wa.error_message = f"{_failed} agent action(s) failed"
                     # Clear per-instance cooldown on failure so the rebalancer can retry.
                     # The cooldown is set at queue time (to prevent in-flight re-targeting),
@@ -1895,15 +1983,19 @@ def execute_rebalancing():
                     # ── POST-SUCCESS: Remove do-not-disrupt from replacement node ──
                     # The replacement node is now the primary; it should participate
                     # in Karpenter consolidation normally going forward.
-                    _replacement_node_name = _wa_meta.get('replacement_node_name') or (
-                        _newest_spot.node_name if '_newest_spot' in dir() and _newest_spot else None
+                    # Issue 3 fix: read from metadata (set when spot joined) instead of
+                    # _newest_spot variable which is unreliable across loop iterations.
+                    _replacement_node_name = (
+                        _wa_meta.get('replacement_node_name') or
+                        _wa_meta.get('replacement_spot_node_name')
                     )
                     if _replacement_node_name:
                         try:
-                            _kp_deprotect = AgentAction(
+                            from backend.models.agent_action import AgentAction as _AA_DP, AgentActionType as _AAT_DP, AgentActionStatus as _AAS_DP
+                            _kp_deprotect = _AA_DP(
                                 cluster_id=_wa.cluster_id,
-                                action_type=AgentActionType.LABEL_NODE,
-                                status=AgentActionStatus.PENDING,
+                                action_type=_AAT_DP.LABEL_NODE,
+                                status=_AAS_DP.PENDING,
                                 payload={
                                     "node_name": _replacement_node_name,
                                     "labels": {},
@@ -2158,7 +2250,7 @@ def execute_rebalancing():
                 ).first()
                 if _sb_settings and getattr(_sb_settings, "maintain_standby", False):
                     from backend.services.substitute_manager import SubstituteManager
-                    _sb_mgr = SubstituteManager(cluster.id, db, _redis)
+                    _sb_mgr = SubstituteManager(db, _redis)
                     _sb_status = _sb_mgr.get_substitute_status(cluster.id)
                     _sb_active = (
                         _sb_status.get("is_warm_spare") or
@@ -2283,7 +2375,8 @@ def execute_rebalancing():
                                 f"for {cluster.name}: {_ln_err}"
                             )
                     else:
-                        _pending_id = (_redis.get(_provision_key) or b"").decode() if _redis else ""
+                        _pv = _redis.get(_provision_key) if _redis else None
+                        _pending_id = (_pv.decode() if isinstance(_pv, bytes) else (_pv or ""))
                         logger.info(
                             f"[auto_rebalancer] Cluster {cluster.name}: only {_total_nodes} total / "
                             f"{_od_count} OD node(s) — spot provision already requested "
@@ -2852,6 +2945,26 @@ def execute_rebalancing():
                                 _family_counts[_fam] = _family_counts.get(_fam, 0) + 1
                             if _ri.az:
                                 _az_counts[_ri.az] = _az_counts.get(_ri.az, 0) + 1
+
+                        # Also count instance types being provisioned by in-flight actions
+                        # (waiting_agent / in_progress) to prevent duplicate pool launches
+                        # while the first replacement node is still joining the cluster.
+                        try:
+                            _inflight_actions = db.query(RebalancingAction).filter(
+                                RebalancingAction.cluster_id == cluster.id,
+                                RebalancingAction.status.in_(['pending', 'in_progress', 'waiting_agent']),
+                            ).all()
+                            for _ia in _inflight_actions:
+                                _ia_type = _ia.target_instance_type
+                                _ia_az = _ia.target_az
+                                if _ia_type:
+                                    _ia_fam = _ia_type.split('.')[0]
+                                    _family_counts[_ia_fam] = _family_counts.get(_ia_fam, 0) + 1
+                                    _total_nodes += 1
+                                if _ia_az:
+                                    _az_counts[_ia_az] = _az_counts.get(_ia_az, 0) + 1
+                        except Exception as _div_ia_err:
+                            logger.debug(f"[auto_rebalancer] In-flight action count failed: {_div_ia_err}")
 
                         _diversified = []
                         for _rp in _ranked:

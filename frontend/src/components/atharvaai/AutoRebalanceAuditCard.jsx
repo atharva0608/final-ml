@@ -134,6 +134,18 @@ const AutoRebalanceAuditCard = ({ clusterId, initialEnabled = false }) => {
                         <FiClock className="w-2 h-2" /> Awaiting Approval
                     </span>
                 );
+            case 'deferred':
+                return (
+                    <span className="px-1.5 py-0.5 bg-gray-50 text-gray-500 text-[10px] rounded border border-gray-200 flex items-center gap-1">
+                        <FiClock className="w-2 h-2" /> Deferred
+                    </span>
+                );
+            case 'waiting_agent':
+                return (
+                    <span className="px-1.5 py-0.5 bg-purple-50 text-purple-600 text-[10px] rounded border border-purple-200 flex items-center gap-1">
+                        <FiActivity className="w-2 h-2 animate-pulse" /> Waiting
+                    </span>
+                );
             default:
                 return null;
         }

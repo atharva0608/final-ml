@@ -723,9 +723,10 @@ def get_karpenter_stats(
     # Calculate realized savings (current spot instances)
     total_realized_savings = sum(c.realized_savings_monthly or 0 for c in clusters)
 
-    # Calculate average CPU utilization from instances
+    # Calculate average CPU utilization from RUNNING instances only
     instances = db.query(Instance).filter(
-        Instance.cluster_id.in_([c.id for c in clusters])
+        Instance.cluster_id.in_([c.id for c in clusters]),
+        Instance.state.in_(['running', 'pending']),
     ).all() if clusters else []
 
     avg_cpu = round(sum(i.cpu_util or 0 for i in instances) / len(instances) if instances else 0, 1)
@@ -813,9 +814,10 @@ def get_karpenter_recommendations(
     total_potential_savings = 0
 
     for cluster in target_clusters:
-        # Include ALL instances (both spot and on-demand) for real monitoring data
+        # Active instances only — terminated rows must not appear in rightsizing analysis
         instances = db.query(Instance).filter(
-            Instance.cluster_id == cluster.id
+            Instance.cluster_id == cluster.id,
+            Instance.state.in_(['running', 'pending']),
         ).all()
 
         # Load WorkloadInspector classification for this cluster (node_name → status string)

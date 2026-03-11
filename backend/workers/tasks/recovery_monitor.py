@@ -77,13 +77,16 @@ def sync_instance_states(self):
 
                 region = cluster.region or "ap-south-1"
 
-                # Try assumed role first; fall back to platform creds
+                # Use assumed role for cross-account clusters; skip if assume fails
+                # (falling back to platform creds would describe a different account
+                # and return empty results, causing all instances to look "terminated")
                 import boto3
-                try:
-                    sts = boto3.client("sts", region_name=region, **base_creds)
-                    if cluster.role_arn:
+                ec2 = None
+                if cluster.aws_role_arn:
+                    try:
+                        sts = boto3.client("sts", region_name=region, **base_creds)
                         assumed = sts.assume_role(
-                            RoleArn=cluster.role_arn,
+                            RoleArn=cluster.aws_role_arn,
                             RoleSessionName="spot-recovery-sync",
                             DurationSeconds=900,
                         )
@@ -94,9 +97,13 @@ def sync_instance_states(self):
                             aws_secret_access_key=c["SecretAccessKey"],
                             aws_session_token=c["SessionToken"],
                         )
-                    else:
-                        ec2 = boto3.client("ec2", region_name=region, **base_creds)
-                except Exception:
+                    except Exception as _role_err:
+                        logger.debug(
+                            f"[recovery/sync] Skipping cluster {cluster.name}: "
+                            f"assume_role failed ({_role_err})"
+                        )
+                        continue  # Skip cross-account cluster — don't fall back to platform creds
+                else:
                     ec2 = boto3.client("ec2", region_name=region, **base_creds)
 
                 # Batch describe (max 1000 IDs per call)
@@ -120,10 +127,14 @@ def sync_instance_states(self):
                                     for res2 in r2.get("Reservations", []):
                                         for inst2 in res2.get("Instances", []):
                                             aws_states[inst2["InstanceId"]] = inst2["State"]["Name"]
-                                    if iid not in aws_states:
-                                        aws_states[iid] = "terminated"  # Not returned = terminated
-                                except Exception:
-                                    aws_states[iid] = "terminated"  # Not found individually
+                                    # NOTE: if iid not in response, leave aws_states[iid] unset.
+                                    # "Not returned" ≠ "terminated" — it may mean permission gap.
+                                except Exception as _ind_err:
+                                    logger.debug(
+                                        f"[recovery/sync] Single-id describe failed "
+                                        f"for {iid}: {_ind_err} — leaving state unchanged"
+                                    )
+                                    # Do NOT mark terminated — can't confirm state
                         else:
                             logger.warning(f"[recovery/sync] DescribeInstances failed for {cluster.name}: {e}")
 
@@ -246,7 +257,7 @@ def scan_orphans(self):
         if base_key and base_secret:
             clusters = db.query(Cluster).filter(
                 Cluster.status == ClusterStatus.ACTIVE,
-                Cluster.role_arn.isnot(None),
+                Cluster.aws_role_arn.isnot(None),
             ).all()
             for cluster in clusters:
                 try:
@@ -257,7 +268,7 @@ def scan_orphans(self):
                         aws_secret_access_key=base_secret,
                     )
                     assumed = sts.assume_role(
-                        RoleArn=cluster.role_arn,
+                        RoleArn=cluster.aws_role_arn,
                         RoleSessionName="spot-orphan-scan",
                         DurationSeconds=900,
                     )

@@ -582,10 +582,13 @@ class ClusterService:
             page_size=filters.page_size
         )
         
-        # Cache result in Redis for 5 seconds (short TTL for real-time status updates)
+        # Cache result in Redis for 30 seconds.
+        # 5s was too short — it expired mid-discovery, returning empty/partial lists and
+        # causing the UI "blank screen" flicker. 30s is safe: discovery runs every 5 min
+        # so at worst the list is 30s behind a node join event (well within tolerance).
         try:
             r = redis.from_url(os.getenv("REDIS_URL", "redis://redis:6379/0"))
-            r.setex(cache_key, 5, result.model_dump_json())
+            r.setex(cache_key, 30, result.model_dump_json())
         except Exception as e:
             logger.debug(f"Failed to cache cluster list: {e}")
         
@@ -1130,9 +1133,11 @@ echo "✅ Agent successfully deployed!"
         """
         cluster = self._get_cluster_with_access(cluster_id, user_id)
 
-        # Query instances for this cluster
+        # Query ONLY active instances — terminated records must never appear in node lists.
+        # Terminated rows stay in DB for audit purposes but the UI must only show live nodes.
         instances = self.db.query(Instance).filter(
-            Instance.cluster_id == cluster_id
+            Instance.cluster_id == cluster_id,
+            Instance.state.in_(['running', 'pending']),
         ).all()
 
         nodes = []
