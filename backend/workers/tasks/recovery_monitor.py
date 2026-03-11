@@ -170,9 +170,15 @@ def scan_orphans(self):
     Detect EC2 instances tagged spot-optimizer:status=pending that were
     launched > ORPHAN_INSTANCE_TIMEOUT_MIN minutes ago and have no
     node_joined:{instance_id} Redis key. Terminate them.
+
+    Runs TWO passes:
+    1. Platform-creds pass — covers instances in the platform's own AWS account.
+    2. Per-cluster assumed-role pass — covers cross-account customer clusters
+       (instances launched by the rebalancer via role assumption).
     """
     from backend.models.base import get_db
     from backend.models.system_config import SystemConfig
+    from backend.models.cluster import Cluster, ClusterStatus
     from backend.core.redis_client import get_redis_client
     from backend.core.config import ORPHAN_INSTANCE_TIMEOUT_MIN
     import boto3
@@ -180,57 +186,96 @@ def scan_orphans(self):
 
     db = next(get_db())
     redis = get_redis_client()
+    orphans_terminated = 0
+    now = datetime.now(timezone.utc)
+    timeout_secs = ORPHAN_INSTANCE_TIMEOUT_MIN * 60
 
-    try:
-        pk = db.query(SystemConfig).filter(SystemConfig.key == "PLATFORM_AWS_ACCESS_KEY").first()
-        ps = db.query(SystemConfig).filter(SystemConfig.key == "PLATFORM_AWS_SECRET").first()
-        pr = db.query(SystemConfig).filter(SystemConfig.key == "PLATFORM_AWS_REGION").first()
+    ORPHAN_FILTERS = [
+        {"Name": "tag:spot-optimizer:status", "Values": ["pending"]},
+        {"Name": "instance-state-name", "Values": ["running"]},
+    ]
 
-        if not pk or not ps or not pk.value or not ps.value:
-            return {"status": "ok", "orphans_terminated": 0, "skipped": "no_credentials"}
-
-        region = pr.value if (pr and pr.value) else "ap-south-1"
-        ec2 = boto3.client(
-            "ec2", region_name=region,
-            aws_access_key_id=pk.value,
-            aws_secret_access_key=ps.value,
-        )
-
-        response = ec2.describe_instances(
-            Filters=[
-                {"Name": "tag:spot-optimizer:status", "Values": ["pending"]},
-                {"Name": "instance-state-name", "Values": ["running"]},
-            ]
-        )
-
-        now = datetime.now(timezone.utc)
-        timeout_secs = ORPHAN_INSTANCE_TIMEOUT_MIN * 60
-        orphans_terminated = 0
-
-        for reservation in response.get("Reservations", []):
+    def _check_and_terminate(ec2_client, reservations):
+        """Shared inner loop: check age + node_joined key, terminate if orphan."""
+        count = 0
+        for reservation in reservations:
             for inst in reservation.get("Instances", []):
                 iid = inst["InstanceId"]
                 launch_time = inst.get("LaunchTime")
                 if not launch_time:
                     continue
-
                 age_secs = (now - launch_time).total_seconds()
                 if age_secs < timeout_secs:
                     continue
-
-                # Skip if the node successfully joined K8s
                 if redis.exists(f"node_joined:{iid}"):
                     continue
-
                 try:
-                    ec2.terminate_instances(InstanceIds=[iid])
-                    orphans_terminated += 1
+                    ec2_client.terminate_instances(InstanceIds=[iid])
+                    count += 1
                     logger.warning(
                         f"[scan_orphans] Terminated orphan {iid} "
                         f"(age={age_secs:.0f}s, no node_joined key)"
                     )
                 except Exception as term_err:
                     logger.error(f"[scan_orphans] Failed to terminate {iid}: {term_err}")
+        return count
+
+    try:
+        pk = db.query(SystemConfig).filter(SystemConfig.key == "PLATFORM_AWS_ACCESS_KEY").first()
+        ps = db.query(SystemConfig).filter(SystemConfig.key == "PLATFORM_AWS_SECRET").first()
+        pr = db.query(SystemConfig).filter(SystemConfig.key == "PLATFORM_AWS_REGION").first()
+
+        base_key = pk.value if pk else None
+        base_secret = ps.value if ps else None
+        default_region = pr.value if (pr and pr.value) else "ap-south-1"
+
+        # ── Pass 1: platform-creds (same-account clusters) ────────────────────
+        if base_key and base_secret:
+            try:
+                ec2_plat = boto3.client(
+                    "ec2", region_name=default_region,
+                    aws_access_key_id=base_key,
+                    aws_secret_access_key=base_secret,
+                )
+                resp = ec2_plat.describe_instances(Filters=ORPHAN_FILTERS)
+                orphans_terminated += _check_and_terminate(ec2_plat, resp.get("Reservations", []))
+            except Exception as e:
+                logger.warning(f"[scan_orphans] Platform-creds pass failed: {e}")
+
+        # ── Pass 2: per-cluster assumed-role (cross-account clusters) ─────────
+        if base_key and base_secret:
+            clusters = db.query(Cluster).filter(
+                Cluster.status == ClusterStatus.ACTIVE,
+                Cluster.role_arn.isnot(None),
+            ).all()
+            for cluster in clusters:
+                try:
+                    region = cluster.region or default_region
+                    sts = boto3.client(
+                        "sts", region_name=region,
+                        aws_access_key_id=base_key,
+                        aws_secret_access_key=base_secret,
+                    )
+                    assumed = sts.assume_role(
+                        RoleArn=cluster.role_arn,
+                        RoleSessionName="spot-orphan-scan",
+                        DurationSeconds=900,
+                    )
+                    c = assumed["Credentials"]
+                    ec2_assumed = boto3.client(
+                        "ec2", region_name=region,
+                        aws_access_key_id=c["AccessKeyId"],
+                        aws_secret_access_key=c["SecretAccessKey"],
+                        aws_session_token=c["SessionToken"],
+                    )
+                    resp2 = ec2_assumed.describe_instances(Filters=ORPHAN_FILTERS)
+                    orphans_terminated += _check_and_terminate(
+                        ec2_assumed, resp2.get("Reservations", [])
+                    )
+                except Exception as cluster_err:
+                    logger.debug(
+                        f"[scan_orphans] Assumed-role pass failed for {cluster.name}: {cluster_err}"
+                    )
 
         return {"status": "ok", "orphans_terminated": orphans_terminated}
 

@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Card } from '../shared';
-import { FiSliders, FiCheckCircle, FiAlertTriangle, FiArrowUpRight, FiActivity, FiInbox, FiShield } from 'react-icons/fi';
-import api, { clusterAPI, adminAPI } from '../../services/api';
+import { FiSliders, FiCheckCircle, FiAlertTriangle, FiArrowUpRight, FiActivity, FiInbox, FiShield, FiClock, FiThumbsUp, FiThumbsDown } from 'react-icons/fi';
+import api, { clusterAPI, adminAPI, atharvaaiAPI } from '../../services/api';
 
 const AutoRebalanceAuditCard = ({ clusterId, initialEnabled = false }) => {
     const [decisions, setDecisions] = useState([]);
@@ -9,6 +9,7 @@ const AutoRebalanceAuditCard = ({ clusterId, initialEnabled = false }) => {
     const [isEnabled, setIsEnabled] = useState(initialEnabled);
     const [toggling, setToggling] = useState(false);
     const [cbState, setCbState] = useState(null);
+    const [approving, setApproving] = useState(null); // action id being approved/denied
 
     useEffect(() => {
         fetchAuditLog();
@@ -83,6 +84,30 @@ const AutoRebalanceAuditCard = ({ clusterId, initialEnabled = false }) => {
         return 'Proactive optimization to safer pool';
     };
 
+    const handleApprove = async (actionId) => {
+        setApproving(actionId);
+        try {
+            await atharvaaiAPI.approveRebalancingAction(actionId);
+            await fetchAuditLog();
+        } catch (e) {
+            alert('Failed to approve: ' + (e.response?.data?.detail || e.message));
+        } finally {
+            setApproving(null);
+        }
+    };
+
+    const handleDeny = async (actionId) => {
+        setApproving(actionId);
+        try {
+            await atharvaaiAPI.denyRebalancingAction(actionId);
+            await fetchAuditLog();
+        } catch (e) {
+            alert('Failed to deny: ' + (e.response?.data?.detail || e.message));
+        } finally {
+            setApproving(null);
+        }
+    };
+
     const getStatusBadge = (status) => {
         switch (status) {
             case 'completed':
@@ -101,6 +126,12 @@ const AutoRebalanceAuditCard = ({ clusterId, initialEnabled = false }) => {
                 return (
                     <span className="px-1.5 py-0.5 bg-blue-50 text-blue-600 text-[10px] rounded border border-blue-100 flex items-center gap-1">
                         <FiActivity className="w-2 h-2 animate-pulse" /> In Progress
+                    </span>
+                );
+            case 'pending_approval':
+                return (
+                    <span className="px-1.5 py-0.5 bg-amber-50 text-amber-700 text-[10px] rounded border border-amber-200 flex items-center gap-1">
+                        <FiClock className="w-2 h-2" /> Awaiting Approval
                     </span>
                 );
             default:
@@ -188,6 +219,28 @@ const AutoRebalanceAuditCard = ({ clusterId, initialEnabled = false }) => {
                                     </span>
                                 )}
                             </div>
+
+                            {action.status === 'pending_approval' && (
+                                <div className="flex items-center gap-2 mt-2 pt-2 border-t border-amber-100">
+                                    <span className="text-[10px] text-amber-700 flex-1">
+                                        {action.source_pool} → {action.target_pool?.split(':')[0]}
+                                    </span>
+                                    <button
+                                        onClick={() => handleApprove(action.id)}
+                                        disabled={approving === action.id}
+                                        className="flex items-center gap-1 px-2 py-1 text-[10px] font-semibold bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50"
+                                    >
+                                        <FiThumbsUp className="w-2.5 h-2.5" /> Approve
+                                    </button>
+                                    <button
+                                        onClick={() => handleDeny(action.id)}
+                                        disabled={approving === action.id}
+                                        className="flex items-center gap-1 px-2 py-1 text-[10px] font-semibold bg-red-100 text-red-700 rounded hover:bg-red-200 disabled:opacity-50"
+                                    >
+                                        <FiThumbsDown className="w-2.5 h-2.5" /> Deny
+                                    </button>
+                                </div>
+                            )}
                         </div>
                     ))
                 )}

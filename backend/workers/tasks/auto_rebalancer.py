@@ -351,9 +351,11 @@ def _launch_spot_instance_direct(
         # Copy existing tags; add/update cluster ownership and platform marker
         _tags = [t for t in _src.get("Tags", []) if not t["Key"].startswith("aws:")]
         _cluster_tag = f"kubernetes.io/cluster/{cluster.name}"
-        _tags = [t for t in _tags if t["Key"] != _cluster_tag]
+        _tags = [t for t in _tags if t["Key"] not in (_cluster_tag, "spot-optimizer:status")]
         _tags.append({"Key": _cluster_tag, "Value": "owned"})
         _tags.append({"Key": "spot-optimizer:launched-by", "Value": "spot-optimizer-direct"})
+        # scan_orphans relies on this tag to detect unjoined instances (15-min timeout)
+        _tags.append({"Key": "spot-optimizer:status", "Value": "pending"})
 
         # If target AZ requested, find a subnet in that AZ (same VPC)
         _target_subnet = _subnet_id
@@ -2685,10 +2687,11 @@ def execute_rebalancing():
                     break
 
                 # Skip if there's already an active rebalancing action for this cluster
-                # (includes waiting_agent = queued but agent hasn't finished yet)
+                # (includes waiting_agent = queued but agent hasn't finished yet,
+                #  and pending_approval = waiting for human to confirm)
                 existing_active = db.query(RebalancingAction).filter(
                     RebalancingAction.cluster_id == cluster.id,
-                    RebalancingAction.status.in_(['pending', 'in_progress', 'waiting_agent'])
+                    RebalancingAction.status.in_(['pending', 'in_progress', 'waiting_agent', 'pending_approval'])
                 ).first()
                 if existing_active:
                     logger.debug(f"Active action {existing_active.id} already running for cluster {cluster.name} — skipping new creation")
@@ -2768,38 +2771,57 @@ def execute_rebalancing():
                         region=cluster.region or "ap-south-1", limit=10
                     )
 
-                    # ── DIVERSIFY POOLS: enforce 40% max per instance family ──────
-                    # When diversify_pools=True, skip pools from over-represented families
-                    # so the cluster doesn't end up with all nodes on the same instance type.
+                    # ── DIVERSIFY POOLS: 40% family cap + 50% AZ cap ────────────
+                    # When diversify_pools=True, skip pools from over-represented
+                    # families OR AZs so the cluster doesn't pack all nodes into
+                    # one instance type or one availability zone.
                     if _ranked and getattr(_opt_settings, 'diversify_pools', False):
                         from backend.models.instance import Instance as _DivInst
-                        _running_types = [
-                            i.instance_type for i in db.query(_DivInst).filter(
-                                _DivInst.cluster_id == cluster.id,
-                                _DivInst.state == 'running',
-                            ).all() if i.instance_type
-                        ]
-                        _total_nodes = len(_running_types) + 1  # +1 for the incoming node
+                        _running_insts = db.query(_DivInst).filter(
+                            _DivInst.cluster_id == cluster.id,
+                            _DivInst.state == 'running',
+                        ).all()
+                        _total_nodes = len(_running_insts) + 1  # +1 for the incoming node
                         _MAX_FAMILY_SHARE = 0.40  # 40% cap per instance family
+                        _MAX_AZ_SHARE = 0.50      # 50% cap per availability zone
                         _family_counts: dict = {}
-                        for _rt in _running_types:
-                            _fam = _rt.split('.')[0]  # e.g. 'c6i' from 'c6i.large'
-                            _family_counts[_fam] = _family_counts.get(_fam, 0) + 1
+                        _az_counts: dict = {}
+                        for _ri in _running_insts:
+                            if _ri.instance_type:
+                                _fam = _ri.instance_type.split('.')[0]
+                                _family_counts[_fam] = _family_counts.get(_fam, 0) + 1
+                            if _ri.az:
+                                _az_counts[_ri.az] = _az_counts.get(_ri.az, 0) + 1
 
                         _diversified = []
                         for _rp in _ranked:
                             _rt_name = _rp.pool.instance_type
+                            _rp_az   = _rp.pool.az or ""
                             _fam = _rt_name.split('.')[0]
                             _cur_fam_count = _family_counts.get(_fam, 0)
-                            if (_cur_fam_count + 1) / _total_nodes <= _MAX_FAMILY_SHARE:
+                            _cur_az_count  = _az_counts.get(_rp_az, 0)
+                            _fam_ok = (_cur_fam_count + 1) / _total_nodes <= _MAX_FAMILY_SHARE
+                            _az_ok  = (_cur_az_count  + 1) / _total_nodes <= _MAX_AZ_SHARE
+                            if _fam_ok and _az_ok:
                                 _diversified.append(_rp)
                                 if len(_diversified) >= 3:
                                     break
-                        # If diversification filtered everything out, fall back to top-3
+                        # If diversification filtered everything out, relax AZ only (not family)
+                        if not _diversified:
+                            for _rp in _ranked:
+                                _rt_name = _rp.pool.instance_type
+                                _fam = _rt_name.split('.')[0]
+                                _cur_fam_count = _family_counts.get(_fam, 0)
+                                if (_cur_fam_count + 1) / _total_nodes <= _MAX_FAMILY_SHARE:
+                                    _diversified.append(_rp)
+                                    if len(_diversified) >= 3:
+                                        break
+                        # Last resort: use top-3 as-is
                         _ranked = _diversified if _diversified else _ranked[:3]
                         logger.info(
-                            f"[auto_rebalancer] Diversify active: family_counts={_family_counts} "
-                            f"→ selected {len(_ranked)} pool(s) after family cap"
+                            f"[auto_rebalancer] Diversify active: "
+                            f"family_counts={_family_counts} az_counts={_az_counts} "
+                            f"→ selected {len(_ranked)} pool(s) after family+AZ caps"
                         )
                     else:
                         _ranked = _ranked[:3]
@@ -2812,12 +2834,15 @@ def execute_rebalancing():
                     target_instance_type_final = target_instance_type
                     pass  # Keep fallback to source_pool
 
+                _needs_approval = getattr(_opt_settings, 'manual_approval_required', False)
+                _action_status = 'pending_approval' if _needs_approval else 'in_progress'
+
                 rebalancing_action = RebalancingAction(
                     cluster_id=cluster.id,
                     trigger='auto_rebalance',
                     source_pool=source_pool,
                     target_pool=target_pool,
-                    status='in_progress',
+                    status=_action_status,
                     started_at=datetime.utcnow(),
                     action_metadata={
                         'reason': _reason,
@@ -2829,7 +2854,14 @@ def execute_rebalancing():
                 )
 
                 db.add(rebalancing_action)
-                logger.info(f"Created auto-rebalance action for {instance.instance_id} in cluster {cluster.name}")
+                if _needs_approval:
+                    logger.info(
+                        f"[auto_rebalancer] manual_approval_required=True — created "
+                        f"pending_approval action for {instance.instance_id} in cluster "
+                        f"{cluster.name}. Approve via POST /api/v1/atharvaai/rebalancing-actions/{{id}}/approve"
+                    )
+                else:
+                    logger.info(f"Created auto-rebalance action for {instance.instance_id} in cluster {cluster.name}")
                 break  # Only create 1 action per cluster per cycle
 
         db.commit()

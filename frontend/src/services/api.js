@@ -336,6 +336,12 @@ export const atharvaaiAPI = {
             params: clusterId ? { cluster_id: clusterId, limit } : { limit }
         }),
 
+    // Approve / deny a pending_approval rebalancing action (manual_approval_required=True)
+    approveRebalancingAction: (actionId) =>
+        api.post(`/api/v1/atharvaai/rebalancing-actions/${actionId}/approve`),
+    denyRebalancingAction: (actionId) =>
+        api.post(`/api/v1/atharvaai/rebalancing-actions/${actionId}/deny`),
+
     // Get rebalancing context: cooldown + next target (unified, works for non-Karpenter clusters)
     getRebalancingContext: (clusterId) => api.get(`/api/v1/atharvaai/v3/rebalancing-context/${clusterId}`),
 

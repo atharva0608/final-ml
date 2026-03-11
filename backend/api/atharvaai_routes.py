@@ -503,6 +503,59 @@ async def get_rebalancing_status(
         raise HTTPException(status_code=500, detail=f"Failed to get rebalancing status: {str(e)}")
 
 
+@router.post("/rebalancing-actions/{action_id}/approve")
+def approve_rebalancing_action(
+    action_id: int,
+    db: Session = Depends(get_db),
+):
+    """
+    Approve a pending_approval rebalancing action so it executes on the next
+    auto-rebalancer cycle.  Used when manual_approval_required=True on the cluster.
+    """
+    action = db.query(RebalancingAction).filter(RebalancingAction.id == action_id).first()
+    if not action:
+        raise HTTPException(status_code=404, detail="Rebalancing action not found")
+    if action.status != "pending_approval":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Action is '{action.status}', not 'pending_approval' — nothing to approve"
+        )
+    meta = dict(action.action_metadata or {})
+    meta["approved_at"] = datetime.utcnow().isoformat()
+    action.status = "in_progress"
+    action.action_metadata = meta
+    db.commit()
+    logger.info(f"[approve] Rebalancing action {action_id} approved → in_progress")
+    return {"status": "approved", "action_id": action_id}
+
+
+@router.post("/rebalancing-actions/{action_id}/deny")
+def deny_rebalancing_action(
+    action_id: int,
+    db: Session = Depends(get_db),
+):
+    """
+    Deny (cancel) a pending_approval rebalancing action without executing it.
+    """
+    action = db.query(RebalancingAction).filter(RebalancingAction.id == action_id).first()
+    if not action:
+        raise HTTPException(status_code=404, detail="Rebalancing action not found")
+    if action.status != "pending_approval":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Action is '{action.status}', not 'pending_approval' — nothing to deny"
+        )
+    meta = dict(action.action_metadata or {})
+    meta["denied_at"] = datetime.utcnow().isoformat()
+    action.status = "failed"
+    action.error_message = "Denied by user (manual_approval_required)"
+    action.completed_at = datetime.utcnow()
+    action.action_metadata = meta
+    db.commit()
+    logger.info(f"[deny] Rebalancing action {action_id} denied → failed")
+    return {"status": "denied", "action_id": action_id}
+
+
 class HeatmapCell(BaseModel):
     day: int  # 0-6 (Sun-Sat) or 1-7 depending on frontend pref. Let's use 0=Monday to match JS often, or just 0-6.
     hour: int  # 0-23

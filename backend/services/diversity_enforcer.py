@@ -143,8 +143,10 @@ class DiversityEnforcer:
                 if inst.instance_type:
                     fam = inst.instance_type.split(".")[0]
                     family_dist[fam] = family_dist.get(fam, 0) + 1
-                if inst.availability_zone:
-                    az_dist[inst.availability_zone] = az_dist.get(inst.availability_zone, 0) + 1
+                # Instance model uses 'az' column (not 'availability_zone')
+                _inst_az = getattr(inst, 'az', None) or getattr(inst, 'availability_zone', None)
+                if _inst_az:
+                    az_dist[_inst_az] = az_dist.get(_inst_az, 0) + 1
 
             family_pct = {k: round(v / total, 4) for k, v in family_dist.items()} if total else {}
             az_pct = {k: round(v / total, 4) for k, v in az_dist.items()} if total else {}
