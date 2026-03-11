@@ -1398,6 +1398,37 @@ def execute_rebalancing():
                                 f"Creating Phase 2 actions (CORDON→DRAIN→TERMINATE)"
                             )
                             _wa_meta['step_4_new_node_joined'] = datetime.utcnow().isoformat()
+
+                            # Apply karpenter.sh/do-not-disrupt=true to the new spot node.
+                            # This prevents Karpenter's consolidation/expiry loop from
+                            # terminating the replacement node while pods are still draining
+                            # onto it.  The annotation is removed after Phase 2 completes.
+                            if _newest_spot and _newest_spot.node_name:
+                                try:
+                                    _kp_annotate = AgentAction(
+                                        cluster_id=_wa.cluster_id,
+                                        action_type=AgentActionType.LABEL_NODE,
+                                        status=AgentActionStatus.PENDING,
+                                        payload={
+                                            "node_name": _newest_spot.node_name,
+                                            "labels": {},
+                                            "annotations": {
+                                                "karpenter.sh/do-not-disrupt": "true"
+                                            },
+                                        },
+                                        action_metadata={"rebalancing_action_id": str(_wa.id),
+                                                         "purpose": "protect_replacement_node"},
+                                    )
+                                    db.add(_kp_annotate)
+                                    db.flush()
+                                    logger.info(
+                                        f"[auto_rebalancer] Queued karpenter.sh/do-not-disrupt=true "
+                                        f"on {_newest_spot.node_name} (action {_wa.id})"
+                                    )
+                                except Exception as _ann_err:
+                                    logger.warning(
+                                        f"[auto_rebalancer] Failed to queue do-not-disrupt annotation: {_ann_err}"
+                                    )
                         elif _spot_wait_elapsed >= _SPOT_WAIT_TIMEOUT_S and _wa_karpenter_active:
                             # Karpenter timeout: Karpenter was supposed to provision but didn't.
                             # Proceed anyway since Karpenter may provision after drain frees capacity.
@@ -1860,6 +1891,34 @@ def execute_rebalancing():
                 else:
                     _wa_meta['current_step'] = 'optimization_complete'
                     _wa_meta['step_6_optimization_complete'] = datetime.utcnow().isoformat()
+
+                    # ── POST-SUCCESS: Remove do-not-disrupt from replacement node ──
+                    # The replacement node is now the primary; it should participate
+                    # in Karpenter consolidation normally going forward.
+                    _replacement_node_name = _wa_meta.get('replacement_node_name') or (
+                        _newest_spot.node_name if '_newest_spot' in dir() and _newest_spot else None
+                    )
+                    if _replacement_node_name:
+                        try:
+                            _kp_deprotect = AgentAction(
+                                cluster_id=_wa.cluster_id,
+                                action_type=AgentActionType.LABEL_NODE,
+                                status=AgentActionStatus.PENDING,
+                                payload={
+                                    "node_name": _replacement_node_name,
+                                    "labels": {},
+                                    "annotations": {"karpenter.sh/do-not-disrupt": "true"},
+                                    "remove": True,
+                                },
+                                action_metadata={"rebalancing_action_id": str(_wa.id),
+                                                 "purpose": "release_replacement_node"},
+                            )
+                            db.add(_kp_deprotect)
+                            db.flush()
+                        except Exception as _deann_err:
+                            logger.warning(
+                                f"[auto_rebalancer] Failed to queue do-not-disrupt removal: {_deann_err}"
+                            )
 
                     # ── POST-SUCCESS: Trigger standby node launch ──────────────
                     # If cluster has maintain_standby enabled, launch a new standby

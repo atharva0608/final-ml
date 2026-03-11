@@ -368,6 +368,21 @@ class ActionActuator:
                 }
 
             logger.info(f"Successfully drained node {node_name}")
+
+            # After draining, proactively clear any stuck VolumeAttachment objects.
+            # EBS volumes can be slow to detach; lingering VolumeAttachments produce
+            # Multi-Attach errors on the new node, blocking StatefulSet pod startup.
+            # This is a best-effort call — failures are logged but do not fail the drain.
+            try:
+                va_result = self.clear_stuck_volume_attachments(node_name, timeout_seconds=30)
+                if va_result.get('cleared', 0) > 0:
+                    logger.info(
+                        f"[drain_node] Cleared {va_result['cleared']} stuck VolumeAttachment(s) "
+                        f"from {node_name}"
+                    )
+            except Exception as _va_err:
+                logger.warning(f"[drain_node] VolumeAttachment cleanup failed (non-fatal): {_va_err}")
+
             return {
                 'success': True,
                 'message': f'Node {node_name} drained successfully',
@@ -447,6 +462,120 @@ class ActionActuator:
                 'message': error_msg,
                 'error': str(e)
             }
+
+    def clear_stuck_volume_attachments(self, node_name: str, timeout_seconds: int = 60) -> Dict[str, Any]:
+        """
+        Detect and force-delete VolumeAttachment objects stuck in an attaching/detaching
+        state for the given node.
+
+        When a drain completes but an EBS volume is slow to detach, the pod on the NEW
+        node sits in ContainerCreating with a Multi-Attach error.  Deleting the stuck
+        VolumeAttachment forces the kubelet to re-attach the volume cleanly.
+
+        Called after a drain succeeds on a node that had PVC-bound pods.
+
+        Returns:
+            {
+              "success": True,
+              "cleared": int,  # number of stuck VolumeAttachments removed
+              "skipped": int,  # healthy or already-detached attachments
+            }
+        """
+        from kubernetes import client as k8s_client
+        storage_v1 = k8s_client.StorageV1Api()
+        cleared = 0
+        skipped = 0
+        errors = []
+
+        try:
+            vas = storage_v1.list_volume_attachment()
+        except Exception as e:
+            return {'success': False, 'message': f'Cannot list VolumeAttachments: {e}'}
+
+        for va in vas.items:
+            # Only care about attachments to the drained node
+            if va.spec.node_name != node_name:
+                skipped += 1
+                continue
+
+            attached = va.status.attached if va.status else False
+            attach_error = (va.status.attach_error or va.status.detach_error) if va.status else None
+
+            # A stuck attachment: either has an error, or has been pending for too long
+            created_ago = 0
+            if va.metadata.creation_timestamp:
+                from datetime import timezone
+                import datetime as _dt
+                _now = _dt.datetime.now(_dt.timezone.utc)
+                created_ago = (_now - va.metadata.creation_timestamp.replace(tzinfo=_dt.timezone.utc)).total_seconds()
+
+            is_stuck = (
+                attach_error or
+                (not attached and created_ago > timeout_seconds)
+            )
+
+            if not is_stuck:
+                skipped += 1
+                continue
+
+            # Force-delete the stuck VolumeAttachment
+            try:
+                storage_v1.delete_volume_attachment(
+                    name=va.metadata.name,
+                    body=k8s_client.V1DeleteOptions(grace_period_seconds=0),
+                )
+                logger.warning(
+                    f"[clear_stuck_va] Deleted stuck VolumeAttachment {va.metadata.name} "
+                    f"(node={node_name}, attached={attached}, error={attach_error})"
+                )
+                cleared += 1
+            except Exception as del_err:
+                errors.append(f"{va.metadata.name}: {del_err}")
+
+        return {
+            'success': True,
+            'cleared': cleared,
+            'skipped': skipped,
+            'errors': errors,
+        }
+
+    def annotate_node(self, node_name: str, annotations: Dict[str, str],
+                      remove: bool = False) -> Dict[str, Any]:
+        """
+        Add or remove annotations on a K8s Node.
+
+        Used to apply Karpenter lifecycle annotations, e.g.:
+          karpenter.sh/do-not-disrupt: "true"
+            → prevents Karpenter consolidation/expiry from terminating a warm
+              spare or an actively-migrating replacement node before pods drain.
+
+        Args:
+            node_name: Kubernetes node name
+            annotations: Dict of annotation key→value pairs to set or remove
+            remove: If True, remove the listed annotations
+        """
+        action = "Removing" if remove else "Applying"
+        logger.info(f"[annotate_node] {action} annotations on {node_name}: {list(annotations.keys())}")
+        try:
+            node = self.core_v1.read_node(node_name)
+            if node.metadata.annotations is None:
+                node.metadata.annotations = {}
+            if remove:
+                for key in annotations:
+                    node.metadata.annotations.pop(key, None)
+            else:
+                node.metadata.annotations.update(annotations)
+            self.core_v1.patch_node(node_name, node)
+            logger.info(f"[annotate_node] {action} annotations on {node_name} succeeded")
+            return {'success': True, 'message': f'Annotations {action.lower()} on {node_name}'}
+        except ApiException as e:
+            msg = f"[annotate_node] Failed to {action.lower()} annotations on {node_name}: {e.reason}"
+            logger.error(msg)
+            return {'success': False, 'message': msg, 'error': str(e)}
+        except Exception as e:
+            msg = f"[annotate_node] Unexpected error on {node_name}: {e}"
+            logger.error(msg, exc_info=True)
+            return {'success': False, 'message': msg, 'error': str(e)}
 
     def update_deployment(self, namespace: str, deployment_name: str,
                          replicas: Optional[int] = None,
@@ -1258,11 +1387,12 @@ class ActionActuator:
                          self._find_node_name(payload.get('instance_type', ''), payload.get('az', '')))
             if not node_name:
                 return {'success': False, 'message': f"Could not find node for instance_id={payload.get('instance_id')} type={payload.get('instance_type')} az={payload.get('az')}"}
-            return self.drain_node(
-                node_name,
-                force=payload.get('ignore_daemonsets', False),
-                grace_period=payload.get('grace_period_seconds', 30)
-            )
+            # force=True: bypass PodDisruptionBudgets (required for emergency drains
+            # where the 2-minute AWS spot window doesn't honour K8s PDB policies).
+            # 'force' payload key takes precedence over legacy 'ignore_daemonsets' key.
+            _force = payload.get('force', payload.get('ignore_daemonsets', False))
+            _grace = payload.get('grace_period', payload.get('grace_period_seconds', 30))
+            return self.drain_node(node_name, force=_force, grace_period=_grace)
 
         elif action_type == 'LABEL_NODE':
             node_name = (payload.get('node_name') or
@@ -1270,7 +1400,11 @@ class ActionActuator:
                          self._find_node_name(payload.get('instance_type', ''), payload.get('az', '')))
             if not node_name:
                 return {'success': False, 'message': 'Could not resolve node_name'}
-            return self.label_node(node_name, payload.get('labels', {}), payload.get('remove', False))
+            result = self.label_node(node_name, payload.get('labels', {}), payload.get('remove', False))
+            # Also apply annotations if provided (e.g. karpenter.sh/do-not-disrupt)
+            if payload.get('annotations') and result.get('success'):
+                result = self.annotate_node(node_name, payload['annotations'], payload.get('remove', False))
+            return result
 
         elif action_type == 'UPDATE_DEPLOYMENT':
             return self.update_deployment(

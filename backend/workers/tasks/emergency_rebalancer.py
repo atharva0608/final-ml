@@ -22,7 +22,7 @@ from backend.workers.app import app
 from backend.core.config import EMERGENCY_COOLDOWN_MINUTES
 
 
-@app.task(name="emergency_rebalancer", bind=True, max_retries=1)
+@app.task(name="emergency_rebalancer", bind=True, max_retries=1, queue="emergency")
 def emergency_rebalancer(
     self,
     cluster_id: str,
@@ -183,15 +183,24 @@ def _execute_standby_failover(db, redis, cluster, interrupted, standby, action):
         db.add(cordon_action)
         db.commit()
 
-        # 3. Drain interrupted node
+        # 3. Drain interrupted node — emergency mode:
+        #    force=True  → bypasses PodDisruptionBudgets immediately. AWS does not
+        #                   honour PDBs at the 2-minute hard deadline; waiting
+        #                   politely guarantees ungraceful pod death.
+        #    grace_period=90 → gives pods 90 seconds to shut down cleanly.
+        #                       Any pod still running at T-90s is force-deleted by
+        #                       the actuator's PDB bypass path so K8s can reschedule
+        #                       it before the 120-second AWS kill arrives.
         drain_action = AgentAction(
             id=generate_uuid(),
             cluster_id=cluster.id,
             action_type=AgentActionType.DRAIN_NODE,
             payload={
                 "node_name": interrupted.node_name,
-                "grace_period": 30,
+                "grace_period": 90,
                 "ignore_daemonsets": True,
+                "force": True,        # bypass PDBs — required for 2-min window
+                "emergency": True,    # signal actuator to use 90s escalation timer
             },
             status=AgentActionStatus.PENDING,
         )

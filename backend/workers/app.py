@@ -236,6 +236,19 @@ app.conf.beat_schedule = {
 }
 
 app.conf.task_routes = {
+    # ── High-priority emergency queue ─────────────────────────────────────────
+    # Emergency tasks MUST run within milliseconds of dispatch.
+    # They must NEVER share a queue with heavy batch jobs (pricing ingest,
+    # ML feature generation, cluster syncs) which can block the worker for
+    # minutes and waste the 2-minute AWS spot interruption window.
+    # Start the emergency worker with:
+    #   celery -A backend.workers.app worker -Q emergency -c 4 --prefetch-multiplier=1
+    'emergency_rebalancer': {'queue': 'emergency'},
+    'backend.workers.tasks.emergency_rebalancer.emergency_rebalancer': {'queue': 'emergency'},
+    'workers.sqs_consumer.poll_interruption_queues': {'queue': 'emergency'},
+    'backend.workers.tasks.sqs_consumer.*': {'queue': 'emergency'},
+
+    # ── Standard queues ────────────────────────────────────────────────────────
     'workers.pricing.*': {'queue': 'pricing'},
     'scrapers.*': {'queue': 'pricing'},
     'backend.workers.tasks.recovery_monitor.*': {'queue': 'monitoring'},
