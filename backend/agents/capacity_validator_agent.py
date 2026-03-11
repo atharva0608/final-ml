@@ -101,11 +101,18 @@ You batch-validate spot capacity.
 
     def _check_capacity(self, region: str, instance_type: str, az: str) -> bool:
         """
-        Check if instance type has available capacity in AZ.
+        Check spot capacity via EC2 RunInstances DryRun (cached 5 min in Redis).
 
-        In production, this would call AWS EC2 describe-instance-type-offerings
-        or maintain a capacity cache from periodic checks.
+        Uses backend/utils/aws/dry_run.py which:
+        - Checks Redis cache key dry_run:{instance_type}:{az} first
+        - Falls back to live EC2 RunInstances(DryRun=True) call
+        - Returns True on DryRunOperation, False on InsufficientInstanceCapacity
+        - Assumes available on any other error (conservative)
         """
-        # Placeholder - assume capacity available
-        # In production: boto3 ec2 client call
-        return True
+        from backend.utils.aws.dry_run import dry_run_pool
+        try:
+            from backend.core.redis_client import get_redis_client
+            redis = get_redis_client()
+        except Exception:
+            redis = None
+        return dry_run_pool(region=region, instance_type=instance_type, az=az, redis=redis)

@@ -135,10 +135,14 @@ Do NOT include text outside JSON."""
                 historical_features=input_data['historical_features']
             )
 
+            # Dynamic cap: at least 50, or 30% of viable pools, whichever is larger,
+            # capped at 200 to prevent downstream memory bloat in large regions like
+            # us-east-1 which can produce 300+ valid combinations.
+            _pool_cap = min(200, max(50, int(len(pools) * 0.30)))
             output = {
                 "region": region,
                 "generated_at": datetime.utcnow().isoformat(),
-                "pools": pools[:50]  # Limit to 50
+                "pools": pools[:_pool_cap]
             }
 
             return AgentResponse(
@@ -198,9 +202,12 @@ Do NOT include text outside JSON."""
             if pool_key in blacklist:
                 continue
 
-            # Get predicted risk from historical features
-            # This would normally come from ML model
-            risk_prob = self._predict_risk(instance_type, az, historical_features)
+            risk_prob = self._predict_risk(
+                instance_type, az, historical_features,
+                interruption_rate=interruption_rate,
+                spot_price=spot_price,
+                ondemand_price=ondemand_price,
+            )
 
             # HARD RULE 3: Reject if predicted risk > 0.45
             if risk_prob > 0.45:
@@ -227,13 +234,46 @@ Do NOT include text outside JSON."""
         self,
         instance_type: str,
         az: str,
-        historical_features: List[Dict]
+        historical_features: List[Dict],
+        interruption_rate: float = 0.0,
+        spot_price: float = 0.0,
+        ondemand_price: float = 1.0,
     ) -> float:
         """
-        Predict risk probability for next 1 hour.
+        Compute a risk probability score [0, 1] for a given pool.
 
-        This is a placeholder - in production, this would call the ML model.
+        Three real signals (no LLM, no placeholder):
+
+        1. Interruption rate (Spot Advisor historical, 0–10% range mapped to 0–0.60)
+           — primary signal, carries 60% weight
+        2. Spot price pressure (spot / on-demand ratio mapped to 0–0.25)
+           — high price pressure = AWS reclaiming capacity
+        3. Real-time price spike from historical_features (0 or 0.25)
+           — if current spot > 1.5× trailing 1-hour average → imminent eviction signal
+
+        Formula: risk = ir_score + price_pressure_score + spike_score, capped at 1.0
         """
-        # Simple heuristic for now
-        # In production: use ONNX model or ML service
-        return 0.15  # Default low risk
+        # 1. Interruption rate signal (0-10% maps linearly to 0-0.60)
+        ir_score = min(interruption_rate / 0.10 * 0.60, 0.60)
+
+        # 2. Price pressure (high spot/OD ratio = capacity squeeze)
+        price_ratio = (spot_price / ondemand_price) if ondemand_price > 0 else 0.5
+        price_pressure_score = min(price_ratio * 0.25, 0.25)
+
+        # 3. Price spike from historical features (dual-window: 1h + 24h)
+        # Both conditions must hold to reduce false positives from transient 1h noise:
+        #   - spot > 1.5× trailing 1h avg  (short-term spike)
+        #   - spot > 1.2× trailing 24h avg (sustained pressure — not just momentary)
+        spike_score = 0.0
+        pool_key = f"{instance_type}:{az}"
+        for feat in (historical_features or []):
+            if feat.get("pool_key") == pool_key:
+                avg_1h = feat.get("avg_price_1h", 0.0)
+                avg_24h = feat.get("avg_price_24h", 0.0)
+                short_spike = avg_1h > 0 and spot_price > avg_1h * 1.5
+                sustained = avg_24h > 0 and spot_price > avg_24h * 1.2
+                if short_spike and sustained:
+                    spike_score = 0.25  # Dual-window spike → imminent eviction warning
+                break
+
+        return min(ir_score + price_pressure_score + spike_score, 1.0)

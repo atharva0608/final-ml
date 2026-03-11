@@ -16,7 +16,7 @@ from redis import Redis
 from backend.core.logger import logger
 
 
-DRY_RUN_CACHE_TTL = 300  # 5 minutes
+DRY_RUN_CACHE_TTL = 120  # 2 minutes — shorter TTL reduces stale capacity decisions
 
 
 def dry_run_pool(
@@ -114,7 +114,7 @@ def dry_run_pool(
 
 
 def _cache_result(redis: Optional[Redis], cache_key: str, passed: bool):
-    """Cache dry-run result with 5-minute TTL."""
+    """Cache dry-run result with 2-minute TTL."""
     if redis:
         try:
             redis.setex(cache_key, DRY_RUN_CACHE_TTL, "pass" if passed else "fail")

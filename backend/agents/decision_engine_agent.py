@@ -226,11 +226,11 @@ No explanations beyond JSON."""
                 continue
 
             # Check max_same_family_ratio <= 0.4
+            # +1/+1 because we are evaluating whether ADDING this instance would violate
             family = instance_type.split('.')[0]
-            if total_instances > 0:
-                current_ratio = family_counts.get(family, 0) / total_instances
-                if current_ratio >= 0.4:
-                    continue
+            projected_ratio = (family_counts.get(family, 0) + 1) / (total_instances + 1)
+            if projected_ratio > 0.4:
+                continue
 
             # 4. Reject pools in cooldown
             if pool_key in cooldown_records:

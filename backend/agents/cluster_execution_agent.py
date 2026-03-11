@@ -108,29 +108,94 @@ No commentary."""
 
     def _patch_nodepool(self, cluster_id: str, selected_pool: Dict) -> str:
         """
-        Patch NodePool CRD with new instance configuration.
+        Patch the Karpenter NodePool CRD with the selected spot pool via
+        KarpenterService.sync_ml_rankings_to_nodepool().
 
-        In production, this would:
-        1. Connect to Kubernetes via SigV4
-        2. Get NodePool CRD
-        3. Patch instance-type and capacity-type
-        4. Apply changes
+        KarpenterService handles SigV4 auth, kubeconfig construction, and
+        the actual kubectl-patch-equivalent API call.
         """
-        # Placeholder implementation
-        self.logger.info(
-            f"Patching NodePool for cluster {cluster_id} "
-            f"with {selected_pool['instance_type']} in {selected_pool['az']}"
-        )
+        from backend.models.base import get_db
+        from backend.services.karpenter_service import KarpenterService
+        from backend.core.redis_client import get_redis_client
 
-        # In production: kubectl patch or K8s client API call
-        return "SUCCESS"
+        db = None
+        try:
+            db = next(get_db())
+            try:
+                redis = get_redis_client()
+            except Exception:
+                redis = None
+
+            ksvc = KarpenterService(db, redis)
+            top_pools = [{
+                "instance_type": selected_pool["instance_type"],
+                "az": selected_pool["az"],
+                "ml_score": float(selected_pool.get("composite_score", 0.5)),
+            }]
+            result = ksvc.sync_ml_rankings_to_nodepool(
+                cluster_id=cluster_id,
+                top_pools=top_pools,
+                nodepool_name="default",
+            )
+            if result.get("status") == "success":
+                self.logger.info(
+                    f"[execution] NodePool patched for cluster {cluster_id} "
+                    f"→ {selected_pool['instance_type']} in {selected_pool['az']}"
+                )
+                return "SUCCESS"
+            else:
+                self.logger.error(
+                    f"[execution] NodePool patch failed for cluster {cluster_id}: {result}"
+                )
+                return "FAILED"
+        except Exception as e:
+            self.logger.error(f"[execution] _patch_nodepool exception: {e}", exc_info=True)
+            return "FAILED"
+        finally:
+            if db:
+                db.close()
 
     def _apply_fallback(self, cluster_id: str) -> str:
-        """Apply fallback configuration (On-Demand)"""
-        self.logger.info(f"Applying fallback for cluster {cluster_id}")
-        return "SUCCESS"
+        """
+        Apply on-demand fallback via KarpenterService.switch_to_ondemand().
+        Uses the cluster's current instance types to keep the same sizing.
+        """
+        from backend.models.base import get_db
+        from backend.models.instance import Instance, InstanceLifecycle
+        from backend.services.karpenter_service import KarpenterService
+        from backend.core.redis_client import get_redis_client
+
+        db = None
+        try:
+            db = next(get_db())
+            try:
+                redis = get_redis_client()
+            except Exception:
+                redis = None
+            # Collect current running instance types to keep sizing constraints intact
+            od_types = [
+                i.instance_type for i in db.query(Instance).filter(
+                    Instance.cluster_id == cluster_id,
+                    Instance.state == "running",
+                ).all() if i.instance_type
+            ]
+            od_types = list(set(od_types)) or ["t3.medium"]
+            ksvc = KarpenterService(db, redis)
+            result = ksvc.switch_to_ondemand(
+                cluster_id=cluster_id,
+                template_instance_types=od_types,
+            )
+            return "SUCCESS" if result.get("status") == "success" else "FAILED"
+        except Exception as e:
+            self.logger.error(f"[execution] _apply_fallback exception: {e}", exc_info=True)
+            return "FAILED"
+        finally:
+            if db:
+                db.close()
 
     def _revert_changes(self, cluster_id: str) -> str:
-        """Revert to previous configuration"""
-        self.logger.info(f"Reverting changes for cluster {cluster_id}")
-        return "SUCCESS"
+        """
+        Revert by switching back to on-demand (same as fallback).
+        KarpenterService will re-enable spot on the next ML ranking cycle.
+        """
+        return self._apply_fallback(cluster_id)
