@@ -302,10 +302,17 @@ class ExecutionController:
     def _dry_run_capacity_check(
         self, instance_type: str, az: str, region: str
     ) -> Tuple[bool, str]:
-        """Validate capacity availability via AWS EC2 dry-run."""
-        # Production: call boto3 EC2 run_instances(DryRun=True)
-        logger.info(f"[ExecCtrl] Dry-run capacity check: {instance_type} in {az}/{region}")
-        return True, f"Capacity available for {instance_type} in {az}"
+        """Validate capacity availability via AWS EC2 RunInstances DryRun (cached 2 min)."""
+        from backend.utils.aws.dry_run import dry_run_pool
+        try:
+            from backend.core.redis_client import get_redis_client
+            _redis = self.redis or get_redis_client()
+        except Exception:
+            _redis = None
+        available = dry_run_pool(region=region, instance_type=instance_type, az=az, redis=_redis)
+        if available:
+            return True, f"Capacity available for {instance_type} in {az}"
+        return False, f"InsufficientInstanceCapacity: {instance_type} in {az}/{region}"
 
     def _provision_substitute(
         self, cluster_id: str, instance_type: str, az: str, region: str

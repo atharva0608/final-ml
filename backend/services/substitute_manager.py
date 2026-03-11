@@ -900,6 +900,7 @@ class SubstituteManager:
                     "vcpu": vcpu,
                     "memory_gb": float(mem),
                     "instance_id": inst.instance_id,
+                    "az": getattr(inst, "az", None) or getattr(inst, "availability_zone", None),
                 }
 
         return best
@@ -925,6 +926,9 @@ class SubstituteManager:
             return {"status": "no_nodes", "cluster_id": cluster_id}
 
         # ── Find cheapest spot pool that fits those specs ──────────────────────
+        # Prefer the same AZ as the largest node so zonal PVCs can reschedule
+        # onto the warm spare without a cross-AZ binding conflict.
+        preferred_az = max_node.get("az")
         try:
             from backend.services.pool_ranking_service import PoolRankingService
             _svc = PoolRankingService(self.db, self.redis)
@@ -932,11 +936,31 @@ class SubstituteManager:
                 vcpu=max_node["vcpu"],
                 memory_gb=max_node["memory_gb"],
                 region=region,
-                limit=5
+                limit=10,  # fetch more so AZ filter has candidates to choose from
             )
             if not ranked:
                 return {"status": "no_pools_found", "cluster_id": cluster_id, "max_node": max_node}
-            best = ranked[0]
+
+            # Prefer pools in the same AZ as the max node (for PVC topology affinity).
+            # Fall back to globally-best pool if none available in that AZ.
+            if preferred_az:
+                az_matched = [p for p in ranked if getattr(p.pool, "az", None) == preferred_az]
+                if az_matched:
+                    best = az_matched[0]
+                    logger.info(
+                        f"[warm-spare] AZ-pinned spare for cluster {cluster_id}: "
+                        f"{best.pool.instance_type} in {preferred_az} "
+                        f"(matched max-node AZ)"
+                    )
+                else:
+                    best = ranked[0]
+                    logger.warning(
+                        f"[warm-spare] No pools in max-node AZ {preferred_az} for cluster "
+                        f"{cluster_id} — using globally-best pool in {best.pool.az}"
+                    )
+            else:
+                best = ranked[0]
+
             best_pool_data = {
                 "instance_type": best.pool.instance_type,
                 "az": best.pool.az,

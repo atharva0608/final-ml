@@ -36,13 +36,31 @@ def handle_termination(instance_id, cluster_id, region, instance_type, az, node_
         db = next(get_db())
         pool_key = f'{instance_type}:{az}'
 
-        # Direct replacement via ExecutionController
+        # Direct replacement via ExecutionController (spot attempt)
+        spot_ok = False
         try:
             from backend.services.execution_controller import ExecutionController
             controller = ExecutionController(cluster_id=cluster_id, region=region)
-            controller.execute_replacement(bypass_double_gate=True, db=db)
+            result = controller.execute_replacement(bypass_double_gate=True, db=db)
+            spot_ok = bool(result and result.get('success'))
         except Exception as e:
             logger.error(f'[emergency_handler] ExecutionController failed: {e}')
+
+        # On-demand last resort — triggered when spot fails during the 2-minute window.
+        # We cannot afford another spot retry that may hit ICE again.
+        if not spot_ok:
+            logger.warning(
+                f'[emergency_handler] Spot replacement failed for cluster {cluster_id} — '
+                f'attempting on-demand fallback ({instance_type} in {region})'
+            )
+            _launch_od_emergency_fallback(
+                cluster_id=cluster_id,
+                region=region,
+                instance_type=instance_type,
+                az=az,
+                db=db,
+                redis=redis,
+            )
 
         # Blacklist terminated pool for 24h
         redis.setex(key_blacklist_global(pool_key), 86400, '1')
@@ -54,3 +72,73 @@ def handle_termination(instance_id, cluster_id, region, instance_type, az, node_
         return {'status': 'handled', 'instance_id': instance_id, 'cluster_id': cluster_id}
     finally:
         redis.delete(lock_key)
+
+
+def _launch_od_emergency_fallback(
+    cluster_id: str,
+    region: str,
+    instance_type: str,
+    az: str,
+    db,
+    redis,
+) -> None:
+    """
+    Launch an on-demand instance as a last resort during spot interruption.
+
+    Called only when the spot replacement attempt fails (e.g. ICE across the
+    region during a mass-reclamation event).  Uses the same instance type as
+    the terminated spot node to preserve cluster sizing.
+
+    The instance is tagged so auto_rebalancer can later convert it back to
+    spot once capacity recovers.
+    """
+    try:
+        import boto3
+        from backend.models.cluster import Cluster
+        from backend.utils.aws.asg import get_assumed_credentials
+
+        cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+        if not cluster:
+            logger.error(f'[emergency_handler] OD fallback: cluster {cluster_id} not found')
+            return
+
+        creds = get_assumed_credentials(cluster, db)
+        session = boto3.Session(
+            aws_access_key_id=creds.get('AccessKeyId'),
+            aws_secret_access_key=creds.get('SecretAccessKey'),
+            aws_session_token=creds.get('SessionToken'),
+        )
+        ec2 = session.client('ec2', region_name=region)
+
+        resp = ec2.run_instances(
+            InstanceType=instance_type,
+            MinCount=1,
+            MaxCount=1,
+            Placement={'AvailabilityZone': az},
+            # Explicitly request on-demand — no spot market options
+            TagSpecifications=[{
+                'ResourceType': 'instance',
+                'Tags': [
+                    {'Key': 'spot-optimizer:status', 'Value': 'od-emergency-fallback'},
+                    {'Key': 'spot-optimizer:cluster-id', 'Value': cluster_id},
+                    {'Key': 'spot-optimizer:revert-to-spot', 'Value': 'true'},
+                ],
+            }],
+        )
+        od_id = resp['Instances'][0]['InstanceId']
+        logger.info(
+            f'[emergency_handler] OD fallback launched: {od_id} '
+            f'({instance_type} in {az}) for cluster {cluster_id}'
+        )
+        # Mark in Redis so auto_rebalancer will convert back to spot once capacity recovers
+        redis.setex(
+            f'emergency:od_fallback:{cluster_id}',
+            86400,
+            json.dumps({'instance_id': od_id, 'instance_type': instance_type, 'az': az}),
+        )
+
+    except Exception as e:
+        logger.error(
+            f'[emergency_handler] OD fallback FAILED for cluster {cluster_id}: {e}',
+            exc_info=True,
+        )
