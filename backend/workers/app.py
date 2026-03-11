@@ -8,8 +8,7 @@ app = Celery(
     backend=os.environ.get("REDIS_URL", "redis://localhost:6379/0"),
     include=[
         'backend.workers.tasks.discovery',
-        'backend.workers.tasks.pricing_task',
-        'backend.workers.tasks.pricing_worker',  # NEW: Phase 1 enterprise pricing
+        'backend.workers.tasks.pricing_worker',  # Phase 1 enterprise pricing (replaces legacy pricing_task)
         'backend.workers.tasks.instance_catalog_worker',  # NEW: Phase 1 instance catalog
         'backend.workers.tasks.agent_tasks',
         'backend.workers.tasks.health',
@@ -44,11 +43,7 @@ app.conf.beat_schedule = {
         'task': 'workers.discovery.scan_all_accounts',
         'schedule': 300.0,
     },
-    # Pricing task
-    'pricing-every-hour': {
-        'task': 'backend.workers.tasks.pricing.fetch_aws_pricing',
-        'schedule': 3600.0,
-    },
+    # NOTE: legacy fetch_aws_pricing removed — replaced by pricing_worker.py tasks below
     # NEW: Zombie Node Cleanup (2 mins)
     'zombie-cleanup-every-2-mins': {
         'task': 'backend.workers.tasks.health.cleanup_zombie_nodes',
@@ -128,12 +123,9 @@ app.conf.beat_schedule = {
         'task': 'workers.optimizer.update_pod_restart_baseline',
         'schedule': 3600.0,  # 1 hour
     },
-    # Spot Price Collection (Every 10 minutes) - Collects historical spot prices for ML features
-    # FIXED: Now uses real AWS pricing scraper instead of mock data
-    'spot-price-collection-every-10-mins': {
-        'task': 'backend.workers.tasks.pricing.fetch_aws_pricing',
-        'schedule': 600.0,  # 10 minutes
-    },
+    # Spot prices covered by pricing_worker.py:
+    #   regional-pricing-refresh-every-10-mins  (refresh_regional_pricing)
+    #   spot-price-ingest-every-10-mins         (ingest_spot_prices)
     # Termination Monitor (Every 30 seconds) - Monitors spot termination notices and updates blacklist
     'termination-monitor-every-30-secs': {
         'task': 'workers.termination_monitor',
