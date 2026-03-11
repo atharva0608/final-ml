@@ -942,7 +942,9 @@ class SubstituteManager:
                 return {"status": "no_pools_found", "cluster_id": cluster_id, "max_node": max_node}
 
             # Prefer pools in the same AZ as the max node (for PVC topology affinity).
-            # Fall back to globally-best pool if none available in that AZ.
+            # If no pool exists in that AZ AND the cluster has stateful/PVC workloads,
+            # abort rather than provision a spare in the wrong AZ — a zonal PVC pod
+            # cannot reschedule cross-AZ and the spare would be a cost leak.
             if preferred_az:
                 az_matched = [p for p in ranked if getattr(p.pool, "az", None) == preferred_az]
                 if az_matched:
@@ -953,10 +955,29 @@ class SubstituteManager:
                         f"(matched max-node AZ)"
                     )
                 else:
+                    # No capacity in preferred AZ — check if cluster has zonal PVC workloads
+                    _has_stateful = self._cluster_has_zonal_pvc_workloads(cluster_id)
+                    if _has_stateful:
+                        logger.warning(
+                            f"[warm-spare] ABORT: cluster {cluster_id} has zonal PVC workloads "
+                            f"but no capacity in preferred AZ {preferred_az}. "
+                            f"Refusing global-AZ fallback — a spare in the wrong zone is a cost leak. "
+                            f"Will retry next cycle when {preferred_az} capacity recovers."
+                        )
+                        return {
+                            "status": "aborted_pvc_az_constraint",
+                            "cluster_id": cluster_id,
+                            "reason": (
+                                f"No spot capacity in {preferred_az} and cluster has zonal PVC "
+                                f"workloads — cross-AZ spare would be unusable."
+                            ),
+                        }
+                    # Stateless cluster: global fallback is safe
                     best = ranked[0]
                     logger.warning(
                         f"[warm-spare] No pools in max-node AZ {preferred_az} for cluster "
-                        f"{cluster_id} — using globally-best pool in {best.pool.az}"
+                        f"{cluster_id} — stateless cluster, using globally-best pool "
+                        f"in {best.pool.az}"
                     )
             else:
                 best = ranked[0]
@@ -1044,6 +1065,51 @@ class SubstituteManager:
             "spare_az": best_pool_data["az"],
             "monthly_cost": best_pool_data["monthly_cost"],
         }
+
+    # =========================================================================
+    def _cluster_has_zonal_pvc_workloads(self, cluster_id: str) -> bool:
+        """
+        Return True if the cluster has pods with Persistent Volume Claims bound to
+        a specific AZ (EBS, local-path, etc.).  These pods cannot reschedule
+        cross-AZ, so provisioning a warm spare in a different AZ is pointless.
+
+        Uses WorkloadInspector's cached classification first (O(1) Redis lookup).
+        Falls back to pod_metric table scan if cache is cold.
+        Returns False on any error (conservative — allows global fallback).
+        """
+        try:
+            # Fast path: check WorkloadInspector cache
+            classifications = self.workload_inspector.get_cached_classification(cluster_id)
+            if classifications:
+                from backend.services.workload_inspector import NodeStatus as _NS
+                for _, status in classifications.items():
+                    if status in (_NS.STATEFUL_PROTECTED, _NS.STATEFUL_ELIGIBLE):
+                        return True
+                # All nodes explicitly classified as stateless
+                return False
+        except Exception:
+            pass
+
+        # Slow path: scan pod_metric metadata for PVC volume mounts
+        try:
+            from backend.models.pod_metric import PodMetric as _PM
+            from datetime import datetime as _dt, timedelta as _td
+            recent_cutoff = _dt.utcnow() - _td(minutes=10)
+            metrics = self.db.query(_PM).filter(
+                _PM.cluster_id == cluster_id,
+                _PM.timestamp >= recent_cutoff,
+            ).limit(200).all()
+            for m in metrics:
+                meta = m.pod_metadata or {}
+                volumes = meta.get("volumes", [])
+                if isinstance(volumes, list) and any(
+                    "persistentVolumeClaim" in v for v in volumes
+                ):
+                    return True
+        except Exception as _e:
+            logger.warning(f"[warm-spare] PVC workload check failed for {cluster_id}: {_e}")
+
+        return False
 
     # =========================================================================
     # Status & Reconciliation

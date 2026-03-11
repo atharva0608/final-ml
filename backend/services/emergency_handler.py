@@ -36,6 +36,33 @@ def handle_termination(instance_id, cluster_id, region, instance_type, az, node_
         db = next(get_db())
         pool_key = f'{instance_type}:{az}'
 
+        # Proactively force-delete the K8s Node object.
+        # The EC2 instance is being terminated by AWS; Kubernetes marks the node
+        # NotReady but does NOT auto-delete the Node object for several minutes.
+        # StatefulSet pods get stuck in Terminating and block rescheduling onto
+        # the warm spare until the object is gone.  Queue a FORCE_DELETE_NODE
+        # so the in-cluster agent clears it immediately.
+        if node_name:
+            try:
+                from backend.models.agent_action import AgentAction, AgentActionType, AgentActionStatus
+                from backend.models.base import generate_uuid
+                _force_del = AgentAction(
+                    id=generate_uuid(),
+                    cluster_id=cluster_id,
+                    action_type=AgentActionType.FORCE_DELETE_NODE,
+                    status=AgentActionStatus.PENDING,
+                    payload={"node_name": node_name, "instance_id": instance_id,
+                             "reason": "spot_interruption_hardware_termination"},
+                )
+                db.add(_force_del)
+                db.commit()
+                logger.info(
+                    f'[emergency_handler] Queued FORCE_DELETE_NODE for ghost node '
+                    f'{node_name} (instance {instance_id})'
+                )
+            except Exception as _fdn_err:
+                logger.warning(f'[emergency_handler] FORCE_DELETE_NODE queue failed: {_fdn_err}')
+
         # Direct replacement via ExecutionController (spot attempt)
         spot_ok = False
         try:

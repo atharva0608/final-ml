@@ -251,6 +251,34 @@ class ActionActuator:
                 'error': str(e)
             }
 
+    def force_delete_node(self, node_name: str) -> Dict[str, Any]:
+        """
+        Force-delete a K8s Node object immediately.
+
+        Used when the underlying EC2 instance is already gone (hardware failure,
+        AWS spot reclamation) and the Node is stuck in NotReady, holding
+        StatefulSet pods in Terminating state and blocking rescheduling.
+
+        Equivalent to: kubectl delete node <node_name> --grace-period=0 --force
+        """
+        logger.info(f"[force_delete_node] Force-deleting ghost node {node_name}")
+        try:
+            from kubernetes.client.rest import ApiException as _ApiEx
+            from kubernetes.client import V1DeleteOptions
+            self.core_v1.delete_node(
+                name=node_name,
+                body=V1DeleteOptions(grace_period_seconds=0),
+            )
+            logger.info(f"[force_delete_node] Ghost node {node_name} deleted from cluster state")
+            return {'success': True, 'message': f'Ghost node {node_name} force-deleted'}
+        except Exception as e:
+            # If node is already gone, treat as success
+            _reason = getattr(e, 'reason', '') or str(e)
+            if 'not found' in _reason.lower() or '404' in _reason:
+                return {'success': True, 'message': f'Node {node_name} already absent from cluster'}
+            logger.error(f"[force_delete_node] Failed to delete {node_name}: {e}")
+            return {'success': False, 'message': str(e)}
+
     def drain_node(self, node_name: str, force: bool = False,
                    grace_period: int = 30) -> Dict[str, Any]:
         """
@@ -1202,6 +1230,26 @@ class ActionActuator:
             if not node_name:
                 return {'success': False, 'message': f"Could not find node for instance_id={payload.get('instance_id')} type={payload.get('instance_type')} az={payload.get('az')}"}
             return self.cordon_node(node_name, uncordon=False)
+
+        elif action_type == 'UNCORDON_NODE':
+            node_name = (payload.get('node_name') or
+                         self._find_node_by_instance_id(payload.get('instance_id', '')) or
+                         self._find_node_name(payload.get('instance_type', ''), payload.get('az', '')))
+            if not node_name:
+                return {'success': False, 'message': f"Could not find node to uncordon: instance_id={payload.get('instance_id')}"}
+            return self.cordon_node(node_name, uncordon=True)
+
+        elif action_type == 'FORCE_DELETE_NODE':
+            # Force-delete the K8s Node object immediately (no graceful drain).
+            # Used when the underlying EC2 instance has already been terminated by AWS
+            # (hardware failure, spot reclamation) and the Node is stuck NotReady,
+            # holding StatefulSet pods in Terminating state.
+            node_name = (payload.get('node_name') or
+                         self._find_node_by_instance_id(payload.get('instance_id', '')) or
+                         self._find_node_name(payload.get('instance_type', ''), payload.get('az', '')))
+            if not node_name:
+                return {'success': False, 'message': f"Could not find ghost node to force-delete: instance_id={payload.get('instance_id')}"}
+            return self.force_delete_node(node_name)
 
         elif action_type == 'DRAIN_NODE':
             # Prefer exact instance_id lookup (via providerID), then fallback to type+AZ

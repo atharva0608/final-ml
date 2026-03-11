@@ -1551,9 +1551,10 @@ def execute_rebalancing():
                             continue
 
                         if _pods_stuck and _post_drain_elapsed >= _READINESS_MAX_S:
-                            # 5-min timeout: pods may still be stuck but K8s node is already
-                            # deleted. UNCORDON_NODE is not a valid AgentActionType, so we
-                            # cannot roll back. Log the anomaly and proceed to EC2 terminate.
+                            # 5-min timeout: pods may still be stuck but the K8s node object
+                            # was already deleted by the drain sequence — uncordon is not
+                            # meaningful at this point (there is nothing to uncordon).
+                            # Log the anomaly and proceed to EC2 terminate.
                             logger.warning(
                                 f"[auto_rebalancer] Action {_wa.id}: pod readiness timeout "
                                 f"({int(_post_drain_elapsed)}s) — pods may still be on "

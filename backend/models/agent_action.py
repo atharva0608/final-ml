@@ -22,6 +22,7 @@ class AgentActionType(enum.Enum):
     PATCH_CONTAINER_RESOURCES = "PATCH_CONTAINER_RESOURCES"  # Right-sizing: update CPU/memory requests+limits
     TERMINATE_NODE = "TERMINATE_NODE"  # Terminate EC2 instance after drain so Karpenter sees Pending pods
     UNCORDON_NODE = "UNCORDON_NODE"  # Uncordon a node (e.g., activate standby during emergency)
+    FORCE_DELETE_NODE = "FORCE_DELETE_NODE"  # Force-delete K8s Node object for ghost/hardware-failed nodes
 
 
 class AgentActionStatus(enum.Enum):
