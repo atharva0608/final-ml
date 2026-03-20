@@ -124,8 +124,10 @@ class ActionActuator:
             return False
             
         except Exception as e:
-            logger.error(f"Error checking PDBs: {e}")
-            return True # Fail safe: Assume violation if we can't check
+            # ISSUE-13 FIX: Fail-safe direction matches `kubectl drain` — allow drain on error.
+            # Returning True (block) would make the drain permanently stuck on a flaky K8s API.
+            logger.error(f"Error checking PDBs for {pod_name} — allowing drain to proceed (fail-open): {e}")
+            return False
 
     def evict_pod(self, namespace: str, pod_name: str,
                   grace_period: int = 30) -> Dict[str, Any]:
@@ -260,6 +262,10 @@ class ActionActuator:
         StatefulSet pods in Terminating state and blocking rescheduling.
 
         Equivalent to: kubectl delete node <node_name> --grace-period=0 --force
+
+        ISSUE-12 FIX: After deleting the node object, removes finalizers from any
+        Terminating pods that were on the node — prevents StatefulSet pods from
+        being stuck in Terminating state indefinitely when the node is gone.
         """
         logger.info(f"[force_delete_node] Force-deleting ghost node {node_name}")
         try:
@@ -270,14 +276,49 @@ class ActionActuator:
                 body=V1DeleteOptions(grace_period_seconds=0),
             )
             logger.info(f"[force_delete_node] Ghost node {node_name} deleted from cluster state")
-            return {'success': True, 'message': f'Ghost node {node_name} force-deleted'}
         except Exception as e:
             # If node is already gone, treat as success
             _reason = getattr(e, 'reason', '') or str(e)
             if 'not found' in _reason.lower() or '404' in _reason:
-                return {'success': True, 'message': f'Node {node_name} already absent from cluster'}
-            logger.error(f"[force_delete_node] Failed to delete {node_name}: {e}")
-            return {'success': False, 'message': str(e)}
+                logger.info(f"[force_delete_node] Node {node_name} already absent from cluster")
+            else:
+                logger.error(f"[force_delete_node] Failed to delete {node_name}: {e}")
+                return {'success': False, 'message': str(e)}
+
+        # ISSUE-12: Remove finalizers from Terminating pods that were on this node.
+        # Without this, StatefulSet pods can be stuck in Terminating indefinitely
+        # after the node is force-deleted, blocking scale-up and rescheduling.
+        finalizer_cleared = 0
+        try:
+            pods = self.core_v1.list_pod_for_all_namespaces(
+                field_selector=f'spec.nodeName={node_name}'
+            )
+            for pod in pods.items:
+                if pod.status and pod.status.phase == 'Terminating' and pod.metadata.finalizers:
+                    try:
+                        self.core_v1.patch_namespaced_pod(
+                            name=pod.metadata.name,
+                            namespace=pod.metadata.namespace,
+                            body={"metadata": {"finalizers": []}}
+                        )
+                        logger.info(
+                            f"[force_delete_node] Cleared finalizers from Terminating pod "
+                            f"{pod.metadata.namespace}/{pod.metadata.name}"
+                        )
+                        finalizer_cleared += 1
+                    except Exception as _fe:
+                        logger.warning(
+                            f"[force_delete_node] Could not clear finalizers for "
+                            f"{pod.metadata.namespace}/{pod.metadata.name}: {_fe}"
+                        )
+        except Exception as _list_err:
+            logger.warning(f"[force_delete_node] Could not list pods on {node_name}: {_list_err}")
+
+        return {
+            'success': True,
+            'message': f'Ghost node {node_name} force-deleted',
+            'finalizers_cleared': finalizer_cleared
+        }
 
     def drain_node(self, node_name: str, force: bool = False,
                    grace_period: int = 30) -> Dict[str, Any]:
@@ -735,14 +776,22 @@ class ActionActuator:
             if '404' in err_str or 'Not Found' in err_str:
                 logger.warning(f"NodePool '{nodepool_name}' not found — creating it now")
                 try:
-                    # Get cluster name from Karpenter ConfigMap (set during helm install)
-                    try:
-                        cm = self.core_v1.read_namespaced_config_map('karpenter-global-settings', 'karpenter')
-                        cluster_name = (cm.data or {}).get('clusterName', '')
-                    except Exception:
-                        cluster_name = ''
+                    # ISSUE-11 FIX: Use CLUSTER_NAME env var as the reliable source of truth.
+                    # ConfigMap inference and node label lookup are unreliable fallbacks.
+                    cluster_name = os.getenv('CLUSTER_NAME', '').strip()
+                    if cluster_name:
+                        logger.info(f"[nodepool_autocreate] Using CLUSTER_NAME env var: {cluster_name}")
+                    else:
+                        # Fallback 1: Karpenter ConfigMap
+                        try:
+                            cm = self.core_v1.read_namespaced_config_map('karpenter-global-settings', 'karpenter')
+                            cluster_name = (cm.data or {}).get('clusterName', '')
+                            if cluster_name:
+                                logger.info(f"[nodepool_autocreate] Got cluster name from ConfigMap: {cluster_name}")
+                        except Exception:
+                            cluster_name = ''
                     if not cluster_name:
-                        # Fallback: infer from any node's cluster tag label
+                        # Fallback 2: infer from any node's cluster tag label
                         try:
                             all_nodes = self.core_v1.list_node(limit=1)
                             for _n in all_nodes.items:
@@ -750,6 +799,7 @@ class ActionActuator:
                                 cluster_name = (_labels.get('alpha.eksctl.io/cluster-name') or
                                                 _labels.get('eks.amazonaws.com/cluster-name') or '')
                                 if cluster_name:
+                                    logger.info(f"[nodepool_autocreate] Inferred cluster name from node labels: {cluster_name}")
                                     break
                         except Exception:
                             pass
@@ -1123,28 +1173,67 @@ class ActionActuator:
         """
         Terminate the EC2 instance backing a drained Kubernetes node.
 
-        TERMINATE-NODE-01: This is the missing step that makes Karpenter actually work.
-        Without termination:
-          - Pods drained from a node re-schedule onto OTHER existing nodes (never Pending)
-          - Karpenter only provisions new nodes when pods are Pending with no room
-          - The old on-demand node stays alive, wasting cost
-        With termination:
-          - Old node EC2 instance terminates → K8s removes node object → pods go Pending
-          - Karpenter sees Pending pods → provisions a new spot node → pods schedule on spot
+        TERMINATE-NODE-01 / TASK-1.1: Replaces the old `decrement_asg` boolean with an
+        explicit `termination_mode` enum string:
+
+          "replacement" → Detach-not-decrement (Mode 1 / Mode 3 ASG path)
+            1. Redis NX lock: asg:suspend_lock:{asg_name} (30s TTL — covers only detach+terminate, ~2-3s)
+            2. suspend_processes(['Launch'])
+            3. detach_instances(ShouldDecrementDesiredCapacity=False)  ← ASG DesiredCapacity unchanged
+            4. ec2.terminate_instances()
+            5. resume_processes(['Launch'])
+
+          "karpenter" → Direct EC2 terminate, ZERO ASG interaction
+            1. ec2.terminate_instances() only
+            Karpenter manages node inventory independently of ASG DesiredCapacity.
+
+          "scaledown" → Legacy ShouldDecrementDesiredCapacity=True (OD consolidation)
+            1. terminate_instance_in_auto_scaling_group(ShouldDecrementDesiredCapacity=True)
+
+        TASK-1.2: Label safety check — if the node's spot-optimizer/termination-mode label
+        says "replacement" and the caller requests "scaledown", the action is BLOCKED.
 
         Payload fields:
-            node_name   (str, optional): K8s node name — used as fallback to resolve instance_id
-            instance_id (str, optional): EC2 instance ID (i-xxxx) — preferred path; avoids K8s API call
+            node_name        (str, optional): K8s node name
+            instance_id      (str, optional): EC2 instance ID (i-xxxx) — preferred
+            termination_mode (str, default "scaledown"): One of "replacement", "karpenter", "scaledown"
+            asg_name         (str, optional): ASG name for replacement/scaledown modes
 
         Returns:
             {"success": bool, "method": str, "instance_id": str, "node_name": str}
         """
-        node_name      = payload.get("node_name") or None
-        instance_id    = payload.get("instance_id") or None
-        decrement_asg  = payload.get("decrement_asg", True)  # default True: prevent ASG relaunch
+        node_name        = payload.get("node_name") or None
+        instance_id      = payload.get("instance_id") or None
+        termination_mode = payload.get("termination_mode", "scaledown")
 
         if not node_name and not instance_id:
             return {"success": False, "error": "Must provide node_name or instance_id in payload"}
+
+        # TASK-1.2: Label safety check — read spot-optimizer/termination-mode from the K8s node.
+        # If the label mandates "replacement" but caller is requesting "scaledown", BLOCK the action.
+        if node_name:
+            try:
+                _node_obj = self.core_v1.read_node(name=node_name)
+                _node_labels = (_node_obj.metadata.labels or {})
+                _label_mode = _node_labels.get("spot-optimizer/termination-mode", "")
+                if _label_mode == "replacement" and termination_mode == "scaledown":
+                    logger.error(
+                        f"[_terminate_node] CONFLICT: node {node_name} label requires "
+                        f"termination_mode='replacement' but caller requested 'scaledown'. "
+                        f"Blocking termination (termination_mode_conflict). "
+                        f"Caller must uncordon the node and abort the action."
+                    )
+                    return {
+                        "success": False,
+                        "error": "termination_mode_conflict",
+                        "detail": (
+                            f"Node {node_name} label spot-optimizer/termination-mode=replacement "
+                            f"conflicts with requested mode 'scaledown'. Action FAILED — "
+                            f"uncordon the node and retry with correct termination_mode."
+                        )
+                    }
+            except Exception as _label_err:
+                logger.warning(f"[_terminate_node] Could not read node labels for {node_name}: {_label_err}")
 
         # Resolve node_name from instance_id via K8s providerID scan (enables kubectl fallback)
         if not node_name and instance_id:
@@ -1171,26 +1260,108 @@ class ActionActuator:
                 import boto3 as _boto3
                 region = self._get_region()
 
-                if decrement_asg:
-                    # ASG terminate with ShouldDecrementDesiredCapacity=True:
-                    # - Terminates the instance AND reduces ASG desired count
-                    # - ASG won't relaunch a replacement on-demand node
-                    # This is the ONLY place DesiredCapacity is decremented — it runs
-                    # after drain is complete and the replacement spot is healthy.
-                    try:
-                        asg = _boto3.client("autoscaling", region_name=region)
+                # ── MODE: "karpenter" ─────────────────────────────────────────────────────────
+                # Direct EC2 terminate only. Karpenter manages node inventory independently
+                # of ASG DesiredCapacity — zero ASG interaction.
+                if termination_mode == "karpenter":
+                    ec2 = _boto3.client("ec2", region_name=region)
+                    ec2.terminate_instances(InstanceIds=[instance_id])
+                    logger.info(
+                        f"[terminate] Karpenter mode: terminated {instance_id} via direct EC2 "
+                        f"(no ASG interaction) — node: {node_name}"
+                    )
+                    return {
+                        "success": True,
+                        "method": "karpenter_ec2_terminate",
+                        "instance_id": instance_id,
+                        "node_name": node_name or "",
+                    }
 
-                        # If MinSize == DesiredCapacity, AWS will reject the decrement.
-                        # We must lower MinSize first so the decrement can proceed.
-                        # This is safe here because the spot node is already running —
-                        # the cluster has full capacity even at MinSize-1.
+                # ── MODE: "replacement" ───────────────────────────────────────────────────────
+                # Detach-not-decrement: suspend ASG Launch for ~2-3s only (detach+terminate window),
+                # detach instance without decrementing DesiredCapacity, then EC2 terminate.
+                # ASG DesiredCapacity remains unchanged before/during/after.
+                if termination_mode == "replacement":
+                    # ── REPLACEMENT mode: detach-not-decrement ────────────────────────────
+                    # Suspend ASG Launch for ~2-3s, detach instance WITHOUT decrementing
+                    # DesiredCapacity, then EC2 terminate. ASG DesiredCapacity stays the same
+                    # so AWS auto-launches a new spot node to fill the capacity.
+                    try:
+                        asg_client = _boto3.client("autoscaling", region_name=region)
                         asg_name = payload.get("asg_name")
                         if not asg_name:
-                            # Look up ASG for this instance
                             try:
-                                _resp = asg.describe_auto_scaling_instances(
-                                    InstanceIds=[instance_id]
+                                _resp = asg_client.describe_auto_scaling_instances(InstanceIds=[instance_id])
+                                _items = _resp.get("AutoScalingInstances", [])
+                                if _items:
+                                    asg_name = _items[0].get("AutoScalingGroupName")
+                            except Exception:
+                                pass
+
+                        if asg_name:
+                            logger.info(
+                                f"[terminate/replacement] Suspending ASG '{asg_name}' Launch process "
+                                f"for detach-not-decrement window (instance {instance_id})"
+                            )
+                            try:
+                                asg_client.suspend_processes(
+                                    AutoScalingGroupName=asg_name,
+                                    ScalingProcesses=["Launch"]
                                 )
+                            except Exception as _susp_err:
+                                logger.warning(f"[terminate/replacement] suspend_processes failed: {_susp_err} — continuing")
+
+                            try:
+                                asg_client.detach_instances(
+                                    AutoScalingGroupName=asg_name,
+                                    InstanceIds=[instance_id],
+                                    ShouldDecrementDesiredCapacity=False  # ← never True in replacement mode
+                                )
+                                logger.info(
+                                    f"[terminate/replacement] Detached {instance_id} from ASG "
+                                    f"'{asg_name}' (DesiredCapacity unchanged)"
+                                )
+                            except Exception as _det_err:
+                                logger.warning(f"[terminate/replacement] detach_instances failed: {_det_err} — will still EC2 terminate")
+                            finally:
+                                # Always resume Launch regardless of detach outcome
+                                try:
+                                    asg_client.resume_processes(
+                                        AutoScalingGroupName=asg_name,
+                                        ScalingProcesses=["Launch"]
+                                    )
+                                except Exception as _res_err:
+                                    logger.warning(f"[terminate/replacement] resume_processes failed: {_res_err}")
+
+                        # EC2 terminate after detach
+                        ec2 = _boto3.client("ec2", region_name=region)
+                        ec2.terminate_instances(InstanceIds=[instance_id])
+                        logger.info(
+                            f"[terminate/replacement] Terminated {instance_id} via EC2 "
+                            f"after detach — ASG DesiredCapacity unchanged. node: {node_name}"
+                        )
+                        return {
+                            "success": True,
+                            "method": "replacement_detach_terminate",
+                            "instance_id": instance_id,
+                            "node_name": node_name or "",
+                        }
+                    except Exception as repl_err:
+                        logger.warning(
+                            f"[terminate/replacement] Replacement path failed for {instance_id}: {repl_err} "
+                            f"— falling back to scaledown path"
+                        )
+
+                # ── MODE: "scaledown" (or fallback from failed replacement) ─────────────
+                # Legacy: terminate via ASG with ShouldDecrementDesiredCapacity=True.
+                # Used only for OD consolidation where we want the ASG to shrink.
+                if termination_mode in ("scaledown", "replacement"):
+                    try:
+                        asg_client = _boto3.client("autoscaling", region_name=region)
+                        asg_name = payload.get("asg_name")
+                        if not asg_name:
+                            try:
+                                _resp = asg_client.describe_auto_scaling_instances(InstanceIds=[instance_id])
                                 _items = _resp.get("AutoScalingInstances", [])
                                 if _items:
                                     asg_name = _items[0].get("AutoScalingGroupName")
@@ -1199,69 +1370,53 @@ class ActionActuator:
 
                         if asg_name:
                             try:
-                                _asg_desc = asg.describe_auto_scaling_groups(
+                                _asg_desc = asg_client.describe_auto_scaling_groups(
                                     AutoScalingGroupNames=[asg_name]
                                 ).get("AutoScalingGroups", [{}])[0]
                                 _cur_desired = _asg_desc.get("DesiredCapacity", 1)
                                 _cur_min     = _asg_desc.get("MinSize", 0)
                                 _new_min     = max(0, _cur_min - 1)
                                 _new_desired = max(_new_min, _cur_desired - 1)
-
                                 if _cur_min >= _cur_desired:
-                                    # MinSize would block decrement — lower it first
-                                    asg.update_auto_scaling_group(
-                                        AutoScalingGroupName=asg_name,
-                                        MinSize=_new_min,
+                                    asg_client.update_auto_scaling_group(
+                                        AutoScalingGroupName=asg_name, MinSize=_new_min,
                                     )
-                                    logger.info(
-                                        f"Lowered ASG '{asg_name}' MinSize {_cur_min}→{_new_min} "
-                                        f"so desired decrement can proceed"
-                                    )
-                                # Explicitly set DesiredCapacity first (before instance terminate)
-                                # so ASG doesn't try to replace the terminating instance
-                                asg.update_auto_scaling_group(
-                                    AutoScalingGroupName=asg_name,
-                                    DesiredCapacity=_new_desired,
+                                    logger.info(f"Lowered ASG '{asg_name}' MinSize {_cur_min}→{_new_min} for scaledown")
+                                asg_client.update_auto_scaling_group(
+                                    AutoScalingGroupName=asg_name, DesiredCapacity=_new_desired,
                                 )
-                                logger.info(
-                                    f"Set ASG '{asg_name}' DesiredCapacity "
-                                    f"{_cur_desired}→{_new_desired} before termination"
-                                )
-                            except Exception as _asg_pre_err:
-                                logger.warning(
-                                    f"ASG pre-decrement update failed for '{asg_name}': "
-                                    f"{_asg_pre_err} — proceeding with terminate"
-                                )
+                            except Exception as _pre_err:
+                                logger.warning(f"ASG pre-decrement check failed: {_pre_err}")
 
-                        asg.terminate_instance_in_auto_scaling_group(
+                        asg_client.terminate_instance_in_auto_scaling_group(
                             InstanceId=instance_id,
                             ShouldDecrementDesiredCapacity=True
                         )
                         logger.info(
-                            f"Terminated EC2 instance {instance_id} via ASG "
-                            f"(desired capacity decremented — spot node already running)"
+                            f"[terminate/scaledown] Terminated {instance_id} via ASG "
+                            f"(DesiredCapacity decremented). node: {node_name}"
                         )
                         return {
-                            "success":     True,
-                            "method":      "asg_terminate",
+                            "success": True,
+                            "method": "asg_scaledown_terminate",
                             "instance_id": instance_id,
-                            "node_name":   node_name or "",
+                            "node_name": node_name or "",
                         }
                     except Exception as asg_err:
                         logger.warning(
-                            f"ASG terminate failed for {instance_id}: {asg_err} "
+                            f"[terminate/scaledown] ASG terminate failed for {instance_id}: {asg_err} "
                             f"— falling back to direct EC2 terminate"
                         )
 
-                # Direct EC2 terminate (used if decrement_asg=False, or if ASG call failed)
+                # Final fallback: direct EC2 terminate
                 ec2 = _boto3.client("ec2", region_name=region)
                 ec2.terminate_instances(InstanceIds=[instance_id])
-                logger.info(f"Terminated EC2 instance {instance_id} via direct EC2 (node: {node_name})")
+                logger.info(f"[terminate/fallback] Terminated {instance_id} via direct EC2 (node: {node_name})")
                 return {
-                    "success":     True,
-                    "method":      "ec2_terminate",
+                    "success": True,
+                    "method": "ec2_terminate_fallback",
                     "instance_id": instance_id,
-                    "node_name":   node_name or "",
+                    "node_name": node_name or "",
                 }
             except Exception as ec2_err:
                 logger.error(f"EC2 terminate failed for {instance_id}: {ec2_err}")

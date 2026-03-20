@@ -116,6 +116,45 @@ def resize_guard_worker(self):
                 )
                 continue
 
+            # ── MODE 3 SYNERGY: Pool-risk revert (Task 2.8) ───────────────
+            # When both rebalancing and rightsizing are active for a cluster,
+            # a resize can put a node onto a riskier pool that the rebalancer
+            # is simultaneously trying to *leave*.  Detect this conflict by
+            # comparing the post-resize pool risk score against the cluster's
+            # configured risk ceiling.
+            try:
+                from backend.models.cluster import Cluster
+                _cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+                if _cluster and getattr(_cluster, 'auto_rebalance_enabled', False) and getattr(_cluster, 'auto_rightsizing_enabled', False):
+                    # Both features active → synergy guard applies
+                    _risk_key = f"pool:risk_score:{cluster_id}:{proposal.instance_type or 'unknown'}"
+                    _pool_risk = redis.get(_risk_key)
+                    _ceiling_key = f"cluster:{cluster_id}:risk_ceiling_pct"
+                    _ceiling = redis.get(_ceiling_key)
+                    _ceiling_val = float(_ceiling) if _ceiling else 20.0  # default BALANCED ceiling
+
+                    if _pool_risk and float(_pool_risk) > _ceiling_val:
+                        logger.warning(
+                            f"[RESIZE-GUARD] Mode 3 synergy: pool risk {float(_pool_risk):.1f}% "
+                            f"> ceiling {_ceiling_val:.1f}% for cluster {cluster_id}"
+                        )
+                        redis.setex(f"resize:rollback_needed:{cluster_id}", 3600, "pool_risk_synergy")
+
+                        proposal.status = ProposalStatus.FAILED
+                        proposal.rejection_reason = (
+                            f"Synergy guard: pool risk {float(_pool_risk):.1f}% "
+                            f"exceeds ceiling {_ceiling_val:.1f}%"
+                        )
+                        db.commit()
+
+                        logger.error(
+                            f"[RESIZE-GUARD] Proposal {proposal.id} failed due to "
+                            f"pool risk synergy conflict"
+                        )
+                        continue
+            except Exception as _synergy_err:
+                logger.debug(f"[RESIZE-GUARD] Synergy check skipped: {_synergy_err}")
+
             # If all checks pass, log success
             logger.debug(
                 f"[RESIZE-GUARD] Cluster {cluster_id} healthy "

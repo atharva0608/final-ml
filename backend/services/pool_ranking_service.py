@@ -156,7 +156,12 @@ class PoolRankingService:
             return db_catalog
 
         # ── Hardcoded fallback (used until nightly worker populates DB) ───
-        logger.info("Using hardcoded instance catalog (DB catalog empty)")
+        # WARNING (Task 4.7): Boot-time fallback only. In production, the
+        # instance_catalog_worker populates the DB within the first scheduled run.
+        logger.warning(
+            "Using hardcoded instance catalog (DB catalog empty). "
+            "This is expected only on first boot before the nightly worker runs."
+        )
         return {
             "t3.nano":    {"vcpu": 2, "memory_gb": 0.5,  "architecture": "amd64"},
             "t3.micro":   {"vcpu": 2, "memory_gb": 1,    "architecture": "amd64"},
@@ -1175,8 +1180,8 @@ class PoolRankingService:
     def _step9_post_score_capacity_check(
         self, scored_pools: List[ScoredPool], region: str
     ) -> List[ScoredPool]:
-        """Post-scoring DryRun: validate top 10 candidates only."""
-        from botocore.exceptions import ClientError
+        """Post-scoring capacity check: validate top 10 candidates only via DescribeInstanceTypeOfferings."""
+        from botocore.exceptions import ClientError  # kept for except clause below
 
         active_clusters = int(self.redis.get("spot:active_cluster_count") or 1)
         MAX_DRYRUN_PER_HOUR = min(200, max(25, active_clusters * 2))
@@ -1212,51 +1217,30 @@ class PoolRankingService:
                 continue
 
             try:
+                # Use DescribeInstanceTypeOfferings instead of RunInstances DryRun.
+                # RunInstances DryRun requires ImageId (causing ParamValidationError),
+                # making every pool fail the check. DescribeInstanceTypeOfferings
+                # directly reports which instance types are offered in each AZ.
                 ec2 = self._get_ec2_client(region)
-                ec2.run_instances(
-                    InstanceType=pool.pool.instance_type,
-                    DryRun=True,
-                    MinCount=1,
-                    MaxCount=1,
-                    Placement={'AvailabilityZone': pool.pool.az}
+                _offerings_resp = ec2.describe_instance_type_offerings(
+                    LocationType="availability-zone",
+                    Filters=[
+                        {"Name": "instance-type", "Values": [pool.pool.instance_type]},
+                        {"Name": "location", "Values": [pool.pool.az]},
+                    ],
                 )
-            except ClientError as e:
-                error_code = e.response.get('Error', {}).get('Code', '') if hasattr(e, 'response') else ''
-
-                if error_code == "DryRunOperation":
-                    # Capacity available
+                _offered = bool(_offerings_resp.get("InstanceTypeOfferings"))
+                if _offered:
                     pool.capacity_status = "validated"
                     pool.capacity_validated_at = now.isoformat()
                     validated.append(pool)
-                    logger.debug(f"DryRun PASS: {pool.pool.instance_type}:{pool.pool.az}")
+                    logger.debug(f"Offering PASS: {pool.pool.instance_type}:{pool.pool.az}")
                 else:
-                    # Capacity unavailable or other error
-                    pool.capacity_status = "unavailable"
-                    pool_id = f"{pool.pool.instance_type}:{pool.pool.az}"
-
-                    # Track failures over 24h
-                    fail_key = f"spot:dryrun_failures_24h:{pool_id}"
-                    fail_count = self.redis.incr(fail_key)
-                    if fail_count == 1:
-                        self.redis.expire(fail_key, 86400)  # 24 hours
-
-                    # Tiered blacklisting
-                    ttl = 12 if fail_count >= 3 else 6
-                    try:
-                        from backend.services.blacklist_service import BlacklistService
-                        blacklist_svc = BlacklistService(self.redis)
-                        blacklist_svc.blacklist_pool_tiered(
-                            pool.pool.instance_type, pool.pool.az, region,
-                            reason=f"dryrun_failure_x{fail_count}", ttl_hours=ttl
-                        )
-                        # n=n replacement: remove from global cache, add next-best
-                        self.update_global_cache_on_blacklist(
-                            pool.pool.instance_type, pool.pool.az, region
-                        )
-                    except Exception as bl_err:
-                        logger.warning(f"Blacklist update failed: {bl_err}")
-
-                    logger.warning(f"DryRun FAIL ({error_code}): {pool_id} — failure #{fail_count}, blacklisted {ttl}h")
+                    # Not offered — mark unvalidated (do NOT blacklist; offering availability
+                    # varies by account/credentials and a false-negative here would
+                    # permanently remove valid pools from rankings).
+                    pool.capacity_status = "unvalidated"
+                    logger.debug(f"Offering not confirmed for {pool.pool.instance_type}:{pool.pool.az} — marking unvalidated")
             except Exception as e:
                 logger.error(f"DryRun exception for {pool.pool.instance_type}:{pool.pool.az}: {e}")
                 if hasattr(self, 'db') and self.db:

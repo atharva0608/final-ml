@@ -5,6 +5,7 @@ import { useClusterStore, useHeaderStore } from '../../store/useStore';
 import { formatCurrency } from '../../utils/formatters';
 import toast from 'react-hot-toast';
 import NodeTemplateTab from './NodeTemplateTab';
+import ClusterDetails from './ClusterDetails';
 
 // ─── PALETTE ─────────────────────────────────────────────────────────────────
 // Philosophy: near-monochrome UI chrome. Color ONLY for data/status indicators.
@@ -107,12 +108,18 @@ const OptimizationSettingsTab = ({ cluster }) => {
     auto_rightsizing_enabled: false,
     optimization_target: 'spot',
     optimization_target_locked: false,
-    cooldown_override_minutes: 300,
     conservative_mode_enabled: true,
     manual_approval_required: false,
     maintain_standby: false,
     failure_cooldown_minutes: 30,
-    diversify_pools: false
+    cooldown_override_minutes: 60,
+    diversify_pools: false,
+    max_family_diversification_cap_pct: 40,
+    min_node_count: 1,
+    scale_down_threshold_pct: 20,
+    scale_down_stabilization_minutes: 15,
+    enable_ascp_auto_scaler: false,
+    check_interval_seconds: 15
   });
 
   useEffect(() => {
@@ -126,13 +133,23 @@ const OptimizationSettingsTab = ({ cluster }) => {
             auto_rebalance_enabled: res.data.automation_controls?.auto_rebalance_enabled ?? false,
             maintain_standby: res.data.automation_controls?.maintain_standby ?? false,
             failure_cooldown_minutes: res.data.automation_controls?.failure_cooldown_minutes ?? 30,
+            cooldown_override_minutes: res.data.automation_controls?.cooldown_override_minutes ?? 60,
             diversify_pools: res.data.automation_controls?.diversify_pools ?? false,
+            max_family_diversification_cap_pct: res.data.automation_controls?.max_family_diversification_cap_pct ?? 40,
+            min_node_count: res.data.automation_controls?.min_node_count ?? 1,
+            scale_down_threshold_pct: res.data.automation_controls?.scale_down_threshold_pct ?? 20,
+            scale_down_stabilization_minutes: res.data.automation_controls?.scale_down_stabilization_minutes ?? 15,
+            enable_ascp_auto_scaler: res.data.automation_controls?.enable_ascp_auto_scaler ?? false,
+            check_interval_seconds: res.data.automation_controls?.check_interval_seconds ?? 15,
             auto_rightsizing_enabled: res.data.automation_controls?.auto_rightsizing_enabled ?? false,
             optimization_target: res.data.automation_controls?.optimization_target ?? 'spot',
             optimization_target_locked: res.data.automation_controls?.optimization_target_locked ?? false,
             conservative_mode_enabled: res.data.automation_controls?.conservative_mode_enabled ?? true,
             manual_approval_required: res.data.automation_controls?.manual_approval_required ?? false,
-            cooldown_override_minutes: res.data.automation_controls?.cooldown_override_minutes ?? 300,
+            optimization_strategy: res.data.optimization_strategy || {
+              risk_savings_tradeoff_pct: 20,
+              risk_ceiling_percent: 25,
+            }
           }));
         }
       } catch (err) {
@@ -156,8 +173,34 @@ const OptimizationSettingsTab = ({ cluster }) => {
           [key]: value
         }
       };
+      // Explicitly remove optimization_strategy from automation_controls payload
+      delete payload.automation_controls.optimization_strategy;
+
       await clusterAPI.updateOptimizationSettings(cluster.id, payload);
       toast.success('Optimization settings updated');
+    } catch (error) {
+      console.error('Update failed:', error);
+      toast.error('Failed to save settings');
+      setSettings(prev);
+    }
+  };
+
+  const updateOptimizationStrategy = async (key, value) => {
+    const prev = { ...settings };
+    setSettings(s => ({
+      ...s,
+      optimization_strategy: { ...s.optimization_strategy, [key]: value }
+    }));
+
+    try {
+      const payload = {
+        optimization_strategy: {
+          ...settings.optimization_strategy,
+          [key]: value
+        }
+      };
+      await clusterAPI.updateOptimizationSettings(cluster.id, payload);
+      toast.success('Strategy settings updated');
     } catch (error) {
       console.error('Update failed:', error);
       toast.error('Failed to save settings');
@@ -232,15 +275,38 @@ const OptimizationSettingsTab = ({ cluster }) => {
             </div>
 
             {/* Diversify Pools */}
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-              <div>
-                <div style={{ fontSize: 13, fontWeight: 500, color: C.text }}>Diversify Spot Pools</div>
-                <div style={{ fontSize: 11, color: C.subtle, marginTop: 2 }}>Spread pods across multiple instance sizes to lower interruption risk</div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 16 }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flex: "1 1 100%" }}>
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 500, color: C.text }}>Diversify Spot Pools</div>
+                  <div style={{ fontSize: 11, color: C.subtle, marginTop: 2 }}>Spread pods across multiple instance sizes to lower interruption risk</div>
+                </div>
+                <ToggleSwitch
+                  checked={settings.diversify_pools}
+                  onChange={(val) => updateSetting('diversify_pools', val)}
+                />
               </div>
-              <ToggleSwitch
-                checked={settings.diversify_pools}
-                onChange={(val) => updateSetting('diversify_pools', val)}
-              />
+
+              {settings.diversify_pools && (
+                <div style={{ width: "100%", padding: "12px 16px", background: C.surfaceHover, borderRadius: 8, border: `1px solid ${C.border}` }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                    <div>
+                      <div style={{ fontSize: 12, fontWeight: 500, color: C.text }}>Max Family Diversification Cap</div>
+                      <div style={{ fontSize: 10, color: C.muted, marginTop: 2 }}>Limit instances of the same family (e.g., c5, m5) to a % of total nodes.</div>
+                    </div>
+                    <div style={{ fontSize: 14, fontWeight: 700, color: C.accent }}>{settings.max_family_diversification_cap_pct}%</div>
+                  </div>
+                  <input
+                    type="range"
+                    min="10"
+                    max="100"
+                    step="5"
+                    value={settings.max_family_diversification_cap_pct}
+                    onChange={e => updateSetting('max_family_diversification_cap_pct', parseInt(e.target.value))}
+                    style={{ width: "100%", accentColor: C.accent, cursor: "pointer" }}
+                  />
+                </div>
+              )}
             </div>
 
             {/* Failure Cooldown */}
@@ -260,8 +326,122 @@ const OptimizationSettingsTab = ({ cluster }) => {
               </div>
             </div>
 
+            {/* Post-Rebalance Cooldown */}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 500, color: C.text }}>Post-Rebalance Cooldown</div>
+                <div style={{ fontSize: 11, color: C.subtle, marginTop: 2 }}>Minimum wait time between consecutive rebalancing cycles</div>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <input
+                  type="number"
+                  value={settings.cooldown_override_minutes}
+                  onChange={(e) => updateSetting('cooldown_override_minutes', parseInt(e.target.value) || 60)}
+                  style={{ width: 60, padding: "6px 8px", borderRadius: 6, border: `1px solid ${C.border}`, background: C.surface, color: C.text, fontSize: 12, outline: "none" }}
+                />
+                <span style={{ fontSize: 11, color: C.muted }}>min</span>
+              </div>
+            </div>
+
+            {/* ── Dynamic Autoscaler Settings ── */}
+            <div style={{ height: 1, background: C.border, margin: "14px 0 10px" }} />
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: C.text }}>ASCP Built-in Auto-Scaler</div>
+                <div style={{ fontSize: 11, color: C.subtle, marginTop: 2 }}>
+                  Monitor pending pods and auto-adjust capacity without Cluster Autoscaler
+                </div>
+              </div>
+              <ToggleSwitch
+                checked={settings.enable_ascp_auto_scaler}
+                onChange={(val) => updateSetting('enable_ascp_auto_scaler', val)}
+              />
+            </div>
+
+            {settings.enable_ascp_auto_scaler && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 12, paddingLeft: 12, borderLeft: `2px solid ${C.accent}20` }}>
+
+            {/* Min Node Count */}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 500, color: C.text }}>Min Node Count</div>
+                <div style={{ fontSize: 11, color: C.subtle, marginTop: 2 }}>Hard floor — autoscaler never scales below this value</div>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <input
+                  type="number"
+                  min="0"
+                  value={settings.min_node_count}
+                  onChange={(e) => updateSetting('min_node_count', parseInt(e.target.value) ?? 1)}
+                  style={{ width: 60, padding: "6px 8px", borderRadius: 6, border: `1px solid ${C.border}`, background: C.surface, color: C.text, fontSize: 12, outline: "none" }}
+                />
+                <span style={{ fontSize: 11, color: C.muted }}>nodes</span>
+              </div>
+            </div>
+
+            {/* Scale-Down Threshold */}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 12 }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 500, color: C.text }}>Scale-Down Threshold</div>
+                <div style={{ fontSize: 11, color: C.subtle, marginTop: 2 }}>Avg CPU+mem below this % triggers idle-node removal</div>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <input
+                  type="number"
+                  min="5"
+                  max="80"
+                  value={settings.scale_down_threshold_pct}
+                  onChange={(e) => updateSetting('scale_down_threshold_pct', parseInt(e.target.value) || 20)}
+                  style={{ width: 60, padding: "6px 8px", borderRadius: 6, border: `1px solid ${C.border}`, background: C.surface, color: C.text, fontSize: 12, outline: "none" }}
+                />
+                <span style={{ fontSize: 11, color: C.muted }}>%</span>
+              </div>
+            </div>
+
+            {/* Scale-Down Stabilization */}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 12 }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 500, color: C.text }}>Scale-Down Stabilization</div>
+                <div style={{ fontSize: 11, color: C.subtle, marginTop: 2 }}>How long utilization must stay below threshold before a scale-down fires</div>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <input
+                  type="number"
+                  min="1"
+                  value={settings.scale_down_stabilization_minutes}
+                  onChange={(e) => updateSetting('scale_down_stabilization_minutes', parseInt(e.target.value) || 15)}
+                  style={{ width: 60, padding: "6px 8px", borderRadius: 6, border: `1px solid ${C.border}`, background: C.surface, color: C.text, fontSize: 12, outline: "none" }}
+                />
+                <span style={{ fontSize: 11, color: C.muted }}>min</span>
+              </div>
+            </div>
+
+            </div>
+            )}
+
           </div>
         )}
+
+        <div style={{ height: 1, background: C.border, margin: "18px 0" }} />
+
+        {/* Check Interval */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18 }}>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 600, color: C.text }}>Check Cycle Interval</div>
+            <div style={{ fontSize: 11, color: C.subtle, marginTop: 4 }}>How often the rebalancer evaluates OD nodes, risk scores, and diversification. Min 15s.</div>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <input
+              type="number"
+              min="15"
+              step="15"
+              value={settings.check_interval_seconds}
+              onChange={(e) => updateSetting('check_interval_seconds', Math.max(15, parseInt(e.target.value) || 15))}
+              style={{ width: 64, padding: "6px 8px", borderRadius: 6, border: `1px solid ${C.border}`, background: C.surface, color: C.text, fontSize: 12, outline: "none" }}
+            />
+            <span style={{ fontSize: 11, color: C.muted }}>sec</span>
+          </div>
+        </div>
 
         <div style={{ height: 1, background: C.border, margin: "18px 0" }} />
 
@@ -309,25 +489,6 @@ const OptimizationSettingsTab = ({ cluster }) => {
 
         <div style={{ height: 1, background: C.border, margin: "18px 0" }} />
 
-        {/* Cooldown */}
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18 }}>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 13, fontWeight: 600, color: C.text }}>Cooldown Duration Override</div>
-            <div style={{ fontSize: 11, color: C.subtle, marginTop: 4 }}>Minimum time to wait between optimization actions (Advanced)</div>
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <input
-              type="number"
-              value={settings.cooldown_override_minutes}
-              onChange={(e) => updateSetting('cooldown_override_minutes', parseInt(e.target.value) || 300)}
-              style={{ width: 60, padding: "6px 8px", borderRadius: 6, border: `1px solid ${C.border}`, background: C.surface, color: C.text, fontSize: 12, outline: "none" }}
-            />
-            <span style={{ fontSize: 11, color: C.muted }}>seconds</span>
-          </div>
-        </div>
-
-        <div style={{ height: 1, background: C.border, margin: "18px 0" }} />
-
         {/* Conservative Mode */}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18 }}>
           <div>
@@ -343,7 +504,7 @@ const OptimizationSettingsTab = ({ cluster }) => {
         <div style={{ height: 1, background: C.border, margin: "18px 0" }} />
 
         {/* Manual Approval */}
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18 }}>
           <div style={{ paddingRight: 32 }}>
             <div style={{ fontSize: 13, fontWeight: 600, color: C.text }}>Manual Approval Required (RBAC)</div>
             <div style={{ fontSize: 11, color: C.subtle, marginTop: 4 }}>If the ASCP.ai decision engine proposes infrastructure changes, route to Team Lead / Org Admin for manual approval before execution.</div>
@@ -354,8 +515,50 @@ const OptimizationSettingsTab = ({ cluster }) => {
           />
         </div>
 
+        <div style={{ height: 1, background: C.border, margin: "18px 0" }} />
+
+        {/* Risk vs Savings Controls */}
+        <div>
+          <div style={{ fontSize: 13, fontWeight: 600, color: C.text, marginBottom: 12 }}>Risk vs Savings Controls</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+            {/* Risk/Savings Tradeoff Slider */}
+            <div style={{ padding: 16, background: C.accentLight, borderRadius: 8, border: `1px solid ${C.blue}30` }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: C.text }}>Risk/Savings Tradeoff</div>
+                  <div style={{ fontSize: 10, color: C.muted, marginTop: 2 }}>Sacrifice % potential savings if a safer pool is available (0% = cheapest only).</div>
+                </div>
+                <div style={{ fontSize: 14, fontWeight: 700, color: C.accent }}>{settings.optimization_strategy?.risk_savings_tradeoff_pct || 20}%</div>
+              </div>
+              <input
+                type="range" min="0" max="50" step="5"
+                value={settings.optimization_strategy?.risk_savings_tradeoff_pct || 20}
+                onChange={e => updateOptimizationStrategy('risk_savings_tradeoff_pct', parseInt(e.target.value))}
+                style={{ width: "100%", accentColor: C.accent, cursor: "pointer" }}
+              />
+            </div>
+
+            {/* Risk Ceiling Slider */}
+            <div style={{ padding: 16, background: C.amberLight, borderRadius: 8, border: `1px solid ${C.amber}40` }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: C.text }}>Maximum Risk Ceiling</div>
+                  <div style={{ fontSize: 10, color: C.muted, marginTop: 2 }}>Reject any pool with risk score above %. Lower = safer but fewer candidates.</div>
+                </div>
+                <div style={{ fontSize: 14, fontWeight: 700, color: C.amber }}>{settings.optimization_strategy?.risk_ceiling_percent || 25}%</div>
+              </div>
+              <input
+                type="range" min="5" max="50" step="5"
+                value={settings.optimization_strategy?.risk_ceiling_percent || 25}
+                onChange={e => updateOptimizationStrategy('risk_ceiling_percent', parseInt(e.target.value))}
+                style={{ width: "100%", accentColor: C.amber, cursor: "pointer" }}
+              />
+            </div>
+          </div>
+        </div>
+
       </div>
-    </div>
+    </div >
   );
 };
 
@@ -1145,8 +1348,8 @@ const ClusterDetail = ({ cluster, onClose }) => {
           }}>
             {[
               { label: "Spot", count: cluster.nodes.spot, color: C.spotColor },
-              { label: "Fallback", count: cluster.nodes.fallback, color: C.fallbackColor },
               { label: "On-Demand", count: cluster.nodes.onDemand, color: C.onDemandColor },
+              ...(cluster.nodes.fallback > 0 ? [{ label: "Fallback", count: cluster.nodes.fallback, color: C.fallbackColor }] : []),
             ].map(nt => (
               <div key={nt.label} style={{ textAlign: "center" }}>
                 <div style={{ fontSize: 26, fontWeight: 800, color: C.text, letterSpacing: "-1px" }}>{nt.count === null ? '—' : nt.count}</div>
@@ -1595,7 +1798,6 @@ export default function ClustersPage() {
   }, []);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("All");
-  const [tradeOff, setTradeOff] = useState(20);
   const [karpenterModeFilter, setKarpenterModeFilter] = useState("ALL");
 
   const [refreshing, setRefreshing] = useState(false);
@@ -1708,7 +1910,12 @@ export default function ClustersPage() {
 
       const totalNodes = c.node_count || 0;
       const spotNodes = c.spot_count || 0;
-      const onDemandNodes = totalNodes - spotNodes;
+      // Use the explicit on_demand_node_count from the API when available;
+      // fall back to subtraction clamped to 0 to prevent negative display
+      // when stale fallback values are inconsistent (e.g., node_count=0, spot_count=1).
+      const onDemandNodes = (c.on_demand_node_count != null)
+        ? c.on_demand_node_count
+        : Math.max(0, totalNodes - spotNodes);
       // nodeListTotals will override these with accurate running counts once detailed data loads
 
       let lastSeenText = "Never";
@@ -2084,25 +2291,6 @@ export default function ClustersPage() {
             ))}
           </div>
 
-          {/* Trade-off slider */}
-          <div style={{ padding: "0 12px 10px" }}>
-            <div style={{ fontSize: 10, fontWeight: 600, color: C.subtle, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>
-              Risk / Savings Trade-off: {tradeOff}
-            </div>
-            <input
-              type="range"
-              min={0}
-              max={50}
-              value={tradeOff}
-              onChange={e => setTradeOff(Number(e.target.value))}
-              style={{ width: "100%", accentColor: C.accent, cursor: "pointer" }}
-            />
-            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 9, color: C.subtle, marginTop: 2 }}>
-              <span>Conservative</span>
-              <span>Aggressive</span>
-            </div>
-          </div>
-
           {/* Karpenter mode selector */}
           <div style={{ padding: "0 12px 10px" }}>
             <div style={{ fontSize: 10, fontWeight: 600, color: C.subtle, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>
@@ -2142,10 +2330,10 @@ export default function ClustersPage() {
         </div>
 
         {/* RIGHT: Detail */}
-        <div style={{ flex: 1, overflowY: "auto", background: C.bg }}>
+        <div style={{ flex: 1, overflowY: "auto", background: C.bg, display: 'flex', flexDirection: 'column' }}>
           {cluster ? (
             cluster.agentInstalled
-              ? <ClusterDetail cluster={cluster} onClose={() => setSelectedAndPersist(null)} />
+              ? <ClusterDetails clusterId={cluster.id} onClose={() => setSelectedAndPersist(null)} />
               : <NoAgentDetail cluster={cluster} onClose={() => setSelectedAndPersist(null)} />
           ) : (
             <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: C.muted, fontSize: 14 }}>

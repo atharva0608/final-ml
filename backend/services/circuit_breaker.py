@@ -87,11 +87,34 @@ class CircuitBreaker:
     # Event recording
     # ──────────────────────────────────────────────────────────────
 
-    def record_rollback(self, cluster_id: str) -> dict:
+    def record_rollback(
+        self,
+        cluster_id: str,
+        is_emergency: bool = False,
+        is_gate_rejection: bool = False,
+    ) -> dict:
         """
         Record a rollback event and evaluate state transition.
         Returns new status dict.
+
+        §11.2: Emergency actions (priority=10) and Mode 3 gate rejections
+        do NOT increment the rollback counter — they are expected operational
+        events, not signs of instability.
         """
+        if is_emergency:
+            logger.info(
+                f"[CircuitBreaker] Cluster {cluster_id}: emergency rollback — "
+                f"not incrementing counter"
+            )
+            return self.get_full_status(cluster_id)
+
+        if is_gate_rejection:
+            logger.info(
+                f"[CircuitBreaker] Cluster {cluster_id}: gate rejection — "
+                f"not incrementing counter"
+            )
+            return self.get_full_status(cluster_id)
+
         # Increment counter with 1h TTL
         key = _KEY_ROLLBACK_COUNT.format(cluster_id=cluster_id)
         pipe = self.redis.pipeline()

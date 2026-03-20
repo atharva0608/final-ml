@@ -180,7 +180,118 @@ class AuditService:
         """
         return self.db.query(AuditLog).filter(AuditLog.id == audit_id).first()
 
+    # ── Task 4.1: Retention Policy ──────────────────────────────────────
+
+    def enforce_retention_policy(self, retention_days: Optional[int] = None) -> dict:
+        """
+        Delete audit log entries older than retention_days.
+
+        Reads default from SystemConfig key 'AUDIT_RETENTION_DAYS' (default 365).
+        Returns count of deleted entries.
+        """
+        if retention_days is None:
+            try:
+                from backend.models.system_config import SystemConfig
+                cfg = self.db.query(SystemConfig).filter(
+                    SystemConfig.key == "AUDIT_RETENTION_DAYS"
+                ).first()
+                retention_days = int(cfg.value) if cfg and cfg.value else 365
+            except Exception:
+                retention_days = 365
+
+        from datetime import timedelta
+        cutoff = datetime.utcnow() - timedelta(days=retention_days)
+
+        count = self.db.query(AuditLog).filter(
+            AuditLog.timestamp < cutoff
+        ).delete(synchronize_session='fetch')
+        self.db.commit()
+
+        logger.info(
+            "Audit retention enforced",
+            retention_days=retention_days,
+            deleted_count=count,
+            cutoff=cutoff.isoformat(),
+        )
+        return {
+            "deleted": count,
+            "retention_days": retention_days,
+            "cutoff": cutoff.isoformat(),
+        }
+
+    # ── Task 4.1: Integrity Verification ────────────────────────────────
+
+    def verify_integrity(self, hours: int = 24, limit: int = 1000) -> dict:
+        """
+        Re-compute checksums for recent audit logs and detect tampering.
+
+        Args:
+            hours: How far back to check (default 24h)
+            limit: Max logs to check per run
+
+        Returns:
+            {"checked": int, "tampered": list[str], "ok": bool}
+        """
+        from datetime import timedelta
+        since = datetime.utcnow() - timedelta(hours=hours)
+
+        recent_logs = self.db.query(AuditLog).filter(
+            AuditLog.timestamp >= since
+        ).order_by(AuditLog.timestamp.desc()).limit(limit).all()
+
+        tampered = []
+        for log in recent_logs:
+            expected = self._compute_checksum(log)
+            if log.checksum and log.checksum != expected:
+                tampered.append(log.id)
+                logger.error(
+                    "TAMPER DETECTED: audit log checksum mismatch",
+                    audit_id=log.id,
+                    expected=expected[:16],
+                    actual=log.checksum[:16] if log.checksum else "None",
+                )
+
+        if tampered:
+            logger.critical(
+                f"INTEGRITY ALERT: {len(tampered)} tampered audit log(s) detected"
+            )
+
+        return {
+            "checked": len(recent_logs),
+            "tampered": tampered,
+            "ok": len(tampered) == 0,
+            "hours_checked": hours,
+        }
+
+    def get_retention_settings(self) -> dict:
+        """Get current retention policy settings."""
+        try:
+            from backend.models.system_config import SystemConfig
+            cfg = self.db.query(SystemConfig).filter(
+                SystemConfig.key == "AUDIT_RETENTION_DAYS"
+            ).first()
+            days = int(cfg.value) if cfg and cfg.value else 365
+        except Exception:
+            days = 365
+        return {"retention_days": days}
+
+    def update_retention_settings(self, retention_days: int) -> dict:
+        """Update retention policy days in SystemConfig."""
+        from backend.models.system_config import SystemConfig
+        cfg = self.db.query(SystemConfig).filter(
+            SystemConfig.key == "AUDIT_RETENTION_DAYS"
+        ).first()
+        if cfg:
+            cfg.value = str(retention_days)
+        else:
+            cfg = SystemConfig(key="AUDIT_RETENTION_DAYS", value=str(retention_days))
+            self.db.add(cfg)
+        self.db.commit()
+        logger.info("Audit retention updated", retention_days=retention_days)
+        return {"retention_days": retention_days, "updated": True}
+
 
 def get_audit_service(db: Session) -> AuditService:
     """Get audit service instance"""
     return AuditService(db)
+

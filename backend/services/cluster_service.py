@@ -535,20 +535,24 @@ class ClusterService:
         # Convert to ClusterListItem schemas
         cluster_list_items = []
         for cluster in clusters:
-            # Count only RUNNING instances — terminated/stopped nodes must not inflate totals
-            total_instances = self.db.query(Instance).filter(
+            # Count only RUNNING instances with a real instance_type.
+            # Exclude: null/empty type, literal 'unknown' (K8s labels not yet propagated),
+            # and 'orphan' state (termination failed, awaiting manual cleanup).
+            _valid_inst_filter = [
                 Instance.cluster_id == cluster.id,
                 Instance.state == 'running',
-            ).count()
+                Instance.instance_type.isnot(None),
+                Instance.instance_type != '',
+                Instance.instance_type != 'unknown',
+            ]
+            total_instances = self.db.query(Instance).filter(*_valid_inst_filter).count()
             spot_instances = self.db.query(Instance).filter(
-                Instance.cluster_id == cluster.id,
+                *_valid_inst_filter,
                 Instance.lifecycle == InstanceLifecycle.SPOT,
-                Instance.state == 'running',
             ).count()
             on_demand_instances = self.db.query(Instance).filter(
-                Instance.cluster_id == cluster.id,
+                *_valid_inst_filter,
                 Instance.lifecycle == InstanceLifecycle.ON_DEMAND,
-                Instance.state == 'running',
             ).count()
 
             cluster_list_items.append(ClusterListItem(
@@ -561,6 +565,9 @@ class ClusterService:
                 # the stale discovery teaser count.  Only fall back if DB found nothing at all.
                 node_count=total_instances if total_instances > 0 else (cluster.node_count or 0),
                 spot_count=spot_instances if total_instances > 0 else (cluster.spot_count or 0),
+                # RC7b: use same guard as above — `or` treats 0 as falsy, causing stale fallback
+                # when all instances are spot (on_demand_instances == 0).
+                on_demand_node_count=on_demand_instances if total_instances > 0 else (cluster.on_demand_node_count or 0),
                 monthly_cost=float(cluster.monthly_cost or 0),
                 agent_installed=cluster.agent_installed == 'Y',
                 last_heartbeat=cluster.last_heartbeat,
@@ -571,8 +578,7 @@ class ClusterService:
                 cpu_total=cluster.cpu_total or 0,
                 mem_total=cluster.mem_total or 0,
                 cpu_usage_pct=float(cluster.cpu_usage_pct or 0),
-                mem_usage_pct=float(cluster.mem_usage_pct or 0),
-                on_demand_node_count=on_demand_instances or cluster.on_demand_node_count or 0
+                mem_usage_pct=float(cluster.mem_usage_pct or 0)
             ))
 
         result = ClusterList(
@@ -1134,10 +1140,11 @@ echo "✅ Agent successfully deployed!"
         cluster = self._get_cluster_with_access(cluster_id, user_id)
 
         # Query ONLY active instances — terminated records must never appear in node lists.
-        # Terminated rows stay in DB for audit purposes but the UI must only show live nodes.
+        # Exclude ghost placeholder instances (instance_id not like 'i-%' or 'ip-%').
         instances = self.db.query(Instance).filter(
             Instance.cluster_id == cluster_id,
             Instance.state.in_(['running', 'pending']),
+            Instance.instance_id.like('i-%') | Instance.instance_id.like('ip-%'),
         ).all()
 
         nodes = []
@@ -1379,6 +1386,14 @@ echo "✅ Agent successfully deployed!"
                     _seen[_key] = _inst
         instances = list(_seen.values())
 
+        # Strip ghost placeholder instances (instance_id not matching a real EC2 ID
+        # and not an ip-hostname placeholder). These show as "unknown" rows in the UI.
+        instances = [
+            i for i in instances
+            if (i.instance_id or '').startswith('i-')
+            or (i.instance_id or '').startswith('ip-')
+        ]
+
         # RC5 fix: extend pod metrics freshness window from 3 → 10 minutes.
         # Daemon set reports every 1 min; 10× window tolerates brief agent pauses
         # or slow pod start-up without blanking out all utilisation data.
@@ -1517,6 +1532,48 @@ echo "✅ Agent successfully deployed!"
                 else:
                     node_classification = "MIXED"
 
+                # ── Node condition: risk score + rebalance trigger ───────────
+                _node_risk_score = None
+                _node_best_pool = None
+                _node_condition = "STABLE"
+                try:
+                    from backend.core.redis_client import get_redis_client as _grc_nd
+                    import json as _jnd
+                    _r_nd = _grc_nd()
+                    _raw_nd = _r_nd.get(f"global_pool_rankings:{cluster.region or 'ap-south-1'}")
+                    if _raw_nd:
+                        _rankings_nd = _jnd.loads(_raw_nd).get("data", [])
+                        _this_pool_key = f"{instance_type}:{availability_zone}"
+                        _cur_nd = next(
+                            (p for p in _rankings_nd
+                             if f"{p['instance_type']}:{p['az']}" == _this_pool_key), None
+                        )
+                        if _cur_nd:
+                            _node_risk_score = round(_cur_nd.get('risk_probability', 0), 3)
+                            _cur_sav_nd = _cur_nd.get('predicted_savings', 0)
+                            _better_nd = [
+                                p for p in _rankings_nd
+                                if (p.get('risk_probability', 1) < _node_risk_score and
+                                    p.get('predicted_savings', 0) >= _cur_sav_nd and
+                                    f"{p['instance_type']}:{p['az']}" != _this_pool_key)
+                            ]
+                            if _better_nd:
+                                _node_best_pool = f"{_better_nd[0]['instance_type']}:{_better_nd[0]['az']}"
+                        # Determine condition using cluster's risk ceiling
+                        from backend.models.cluster import OptimizationStrategy as _OS_nd
+                        _strat_nd = self.db.query(_OS_nd).filter_by(cluster_id=cluster_id).first()
+                        _ceil_nd = (getattr(_strat_nd, 'risk_ceiling_percent', 25) or 25) / 100.0
+                        if lifecycle == "on-demand":
+                            _node_condition = "AWAITING_SPOT"
+                        elif _node_risk_score is not None and _node_risk_score > _ceil_nd:
+                            _node_condition = "REBALANCE:RISK_HIGH"
+                        elif _node_best_pool:
+                            _node_condition = "REBALANCE:BETTER_POOL"
+                        else:
+                            _node_condition = "STABLE"
+                except Exception:
+                    pass  # condition enrichment is best-effort; never blocks node display
+
                 nodes_detailed.append({
                     "instance_id": inst.instance_id,
                     "node_name": node_name,
@@ -1533,7 +1590,10 @@ echo "✅ Agent successfully deployed!"
                     "total_memory_usage_mb": round(sum(p['memory_usage_mb'] for p in node_pods), 2) if node_pods else 0,
                     "pod_count": len(node_pods),
                     "stateful_pod_count": len(stateful_pods),
-                    "pods": node_pods
+                    "pods": node_pods,
+                    "current_risk_score": _node_risk_score,
+                    "best_available_pool": _node_best_pool,
+                    "rebalance_condition": _node_condition,
                 })
         # No else branch — if no running instances are in the DB we return an empty list.
         # Fake "Unknown" nodes must not appear; only daemon-set-reported data is shown.

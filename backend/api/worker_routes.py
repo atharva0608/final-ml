@@ -204,6 +204,15 @@ async def register_node(req: RegisterNodeRequest):
                         f"{req.instance_id} lifecycle={req.lifecycle}"
                     )
 
+            # Update Cluster.last_heartbeat on first registration too —
+            # ensures the health badge goes green as soon as any node checks in.
+            from backend.models.cluster import Cluster, ClusterStatus
+            _cl_reg = db.query(Cluster).filter(Cluster.id == req.cluster_id).first()
+            if _cl_reg:
+                _cl_reg.last_heartbeat = datetime.utcnow()
+                _cl_reg.agent_installed = "Y"
+                _cl_reg.status = ClusterStatus.ACTIVE
+
             db.commit()
             logger.info(
                 f"[worker] Node registered: {req.node_name} "
@@ -247,6 +256,17 @@ async def worker_heartbeat(req: HeartbeatRequest):
             if reg:
                 reg.last_heartbeat = datetime.utcnow()
                 reg.status = "active"
+
+                # Also update Cluster.last_heartbeat so the frontend health badge works.
+                # The old /agents/heartbeat endpoint did this; /worker/heartbeat does not —
+                # causing "Agent Degraded · Last heartbeat: Unknown" even when agents run fine.
+                from backend.models.cluster import Cluster, ClusterStatus
+                _cl = db.query(Cluster).filter(Cluster.id == req.cluster_id).first()
+                if _cl:
+                    _cl.last_heartbeat = datetime.utcnow()
+                    _cl.agent_installed = "Y"
+                    _cl.status = ClusterStatus.ACTIVE
+
                 db.commit()
                 return {"status": "ok"}
             else:

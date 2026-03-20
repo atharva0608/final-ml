@@ -557,6 +557,21 @@ def disconnect_agent(
     cluster.updated_at = datetime.utcnow()
     db.commit()
 
+    # Issue #8: Force-close any active WebSocket connection for this cluster
+    # so the agent cannot continue sending/receiving commands on the old session.
+    try:
+        from backend.core import api_gateway
+        ws = api_gateway.active_connections.pop(cluster_id, None)
+        if ws:
+            import asyncio
+            try:
+                asyncio.get_event_loop().create_task(ws.close(code=1008, reason="API key rotated"))
+            except RuntimeError:
+                pass  # No event loop — WS will fail on next send anyway
+            logger.info(f"Force-closed WebSocket for cluster {cluster_id}")
+    except Exception as ws_err:
+        logger.warning(f"WebSocket cleanup skipped for {cluster_id}: {ws_err}")
+
     logger.info(f"Agent disconnected from cluster {cluster_id} by user {current_user.id}")
     return {
         "message": "Agent disconnected. Historical data preserved.",
@@ -692,14 +707,21 @@ def get_cluster_optimization_settings(
             "auto_rightsizing_enabled": automation.auto_rightsizing_enabled if automation else False,
             "instance_aware_rightsizing": automation.instance_aware_rightsizing if automation else False,
             "cooldown_override_minutes": automation.cooldown_override_minutes if automation else None,
+            "spot_join_timeout_minutes": automation.spot_join_timeout_minutes if automation else None,
             "conservative_mode_enabled": automation.conservative_mode_enabled if automation else True,
             "manual_approval_required": automation.manual_approval_required if automation else False,
             "target_spot_exposure_pct": automation.target_spot_exposure_pct if automation else 100,
             # Sub-toggles — required so the frontend doesn't overwrite them with stale defaults on save
             "maintain_standby": automation.maintain_standby if automation else False,
             "diversify_pools": automation.diversify_pools if automation else False,
+            "max_family_diversification_cap_pct": automation.max_family_diversification_cap_pct if automation else 40,
             "failure_cooldown_minutes": automation.failure_cooldown_minutes if automation else 30,
             "optimization_target": automation.optimization_target if automation else "spot",
+            "min_node_count": automation.min_node_count if automation else 1,
+            "scale_down_threshold_pct": automation.scale_down_threshold_pct if automation else 20,
+            "scale_down_stabilization_minutes": automation.scale_down_stabilization_minutes if automation else 15,
+            "enable_ascp_auto_scaler": automation.enable_ascp_auto_scaler if automation else False,
+            "check_interval_seconds": automation.check_interval_seconds if automation else 15,
         },
         "optimization_strategy": {
             "strategy_type": strategy.strategy_type if strategy else "BALANCED",

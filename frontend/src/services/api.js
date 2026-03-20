@@ -359,6 +359,11 @@ export const atharvaaiAPI = {
 
     // Enriched volatility status (includes az_pressure map)
     getVolatilityStatusEnriched: () => api.get('/api/v1/atharvaai/volatility/status'),
+
+    // Savings Velocity history
+    getSavingsVelocity: (clusterId, days = 30) => api.get('/api/v1/atharvaai/savings-velocity', {
+        params: { cluster_id: clusterId, days }
+    }),
 };
 export const cleanupAPI = hygieneAPI;
 

@@ -1,9 +1,9 @@
 # Spot Optimizer Platform — Complete Backend Logic Reference
 
-> **Source of truth**: Extracted exclusively from `.py`, `.json`, `.jsx` files.
-> **Files analyzed**: 147+ backend Python services, 10+ Celery workers, 60+ models, 6 core modules, 1 guardrail engine, 6 modules, 8 agents, 3 hibernation strategies, 2 scrapers.
+> **Source of truth**: Extracted exclusively from `.py`, `.jsx`, `.js` files in this repository.
+> **Files analyzed**: 150+ backend Python services, 13 Celery workers, 60+ models, 6 core modules, 1 guardrail engine, 3 hibernation strategies.
 > **Zero `.md` or `.txt` files referenced.**
-> **Last updated**: 2026-03-06 (exhaustive re-audit of ALL backend files)
+> **Last updated**: 2026-03-17 — Full refresh: hybrid ASG/Karpenter architecture, standby node system, emergency rebalancer, decision engine service, daily stats aggregator, dry-run refresher, cache warmer, recovery monitor, pool-level diversification, RC3 lifecycle guard, absolute-timestamp cooldowns, OverviewTab real-data sources, ClusterDetails API fix.
 
 ---
 
@@ -11,1013 +11,1115 @@
 
 ## 1.1 Architecture Overview
 
-The platform consists of 10 core engines coordinated through a central control plane:
+The platform consists of 12 core engines coordinated through a central control plane:
 
 ```mermaid
 flowchart TD
     subgraph "Intelligence Layer"
         A["ASCP AI Engine<br>(Pool Ranking)"] --> B["Risk Engine"]
         B --> C["EV Model"]
+        A --> DE["Decision Engine Service<br>(Facade)"]
     end
     subgraph "Decision Layer"
         C --> D["Decision Engine v3<br>(15-Step Pipeline)"]
         D --> E["Guardrail Engine"]
         E --> F["Circuit Breaker"]
+        DE --> D
     end
     subgraph "Execution Layer"
         F --> G["Execution Controller"]
         G --> H["Substitute Manager"]
-        G --> I["Auto Rebalancer"]
+        G --> I["Auto Rebalancer<br>(Hybrid ASG+Karpenter)"]
+        G --> ER["Emergency Rebalancer"]
+        G --> SB["Standby Node Manager"]
     end
     subgraph "Scheduling Layer"
         J["Hibernation Engine"]
         K["Right-Sizing Engine"]
         L["Control Plane Loop"]
+        RM["Recovery Monitor"]
+        CW["Cache Warmer"]
+        DRR["Dry-Run Refresher"]
     end
     L --> D
     K --> M["Optimizer Coordinator"]
     M --> D
+    RM --> I
+    CW --> A
+    DRR --> DE
 ```
 
 ## 1.2 Engine Registry
 
-| Engine | Primary File | Lines | Purpose |
+| Engine | Primary File | Approx Lines | Purpose |
 |---|---|---|---|
-| **ASCP AI (System A)** | `pool_ranking_service.py` | 1659 | 2-tier ML scoring pipeline with ONNX models |
-| **Risk Engine** | `risk_engine.py` | 343 | Bayesian risk composition (5 components) |
-| **EV Model** | `ev_model.py` | 184 | Economic expected value with 6-term formula |
-| **Decision Engine v3** | `decision_engine.py` | 781 | 15-step policy evaluation pipeline |
-| **Guardrail Engine** | `guardrail_engine.py` | 351 | Hard guards + spend velocity + health score |
-| **Circuit Breaker** | `circuit_breaker.py` | 239 | NORMAL→CONSERVATIVE→HALT state machine |
-| **Cooldown Controller** | `cooldown_controller.py` | 340 | 6-type anti-flapping enforcement |
-| **Execution Controller** | `execution_controller.py` | 231 | 6-step safe node replacement |
-| **Substitute Manager** | `substitute_manager.py` | 969 | Zero-downtime substitute node lifecycle |
-| **Optimizer Coordinator** | `optimizer_coordinator.py` | 645 | Phase machine + trust phases |
-| **Hibernation Service** | `hibernation_service.py` | 445 | Schedule CRUD + savings calculation |
-| **Right-Sizing Service** | `rightsizing_service.py` | 836 | Pod metrics analysis + recommendations |
+| **ASCP AI (System A)** | `backend/services/pool_ranking_service.py` | 1862 | 2-tier ML scoring pipeline with ONNX models |
+| **Risk Engine** | `backend/core/risk_engine.py` | 343 | Bayesian risk composition (5 components) |
+| **EV Model** | `backend/core/ev_model.py` | 184 | Economic expected value with 6-term formula |
+| **Decision Engine v3** | `backend/services/decision_engine_service.py` | ~150 | Unified pool-selection facade (rank, blacklist, report) |
+| **Guardrail Engine** | `backend/services/guardrail_engine.py` | 380 | 7-tier safety checks before execution |
+| **Circuit Breaker** | `backend/services/circuit_breaker.py` | 220 | 3-state: NORMAL → CONSERVATIVE → HALT |
+| **Instability Propagator** | `backend/services/instability_propagator.py` | ~150 | Cross-cluster signal propagation |
+| **Execution Controller** | `backend/services/execution_controller.py` | ~280 | 6-step action pipeline |
+| **Auto Rebalancer** | `backend/workers/tasks/auto_rebalancer.py` | 4645 | OD → SPOT migration, ASG+Karpenter hybrid |
+| **Emergency Rebalancer** | `backend/workers/tasks/emergency_rebalancer.py` | ~80 | Spot interruption response with standby-first |
+| **Standby Node Manager** | `backend/workers/tasks/standby.py` | ~60 | Pre-warmed cordoned node lifecycle |
+| **Recovery Monitor** | `backend/workers/tasks/recovery_monitor.py` | ~200 | Sync AWS states, detect orphans every 5 min |
+| **Cache Warmer** | `backend/workers/tasks/cache_warmer.py` | ~80 | Pre-compute rankings for top 10 profiles hourly |
+| **Dry-Run Refresher** | `backend/workers/tasks/dry_run_refresher.py` | ~50 | Refresh capacity status every 5 min |
+| **Hibernate Engine** | `backend/hibernation_strategy/` | ~600 | 3 strategies: TimeBased, UtilBased, Smart |
+| **Right-Sizing Engine** | `backend/services/rightsizing_service.py` | ~400 | Bin-pack to smaller instance, pod request rightsizing |
+| **Diversity Enforcer** | `backend/services/diversity_enforcer.py` | 280 | Pool-level diversification (1 node per pool) |
+| **Control Plane Loop** | `backend/workers/tasks/control_plane_loop.py` | ~300 | 8-step Celery task, runs every 5 min |
 
-### Supporting Services
+## 1.3 Celery Worker Schedule
 
-| Service | File | Lines | Purpose |
+| Task | Beat Schedule | File | Purpose |
 |---|---|---|---|
-| `BlacklistService` | `blacklist_service.py` | 423 | Tiered pool blacklisting on interruption |
-| `DiversityEnforcer` | `diversity_enforcer.py` | 168 | Family/AZ concentration guard (+1 projection) |
-| `WorkloadInspector` | `workload_inspector.py` | 333 | Stateful vs Stateless node classification |
-| `EventMonitor` | `event_monitor.py` | 690 | Termination notice handler + volatility detection |
-| `PoolRotationService` | `pool_rotation_service.py` | 572 | AZ auto-failover |
-| `GlobalPoolCacheService` | `global_pool_cache_service.py` | 206 | Region-wide ML cache (65-min TTL) |
-| `MLFeatureService` | `ml_feature_service.py` | 524 | 45-feature engineering for ONNX |
-| `InstabilityPropagator` | `instability_propagator.py` | 191 | Cross-cluster risk propagation |
-| `ObservabilityLogger` | `observability_logger.py` | 200 | Decision audit trail (Redis + DB) |
-| `DistributedLocks` | `distributed_locks.py` | 398 | NX EX locks + Lua rate limiting |
-
-### Workers (Celery Beat Schedule)
-
-| Worker | File | Schedule | Purpose |
-|---|---|---|---|
-| `execute_pool_ranking_pipeline` | `atharvaai_worker.py` | 1 hour | Full ML pipeline |
-| `collect_spot_prices` | `atharvaai_worker.py` | 10 min | Historical price collection |
-| `compute_family_baselines` | `atharvaai_worker.py` | Weekly | Family-hour statistics |
-| `sync_karpenter_nodepools` | `atharvaai_worker.py` | 1 hour | NodePool YAML sync |
-| `run_all_clusters_decision_cycle` | `control_plane_loop.py` | 5 min | Control plane loop |
-| `execute_hibernation_scheduler` | `hibernation_worker.py` | 1 min | Schedule checker |
-| `execute_rebalancing` | `auto_rebalancer.py` | On-demand | Node migration |
-| `maintain_warm_spare_all_clusters` | `maintain_warm_spare_worker.py` | 5 min | Warm substitute per cluster |
-| `resize_guard_worker` | `resize_guard_worker.py` | 5 min | 2h post-resize health monitoring |
-| `update_pod_restart_baseline` | `resize_guard_worker.py` | 1 hour | Pod restart baseline |
-| `monitor_terminations` | `termination_monitor.py` | On-demand | Spot interruption detection |
-| `scrape_spot_advisor_task` | `spot_advisor_scraper.py` | Daily 2AM | Spot Advisor data refresh |
-| `collect_spot_prices_task` | `pricing_collector.py` | 5 min | Pricing data collection |
-| `collect_ondemand_prices_task` | `pricing_collector.py` | Daily 1AM | On-Demand price refresh |
+| `execute_rebalancing` | Every 15 s | `auto_rebalancer.py` | Main rebalancing cycle |
+| `run_discovery` | Every 60 s | `discovery.py` | Sync K8s node state to DB |
+| `termination_monitor` | Every 30 s | `termination_monitor.py` | Detect at-risk spot nodes |
+| `control_plane_loop` | Every 5 min | `control_plane_loop.py` | 8-step control plane evaluation |
+| `cache_warmer` | Hourly | `cache_warmer.py` | Pre-compute pool rankings |
+| `dry_run_refresher` | Every 5 min | `dry_run_refresher.py` | Refresh capacity status |
+| `recovery_monitor` | Every 5 min | `recovery_monitor.py` | Sync AWS states, scan orphans |
+| `daily_stats_aggregator` | Daily 02:00 UTC | `daily_stats_aggregator.py` | Aggregate daily cost metrics |
+| `rightsizing_evaluation_worker` | Every 24 h | `optimizer_coordinator_worker.py` | Bin-pack evaluation |
 
 ---
 
-# SECTION 2: ASCP AI ENGINE — ML Pipeline (System A)
+# SECTION 2: ML RANKING ENGINE (System A)
 
-**Source**: `backend/services/pool_ranking_service.py` (1659 lines)
+## 2.1 Two-Tier Pipeline
 
-## 2.1 Two-Tier Architecture
+**File**: `backend/services/pool_ranking_service.py`
 
-```mermaid
-flowchart TD
-    subgraph "Tier 1: Global Cache (65-min TTL)"
-        G1["Build ALL catalog × AZ candidates"] --> G3["Step 3: Spot Advisor filter (rank ≤ 3)"]
-        G3 --> G4["Step 4: Blacklist filter (failure ≥ 3 → hard reject)"]
-        G4 --> G6["Step 6: Fetch spot + on-demand prices"]
-        G6 --> G7["Step 7: ONNX ML scoring (45 features)"]
-        G7 --> G7b["Step 7b: Risk cutoff (risk ≤ 0.50)"]
-        G7b --> DEDUP["Dedup by instance type, sort by ml_score"]
-        DEDUP --> CACHE["Store top 100 in Redis (65-min TTL)"]
-    end
+```
+Tier 1 — Global (Redis-cached, 65 min TTL)
+  → Runs full ONNX ML pipeline on ALL catalog instances
+  → Caches top 100 pools per region
+  → Shared across ALL clusters in the same region
 
-    subgraph "Tier 2: Per-Client Filter (in-memory)"
-        CACHE --> F1["Architecture filter"]
-        F1 --> F2["vCPU range filter"]
-        F2 --> F3["Memory range filter"]
-        F3 --> F4["Allowed families filter"]
-        F4 --> F5["Allowed sizes filter"]
-        F5 --> F6["Allowed AZs filter"]
-        F6 --> F7["Excluded instances filter"]
-        F7 --> F8["Hard blacklist re-check (failure ≥ 3)"]
-        F8 --> RERANK["Re-rank 1 → N"]
-    end
-
-    RERANK --> S9["Step 9: Post-score DryRun capacity check (top 10 only)"]
-    S9 --> RESULT["Return ranked pools"]
+Tier 2 — Per-request (in-memory, sub-ms)
+  → Applies per-cluster filters: vCPU, memory, family allowlist, AZ, architecture
+  → Removes blacklisted pools
+  → Returns top N matching pools for this cluster
 ```
 
-### Global Cache Constants (verified from code L34-36)
-```python
-GLOBAL_CACHE_TTL = 65 * 60    # 65 minutes (3900 seconds)
-GLOBAL_CACHE_LIMIT = 100      # Top 100 pools cached per region
-```
+### `rank_pools()` — line 233
+Orchestrates both tiers. Calls `_get_or_compute_global_rankings()` then `_apply_client_filters()`.
 
-## 2.2 Step 3 — Spot Advisor Filter
-- Data source: `_get_spot_advisor_data()` (scraped from AWS Spot Advisor)
-- Rank encoding: 0 = <5%, 1 = 5-10%, 2 = 10-15%, 3 = 15-20%, 4 = >20%
-- **Hard filter**: `rank <= 3` (reject pools with >20% interruption rate)
+### `_run_global_pipeline()` — line 360
+Runs all pipeline steps on the full instance catalog:
 
-## 2.3 Step 4 — Blacklist Check (Tiered)
-- Redis set: `risky_pools:{region}`
-- Failure count: `blacklist_failures:{instance_type}:{az}`
-- **Hard reject**: `failure_count >= 3`
-- **Soft flag**: `failure_count 1-2` (kept, penalized -20% savings)
-
-## 2.4 Step 6 — Price Fetch
-- Source: `_get_pricing_data(region)` → AWS Pricing API cached in Redis
-- Fallback: `_estimate_instance_price(instance_type)` based on family/size heuristic
-- Safety checks:
-  - If `spot_price <= 0` → set to `ondemand_price * 0.30`
-  - If `spot_price >= ondemand_price` → set to `ondemand_price * 0.70`
-
-## 2.5 Step 7 — ML Scoring (ONNX Models)
-
-**Models**: `ml_model/classifier_6.onnx` + `ml_model/regressor_6.onnx`
-**Config**: `ml_model/risk_threshold.json` → `optimal_threshold: 0.35`, `model_version: 6`
-
-```mermaid
-flowchart TD
-    FEAT["MLFeatureService.engineer_features() → 45 features"] --> CLS["classifier_6.onnx → risk_probability"]
-    FEAT --> REG["regressor_6.onnx → predicted_savings"]
-    CLS --> FLAG{"risk > 0.35?"}
-    FLAG -- "Yes" --> FLAGGED["is_flagged = True (kept, visible in UI)"]
-    FLAG -- "No" --> OK["is_flagged = False"]
-    FLAGGED --> EV["ml_score = savings × (1 - risk)"]
-    OK --> EV
-```
-
-**Feature categories** (45 total from `ml_feature_service.py`):
-
-| Category | Count | Source |
-|---|---|---|
-| Temporal | 10 | Hour, day, sin/cos transforms |
-| Lag/History | 3 | 1h, 4h, 24h savings |
-| Rolling Windows | 8 | 4h/24h mean, std, min, max |
-| Price Dynamics | 5 | Spread, ratio, momentum |
-| Family Patterns | 6 | Family-hour baselines |
-| Family Stress | 3 | Cross-instance contagion |
-| Events | 3 | Holiday/stress flags |
-| Categorical | 7 | Family, size, AZ encoded |
-
-**ML Circuit Breaker**: If ONNX inference fails 3+ times in 10 minutes → falls back to heuristic.
-- Redis keys: `atharvaai:ml_fail_count` (10 min TTL), `atharvaai:ml_degraded` (10 min TTL)
-
-## 2.6 Step 7b — Risk Cutoff
-- Hard cutoff: `risk_probability <= 0.50` in global pipeline
-
-## 2.7 Step 9 — DryRun Capacity Check
-- Only **top 10** pools DryRun-validated (API cost control)
-- Budget: `spot:dryrun_count:{region}` (hourly)
-- Per-pool failure: `spot:dryrun_failures_24h:{pool_id}` (24h rolling)
-
----
-
-# SECTION 3: RISK ENGINE — Composite Risk Score
-
-**Source**: `backend/core/risk_engine.py` (343 lines)
-
-## 3.1 Constants (verified from code L27-182)
-
-```python
-_K_LAPLACE             = 4.0       # Bayesian smoothing constant
-_T_POOL_MINUTES        = 60.0      # Pool pressure half-life (minutes)
-_ALPHA_ADVISOR         = 0.3       # Spot Advisor blending weight
-_W_ADJUSTED_ML         = 0.35      # AdjustedML weight in BaseRisk
-_W_VOLATILITY          = 0.10      # Volatility weight in BaseRisk
-_W_POOL_PRESSURE       = 0.25      # Pool pressure weight in FinalRisk
-_W_AZ_DELTA            = 0.15      # AZ delta weight in FinalRisk
-_W_CLUSTER_INSTABILITY = 0.15      # Cluster instability weight in FinalRisk
-_TAU_CONSERVATIVE_SECONDS = 7200.0 # Decay τ for conservative mode (120 minutes)
-```
-
-## 3.2 Risk Computation Pipeline
-
-```mermaid
-flowchart TD
-    subgraph "§3.1 Pool Pressure"
-        F1["failures_30min + K_LAPLACE"] --> DIV["÷ (active_nodes + K_LAPLACE)"]
-        DIV --> DECAY["× exp(-Δt / 60 min)"]
-        DECAY --> PP["PoolPressure ∈ [0,1]"]
-    end
-
-    subgraph "§3.2 AZ Instability"
-        PP --> AZ["AZDelta = max(avg(AZ_pressures) - PoolPressure, 0)"]
-        AZ --> AZR["AZDelta ∈ [0,1]"]
-    end
-
-    subgraph "§3.3 Price Volatility"
-        PRICES["prices_last_60min"] --> VOL["StdDev / (EMA_30 or Mean)"]
-        VOL --> NV["NormalizedVolatility ∈ [0,1]"]
-    end
-
-    subgraph "§3.4 Base Risk"
-        ML["ML_Risk"] --> ADJ["AdjustedML = ML_Risk × (1 + AdvisorRisk × 0.3)"]
-        ADJ --> BR["BaseRisk = (AdjustedML × 0.35) + (Volatility × 0.10)"]
-    end
-
-    subgraph "§3.5 Final Risk"
-        BR --> FR["FinalRisk = BaseRisk"]
-        PP --> FR2["+ (PoolPressure × 0.25)"]
-        AZR --> FR3["+ (AZDelta × 0.15)"]
-        CB["ClusterInstabilityBoost"] --> FR4["+ (ClusterBoost × 0.15)"]
-        FR --> FINAL["FinalRisk ∈ [0,1]"]
-        FR2 --> FINAL
-        FR3 --> FINAL
-        FR4 --> FINAL
-    end
-```
-
-## 3.3 Cluster Instability State Machine (Redis-Backed)
-
-**Redis Key**: `spot:cluster_state:{cluster_id}` (NO TTL — permanent)
-
-```mermaid
-stateDiagram-v2
-    [*] --> NORMAL
-    NORMAL --> CONSERVATIVE : Risk event detected
-    CONSERVATIVE --> HALT : Multiple failures
-    HALT --> NORMAL : Manual recovery / timeout
-    CONSERVATIVE --> NORMAL : Decay timer expires
-```
-
-**Boost values** (from code L185-244):
-- `NORMAL`: boost = `0.0`
-- `CONSERVATIVE`: boost = `1.3 × exp(-elapsed_seconds / 7200)` → decays from 1.3 → 0 over ~2h
-- `HALT`: boost = `1.0` (constant maximum)
-
----
-
-# SECTION 4: EV MODEL — Economic Expected Value
-
-**Source**: `backend/core/ev_model.py` (184 lines)
-
-## 4.1 Dynamic Capacity Failure Probability (from code L18-39)
-```
-Probability = DryRun_Failures_24h / DryRun_Attempts
-Fallback: 0.05 if no data
-Cap: min(probability, 0.50) — never assume total failure
-```
-
-## 4.2 EV Formula Chain (from code L46-129)
-```
-1. EffectiveExposureHours = min(RiskHorizonHours, RecoveryTimeHours)
-2. ExpectedInterruptionCost = FinalRisk × DowntimeCostPerHour × EffectiveExposureHours
-3. CapacityFailureRisk = CapacityFailureProbability × RetryCost
-4. MigrationPenalty = DrainTimeCost + WarmupCost + ControlPlaneCost
-5. VolatilityCost = NormalizedVolatility × VolatilityCostMultiplier
-6. EV = Savings - InterruptionCost - MigrationPenalty - CapacityFailureRisk - VolatilityCost
-```
-
-**Decision rule**: `EV > 0` → candidate eligible
-
-## 4.3 Default Parameter Values (from code L141-150)
-
-| Parameter | Default | Unit |
-|---|---|---|
-| `risk_horizon_hours` | 2.0 | hours |
-| `recovery_time_hours` | 0.5 | hours |
-| `downtime_cost_per_hour` | 100.0 | USD |
-| `retry_cost` | 10.0 | USD |
-| `capacity_failure_probability` | 0.05 | ratio |
-| `drain_time_cost` | 2.0 | USD |
-| `warmup_cost` | 1.0 | USD |
-| `control_plane_cost` | 0.5 | USD |
-| `volatility_cost_multiplier` | 5.0 | multiplier |
-
----
-
-# SECTION 5: DECISION ENGINE v3 — 15-Step Policy Pipeline
-
-**Source**: `backend/core/decision_engine.py` (781 lines)
-
-## 5.1 Optimization Profiles (from code L56-84)
-
-| Profile | Risk Ceiling | Delta Threshold | Max Family Ratio | Max AZ Ratio | Staleness Penalty | Volatility Adj |
-|---|---|---|---|---|---|---|
-| `COST_FIRST` | 0.25 | 0.03 (3%) | 0.40 | 0.50 | 0.95 | -0.05 |
-| `BALANCED` (default) | 0.20 | 0.05 (5%) | 0.40 | 0.50 | 0.95 | -0.05 |
-| `NO_DOWNTIME_FIRST` | 0.10 | 0.08 (8%) | 0.30 | 0.40 | 0.95 | -0.05 |
-
-**Constants** (from code L92-93):
-```python
-CURRENT_MODEL_VERSION = "6"
-ITN_BYPASS_ENABLED = True
-```
-
-## 5.2 15-Step Pipeline Flow
-
-```mermaid
-flowchart TD
-    S1["Step 1: Cluster cooldown check"] -->|"Skipped if is_emergency"| S1b
-    S1b["Step 1b: Pricing freshness (≤15 min)"] -->|"Fail-open if no timestamp"| S2
-    S2["Step 2: Pool cooldown filter"] -->|"ITN bypass if emergency"| S2b
-    S2b["Step 2b: Fetch node classification"] --> S2c
-    S2c["Step 2c: Filter STATELESS_ELIGIBLE nodes"] --> S3
-    S3["Step 3: Validate model version"] --> S4
-    S4["Step 4: Load optimization profile"] --> S5
-    S5["Step 5: Load global rankings from Redis"] --> S6
-    S6["Step 6: THREE-LAYER RISK CEILING"] --> S7
-    S7["Step 7: Capacity freshness penalty"] --> S8
-    S8["Step 8: Volatility guard (no-op, handled in Step 6)"] --> S9
-    S9["Step 9: Re-score all pools with evaluate_candidate_ev()"] --> S10
-    S10["Step 10: Score current pool (simple EV)"] --> S11
-    S11["Step 11: Template + Karpenter filters"] --> S12
-    S12["Step 12: Diversity check + deadlock protection"] --> S13
-    S13["Step 13: Delta threshold check"] --> S14
-    S14["Step 14: APPROVED — select best candidate"]
-```
-
-### Step 6 — Three-Layer Risk Ceiling (from code L344-393)
-```
-Layer 1: Profile ceiling (from optimization mode, e.g., BALANCED = 0.20)
-Layer 2: Volatility adjustment (volatile market: ceiling += -0.05)
-         Example: BALANCED volatile → 0.20 + (-0.05) = 0.15
-Layer 3: Trust-phase override (use min of current ceiling and trust phase ceiling)
-         Phase 0: risk_ceiling_override = 0.15
-         Phase 1: risk_ceiling_override = 0.20
-         Phase 2: risk_ceiling_override = None (use profile default)
-
-Effective ceiling = min(Layer1 + Layer2, Layer3_override_if_set)
-Hard reject: pool.risk_probability > effective_ceiling
-```
-
-### Step 9 — Full EV Re-scoring (from code L423-463)
-Uses `evaluate_candidate_ev()` from `ev_model.py` with dynamic capacity failure probability from Redis.
-
-### Step 10 — Current Pool Scoring (from code L465-481)
-Uses **simple** `compute_expected_value()`: `savings × (1 - risk)` — intentionally different from Step 9.
-
-### Step 12 — Diversity Deadlock Protection (from code L528-541)
-If no candidates pass diversity: `current_pool_ev >= 0.5` → hold current pool.
-
-### Step 13 — Delta Threshold (from code L554-594)
-```
-delta = best_candidate_ev - current_pool_ev
-if delta < profile.delta_threshold → REJECT
-```
-
-### Rejection Counters (from code L744-780)
-**Redis Key**: `spot:rejection_counters:{cluster_id}` (24h TTL, hash)
-
----
-
-# SECTION 6: SAFETY CHECKPOINTS
-
-## 6.1 Guardrail Engine — Hard Guards
-
-**Source**: `backend/services/guardrail_engine.py` (351 lines)
-
-### Hard Guards (from code L21-27, all must pass)
-
-| Guard | Default | Description |
-|---|---|---|
-| Spot Ratio | ≤ 0.80 | Max 80% spot nodes |
-| AZ Concentration | ≤ 0.60 | No AZ > 60% of spot nodes |
-| Family Concentration | ≤ 0.50 | No instance family > 50% |
-| Daily Spend Cap | ≤ $10,000 | Daily spend limit |
-| Concurrent Nodes Down | ≤ 3 | Max simultaneous drains |
-| Stateful Node | `False` | Block auto-scaling on stateful |
-| Maintenance Window | `False` | Block ops during maintenance |
-
-### Spend Velocity Guard (from code L99-138)
-```
-SpendVelocity = HourlyCostNow - HourlyCost1hAgo
-If velocity > 50 USD/hr → Block upward resizes
-Downward resizes always allowed
-```
-
-### Org-Level Spend Velocity Guard (from code L142-183)
-```
-Redis key: spot:org_spend_velocity:{org_id}
-Threshold: 200 USD/hr (default)
-If org-wide velocity > threshold → Block ALL upward resizes in org
-```
-
-### Stabilization Guard (from code L190-203)
-```
-After execution wait 2–5 min. Default stabilization_minutes = 3.0
-```
-
-### Cluster Health Score (from code L239-276)
-```
-HealthScore = 0.25×(PendingPods) + 0.25×(ReadyNodes) + 0.25×(Latency) + 0.25×(CPUHeadroom)
-Threshold: ≥ 0.75 required to proceed
-```
-
-## 6.2 Circuit Breaker State Machine
-
-**Source**: `backend/services/circuit_breaker.py` (239 lines)
-
-### Constants (from code L31-35)
-```python
-ROLLBACK_WINDOW_SECONDS      = 3600    # 1 hour window
-NORMAL_TO_CONSERVATIVE_COUNT = 2       # ≥2 rollbacks → CONSERVATIVE
-CONSERVATIVE_TO_HALT_COUNT   = 3       # ≥3 rollbacks while CONSERVATIVE → HALT
-HALT_STABLE_SECONDS          = 1800    # 30 min no failures → CONSERVATIVE
-CONSERVATIVE_DECAY_SECONDS   = 7200    # 2h stable → NORMAL
-```
-
-### State Transitions (from code L199-227)
-
-```mermaid
-stateDiagram-v2
-    [*] --> NORMAL
-    NORMAL --> CONSERVATIVE : ≥2 rollbacks in 1h
-    CONSERVATIVE --> HALT : ≥3 rollbacks in 1h
-    HALT --> CONSERVATIVE : 30 min stable (no failures)
-    CONSERVATIVE --> NORMAL : 2h stable + 30min since last failure
-    NORMAL --> NORMAL : Admin manual reset
-```
-
-### Risk Multiplier (from code L229-238)
-
-| State | Risk Multiplier | Formula |
-|---|---|---|
-| `NORMAL` | 1.0 | Constant |
-| `CONSERVATIVE` | 1.3 → 0.0 (decaying) | `1.3 × exp(-minutes / 120)` |
-| `HALT` | 2.0 | Constant — ALL automation blocked |
-
-### Redis Keys (from code L25-28)
-
-| Key | TTL | Purpose |
-|---|---|---|
-| `cb:state:{cluster_id}` | 24h | Current state |
-| `cb:rollbacks:{cluster_id}` | 1h | Rollback counter |
-| `cb:last_failure:{cluster_id}` | 1h | Last failure timestamp |
-| `cb:state_entered:{cluster_id}` | 24h | State entry timestamp |
-
-## 6.3 Cooldown Controller
-
-**Source**: `backend/services/cooldown_controller.py` (340 lines)
-
-### Cooldown Types (from code L32-38, L295)
-
-| Type | Redis Key | Default TTL | Purpose |
-|---|---|---|---|
-| Cluster switch | `spot:cooldown:cluster:{id}` | 60 min | Prevent cluster-level flapping |
-| Pool reuse | `spot:cooldown:pool:{pool_id}` | 120 min | Prevent reusing failed pool |
-| Pool switch | `spot:cooldown:action:pool_switch:{id}` | 30 min | Prevent rapid pool changes |
-| Resize | `spot:cooldown:action:resize:{id}` | 360 min (6h) | Prevent size oscillation |
-| Substitute | `spot:cooldown:action:substitute:{id}` | 120 min | Prevent substitute churn |
-| **Stabilization lock** | `spot:stabilization_lock:{id}` | 300s (5 min) | Post-execution stabilization |
-
-**Emergency Override** (from code L139-153): `override_for_emergency()` deletes the cluster cooldown key.
-
----
-
-# SECTION 7: EXECUTION ENGINE
-
-## 7.1 Execution Controller — 6-Step Safe Node Replacement
-
-**Source**: `backend/core/action_executor.py` (18916 bytes) + `backend/services/execution_controller.py` (231 lines)
-
-```mermaid
-flowchart TD
-    S1["Step 1: DryRun capacity check<br>AWS ec2:CreateFleet DryRun"] --> S2["Step 2: Provision substitute node<br>AWS ec2:RunInstances"]
-    S2 --> S3["Step 3: Wait substitute Ready<br>K8s: get node, check Ready (300s timeout)"]
-    S3 --> S4["Step 4: Drain original node<br>K8s: cordon + evict pods"]
-    S4 --> S5["Step 5: Verify workload health<br>K8s: check pod restarts, ready count"]
-    S5 --> S6["Step 6: Terminate original node<br>AWS ec2:TerminateInstances"]
-    S4 -->|"Failure"| ROLLBACK["Un-cordon original + record circuit breaker rollback"]
-    S5 -->|"Unhealthy"| ROLLBACK
-```
-
-**On failure**: Increments rollback counter in circuit breaker.
-**On success**: Records success in circuit breaker.
-**Substitute wait timeout**: 300 seconds.
-
-## 7.2 Auto-Rebalancer
-
-**Source**: `backend/workers/tasks/auto_rebalancer.py` (522 lines)
-
-| Type | Timeout | Trigger |
-|---|---|---|
-| Emergency | 90 seconds | Termination notice |
-| Graceful | 10 minutes | Scheduled/proactive optimization |
-
-**Steps**: Cordon nodes → Drain pods → Karpenter provisions replacements on safe pools.
-
-## 7.3 Substitute Manager — Zero-Downtime Lifecycle
-
-**Source**: `backend/services/substitute_manager.py` (969 lines)
-
-```mermaid
-stateDiagram-v2
-    [*] --> IDLE
-    IDLE --> PREWARMING : deploy_substitute()
-    PREWARMING --> READY : DryRun passed
-    READY --> ACTIVE : promote_substitute()
-    ACTIVE --> RELEASING : release_substitute()
-    RELEASING --> IDLE : Cleanup complete
-    PREWARMING --> IDLE : All candidates fail
-```
-
-**Redis keys**: `spot:substitute:state:{cluster_id}`, `spot:substitute:meta:{cluster_id}`
-
-### Warm Spare System (`maintain_warm_spare_worker.py`, 141 lines)
-- Runs every **5 minutes** via Celery Beat
-- Ensures **≥1 warm substitute** per auto-rebalance-enabled cluster
-- Sized for the **LARGEST node** in the cluster
-- Uses the **CHEAPEST** available spot pool
-
-## 7.4 Spot Interruption Handling Flow
-
-**Source**: `backend/services/event_monitor.py` (690 lines) + `backend/workers/tasks/termination_monitor.py` (316 lines)
-
-```mermaid
-flowchart TD
-    ITN["Spot Termination Notice (2-min warning)"] --> COOLDOWN["Override cluster cooldown"]
-    COOLDOWN --> BL["Blacklist terminated pool (24h)"]
-    BL --> CLASSIFY["Check node classification"]
-    CLASSIFY --> PDB{"PDB blocks eviction?"}
-    PDB -- "Yes" --> ALERT["ALERT: manual intervention"]
-    PDB -- "No" --> SUB["Activate substitute node"]
-    SUB --> DRAIN["Drain terminated node"]
-    DRAIN --> REBAL["trigger_emergency_rebalancing()"]
-    REBAL --> ACTION["Create RebalancingAction (90s emergency)"]
-```
-
-**Bypasses**: delta threshold, savings check, cluster cooldown, pool cooldown.
-
-**Detection Sources**:
-1. EventBridge: AWS termination notices (2-minute warning)
-2. DaemonSet agent: Node-level termination detection via IMDS polling
-3. Manual API: User flags via UI
-
----
-
-# SECTION 8: HIBERNATION ENGINE
-
-**Source**: `backend/services/hibernation_service.py` (445 lines) + `backend/workers/tasks/hibernation_worker.py` (390 lines)
-
-## 8.1 Strategies & Implementations
-
-| Strategy | File | Description | Savings | Wake Time |
-|---|---|---|---|---|
-| `NAMESPACE_SLEEP` | `namespace_sleep.py` (370L) | Scale workloads to 0 replicas | 80% | 2 min |
-| `NUCLEAR` | `nuclear.py` (79L) | Scale ASGs to 0, terminate workers | 70% | 5 min |
-| `SNAPSHOT_RESTORE` | `snapshot_restore.py` (91L) | EBS snapshot + full shutdown | 95% | 15 min |
-
-### Namespace Sleep Constants
-```python
-SYSTEM_NAMESPACES = ["kube-system", "kube-public", "kube-node-lease", "spot-optimizer"]
-WAKE_ORDER = ["StatefulSet", "Deployment", "CronJob", "Job"]
-MAX_CONCURRENT_OPERATIONS = 10
-OPERATION_DELAY_SECONDS = 0.5
-POD_TERMINATION_TIMEOUT = 300
-RESPECT_PDB = True
-```
-
-## 8.2 Schedule Matrix Format
-
-| Type | Length | Encoding |
-|---|---|---|
-| WEEKLY | 168 chars | 7 days × 24 hours |
-| DAILY | 31 chars | 1 month of days |
-| MONTHLY | 744 chars | 31 days × 24 hours |
-
-`'0'` = AWAKE, `'1'` = SLEEPING
-
-## 8.3 Savings Estimation
-```
-sleep_hours = matrix.count('1')
-hourly_cost = cluster.monthly_cost / 730
-weekly_savings = sleep_hours × hourly_cost × strategy_percentage
-annual_savings = weekly_savings × 52
-```
-
-## 8.4 Distributed Locking
-```
-Lock key: hibernation:lock:{schedule_id}:{cluster_id}
-Lock TTL: 180 seconds
-Acquisition: SET NX EX (atomic)
-Release: Only if still owned (compare lock_value)
-```
-
-## 8.5 Hibernation Cluster Suspend Flow
-
-```mermaid
-flowchart TD
-    SCHED["execute_hibernation_scheduler (every 1 min)"] --> CHECK["Check all schedules"]
-    CHECK --> MATRIX{"Current hour in matrix == '1'?"}
-    MATRIX -- "Yes" --> LOCK["Acquire distributed lock"]
-    LOCK --> STRAT["Select strategy"]
-    STRAT --> NS["NAMESPACE_SLEEP:<br>K8s: get deployments → scale to 0<br>K8s: get statefulsets → scale to 0"]
-    STRAT --> NUC["NUCLEAR:<br>AWS autoscaling:UpdateAutoScalingGroup → min=0<br>AWS ec2:TerminateInstances"]
-    STRAT --> SNAP["SNAPSHOT_RESTORE:<br>AWS ec2:CreateSnapshot<br>then Nuclear shutdown"]
-    NS --> DB["Update DB: hibernation_state = SLEEPING"]
-    NUC --> DB
-    SNAP --> DB
-    MATRIX -- "No + was sleeping" --> WAKE["execute_wake:<br>Reverse strategy (scale up, restore)"]
-    WAKE --> PREWARM["execute_prewarm (pre_warm_minutes before wake)"]
-```
-
----
-
-# SECTION 9: RIGHT-SIZING ENGINE
-
-**Source**: `backend/services/rightsizing_service.py` (~960 lines)
-
-## 9.1 Constants
-```python
-SAFETY_BUFFER_PCT = 20         # 20% overhead on P95 usage
-OVERSIZED_THRESHOLD_PCT = 50   # Request ≥ 50% above usage → "oversized"
-UNDERSIZED_THRESHOLD_PCT = 95  # Usage ≥ 95% of request → "undersized"
-```
-
-## 9.2 Right-Sizing Recommendation Flow
-
-```mermaid
-flowchart TD
-    START["generate_recommendations(cluster_id)"] --> CTRL["Get distinct controllers"]
-    CTRL --> LOOP["For each controller"]
-    LOOP --> QUERY["Query pod_metrics (168h window)"]
-    QUERY --> MIN{"≥ min_data_points (100)?"}
-    MIN -- "No" --> SKIP["Skip"]
-    MIN -- "Yes" --> STATS["Calculate P50, P95, P99 for CPU + Memory"]
-    STATS --> REC["Recommended = P95 + SAFETY_BUFFER_PCT"]
-    REC --> IAWARE{"Instance-Aware Mode?"}
-    IAWARE -- "Yes" --> POOL["_check_better_pool_exists()\nDouble gate: risk < 15% AND spot < OD"]
-    POOL --> EXISTS{"Pool found?"}
-    EXISTS -- "No" --> SKIPPOOL["Skip (not actionable)"]
-    EXISTS -- "Yes" --> TAG["Tag is_actionable=True + best_pool"]
-    TAG --> TYPE{"Classify"}
-    IAWARE -- "No" --> TYPE
-    TYPE -- "Request ≥ 50% above P95" --> OVER["OVERSIZED"]
-    TYPE -- "P95 ≥ 95% of Request" --> UNDER["UNDERSIZED"]
-    TYPE -- "Otherwise" --> RIGHT["RIGHT_SIZED"]
-```
-
-### Confidence Levels
-
-| Level | Criteria |
+| Step | Purpose |
 |---|---|
-| HIGH | `data_points >= min × 3` AND `window >= 72h` |
-| MEDIUM | `data_points >= min` |
-| LOW | Insufficient data |
+| Step 1 | Build candidate pools (instance × AZ matrix) |
+| Step 2 | Fetch Spot Advisor interruption rates (3-tier fallback: AWS API → Redis cache → hardcoded) |
+| Step 3 | Tiered Spot Advisor filter — Pass 0: <5%, Pass 1: ≤10%, Pass 2: ≤15% |
+| Step 4 | Fetch current spot prices |
+| Step 5 | Build feature vectors for ONNX models |
+| Step 6 | Run `classifier_6.onnx` → `risk_probability` (0–1) |
+| Step 7 | Run `regressor_6.onnx` → `predicted_savings` (0–1) |
+| Step 8 | Compute composite ML score + sort |
+| Step 9 | Dry-run capacity validation per top pool |
 
-## 9.3.1 Instance-Aware Rightsizing Mode
+### `_step9_post_score_capacity_check()` — line ~600
+Calls `dry_run_pool()` for each top-ranked pool. Marks capacity as `available` / `uncertain` / `insufficient`.
 
-When `ClusterOptimizationSettings.instance_aware_rightsizing = True`:
-
-1. After generating each recommendation, `_check_better_pool_exists()` is called
-2. **Double gate**: pool must pass BOTH:
-   - Risk < 15% ceiling
-   - Spot price < on-demand price for equivalent instance
-3. Additional filters: not blacklisted, capacity available, size within 1x-2x of target
-4. Recommendations without a passing pool are skipped
-5. Passing recommendations get `is_actionable=True` + `best_pool` metadata
-
-**Fail-open behavior**: On any error in the pool check, recommendations default to `is_actionable=True`.
-
-## 9.4 Cost Estimation
+### ONNX Models — lines 104–117
+```python
+# backend/services/pool_ranking_service.py
+classifier = ort.InferenceSession("ml_model/classifier_6.onnx")
+regressor  = ort.InferenceSession("ml_model/regressor_6.onnx")
+RISK_THRESHOLD = json.load(open("ml_model/risk_threshold.json"))["threshold"]  # default 0.35
+GLOBAL_CACHE_LIMIT = 100     # top pools cached per region
+GLOBAL_CACHE_TTL   = 3900    # 65 minutes
 ```
-monthly_cost = (cpu_millicores / 1000) × cpu_hourly_rate × 730
-             + (memory_mb / 1024) × mem_hourly_rate × 730
+
+### Instance Catalog Priority — lines 143–231
+1. **DB** — `InstanceCatalog` table (populated by nightly worker)
+2. **Hardcoded fallback** — 65 instance types with vCPU/memory/arch specs
+3. **Safe defaults** — 2 vCPU, $0.05/hr (last resort)
+
+### `ScoredPool` Object — lines 67–85
+```python
+class ScoredPool:
+    pool: InstancePool             # (instance_type, az, region)
+    predicted_savings: float       # 0–1, regressor output
+    risk_probability: float        # 0–1, classifier output (lower = safer)
+    ml_score: float                # composite ranking score
+    is_flagged: bool               # on global blacklist
+    rank: int                      # 1-based ranking position
+    capacity_status: str           # 'available' | 'uncertain' | 'insufficient'
+    capacity_validated_at: str     # ISO timestamp of last dry-run check
 ```
 
-**Instance family cost modifiers**:
+## 2.2 Global Pool Rankings Redis Cache
 
-| Family | CPU $/core-hr | Mem $/GB-hr |
+```
+Key:   global_pool_rankings:{region}          e.g. global_pool_rankings:ap-south-1
+Value: JSON { "data": [ScoredPool...], "ts": ISO }
+TTL:   65 minutes
+```
+
+Used by:
+- `atharvaai_routes.py` — `/pools/rankings` endpoint
+- `auto_rebalancer.py` — Pool selection for S2S and OD→SPOT
+- `cluster_service.py` — Node condition enrichment (`current_risk_score`, `best_available_pool`)
+
+---
+
+# SECTION 3: DECISION ENGINE SERVICE
+
+**File**: `backend/services/decision_engine_service.py`
+
+Unified facade for all pool-selection decisions. Wraps `PoolRankingService` with blacklisting and failure tracking.
+
+### Constants — lines 28–32
+```python
+FAILURE_THRESHOLD     = 3      # auto-blacklist after N failures in 24h
+BLACKLIST_TTL_HOURS   = 24     # default blacklist duration
+DRY_RUN_CACHE_TTL     = 300    # 5 minutes
+RANKING_CACHE_TTL     = 3600   # 1 hour
+```
+
+### `rank_for_node(node, cluster)` — line 64
+Returns top `ScoredPool` list for a specific running node. Applies node template + blacklist filters.
+
+### `rank_for_template(template_spec)` — line 136
+Returns top pools matching a size specification (vCPU range, memory range, architecture).
+
+### `report_termination(pool_key)` — line ~180
+```python
+# Sets global blacklist in Redis for 24h:
+redis.set(f"blacklist:pool:{pool_key}", "terminated", ex=86400)
+# Also lowers rank in global rankings cache for this pool
+```
+
+### `report_launch_failure(pool_key, cluster_id)` — line ~220
+```python
+# Increments failure counter; auto-blacklists when >= FAILURE_THRESHOLD
+redis.incr(f"failures:{pool_key}:{cluster_id}")
+if count >= FAILURE_THRESHOLD:
+    redis.set(f"blacklist:pool:{pool_key}", "failures", ex=86400)
+```
+
+### Decision Routes — `backend/api/decision_routes.py`
+```
+POST /api/v1/decision/rank-for-node         → rank_for_node()
+POST /api/v1/decision/rank-for-template     → rank_for_template()
+POST /api/v1/decision/report-termination    → report_termination()
+POST /api/v1/decision/report-launch-failure → report_launch_failure()
+GET  /api/v1/decision/blacklist             → current blacklist entries
+```
+
+---
+
+# SECTION 4: AUTO-REBALANCER ENGINE
+
+**File**: `backend/workers/tasks/auto_rebalancer.py` (4645 lines)
+
+## 4.1 Entry Point
+
+`execute_rebalancing()` — line 1756. Called by Celery beat every 15 seconds per cluster.
+
+## 4.2 AWS State Sync
+
+`_sync_instance_state_from_aws()` — line 31
+
+```python
+# Loads platform credentials from SystemConfig (not default chain):
+aws_creds = db.query(SystemConfig).filter_by(key="PLATFORM_AWS_ACCESS_KEY").first()
+sts_client = boto3.client("sts",
+    aws_access_key_id=aws_creds.value,
+    aws_secret_access_key=secret.value)
+
+# RC3 Guard — prevents SPOT→OD lifecycle downgrade from transient label absence:
+if db_inst.lifecycle == InstanceLifecycle.SPOT and real_lifecycle == InstanceLifecycle.ON_DEMAND:
+    streak = redis.incr(f"rc3:sync_od_streak:{aws_iid}")
+    redis.expire(f"rc3:sync_od_streak:{aws_iid}", 300)
+    if streak >= 3:                      # 3 consecutive OD reports (~45s at 15s polling)
+        db_inst.lifecycle = real_lifecycle
+        redis.delete(f"rc3:sync_od_streak:{aws_iid}")
+    # else: keep SPOT — transient label absence
+```
+
+## 4.3 Spot Instance Launch
+
+`_launch_spot_instance_direct()` — line 324
+
+Uses `ec2.create_fleet()` with `SpotOptions`. Handles capacity fallback across AZs. Returns `(instance_id, az, instance_type)`.
+
+```python
+fleet_config = {
+    "SpotOptions": {"AllocationStrategy": "price-capacity-optimized"},
+    "LaunchTemplateConfigs": [...],
+    "TargetCapacitySpecification": {
+        "TotalTargetCapacity": 1,
+        "DefaultTargetCapacityType": "spot"
+    }
+}
+```
+
+## 4.4 Safety Gates (in `execute_rebalancing_action()` — line 642)
+
+Three gates must all pass before any drain/terminate:
+
+```
+Gate 1 — Stabilization Lock (line 697)
+  Redis key: lock:stabilize:{cluster_id}
+  Set by: any cross-system operation (Karpenter install, rightsizing, etc.)
+  TTL: 5–10 minutes
+
+Gate 2 — Substitute Mutual Exclusion (line 710)
+  Blocks if warm-spare is in PREWARMING or RELEASING state
+  Prevents two concurrent topology changes
+
+Gate 3 — Resize Cooldown (line 725)
+  Redis key: lock:rightsizing_cooldown:{cluster_id}
+  Set after each right-sizing operation
+```
+
+## 4.5 Rebalancing Phases (per action)
+
+```
+Phase 1: Spot Provisioning
+  Karpenter cluster → PATCH_KARPENTER_NODEPOOL (AgentAction)
+  Non-Karpenter     → _launch_spot_instance_direct() directly
+
+Phase 2: Wait for spot node to join K8s
+  Polls instance state; timeout = spot_join_timeout_minutes (default 30)
+
+Phase 3: Cordon
+  CORDON_NODE AgentAction sent to agent DaemonSet
+
+Phase 4: Drain
+  DRAIN_NODE AgentAction, grace_period_seconds=60
+
+Phase 5: EC2 Terminate + ASG Decrement
+  ASG growth guard (line 1637):
+    if asg_desired <= asg_min:
+        update_auto_scaling_group(MinSize=0)  # allow decrement
+    terminate_instance_in_auto_scaling_group(ShouldDecrementDesiredCapacity=True)
+```
+
+## 4.6 Pool-Level Diversification (S2S block)
+
+S2S = Spot-to-Spot rebalancing when diversification trigger fires.
+
+**Definition**: Pool = `(instance_type, az)`. Max 1 node per identical pool.
+
+```python
+# Count duplicate pools in running instances:
+_sp_pool_dupes = sum(
+    1 for i in _running_insts_s2s
+    if i.instance_type == _sp_inst.instance_type and i.az == _sp_inst.az
+)
+if _sp_pool_dupes > 1:
+    _s2s_trigger_reason = f'diversify_pools: duplicate pool {_sp_inst.instance_type}:{_sp_inst.az}'
+```
+
+**Note**: `c5.large:ap-south-1a` and `c5.large:ap-south-1b` are different pools — both allowed.
+
+## 4.7 Risk-Threshold S2S Trigger
+
+```python
+# Load strategy thresholds once per cluster cycle:
+_opt_strat = db.query(OptimizationStrategy).filter_by(cluster_id=cluster.id).first()
+_risk_ceil_s2s = (getattr(_opt_strat, 'risk_ceiling_percent', 25) or 25) / 100.0
+_tradeoff_pct_s2s = (getattr(_opt_strat, 'risk_savings_tradeoff_pct', 20) or 20) / 100.0
+
+# For each spot node: check if its pool risk exceeds ceiling
+if _sp_cur_pool and _sp_cur_pool.get('risk_probability', 0) > _risk_ceil_s2s:
+    _s2s_trigger_reason = f'risk_threshold: {_sp_risk:.2f} > {_risk_ceil_s2s:.2f}'
+```
+
+## 4.8 S2S Target Pool Selection (Tradeoff Logic)
+
+```python
+# Pass 1: better risk AND equal/better savings
+_s2s_target = next((
+    p for p in _ranked_s2s
+    if p.risk_probability < _sp_risk
+    and p.predicted_savings >= _sp_cur_savings
+    and f"{p.pool.instance_type}:{p.pool.az}" not in _occupied_pools
+), None)
+
+# Pass 2: tradeoff — accept up to N% worse savings for better risk
+if not _s2s_target:
+    _min_savings = _sp_cur_savings * (1 - _tradeoff_pct_s2s)
+    _s2s_target = next((
+        p for p in _ranked_s2s
+        if p.risk_probability < _sp_risk
+        and p.predicted_savings >= _min_savings
+        and f"{p.pool.instance_type}:{p.pool.az}" not in _occupied_pools
+    ), None)
+
+# No qualifying pool → silent retry next cycle (no action created)
+```
+
+## 4.9 Stale Action Expiry — line 1775
+
+```python
+# Actions stuck > 45 minutes are marked FAILED:
+cutoff = datetime.utcnow() - timedelta(minutes=45)
+stale = db.query(AgentAction).filter(
+    AgentAction.status.in_(['PENDING', 'PICKED_UP']),
+    AgentAction.created_at < cutoff
+).all()
+for a in stale:
+    a.status = 'FAILED'
+    a.error_message = 'Expired: stuck > 45 min'
+```
+
+## 4.10 Daily Rebalancing Limits
+
+```python
+# Default max_rebalances_per_24h = 5 (StatelessRuntimeRules)
+# Count completed actions in rolling 24h window:
+count = db.query(RebalancingAction).filter(
+    RebalancingAction.cluster_id == cluster_id,
+    RebalancingAction.status == 'completed',
+    RebalancingAction.completed_at >= datetime.utcnow() - timedelta(hours=24)
+).count()
+if count >= max_per_day:
+    defer(reason='daily_limit_reached')
+```
+
+---
+
+# SECTION 5: EMERGENCY REBALANCER
+
+**File**: `backend/workers/tasks/emergency_rebalancer.py` (entry: `emergency_rebalancer()` line 26)
+
+Handles spot interruptions with **standby-first** strategy.
+
+```python
+def emergency_rebalancer(cluster_id, interrupted_instance_id):
+    # 1. Clear cooldowns (emergency overrides normal cooldown)
+    redis.delete(f"spot:cooldown:{cluster_id}")
+
+    # 2. Blacklist interrupted pool for 24h
+    decision_engine.report_termination(f"{instance_type}:{az}")
+
+    # 3. Create RebalancingAction with trigger='emergency'
+    action = RebalancingAction(trigger='emergency', status='in_progress', ...)
+
+    # 4a. If standby node exists and is READY → use it immediately
+    if standby and standby.state == 'READY':
+        send_agent_action(UNCORDON_NODE, standby.instance_id)
+        send_agent_action(CORDON_NODE, interrupted_instance_id)
+        send_agent_action(DRAIN_NODE, interrupted_instance_id)
+        launch_standby_node.delay(cluster_id)  # replenish standby
+    else:
+        # 4b. No standby → launch new spot, then drain interrupted
+        _launch_spot_instance_direct(cluster_id, ...)
+        send_agent_action(CORDON_NODE, interrupted_instance_id)
+        send_agent_action(DRAIN_NODE, interrupted_instance_id)
+```
+
+---
+
+# SECTION 6: STANDBY NODE MANAGER
+
+**File**: `backend/workers/tasks/standby.py` (entry: `launch_standby_node()` line 18)
+
+Maintains one **pre-warmed, cordoned** spot node per cluster.
+
+```python
+# Lifecycle:
+# 1. Provision via _launch_spot_instance_direct()
+# 2. Wait for K8s join (up to spot_join_timeout_minutes)
+# 3. CORDON_NODE (workloads never scheduled here)
+# 4. Mark standby=True in DB (WarmSpareStatus table)
+# 5. Periodic health check — if interrupted, auto-replenish
+```
+
+Standby state exposed via:
+- `atharvaai_routes.py` `/v3/substitute/{cluster_id}` — IDLE / PREWARMING / READY / RELEASING
+- Frontend: `RebalancingTimeline` standby status card
+
+---
+
+# SECTION 7: RECOVERY MONITOR
+
+**File**: `backend/workers/tasks/recovery_monitor.py`
+
+### `sync_instance_states()` — line 27 (every 5 min)
+```python
+# For each running instance in DB:
+#   Call ec2.describe_instances() using platform credentials
+#   Apply RC3 guard before SPOT→OD downgrade (same as auto_rebalancer)
+#   Mark terminated/stopped instances as 'terminated' in DB
+```
+
+### `scan_orphans()` — line ~150 (every 5 min)
+```python
+# Orphan = spot instance launched by platform but not in K8s node list
+# Criteria: instance running in AWS, no matching Node object in K8s, age > 10 min
+# Action: terminate orphan via ec2.terminate_instances()
+```
+
+---
+
+# SECTION 8: CACHE WARMER
+
+**File**: `backend/workers/tasks/cache_warmer.py` (entry: `cache_warmer()` line 16, hourly)
+
+```python
+# 1. Aggregate top 10 instance type profiles from running nodes across all clusters
+# 2. For each profile (vCPU, memory, arch): call PoolRankingService.rank_pools()
+# 3. Cache result in Redis:
+#    Key: pool_rankings:{region}:{profile_hash}
+#    TTL: 1 hour (RANKING_CACHE_TTL = 3600)
+# 4. Warms Tier 2 cache so first real request hits cache, not ML pipeline
+```
+
+---
+
+# SECTION 9: DRY-RUN REFRESHER
+
+**File**: `backend/workers/tasks/dry_run_refresher.py` (entry: `dry_run_refresher()` line 14, every 5 min)
+
+```python
+# 1. Fetch global_pool_rankings:{region} from Redis (top 100 pools)
+# 2. For each pool call dry_run_pool():
+#    Uses describe_instance_type_offerings() — NOT RunInstances DryRun
+#    (faster, no billing, checks AZ + instance type availability)
+# 3. Update capacity_status: 'available' | 'uncertain' | 'insufficient'
+# 4. Write back to global rankings cache
+```
+
+### `dry_run_pool()` — `backend/utils/aws/dry_run.py` line 22
+```python
+DRY_RUN_CACHE_TTL = 120    # 2 minutes (shorter than ranking TTL)
+
+def dry_run_pool(instance_type, az, region, aws_creds):
+    cache_key = f"dryrun:{region}:{instance_type}:{az}"
+    cached = redis.get(cache_key)
+    if cached: return json.loads(cached)
+
+    offerings = ec2.describe_instance_type_offerings(
+        Filters=[
+            {"Name": "instance-type", "Values": [instance_type]},
+            {"Name": "location",      "Values": [az]},
+        ]
+    )
+    status = "available" if offerings["InstanceTypeOfferings"] else "insufficient"
+    redis.set(cache_key, json.dumps({"status": status}), ex=DRY_RUN_CACHE_TTL)
+    return status
+```
+
+---
+
+# SECTION 10: DIVERSITY ENFORCER
+
+**File**: `backend/services/diversity_enforcer.py` (core class: `DiversityEnforcer` line 15)
+
+## Pool-Level Diversification Rule
+
+**Pool = `(instance_type, az)`**. Max 1 node per identical pool.
+
+| Pool Key | Allowed |
+|---|---|
+| `c5.large:ap-south-1a` + `c5.large:ap-south-1b` | ✅ Different AZ = different pools |
+| `c5.large:ap-south-1a` + `c5.large:ap-south-1a` | ❌ Same pool = duplicate |
+| `c5.large:ap-south-1a` + `m5.large:ap-south-1a` | ✅ Different type = different pools |
+
+### `check_candidate(pool_key, cluster_id)` — line 28
+```python
+occupied = redis.smembers(f"cluster_pools:{cluster_id}")
+if pool_key in occupied:
+    return False, "pool_occupied"
+
+az = pool_key.split(":")[1]
+az_count = sum(1 for p in occupied if p.endswith(f":{az}"))
+total = len(occupied) + 1
+if az_count / total > max_az_ratio:            # default 0.50
+    return False, "az_concentration"
+
+return True, None
+```
+
+## Diversity Thresholds — lines 18–22
+
+| Mode | `max_az_ratio` |
+|---|---|
+| `COST_FIRST` | 0.50 |
+| `BALANCED` | 0.50 |
+| `NO_DOWNTIME_FIRST` | 0.40 |
+
+### `filter_by_cluster_pools(ranked_pools, cluster_id)` — line 203
+Removes any pool already occupied. Used by `auto_rebalancer.py` before selecting replacement target.
+
+### `update_cluster_pools(cluster_id, add=None, remove=None)` — line 248
+Maintains `cluster_pools:{cluster_id}` Redis set. Called after launch (add) and terminate (remove).
+
+---
+
+# SECTION 11: LIFECYCLE DETECTION (RC3 GUARD)
+
+The RC3 guard prevents a false **SPOT → ON_DEMAND** lifecycle downgrade when K8s node labels haven't propagated yet after agent reinstall.
+
+**Pattern used in 2 places**:
+
+### `_sync_instance_state_from_aws()` — `auto_rebalancer.py` line 129
+```python
+if db_inst.lifecycle == InstanceLifecycle.SPOT and real_lifecycle == InstanceLifecycle.ON_DEMAND:
+    streak = int(redis.incr(f"rc3:sync_od_streak:{aws_iid}") or 0)
+    redis.expire(f"rc3:sync_od_streak:{aws_iid}", 300)
+    if streak >= 3:                     # 3 × 15s = 45s of consistent OD reports
+        db_inst.lifecycle = real_lifecycle
+        redis.delete(f"rc3:sync_od_streak:{aws_iid}")
+    # else: keep SPOT — transient label absence
+else:
+    db_inst.lifecycle = real_lifecycle  # all other transitions: update immediately
+```
+
+### `backend/routers/metrics.py` — line ~148 (mirrors above for K8s metrics push)
+```python
+if lifecycle == InstanceLifecycle.SPOT:
+    inst.lifecycle = InstanceLifecycle.SPOT
+    redis.delete(f"rc3:metrics_od_streak:{inst.instance_id}")
+elif inst.lifecycle == InstanceLifecycle.SPOT:
+    streak = int(redis.incr(f"rc3:metrics_od_streak:{inst.instance_id}") or 0)
+    redis.expire(f"rc3:metrics_od_streak:{inst.instance_id}", 1800)
+    if streak >= 3:
+        inst.lifecycle = lifecycle
+        redis.delete(f"rc3:metrics_od_streak:{inst.instance_id}")
+    # else: keep SPOT
+else:
+    inst.lifecycle = lifecycle
+```
+
+---
+
+# SECTION 12: DATA MODELS
+
+## 12.1 Core Cluster Models — `backend/models/cluster.py`
+
+### `Cluster` table
+| Field | Type | Purpose |
 |---|---|---|
-| t3/t3a | 0.0325 | 0.0041 |
-| m5/m6i/m6a | 0.0425 | 0.0053 |
-| c5/c6i/c6a | 0.0365 | 0.0046 |
-| r5/r6i | 0.0540 | 0.0068 |
-| Graviton | General × 0.8 | Memory × 0.8 |
+| `id` | UUID | Primary key |
+| `karpenter_mode` | Enum | `DRY_RUN` or `AUTO` (null = not installed) |
+| `optimization_mode` | String | `COST_FIRST` / `BALANCED` / `NO_DOWNTIME_FIRST` |
+| `model_version` | String | Pinned ML model version (default "6") |
+| `workload_type` | String | `STATELESS` — stored but live classification preferred |
+| `auto_rebalance_enabled` | Boolean | Master toggle (legacy, superseded by Settings) |
+| `is_hibernating` | Boolean | Currently hibernated |
+| `hibernation_state` | JSON | Saved replica counts for wake |
 
-## 9.5 Optimizer Coordinator — Phase Machine
-
-**Source**: `backend/services/optimizer_coordinator.py` (645 lines)
-
-```mermaid
-stateDiagram-v2
-    [*] --> INITIAL_POOL_OPTIMIZATION
-    INITIAL_POOL_OPTIMIZATION --> STABILIZATION : Complete
-    STABILIZATION --> RIGHTSIZING_EVALUATION : Stability passed
-    RIGHTSIZING_EVALUATION --> COMBINED_EVALUATION : EV comparison
-    COMBINED_EVALUATION --> EXECUTION : EV > 10% improvement
-    COMBINED_EVALUATION --> STABILIZATION : Rejected
-    EXECUTION --> COOLDOWN : Complete
-    COOLDOWN --> INITIAL_POOL_OPTIMIZATION : Expired
-```
-
-### Progressive Trust Phases (from code L211-253)
-
-| Phase | Cluster Age | Rightsizing | Safety Buffer | Min Samples | Risk Ceiling Override |
-|---|---|---|---|---|---|
-| **Phase 0** | 0–30 min | No | 30% | 500 | 0.15 |
-| **Phase 1** | 30 min – 2h | Yes (conservative) | 25% | 500 | 0.20 |
-| **Phase 2** | > 2h | Yes (full) | 20% | 100 | None (profile default) |
-
-### Combined EV Evaluation (from code L329-513)
-Compares three options:
-- **Option A**: Current size + new pool (pool only)
-- **Option B**: New size + best pool for new size (combined)
-- **Option C**: Current size + current pool (do nothing)
-
----
-
-# SECTION 10: CONTROL PLANE LOOP
-
-**Source**: `backend/workers/tasks/control_plane_loop.py` (390 lines)
-
-```mermaid
-flowchart TD
-    INIT["Load cluster from DB"] --> HGATE{"is_hibernating?"}
-    HGATE -- "Yes" --> SKIP["SKIPPED: HIBERNATING"]
-    HGATE -- "No" --> S1["Step 1: Update Market Signals"]
-    S1 --> S2["Step 2: Update Blacklist Tiers"]
-    S2 --> S3["Step 3: Update Cluster Instability State"]
-    S3 --> CBHALT{"Circuit breaker HALT?"}
-    CBHALT -- "Yes" --> HALT["REJECTED: HALT"]
-    CBHALT -- "No" --> S4["Step 4: Filter Nodes (stateless, off cooldown)"]
-    S4 --> NODES{"Eligible nodes?"}
-    NODES -- "None" --> NOFILT["REJECTED: No eligible nodes"]
-    NODES -- "Yes" --> S5["Step 5: Right-Sizing Baseline"]
-    S5 --> S6["Step 6: Evaluate Candidate Pools"]
-    S6 --> CANDS{"Positive-EV candidates?"}
-    CANDS -- "None" --> NOEV["REJECTED: No positive-EV candidates"]
-    CANDS -- "Yes" --> S7["Step 7: Diversification Simulation"]
-    S7 --> S8["Step 8: Build Execution Plan"]
-    S8 --> LOG["Log decision via ObservabilityLogger"]
-```
-
-**Runs every 5 minutes** via `run_all_clusters_decision_cycle` Celery task.
-Per-cluster cycle: max 2 retries, 60s countdown.
-
----
-
-# SECTION 11: CLUSTER MONITORING
-
-## 11.1 Resize Guard — Post-Resize Health Monitoring
-
-**Source**: `backend/workers/tasks/resize_guard_worker.py` (168 lines)
-
-Monitors cluster health for **2 hours** after any resize action. Runs every **5 minutes**.
-
-### Rollback Triggers
-
-| Trigger | Threshold | Action |
+### `ClusterOptimizationSettings` — lines 129–150
+| Field | Default | Purpose |
 |---|---|---|
-| CPU Stress | `cpu_avg_10m > 85%` sustained | Mark proposal FAILED |
-| Pod Restart Spike | `restart_rate > baseline × 2` | Mark proposal FAILED |
-| Memory Pressure | `> 5 memory pressure events` | Mark proposal FAILED |
+| `auto_rebalance_enabled` | false | Enable OD→SPOT migration |
+| `auto_rightsizing_enabled` | false | Enable pod resource rightsizing |
+| `auto_stateful_rightsizing_enabled` | false | Allow rightsizing on stateful workloads |
+| `cooldown_override_minutes` | 60 | Minimum wait between rebalancing cycles |
+| `failure_cooldown_minutes` | 30 | Pause after failed replacement |
+| `conservative_mode_enabled` | true | Limit aggressiveness first 24h |
+| `manual_approval_required` | false | Gate all changes on human approval |
+| `maintain_standby` | false | Keep pre-warmed standby node |
+| `diversify_pools` | false | Enable pool-level diversification |
+| `optimization_target` | "spot" | `"spot"` or `"on_demand"` |
+| `check_interval_seconds` | 15 | How often rebalancer evaluates |
 
-### Pod Restart Baseline
-- Updated **hourly** by `update_pod_restart_baseline` task
-- Baseline = average restarts over last 24h (excluding 2h guard window)
-- Redis key: `metrics:pod_restart_baseline:{cluster_id}` (1h TTL)
-
-## 11.2 Volatility Regime Detection
-
-**Source**: `backend/services/event_monitor.py` (690 lines)
-
-```
-1. Compute rolling 24h StdDev of spot prices
-2. Compare against 30-day distribution
-3. If current_stddev > P75 of historical → VOLATILE
-4. Set Redis flag: spot:volatility_regime:{region} (2h TTL)
-```
-
-## 11.3 WorkloadInspector Classification Logic
-
-**Source**: `backend/services/workload_inspector.py` (333 lines)
-
-```mermaid
-flowchart TD
-    NODE["For each node"] --> SYS{"System/control plane?"}
-    SYS -- "Yes" --> SYSTEM["SYSTEM_PROTECTED"]
-    SYS -- "No" --> PODS["Fetch pods<br>K8s: list pods"]
-    PODS --> SS{"StatefulSet pods?"}
-    SS -- "Yes" --> STATEFUL["STATEFUL_PROTECTED"]
-    SS -- "No" --> PVC{"PVC volumes?"}
-    PVC -- "Yes" --> STATEFUL
-    PVC -- "No" --> HP{"hostPath volumes?"}
-    HP -- "Yes" --> STATEFUL
-    HP -- "No" --> PDB{"PDB maxUnavailable=0?"}
-    PDB -- "Yes" --> DRAIN_UNSAFE["DRAIN_UNSAFE"]
-    PDB -- "No" --> STATELESS["STATELESS_ELIGIBLE ✓"]
-```
-
-Cache: `spot:node_classification:{cluster_id}` (10-min TTL)
-
----
-
-# SECTION 12: AWS INTEGRATION LAYER
-
-## 12.1 AWS API Calls
-
-| AWS Service | API | Purpose | Required Permission |
-|---|---|---|---|
-| EC2 | `CreateFleet` (DryRun) | Capacity validation | `ec2:CreateFleet` |
-| EC2 | `RunInstances` | Provision spot/OD nodes | `ec2:RunInstances` |
-| EC2 | `TerminateInstances` | Remove old nodes | `ec2:TerminateInstances` |
-| EC2 | `DescribeInstances` | Node inventory | `ec2:DescribeInstances` |
-| EC2 | `DescribeSpotPriceHistory` | Spot price collection | `ec2:DescribeSpotPriceHistory` |
-| EC2 | `DescribeInstanceTypes` | Instance catalog | `ec2:DescribeInstanceTypes` |
-| EC2 | `CreateSnapshot` | Hibernation snapshot | `ec2:CreateSnapshot` |
-| EKS | `DescribeCluster` | Cluster validation | `eks:DescribeCluster` |
-| AutoScaling | `UpdateAutoScalingGroup` | Hibernation nuclear | `autoscaling:UpdateAutoScalingGroup` |
-| STS | `AssumeRole` | Cross-account access | `sts:AssumeRole` |
-| IAM | `PassRole` | Instance profile | `iam:PassRole` |
-| CloudWatch | `GetMetricData` | Monitoring metrics | `cloudwatch:GetMetricData` |
-| Pricing | `GetProducts` | On-demand pricing | `pricing:GetProducts` |
-| S3 | `GetObject` | Spot Advisor data | `s3:GetObject` |
-
-## 12.2 Pricing Collection
-
-**Spot Prices** (every 5 min): `ec2.describe_spot_price_history()`
-**On-Demand Prices** (daily 1AM): AWS Price List API
-**Regions monitored** (11): us-east-1, us-east-2, us-west-1, us-west-2, eu-west-1, eu-west-2, eu-central-1, ap-south-1, ap-southeast-1, ap-southeast-2, ap-northeast-1
-**Savings**: `savings_pct = ((ondemand - spot) / ondemand) × 100`
-
----
-
-# SECTION 13: KUBERNETES INTEGRATION LAYER
-
-## 13.1 Kubernetes API Calls
-
-| Resource | Operation | Purpose | RBAC |
-|---|---|---|---|
-| Nodes | `GET`, `LIST` | Node inventory | `get`, `list` nodes |
-| Nodes | `PATCH` (cordon/uncordon) | Drain prep | `patch` nodes |
-| Pods | `GET`, `LIST` | Pod inspection | `get`, `list` pods |
-| Pods | `Eviction` (CREATE) | Drain execution | `create` pods/eviction |
-| Deployments | `GET`, `PATCH` | Hibernation scale | `get`, `patch` deployments |
-| StatefulSets | `GET`, `PATCH` | Hibernation scale | `get`, `patch` statefulsets |
-| PDB | `GET` | Disruption check | `get` poddisruptionbudgets |
-| Metrics | `GET` | Pod CPU/Memory | `get` pods (metrics.k8s.io) |
-
----
-
-# SECTION 14: FAILURE HANDLING
-
-## 14.1 Blacklist Service
-
-**Source**: `backend/services/blacklist_service.py` (423 lines)
-
-```mermaid
-flowchart TD
-    EVENT["Spot interruption / DryRun failure"] --> BL["blacklist_pool()"]
-    BL --> FC["Increment failure_count"]
-    FC --> TTL["TTL = 24h × 2^(failure_count - 1)"]
-    TTL --> ADD["SADD risky_pools:{region}"]
-
-    subgraph "Tiered Blacklist"
-        T1["DryRun failure 1-2×/24h → 6h"]
-        T2["DryRun failure 3+/24h → 12h"]
-        T3["Actual interruption → 24h"]
-    end
-
-    subgraph "Cascade Protection"
-        CASC{"> 70% blacklisted?"}
-        CASC -- "Yes" --> SUSP["Suspend PREDICTIVE blacklisting 30min"]
-        CASC -- "No" --> APPLY["Apply blacklist"]
-    end
-```
-
-**Cascade dampener**: `spot:blacklist_suspended:{region}` (30 min TTL). Only PREDICTIVE suspended; deterministic always honored.
-
-## 14.2 Cross-Cluster Instability Propagator
-
-**Source**: `backend/services/instability_propagator.py` (~230 lines)
-
-```
-SYSTEMIC_CLUSTER_THRESHOLD = 3   # ≥3 clusters impacted → systemic event
-```
-
-When one cluster experiences interruption → update pool pressure for ALL clusters sharing that pool/AZ. If ≥3 clusters affected → escalate to SYSTEMIC.
-
-### Observability Metrics (Redis counters)
-
-| Redis Key | Type | Description |
+### `OptimizationStrategy` — lines 157–175
+| Field | Default | Purpose |
 |---|---|---|
-| `propagator:metrics:events_total` | Counter (INCR) | Total interruption events recorded |
-| `propagator:metrics:systemic_total` | Counter (INCR) | Total systemic (multi-cluster) events |
-| `propagator:metrics:pools_affected` | Set (SADD) | Unique pools with active pressure |
-| `propagator:metrics:clusters_affected` | Set (SADD) | Unique clusters impacted |
+| `strategy_type` | "BALANCED" | Overall strategy |
+| `risk_ceiling_percent` | 25 | Max pool risk score (0–100) |
+| `min_savings_percent` | 15 | Minimum savings to accept a pool |
+| `risk_savings_tradeoff_pct` | 20 | % savings to sacrifice for safer pool |
+| `volatility_tolerance_percent` | 20 | Allowed price volatility |
+| `diversity_strictness_level` | "Medium" | Diversity enforcement level |
 
-All metrics are updated atomically via Redis pipeline on each `record_interruption_event()` call. Retrievable via `get_metrics()` method.
+## 12.2 Instance Model — `backend/models/instance.py`
+| Field | Purpose |
+|---|---|
+| `lifecycle` | `InstanceLifecycle` enum: `SPOT` or `ON_DEMAND` |
+| `instance_type` | e.g. `t3.medium` |
+| `az` | Availability zone e.g. `ap-south-1a` |
+| `state` | `running` / `terminated` / `stopped` |
+| `classification` | `STATELESS` / `STATEFUL` / `MIXED` / `EMPTY` |
 
-## 14.3 Global Risk Tracker ("Hive Mind")
+**RC1 fix**: Node count queries filter `Instance.state == 'running'` to exclude terminated instances from display counts.
 
-**Source**: `backend/modules/risk_tracker.py` (227 lines)
-
-- When one client experiences interruption → ALL clients warned
-- **Redis key**: `RISK:{az}:{instance_type}` → "DANGER"
-- **TTL**: 30 minutes
-- **Pub/Sub**: Publishes to `risk:flagged` channel
-
-## 14.4 Pool Rotation Service
-
-**Source**: `backend/services/pool_rotation_service.py` (572 lines)
-
-**Triggers**: Viable pool count < threshold, primary AZ < 30% viable, cascade > 70% blacklisted.
-**Actions**: Promote backup AZs, clear pool ranking cache, refresh top 20 from healthy AZs.
-
----
-
-# SECTION 15: AGENT LOGIC (Client-Side DaemonSet)
-
-## 15.1 Registration & Authentication
-- Uses `CLUSTER_ID` + `API_KEY` → `/api/v1/agents/register`
-- Generates unique `AGENT_ID` (hostname + UUID)
-- **HMAC**: `SECRET_KEY` verifies all action commands
-
-## 15.2 Metrics Collection (`MetricsCollector`)
-- Schedule: 60s batched collection
-- Priority: `psutil` (if `HOST_PROC` mounted) → fallback `metrics.k8s.io`
-- Nodes < 5 min old marked `CALIBRATING`
-- Payload: pod + node + event metrics → `/api/v1/agent-metrics/batch`
-
-## 15.3 Right-Sizing Pod Metrics (`PodMetricsCollector`)
-- Filters **only local node** pods
-- Extracts controller info, CPU (millicores), memory (bytes), QoS class
-- Submission: every 5 min → `/api/v1/pod-metrics/batch`
-
-## 15.4 Safety and Execution (`ActionActuator`)
-- Polls `/api/v1/actions/poll`
-- **HMAC validated** before any action
-- **PDB Guardrail**: `disruptions_allowed < 1` → blocks eviction (HTTP 429)
-- Reports results → `/api/v1/actions/{action_id}/result`
-
-## 15.5 Spot Interruption Detection (`SpotPoller`)
-- Polls AWS IMDS every **5 seconds**: `http://169.254.169.254/latest/meta-data/spot/instance-action`
-- On termination: Cordon → Drain (force) → Webhook `/api/v1/clusters/{id}/fallback`
-
-## 15.6 Real-Time Communication
-- **WebSocket**: Bidirectional `wss://` for real-time actions, exponential backoff reconnect
-- **Heartbeat**: HTTP `/api/v1/agents/heartbeat` with process health
-- **Probes**: `/healthz` and `/readyz` for K8s lifecycle
+## 12.3 Daily Cluster Stats — `backend/models/daily_cluster_stats.py`
+```python
+class DailyClusterStats(Base):
+    __tablename__ = "daily_cluster_stats"
+    id               = Column(UUID)
+    cluster_id       = Column(UUID, ForeignKey("clusters.id"))
+    date_stamp       = Column(Date)                  # unique per cluster per day
+    total_cost       = Column(Numeric)
+    total_savings    = Column(Numeric)
+    spot_nodes       = Column(Integer)
+    on_demand_nodes  = Column(Integer)
+    spot_ratio       = Column(Numeric)               # 0–1
+    avg_cpu_pct      = Column(Numeric)
+    avg_memory_pct   = Column(Numeric)
+    # Unique index: idx_daily_stats_cluster_date (cluster_id, date_stamp)
+```
 
 ---
 
-# APPENDIX A: Complete Redis Key Reference
+# SECTION 13: API ROUTES
 
-| Key Pattern | Service | TTL | Purpose |
+## 13.1 AtharvaAI Routes — `backend/api/atharvaai_routes.py`
+
+Prefix: `/api/v1/atharvaai`
+
+| Endpoint | Method | Line | Purpose |
 |---|---|---|---|
-| `spot:cooldown:cluster:{id}` | CooldownController | 60 min | Cluster switch cooldown |
-| `spot:cooldown:pool:{pool_id}` | CooldownController | 120 min | Pool failure cooldown |
-| `spot:cooldown:action:resize:{id}` | CooldownController | 360 min | Resize cooldown |
-| `spot:cooldown:action:pool_switch:{id}` | CooldownController | 30 min | Pool switch cooldown |
-| `spot:cooldown:action:substitute:{id}` | CooldownController | 120 min | Substitute cooldown |
-| `spot:stabilization_lock:{id}` | CooldownController | 5 min | Post-execution stabilization |
-| `spot:node_classification:{id}` | WorkloadInspector | 10 min | Node status map |
-| `spot:cluster_mode:{id}` | DecisionEngine | 300s | Optimization mode |
-| `spot:global_rankings:{region}` | Intelligence Layer | Variable | Pre-computed rankings |
-| `spot:volatility_regime:{region}` | EventMonitor | 2h | Volatile market flag |
-| `global_pool_rankings:{region}` | PoolRankingService | 65 min | Tier 1 global cache |
-| `spot:ondemand_fallback:{id}` | KarpenterService | 12h | On-demand fallback |
-| `spot:execution_failures:{id}` | KarpenterService | 10 min | Karpenter circuit breaker |
-| `spot:dryrun_count:{region}` | PoolRankingService | 1h | DryRun budget |
-| `spot:dryrun_failures_24h:{pool}` | PoolRankingService | 24h | Per-pool DryRun failures |
-| `spot:cluster_state:{cluster_id}` | risk_engine.py | NONE | Permanent cluster state machine |
-| `spot:rejection_counters:{id}` | DecisionEngine | 24h | Rejection counter hash |
-| `spot:org_spend_velocity:{org_id}` | GuardrailEngine | 1h | Org spend velocity |
-| `spot:substitute:state:{id}` | SubstituteManager | Variable | Substitute lifecycle |
-| `spot:substitute:meta:{id}` | SubstituteManager | Variable | Substitute metadata |
-| `hibernation:lock:{sched}:{cluster}` | HibernationWorker | 180s | Distributed lock |
-| `atharvaai:ml_fail_count` | PoolRankingService | 10 min | ML circuit breaker |
-| `atharvaai:ml_degraded` | PoolRankingService | 10 min | ML degraded flag |
-| `risky_pools:{region}` | BlacklistService | Variable | Blacklisted pool set |
-| `blacklist_failures:{type}:{az}` | BlacklistService | Variable | Failure count per pool |
-| `spot:blacklist_suspended:{region}` | BlacklistService | 30 min | Cascade dampener |
-| `capacity:{type}:{az}` | PoolRankingService | 15 min | Capacity DryRun cache |
-| `cb:state:{cluster_id}` | CircuitBreaker | 24h | CB state |
-| `cb:rollbacks:{cluster_id}` | CircuitBreaker | 1h | Rollback counter |
-| `cb:last_failure:{cluster_id}` | CircuitBreaker | 1h | Last failure time |
-| `cb:state_entered:{cluster_id}` | CircuitBreaker | 24h | State entry time |
-| `propagator:pool_pressure:{r}:{az}:{type}` | Propagator | 2h | Pool pressure |
-| `propagator:az_pressure:{r}:{az}` | Propagator | 2h | AZ average pressure |
-| `propagator:events:{r}:{az}:{type}` | Propagator | 30 min | Failure counter |
-| `RISK:{az}:{type}` | GlobalRiskTracker | 30 min | Hive Mind risk flag |
-| `resize:guard:{id}:invocations` | ResizeGuard | 2h | Guard invocation counter |
-| `resize:failure_count_24h:{id}` | OptimizerCoordinator | 24h | Resize circuit breaker |
-| `pricing:last_updated:{region}` | Market Ingestion | Variable | Pricing timestamp |
-| `metrics:pod_restart_baseline:{id}` | ResizeGuard | 1h | Pod restart baseline |
-| `obs:decisions:{cluster_id}` | ObservabilityLogger | 24h | Decision audit (last 100) |
+| `/clusters/{cluster_id}/effective-configuration` | GET | 108 | Unified config (Policy > Template > Strategy) |
+| `/pools/rankings` | POST | 148 | 8-step ML pool ranking pipeline |
+| `/blacklist` | GET | 331 | Global flagged/blacklisted pools |
+| `/rebalancing/status` | GET | 447 | Rebalancing actions with 6-step timeline |
+| `/rebalancing-actions/{id}/approve` | POST | 513 | Manual approval |
+| `/rebalancing-actions/{id}/deny` | POST | 539 | Reject pending action |
+| `/interruption-heatmap` | GET | 576 | Spot interruption frequency by pool |
+| `/savings-velocity` | GET | 677 | Daily/weekly/monthly savings trend |
+| `/v3/global-intelligence/status` | GET | 810 | ML model health + feature quality |
+| `/v3/diversity/{cluster_id}` | GET | 866 | Family/AZ distribution gauges |
+| `/v3/state-machine/{cluster_id}` | GET | 890 | Rebalancing FSM status |
+| `/v3/cluster/{cluster_id}/optimization-mode` | PUT | 948 | Set COST_FIRST / BALANCED / NO_DOWNTIME |
+| `/v3/cluster/{cluster_id}/model-version` | PUT | 1014 | Pin ML model version |
+| `/v3/cooldown/{cluster_id}` | GET | 1114 | Cooldown status + remaining_seconds |
+| `/v3/workload-status/{cluster_id}` | GET | 1140 | STATELESS / STATEFUL / MIXED / EMPTY |
+| `/v3/substitute/{cluster_id}` | GET | 1181 | Standby node status |
+| `/clusters/{cluster_id}/node-recommendations` | GET | 1302 | Per-node optimization recommendations |
+| `/clusters/{cluster_id}/impact` | GET | 1700 | Projected savings from recommendations |
+| `/v3/rebalancing-context/{cluster_id}` | GET | 1818 | Unified: cooldown + next-target + daily-limit |
+
+### `/v3/rebalancing-context/{cluster_id}` Response — line 1818
+```python
+{
+    "cooldown": {
+        "active": bool,
+        "remaining_seconds": int,
+        "expires_at": "2026-03-17T12:52:10Z",    # absolute ISO timestamp
+        "reason": str
+    },
+    "next_check_at": "2026-03-17T12:52:25Z",      # now + 15s (absolute)
+    "timestamp": "2026-03-17T12:52:10Z",
+    "next_target": { "instance_type": str, "az": str, "risk": float } | null,
+    "daily_actions": { "used": int, "limit": int, "resets_at": str }
+}
+```
+
+`expires_at` and `next_check_at` are **absolute UTC timestamps**, not relative seconds, so the frontend countdown survives page refresh.
+
+## 13.2 Cluster Routes — `backend/api/cluster_routes.py`
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /api/v1/clusters/{id}` | Cluster details |
+| `GET /api/v1/clusters/{id}/nodes/detailed` | Live node list with pod data, classification, lifecycle |
+| `GET /api/v1/clusters/{id}/utilization` | CPU/memory utilization |
+| `GET /api/v1/clusters/{id}/workload-type` | STATELESS/STATEFUL/MIXED/EMPTY |
+| `GET /api/v1/clusters/{id}/optimization-settings` | Full settings (automation_controls + optimization_strategy) |
+| `PUT /api/v1/clusters/{id}/optimization-settings` | Save settings |
+
+### `/nodes/detailed` Response per node
+```json
+{
+  "instance_id": "i-0ca36277e8f91df72",
+  "node_name": "ip-192-168-5-50.ap-south-1.compute.internal",
+  "instance_type": "t3.medium",
+  "lifecycle": "on-demand",
+  "availability_zone": "ap-south-1b",
+  "status": "running",
+  "classification": "STATELESS",
+  "cpu_utilization_pct": 1.5,
+  "memory_utilization_pct": 21.15,
+  "cpu_capacity_cores": 2,
+  "memory_capacity_gb": 4,
+  "pod_count": 6,
+  "stateful_pod_count": 0,
+  "pods": [ { "pod_name": str, "is_stateful": bool, "cpu_usage_millicores": int, ... } ],
+  "current_risk_score": float | null,
+  "best_available_pool": "c5.large:ap-south-1b" | null,
+  "rebalance_condition": "STABLE" | "AWAITING_SPOT" | "REBALANCE:RISK_HIGH" | "REBALANCE:BETTER_POOL"
+}
+```
+
+## 13.3 Karpenter Routes — `backend/api/karpenter_routes.py`
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /api/v1/karpenter/config?cluster_id={id}` | Full Karpenter + optimization config |
+| `PATCH /api/v1/karpenter/config/{cluster_id}` | Update config; syncs `automation_controls` + `optimization_strategy` to DB |
+| `POST /api/v1/karpenter/clusters/{id}/install` | Install Karpenter via agent |
+| `DELETE /api/v1/karpenter/clusters/{id}/install` | Uninstall |
+| `GET /api/v1/karpenter/clusters/{id}/install-status` | Returns `{ karpenter_installed: bool, last_action: {...} }` |
+| `GET /api/v1/karpenter/native-spot/status/{id}` | Non-Karpenter ASG spot status |
 
 ---
 
-*Total: **15 sections** · **12 core engines** · **14 Celery workers** · **40+ Redis keys** · **14 AWS APIs** · **8 K8s operations** · **10 flow diagrams***
+# SECTION 14: NODE CONDITION ENRICHMENT
+
+**File**: `backend/services/cluster_service.py` — `get_cluster_nodes_detailed()` line ~1520
+
+After computing node classification, reads pool rankings from Redis to attach per-node condition:
+
+```python
+_raw = redis.get(f"global_pool_rankings:{cluster.region or 'ap-south-1'}")
+if _raw:
+    _rankings = json.loads(_raw).get("data", [])
+    _this_key = f"{instance_type}:{availability_zone}"
+    _cur = next((p for p in _rankings if f"{p['instance_type']}:{p['az']}" == _this_key), None)
+    if _cur:
+        _risk_score = round(_cur.get('risk_probability', 0), 3)
+        # Best pool = lower risk + equal/better savings
+        _better = [p for p in _rankings
+                   if p.get('risk_probability', 1) < _risk_score
+                   and p.get('predicted_savings', 0) >= _cur.get('predicted_savings', 0)
+                   and f"{p['instance_type']}:{p['az']}" != _this_key]
+        _best_pool = f"{_better[0]['instance_type']}:{_better[0]['az']}" if _better else None
+
+    _ceil = (OptimizationStrategy.risk_ceiling_percent or 25) / 100.0
+    _rebalance_condition = (
+        "AWAITING_SPOT"        if lifecycle == "on-demand"                    else
+        "REBALANCE:RISK_HIGH"  if _risk_score is not None and _risk_score > _ceil else
+        "REBALANCE:BETTER_POOL" if _best_pool                                 else
+        "STABLE"
+    )
+```
+
+---
+
+# SECTION 15: FRONTEND COMPONENTS
+
+## 15.1 ClusterDetails — `frontend/src/components/clusters/ClusterDetails.jsx`
+
+### Parallel Data Fetch (`fetchClusterDetails()` — line 144)
+On mount/refresh, fetches **12 endpoints in parallel** via `Promise.allSettled`:
+
+```javascript
+const [clusterRes, metricsRes, policyRes, scheduleRes, utilRes, workloadRes,
+       nodesRes, optRes, recRes, rebalRes, rsizeRes, costTRes] = await Promise.allSettled([
+  clusterAPI.getCluster(clusterId),
+  metricsAPI.getClusterMetrics(clusterId),
+  policyAPI.getPolicy(clusterId),
+  hibernationAPI.getByCluster(clusterId),       // was: getSchedule (doesn't exist) — fixed
+  clusterAPI.getUtilization(clusterId),
+  clusterAPI.getWorkloadType(clusterId),
+  clusterAPI.getNodesDetailed(clusterId),
+  clusterAPI.getOptimizationSettings(clusterId),
+  atharvaaiAPI.getNodeRecommendations(clusterId),
+  atharvaaiAPI.getRebalancingStatus(clusterId),
+  optimizationAPI.getRightsizing(clusterId),
+  metricsAPI.getCostTimeSeries({ cluster_id: clusterId }),
+]);
+```
+
+**Removed** 4 legacy 404 endpoints: `/classification`, `/substitute/status`, `/cooldown`, `/execution/status`.
+
+### Loading Strategy
+```javascript
+// Only shows full-page spinner on true initial load (no cluster data yet).
+// Refreshes silently update state without blanking the UI.
+if (loading && !cluster) return <spinner>;
+if (!cluster) setLoading(true);   // fetchClusterDetails only sets loading on first call
+```
+
+### 30-Second Background Poll — line 122
+```javascript
+// Lightweight 3-endpoint poll — does NOT touch loading state:
+const [nodesRes, rebalRes, recRes] = await Promise.allSettled([
+  clusterAPI.getNodesDetailed(clusterId),
+  atharvaaiAPI.getRebalancingStatus(clusterId),
+  atharvaaiAPI.getNodeRecommendations(clusterId),
+]);
+// Old data stays visible until new data arrives silently
+```
+
+### Node Condition Badge — lines 28–59
+```javascript
+const CONDITION_STYLES = {
+    REBALANCING:             'bg-indigo-50 text-indigo-700 border-indigo-200',
+    AWAITING_SPOT:           'bg-blue-50  text-blue-700  border-blue-200',
+    'REBALANCE:RISK_HIGH':   'bg-red-50   text-red-700   border-red-200',
+    'REBALANCE:BETTER_POOL': 'bg-amber-50 text-amber-700 border-amber-200',
+    STABLE:                  'bg-green-50 text-green-700 border-green-200',
+};
+// isInFlight: node has an in_progress or waiting_agent rebalancing action
+// Shows animated "Rebalancing..." badge instead of condition
+```
+
+### Optimization Engine Settings Card (compact)
+Controls saved via `handleOptConfigChange(section, key, value)` + explicit "Save All Settings" button calling `clusterAPI.updateOptimizationSettings()`.
+
+Settings displayed (matching DB fields in `ClusterOptimizationSettings`):
+- Auto Rebalance toggle
+- Sub-items when enabled: Diversify Pools, Maintain Standby, Failure Cooldown (min), Post-Rebalance Cooldown (min)
+- Check Cycle Interval (sec, min 15)
+- Auto Right-Sizing toggle
+- Optimization Target (Spot / On-Demand; locks to Spot in synergy mode)
+- Conservative Mode
+- Manual Approval Required
+
+## 15.2 OverviewTab — `frontend/src/components/clusters/overview/OverviewTab.jsx`
+
+### Node Composition — lines 163–174
+```javascript
+// Source of truth: nodesDetailed.nodes[] from /clusters/{id}/nodes/detailed
+const nodesList  = nodesDetailed?.nodes || [];
+const spotCount  = nodesList.filter(n => n.lifecycle === 'spot'  || n.lifecycle === 'SPOT').length
+                   || metrics?.spot_instances || cluster?.spot_count || 0;
+const odCount    = nodesList.filter(n => n.lifecycle === 'on-demand' || n.lifecycle === 'ON_DEMAND').length
+                   || metrics?.on_demand_instances || cluster?.on_demand_node_count || 0;
+const fallbackCount = nodesList.filter(n => n.lifecycle === 'fallback').length;
+// Fallback row hidden when fallbackCount === 0
+```
+
+### Pods — lines 176–186
+```javascript
+// Sum pod_count per node (nodesDetailed.total_pods is null at top level)
+const totalPods       = nodesList.reduce((s, n) => s + (n.pod_count || 0), 0);
+const spotFriendlyPods = nodesList.reduce((s, n) => s + (n.pods || []).filter(p => !p.is_stateful).length, 0);
+const statefulPods    = nodesList.reduce((s, n) => s + (n.stateful_pod_count || 0), 0);
+```
+
+### Node Classification — lines 188–192
+```javascript
+// Drives workload recommendations
+const statelessNodes = nodesList.filter(n => n.classification === 'STATELESS').length;
+const statefulNodes  = nodesList.filter(n => n.classification === 'STATEFUL').length;
+const mixedNodes     = nodesList.filter(n => n.classification === 'MIXED').length;
+// STATELESS → SPOT safe | STATEFUL → OD recommended | MIXED → review
+```
+
+### Cost Calculation — lines 196–208
+```javascript
+// Prefer real metrics; fall back to nodeRecommendations computation:
+const calcMonthly = (nodeRecommendations || [])
+    .reduce((s, r) => s + (r.current_cost || 0) * 730, 0);   // 730h/month
+const calcSavings = (nodeRecommendations || [])
+    .filter(r => r.lifecycle !== 'spot')
+    .reduce((s, r) => {
+        const sp = r.target_spot_price > 0 ? r.target_spot_price : r.current_cost * 0.35;
+        return s + Math.max(0, r.current_cost - sp) * 730;
+    }, 0);
+const totalCost = metrics?.monthly_cost || cluster?.monthly_cost || calcMonthly || 0;
+```
+
+### typeSpecs — line 229
+```javascript
+// Uses real API field names: cpu_capacity_cores + memory_capacity_gb
+const typeSpecs = useMemo(() => {
+    const m = {};
+    nodesList.forEach(n => {
+        if (n.instance_type && !m[n.instance_type])
+            m[n.instance_type] = {
+                vcpu: n.cpu_capacity_cores || 0,
+                mem:  n.memory_capacity_gb  || 0,
+            };
+    });
+    return m;
+}, [nodesList]);
+```
+
+### ASCP.ai / Karpenter Status — lines 210–225
+```javascript
+// Agent active = cluster status is 'active' (agent_installed field is null from API)
+const isHealthy  = ['active', 'ACTIVE'].includes(cluster?.status || '');
+const ascpActive = isHealthy;    // not: agent_installed === 'Y' (wrong field)
+
+// Karpenter status from /karpenter/clusters/{id}/install-status
+const karpInstalled = karpenterInstallStatus?.karpenter_installed;
+// Description dynamically reflects actual spot count:
+// spotCount > 0  → "Active — managing N spot nodes"
+// karpInstalled  → "Installed — will provision spot nodes when rebalancer triggers"
+// else           → "Not installed — required for spot node provisioning"
+```
+
+## 15.3 RebalancingTimeline — `frontend/src/components/atharvaai/RebalancingTimeline.jsx`
+
+### 6-Step Timeline Steps — lines 33–40
+```javascript
+STEPS = [
+  { id: "step_1_spot_provisioning",   label: "New Pool Provisioned" },
+  { id: "step_2_cordon",              label: "Node Cordoned" },
+  { id: "step_3_draining_pods",       label: "Pods Draining" },
+  { id: "step_4_new_node_joined",     label: "New Node Joined" },
+  { id: "step_5_old_node_terminated", label: "Old Node Terminated" },
+  { id: "step_6_optimization_complete","label": "Complete" },
+]
+```
+
+### Absolute-Timestamp Cooldown — lines 70–90
+```javascript
+// State stores ISO strings from backend (survives page refresh):
+const [cooldownExpiresAt, setCooldownExpiresAt] = useState(null);
+const [nextCheckAt, setNextCheckAt]             = useState(null);
+
+// Countdown computed from Date.now() — NOT a decrementing state variable:
+const liveSeconds = cooldownExpiresAt
+    ? Math.max(0, Math.floor((new Date(cooldownExpiresAt) - Date.now()) / 1000))
+    : 0;
+const nextCycleSeconds = nextCheckAt
+    ? Math.max(0, Math.floor((new Date(nextCheckAt) - Date.now()) / 1000))
+    : 15;
+
+// Per-second tick forces re-renders without storing seconds in state:
+useEffect(() => {
+    const tick = setInterval(() => setTick(t => t + 1), 1000);
+    return () => clearInterval(tick);
+}, []);
+```
+
+### Data Fetch — lines 84–129
+```javascript
+// Primary: getRebalancingStatus(clusterId, limit=5)
+// Context: getRebalancingContext(clusterId) → sets cooldownExpiresAt, nextCheckAt
+// Poll: every 15 seconds
+// Filter: show actions in ['in_progress','waiting_agent'] OR completed within last 1 hour
+```
+
+---
+
+# SECTION 16: CRITICAL CONSTANTS & THRESHOLDS
+
+| Constant | Value | File | Purpose |
+|---|---|---|---|
+| `GLOBAL_CACHE_TTL` | 3900 s (65 min) | `pool_ranking_service.py` | Global pool rankings Redis TTL |
+| `GLOBAL_CACHE_LIMIT` | 100 | `pool_ranking_service.py` | Top pools cached per region |
+| `RISK_THRESHOLD` | 0.35 | `ml_model/risk_threshold.json` | F1-optimized classifier cutoff |
+| `DRY_RUN_CACHE_TTL` | 120 s (2 min) | `utils/aws/dry_run.py` | Capacity check cache TTL |
+| `FAILURE_THRESHOLD` | 3 | `decision_engine_service.py` | Failures before auto-blacklist |
+| `BLACKLIST_TTL_HOURS` | 24 | `decision_engine_service.py` | Termination-triggered blacklist |
+| `Stale Action Expiry` | 45 min | `auto_rebalancer.py:1775` | Stuck action → FAILED |
+| `DRAIN grace_period` | 60 s | `auto_rebalancer.py` | Pod eviction grace period |
+| `RC3 OD streak threshold` | 3 reports | `auto_rebalancer.py:129` | Before SPOT→OD downgrade |
+| `Default cooldown` | 60 min | `ClusterOptimizationSettings` | Post-rebalance wait |
+| `Default failure cooldown` | 30 min | `ClusterOptimizationSettings` | After failed replacement |
+| `Default daily limit` | 5 | `StatelessRuntimeRules` | Max rebalances per 24h |
+| `Spot join timeout` | 30 min | `ClusterOptimizationSettings` | Spot node must join K8s |
+| `Default risk ceiling` | 25% | `OptimizationStrategy` | Max pool risk to accept |
+| `Default tradeoff pct` | 20% | `OptimizationStrategy` | Savings to sacrifice for safer pool |
+| `Check interval` | 15 s | `ClusterOptimizationSettings` | Rebalancer evaluation frequency |
+| `Cache warmer TTL` | 3600 s | `cache_warmer.py` | Per-profile ranking cache |
+| `Recovery monitor freq` | 5 min | `recovery_monitor.py` | State sync + orphan scan |
+
+---
+
+# SECTION 17: DATA FLOW DIAGRAMS
+
+## 17.1 Full Rebalancing Path (OD → SPOT)
+
+```
+Auto-rebalancer cycle (every 15s):
+  auto_rebalancer.py:execute_rebalancing()
+    │
+    ├─ _sync_instance_state_from_aws()     ← RC3 guard on SPOT→OD
+    │
+    ├─ Safety Gate 1: Stabilization Lock   ← lock:stabilize:{cluster_id}
+    ├─ Safety Gate 2: Substitute MutEx     ← standby not in PREWARMING
+    ├─ Safety Gate 3: Resize Cooldown      ← lock:rightsizing_cooldown:{cluster_id}
+    │
+    ├─ Daily limit check (max 5/24h)
+    │
+    ├─ Phase 1: Provision Spot
+    │   ├─ Karpenter: PATCH_KARPENTER_NODEPOOL (AgentAction)
+    │   └─ Non-Karpenter: _launch_spot_instance_direct() → ec2.create_fleet()
+    │
+    ├─ Phase 2: CORDON_NODE (AgentAction)
+    ├─ Phase 3: DRAIN_NODE (AgentAction, 60s grace)
+    │
+    └─ Phase 4: EC2 Terminate
+        ├─ ASG min-size guard: if desired==min → set MinSize=0 first
+        └─ terminate_instance_in_auto_scaling_group(ShouldDecrement=True)
+```
+
+## 17.2 Emergency Interruption Path
+
+```
+Spot interruption detected by termination_monitor.py
+  │
+  └─ emergency_rebalancer.py:emergency_rebalancer()
+      ├─ Clear cooldowns (emergency override)
+      ├─ decision_engine.report_termination(pool) → blacklist 24h
+      │
+      ├─ standby == READY?
+      │   YES → UNCORDON standby, drain interrupted, replenish standby
+      │   NO  → launch new spot, drain interrupted
+```
+
+## 17.3 Pool Ranking Request Path
+
+```
+Frontend: POST /api/v1/atharvaai/pools/rankings
+  │
+  └─ PoolRankingService.rank_pools()
+      ├─ Tier 1: _get_or_compute_global_rankings()
+      │   ├─ Redis hit?  → return cached top 100 pools (65 min TTL)
+      │   └─ Redis miss? → _run_global_pipeline()
+      │       ├─ Build all (instance × AZ) candidates
+      │       ├─ Steps 1-8: filter → ONNX score → sort
+      │       └─ Cache to Redis: global_pool_rankings:{region}
+      │
+      ├─ Tier 2: _apply_client_filters()
+      │   ├─ vCPU / memory / family / AZ / arch filters
+      │   └─ Remove blacklisted pools
+      │
+      └─ Step 9: _step9_post_score_capacity_check()
+          └─ dry_run_pool() per top pool → capacity_status
+```
+
+## 17.4 Node Condition Enrichment Path
+
+```
+GET /api/v1/clusters/{id}/nodes/detailed
+  │
+  └─ cluster_service.get_cluster_nodes_detailed()
+      ├─ Fetch running instances from DB
+      ├─ Read global_pool_rankings:{region} from Redis
+      ├─ For each node:
+      │   ├─ Match to pool by (instance_type:az)
+      │   ├─ current_risk_score = pool.risk_probability
+      │   ├─ best_available_pool = better pool with lower risk + equal savings
+      │   └─ rebalance_condition = STABLE | AWAITING_SPOT | REBALANCE:RISK_HIGH | REBALANCE:BETTER_POOL
+      └─ Return enriched node list
+```
+
+---
+
+# SECTION 18: REDIS KEY REGISTRY
+
+| Key Pattern | TTL | Set By | Read By |
+|---|---|---|---|
+| `global_pool_rankings:{region}` | 65 min | `pool_ranking_service.py` | `auto_rebalancer`, `cluster_service`, `atharvaai_routes` |
+| `pool_rankings:{region}:{profile_hash}` | 60 min | `cache_warmer.py` | `pool_ranking_service.py` |
+| `dryrun:{region}:{type}:{az}` | 2 min | `utils/aws/dry_run.py` | `pool_ranking_service.py` |
+| `spot:cooldown:{cluster_id}` | variable | `auto_rebalancer.py` | `auto_rebalancer.py` |
+| `lock:rebalance:{cluster_id}` | 10 min | `auto_rebalancer.py` | `auto_rebalancer.py` |
+| `lock:stabilize:{cluster_id}` | 5–10 min | cross-system ops | `auto_rebalancer.py` (Gate 1) |
+| `lock:rightsizing_cooldown:{cluster_id}` | variable | `rightsizing_service.py` | `auto_rebalancer.py` (Gate 3) |
+| `cluster_pools:{cluster_id}` | permanent | `diversity_enforcer.py` | `diversity_enforcer.py` |
+| `blacklist:pool:{pool_key}` | 24 h | `decision_engine_service.py` | `pool_ranking_service.py` |
+| `failures:{pool_key}:{cluster_id}` | 24 h | `decision_engine_service.py` | `decision_engine_service.py` |
+| `rc3:sync_od_streak:{instance_id}` | 5 min | `auto_rebalancer.py` | `auto_rebalancer.py` |
+| `rc3:metrics_od_streak:{instance_id}` | 30 min | `routers/metrics.py` | `routers/metrics.py` |
+| `spot:karpenter:nodepool_updated:{cluster_id}` | 30 min | `auto_rebalancer.py` | `auto_rebalancer.py` |
+
+---
+
+# SECTION 19: KNOWN BUGS FIXED
+
+| Bug | Root Cause | Fix | File:Line |
+|---|---|---|---|
+| **Cluster grew 3→9 nodes** | ASG `desired=min=1`: EC2 terminate succeeded but desired stayed=1; Launch re-enabled → new OD launched | Before ASG terminate: if `desired <= min`, call `update_auto_scaling_group(MinSize=0)` | `auto_rebalancer.py:1637` |
+| **Node display showed 1 instead of 3** | `list_clusters()` counted ALL instances including terminated in `node_count` | Added `Instance.state == 'running'` filter to all 3 count queries | `cluster_service.py:539` |
+| **"Failed to load cluster details"** | `hibernationAPI.getSchedule()` called but method doesn't exist → synchronous `TypeError` before `Promise.allSettled` ran | Changed to `hibernationAPI.getByCluster()` | `ClusterDetails.jsx:152` |
+| **404 spam in console** | 4 legacy endpoints (`/classification`, `/substitute/status`, `/cooldown`, `/execution/status`) called on every open | Removed all 4 from parallel fetch | `ClusterDetails.jsx:149` |
+| **Cluster details flickered blank** | `if (loading) return <spinner>` blanked entire UI on every refresh | Changed to `if (loading && !cluster)` — only blank on true initial load | `ClusterDetails.jsx:327` |
+| **SPOT node shown as OD after reinstall** | K8s labels not propagated yet; metrics push immediately overwrote DB SPOT→OD | RC3 guard: require 3 consecutive OD reports (~45s) before downgrade | `auto_rebalancer.py:129`, `routers/metrics.py:148` |
+| **AWS sync used default creds** | STS client created with default chain; Docker container has no real AWS creds | Load `PLATFORM_AWS_ACCESS_KEY/SECRET` from SystemConfig table first | `auto_rebalancer.py:59` |
+| **Karpenter `ec2:CreateTags` blocked** | Policy condition `StringEquals: aws:ResourceTag/karpenter.sh/nodepool: "*"` blocks new resources | Remove condition restriction; scope via resource ARN only | `agent_injector.py` |
+| **PENDING actions accumulated** | Stale expiry only expired PICKED_UP (not PENDING) actions | Expiry now includes both PENDING and PICKED_UP > 45 min | `auto_rebalancer.py:1775` |
+| **Stabilization timer reset on refresh** | Frontend stored countdown as decrementing state (`liveSeconds--`) | Store backend ISO timestamps, compute from `Date.now()` each tick | `RebalancingTimeline.jsx:70` |
+| **OverviewTab fake data** | `agent_installed === 'Y'` always false; "/ 5 configured" hardcoded; Fallback: 0 always shown | Fixed field checks; removed hardcoded; hide Fallback row when 0 | `OverviewTab.jsx:224,527,391` |

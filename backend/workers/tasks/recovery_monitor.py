@@ -297,10 +297,134 @@ def scan_orphans(self):
         db.close()
 
 
+# ── Task 3: Karpenter consolidation stall detection (Task 3.7) ────────────────
+
+@app.task(name="backend.workers.tasks.recovery_monitor.detect_karpenter_stalls",
+          bind=True, max_retries=1)
+def detect_karpenter_stalls(self):
+    """
+    Detect Karpenter-mode terminate actions that dispatched >15 min ago
+    but whose target instance is still running in AWS.
+
+    Karpenter's consolidation controller can stall if the NodeClaim
+    reconciler loses track of a node (e.g. after a control-plane restart).
+    In that case, the TERMINATE_NODE action completed on our side but
+    the EC2 instance is still alive.
+
+    Fix: Direct ec2.terminate_instances() as fallback.
+    Runs every 5 minutes via Celery beat.
+    """
+    from backend.models.base import get_db
+    from backend.models.agent_action import AgentAction, AgentActionType, AgentActionStatus
+    from backend.models.cluster import Cluster, ClusterStatus
+    from backend.models.system_config import SystemConfig
+    from datetime import datetime, timedelta
+    import boto3
+    import json
+
+    db = next(get_db())
+    stalls_fixed = 0
+
+    try:
+        # Find TERMINATE_NODE actions with mode=karpenter completed >15 min ago
+        cutoff = datetime.utcnow() - timedelta(minutes=15)
+
+        karpenter_terminates = db.query(AgentAction).filter(
+            AgentAction.action_type == AgentActionType.TERMINATE_NODE,
+            AgentAction.status == AgentActionStatus.COMPLETED,
+            AgentAction.completed_at <= cutoff,
+            AgentAction.completed_at >= datetime.utcnow() - timedelta(hours=2),  # Only last 2h
+        ).all()
+
+        if not karpenter_terminates:
+            return {"status": "ok", "stalls_fixed": 0}
+
+        # Filter to karpenter-mode only
+        karpenter_actions = []
+        for act in karpenter_terminates:
+            payload = act.payload or {}
+            if payload.get("termination_mode") == "karpenter":
+                karpenter_actions.append(act)
+
+        if not karpenter_actions:
+            return {"status": "ok", "stalls_fixed": 0}
+
+        logger.info(
+            f"[recovery/karpenter-stall] Checking {len(karpenter_actions)} "
+            f"karpenter terminate actions for stalls"
+        )
+
+        # Get platform credentials
+        pk = db.query(SystemConfig).filter(SystemConfig.key == "PLATFORM_AWS_ACCESS_KEY").first()
+        ps = db.query(SystemConfig).filter(SystemConfig.key == "PLATFORM_AWS_SECRET").first()
+        if not pk or not ps or not pk.value or not ps.value:
+            return {"status": "ok", "stalls_fixed": 0, "skipped": "no_credentials"}
+
+        for act in karpenter_actions:
+            payload = act.payload or {}
+            instance_id = payload.get("instance_id")
+            if not instance_id or not instance_id.startswith("i-"):
+                continue
+
+            cluster = db.query(Cluster).filter(Cluster.id == act.cluster_id).first()
+            if not cluster:
+                continue
+
+            try:
+                region = cluster.region or "ap-south-1"
+                ec2 = boto3.client(
+                    "ec2", region_name=region,
+                    aws_access_key_id=pk.value,
+                    aws_secret_access_key=ps.value,
+                )
+
+                # Check if instance is still running
+                resp = ec2.describe_instances(InstanceIds=[instance_id])
+                for res in resp.get("Reservations", []):
+                    for inst in res.get("Instances", []):
+                        state = inst["State"]["Name"]
+                        if state == "running":
+                            # Stall detected — force terminate
+                            logger.warning(
+                                f"[recovery/karpenter-stall] Instance {instance_id} still "
+                                f"running {(datetime.utcnow() - act.completed_at).total_seconds() / 60:.0f}min "
+                                f"after karpenter terminate action — force terminating"
+                            )
+                            ec2.terminate_instances(InstanceIds=[instance_id])
+                            stalls_fixed += 1
+
+                            # Update action metadata to record the force-terminate
+                            meta = act.action_metadata or {}
+                            meta["karpenter_stall_detected"] = True
+                            meta["force_terminated_at"] = datetime.utcnow().isoformat()
+                            act.action_metadata = meta
+                            db.commit()
+
+            except Exception as inst_err:
+                logger.debug(
+                    f"[recovery/karpenter-stall] Check failed for {instance_id}: {inst_err}"
+                )
+
+        if stalls_fixed:
+            logger.warning(
+                f"[recovery/karpenter-stall] Force-terminated {stalls_fixed} stalled instance(s)"
+            )
+
+        return {"status": "ok", "stalls_fixed": stalls_fixed}
+
+    except Exception as e:
+        logger.error(f"[recovery/karpenter-stall] Fatal: {e}")
+        return {"status": "error", "error": str(e)}
+    finally:
+        db.close()
+
+
 # Legacy task name alias (for backward compat with existing beat schedule)
 @app.task(name="recovery_monitor", bind=True, max_retries=1)
 def recovery_monitor(self):
-    """Alias: runs both sync + scan."""
+    """Alias: runs both sync + scan + karpenter stall detection."""
     r1 = sync_instance_states.apply()
     r2 = scan_orphans.apply()
-    return {"sync": r1.result, "scan": r2.result}
+    r3 = detect_karpenter_stalls.apply()
+    return {"sync": r1.result, "scan": r2.result, "karpenter_stalls": r3.result}
+

@@ -432,6 +432,18 @@ def update_karpenter_config(
             if bool(_diversify) and not _prev_diversify:
                 _diversify_was_enabled = True
 
+        # ── SYNC automation scalar settings to DB ───────────────────────────────
+        for _f, _default in [
+            ("min_node_count", 1),
+            ("scale_down_threshold_pct", 20),
+            ("scale_down_stabilization_minutes", 15),
+            ("enable_ascp_auto_scaler", False),
+            ("check_interval_seconds", 15),
+        ]:
+            _v = updates.get(_f)
+            if _v is not None and opt is not None:
+                setattr(opt, _f, type(_default)(_v))
+
         # ── SYNC auto_stateful_rightsizing_enabled ──────────────────────────────
         _auto_stateful = updates.get("auto_stateful_rightsizing_enabled")
         if _auto_stateful is not None and opt is not None:
@@ -1127,7 +1139,9 @@ def apply_karpenter_recommendation(
                 "node_name": inst.node_name,
                 "recommended_type": payload.recommended_type,
                 "stateful_resize": True,
-                "decrement_asg": True,
+                # TASK-1.1: termination_mode replaces decrement_asg boolean.
+                # stateful resize uses "replacement" mode: detach-not-decrement.
+                "termination_mode": "replacement",
                 "reason": f"stateful_rightsizing: {inst.instance_type} → {payload.recommended_type}",
             },
         )

@@ -121,3 +121,50 @@ def get_audit_log(
         diff_before=audit_log.diff_before,
         diff_after=audit_log.diff_after
     )
+
+
+# ── Task 4.1: Retention + Integrity Endpoints ──────────────────────────
+
+@router.get(
+    "/retention/settings",
+    summary="Get audit retention settings",
+    description="Get current retention policy configuration (days)"
+)
+def get_retention_settings(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get retention policy settings."""
+    service = get_audit_service(db)
+    return service.get_retention_settings()
+
+
+@router.put(
+    "/retention/settings",
+    summary="Update audit retention settings",
+    description="Set retention policy days (min 30, max 3650)"
+)
+def update_retention_settings(
+    retention_days: int = Query(..., ge=30, le=3650, description="Retention in days"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Update retention policy. Requires admin access."""
+    service = get_audit_service(db)
+    return service.update_retention_settings(retention_days)
+
+
+@router.post(
+    "/integrity/verify",
+    summary="Verify audit log integrity",
+    description="Re-compute checksums to detect tampered entries"
+)
+def verify_integrity(
+    hours: int = Query(24, ge=1, le=720, description="Hours to check"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Verify integrity of recent audit logs."""
+    service = get_audit_service(db)
+    return service.verify_integrity(hours=hours)
+

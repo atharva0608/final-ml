@@ -34,6 +34,7 @@ app = Celery(
         'backend.workers.tasks.emergency_rebalancer',        # EE: Standby-aware emergency
         'backend.workers.tasks.recovery_monitor',            # EE: Detect orphaned instances
         'backend.workers.tasks.daily_stats_aggregator',      # Multi-Cluster: Rollup stats
+        'backend.workers.tasks.auto_scaler',                  # ASCP: built-in optional auto-scaler
     ]
 )
 
@@ -135,6 +136,11 @@ app.conf.beat_schedule = {
     'auto-rebalancer-every-15-secs': {
         'task': 'workers.auto_rebalancer',
         'schedule': 15.0,  # 15 seconds
+    },
+    # ASCP Auto-Scaler (Every 30 seconds) - Optional built-in scaler (off by default per cluster)
+    'ascp-auto-scaler-every-30-secs': {
+        'task': 'workers.auto_scaler.run',
+        'schedule': 30.0,
     },
     # Karpenter NodePool Sync (Every 30 seconds) - Syncs ML rankings to Karpenter NodePools
     'karpenter-nodepool-sync-every-30-secs': {

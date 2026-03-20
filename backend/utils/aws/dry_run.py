@@ -81,32 +81,27 @@ def dry_run_pool(
 
         ec2 = boto3.client("ec2", **client_kwargs)
 
-        # Use RunInstances DryRun (simpler than CreateFleet, same signal)
-        ec2.run_instances(
-            InstanceType=instance_type,
-            DryRun=True,
-            MinCount=1,
-            MaxCount=1,
-            Placement={"AvailabilityZone": az},
+        # Use DescribeInstanceTypeOfferings — checks whether the instance type is
+        # offered in the target AZ. This avoids RunInstances DryRun which requires
+        # an ImageId (causing ParamValidationError before any API call is made).
+        _resp = ec2.describe_instance_type_offerings(
+            LocationType="availability-zone",
+            Filters=[
+                {"Name": "instance-type", "Values": [instance_type]},
+                {"Name": "location", "Values": [az]},
+            ],
         )
-        # If no exception, capacity exists (shouldn't reach here with DryRun)
-        _cache_result(redis, cache_key, True)
-        return True
+        _available = bool(_resp.get("InstanceTypeOfferings"))
+        _cache_result(redis, cache_key, _available)
+        if not _available:
+            logger.info(f"[dry_run] {instance_type} not offered in {az} ({region})")
+        return _available
 
     except ClientError as e:
         error_code = e.response.get("Error", {}).get("Code", "")
-        if error_code == "DryRunOperation":
-            # DryRun succeeded → capacity available
-            _cache_result(redis, cache_key, True)
-            return True
-        elif error_code == "InsufficientInstanceCapacity":
-            _cache_result(redis, cache_key, False)
-            logger.info(f"[dry_run] No capacity: {pool_key} in {region}")
-            return False
-        else:
-            # Other error — treat as uncertain, assume available
-            logger.warning(f"[dry_run] Ambiguous result for {pool_key}: {error_code}")
-            return True
+        # Any auth/access error — assume available (conservative)
+        logger.warning(f"[dry_run] Ambiguous result for {pool_key}: {error_code} — assuming available")
+        return True
 
     except Exception as e:
         logger.warning(f"[dry_run] Exception for {pool_key}: {e}")

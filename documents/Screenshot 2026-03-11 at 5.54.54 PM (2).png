@@ -1,0 +1,155 @@
+# Why `c6i.large` Rebalancing Failed — Evidence from Real Data
+
+> **Action #109** | Cluster: `spot-demo-1` (`301c09b0`) | Region: `ap-south-1`
+> **Time**: 2026-03-11 12:01:12 UTC (~5.5 hours ago)
+
+---
+
+## What the Database Says
+
+### Rebalancing Action #109
+
+| Field | Value |
+|---|---|
+| **Source** | `t3.medium:ap-south-1a` |
+| **Target** | `c6i.large:ap-south-1b` |
+| **Instance** | `i-09ac7926aee3c7c0c` (currently SPOT, running) |
+| **Status** | `failed` |
+| **Error** | `Direct spot EC2 launch failed: no spot capacity available for types ['c6i.large', 'c5.large', 't3.medium']. Try again later.` |
+| **Metadata** | `target_instance_type: t3.medium`, `bin_packed: false` |
+
+### Related Failure — Action #110 (21 min later)
+
+| Field | Value |
+|---|---|
+| **Source** | `c5.large:ap-south-1b` |
+| **Target** | `t4g.small:ap-south-1c` |
+| **Instance** | `i-007bd113a0f7ecb02` (SPOT c5.large, running) |
+| **Error** | `Direct spot EC2 launch failed: no spot capacity available for types ['c5.large', 't3.medium', 't3a.medium']` |
+
+---
+
+## Root Cause: AWS Role ARN Not Configured → All EC2 API Calls Fail
+
+```sql
+-- Cluster configuration
+name: spot-demo-1 | region: ap-south-1 | aws_role_arn: NULL | karpenter_mode: NULL
+```
+
+The cluster has **no `aws_role_arn` configured**. Looking at the code path in [_launch_spot_instance_direct L279-323](file:///Users/atharvapudale/Desktop/backend-ecc/Atharva%20Repo/github/final-ml/backend/workers/tasks/auto_rebalancer.py#L279-L323):
+
+```python
+_role_arn = cluster.aws_role_arn          # NULL
+if not _role_arn and cluster.account_id:  # account_id likely NULL too
+    ...
+if _plat_key and _plat_secret:
+    if _role_arn:   # NULL → skip STS
+        ...
+    else:
+        _creds = {"aws_access_key_id": _plat_key, ...}  # uses platform creds directly
+
+_ec2 = boto3.client("ec2", region_name=region, **_creds)
+_ec2.describe_instances(InstanceIds=[source_instance_id])  # ← FAILS HERE
+```
+
+Without a role ARN, the code falls back to **platform credentials only**. These platform creds operate in the **platform's own AWS account** — not the customer's account where `i-09ac7926aee3c7c0c` actually lives. So `describe_instances()` returns empty/error → `run_instances()` fails → reports "no spot capacity".
+
+> [!CAUTION]
+> The error message is misleading. It says "no spot capacity" but the real reason is **the platform cannot access the customer's AWS account** — there's no cross-account IAM role configured.
+
+---
+
+## Evidence Chain
+
+### 1. Redis Global Blacklist — All Nearby Pools Are Blacklisted
+
+```
+blacklist:global:c6i.large:ap-south-1b    ← target pool
+blacklist:global:c5.large:ap-south-1b     ← fallback #1
+blacklist:global:c5.large:ap-south-1c     ← fallback alt-AZ
+blacklist:global:t3.medium:ap-south-1b    ← fallback #2
+blacklist:global:t3.medium:ap-south-1c    ← fallback alt-AZ
+blacklist:global:t3a.medium:ap-south-1c   ← fallback #3
+```
+
+These pools were blacklisted **because the launch attempts failed** — creating a negative feedback loop. Failed launch → pool gets blacklisted → next cycle skips that pool OR uses it anyway and fails again.
+
+### 2. Launch Attempt Tracking in Redis
+
+```
+pool_launch_attempts:c6i.large:ap-south-1b
+pool_launch_attempts:c6i.large:ap-south-1c
+```
+
+Confirms the system tried launching `c6i.large` in both `ap-south-1b` and `ap-south-1c`.
+
+### 3. Instance Table — Already Migrated to Spot
+
+| Instance ID | Type | Lifecycle | AZ | State |
+|---|---|---|---|---|
+| `i-09ac7926aee3c7c0c` | t3.medium | **SPOT** | ap-south-1a | running |
+| `i-09deb55db43b3b793` | t3.medium | **SPOT** | ap-south-1a | running |
+| `i-007bd113a0f7ecb02` | c5.large | **SPOT** | ap-south-1b | running |
+| `ip-192-168-101-200` | t3.medium | ON_DEMAND | ap-south-1a | running |
+| `ip-192-168-94-24` | t3.medium | ON_DEMAND | ap-south-1a | running |
+| `ip-192-168-124-162` | t3.medium | ON_DEMAND | ap-south-1a | running |
+
+The 3 `ip-` prefixed "ON_DEMAND" records are **placeholder instances seeded from Redis telemetry** (not real EC2 IDs). The 3 `i-` prefixed instances are real AWS spot instances — the cluster has **already been fully migrated to spot**.
+
+### 4. Cluster Counter Mismatch
+
+```sql
+spot_count: 0 | on_demand_node_count: 0  -- in clusters table
+```
+
+But the instances table shows 3 spot + 3 OD → **cluster counters are stale/zero**. The auto-rebalancer re-ran [_sync_instance_state_from_aws](file:///Users/atharvapudale/Desktop/backend-ecc/Atharva%20Repo/github/final-ml/backend/workers/tasks/auto_rebalancer.py#31-290), but with no role ARN it couldn't update these.
+
+---
+
+## Complete Failure Chain
+
+```mermaid
+flowchart TD
+    A["Celery beat fires execute_rebalancing()"] --> B["Finds 3 ip- placeholder OD instances"]
+    B --> C["Picks ip-192-168-124-162 as target"]
+    C --> D["Resolves placeholder → i-09ac7926aee3c7c0c
+    (already SPOT!)"]
+    D --> E["ML ranks c6i.large:ap-south-1b as target"]
+    E --> F["Allocatable check:
+    c6i.large (2,4) vs t3.medium (2,4) → PASS"]
+    F --> G["_launch_spot_instance_direct()"]
+    G --> H["No aws_role_arn → uses platform creds directly"]
+    H --> I["EC2 describe_instances(i-09ac7926aee3c7c0c)
+    ❌ Instance not in platform account"]
+    I --> J["Catches exception → reports 'no capacity'"]
+    J --> K["action.status = 'failed'"]
+    K --> L["Pool blacklisted in Redis"]
+```
+
+---
+
+## Issues Found
+
+| # | Issue | Severity |
+|---|---|---|
+| 1 | **No `aws_role_arn`** on cluster → all EC2 calls fail silently | 🔴 Critical |
+| 2 | **Misleading error message** — says "no spot capacity" when the real issue is IAM access | 🔴 Critical |
+| 3 | **Placeholder OD instances** (`ip-` prefixed) are treated as real OD nodes → triggers unnecessary rebalancing | 🟠 High |
+| 4 | **Already-SPOT instance targeted** — `i-09ac7926aee3c7c0c` is already SPOT but still targeted for OD→Spot migration | 🟠 High |
+| 5 | **Blacklist cascade** — failed launches blacklist pools, preventing future valid attempts | 🟡 Medium |
+| 6 | **Cluster counters stale** (spot_count=0, od_count=0) because AWS sync can't run without role ARN | 🟡 Medium |
+
+---
+
+## Fix
+
+Configure the AWS cross-account role ARN on the cluster:
+
+```sql
+UPDATE clusters
+SET aws_role_arn = 'arn:aws:iam::role/',
+    aws_external_id = ''
+WHERE id = '301c09b0-d9a5-4171-8578-1119d8993b47';
+```
+
+Or via the Admin Settings UI → link an AWS account with the IAM role that has `ec2:RunInstances`, `ec2:DescribeInstances`, `sts:AssumeRole` permissions.

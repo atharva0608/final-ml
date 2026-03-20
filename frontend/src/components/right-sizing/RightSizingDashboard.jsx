@@ -636,6 +636,7 @@ function KarpenterConfigPanel({ clusterId, initialConfig, onSaved }) {
     auto_stateful_rightsizing_enabled: initialConfig?.auto_stateful_rightsizing_enabled ?? false,
     stateful_require_approval: initialConfig?.stateful_require_approval ?? true,
     diversify_pools: initialConfig?.diversify_pools ?? false,
+    optimization_target: initialConfig?.optimization_target ?? 'spot',
   });
   const [saving, setSaving] = useState(false);
 
@@ -709,6 +710,30 @@ function KarpenterConfigPanel({ clusterId, initialConfig, onSaved }) {
             <input type="number" min="10" max="100" value={form.buffer_pct} onChange={e => set('buffer_pct', Number(e.target.value))} style={{ width: 80, padding: '6px 10px', border: `1px solid ${T.border}`, borderRadius: 6, fontSize: 14, fontWeight: 600, color: T.text }} />
             <span style={{ fontSize: 12, color: T.textMuted }}>% above P95 usage — applied during bin-packing</span>
           </div>
+        </div>
+
+        <div style={{ marginTop: 24 }}>
+          <SectionLabel>Optimization Target</SectionLabel>
+          {(() => {
+            const _syn = form.auto_rebalancing_enabled && form.auto_rightsizing_enabled;
+            return (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <select
+                  value={_syn ? 'spot' : form.optimization_target}
+                  onChange={e => !_syn && set('optimization_target', e.target.value)}
+                  disabled={_syn}
+                  style={{ padding: '6px 12px', border: `1px solid ${_syn ? T.borderLight : T.border}`, borderRadius: 6, fontSize: 13, fontWeight: 600, color: _syn ? T.textMuted : T.text, background: _syn ? T.bg : T.surface, cursor: _syn ? 'not-allowed' : 'pointer' }}
+                >
+                  <option value="spot">Spot</option>
+                  <option value="on_demand">On-Demand</option>
+                </select>
+                {_syn && (
+                  <span style={{ fontSize: 11, color: T.textMuted }}>Locked to Spot in synergy mode</span>
+                )}
+              </div>
+            );
+          })()}
+          <div style={{ fontSize: 11, color: T.textMuted, marginTop: 4 }}>Billing model for right-sized replacement nodes</div>
         </div>
       </Card>
 

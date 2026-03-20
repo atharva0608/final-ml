@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Card } from '../shared';
 import { FiSliders, FiCheckCircle, FiAlertTriangle, FiArrowUpRight, FiActivity, FiInbox, FiShield, FiClock, FiThumbsUp, FiThumbsDown } from 'react-icons/fi';
 import api, { clusterAPI, adminAPI, atharvaaiAPI } from '../../services/api';
+import AutoRebalanceAuditModal from './AutoRebalanceAuditModal';
 
 const AutoRebalanceAuditCard = ({ clusterId, initialEnabled = false }) => {
     const [decisions, setDecisions] = useState([]);
@@ -10,6 +11,7 @@ const AutoRebalanceAuditCard = ({ clusterId, initialEnabled = false }) => {
     const [toggling, setToggling] = useState(false);
     const [cbState, setCbState] = useState(null);
     const [approving, setApproving] = useState(null); // action id being approved/denied
+    const [isAuditModalOpen, setIsAuditModalOpen] = useState(false);
 
     useEffect(() => {
         fetchAuditLog();
@@ -44,7 +46,10 @@ const AutoRebalanceAuditCard = ({ clusterId, initialEnabled = false }) => {
 
     const fetchAuditLog = async () => {
         try {
-            const response = await api.get('/api/v1/atharvaai/rebalancing/status?limit=3');
+            const params = clusterId
+                ? `/api/v1/atharvaai/rebalancing/status?limit=5&cluster_id=${clusterId}`
+                : '/api/v1/atharvaai/rebalancing/status?limit=5';
+            const response = await api.get(params);
             if (response.data && Array.isArray(response.data)) {
                 setDecisions(response.data);
             } else {
@@ -184,11 +189,10 @@ const AutoRebalanceAuditCard = ({ clusterId, initialEnabled = false }) => {
                     <div className={`w-2 h-2 rounded-full ${isEnabled ? 'bg-green-500 animate-pulse' : 'bg-gray-300'}`}></div>
                     <h3 className="font-semibold text-gray-800">Auto-Rebalancer History</h3>
                     {cbState && (
-                        <span className={`inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-semibold rounded-full ${
-                            cbState === 'NORMAL' ? 'bg-green-100 text-green-700' :
-                            cbState === 'CONSERVATIVE' ? 'bg-yellow-100 text-yellow-700' :
-                            'bg-red-100 text-red-700'
-                        }`}>
+                        <span className={`inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-semibold rounded-full ${cbState === 'NORMAL' ? 'bg-green-100 text-green-700' :
+                                cbState === 'CONSERVATIVE' ? 'bg-yellow-100 text-yellow-700' :
+                                    'bg-red-100 text-red-700'
+                            }`}>
                             <FiShield className="w-2.5 h-2.5" />
                             CB: {cbState}
                         </span>
@@ -205,12 +209,25 @@ const AutoRebalanceAuditCard = ({ clusterId, initialEnabled = false }) => {
                     </div>
                 ) : (
                     decisions.map((action, idx) => (
-                        <div key={action.id || idx} className="bg-white p-3 rounded-lg border border-gray-100 shadow-sm hover:shadow-md transition-shadow">
+                        <div key={action.id || idx} className={`bg-white p-3 rounded-lg border shadow-sm hover:shadow-md transition-shadow ${action.status === 'failed' ? 'border-red-200' : 'border-gray-100'}`}>
                             <div className="flex justify-between items-start mb-1">
-                                <span className="text-xs font-bold text-gray-700 font-mono">
-                                    {action.target_pool ? action.target_pool.split(':')[0] : 'Unknown'}
+                                <span className="text-xs font-bold text-gray-700 font-mono flex items-center gap-1 flex-wrap">
+                                    {/* Source → Target display */}
+                                    {action.source_pool && (
+                                        <span className="text-gray-400">{action.source_pool.split(':')[0]}</span>
+                                    )}
+                                    {action.source_pool && <span className="text-gray-300">→</span>}
+                                    {action.original_target_pool ? (
+                                        <>
+                                            <span className="line-through text-gray-400">{action.original_target_pool.split(':')[0]}</span>
+                                            <span className="text-gray-300">→</span>
+                                            <span>{action.target_pool ? action.target_pool.split(':')[0] : 'Unknown'}</span>
+                                        </>
+                                    ) : (
+                                        action.target_pool ? action.target_pool.split(':')[0] : 'Unknown'
+                                    )}
                                 </span>
-                                <span className="text-[10px] text-gray-400">
+                                <span className="text-[10px] text-gray-400 ml-2 shrink-0">
                                     {timeAgo(action.started_at)}
                                 </span>
                             </div>
@@ -231,6 +248,22 @@ const AutoRebalanceAuditCard = ({ clusterId, initialEnabled = false }) => {
                                     </span>
                                 )}
                             </div>
+
+                            {action.status === 'failed' && action.error_message && (
+                                <div className="mt-2 p-2 bg-red-50 border border-red-100 rounded text-[10px] text-red-600 font-mono break-words">
+                                    {action.error_message}
+                                </div>
+                            )}
+                            {action.status === 'deferred' && action.error_message && (
+                                <div className="mt-2 p-2 bg-amber-50 border border-amber-100 rounded text-[10px] text-amber-700 font-mono break-words">
+                                    {action.error_message}
+                                </div>
+                            )}
+                            {action.pool_change_reason && (
+                                <div className="mt-2 p-2 bg-blue-50 border border-blue-100 rounded text-[10px] text-blue-700 font-mono break-words">
+                                    Pool changed: {action.pool_change_reason}
+                                </div>
+                            )}
 
                             {action.status === 'pending_approval' && (
                                 <div className="flex items-center gap-2 mt-2 pt-2 border-t border-amber-100">
@@ -259,10 +292,20 @@ const AutoRebalanceAuditCard = ({ clusterId, initialEnabled = false }) => {
             </div>
 
             <div className="mt-3 pt-2 border-t border-gray-200 text-center">
-                <button className="text-xs text-blue-600 hover:text-blue-800 font-medium flex items-center justify-center gap-1 mx-auto">
+                <button 
+                    onClick={() => setIsAuditModalOpen(true)}
+                    className="text-xs text-blue-600 hover:text-blue-800 font-medium flex items-center justify-center gap-1 mx-auto"
+                >
                     View Full Audit Log <FiArrowUpRight />
                 </button>
             </div>
+            
+            {/* Full Audit Log Modal */}
+            <AutoRebalanceAuditModal 
+                isOpen={isAuditModalOpen} 
+                onClose={() => setIsAuditModalOpen(false)} 
+                clusterId={clusterId}
+            />
         </Card>
     );
 };

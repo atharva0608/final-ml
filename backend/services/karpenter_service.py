@@ -214,7 +214,7 @@ class KarpenterService:
 
             # Set 12-hour fallback TTL in Redis
             if self.redis:
-                fallback_key = f"ondemand_fallback:{cluster_id}"
+                fallback_key = f"spot:ondemand_fallback:{cluster_id}"
                 fallback_data = {
                     "cluster_id": cluster_id,
                     "cluster_name": cluster.name,
@@ -315,7 +315,7 @@ class KarpenterService:
             )
 
             if self.redis:
-                self.redis.delete(f"ondemand_fallback:{cluster_id}")
+                self.redis.delete(f"spot:ondemand_fallback:{cluster_id}")
 
             logger.info(f"Reverted cluster {cluster.name} from on-demand to spot.")
             return {
@@ -334,7 +334,7 @@ class KarpenterService:
         """Check if cluster is currently in on-demand fallback mode."""
         if not self.redis:
             return False
-        return bool(self.redis.exists(f"ondemand_fallback:{cluster_id}"))
+        return bool(self.redis.exists(f"spot:ondemand_fallback:{cluster_id}"))
 
     def _get_region_azs(self, region: str) -> List[str]:
         """Get default AZs for region."""
@@ -847,6 +847,15 @@ class KarpenterService:
                 'karpenter_mode': karpenter_mode,
             }
             redis.setex(cache_key, 300, _json.dumps(result))
+
+            # Task 3.3: Also set/clear the spot:karpenter:installed key that
+            # emergency_rebalancer and other services check.
+            _installed_key = f"spot:karpenter:installed:{cluster_id}"
+            if detected:
+                redis.setex(_installed_key, 3600, karpenter_mode)  # 1h TTL, refreshed on every detection
+            else:
+                redis.delete(_installed_key)
+
             return result
 
         except Exception as e:

@@ -64,7 +64,14 @@ def calculate_real_savings(self: Task):
 
             # Group instances by lifecycle
             on_demand_instances = [i for i in instances if i.lifecycle == InstanceLifecycle.ON_DEMAND]
-            spot_instances = [i for i in instances if i.lifecycle == InstanceLifecycle.SPOT]
+            
+            # Issue #3: Only count spot instances launched by the platform to avoid 
+            # inflating savings with pre-existing or independently managed spot nodes
+            platform_flags = ("platform", "spot-optimizer-direct")
+            spot_instances = [
+                i for i in instances 
+                if i.lifecycle == InstanceLifecycle.SPOT and i.launched_by in platform_flags
+            ]
 
             # Calculate savings
             potential_savings = 0.0

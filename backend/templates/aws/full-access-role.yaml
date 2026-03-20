@@ -110,6 +110,8 @@ Resources:
                   - 'ec2:DescribeAvailabilityZones'
                   - 'ec2:DescribeReservedInstances'
                   - 'ec2:DescribeTags'
+                  - 'ec2:DescribeSpotPriceHistory'
+                  - 'sts:GetCallerIdentity'
                 Resource: '*'
 
               # Auto Scaling Discovery (All Regions)
@@ -155,6 +157,18 @@ Resources:
                   - 'pricing:DescribeServices'
                 Resource: '*'
 
+              # EC2 Describe Subnets for AZ-aware selection
+              - Sid: 'EC2DescribeSubnets'
+                Effect: Allow
+                Action: 'ec2:DescribeSubnets'
+                Resource: '*'
+
+              # EC2 Describe Security Groups for completeness
+              - Sid: 'EC2DescribeSecurityGroups'
+                Effect: Allow
+                Action: 'ec2:DescribeSecurityGroups'
+                Resource: '*'
+
         # =============================================================================
         # CLUSTER MANAGEMENT PERMISSIONS (All Regions)
         # =============================================================================
@@ -198,6 +212,27 @@ Resources:
                   - 'autoscaling:DeletePolicy'
                 Resource: '*'
 
+              # Auto Scaling Detach Instances for replacement termination mode
+              - Sid: 'AutoScalingDetach'
+                Effect: Allow
+                Action: 'autoscaling:DetachInstances'
+                Resource: '*'
+
+              # CloudFormation — backend updates ClusterName parameter in this stack
+              # after cluster connect via cloudformation:UpdateStack, and reads stack
+              # outputs (KarpenterNodeRoleArn etc.) via DescribeStacks.
+              - Sid: 'CloudFormationManagement'
+                Effect: Allow
+                Action:
+                  - 'cloudformation:UpdateStack'
+                  - 'cloudformation:DescribeStacks'
+                  - 'cloudformation:DescribeStackResources'
+                  - 'cloudformation:ListStacks'
+                  - 'cloudformation:GetTemplate'
+                Resource:
+                  - !Sub 'arn:aws:cloudformation:*:${AWS::AccountId}:stack/SpotOptimizer*/*'
+                  - !Sub 'arn:aws:cloudformation:*:${AWS::AccountId}:stack/spot-optimizer*/*'
+
               # EC2 Instance Management for Hibernation (All Regions)
               - Sid: 'EC2InstanceManagement'
                 Effect: Allow
@@ -207,7 +242,9 @@ Resources:
                   - 'ec2:RebootInstances'
                   - 'ec2:ModifyInstanceAttribute'
                   - 'ec2:CreateTags'
-                  - 'ec2:DescribeInstanceAttribute'   # needed to read user-data for direct spot launch
+                  - 'ec2:DescribeInstanceAttribute'        # reads user-data from source instance for direct spot launch
+                  - 'ec2:DescribeLaunchTemplates'          # fallback: get user-data from EKS node group launch template
+                  - 'ec2:DescribeLaunchTemplateVersions'   # fallback: get user-data from EKS node group launch template
                 Resource: '*'
 
               # Direct EC2 Spot Launch (non-Karpenter clusters)
@@ -362,6 +399,16 @@ Resources:
                   - 'iam:ListRoles'
                   - 'iam:ListInstanceProfiles'
                 Resource: '*'
+
+              # SQS receive for the platform's own emergency handling
+              - Sid: 'ConsumeInterruptionQueue'
+                Effect: Allow
+                Action:
+                  - 'sqs:ReceiveMessage'
+                  - 'sqs:DeleteMessage'
+                  - 'sqs:GetQueueAttributes'
+                  - 'sqs:GetQueueUrl'
+                Resource: !GetAtt KarpenterInterruptionQueue.Arn
 
               # EventBridge — spot interruption + rebalance notification rules
               - Sid: 'KarpenterEventBridge'
@@ -708,6 +755,30 @@ Resources:
           - 'aws.ec2'
         detail-type:
           - 'EC2 Instance State-change Notification'
+      State: ENABLED
+      Targets:
+        - Id: KarpenterInterruptionQueueTarget
+          Arn: !GetAtt KarpenterInterruptionQueue.Arn
+
+  # AWS Health scheduled change / spot interruption (from AWS Health service)
+  # Complements IMDS-based detection; catches health events that may not appear
+  # in EC2 spot interruption warnings (e.g., scheduled maintenance, hardware failure).
+  KarpenterHealthEventRule:
+    Type: 'AWS::Events::Rule'
+    Properties:
+      Name: !Sub 'KarpenterRule-${ClusterName}-HealthEvent'
+      Description: !Sub 'Routes AWS Health spot/maintenance events to Karpenter queue for ${ClusterName}'
+      EventPattern:
+        source:
+          - 'aws.health'
+        detail-type:
+          - 'AWS Health Event'
+        detail:
+          service:
+            - 'EC2'
+          eventTypeCategory:
+            - 'scheduledChange'
+            - 'issue'
       State: ENABLED
       Targets:
         - Id: KarpenterInterruptionQueueTarget

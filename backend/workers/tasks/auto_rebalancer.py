@@ -125,10 +125,37 @@ def _sync_instance_state_from_aws(db: Session, cluster: Cluster):
         db_id_map = {inst.instance_id: inst for inst in db_instances}
 
         if not aws_lifecycle_map:
-            logger.warning(f"[aws_sync] No running instances found in AWS for cluster {cluster.name} "
-                           f"(check tag kubernetes.io/cluster/{cluster.name} on EC2 instances) "
-                           f"— marking all DB instances as terminated")
-            # Still mark all running DB instances as terminated (cluster may have been scaled to 0)
+            # Empty result may be transient (EKS tag not yet propagated, API hiccup, wrong tag).
+            # Require 3 consecutive empty responses before marking instances terminated.
+            # This prevents all nodes from being falsely evicted on a single bad AWS call.
+            _empty_streak_key = f"aws_sync:empty_streak:{cluster.id}"
+            try:
+                from backend.core.redis_client import get_redis_client as _grc_es
+                _r_es = _grc_es()
+                _empty_streak = int(_r_es.incr(_empty_streak_key) or 0)
+                _r_es.expire(_empty_streak_key, 600)  # 10-min TTL (3 × ~3-min cycles)
+                logger.warning(
+                    f"[aws_sync] No running instances found in AWS for cluster {cluster.name} "
+                    f"(check tag kubernetes.io/cluster/{cluster.name}) "
+                    f"— empty streak {_empty_streak}/3"
+                )
+                if _empty_streak < 3:
+                    return  # Transient — don't touch DB yet
+                # 3 consecutive empty responses: likely scaled to 0 or tag removed
+                _r_es.delete(_empty_streak_key)
+            except Exception:
+                # Redis unavailable — use conservative single-observation guard:
+                # never mass-terminate on a single empty result
+                logger.warning(
+                    f"[aws_sync] No running instances found in AWS for cluster {cluster.name} "
+                    f"(Redis unavailable for streak guard) — skipping to avoid false termination"
+                )
+                return
+            # Confirmed 3× empty: cluster likely scaled to 0 or misconfigured
+            logger.warning(
+                f"[aws_sync] Confirmed 3 consecutive empty AWS responses for {cluster.name} "
+                f"— marking all DB instances as terminated"
+            )
             for db_inst in db_instances:
                 if db_inst.state == 'running':
                     db_inst.state = 'terminated'
@@ -187,8 +214,39 @@ def _sync_instance_state_from_aws(db: Session, cluster: Cluster):
                 # Update existing record to match AWS truth
                 changed = False
                 if db_inst.lifecycle != real_lifecycle:
-                    db_inst.lifecycle = real_lifecycle
-                    changed = True
+                    if (db_inst.lifecycle == InstanceLifecycle.SPOT and
+                            real_lifecycle == InstanceLifecycle.ON_DEMAND):
+                        # SPOT→OD downgrade: require 3 consecutive AWS observations
+                        # to avoid flipping on transient DescribeInstances gaps
+                        try:
+                            from backend.core.redis_client import get_redis_client as _grc_rc3s
+                            _r3s = _grc_rc3s()
+                            _sk3s = f"rc3:sync_od_streak:{aws_iid}"
+                            _streak3s = int(_r3s.incr(_sk3s) or 0)
+                            _r3s.expire(_sk3s, 300)  # 5-min TTL (3 × 15s cycles)
+                            if _streak3s >= 3:
+                                db_inst.lifecycle = real_lifecycle
+                                _r3s.delete(_sk3s)
+                                changed = True
+                                logger.info(f"[aws_sync] RC3: confirmed SPOT→OD for {aws_iid} after 3 consecutive OD observations")
+                            # else: keep SPOT (transient absence)
+                        except Exception as _rc3_err:
+                            # Redis unavailable — keep current SPOT lifecycle.
+                            # Downgrading on a transient Redis error would cause false OD
+                            # classification and trigger unnecessary rebalancing.
+                            logger.warning(
+                                f"[aws_sync] RC3 guard Redis error for {aws_iid}: {_rc3_err} "
+                                f"— keeping current lifecycle {db_inst.lifecycle} (no change)"
+                            )
+                    else:
+                        db_inst.lifecycle = real_lifecycle
+                        changed = True
+                        # Clear any stale RC3 streak when confirmed non-SPOT
+                        try:
+                            from backend.core.redis_client import get_redis_client as _grc_rc3c
+                            _grc_rc3c().delete(f"rc3:sync_od_streak:{aws_iid}")
+                        except Exception:
+                            pass
                 if aws_itype and db_inst.instance_type != aws_itype:
                     db_inst.instance_type = aws_itype
                     changed = True
@@ -266,9 +324,10 @@ def _sync_instance_state_from_aws(db: Session, cluster: Cluster):
 def _launch_spot_instance_direct(
     db, cluster, source_instance_id: str,
     target_instance_types: list, target_az: str, region: str
-):
+) -> tuple:
     """
     Launch a spot EC2 instance for non-Karpenter clusters.
+    Returns (instance_id, instance_type, az, error_msg). error_msg is None on success.
 
     Copies AMI, subnet, security groups, IAM instance profile, and cluster tags
     from the source OD instance, then calls run_instances() with spot market options.
@@ -276,6 +335,7 @@ def _launch_spot_instance_direct(
 
     Returns the new EC2 instance_id on success, or None on failure.
     """
+    _last_err = None  # tracks the most recent AWS error for caller reporting
     try:
         import boto3 as _b3f
         from botocore.exceptions import ClientError as _CE
@@ -323,8 +383,16 @@ def _launch_spot_instance_direct(
         _ec2 = _b3f.client("ec2", region_name=region, **_creds)
 
         # Describe source instance to copy launch parameters
-        _resp = _ec2.describe_instances(InstanceIds=[source_instance_id])
-        _src  = _resp["Reservations"][0]["Instances"][0]
+        try:
+            _resp = _ec2.describe_instances(InstanceIds=[source_instance_id])
+            _src  = _resp["Reservations"][0]["Instances"][0]
+        except _CE as _ce:
+            if _ce.response["Error"]["Code"] == "InvalidInstanceID.NotFound":
+                if not _role_arn:
+                    raise ValueError(f"CRITICAL ERROR: Cannot access customer AWS account for cluster {cluster.name}. No 'aws_role_arn' is configured. Please link an AWS account.")
+                else:
+                    raise ValueError(f"CRITICAL ERROR: Cannot find instance {source_instance_id} using role {_role_arn}. Verify cross-account IAM permissions.")
+            raise
 
         _ami_id       = _src["ImageId"]
         _subnet_id    = _src.get("SubnetId", "")
@@ -337,23 +405,139 @@ def _launch_spot_instance_direct(
         # it is passed as user-data at launch time. Without it the new node's kubelet
         # never starts and the node never joins the cluster.
         _user_data_b64 = ""
+        # Attempt 1: describe_instance_attribute (requires ec2:DescribeInstanceAttribute IAM perm)
         try:
             _ud_resp = _ec2.describe_instance_attribute(
                 InstanceId=source_instance_id, Attribute="userData"
             )
             _user_data_b64 = _ud_resp.get("UserData", {}).get("Value", "")
+            if _user_data_b64:
+                logger.info(
+                    f"[auto_rebalancer] Got user-data via instance attribute for {source_instance_id} "
+                    f"({len(_user_data_b64)} chars base64)"
+                )
         except Exception as _ud_err:
             logger.warning(
-                f"[auto_rebalancer] Could not fetch user-data from {source_instance_id}: "
-                f"{_ud_err} — new spot node may not join the cluster"
+                f"[auto_rebalancer] Could not fetch user-data via DescribeInstanceAttribute "
+                f"for {source_instance_id}: {_ud_err} — trying launch template fallback"
+            )
+
+        # Attempt 2: get user-data from the source instance's launch template (EKS managed node groups
+        # store the bootstrap script in the launch template, not the instance attribute directly).
+        # This also handles the case where ec2:DescribeInstanceAttribute is not granted.
+        if not _user_data_b64:
+            try:
+                _lt_info = _src.get("LaunchTemplate", {})
+                _lt_id = _lt_info.get("LaunchTemplateId")
+                _lt_version = str(_lt_info.get("Version") or "$Default")
+                if _lt_id:
+                    _lt_resp = _ec2.describe_launch_template_versions(
+                        LaunchTemplateId=_lt_id,
+                        Versions=[_lt_version],
+                    )
+                    _lt_versions = _lt_resp.get("LaunchTemplateVersions", [])
+                    if _lt_versions:
+                        _lt_ud = _lt_versions[0].get("LaunchTemplateData", {}).get("UserData", "")
+                        if _lt_ud:
+                            _user_data_b64 = _lt_ud
+                            logger.info(
+                                f"[auto_rebalancer] Got user-data from launch template "
+                                f"{_lt_id}:{_lt_version} ({len(_user_data_b64)} chars base64)"
+                            )
+                        else:
+                            logger.warning(
+                                f"[auto_rebalancer] Launch template {_lt_id}:{_lt_version} "
+                                f"has no user-data"
+                            )
+                else:
+                    logger.warning(
+                        f"[auto_rebalancer] Source instance {source_instance_id} has no "
+                        f"LaunchTemplate association — cannot get user-data from LT"
+                    )
+            except Exception as _lt_err:
+                logger.warning(
+                    f"[auto_rebalancer] Could not fetch user-data from launch template: {_lt_err}"
+                )
+
+        # Attempt 3: Get user-data from the EKS managed node group launch template.
+        # This is the most reliable source — it is the authoritative bootstrap script
+        # for this EKS cluster, independent of which running instance we copied from.
+        # REQUIRED when source_instance_id is a direct-launched node (no LT association).
+        if not _user_data_b64:
+            try:
+                import boto3 as _b3_eks3
+                _eks3 = _b3_eks3.client("eks", region_name=region, **_creds)
+                _eks_cluster_name = (
+                    getattr(cluster, 'eks_cluster_name', None)
+                    or getattr(cluster, 'name', None)
+                    or cluster.name
+                )
+                _ngs = _eks3.list_nodegroups(clusterName=_eks_cluster_name).get('nodegroups', [])
+                for _ng_name in _ngs:
+                    _ng = _eks3.describe_nodegroup(
+                        clusterName=_eks_cluster_name, nodegroupName=_ng_name
+                    )['nodegroup']
+                    _ng_lt = _ng.get('launchTemplate', {})
+                    _ng_lt_id = _ng_lt.get('id')
+                    _ng_lt_ver = str(_ng_lt.get('version') or '$Default')
+                    if _ng_lt_id:
+                        _lt3 = _ec2.describe_launch_template_versions(
+                            LaunchTemplateId=_ng_lt_id, Versions=[_ng_lt_ver]
+                        ).get('LaunchTemplateVersions', [])
+                        if _lt3:
+                            _ud3 = _lt3[0].get('LaunchTemplateData', {}).get('UserData', '')
+                            if _ud3:
+                                _user_data_b64 = _ud3
+                                logger.info(
+                                    f"[auto_rebalancer] Got user-data from EKS nodegroup "
+                                    f"'{_ng_name}' LT {_ng_lt_id}:{_ng_lt_ver} "
+                                    f"({len(_user_data_b64)} chars base64)"
+                                )
+                                break
+                if not _user_data_b64:
+                    logger.warning(
+                        f"[auto_rebalancer] EKS nodegroup LT user-data: no nodegroup had user-data "
+                        f"for cluster '{_eks_cluster_name}'"
+                    )
+            except Exception as _eks3_err:
+                logger.warning(
+                    f"[auto_rebalancer] Attempt 3 (EKS nodegroup LT): {_eks3_err}"
+                )
+
+        if not _user_data_b64:
+            logger.error(
+                f"[auto_rebalancer] *** No user-data found for {source_instance_id} ***  "
+                f"New spot node will launch WITHOUT the EKS bootstrap script — "
+                f"kubelet will NOT start and the node will NOT join the cluster. "
+                f"Grant ec2:DescribeInstanceAttribute + ec2:DescribeLaunchTemplateVersions "
+                f"to the cross-account IAM role to fix this."
             )
 
         # Copy existing tags; add/update cluster ownership and platform marker
         _tags = [t for t in _src.get("Tags", []) if not t["Key"].startswith("aws:")]
         _cluster_tag = f"kubernetes.io/cluster/{cluster.name}"
-        _tags = [t for t in _tags if t["Key"] not in (_cluster_tag, "spot-optimizer:status")]
+        # Strip all keys we will re-set below to prevent InvalidParameterValue: Duplicate tag key.
+        _STRIP_KEYS = {
+            _cluster_tag,
+            "spot-optimizer:status",
+            "spot-optimizer:launched-by",
+            "spot-optimizer:template-id",
+            "spot-optimizer:termination-mode",
+            "spot-optimizer:allowed-architectures",
+        }
+        _tags = [t for t in _tags if t["Key"] not in _STRIP_KEYS]
         _tags.append({"Key": _cluster_tag, "Value": "owned"})
         _tags.append({"Key": "spot-optimizer:launched-by", "Value": "spot-optimizer-direct"})
+        # ── Task 3.9: Additional node labels at launch ────────────────
+        _tags.append({"Key": "spot-optimizer:template-id", "Value": source_instance_id[:20]})
+        _tags.append({"Key": "spot-optimizer:termination-mode", "Value": "replacement"})
+        # allowed-architectures: set based on source instance family (from described EC2 data)
+        _ARM_FAMILIES_TAG = {'t4g', 'c6g', 'c7g', 'm6g', 'm7g', 'r6g', 'r7g',
+                             'c6gn', 'c6gd', 'm6gd', 'r6gd', 'a1', 'hpc7g'}
+        _src_instance_type = _src.get("InstanceType", "")  # from describe_instances response
+        _src_fam = _src_instance_type.split('.')[0] if _src_instance_type else ''
+        _arch_tag_val = "arm64" if _src_fam in _ARM_FAMILIES_TAG else "x86_64"
+        _tags.append({"Key": "spot-optimizer:allowed-architectures", "Value": _arch_tag_val})
         # scan_orphans relies on this tag to detect unjoined instances (15-min timeout)
         _tags.append({"Key": "spot-optimizer:status", "Value": "pending"})
 
@@ -371,15 +555,30 @@ def _launch_spot_instance_direct(
             except Exception:
                 pass  # Fall back to source subnet
 
+        # Copy public IP setting from source instance.
+        # If source EKS nodes have public IPs (public subnets with MapPublicIpOnLaunch=True),
+        # the spot replacement MUST also get a public IP to reach the EKS API server.
+        # Without this, kubelet bootstrap fails: node never joins the cluster.
+        # Root cause of orphan c5.large (i-0beb31e95ae1af124) not joining EKS cluster.
+        _src_has_public_ip = bool(_src.get("PublicIpAddress"))
+
         # Try each instance type in priority order; skip on capacity errors
-        for _itype in (target_instance_types or ["t3.medium"])[:6]:
+        # Task 4.8: configurable cascade limit (default 6)
+        _max_attempts = 6
+        try:
+            from backend.models.cluster import ClusterOptimizationSettings
+            _opt_settings = db.query(ClusterOptimizationSettings).filter(
+                ClusterOptimizationSettings.cluster_id == cluster.id
+            ).first()
+            if _opt_settings and _opt_settings.max_instance_type_attempts:
+                _max_attempts = _opt_settings.max_instance_type_attempts
+        except Exception:
+            pass
+        # Track which types were tried and why they failed so callers can record
+        # the reason a pool was changed from the originally planned type.
+        _skipped: dict = {}  # {instance_type: "ErrorCode: message"}
+        for _itype in (target_instance_types or ["t3.medium"])[:_max_attempts]:
             try:
-                # Use NetworkInterfaces instead of top-level SubnetId/SecurityGroupIds
-                # so we can explicitly set AssociatePublicIpAddress=False.
-                # EKS worker nodes must use private IPs only — they communicate via
-                # VPC CNI and should never be reachable from the internet directly.
-                # Using top-level SubnetId inherits the subnet's MapPublicIpOnLaunch
-                # setting (True for public subnets), assigning a spurious public IP.
                 _run_kwargs = {
                     "ImageId":      _ami_id,
                     "InstanceType": _itype,
@@ -388,7 +587,7 @@ def _launch_spot_instance_direct(
                         "DeviceIndex": 0,
                         "SubnetId": _target_subnet,
                         "Groups": _sg_ids,
-                        "AssociatePublicIpAddress": False,
+                        "AssociatePublicIpAddress": _src_has_public_ip,
                     }],
                     "InstanceMarketOptions": {
                         "MarketType": "spot",
@@ -409,28 +608,35 @@ def _launch_spot_instance_direct(
                 logger.info(
                     f"[auto_rebalancer] Direct spot launch: {_itype} in {_actual_az} "
                     f"→ EC2 {_new_id} (cluster {cluster.name})"
+                    + (f" [skipped: {_skipped}]" if _skipped else "")
                 )
-                return _new_id, _itype, _actual_az  # actual type + AZ used
+                return _new_id, _itype, _actual_az, None, _skipped
 
             except _CE as _ce:
                 _code = _ce.response["Error"]["Code"]
+                _msg = _ce.response["Error"].get("Message", str(_ce))
+                _last_err = f"{_code}: {_msg}"
                 if _code in ("InsufficientInstanceCapacity", "SpotMaxPriceTooLow",
                              "InstanceLimitExceeded", "Unsupported"):
+                    _skipped[_itype] = f"{_code}: {_msg}"
                     logger.warning(
                         f"[auto_rebalancer] {_itype} unavailable ({_code}), trying next type"
                     )
                     continue
                 raise  # Unexpected error — propagate
 
-        logger.error(
-            f"[auto_rebalancer] All instance types exhausted for cluster {cluster.name} "
-            f"— no spot capacity available in {target_az or 'any AZ'}"
+        _capacity_err = (
+            f"All instance types exhausted ({', '.join(target_instance_types[:3])}) "
+            f"in {target_az or 'any AZ'}"
+            + (f" — last AWS error: {_last_err}" if _last_err else "")
         )
-        return None, None, None
+        logger.error(f"[auto_rebalancer] {_capacity_err} for cluster {cluster.name}")
+        return None, None, None, _capacity_err, _skipped
 
     except Exception as _e:
-        logger.error(f"[auto_rebalancer] _launch_spot_instance_direct failed: {_e}")
-        return None, None, None
+        _err_str = str(_e)
+        logger.error(f"[auto_rebalancer] _launch_spot_instance_direct failed: {_err_str}")
+        return None, None, None, _err_str, {}
 
 
 def execute_rebalancing_action(db: Session, action: RebalancingAction):
@@ -438,6 +644,10 @@ def execute_rebalancing_action(db: Session, action: RebalancingAction):
         from backend.core.redis_client import get_redis_client, key_cluster_cooldown, key_rebalance_lock
         from backend.services.cooldown_controller import CooldownController
         from backend.services.distributed_locks import distributed_lock
+
+        # Track lock state outside try so finally can always release it
+        _lock_key_release = None
+        _redis_release = None
 
         try:
             logger.info(f"Executing rebalancing action {action.id}: {action.cluster_id} ({action.source_pool} → {action.target_pool})")
@@ -466,6 +676,10 @@ def execute_rebalancing_action(db: Session, action: RebalancingAction):
             # Ensure only one rebalancing cycle runs at a time per cluster
             _lock_key = key_rebalance_lock(action.cluster_id)
             _lock_acquired = _redis.set(_lock_key, action.id, nx=True, ex=600)
+            if _lock_acquired:
+                # Store refs so finally block can always release the lock
+                _lock_key_release = _lock_key
+                _redis_release = _redis
             if not _lock_acquired:
                 logger.info(
                     f"[auto_rebalancer] Rebalance already in progress for cluster "
@@ -515,6 +729,21 @@ def execute_rebalancing_action(db: Session, action: RebalancingAction):
                 )
                 action.status = 'deferred'
                 action.error_message = "Resize cooldown active — deferred"
+                db.commit()
+                return
+
+            # ── DOUBLE-LAUNCH GUARD ───────────────────────────────────────────
+            # If replacement_spot_instance_id is already set in metadata, Phase 1
+            # (spot launch) already ran. Transitioning to waiting_agent at line 1241
+            # should prevent re-entry, but this explicit guard protects against race
+            # conditions where the action is still in_progress when the next cycle runs.
+            _existing_replacement = (action.action_metadata or {}).get('replacement_spot_instance_id')
+            if _existing_replacement:
+                logger.info(
+                    f"[auto_rebalancer] Action {action.id}: spot {_existing_replacement} already launched "
+                    f"— skipping Phase 1, transitioning to waiting_agent"
+                )
+                action.status = 'waiting_agent'
                 db.commit()
                 return
 
@@ -712,11 +941,95 @@ def execute_rebalancing_action(db: Session, action: RebalancingAction):
                             region=cluster.region or "ap-south-1", limit=8
                         )
                         if _ranked_ml:
-                            ml_instance_types = list(dict.fromkeys(
+                            # ── RESPECT DIVERSIFICATION: honour the action's target_instance_type ──
+                            # The action was created with a diversification-filtered pool selection
+                            # (pool-unique + family-capped). If we re-rank without that filter we
+                            # end up launching the ML-top type (e.g. c6i.large) regardless of what
+                            # was already running — causing pool duplication and family cap violations.
+                            #
+                            # Fix A: include both 'running' AND 'pending' instances so that a
+                            # pre-registered spot instance (state='pending', launched by a previous
+                            # action in the same batch) blocks its pool from being chosen as a
+                            # fallback — preventing two c5.large in the same AZ.
+                            #
+                            # Fix B: apply the same occupancy filter to target_instance_type (the
+                            # primary type, set at action-creation time). If the pool became occupied
+                            # between creation and execution, we defer rather than duplicate.
+                            _occupied_exec = set(
+                                (i.instance_type, i.az or '')
+                                for i in db.query(Instance).filter(
+                                    Instance.cluster_id == action.cluster_id,
+                                    Instance.state.in_(['running', 'pending']),
+                                    Instance.instance_id.like('i-%'),
+                                ).all()
+                                if i.instance_type and i.az
+                            )
+                            # All candidate types (primary + fallbacks), deduplicated, diversified
+                            _all_candidate_types = list(dict.fromkeys(
+                                [target_instance_type] +
                                 [p.pool.instance_type for p in _ranked_ml]
-                            ))[:8] or ["t3a.medium", "t3.small", "t3.medium", "m6g.medium"]
+                            ))
+                            _diversified_types = [
+                                t for t in _all_candidate_types
+                                if (t, target_az) not in _occupied_exec
+                            ]
+                            if _diversified_types:
+                                ml_instance_types = _diversified_types[:8]
+                            else:
+                                # Every candidate pool is already occupied — defer to next cycle
+                                # rather than growing the cluster with a duplicate.
+                                logger.info(
+                                    f"[auto_rebalancer] All candidate pools for "
+                                    f"{target_instance_type}:{target_az} occupied — deferring "
+                                    f"action {action.id} to next cycle (diversification constraint)"
+                                )
+                                action.status = 'deferred'
+                                action.error_message = (
+                                    f"All candidate spot pools for {target_az} are currently occupied "
+                                    f"(diversification constraint). Will retry next cycle."
+                                )
+                                db.commit()
+                                return
+                            logger.info(
+                                f"[auto_rebalancer] Exec ml_instance_types (diversified, "
+                                f"pool-filtered): {ml_instance_types[:4]}"
+                            )
                     except Exception:
                         pass
+
+                    # ── ARCHITECTURE FILTER ────────────────────────────────────────
+                    # _launch_spot_instance_direct() copies the source instance's AMI.
+                    # An amd64 AMI cannot boot ARM64 types (c6g, m6g, t4g, etc.)
+                    # and vice-versa.  Filter ml_instance_types to the source arch
+                    # so we never attempt a cross-arch launch that silently fails
+                    # and falls through to a larger/wrong instance type.
+                    _ARM64_FAMILIES = {'t4g', 'c6g', 'c7g', 'm6g', 'm7g', 'r6g', 'r7g',
+                                       'c6gn', 'c6gd', 'm6gd', 'r6gd', 'a1', 'hpc7g'}
+                    _source_family = source_instance_type.split('.')[0] if source_instance_type else ''
+                    _source_is_arm = _source_family in _ARM64_FAMILIES
+                    _pre_filter_count = len(ml_instance_types)
+                    if _source_is_arm:
+                        # Source is ARM64 — keep only ARM64 types
+                        ml_instance_types = [
+                            t for t in ml_instance_types
+                            if t.split('.')[0] in _ARM64_FAMILIES
+                        ]
+                    else:
+                        # Source is amd64 — exclude all ARM64 types
+                        ml_instance_types = [
+                            t for t in ml_instance_types
+                            if t.split('.')[0] not in _ARM64_FAMILIES
+                        ]
+                    if not ml_instance_types:
+                        # Architecture filter removed all candidates — use source type
+                        ml_instance_types = [source_instance_type or 't3.medium']
+                    if len(ml_instance_types) != _pre_filter_count:
+                        logger.info(
+                            f"[auto_rebalancer] Filtered ml_instance_types by arch "
+                            f"({'arm64' if _source_is_arm else 'amd64'}): "
+                            f"{_pre_filter_count} → {len(ml_instance_types)} types: "
+                            f"{ml_instance_types[:5]}"
+                        )
 
                     # ── PHASE 1: Provision spot node ────────────────────────────────
                     # CORDON, DRAIN, TERMINATE will be created by the action resolution
@@ -786,6 +1099,84 @@ def execute_rebalancing_action(db: Session, action: RebalancingAction):
                         )
                     else:
                         # Non-Karpenter path: directly launch EC2 spot instance
+
+                        # ── PRE-LAUNCH ORPHAN DETECTION ────────────────────────────
+                        # If a previous rebalancing action for the SAME source instance
+                        # failed and its orphan spot wasn't cleaned up (e.g. rollback
+                        # ran before discovery synced the DB), terminate it now before
+                        # launching a new one.  Prevents unbounded node growth.
+                        try:
+                            _prev_failed = db.query(RebalancingAction).filter(
+                                RebalancingAction.cluster_id == action.cluster_id,
+                                RebalancingAction.status == 'failed',
+                                RebalancingAction.id != action.id,
+                                RebalancingAction.started_at >= datetime.utcnow() - timedelta(hours=24),
+                            ).all()
+                            for _pf in _prev_failed:
+                                _pf_meta = _pf.action_metadata or {}
+                                if _pf_meta.get('instance_id') != instance_id_for_action:
+                                    continue  # different source instance
+                                _pf_orphan = _pf_meta.get('replacement_spot_instance_id')
+                                _pf_rolled = _pf_meta.get('rollback_terminated_spot')
+                                if _pf_orphan and _pf_orphan.startswith('i-') and _pf_orphan != _pf_rolled:
+                                    # Orphan exists and wasn't terminated by rollback
+                                    # Verify it's still running via AWS before terminating
+                                    try:
+                                        from backend.utils.aws.asg import get_assumed_credentials as _gac_orphan
+                                        import boto3 as _b3_orphan
+                                        _oc = _gac_orphan(cluster, db)
+                                        _oec2 = _b3_orphan.Session(
+                                            aws_access_key_id=_oc.get('AccessKeyId'),
+                                            aws_secret_access_key=_oc.get('SecretAccessKey'),
+                                            aws_session_token=_oc.get('SessionToken'),
+                                        ).client('ec2', region_name=cluster.region or 'ap-south-1')
+                                        _or = _oec2.describe_instances(InstanceIds=[_pf_orphan])
+                                        _o_state = 'terminated'
+                                        for _orr in _or.get('Reservations', []):
+                                            for _oi in _orr.get('Instances', []):
+                                                _o_state = _oi.get('State', {}).get('Name', 'terminated')
+                                        if _o_state in ('running', 'pending'):
+                                            _oec2.terminate_instances(InstanceIds=[_pf_orphan])
+                                            logger.info(
+                                                f"[auto_rebalancer] Pre-launch orphan cleanup: "
+                                                f"terminated {_pf_orphan} (from failed action {_pf.id}) "
+                                                f"before launching new spot for {instance_id_for_action}"
+                                            )
+                                            # Record cleanup in old action metadata
+                                            _pf_meta['rollback_terminated_spot'] = _pf_orphan
+                                            _pf.action_metadata = _pf_meta
+                                            db.flush()
+                                    except Exception as _oe:
+                                        # Cannot confirm orphan state — fail the action.
+                                        # Launching a new spot without cleaning up a potential orphan
+                                        # risks growing the cluster beyond its original size.
+                                        logger.error(
+                                            f"[auto_rebalancer] Pre-launch orphan cleanup FAILED "
+                                            f"for {_pf_orphan}: {_oe} — aborting action to prevent "
+                                            f"duplicate instances. Manual cleanup required."
+                                        )
+                                        action.status = 'failed'
+                                        action.error_message = (
+                                            f"Pre-launch orphan cleanup failed for {_pf_orphan}: {_oe}. "
+                                            f"Manual intervention required before retrying."
+                                        )
+                                        db.commit()
+                                        return
+                        except Exception as _pf_err:
+                            # Cannot check for orphan instances — fail the action.
+                            # Proceeding without this check risks duplicate instances in the cluster.
+                            logger.error(
+                                f"[auto_rebalancer] Pre-launch orphan detection FAILED: {_pf_err} "
+                                f"— aborting action to prevent unbounded cluster growth."
+                            )
+                            action.status = 'failed'
+                            action.error_message = (
+                                f"Pre-launch orphan detection failed: {_pf_err}. "
+                                f"Cannot safely launch spot instance without confirming no orphans exist."
+                            )
+                            db.commit()
+                            return
+
                         # Track launch attempt for pool reliability metrics
                         try:
                             from backend.services.pool_ranking_service import report_launch_attempt as _rla
@@ -794,7 +1185,7 @@ def execute_rebalancing_action(db: Session, action: RebalancingAction):
                         except Exception:
                             pass
 
-                        _new_ec2_id, _actual_itype, _actual_az = _launch_spot_instance_direct(
+                        _new_ec2_id, _actual_itype, _actual_az, _launch_err, _launch_skipped = _launch_spot_instance_direct(
                             db, cluster,
                             source_instance_id=instance_id_for_action,
                             target_instance_types=ml_instance_types,
@@ -810,32 +1201,93 @@ def execute_rebalancing_action(db: Session, action: RebalancingAction):
                             except Exception:
                                 pass
 
-                            # No capacity available for any type — fail cleanly
-                            logger.error(
-                                f"[auto_rebalancer] Action {action.id}: direct spot launch failed "
-                                f"for cluster {cluster.name} — no capacity in any instance type"
-                            )
                             action.status = 'failed'
-                            action.error_message = (
-                                "Direct spot EC2 launch failed: no spot capacity available "
-                                f"for types {ml_instance_types[:3]}. Try again later."
+                            action.error_message = _launch_err or (
+                                f"Direct spot EC2 launch failed for types {ml_instance_types[:3]}"
                             )
                             db.commit()
                             return
 
                         # Update target_pool to the ACTUAL launched type (not just ML top pick)
+                        _original_target_pool = action.target_pool  # preserve planned pool before overwrite
                         if _actual_itype and _actual_az:
                             action.target_pool = f"{_actual_itype}:{_actual_az}"
+
+                        # Pre-register the new spot instance in DB immediately so that
+                        # metrics.py (which doesn't see K8s lifecycle labels for direct-launched
+                        # nodes) cannot create it as ON_DEMAND. The RC3 guard then protects
+                        # it for the first 90 s until aws_sync confirms.
+                        try:
+                            _safe_new_id = _new_ec2_id[:20]
+                            _exists_new = db.query(Instance).filter(
+                                Instance.cluster_id == cluster.id,
+                                Instance.instance_id == _safe_new_id,
+                            ).first()
+                            if not _exists_new:
+                                _pre_inst = Instance(
+                                    cluster_id=cluster.id,
+                                    instance_id=_safe_new_id,
+                                    instance_type=_actual_itype or "unknown",
+                                    lifecycle=InstanceLifecycle.SPOT,
+                                    az=_actual_az or f"{cluster.region or 'ap-south-1'}a",
+                                    price=0.0,
+                                    state='pending',
+                                    status='PENDING',
+                                    architecture='amd64',
+                                )
+                                db.add(_pre_inst)
+                                db.flush()
+                                logger.info(
+                                    f"[auto_rebalancer] Pre-registered {_safe_new_id} "
+                                    f"({_actual_itype}) as SPOT in DB — prevents false OD classification"
+                                )
+                        except Exception as _pre_reg_err:
+                            logger.warning(f"[auto_rebalancer] Pre-register spot instance failed: {_pre_reg_err}")
 
                         # Create a pre-COMPLETED PATCH_NODEPOOL action so the resolution
                         # loop treats Phase 1 as done and waits for the spot node to join.
                         _phase1_payload["direct_ec2_launch"] = True
                         _phase1_payload["new_ec2_instance_id"] = _new_ec2_id
                         _phase1_payload["actual_instance_type"] = _actual_itype
-                        # Fix 1: also store in RebalancingAction metadata so rollback
-                        # helpers can find the orphan spot without a timestamp heuristic.
+                        # Store in RebalancingAction metadata: replacement ID, original
+                        # planned pool, and reason if pool changed due to capacity issues.
                         _meta_update_p1 = dict(action.action_metadata or {})
                         _meta_update_p1['replacement_spot_instance_id'] = _new_ec2_id
+                        _original_itype_p1 = (_original_target_pool or '').split(':')[0]
+                        if _actual_itype and _actual_itype != _original_itype_p1:
+                            _meta_update_p1['original_target_pool'] = _original_target_pool
+                            _skipped_summary = '; '.join(
+                                f"{t}: {e}" for t, e in (_launch_skipped or {}).items()
+                            )
+                            _meta_update_p1['pool_change_reason'] = (
+                                f"{_original_itype_p1} → {_actual_itype} "
+                                f"(capacity unavailable"
+                                + (f": {_skipped_summary}" if _skipped_summary else "")
+                                + ")"
+                            )
+                            # Blacklist each InsufficientInstanceCapacity pool for 6h so
+                            # the ML engine avoids re-selecting it this session.
+                            if _launch_skipped:
+                                try:
+                                    from backend.services.blacklist_service import BlacklistService as _BLS
+                                    if _redis:
+                                        _bls = _BLS(_redis)
+                                        _region_bl = cluster.region or "ap-south-1"
+                                        for _bl_type, _bl_err_str in _launch_skipped.items():
+                                            if "InsufficientInstanceCapacity" in _bl_err_str:
+                                                _bls.blacklist_pool(
+                                                    instance_type=_bl_type,
+                                                    az=target_az or "",
+                                                    region=_region_bl,
+                                                    reason="InsufficientInstanceCapacity during launch cascade",
+                                                    ttl_override_hours=6,
+                                                )
+                                                logger.info(
+                                                    f"[auto_rebalancer] Blacklisted {_bl_type}:{target_az} "
+                                                    f"for 6h (InsufficientInstanceCapacity, action {action.id})"
+                                                )
+                                except Exception as _bl_ex:
+                                    logger.warning(f"[auto_rebalancer] Capacity blacklist update failed: {_bl_ex}")
                         action.action_metadata = _meta_update_p1
                         from backend.models.agent_action import AgentActionStatus as _AAS_P1
                         nodepool_action = AgentAction(
@@ -885,7 +1337,6 @@ def execute_rebalancing_action(db: Session, action: RebalancingAction):
                 ).first()
                 _target_node_name = _target_node_inst.node_name if _target_node_inst else None
                 if _target_node_name:
-                    from datetime import timedelta
                     _recent_cutoff = datetime.utcnow() - timedelta(minutes=10)
                     action.pods_migrated = db.query(PodMetric.pod_name).filter(
                         PodMetric.node_name == _target_node_name,
@@ -948,6 +1399,14 @@ def execute_rebalancing_action(db: Session, action: RebalancingAction):
             action.duration_seconds = int((action.completed_at - action.started_at).total_seconds()) if action.started_at else 0
             action.error_message = str(e)
             db.commit()
+        finally:
+            # Always release the rebalance lock when execution completes (success, failure, or exception)
+            if _lock_key_release and _redis_release:
+                try:
+                    _redis_release.delete(_lock_key_release)
+                except Exception:
+                    pass
+
 
 def trigger_graceful_rebalancing(
     cluster_id: str,
@@ -1050,6 +1509,39 @@ def _seed_instances_from_redis(db: Session, cluster) -> list:
         return best
 
     _redis = _grc()
+
+    # Guard: if the cluster already has any running instances in the DB (even ip- placeholders),
+    # don't create NEW synthetic instances. Discovery will eventually link ip- records to i- IDs.
+    # Seeding is only for clusters with ZERO instance records.
+    # Also: if ANY spot instances exist in the cluster (running OR terminated recently),
+    # never seed with ON_DEMAND defaults — this would cause false OD detection and
+    # trigger unnecessary spot launches, growing the cluster.
+    try:
+        _existing_count = db.query(Instance).filter(
+            Instance.cluster_id == cluster.id,
+            Instance.state == 'running',
+        ).count()
+        if _existing_count > 0:
+            return []
+    except Exception:
+        pass
+
+    # Secondary guard: if cluster has ANY spot instances (even recently terminated),
+    # don't seed. A cluster with known spot history should not get fake OD seeds.
+    try:
+        _spot_exists = db.query(Instance).filter(
+            Instance.cluster_id == cluster.id,
+            Instance.lifecycle == InstanceLifecycle.SPOT,
+        ).first()
+        if _spot_exists:
+            logger.debug(
+                f"[seed_redis] Cluster {cluster.id} has spot instance history — "
+                f"skipping ON_DEMAND seed to prevent false rebalancing"
+            )
+            return []
+    except Exception:
+        pass
+
     _pattern = f"metrics:node:{cluster.id}:*"
     try:
         # Issue 13 fix: use scan_iter instead of keys() — avoids O(N) blocking scan
@@ -1080,11 +1572,13 @@ def _seed_instances_from_redis(db: Session, cluster) -> list:
             if not _short_id:
                 continue
 
-            # Skip if already exists
+            # Skip if already exists in DB.
+            # Do NOT re-add existing ip- placeholder records to the seeded list —
+            # they may be stale (spot nodes whose EC2 'i-' ID was later discovered),
+            # and targeting them for rebalancing causes launch failures because
+            # 'ip-xxx' is not a valid EC2 instance ID.
             existing = db.query(Instance).filter(Instance.instance_id == _short_id).first()
             if existing:
-                if existing.lifecycle == InstanceLifecycle.ON_DEMAND:
-                    seeded.append(existing)
                 continue
 
             cpu_mc = _data.get('cpu_capacity_millicores', 2000)
@@ -1219,7 +1713,20 @@ def _do_rollback_terminate_orphan_spot(wa, wa_meta, db):
                 .first()
             )
 
+        # Resolve the EC2 instance ID to terminate (DB record OR direct from metadata)
+        _terminate_id = None
         if _orphan_inst and _orphan_inst.instance_id:
+            _terminate_id = _orphan_inst.instance_id
+        elif _orphan_id and _orphan_id.startswith('i-'):
+            # DB record doesn't exist yet (discovery hasn't synced), but we know
+            # the exact instance_id from Phase 1 metadata → terminate directly.
+            _terminate_id = _orphan_id
+            logger.info(
+                f"[rollback] Orphan {_orphan_id} not in DB yet (discovery lag) "
+                f"— terminating directly via EC2 API (action {wa.id})"
+            )
+
+        if _terminate_id:
             from backend.utils.aws.asg import get_assumed_credentials as _gac_spot
             import boto3 as _b3spot
             _spot_creds = _gac_spot(_rb_cluster, db)
@@ -1228,12 +1735,12 @@ def _do_rollback_terminate_orphan_spot(wa, wa_meta, db):
                 aws_secret_access_key=_spot_creds.get('SecretAccessKey'),
                 aws_session_token=_spot_creds.get('SessionToken'),
             ).client("ec2", region_name=_rb_cluster.region or "ap-south-1")
-            _spot_ec2.terminate_instances(InstanceIds=[_orphan_inst.instance_id])
+            _spot_ec2.terminate_instances(InstanceIds=[_terminate_id])
             logger.info(
-                f"[rollback] Terminated orphan spot {_orphan_inst.instance_id} "
+                f"[rollback] Terminated orphan spot {_terminate_id} "
                 f"(action {wa.id})"
             )
-            wa_meta['rollback_terminated_spot'] = _orphan_inst.instance_id
+            wa_meta['rollback_terminated_spot'] = _terminate_id
             wa.action_metadata = wa_meta
             db.commit()
         else:
@@ -1255,10 +1762,54 @@ def execute_rebalancing():
     try:
         from backend.core.redis_client import get_redis_client as _get_redis_outer
         _redis = _get_redis_outer()
+        if _redis:
+            # Try to acquire execution lock to prevent overlapping Celery runs (Race Condition fix)
+            if not _redis.set("lock:workers.auto_rebalancer", "1", nx=True, ex=300):
+                logger.info("Auto-rebalancer already running, skipping this scheduled run.")
+                db.close()
+                return
     except Exception:
         _redis = None
 
     try:
+        # ── STALE ACTION EXPIRY ───────────────────────────────────────────────
+        # Actions stuck in in_progress or waiting_agent for >45 min are orphaned:
+        # spot node never joined K8s, agent restarted, EC2 launch failed silently,
+        # or drain timed out.  Expire them so they don't block new migrations
+        # forever and so the history card shows an honest 'failed' entry instead
+        # of a ghost 'In Progress' badge.
+        _stale_cutoff = datetime.utcnow() - timedelta(minutes=45)
+        _stale_actions = db.query(RebalancingAction).filter(
+            RebalancingAction.status.in_(['in_progress', 'waiting_agent']),
+            RebalancingAction.started_at < _stale_cutoff,
+        ).all()
+        for _stale in _stale_actions:
+            _stuck_min = int((datetime.utcnow() - _stale.started_at).total_seconds() / 60) if _stale.started_at else 0
+            _stale.status = 'failed'
+            _stale.error_message = (
+                f"Action timed out after {_stuck_min} min in state '{_stale.status}'. "
+                f"Possible causes: spot node never joined (InsufficientInstanceCapacity), "
+                f"K8s agent disconnected, EC2 launch failed silently, or drain blocked by PDB. "
+                f"Rebalancer will retry on next eligible cycle."
+            )
+            _stale.completed_at = datetime.utcnow()
+            if _stale.started_at:
+                _stale.duration_seconds = int(
+                    (datetime.utcnow() - _stale.started_at).total_seconds()
+                )
+            logger.warning(
+                f"[auto_rebalancer] Expired stale action {_stale.id} "
+                f"({_stale.source_pool} → {_stale.target_pool}) — "
+                f"stuck {_stuck_min} min in status that was '{_stale.status}' "
+                f"(started {_stale.started_at})"
+            )
+        if _stale_actions:
+            db.commit()
+            logger.warning(
+                f"[auto_rebalancer] Expired {len(_stale_actions)} stale RebalancingAction(s) "
+                f"that exceeded the 45-min timeout."
+            )
+
         # Step 0: Resolve waiting_agent actions whose AgentActions have all finished.
         # An action stays 'waiting_agent' until PATCH_NODEPOOL → CORDON → DRAIN → TERMINATE
         # all complete on the agent. This prevents UI showing "completed" prematurely.
@@ -1339,6 +1890,12 @@ def execute_rebalancing():
                 # without waiting for the spot replacement to join.
                 if _failed == 0:
                     _wa_cluster_obj = db.query(Cluster).filter(Cluster.id == _wa.cluster_id).first()
+                    # Load opt_settings once for this action's cluster (used for join timeout)
+                    try:
+                        from backend.models.cluster import ClusterOptimizationSettings as _COSS
+                        _wa_opt = db.query(_COSS).filter(_COSS.cluster_id == _wa.cluster_id).first()
+                    except Exception:
+                        _wa_opt = None
                     # Fix 1: Use payload-based Karpenter detection — live karpenter_mode can
                     # change between Phase 1 execution and Phase 2 resolution (race condition).
                     # If karpenter_mode flips to null between execution and resolution, the old
@@ -1377,11 +1934,30 @@ def execute_rebalancing():
                         # NEW spot instance joined — but also require it has been running for
                         # at least 90 seconds so EC2 status checks pass and the node can register
                         # with K8s before we drain the OD node underneath it.
-                        _newest_spot = db.query(Instance).filter(
-                            Instance.cluster_id == _wa.cluster_id,
-                            Instance.lifecycle == InstanceLifecycle.SPOT,
-                            Instance.state == 'running',
-                        ).order_by(Instance.created_at.desc()).first()
+                        # Prefer the specific replacement instance recorded at Phase 1
+                        # launch — prevents grabbing a concurrent action's spot node.
+                        _replacement_id_pinned = _wa_meta.get('replacement_spot_instance_id')
+                        if _replacement_id_pinned:
+                            _newest_spot = db.query(Instance).filter(
+                                Instance.cluster_id == _wa.cluster_id,
+                                Instance.lifecycle == InstanceLifecycle.SPOT,
+                                Instance.state == 'running',
+                                Instance.instance_id == _replacement_id_pinned[:20],
+                            ).first()
+                            if not _newest_spot:
+                                # Not yet running (still pending) — don't fall through to newest-by-date
+                                # as that could grab a different action's replacement node
+                                logger.debug(
+                                    f"[auto_rebalancer] Action {_wa.id}: pinned replacement "
+                                    f"{_replacement_id_pinned[:12]} not yet running — waiting"
+                                )
+                                continue
+                        else:
+                            _newest_spot = db.query(Instance).filter(
+                                Instance.cluster_id == _wa.cluster_id,
+                                Instance.lifecycle == InstanceLifecycle.SPOT,
+                                Instance.state == 'running',
+                            ).order_by(Instance.created_at.desc()).first()
                         _SPOT_STABILIZE_S = 90
                         _spot_age_s = (
                             (datetime.utcnow() - _newest_spot.created_at).total_seconds()
@@ -1427,7 +2003,8 @@ def execute_rebalancing():
                         (datetime.utcnow() - _patch_completed_at).total_seconds()
                         if _patch_completed_at else 9999
                     )
-                    _SPOT_WAIT_TIMEOUT_S = 30 * 60  # 30 minutes
+                    _join_timeout_cfg = getattr(_wa_opt, 'spot_join_timeout_minutes', None) if _wa_opt else None
+                    _SPOT_WAIT_TIMEOUT_S = (_join_timeout_cfg * 60) if (_join_timeout_cfg and _join_timeout_cfg > 0) else (30 * 60)
 
                     # ── Phase 2 creation: NEW spot joined OR timeout ───────────
                     if not _phase2_exists:
@@ -1472,9 +2049,9 @@ def execute_rebalancing():
                                             "annotations": {
                                                 "karpenter.sh/do-not-disrupt": "true"
                                             },
+                                            "rebalancing_action_id": str(_wa.id),
+                                            "purpose": "protect_replacement_node",
                                         },
-                                        action_metadata={"rebalancing_action_id": str(_wa.id),
-                                                         "purpose": "protect_replacement_node"},
                                     )
                                     db.add(_kp_annotate)
                                     db.flush()
@@ -1487,10 +2064,49 @@ def execute_rebalancing():
                                         f"[auto_rebalancer] Failed to queue do-not-disrupt annotation: {_ann_err}"
                                     )
                         elif _spot_wait_elapsed >= _SPOT_WAIT_TIMEOUT_S and _wa_karpenter_active:
-                            # Karpenter timeout: Karpenter was supposed to provision but didn't.
-                            # Safety check: only proceed if other nodes exist to absorb workloads.
-                            # Draining without any running replacement onto a single-node cluster
-                            # causes guaranteed downtime — fail cleanly instead.
+                            # Timeout: spot replacement did not join K8s in time.
+                            # For direct EC2 launch (non-Karpenter S2S): the replacement EC2
+                            # is running in AWS but kubelet never started (likely missing user-data /
+                            # IAM issue). Terminate the orphan EC2 and FAIL the action — do NOT
+                            # drain the source node without a working replacement.
+                            if _direct_launch:
+                                _orphan_id = _wa_meta.get('replacement_spot_instance_id')
+                                if _orphan_id:
+                                    try:
+                                        _do_rollback_terminate_orphan_spot(
+                                            _wa, _wa_meta, db
+                                        )
+                                        logger.warning(
+                                            f"[auto_rebalancer] Action {_wa.id}: direct-launch "
+                                            f"orphan {_orphan_id} terminated (kubelet never joined K8s)"
+                                        )
+                                    except Exception as _orp_err:
+                                        logger.warning(
+                                            f"[auto_rebalancer] Action {_wa.id}: orphan termination "
+                                            f"failed: {_orp_err} — manual cleanup of {_orphan_id} required"
+                                        )
+                                logger.error(
+                                    f"[auto_rebalancer] Action {_wa.id}: direct spot node "
+                                    f"did not join cluster after {int(_spot_wait_elapsed)}s — "
+                                    f"failing action. Likely cause: missing user-data (grant "
+                                    f"ec2:DescribeInstanceAttribute + ec2:DescribeLaunchTemplateVersions)"
+                                )
+                                _wa.status = 'failed'
+                                _wa.error_message = (
+                                    f"Spot node did not join cluster after {int(_spot_wait_elapsed)}s. "
+                                    f"Likely cause: EKS bootstrap script not copied to new node. "
+                                    f"Grant ec2:DescribeInstanceAttribute and ec2:DescribeLaunchTemplateVersions "
+                                    f"to the cross-account IAM role and retry."
+                                )
+                                _wa.completed_at = datetime.utcnow()
+                                _wa.duration_seconds = int(
+                                    (_wa.completed_at - _wa.started_at).total_seconds()
+                                ) if _wa.started_at else 0
+                                db.commit()
+                                continue
+
+                            # Karpenter (non-direct) timeout: check if other nodes exist
+                            # to absorb workloads before proceeding.
                             _other_running = db.query(Instance).filter(
                                 Instance.cluster_id == _wa.cluster_id,
                                 Instance.state == 'running',
@@ -1583,9 +2199,10 @@ def execute_rebalancing():
                                     "node_name": None,
                                     "rebalancing_action_id": _wa.id,
                                     "zero_downtime_step": 4,
-                                    "decrement_asg": True,
-                                    # Pass ASG context so agent can reduce MinSize if
-                                    # needed before decrementing DesiredCapacity.
+                                    # TASK-1.1: termination_mode replaces decrement_asg boolean.
+                                    # "replacement" = detach-not-decrement; ASG DesiredCapacity stays
+                                    # unchanged so AWS auto-launches a new spot in the same group.
+                                    "termination_mode": "replacement",
                                     "asg_name": _wa_meta.get("asg_name_used"),
                                     "asg_min_at_start": _wa_meta.get("asg_min_at_start"),
                                     "asg_desired_at_start": _wa_meta.get("asg_desired_at_start"),
@@ -1633,7 +2250,7 @@ def execute_rebalancing():
                         _post_drain_elapsed = (
                             datetime.utcnow() - datetime.fromisoformat(_post_drain_ts)
                         ).total_seconds()
-                        _READINESS_GRACE_S = 90   # 90 seconds minimum after kubectl delete node
+                        _READINESS_GRACE_S = 20   # 20 seconds minimum after kubectl delete node (90s spot-stabilisation wait already happened before Phase 2)
                         _READINESS_MAX_S   = 300  # 5-minute maximum wait
 
                         if _post_drain_elapsed < _READINESS_GRACE_S:
@@ -1833,72 +2450,176 @@ def execute_rebalancing():
                         _terminated = False
                         _term_region = _wa_region
 
-                        # Try 1: ASG terminate with ShouldDecrementDesiredCapacity=True.
-                        # When ASG desired == min (e.g. last node), AWS rejects the decrement.
-                        # Fix: lower min_size to 0 first so the decrement can proceed.
-                        # This prevents the ASG from auto-relaunching an OD replacement after
-                        # we resume its Launch process (cluster growth bug).
+                        # Single-path terminate — no fallbacks.
+                        # Using a fallback (ASG fail → direct EC2) is what caused cluster growth:
+                        # direct EC2 removes the instance but leaves ASG desired=1, so ASG
+                        # auto-relaunches an OD replacement when processes are resumed.
+                        # Rule: if the node is in an ASG, use ASG terminate ONLY.
+                        #       if the node is NOT in an ASG (Karpenter-managed), use direct EC2 ONLY.
+                        # On ANY failure — log the error, mark ec2_terminate_failed, do NOT retry.
                         try:
-                            _asg_wa = _b3wa.client("autoscaling",
-                                                   region_name=_term_region, **_wa_creds)
                             _stored_asg_for_term = _wa_meta.get('asg_name_used')
-                            _asg_desired_start = int(_wa_meta.get('asg_desired_at_start', 2))
-                            _asg_min_start = int(_wa_meta.get('asg_min_at_start', 1))
-                            if _stored_asg_for_term and _asg_desired_start <= _asg_min_start:
-                                # Desired would hit min after decrement — lower min temporarily
-                                try:
-                                    _asg_wa.update_auto_scaling_group(
-                                        AutoScalingGroupName=_stored_asg_for_term,
-                                        MinSize=0,
-                                    )
-                                    logger.info(
-                                        f"[auto_rebalancer] Lowered ASG '{_stored_asg_for_term}' "
-                                        f"min_size to 0 before last-node terminate (action {_wa.id})"
-                                    )
-                                except Exception as _min_err:
-                                    logger.warning(
-                                        f"[auto_rebalancer] Could not lower ASG min_size: {_min_err}"
-                                    )
-                            _asg_wa.terminate_instance_in_auto_scaling_group(
-                                InstanceId=_wa_instance_id,
-                                ShouldDecrementDesiredCapacity=True
-                            )
-                            _terminated = True
-                            logger.info(
-                                f"[auto_rebalancer] Backend terminated EC2 {_wa_instance_id} "
-                                f"via ASG (action {_wa.id} post-drain)"
-                            )
-                        except Exception as _asg_err:
-                            logger.warning(
-                                f"[auto_rebalancer] ASG terminate failed for {_wa_instance_id}: "
-                                f"{_asg_err} — trying direct EC2 terminate"
-                            )
 
-                        # Try 2: Direct EC2 terminate
-                        if not _terminated:
-                            try:
+                            if _stored_asg_for_term:
+                                # ── ASG-managed node: suspend Launch → detach → terminate
+                                # → decrement DesiredCapacity → resume Launch.
+                                # CRITICAL: We decrement DesiredCapacity BEFORE resuming Launch
+                                # so the ASG doesn't auto-launch a new OD replacement.
+                                # The spot replacement is already running at this point.
+                                _asg_wa = _b3wa.client("autoscaling",
+                                                       region_name=_term_region, **_wa_creds)
+                                _ec2_wa_term = _b3wa.client("ec2",
+                                                            region_name=_term_region, **_wa_creds)
+                                _asg_suspend_lock = f"asg:suspend_lock:{_stored_asg_for_term}"
+                                with _redis.lock(_asg_suspend_lock, timeout=60, blocking_timeout=65):
+                                    # Step 1: Suspend Launch to prevent auto-scaling during operation
+                                    _asg_wa.suspend_processes(
+                                        AutoScalingGroupName=_stored_asg_for_term,
+                                        ScalingProcesses=['Launch'],
+                                    )
+                                    try:
+                                        # Step 2: Get current desired/min FIRST so we can
+                                        # decrement even if later steps fail.
+                                        _asg_info = _asg_wa.describe_auto_scaling_groups(
+                                            AutoScalingGroupNames=[_stored_asg_for_term]
+                                        )
+                                        _asg_groups = _asg_info.get('AutoScalingGroups', [])
+                                        _cur_desired = _asg_groups[0]['DesiredCapacity'] if _asg_groups else 1
+                                        _cur_min = _asg_groups[0]['MinSize'] if _asg_groups else 0
+
+                                        # Step 3: Detach without decrement — non-fatal.
+                                        # EKS Managed Node Groups auto-terminate the EC2 when
+                                        # 'kubectl delete node' runs, which removes the instance
+                                        # from the ASG before we reach here. In that case
+                                        # detach_instances throws a ValidationError. We catch it
+                                        # and continue — terminate + decrement still run.
+                                        try:
+                                            _asg_wa.detach_instances(
+                                                InstanceIds=[_wa_instance_id],
+                                                AutoScalingGroupName=_stored_asg_for_term,
+                                                ShouldDecrementDesiredCapacity=False,
+                                            )
+                                        except Exception as _detach_err:
+                                            logger.warning(
+                                                f"[auto_rebalancer] detach_instances failed for "
+                                                f"{_wa_instance_id} (likely already removed by EKS MNG "
+                                                f"after kubectl delete node): {_detach_err} — "
+                                                f"continuing with EC2 terminate + capacity decrement"
+                                            )
+
+                                        # Step 4: Terminate the EC2 instance — idempotent if
+                                        # EKS MNG already terminated it (returns success).
+                                        try:
+                                            _ec2_wa_term.terminate_instances(InstanceIds=[_wa_instance_id])
+                                        except Exception as _term_ec2_err:
+                                            logger.warning(
+                                                f"[auto_rebalancer] terminate_instances failed for "
+                                                f"{_wa_instance_id}: {_term_ec2_err} — "
+                                                f"continuing with capacity decrement"
+                                            )
+
+                                        # Step 5: ALWAYS decrement DesiredCapacity regardless of
+                                        # whether Steps 3–4 succeeded.  This is the critical fix:
+                                        # if we skip the decrement, ASG desired stays at N while
+                                        # only N-1 instances are running → ASG auto-launches an
+                                        # OD replacement when Launch is resumed → cluster grows.
+                                        #
+                                        # Cluster size math: we launched 1 spot BEFORE cordon,
+                                        # so total = N. After OD terminates + desired--, ASG
+                                        # desired = N-1, spot nodes = 1 more → size stays N. ✓
+                                        #
+                                        # When desired reaches 0 (all OD converted):
+                                        #   • Cluster Autoscaler can still raise desired from 0
+                                        #     when pending pods exist (traffic spike) → ASG
+                                        #     launches new OD → rebalancer converts to spot
+                                        #     within the next 15s cycle automatically.
+                                        #   • If CA is not installed: user scales manually or
+                                        #     directly increases desired — rebalancer handles it.
+                                        _new_desired = max(0, _cur_desired - 1)
+                                        _new_min = min(_cur_min, _new_desired)
+                                        _asg_wa.update_auto_scaling_group(
+                                            AutoScalingGroupName=_stored_asg_for_term,
+                                            MinSize=_new_min,
+                                            DesiredCapacity=_new_desired,
+                                        )
+                                        if _new_desired == 0:
+                                            logger.info(
+                                                f"[auto_rebalancer] ASG '{_stored_asg_for_term}' "
+                                                f"fully converted to spot: desired=0. "
+                                                f"Cluster runs on spot-only. Any new OD added "
+                                                f"(CA/manual scale-up) will be auto-converted."
+                                            )
+                                        else:
+                                            logger.info(
+                                                f"[auto_rebalancer] ASG '{_stored_asg_for_term}' capacity "
+                                                f"decremented: desired {_cur_desired}→{_new_desired}, "
+                                                f"min {_cur_min}→{_new_min}"
+                                            )
+                                    finally:
+                                        # Step 6: Always re-enable Launch
+                                        _asg_wa.resume_processes(
+                                            AutoScalingGroupName=_stored_asg_for_term,
+                                            ScalingProcesses=['Launch'],
+                                        )
+                                _terminated = True
+                                logger.info(
+                                    f"[auto_rebalancer] Backend terminated EC2 {_wa_instance_id} "
+                                    f"via ASG detach+EC2 terminate (DesiredCapacity decremented, "
+                                    f"cluster size maintained, action {_wa.id} post-drain)"
+                                )
+                            else:
+                                # ── Non-ASG node (Karpenter-managed): direct EC2 ONLY ─────
                                 _ec2_wa = _b3wa.client("ec2",
                                                        region_name=_term_region, **_wa_creds)
                                 _ec2_wa.terminate_instances(InstanceIds=[_wa_instance_id])
                                 _terminated = True
                                 logger.info(
                                     f"[auto_rebalancer] Backend terminated EC2 {_wa_instance_id} "
-                                    f"via direct EC2 API (action {_wa.id} post-drain)"
-                                )
-                            except Exception as _ec2_err:
-                                logger.warning(
-                                    f"[auto_rebalancer] Direct EC2 terminate also failed for "
-                                    f"{_wa_instance_id}: {_ec2_err}"
+                                    f"via direct EC2 API (non-ASG node, action {_wa.id} post-drain)"
                                 )
 
-                        if _terminated:
                             _wa_meta['step_5_old_node_terminated'] = datetime.utcnow().isoformat()
-                        else:
+                            # ── Immediately mark source instance as terminated in DB ──
+                            # Without this, the rebalancer sees it as ON_DEMAND on the
+                            # next 15s cycle and launches ANOTHER replacement → cluster growth.
+                            try:
+                                _src_db_inst = db.query(Instance).filter(
+                                    Instance.instance_id == _wa_instance_id
+                                ).first()
+                                if _src_db_inst:
+                                    _src_db_inst.state = 'terminated'
+                                    db.flush()
+                                    logger.info(
+                                        f"[auto_rebalancer] Marked {_wa_instance_id} as "
+                                        f"terminated in DB (prevents cluster growth)"
+                                    )
+                            except Exception as _term_db_err:
+                                logger.warning(
+                                    f"[auto_rebalancer] Failed to mark source instance "
+                                    f"terminated in DB: {_term_db_err}"
+                                )
+                            # Also clear the per-instance rebalancing cooldown key so discovery
+                            # can re-register this instance if it somehow reappears (unlikely).
+                            try:
+                                _redis.delete(f"spot:rebalanced:instance:{_wa_instance_id}")
+                            except Exception:
+                                pass
+
+                        except Exception as _term_err:
                             _wa_meta['ec2_terminate_failed'] = True
                             logger.error(
-                                f"[auto_rebalancer] CRITICAL: Both EC2 terminate methods failed for "
-                                f"{_wa_instance_id} — instance still running on AWS!"
+                                f"[auto_rebalancer] EC2 terminate FAILED for {_wa_instance_id}: "
+                                f"{_term_err} — no fallback applied, cluster state unchanged. "
+                                f"Manual intervention required."
                             )
+                            # Set a 90-min Redis cooldown so the rebalancer doesn't
+                            # immediately retry the same source instance (cluster growth guard).
+                            try:
+                                _redis.set(
+                                    f"spot:term_failed:{_wa_instance_id}", "1", ex=5400
+                                )
+                            except Exception:
+                                pass
                     except Exception as _term_err:
                         _terminated = False
                         _wa_meta['ec2_terminate_failed'] = True
@@ -2058,7 +2779,12 @@ def execute_rebalancing():
                         from backend.core.redis_client import get_redis_client as _grc_de
                         _de_svc = DecisionEngineService(db, _grc_de())
                         _target_type = _wa_meta.get("target_instance_type", "")
-                        _target_az = _wa_meta.get("target_az", "")
+                        # Fallback: parse from target_pool string for old actions that
+                        # pre-date the 'target_az' metadata key being stored at creation.
+                        _target_az = _wa_meta.get("target_az") or (
+                            _wa.target_pool.split(':')[1]
+                            if _wa.target_pool and ':' in _wa.target_pool else ""
+                        )
                         if _target_type and _target_az:
                             _de_svc.report_launch_failure(
                                 cluster_id=_wa.cluster_id,
@@ -2099,6 +2825,30 @@ def execute_rebalancing():
         auto_rebalance_clusters = db.query(Cluster).filter(Cluster.id.in_(cluster_ids)).all()
 
         for cluster in auto_rebalance_clusters:
+            # Load optimization settings once per cluster (used for cooldown + other logic)
+            _opt_settings = db.query(ClusterOptimizationSettings).filter(
+                ClusterOptimizationSettings.cluster_id == cluster.id
+            ).first()
+
+            logger.debug(f"[auto_rebalancer] >>> Processing cluster {cluster.name} (id={cluster.id})")
+
+            # ── PER-CLUSTER INTERVAL GATE ────────────────────────────────────
+            # Each cluster can configure its own check frequency (default 15s).
+            # The Celery beat fires every 15s; this gate prevents re-processing
+            # clusters more frequently than their configured interval.
+            _check_interval = max(15, int(getattr(_opt_settings, 'check_interval_seconds', 15) or 15))
+            _last_check_key = f"spot:last_check:{cluster.id}"
+            try:
+                if _redis and _check_interval > 15 and _redis.exists(_last_check_key):
+                    continue  # interval key still alive → not time yet
+            except Exception:
+                pass
+            try:
+                if _redis and _check_interval > 15:
+                    _redis.setex(_last_check_key, _check_interval, "1")
+            except Exception:
+                pass
+
             # ── STEP 0: Sync real AWS instance state before any decisions ────
             # This ensures DB reflects actual AWS lifecycle, not assumed state.
             try:
@@ -2137,7 +2887,8 @@ def execute_rebalancing():
                             from backend.models.instance import Instance as _Inst
                             _od_inst = db.query(_Inst).filter(
                                 _Inst.cluster_id == cluster.id,
-                                _Inst.lifecycle == InstanceLifecycle.ON_DEMAND
+                                _Inst.lifecycle == InstanceLifecycle.ON_DEMAND,
+                                _Inst.instance_id.like('i-%')
                             ).first()
                             _src_type_np = _od_inst.instance_type if _od_inst else "t3.medium"
                             _specs_np = _INSTANCE_VCPU_MEM.get(_src_type_np, (2, 8))
@@ -2179,6 +2930,64 @@ def execute_rebalancing():
                 # NOTE: Do NOT continue here. Fall through to the cordon/drain/terminate
                 # logic below so managed-node-group on-demand nodes are actually replaced.
 
+            logger.info(f"[auto_rebalancer] CHECKPOINT-A cluster={cluster.name}")
+            # ── GHOST INSTANCE CLEANUP ──────────────────────────────────────
+            # Remove placeholder records (instance_id NOT like 'i-%') that were
+            # created before the metrics.py guard was added. These ghost instances
+            # pollute OD queries (blocking S2S) and show "unknown" in the UI.
+            try:
+                _ghost_updated = db.query(Instance).filter(
+                    Instance.cluster_id == cluster.id,
+                    Instance.state == 'running',
+                    ~Instance.instance_id.like('i-%'),
+                    ~Instance.instance_id.like('ip-%'),
+                ).update({'state': 'terminated'}, synchronize_session=False)
+                if _ghost_updated:
+                    db.flush()
+                    logger.info(
+                        f"[auto_rebalancer] Cleaned up {_ghost_updated} ghost placeholder "
+                        f"instance(s) for cluster {cluster.name}"
+                    )
+            except Exception as _ghost_err:
+                logger.warning(f"[auto_rebalancer] Ghost cleanup failed for {cluster.name}: {_ghost_err}")
+            # ── STALE ip- PLACEHOLDER CLEANUP ──────────────────────────────
+            # ip- records (K8s hostname-style IDs) are stale when no running i-
+            # instance has a matching node_name. Without this cleanup, stale OD
+            # placeholders (e.g. ip-192-168-70-251) inflate _od_count and block S2S.
+            try:
+                _ip_placeholders = db.query(Instance).filter(
+                    Instance.cluster_id == cluster.id,
+                    Instance.state == 'running',
+                    Instance.instance_id.like('ip-%'),
+                ).all()
+                if _ip_placeholders:
+                    _real_node_names = set(
+                        r[0] for r in db.query(Instance.node_name).filter(
+                            Instance.cluster_id == cluster.id,
+                            Instance.state == 'running',
+                            Instance.instance_id.like('i-%'),
+                            Instance.node_name.isnot(None),
+                        ).all()
+                    )
+                    _stale_ip_count = 0
+                    for _ip_rec in _ip_placeholders:
+                        _ip_prefix = _ip_rec.instance_id  # e.g. 'ip-192-168-70-251'
+                        _matched = any(
+                            nm and (nm == _ip_prefix or nm.startswith(_ip_prefix + '.'))
+                            for nm in _real_node_names
+                        )
+                        if not _matched:
+                            _ip_rec.state = 'terminated'
+                            _stale_ip_count += 1
+                    if _stale_ip_count:
+                        db.flush()
+                        logger.info(
+                            f"[auto_rebalancer] Cleaned up {_stale_ip_count} stale ip- "
+                            f"placeholder(s) for cluster {cluster.name} "
+                            f"(no matching running i- node_name)"
+                        )
+            except Exception as _ip_err:
+                logger.warning(f"[auto_rebalancer] Stale ip- cleanup failed for {cluster.name}: {_ip_err}")
             # ── SAFETY GATE: OptimizerCoordinator phase (RC-5) ──────────────
             # Don't create new rebalancing actions while right-sizing is mid-execution
             try:
@@ -2208,9 +3017,37 @@ def execute_rebalancing():
             ).count()
 
             if recent_rebalances >= max_rebalances:
-                logger.info(f"Skipping auto-rebalance for cluster {cluster.name}: hit daily limit of {max_rebalances}")
-                continue
+                # Daily limit is designed to prevent excessive SPOT→SPOT churn.
+                # OD→SPOT conversions are always allowed — that's the core purpose
+                # of the platform and should never be blocked by the churn limiter.
+                # Use raw SQL to ensure fresh read (bypasses ORM identity cache).
+                try:
+                    _od_row = db.execute(
+                        "SELECT COUNT(*) FROM instances "
+                        "WHERE cluster_id = :cid AND state = 'running' "
+                        "AND instance_id LIKE 'i-%' "
+                        "AND lifecycle NOT IN ('spot', 'SPOT')",
+                        {"cid": cluster.id}
+                    ).scalar()
+                    _pre_od_count = int(_od_row or 0)
+                except Exception:
+                    _pre_od_count = 0
+                if _pre_od_count == 0:
+                    # No OD nodes — only S2S work remains. S2S has its own per-node
+                    # daily limit check (line ~3044) so do NOT continue here.
+                    # Log the state for observability but fall through to S2S section.
+                    logger.info(
+                        f"[auto_rebalancer] Cluster {cluster.name}: daily limit reached "
+                        f"({recent_rebalances}/{max_rebalances}) — no OD nodes, S2S will "
+                        f"apply its own limit check"
+                    )
+                logger.info(
+                    f"[auto_rebalancer] Daily limit reached ({recent_rebalances}/{max_rebalances}) "
+                    f"but cluster {cluster.name} has {_pre_od_count} OD node(s) — "
+                    f"bypassing limit for OD→spot conversion"
+                )
 
+            logger.info(f"[auto_rebalancer] CHECKPOINT-B cluster={cluster.name} recent={recent_rebalances}/{max_rebalances}")
             # ── ONE-AT-A-TIME GUARDRAIL ──────────────────────────────────────
             # Check if an AgentAction (cordon/drain/patch) is still in flight
             # for this cluster. If so, skip until it completes.
@@ -2274,13 +3111,29 @@ def execute_rebalancing():
             _total_nodes = db.query(Instance).filter(
                 Instance.cluster_id == cluster.id,
                 Instance.state == 'running',
+                Instance.instance_id.like('i-%'),  # exclude ghost placeholders
             ).count()
             _od_count = db.query(Instance).filter(
                 Instance.cluster_id == cluster.id,
                 Instance.lifecycle == InstanceLifecycle.ON_DEMAND,
                 Instance.state == 'running',
+                Instance.instance_id.like('i-%'),  # exclude ghost placeholders
             ).count()
-            if _total_nodes <= 1:
+            if _total_nodes == 0:
+                # Completely empty cluster — nothing to rebalance
+                logger.info(f"[auto_rebalancer] Cluster {cluster.name}: no running instances — skipping")
+                continue
+
+            if _total_nodes == 1 and _od_count == 0:
+                # Single SPOT node — cluster is already optimized.
+                # Fall through to the S2S section which has its own safety checks
+                # (S2S will not drain the last node without a confirmed replacement).
+                logger.info(
+                    f"[auto_rebalancer] Cluster {cluster.name}: 1 spot node, 0 OD nodes "
+                    f"— skipping last-node guard, proceeding to S2S diversification"
+                )
+
+            elif _total_nodes <= 1:
                 if _karpenter_active:
                     # Karpenter is present — update NodePool via direct backend call
                     # (no in-cluster agent required) to signal spot provisioning.
@@ -2294,6 +3147,7 @@ def execute_rebalancing():
                             _any_od = db.query(Instance).filter(
                                 Instance.cluster_id == cluster.id,
                                 Instance.lifecycle == InstanceLifecycle.ON_DEMAND,
+                                Instance.instance_id.like('i-%')
                             ).first()
                             _src_type = _any_od.instance_type if _any_od else "t3.medium"
                             _specs = _INSTANCE_VCPU_MEM.get(_src_type, (2, 8))
@@ -2337,6 +3191,7 @@ def execute_rebalancing():
                                 Instance.cluster_id == cluster.id,
                                 Instance.lifecycle == InstanceLifecycle.ON_DEMAND,
                                 Instance.state == 'running',
+                                Instance.instance_id.like('i-%')
                             ).first()
                             if _any_od:
                                 _specs_ln = _INSTANCE_VCPU_MEM.get(_any_od.instance_type, (2, 8))
@@ -2345,7 +3200,7 @@ def execute_rebalancing():
                                     region=cluster.region or "ap-south-1", limit=6
                                 )
                                 _types_ln = [p.pool.instance_type for p in (_ranked_ln or [])] or [_any_od.instance_type]
-                                _new_spot_id, _ln_actual_type, _ln_actual_az = _launch_spot_instance_direct(
+                                _new_spot_id, _ln_actual_type, _ln_actual_az, _ln_launch_err, _ln_skipped = _launch_spot_instance_direct(
                                     db, cluster,
                                     source_instance_id=_any_od.instance_id,
                                     target_instance_types=_types_ln,
@@ -2404,97 +3259,159 @@ def execute_rebalancing():
                         AgentActionType as _AAT_REC,
                         AgentActionStatus as _AAS_REC,
                     )
-                    _direct_launches = db.query(_AA_REC).filter(
-                        _AA_REC.cluster_id == cluster.id,
-                        _AA_REC.action_type == _AAT_REC.PATCH_KARPENTER_NODEPOOL,
-                        _AA_REC.payload.contains({"direct_ec2_launch": True}),
-                        _AA_REC.created_at >= datetime.utcnow() - timedelta(days=7),
-                    ).all()
-
-                    for _dl in _direct_launches:
-                        _dl_payload = _dl.payload or {}
-                        _launched_spot_id = _dl_payload.get("new_ec2_instance_id")
-                        if not _launched_spot_id:
-                            continue
-
-                        # Only act if discovery has seen this instance (else it's still launching)
-                        _spot_inst = db.query(Instance).filter(
-                            Instance.cluster_id == cluster.id,
-                            Instance.instance_id == _launched_spot_id,
-                        ).first()
-                        if not _spot_inst:
-                            continue  # Not yet in DB — still launching, check next cycle
-                        if _spot_inst.state == 'running':
-                            continue  # Still healthy, nothing to do
-
-                        # Instance is terminated — was it us (intentional TERMINATE_NODE)?
-                        _our_termination = db.query(_AA_REC).filter(
+                    # ── Cluster-level recovery cap: max 1 recovery per cluster per cycle ──
+                    _cluster_recovery_key = f"spot:recovery:cluster:{cluster.id}"
+                    if _redis and _redis.exists(_cluster_recovery_key):
+                        logger.debug(
+                            f"[auto_rebalancer] Spot recovery: cluster {cluster.name} "
+                            f"already has a recovery in progress this cycle — skipping"
+                        )
+                    else:
+                        # Lookback: only check the last 24h (not 7 days) to avoid
+                        # re-triggering recovery for long-stale historical launches.
+                        _direct_launches = db.query(_AA_REC).filter(
                             _AA_REC.cluster_id == cluster.id,
-                            _AA_REC.action_type == _AAT_REC.TERMINATE_NODE,
-                            _AA_REC.payload.contains({"instance_id": _launched_spot_id}),
-                            _AA_REC.status == _AAS_REC.COMPLETED,
-                        ).first()
-                        if _our_termination:
-                            continue  # We intentionally replaced it — no recovery needed
+                            _AA_REC.action_type == _AAT_REC.PATCH_KARPENTER_NODEPOOL,
+                            _AA_REC.payload.contains({"direct_ec2_launch": True}),
+                            _AA_REC.created_at >= datetime.utcnow() - timedelta(hours=24),
+                        ).order_by(_AA_REC.created_at.desc()).all()
 
-                        # AWS terminated it (spot interruption or hardware failure)
-                        _recovery_key = f"spot:recovery:{_launched_spot_id}"
-                        if _redis and _redis.exists(_recovery_key):
-                            continue  # Recovery already in progress, wait for cooldown
+                        for _dl in _direct_launches:
+                            _dl_payload = _dl.payload or {}
+                            _launched_spot_id = _dl_payload.get("new_ec2_instance_id")
+                            if not _launched_spot_id:
+                                continue
 
-                        # Find a running instance to clone user-data / subnet / SG from
-                        _ref_od = db.query(Instance).filter(
-                            Instance.cluster_id == cluster.id,
-                            Instance.state == 'running',
-                        ).first()
-                        if not _ref_od:
-                            logger.warning(
-                                f"[auto_rebalancer] Spot recovery: no running instance to "
-                                f"clone config from for cluster {cluster.name} — skipping"
-                            )
-                            continue
+                            # Per-instance dedup: recovery already in progress?
+                            _recovery_key = f"spot:recovery:{_launched_spot_id}"
+                            if _redis and _redis.exists(_recovery_key):
+                                continue
 
-                        logger.info(
-                            f"[auto_rebalancer] Spot recovery: {_launched_spot_id} was terminated "
-                            f"by AWS (not by us) — relaunching replacement for {cluster.name}"
-                        )
-                        from backend.services.pool_ranking_service import PoolRankingService
-                        from backend.services.substitute_manager import _INSTANCE_VCPU_MEM
-                        _rec_type = _spot_inst.instance_type or "t3.medium"
-                        _rec_specs = _INSTANCE_VCPU_MEM.get(_rec_type, (2, 8))
-                        _ranked_rec = PoolRankingService(db, _redis).rank_pools_for_size(
-                            vcpu=_rec_specs[0], memory_gb=float(_rec_specs[1]),
-                            region=cluster.region or "ap-south-1", limit=6
-                        )
-                        _types_rec = [p.pool.instance_type for p in (_ranked_rec or [])] or [_rec_type]
-                        _new_spot_id, _rec_actual_type, _rec_actual_az = _launch_spot_instance_direct(
-                            db, cluster,
-                            source_instance_id=_ref_od.instance_id,
-                            target_instance_types=_types_rec,
-                            target_az=_spot_inst.az or "",
-                            region=cluster.region or "ap-south-1",
-                        )
-                        if _new_spot_id:
-                            if _redis:
-                                _redis.setex(_recovery_key, 3600, _new_spot_id)  # 1h dedup
+                            # Only act if discovery has seen this instance (else still launching)
+                            _spot_inst = db.query(Instance).filter(
+                                Instance.cluster_id == cluster.id,
+                                Instance.instance_id == _launched_spot_id,
+                            ).first()
+                            if not _spot_inst:
+                                continue  # Not yet in DB — still launching
+                            if _spot_inst.state == 'running':
+                                continue  # Still healthy in DB
+
+                            # ── AWS VERIFY: never trust DB alone for termination decision ──
+                            # DB may be stale — confirm the instance is ACTUALLY terminated
+                            # in AWS before launching a replacement. A false positive here
+                            # causes cascade launches (the bug that spawned 5 instances).
+                            try:
+                                from backend.utils.aws.asg import get_assumed_credentials as _gac_verify
+                                import boto3 as _b3_verify
+                                _vc = _gac_verify(cluster, db)
+                                _verify_ec2 = _b3_verify.Session(
+                                    aws_access_key_id=_vc.get('AccessKeyId'),
+                                    aws_secret_access_key=_vc.get('SecretAccessKey'),
+                                    aws_session_token=_vc.get('SessionToken'),
+                                ).client("ec2", region_name=cluster.region or "ap-south-1")
+                                _verify_resp = _verify_ec2.describe_instances(
+                                    InstanceIds=[_launched_spot_id]
+                                )
+                                _verify_reservations = _verify_resp.get("Reservations", [])
+                                if _verify_reservations:
+                                    _aws_state = (
+                                        _verify_reservations[0]
+                                        .get("Instances", [{}])[0]
+                                        .get("State", {})
+                                        .get("Name", "unknown")
+                                    )
+                                    if _aws_state == "running":
+                                        # DB is stale — heal it and skip recovery
+                                        _spot_inst.state = "running"
+                                        db.flush()
+                                        logger.info(
+                                            f"[auto_rebalancer] Spot recovery: {_launched_spot_id} "
+                                            f"is RUNNING in AWS (DB was stale) — healed DB, skipping recovery"
+                                        )
+                                        continue
+                                    elif _aws_state not in ("terminated", "shutting-down"):
+                                        # Pending/stopping — give it time, don't recovery yet
+                                        logger.debug(
+                                            f"[auto_rebalancer] Spot recovery: {_launched_spot_id} "
+                                            f"AWS state={_aws_state} — waiting, skip recovery this cycle"
+                                        )
+                                        continue
+                                    # else: AWS confirms terminated → proceed with recovery
+                            except Exception as _verify_err:
+                                logger.warning(
+                                    f"[auto_rebalancer] Spot recovery: AWS verify failed for "
+                                    f"{_launched_spot_id}: {_verify_err} — skipping recovery (conservative)"
+                                )
+                                continue  # Skip if we can't confirm termination
+
+                            # Instance is terminated — was it us (intentional TERMINATE_NODE)?
+                            _our_termination = db.query(_AA_REC).filter(
+                                _AA_REC.cluster_id == cluster.id,
+                                _AA_REC.action_type == _AAT_REC.TERMINATE_NODE,
+                                _AA_REC.payload.contains({"instance_id": _launched_spot_id}),
+                                _AA_REC.status == _AAS_REC.COMPLETED,
+                            ).first()
+                            if _our_termination:
+                                continue  # Intentional replacement — no recovery needed
+
+                            # Find a running instance to clone user-data / subnet / SG from
+                            _ref_od = db.query(Instance).filter(
+                                Instance.cluster_id == cluster.id,
+                                Instance.state == 'running',
+                                Instance.instance_id.like('i-%'),
+                            ).first()
+                            if not _ref_od:
+                                logger.warning(
+                                    f"[auto_rebalancer] Spot recovery: no running reference "
+                                    f"instance for cluster {cluster.name} — skipping"
+                                )
+                                break  # Nothing to clone from; try again next cycle
+
                             logger.info(
-                                f"[auto_rebalancer] Spot recovery: launched {_new_spot_id} "
-                                f"({_rec_actual_type} in {_rec_actual_az}) "
-                                f"to replace interrupted spot {_launched_spot_id} "
-                                f"in cluster {cluster.name}"
+                                f"[auto_rebalancer] Spot recovery: {_launched_spot_id} confirmed "
+                                f"terminated by AWS — relaunching replacement for {cluster.name}"
                             )
-                        else:
-                            if _redis:
-                                _redis.setex(_recovery_key, 300, "failed")  # retry in 5 min
-                            logger.warning(
-                                f"[auto_rebalancer] Spot recovery: relaunch failed for "
-                                f"{_launched_spot_id} — will retry in 5 min"
+                            from backend.services.pool_ranking_service import PoolRankingService
+                            from backend.services.substitute_manager import _INSTANCE_VCPU_MEM
+                            _rec_type = _spot_inst.instance_type or "t3.medium"
+                            _rec_specs = _INSTANCE_VCPU_MEM.get(_rec_type, (2, 8))
+                            _ranked_rec = PoolRankingService(db, _redis).rank_pools_for_size(
+                                vcpu=_rec_specs[0], memory_gb=float(_rec_specs[1]),
+                                region=cluster.region or "ap-south-1", limit=6
                             )
+                            _types_rec = [p.pool.instance_type for p in (_ranked_rec or [])] or [_rec_type]
+                            _new_spot_id, _rec_actual_type, _rec_actual_az, _rec_launch_err, _rec_skipped = _launch_spot_instance_direct(
+                                db, cluster,
+                                source_instance_id=_ref_od.instance_id,
+                                target_instance_types=_types_rec,
+                                target_az=_spot_inst.az or "",
+                                region=cluster.region or "ap-south-1",
+                            )
+                            if _new_spot_id:
+                                if _redis:
+                                    _redis.setex(_recovery_key, 3600, _new_spot_id)       # 1h per-instance
+                                    _redis.setex(_cluster_recovery_key, 120, _new_spot_id)  # 2 min cluster cap
+                                logger.info(
+                                    f"[auto_rebalancer] Spot recovery: launched {_new_spot_id} "
+                                    f"({_rec_actual_type} in {_rec_actual_az}) "
+                                    f"to replace interrupted spot {_launched_spot_id} "
+                                    f"in cluster {cluster.name}"
+                                )
+                            else:
+                                if _redis:
+                                    _redis.setex(_recovery_key, 300, "failed")  # retry in 5 min
+                                logger.warning(
+                                    f"[auto_rebalancer] Spot recovery: relaunch failed for "
+                                    f"{_launched_spot_id} — will retry in 5 min"
+                                )
+                            break  # Only 1 recovery per cluster per cycle
                 except Exception as _rec_err:
                     logger.warning(
                         f"[auto_rebalancer] Spot recovery check failed for {cluster.name}: {_rec_err}"
                     )
 
+            logger.info(f"[auto_rebalancer] CHECKPOINT-C cluster={cluster.name}")
             # ── KARPENTER PROVISIONING COOLDOWN ──────────────────────────────
             # After draining a node, wait 20 min AND check if Karpenter provisioned
             # a spot node. Only proceed if either a spot node exists OR 20 min elapsed.
@@ -2507,15 +3424,58 @@ def execute_rebalancing():
             ).order_by(RebalancingAction.completed_at.desc()).first()
             if last_completed_action and last_completed_action.completed_at:
                 elapsed = (datetime.utcnow() - last_completed_action.completed_at).total_seconds()
-                _COOLDOWN = 600  # 10-minute strict cooldown between rebalancing actions
+                # Cooldown: user-configured (cooldown_override_minutes), default 60 min
+                _cooldown_cfg = getattr(_opt_settings, 'cooldown_override_minutes', None) if _opt_settings else None
+                _COOLDOWN = (_cooldown_cfg * 60) if (_cooldown_cfg and _cooldown_cfg > 0) else 3600
                 if elapsed < _COOLDOWN:
-                    # Strict cooldown: always wait, no exceptions. Spot provisioning now
-                    # happens in Phase 1 (before drain), so no need for 20-min Karpenter wait.
-                    logger.info(
-                        f"[auto_rebalancer] Cluster {cluster.name}: strict {_COOLDOWN}s cooldown "
-                        f"({int(_COOLDOWN - elapsed)}s remaining)"
-                    )
-                    continue
+                    # Cooldown prevents excessive S2S churn. OD→SPOT conversions always
+                    # bypass it — converting OD to spot is the platform's primary purpose.
+                    try:
+                        _cd_od = db.execute(
+                            "SELECT COUNT(*) FROM instances WHERE cluster_id = :cid "
+                            "AND state = 'running' AND lifecycle NOT IN ('spot', 'SPOT')",
+                            {"cid": cluster.id}
+                        ).scalar()
+                        _cd_od = int(_cd_od or 0)
+                    except Exception:
+                        _cd_od = 0
+                    if _cd_od == 0:
+                        # No OD nodes — check for diversification violations that also bypass
+                        _cd_diversify_bypass = False
+                        try:
+                            _cd_opt_div = db.query(ClusterOptimizationSettings).filter_by(
+                                cluster_id=cluster.id
+                            ).first()
+                            if getattr(_cd_opt_div, 'diversify_pools', False):
+                                _cd_running = db.query(Instance).filter(
+                                    Instance.cluster_id == cluster.id,
+                                    Instance.state == 'running',
+                                ).all()
+                                _cd_pool_dist: dict = {}
+                                for _cdr in _cd_running:
+                                    if _cdr.instance_type and _cdr.az:
+                                        _k = (_cdr.instance_type, _cdr.az)
+                                        _cd_pool_dist[_k] = _cd_pool_dist.get(_k, 0) + 1
+                                _cd_diversify_bypass = any(v > 1 for v in _cd_pool_dist.values())
+                        except Exception:
+                            pass
+                        if not _cd_diversify_bypass:
+                            logger.info(
+                                f"[auto_rebalancer] Cluster {cluster.name}: strict {_COOLDOWN}s cooldown "
+                                f"({int(_COOLDOWN - elapsed)}s remaining)"
+                            )
+                            continue
+                        logger.info(
+                            f"[auto_rebalancer] Cluster {cluster.name}: cooldown active "
+                            f"({int(_COOLDOWN - elapsed)}s remaining) but diversify violation detected "
+                            f"— bypassing cooldown for S2S diversification fix"
+                        )
+                    else:
+                        logger.info(
+                            f"[auto_rebalancer] Cluster {cluster.name}: cooldown active "
+                            f"({int(_COOLDOWN - elapsed)}s remaining) but {_cd_od} OD node(s) "
+                            f"— bypassing cooldown for OD→SPOT conversion"
+                        )
 
             # Re-queue only the OLDEST deferred action (1 at a time per cluster)
             oldest_deferred = db.query(RebalancingAction).filter(
@@ -2523,12 +3483,30 @@ def execute_rebalancing():
                 RebalancingAction.status == 'deferred'
             ).order_by(RebalancingAction.started_at).first()
             if oldest_deferred:
-                oldest_deferred.status = 'in_progress'
-                oldest_deferred.started_at = datetime.utcnow()
-                logger.info(f"Re-queuing deferred action {oldest_deferred.id} for cluster {cluster.name}")
-                # Don't create new actions this cycle — retry the deferred one first
-                continue
+                # OD nodes take priority over deferred S2S actions — check first.
+                try:
+                    _def_od = db.execute(
+                        "SELECT COUNT(*) FROM instances WHERE cluster_id = :cid "
+                        "AND state = 'running' AND lifecycle NOT IN ('spot', 'SPOT')",
+                        {"cid": cluster.id}
+                    ).scalar()
+                    _def_od = int(_def_od or 0)
+                except Exception:
+                    _def_od = 0
+                if _def_od > 0:
+                    logger.info(
+                        f"[auto_rebalancer] Skipping deferred action {oldest_deferred.id} re-queue: "
+                        f"{_def_od} OD node(s) take priority for cluster {cluster.name}"
+                    )
+                    # Fall through to OD instance processing below
+                else:
+                    oldest_deferred.status = 'in_progress'
+                    oldest_deferred.started_at = datetime.utcnow()
+                    logger.info(f"Re-queuing deferred action {oldest_deferred.id} for cluster {cluster.name}")
+                    # Don't create new actions this cycle — retry the deferred one first
+                    continue
 
+            logger.info(f"[auto_rebalancer] CHECKPOINT-D cluster={cluster.name}")
             # Find on-demand instances that should be migrated to spot
             # IMPORTANT: state='running' filter prevents terminated OD instances
             # (instances already replaced in a previous cycle whose DB record hasn't
@@ -2538,6 +3516,7 @@ def execute_rebalancing():
                 Instance.cluster_id == cluster.id,
                 Instance.lifecycle == InstanceLifecycle.ON_DEMAND,
                 Instance.state == 'running',   # Only target running OD nodes
+                Instance.instance_id.like('i-%'),  # exclude ghost placeholder instances
             ).all()
 
             # ── REDIS FALLBACK: seed instances from agent telemetry if DB is empty ──
@@ -2553,11 +3532,20 @@ def execute_rebalancing():
                     )
                     on_demand_instances = _seeded
                 else:
-                    logger.info(
-                        f"[auto_rebalancer] No instances in DB or Redis for cluster {cluster.name} "
-                        f"— skipping rebalancing this cycle"
-                    )
-                    continue
+                    # No OD instances found — but SPOT instances may still need S2S
+                    # diversification or risk-based migration. Only truly skip if there
+                    # are no running instances at all (empty cluster).
+                    _any_running = db.query(Instance).filter(
+                        Instance.cluster_id == cluster.id,
+                        Instance.state == 'running',
+                    ).count()
+                    if _any_running == 0:
+                        logger.info(
+                            f"[auto_rebalancer] No running instances for cluster {cluster.name} "
+                            f"— skipping rebalancing this cycle"
+                        )
+                        continue
+                    # else: fall through — S2S checks will run on spot instances below
 
             # ── PER-INSTANCE COOLDOWN: skip instances already rebalanced recently ──
             # After a successful rebalancing, a 24h Redis key is set for the instance.
@@ -2580,6 +3568,7 @@ def execute_rebalancing():
             except Exception as _cd_err:
                 logger.warning(f"[auto_rebalancer] Instance cooldown check failed: {_cd_err}")
 
+            logger.info(f"[auto_rebalancer] CHECKPOINT-E cluster={cluster.name} od={len(on_demand_instances)}")
             if not on_demand_instances:
                 # ── SPOT-TO-SPOT REBALANCING ────────────────────────────────────────
                 # All ON_DEMAND nodes are migrated or in cooldown.
@@ -2606,14 +3595,39 @@ def execute_rebalancing():
                     ClusterOptimizationSettings.cluster_id == cluster.id
                 ).first()
                 _diversify_s2s = getattr(_opt_s2s, 'diversify_pools', False)
+                logger.info(f"[auto_rebalancer] CHECKPOINT-F S2S diversify_s2s={_diversify_s2s} cluster={cluster.name}")
+                _diversify_fam_cap_pct = getattr(_opt_s2s, 'max_family_diversification_cap_pct', 40) or 40
+                _diversify_fam_cap_ratio = _diversify_fam_cap_pct / 100.0
+                import math as _math_s2s
 
-                # Family distribution across ALL currently running nodes
+                # Load risk strategy (risk ceiling + tradeoff %) for S2S decisions
+                try:
+                    from backend.models.cluster import OptimizationStrategy as _OptS_s2s
+                    _opt_strat_s2s = db.query(_OptS_s2s).filter_by(cluster_id=cluster.id).first()
+                    _risk_ceil_s2s = (getattr(_opt_strat_s2s, 'risk_ceiling_percent', 25) or 25) / 100.0
+                    _tradeoff_pct_s2s = (getattr(_opt_strat_s2s, 'risk_savings_tradeoff_pct', 20) or 20) / 100.0
+                except Exception:
+                    _risk_ceil_s2s = 0.25
+                    _tradeoff_pct_s2s = 0.20
+                # Apply regional market factor to S2S risk ceiling (clamped 0.8–1.2)
+                try:
+                    _mf_raw_s2s = _redis.get(f"market_factor:{cluster.region or 'ap-south-1'}")
+                    _risk_ceil_s2s *= float(_mf_raw_s2s) if _mf_raw_s2s else 1.0
+                except Exception:
+                    pass
+
+                # Pool distribution across ALL currently running nodes
                 _all_running_s2s = db.query(Instance).filter(
                     Instance.cluster_id == cluster.id,
                     Instance.state == 'running',
                 ).all()
-                _fam_counts_s2s: dict = {}
+                # pool_counts_s2s: (instance_type, az) → count for pool-level uniqueness
+                _pool_counts_s2s: dict = {}
+                _fam_counts_s2s: dict = {}  # kept for legacy risk-check pass
                 for _sri in _all_running_s2s:
+                    if _sri.instance_type and _sri.az:
+                        _spk = (_sri.instance_type, _sri.az)
+                        _pool_counts_s2s[_spk] = _pool_counts_s2s.get(_spk, 0) + 1
                     if _sri.instance_type:
                         _f = _sri.instance_type.split('.')[0]
                         _fam_counts_s2s[_f] = _fam_counts_s2s.get(_f, 0) + 1
@@ -2631,34 +3645,112 @@ def execute_rebalancing():
                     except Exception:
                         pass
 
-                    # Daily limit and active-action guard
-                    if recent_rebalances >= max_rebalances:
-                        break
+                    # Active-action guard: only 1 migration at a time per cluster
                     _active_s2s = db.query(RebalancingAction).filter(
                         RebalancingAction.cluster_id == cluster.id,
                         RebalancingAction.status.in_(['pending', 'in_progress', 'waiting_agent'])
                     ).first()
                     if _active_s2s:
                         break
+                    # Daily limit guard: diversify violations always bypass (correctness,
+                    # not churn); risk-based S2S is subject to the per-cluster limit.
+                    _s2s_is_diversify = False
+                    if _diversify_s2s and _sp_inst.instance_type and _sp_inst.az:
+                        _sp_pool_key_s2s_pre = (_sp_inst.instance_type, _sp_inst.az)
+                        _s2s_is_diversify = _pool_counts_s2s.get(_sp_pool_key_s2s_pre, 0) > 1
+                    if recent_rebalances >= max_rebalances and not _s2s_is_diversify:
+                        break  # over limit + no diversify violation → skip
 
                     _s2s_trigger_reason = None
+                    _cur_risk_s2s = None  # may remain None if Check 2 is skipped (diversify trigger)
 
-                    # ── Check 1: Diversify violation ──────────────────────────────
-                    if _diversify_s2s and _sp_inst.instance_type:
-                        _sp_fam = _sp_inst.instance_type.split('.')[0]
-                        _sp_share = _fam_counts_s2s.get(_sp_fam, 0) / _total_running_s2s
-                        if _sp_share > 0.40:
+                    # ── Check 0: Opportunistic better-pool trigger ────────────────
+                    # If a pool exists that is BOTH cheaper (higher savings) AND safer
+                    # (lower risk) than the current pool, always migrate — no other
+                    # condition required. Minimum deltas prevent micro-fluctuation churn.
+                    _S2S_OPP_RISK_DELTA  = 0.05   # pool must be ≥5pp lower risk
+                    _S2S_OPP_SAV_DELTA   = 0.01   # pool must be ≥1pp higher savings
+                    if not _s2s_trigger_reason and _sp_inst.instance_type:
+                        try:
+                            from backend.services.substitute_manager import _INSTANCE_VCPU_MEM as _IVM_opp
+                            from backend.services.pool_ranking_service import PoolRankingService as _PRS_opp
+                            _opp_specs = _IVM_opp.get(_sp_inst.instance_type, (2, 8))
+                            _opp_ranked = _PRS_opp(db, _redis).rank_pools_for_size(
+                                vcpu=_opp_specs[0], memory_gb=float(_opp_specs[1]),
+                                region=cluster.region or 'ap-south-1', limit=10
+                            )
+                            if _opp_ranked:
+                                _opp_cur = next(
+                                    (_rp for _rp in _opp_ranked
+                                     if _rp.pool.instance_type == _sp_inst.instance_type and
+                                     (_rp.pool.az or "") == (_sp_inst.az or "")),
+                                    None
+                                )
+                                if _opp_cur:
+                                    _opp_cur_risk = _opp_cur.risk_probability
+                                    _opp_cur_sav  = _opp_cur.predicted_savings
+                                    _opp_better = next(
+                                        (_rp for _rp in _opp_ranked
+                                         if (_rp.pool.instance_type, _rp.pool.az or "") !=
+                                            (_sp_inst.instance_type, _sp_inst.az or "")
+                                         and _rp.risk_probability <= _opp_cur_risk - _S2S_OPP_RISK_DELTA
+                                         and _rp.predicted_savings >= _opp_cur_sav + _S2S_OPP_SAV_DELTA),
+                                        None
+                                    )
+                                    if _opp_better:
+                                        _cur_risk_s2s = _opp_cur_risk
+                                        _s2s_trigger_reason = (
+                                            f'opportunistic: {_opp_better.pool.instance_type}:{_opp_better.pool.az} '
+                                            f'risk {_opp_cur_risk:.2f}→{_opp_better.risk_probability:.2f} '
+                                            f'sav {_opp_cur_sav:.2f}→{_opp_better.predicted_savings:.2f}'
+                                        )
+                                        logger.info(
+                                            f"[auto_rebalancer] S2S opportunistic trigger: "
+                                            f"{_sp_inst.instance_id} ({_sp_inst.instance_type}:{_sp_inst.az}) "
+                                            f"— {_s2s_trigger_reason}"
+                                        )
+                        except Exception as _opp_err:
+                            logger.debug(f'[auto_rebalancer] S2S opportunistic check: {_opp_err}')
+
+                    # ── Check 1: Diversify violation (pool-level) ─────────────────
+                    # Pool = (instance_type, az). If >1 node shares the same pool, trigger S2S.
+                    if _diversify_s2s and _sp_inst.instance_type and _sp_inst.az:
+                        _sp_pool_key_s2s = (_sp_inst.instance_type, _sp_inst.az)
+                        _sp_pool_count = _pool_counts_s2s.get(_sp_pool_key_s2s, 0)
+                        if _sp_pool_count > 1:
                             _s2s_trigger_reason = (
-                                f'diversify_pools: {_sp_fam} family at '
-                                f'{_sp_share:.0%} (cap 40%)'
+                                f'diversify_pools: duplicate pool '
+                                f'{_sp_inst.instance_type}:{_sp_inst.az} '
+                                f'({_sp_pool_count} nodes)'
                             )
                             logger.info(
                                 f"[auto_rebalancer] S2S diversify trigger: "
-                                f"{_sp_inst.instance_id} ({_sp_inst.instance_type}) "
+                                f"{_sp_inst.instance_id} ({_sp_inst.instance_type}:{_sp_inst.az}) "
                                 f"— {_s2s_trigger_reason}"
                             )
+                            
+                        # ── Check 1.5: Diversify violation (family-level) ─────────────
+                        if not _s2s_trigger_reason and _sp_inst.instance_type:
+                            _f = _sp_inst.instance_type.split('.')[0]
+                            _f_count = _fam_counts_s2s.get(_f, 0)
+                            # Use ceiling so small clusters are handled correctly:
+                            # ceil(0.40 * 3) = 2 — a family is only "over cap" when it
+                            # holds strictly MORE than the ceiling limit.
+                            _fam_cap_nodes = max(1, _math_s2s.ceil(_diversify_fam_cap_ratio * _total_running_s2s))
+                            if _total_running_s2s > 0 and _f_count > _fam_cap_nodes:
+                                _s2s_trigger_reason = (
+                                    f'diversify_family: family {_f} exceeds cap '
+                                    f'({_f_count}/{_total_running_s2s} > {_diversify_fam_cap_pct}%)'
+                                )
+                                logger.info(
+                                    f"[auto_rebalancer] S2S diversify trigger: "
+                                    f"{_sp_inst.instance_id} ({_sp_inst.instance_type}:{_sp_inst.az}) "
+                                    f"— {_s2s_trigger_reason}"
+                                )
 
-                    # ── Check 2: Risk-based migration ─────────────────────────────
+                    # ── Check 2: Risk-threshold trigger (uses OptimizationStrategy) ──
+                    # Fires when the node's pool risk > risk_ceiling_percent.
+                    # Uses the user-configured risk ceiling (default 25%).
                     if not _s2s_trigger_reason and _sp_inst.instance_type:
                         try:
                             from backend.services.substitute_manager import _INSTANCE_VCPU_MEM as _IVM2
@@ -2670,23 +3762,19 @@ def execute_rebalancing():
                             )
                             if _sp_ranked:
                                 _cur_risk_s2s = next(
-                                    (_rp.risk_score for _rp in _sp_ranked
-                                     if _rp.pool.instance_type == _sp_inst.instance_type),
-                                    0.7  # high risk if type not in rankings
+                                    (_rp.risk_probability for _rp in _sp_ranked
+                                     if _rp.pool.instance_type == _sp_inst.instance_type and
+                                     (_rp.pool.az or "") == (_sp_inst.az or "")),
+                                    next(
+                                        (_rp.risk_probability for _rp in _sp_ranked
+                                         if _rp.pool.instance_type == _sp_inst.instance_type),
+                                        None
+                                    )
                                 )
-                                _best_alt_s2s = next(
-                                    (_rp for _rp in _sp_ranked
-                                     if _rp.pool.instance_type != _sp_inst.instance_type),
-                                    None
-                                )
-                                if (_best_alt_s2s
-                                        and _cur_risk_s2s > 0.4
-                                        and (_cur_risk_s2s - _best_alt_s2s.risk_score) >= 0.15):
+                                if _cur_risk_s2s is not None and _cur_risk_s2s > _risk_ceil_s2s:
                                     _s2s_trigger_reason = (
-                                        f'risk_improvement: {_sp_inst.instance_type} '
-                                        f'risk={_cur_risk_s2s:.2f} → '
-                                        f'{_best_alt_s2s.pool.instance_type} '
-                                        f'risk={_best_alt_s2s.risk_score:.2f}'
+                                        f'risk_threshold: {_sp_inst.instance_type}:{_sp_inst.az} '
+                                        f'risk={_cur_risk_s2s:.2f} > ceil={_risk_ceil_s2s:.2f}'
                                     )
                         except Exception as _rck_err:
                             logger.debug(f'[auto_rebalancer] S2S risk check: {_rck_err}')
@@ -2694,7 +3782,7 @@ def execute_rebalancing():
                     if not _s2s_trigger_reason:
                         continue  # this SPOT node is fine, check the next one
 
-                    # ── Find best target pool (respecting diversify cap) ──────────
+                    # ── Find best target pool (pool-level uniqueness + tradeoff) ──
                     try:
                         from backend.services.substitute_manager import _INSTANCE_VCPU_MEM as _IVM3
                         from backend.services.pool_ranking_service import PoolRankingService as _PRS3
@@ -2703,24 +3791,114 @@ def execute_rebalancing():
                             vcpu=_sp_specs3[0], memory_gb=float(_sp_specs3[1]),
                             region=cluster.region or 'ap-south-1', limit=10
                         )
+                        # Current node's savings baseline (for tradeoff calc)
+                        _sp_cur_savings = next(
+                            (_rp.predicted_savings for _rp in _sp_ranked3
+                             if _rp.pool.instance_type == _sp_inst.instance_type and
+                             (_rp.pool.az or "") == (_sp_inst.az or "")),
+                            0.5  # assume moderate savings if not found
+                        )
                         _best_s2s_pool = None
+                        # Is this a diversification-triggered S2S?
+                        _is_diversify_trigger = 'diversify' in (_s2s_trigger_reason or '')
+                        # Pass 1: better risk AND equal/higher savings
                         for _rp3 in _sp_ranked3:
-                            if _rp3.pool.instance_type == _sp_inst.instance_type:
-                                continue  # never re-migrate to same type
+                            _t3_pk = (_rp3.pool.instance_type, _rp3.pool.az or "")
+                            _t3_f = _rp3.pool.instance_type.split('.')[0]
+                            if _t3_pk == (_sp_inst.instance_type, _sp_inst.az or ""):
+                                continue  # never re-migrate to same pool
+
+                            # Ceiling-based family cap: ceil(cap% × total) → each family
+                            # may hold at most that many nodes. This prevents the raw-ratio
+                            # check from blocking all alternatives on small clusters.
+                            # e.g. 3 nodes, 40% cap → ceil(1.2)=2; adding 1 to empty family
+                            # gives count=1 ≤ 2 → PASSES (was 33% > 40% raw → would block).
+                            _fam_cap_nodes_tgt = max(1, _math_s2s.ceil(_diversify_fam_cap_ratio * _total_running_s2s))
                             if _diversify_s2s:
-                                _rp3_fam = _rp3.pool.instance_type.split('.')[0]
-                                # After this swap: new family gains one node, current loses one
-                                _sim_new_fam_cnt = _fam_counts_s2s.get(_rp3_fam, 0) + 1
-                                if _sim_new_fam_cnt / _total_running_s2s > 0.40:
-                                    continue  # would over-concentrate the new family
-                            _best_s2s_pool = _rp3
-                            break
+                                if _pool_counts_s2s.get(_t3_pk, 0) > 0:
+                                    continue  # target pool already occupied
+                                _cur_t3_f_count = _fam_counts_s2s.get(_t3_f, 0)
+                                if _cur_t3_f_count + 1 > _fam_cap_nodes_tgt:
+                                    continue  # family would exceed ceiling cap
+
+                            if (_rp3.risk_probability < (_cur_risk_s2s or 1.0) and
+                                    _rp3.predicted_savings >= _sp_cur_savings):
+                                _best_s2s_pool = _rp3
+                                break
+                        # Pass 2 (tradeoff): better risk, accept up to tradeoff% less savings.
+                        # ONLY for risk-threshold trigger — opportunistic/diversify must not
+                        # sacrifice savings (user condition: must be BOTH cheaper AND safer).
+                        if not _best_s2s_pool and 'risk_threshold' in (_s2s_trigger_reason or ''):
+                            _min_sav = _sp_cur_savings * (1 - _tradeoff_pct_s2s)
+                            for _rp3 in _sp_ranked3:
+                                _t3_pk = (_rp3.pool.instance_type, _rp3.pool.az or "")
+                                _t3_f = _rp3.pool.instance_type.split('.')[0]
+                                if _t3_pk == (_sp_inst.instance_type, _sp_inst.az or ""):
+                                    continue
+
+                                if _diversify_s2s:
+                                    if _pool_counts_s2s.get(_t3_pk, 0) > 0:
+                                        continue
+                                    _cur_t3_f_count = _fam_counts_s2s.get(_t3_f, 0)
+                                    if _cur_t3_f_count + 1 > _fam_cap_nodes_tgt:
+                                        continue
+
+                                if (_rp3.risk_probability < (_cur_risk_s2s or 1.0) and
+                                        _rp3.predicted_savings >= _min_sav):
+                                    _best_s2s_pool = _rp3
+                                    break
+                        # Pass 3 (diversify any-pool): for diversification triggers, accept
+                        # ANY unoccupied pool from a different family — correctness over optimality.
+                        if not _best_s2s_pool and _is_diversify_trigger and _diversify_s2s:
+                            for _rp3 in _sp_ranked3:
+                                _t3_pk = (_rp3.pool.instance_type, _rp3.pool.az or "")
+                                _t3_f = _rp3.pool.instance_type.split('.')[0]
+                                if _t3_pk == (_sp_inst.instance_type, _sp_inst.az or ""):
+                                    continue
+                                _cur_t3_f_count = _fam_counts_s2s.get(_t3_f, 0)
+                                # Don't migrate to a DIFFERENT node in the SAME over-represented family
+                                if _cur_t3_f_count + 1 > _fam_cap_nodes_tgt:
+                                    continue
+                                if _pool_counts_s2s.get(_t3_pk, 0) == 0:
+                                    _best_s2s_pool = _rp3
+                                    break
 
                         if not _best_s2s_pool:
-                            logger.debug(
-                                f'[auto_rebalancer] S2S: no suitable target pool for '
-                                f'{_sp_inst.instance_id} after diversify filter — skipping'
-                            )
+                            # Pass 3 (OD fallback): if risk is the trigger and no spot pool
+                            # qualifies, fall back to same-type on-demand to maintain capacity.
+                            # Diversification violations just retry next cycle (no OD needed).
+                            if 'risk_threshold' in (_s2s_trigger_reason or ''):
+                                _s2s_od_src = f"{_sp_inst.instance_type}:{_sp_inst.az or cluster.region + 'a'}"
+                                _s2s_od_action = RebalancingAction(
+                                    cluster_id=cluster.id,
+                                    trigger='auto_rebalance',
+                                    source_pool=_s2s_od_src,
+                                    target_pool=_s2s_od_src,  # same type, OD lifecycle
+                                    status='in_progress',
+                                    started_at=datetime.utcnow(),
+                                    action_metadata={
+                                        'reason': f'{_s2s_trigger_reason} (od_fallback)',
+                                        'initiated_by': 'auto_rebalancer',
+                                        'instance_id': _sp_inst.instance_id,
+                                        'spot_to_spot': False,
+                                        'is_od_fallback': True,
+                                        'target_instance_type': _sp_inst.instance_type,
+                                        'bin_packed': False,
+                                    }
+                                )
+                                db.add(_s2s_od_action)
+                                _s2s_created = True
+                                logger.info(
+                                    f'[auto_rebalancer] S2S OD fallback: no safer spot pool for '
+                                    f'{_sp_inst.instance_id} ({_sp_inst.instance_type}) — '
+                                    f'replacing with on-demand (reason={_s2s_trigger_reason})'
+                                )
+                            else:
+                                logger.info(
+                                    f'[auto_rebalancer] S2S: no qualifying target pool for '
+                                    f'{_sp_inst.instance_id} (risk={_cur_risk_s2s}, '
+                                    f'tradeoff={_tradeoff_pct_s2s:.0%}) — will retry next cycle'
+                                )
                             continue
 
                         _s2s_src = f"{_sp_inst.instance_type}:{_sp_inst.az or cluster.region + 'a'}"
@@ -2766,10 +3944,17 @@ def execute_rebalancing():
                 Instance.lifecycle == InstanceLifecycle.SPOT,
                 Instance.state == 'running',
             ).count()
+            _total_running = _running_spot_count + len(on_demand_instances)
             logger.debug(
                 f"[auto_rebalancer] Cluster {cluster.name}: "
                 f"{_running_spot_count} running spot, {len(on_demand_instances)} remaining OD"
             )
+
+            # ── DYNAMIC AUTOSCALER (delegated to auto_scaler.py) ──────────────
+            # Capacity management is handled by backend/workers/tasks/auto_scaler.py.
+            # That task runs every 30 seconds and is enabled per-cluster via the
+            # `enable_ascp_auto_scaler` toggle in ClusterOptimizationSettings.
+            # When the toggle is OFF (default) no automatic scaling occurs here.
 
             for instance in on_demand_instances:
                 # Skip placeholder instances (daemon-set auto-created with ip- hostname as ID).
@@ -2786,58 +3971,129 @@ def execute_rebalancing():
                 # on-demand. Karpenter-provisioned spot nodes briefly appear as ON_DEMAND
                 # in the DB due to a discovery race condition (AWS sometimes omits
                 # InstanceLifecycle in certain describe-instances calls).
+                #
+                # SAFE DEFAULT: if we cannot verify lifecycle from AWS for ANY reason
+                # (no credentials, API error, invalid instance ID), SKIP this instance
+                # rather than proceeding. The rebalancer will retry next cycle.
+                # This prevents false spot launches from stale DB data.
                 try:
                     from backend.utils.aws.asg import get_assumed_credentials as _get_creds_lv
                     _lv_creds = _get_creds_lv(cluster)
-                    if _lv_creds:
-                        import boto3 as _boto3_lv
-                        _ec2_lv = _boto3_lv.client(
-                            'ec2',
-                            region_name=cluster.region or 'ap-south-1',
-                            aws_access_key_id=_lv_creds.get('AccessKeyId') or _lv_creds.get('access_key'),
-                            aws_secret_access_key=_lv_creds.get('SecretAccessKey') or _lv_creds.get('secret_key'),
-                            aws_session_token=_lv_creds.get('SessionToken') or _lv_creds.get('session_token'),
+                    if not _lv_creds:
+                        # No credentials → cannot verify → skip this instance for safety
+                        logger.info(
+                            f"[auto_rebalancer] Live check skipped for {instance.instance_id}: "
+                            f"no AWS credentials available — skipping to prevent false rebalancing"
                         )
-                        _resp_lv = _ec2_lv.describe_instances(InstanceIds=[instance.instance_id])
-                        _aws_inst_lv = None
-                        for _r in _resp_lv.get('Reservations', []):
-                            for _i in _r.get('Instances', []):
-                                if _i.get('InstanceId') == instance.instance_id:
-                                    _aws_inst_lv = _i
-                                    break
-                        if _aws_inst_lv:
-                            _aws_lc = _aws_inst_lv.get('InstanceLifecycle', 'on-demand')
-                            if _aws_lc == 'spot':
-                                # AWS says SPOT — correct the DB and skip this instance
-                                instance.lifecycle = InstanceLifecycle.SPOT
-                                db.commit()
-                                _cd_key_lv = f"spot:rebalanced:instance:{instance.instance_id}"
-                                try:
-                                    get_redis_client().set(_cd_key_lv, '1', ex=86400)
-                                except Exception:
-                                    pass
-                                logger.info(
-                                    f"[auto_rebalancer] Live AWS check: {instance.instance_id} is SPOT "
-                                    f"(DB was stale ON_DEMAND). Corrected + set 24h cooldown."
-                                )
-                                continue
-                        else:
-                            # Instance not found in AWS → already terminated, skip
-                            logger.info(
-                                f"[auto_rebalancer] Live AWS check: {instance.instance_id} not found "
-                                f"in AWS — likely already terminated, skipping."
-                            )
-                            instance.state = 'terminated'
+                        continue
+                    # Only attempt live check for real EC2 instance IDs (i-xxx)
+                    if not instance.instance_id or not instance.instance_id.startswith('i-'):
+                        logger.info(
+                            f"[auto_rebalancer] Live check skipped: {instance.instance_id} is not "
+                            f"a real EC2 ID — skipping placeholder instance"
+                        )
+                        instance.state = 'terminated'
+                        db.commit()
+                        continue
+                    import boto3 as _boto3_lv
+                    _ec2_lv = _boto3_lv.client(
+                        'ec2',
+                        region_name=cluster.region or 'ap-south-1',
+                        aws_access_key_id=_lv_creds.get('AccessKeyId') or _lv_creds.get('access_key'),
+                        aws_secret_access_key=_lv_creds.get('SecretAccessKey') or _lv_creds.get('secret_key'),
+                        aws_session_token=_lv_creds.get('SessionToken') or _lv_creds.get('session_token'),
+                    )
+                    _resp_lv = _ec2_lv.describe_instances(InstanceIds=[instance.instance_id])
+                    _aws_inst_lv = None
+                    for _r in _resp_lv.get('Reservations', []):
+                        for _i in _r.get('Instances', []):
+                            if _i.get('InstanceId') == instance.instance_id:
+                                _aws_inst_lv = _i
+                                break
+                    if _aws_inst_lv:
+                        _aws_lc = _aws_inst_lv.get('InstanceLifecycle', 'on-demand')
+                        if _aws_lc == 'spot':
+                            # AWS says SPOT — correct the DB and skip this instance
+                            instance.lifecycle = InstanceLifecycle.SPOT
                             db.commit()
+                            _cd_key_lv = f"spot:rebalanced:instance:{instance.instance_id}"
+                            try:
+                                get_redis_client().set(_cd_key_lv, '1', ex=86400)
+                            except Exception:
+                                pass
+                            logger.info(
+                                f"[auto_rebalancer] Live AWS check: {instance.instance_id} is SPOT "
+                                f"(DB was stale ON_DEMAND). Corrected + set 24h cooldown."
+                            )
                             continue
+                        # AWS confirmed ON_DEMAND — safe to proceed with rebalancing
+                    else:
+                        # Instance not found in AWS → already terminated, skip
+                        logger.info(
+                            f"[auto_rebalancer] Live AWS check: {instance.instance_id} not found "
+                            f"in AWS — likely already terminated, skipping."
+                        )
+                        instance.state = 'terminated'
+                        db.commit()
+                        continue
                 except Exception as _lv_err:
-                    logger.debug(f"[auto_rebalancer] Live lifecycle check skipped: {_lv_err}")
-                    # Proceed with DB value on error (graceful degradation)
+                    # AWS verification failed — SKIP this instance (safe default).
+                    # Better to miss one rebalancing cycle than to falsely grow the cluster.
+                    logger.warning(
+                        f"[auto_rebalancer] Live lifecycle check FAILED for {instance.instance_id}: "
+                        f"{_lv_err} — skipping this instance to prevent false rebalancing"
+                    )
+                    continue
 
-                # Check daily limit
+                # Check daily limit — OD→spot conversions always bypass (see cluster-level check above)
                 if (recent_rebalances) >= max_rebalances:
-                    logger.info(f"Hit daily limit for cluster {cluster.name}")
-                    break
+                    # instance here is always OD (we're in on_demand_instances loop)
+                    # so we allow it through. Only break if this instance is somehow spot.
+                    if instance.lifecycle != InstanceLifecycle.ON_DEMAND:
+                        logger.info(f"Hit daily limit for cluster {cluster.name}")
+                        break
+
+                # ── CLUSTER GROWTH GUARD #1: termination-failed cooldown ───────
+                # If we previously tried to terminate this instance and it failed,
+                # don't immediately create another action → cluster would grow.
+                try:
+                    if _redis.get(f"spot:term_failed:{instance.instance_id}"):
+                        logger.info(
+                            f"[auto_rebalancer] Skipping {instance.instance_id}: "
+                            f"termination recently failed (cooldown active). "
+                            f"Mark instance as orphan for manual cleanup."
+                        )
+                        # Mark the stuck instance as orphan so UI can surface it
+                        instance.state = 'orphan'
+                        db.commit()
+                        continue
+                except Exception:
+                    pass
+
+                # ── CLUSTER GROWTH GUARD #2: recent completed action for this instance ──
+                # If a completed action already ran for this source instance in the last
+                # 2 hours (e.g. terminate succeeded but DB state wasn't updated yet),
+                # skip it to prevent duplicate replacements.
+                try:
+                    _recent_completed = db.query(RebalancingAction).filter(
+                        RebalancingAction.cluster_id == cluster.id,
+                        RebalancingAction.status.in_(['completed', 'failed']),
+                        RebalancingAction.completed_at >= datetime.utcnow() - timedelta(hours=2),
+                    ).filter(
+                        RebalancingAction.action_metadata.op('->>')('instance_id') == instance.instance_id
+                    ).first()
+                    if _recent_completed:
+                        logger.info(
+                            f"[auto_rebalancer] Skipping {instance.instance_id}: "
+                            f"recent {_recent_completed.status} action {_recent_completed.id} "
+                            f"exists (< 2h) — marking DB instance as terminated to stop growth"
+                        )
+                        # Source should already be gone — force DB state to terminated
+                        instance.state = 'terminated'
+                        db.commit()
+                        continue
+                except Exception as _rcq_err:
+                    logger.debug(f"[auto_rebalancer] Recent action check failed: {_rcq_err}")
 
                 # Skip if there's already an active rebalancing action for this cluster
                 # (includes waiting_agent = queued but agent hasn't finished yet,
@@ -2859,9 +4115,7 @@ def execute_rebalancing():
                 # auto_rebalance+rightsizing → BIN-PACK first (find smaller type based on
                 #                              actual CPU/memory usage), then ML-rank for
                 #                              the bin-packed size → cheapest + smallest spot
-                _opt_settings = db.query(ClusterOptimizationSettings).filter(
-                    ClusterOptimizationSettings.cluster_id == cluster.id
-                ).first()
+                # _opt_settings already loaded at top of cluster loop
                 _auto_rightsizing_on = _opt_settings.auto_rightsizing_enabled if _opt_settings else False
 
                 target_instance_type = instance.instance_type  # default: same size
@@ -2924,88 +4178,264 @@ def execute_rebalancing():
                         region=cluster.region or "ap-south-1", limit=10
                     )
 
-                    # ── DIVERSIFY POOLS: 40% family cap + 50% AZ cap ────────────
-                    # When diversify_pools=True, skip pools from over-represented
-                    # families OR AZs so the cluster doesn't pack all nodes into
-                    # one instance type or one availability zone.
+                    # ── DIVERSIFY POOLS: pool-level uniqueness + 50% AZ cap ─────────
+                    # Pool = (instance_type, az). Max 1 node per identical pool.
+                    # c5.large:ap-south-1a and c5.large:ap-south-1b are DIFFERENT pools.
+                    # AZ cap (50%) is kept to prevent all nodes concentrating in one AZ.
                     if _ranked and getattr(_opt_settings, 'diversify_pools', False):
                         from backend.models.instance import Instance as _DivInst
                         _running_insts = db.query(_DivInst).filter(
                             _DivInst.cluster_id == cluster.id,
                             _DivInst.state == 'running',
                         ).all()
-                        _total_nodes = len(_running_insts) + 1  # +1 for the incoming node
-                        _MAX_FAMILY_SHARE = 0.40  # 40% cap per instance family
-                        _MAX_AZ_SHARE = 0.50      # 50% cap per availability zone
-                        _family_counts: dict = {}
+                        # Build pool-count dict: (instance_type, az) → count
+                        _pool_counts: dict = {}
                         _az_counts: dict = {}
+                        _fam_counts: dict = {}
+                        _diversify_fam_cap_pct = getattr(_opt_settings, 'max_family_diversification_cap_pct', 40) or 40
+                        _diversify_fam_cap_ratio = _diversify_fam_cap_pct / 100.0
+                        import math as _math_div
+
                         for _ri in _running_insts:
-                            if _ri.instance_type:
-                                _fam = _ri.instance_type.split('.')[0]
-                                _family_counts[_fam] = _family_counts.get(_fam, 0) + 1
+                            if _ri.instance_type and _ri.az:
+                                _pk = (_ri.instance_type, _ri.az)
+                                _pool_counts[_pk] = _pool_counts.get(_pk, 0) + 1
                             if _ri.az:
                                 _az_counts[_ri.az] = _az_counts.get(_ri.az, 0) + 1
+                            if _ri.instance_type:
+                                _f = _ri.instance_type.split('.')[0]
+                                _fam_counts[_f] = _fam_counts.get(_f, 0) + 1
 
-                        # Also count instance types being provisioned by in-flight actions
-                        # (waiting_agent / in_progress) to prevent duplicate pool launches
-                        # while the first replacement node is still joining the cluster.
+                        # Include in-flight provisioning actions to prevent duplicate pools
+                        _inflight_actions_div = []
                         try:
-                            _inflight_actions = db.query(RebalancingAction).filter(
+                            _inflight_actions_div = db.query(RebalancingAction).filter(
                                 RebalancingAction.cluster_id == cluster.id,
                                 RebalancingAction.status.in_(['pending', 'in_progress', 'waiting_agent']),
                             ).all()
-                            for _ia in _inflight_actions:
-                                _ia_type = _ia.target_instance_type
-                                _ia_az = _ia.target_az
-                                if _ia_type:
-                                    _ia_fam = _ia_type.split('.')[0]
-                                    _family_counts[_ia_fam] = _family_counts.get(_ia_fam, 0) + 1
-                                    _total_nodes += 1
-                                if _ia_az:
-                                    _az_counts[_ia_az] = _az_counts.get(_ia_az, 0) + 1
                         except Exception as _div_ia_err:
                             logger.debug(f"[auto_rebalancer] In-flight action count failed: {_div_ia_err}")
+                        for _ia in _inflight_actions_div:
+                            # target_pool is stored as "instance_type:az" string
+                            _ia_tpool = getattr(_ia, 'target_pool', None) or ''
+                            if _ia_tpool and ':' in _ia_tpool:
+                                _ia_type, _ia_az = _ia_tpool.split(':', 1)
+                                _pk = (_ia_type, _ia_az)
+                                _pool_counts[_pk] = _pool_counts.get(_pk, 0) + 1
+                                _az_counts[_ia_az] = _az_counts.get(_ia_az, 0) + 1
+                                _fam_counts[_ia_type.split('.')[0]] = _fam_counts.get(_ia_type.split('.')[0], 0) + 1
+
+                        _total_nodes_div = len(_running_insts) + len(_inflight_actions_div) + 1
+                        _MAX_AZ_SHARE = 0.50
+
+                        # Ceiling-based family cap: max nodes per family = ceil(cap% × total).
+                        # Prevents raw-ratio math from blocking all new families on small clusters.
+                        # Example: 3 nodes, 40% cap → ceil(1.2)=2; adding 1 to empty family
+                        # gives count=1 ≤ 2 → PASSES (raw 33% < 40% also passes, consistent).
+                        _fam_cap_nodes_div = max(1, _math_div.ceil(_diversify_fam_cap_ratio * _total_nodes_div))
 
                         _diversified = []
                         for _rp in _ranked:
-                            _rt_name = _rp.pool.instance_type
-                            _rp_az   = _rp.pool.az or ""
-                            _fam = _rt_name.split('.')[0]
-                            _cur_fam_count = _family_counts.get(_fam, 0)
-                            _cur_az_count  = _az_counts.get(_rp_az, 0)
-                            _fam_ok = (_cur_fam_count + 1) / _total_nodes <= _MAX_FAMILY_SHARE
-                            _az_ok  = (_cur_az_count  + 1) / _total_nodes <= _MAX_AZ_SHARE
-                            if _fam_ok and _az_ok:
+                            _pk = (_rp.pool.instance_type, _rp.pool.az or "")
+                            _f = _rp.pool.instance_type.split('.')[0]
+                            _az_ok = (_az_counts.get(_rp.pool.az or "", 0) + 1) / _total_nodes_div <= _MAX_AZ_SHARE
+                            _fam_ok = (_fam_counts.get(_f, 0) + 1) <= _fam_cap_nodes_div
+
+                            # Pool-level & Family-level: skip if occupied or family cap exceeded
+                            if _pool_counts.get(_pk, 0) == 0 and _az_ok and _fam_ok:
                                 _diversified.append(_rp)
                                 if len(_diversified) >= 3:
                                     break
-                        # If diversification filtered everything out, relax AZ only (not family)
+                        # Fallback 1: relax AZ cap, still enforce pool uniqueness & family cap
                         if not _diversified:
                             for _rp in _ranked:
-                                _rt_name = _rp.pool.instance_type
-                                _fam = _rt_name.split('.')[0]
-                                _cur_fam_count = _family_counts.get(_fam, 0)
-                                if (_cur_fam_count + 1) / _total_nodes <= _MAX_FAMILY_SHARE:
+                                _pk = (_rp.pool.instance_type, _rp.pool.az or "")
+                                _f = _rp.pool.instance_type.split('.')[0]
+                                _fam_ok = (_fam_counts.get(_f, 0) + 1) <= _fam_cap_nodes_div
+                                if _pool_counts.get(_pk, 0) == 0 and _fam_ok:
+                                    _diversified.append(_rp)
+                                    if len(_diversified) >= 3:
+                                        break
+                        # Fallback 2: relax family cap too, only enforce pool uniqueness
+                        if not _diversified:
+                            for _rp in _ranked:
+                                _pk = (_rp.pool.instance_type, _rp.pool.az or "")
+                                if _pool_counts.get(_pk, 0) == 0:
                                     _diversified.append(_rp)
                                     if len(_diversified) >= 3:
                                         break
                         # Last resort: use top-3 as-is
                         _ranked = _diversified if _diversified else _ranked[:3]
                         logger.info(
-                            f"[auto_rebalancer] Diversify active: "
-                            f"family_counts={_family_counts} az_counts={_az_counts} "
-                            f"→ selected {len(_ranked)} pool(s) after family+AZ caps"
+                            f"[auto_rebalancer] Diversify active (pool-level): "
+                            f"pool_counts={_pool_counts} az_counts={_az_counts} "
+                            f"→ selected {len(_ranked)} pool(s) after pool-uniqueness+AZ cap"
                         )
                     else:
                         _ranked = _ranked[:3]
 
-                    if _ranked:
-                        _p = _ranked[0].pool
+                    # ── SIZE CAP: prevent upsizing during pure spot migration ────
+                    # When NOT bin-packing, do not pick a pool whose instance type
+                    # is larger than the current node (avoids paying more for
+                    # a bigger instance just because it has lower risk).
+                    # Allow up to 1.25x vCPU/memory headroom for equivalent tiers.
+                    if not bin_packed:
+                        _cur_specs_cap = _INSTANCE_VCPU_MEM.get(instance.instance_type)
+                        if _cur_specs_cap:
+                            _max_vcpu_cap = _cur_specs_cap[0] * 1.25
+                            _max_mem_cap = _cur_specs_cap[1] * 1.25
+                            _size_capped = [
+                                _r for _r in _ranked
+                                if (
+                                    _INSTANCE_VCPU_MEM.get(_r.pool.instance_type, (0, 0))[0] <= _max_vcpu_cap
+                                    and
+                                    _INSTANCE_VCPU_MEM.get(_r.pool.instance_type, (0, 0))[1] <= _max_mem_cap
+                                )
+                            ]
+                            if _size_capped:
+                                logger.debug(
+                                    f"[auto_rebalancer] Size cap: {len(_ranked)} → {len(_size_capped)} "
+                                    f"pools (max {_max_vcpu_cap:.1f}vCPU/{_max_mem_cap:.1f}GB)"
+                                )
+                                _ranked = _size_capped
+
+                    # ── DOUBLE GATE: 3-step selection hierarchy ──────────────────
+                    # OD on-demand reference price for this instance type
+                    _OD_PRICES_G = {
+                        "t3.nano":0.0052,"t3.micro":0.0104,"t3.small":0.0208,
+                        "t3.medium":0.0416,"t3.large":0.0832,"t3.xlarge":0.1664,
+                        "t3.2xlarge":0.3328,"t3a.medium":0.0376,"t3a.large":0.0752,
+                        "m5.large":0.096,"m5.xlarge":0.192,"m5.2xlarge":0.384,
+                        "m6i.large":0.096,"m6i.xlarge":0.192,"c5.large":0.085,
+                        "c5.xlarge":0.17,"c6i.large":0.085,"c6g.large":0.077,
+                        "r5.large":0.126,"r5.xlarge":0.252,"m6g.large":0.077,
+                    }
+                    _od_price_g = _OD_PRICES_G.get(instance.instance_type, 0.10)
+                    try:
+                        from backend.models.cluster import OptimizationStrategy as _OS_g
+                        _os_g = db.query(_OS_g).filter_by(cluster_id=cluster.id).first()
+                        _tradeoff_g = (getattr(_os_g, 'risk_savings_tradeoff_pct', 20) or 20) / 100.0
+                        _rceil_g = (getattr(_os_g, 'risk_ceiling_percent', 25) or 25) / 100.0
+                    except Exception:
+                        _tradeoff_g = 0.20
+                        _rceil_g = 0.25
+                    # Apply regional market factor to risk ceiling (clamped 0.8–1.2)
+                    try:
+                        _mf_raw_g = _redis.get(f"market_factor:{cluster.region or 'ap-south-1'}")
+                        _rceil_g *= float(_mf_raw_g) if _mf_raw_g else 1.0
+                    except Exception:
+                        pass
+
+                    _chosen_g = None
+                    # Find cheapest valid spot price to calculate realistic tradeoff bounds
+                    _valid_spots = [r for r in _ranked if r.pool.spot_price > 0]
+                    _cheapest_spot = min(
+                        _valid_spots, key=lambda x: x.pool.spot_price
+                    ).pool.spot_price if _valid_spots else _od_price_g * 0.3
+
+                    # Pass 1: cheaper (spot < OD price) AND risk below ceiling
+                    for _rg in _ranked:
+                        _cheaper_g = (
+                            (_rg.pool.spot_price > 0 and _rg.pool.spot_price < _od_price_g) or
+                            (_rg.pool.spot_price == 0 and _rg.predicted_savings > 0.05)
+                        )
+                        if _cheaper_g and _rg.risk_probability < _rceil_g:
+                            _chosen_g = _rg
+                            break
+                            
+                    # Pass 2 (tradeoff): allow giving up to tradeoff% of the OD savings
+                    if not _chosen_g:
+                        _max_g = _cheapest_spot + (_od_price_g - _cheapest_spot) * _tradeoff_g
+                        _p2_g = [
+                            _rg for _rg in _ranked
+                            if ((_rg.pool.spot_price > 0 and _rg.pool.spot_price <= _max_g)
+                                or _rg.pool.spot_price == 0)
+                            and _rg.risk_probability < _rceil_g
+                        ]
+                        if _p2_g:
+                            _chosen_g = min(_p2_g, key=lambda r: r.risk_probability)
+                    # Risk override: node itself is dangerously risky → any safer pool, price ignored
+                    if not _chosen_g:
+                        _node_risk_g = float(instance.risk_score or 0.0)
+                        if _node_risk_g > _rceil_g:
+                            _safer_g = [_rg for _rg in _ranked if _rg.risk_probability < _node_risk_g]
+                            if _safer_g:
+                                _chosen_g = min(_safer_g, key=lambda r: r.risk_probability)
+
+                    # OD→SPOT final fallback: any spot pool is still better than staying on OD.
+                    # Spot is almost always cheaper than OD even at "high risk". Pick the
+                    # lowest-risk pool that is at least cheaper than OD price.
+                    if not _chosen_g and instance.lifecycle == InstanceLifecycle.ON_DEMAND:
+                        _cheaper_any = [
+                            r for r in _ranked
+                            if r.pool.spot_price == 0 or r.pool.spot_price < _od_price_g
+                        ]
+                        if _cheaper_any:
+                            _chosen_g = min(_cheaper_any, key=lambda r: r.risk_probability)
+                            logger.info(
+                                f"[auto_rebalancer] OD→SPOT fallback for {instance.instance_id}: "
+                                f"using lowest-risk pool {_chosen_g.pool.instance_type}:{_chosen_g.pool.az} "
+                                f"(risk={_chosen_g.risk_probability:.2f}, ceiling exceeded but still cheaper than OD)"
+                            )
+                        elif _ranked:
+                            _chosen_g = _ranked[0]
+                            logger.info(
+                                f"[auto_rebalancer] OD→SPOT last-resort for {instance.instance_id}: "
+                                f"using top-ranked pool {_ranked[0].pool.instance_type}:{_ranked[0].pool.az}"
+                            )
+
+                    if _chosen_g:
+                        _p = _chosen_g.pool
                         target_pool = f"{_p.instance_type}:{_p.az}"
                         target_instance_type_final = _p.instance_type
+                    else:
+                        # No suitable spot pool found this cycle — leave OD node as-is
+                        logger.debug(
+                            f"[auto_rebalancer] No qualifying spot pool for {instance.instance_id} "
+                            f"({instance.instance_type}, od_price={_od_price_g:.4f}, "
+                            f"risk_ceil={_rceil_g:.2f}) — skipping this cycle"
+                        )
+                        target_pool = None  # sentinel: skip action creation
                 except Exception:
                     target_instance_type_final = target_instance_type
-                    pass  # Keep fallback to source_pool
+                    # on exception: keep target_pool = source_pool as fallback
+
+                if target_pool is None:
+                    # No qualifying spot pool — create a deferred action so the UI
+                    # can surface this as a visible event rather than a silent skip.
+                    try:
+                        _deferred_action = RebalancingAction(
+                            cluster_id=cluster.id,
+                            trigger='auto_rebalance',
+                            source_pool=source_pool,
+                            target_pool=source_pool,  # same as source — no better pool found; NOT NULL constraint requires a value
+                            status='deferred',
+                            started_at=datetime.utcnow(),
+                            completed_at=datetime.utcnow(),
+                            duration_seconds=0,
+                            error_message=(
+                                f"No compatible spot pool found for {instance.instance_type} "
+                                f"(risk_ceil={_rceil_g:.0%}, tradeoff={_tradeoff_g:.0%}). "
+                                f"Will retry next cycle."
+                            ),
+                            action_metadata={
+                                'reason': 'no_pool_found',
+                                'initiated_by': 'auto_rebalancer',
+                                'instance_id': instance.instance_id,
+                                'instance_type': instance.instance_type,
+                                'risk_ceiling': round(_rceil_g, 3),
+                                'tradeoff_pct': round(_tradeoff_g, 3),
+                            },
+                        )
+                        db.add(_deferred_action)
+                        db.commit()
+                        logger.info(
+                            f"[auto_rebalancer] Deferred action created for {instance.instance_id} "
+                            f"— no qualifying spot pool (risk_ceil={_rceil_g:.0%})"
+                        )
+                    except Exception as _def_err:
+                        logger.warning(f"[auto_rebalancer] Failed to create deferred action: {_def_err}")
+                    continue  # try next OD instance
 
                 _needs_approval = getattr(_opt_settings, 'manual_approval_required', False)
                 _action_status = 'pending_approval' if _needs_approval else 'in_progress'
@@ -3023,6 +4453,10 @@ def execute_rebalancing():
                         'instance_id': instance.instance_id,
                         'bin_packed': bin_packed,
                         'target_instance_type': target_instance_type,
+                        # AZs stored at creation so Decision Engine failure reporting
+                        # and Phase-2 AZ fallback never rely on empty-string guards.
+                        'target_az': target_pool.split(':')[1] if ':' in (target_pool or '') else (instance.az or ''),
+                        'source_az': instance.az or '',
                     }
                 )
 
@@ -3171,7 +4605,9 @@ def execute_rebalancing():
                                 "node_name": _sf_inst.node_name,
                                 "recommended_type": _rec_type,
                                 "stateful_resize": True,
-                                "decrement_asg": True,
+                                # TASK-1.1: termination_mode replaces decrement_asg boolean.
+                                # stateful resize is a replacement-style operation — ASG DesiredCapacity stays.
+                                "termination_mode": "replacement",
                                 "reason": f"auto_stateful_rightsizing: {_itype}→{_rec_type}",
                             },
                         ))
@@ -3202,3 +4638,8 @@ def execute_rebalancing():
         raise
     finally:
         db.close()
+        if _redis:
+            try:
+                _redis.delete("lock:workers.auto_rebalancer")
+            except Exception:
+                pass

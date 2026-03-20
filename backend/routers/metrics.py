@@ -123,14 +123,27 @@ async def receive_metrics_batch(
                 or labels.get("failure-domain.beta.kubernetes.io/zone")
                 or "unknown"
             )
-            # EKS sets lifecycle=spot for spot nodes; anything else is on-demand
+            # Determine spot lifecycle from K8s node labels.
+            # Sources checked in priority order:
+            #   1. eks.amazonaws.com/capacityType   — EKS managed node groups (SPOT / ON_DEMAND)
+            #   2. karpenter.sh/capacity-type        — Karpenter-provisioned nodes (spot / on-demand)
+            #   3. node.kubernetes.io/lifecycle      — self-managed / legacy label (spot / normal)
+            # If none of these are present (direct-launched non-Karpenter spot instances),
+            # fall back to the existing DB value so the pre-registered SPOT record set by
+            # _launch_spot_instance_direct is not overwritten with ON_DEMAND.
             lc_label = (
                 labels.get("eks.amazonaws.com/capacityType")
+                or labels.get("karpenter.sh/capacity-type")
                 or labels.get("node.kubernetes.io/lifecycle")
                 or ""
             ).lower()
             if "spot" in lc_label:
                 lifecycle = InstanceLifecycle.SPOT
+            elif lc_label == "":
+                # No lifecycle label present — direct-launched non-Karpenter spot nodes
+                # don't carry K8s lifecycle labels unless kubelet is explicitly configured.
+                # Set to None so the existing DB value is preserved (see update logic below).
+                lifecycle = None
             else:
                 lifecycle = InstanceLifecycle.ON_DEMAND
 
@@ -152,7 +165,35 @@ async def receive_metrics_batch(
                     inst.instance_type = instance_type
                 if az and az != "unknown":
                     inst.az = az
-                inst.lifecycle = lifecycle
+                # RC3 guard: K8s label SPOT→OD must be observed 3× (~90s) before accepting.
+                # After agent reinstall, labels may not propagate to the first few batch
+                # payloads, causing a false ON_DEMAND report on a confirmed SPOT node.
+                # lifecycle=None means no K8s label was present — preserve existing DB value.
+                if lifecycle is None:
+                    pass  # No label — keep existing DB lifecycle unchanged
+                elif lifecycle == InstanceLifecycle.SPOT:
+                    inst.lifecycle = InstanceLifecycle.SPOT
+                    try:
+                        from backend.core.redis_client import get_redis_client as _grc_m
+                        _grc_m().delete(f"rc3:metrics_od_streak:{inst.instance_id}")
+                    except Exception:
+                        pass
+                elif inst.lifecycle == InstanceLifecycle.SPOT:
+                    # K8s says OD but DB has SPOT — guard against transient label absence
+                    try:
+                        from backend.core.redis_client import get_redis_client as _grc_m2
+                        _rm2 = _grc_m2()
+                        _sk_m = f"rc3:metrics_od_streak:{inst.instance_id}"
+                        _streak_m = int(_rm2.incr(_sk_m) or 0)
+                        _rm2.expire(_sk_m, 1800)  # 30-min TTL
+                        if _streak_m >= 3:
+                            inst.lifecycle = lifecycle
+                            _rm2.delete(_sk_m)
+                        # else: keep SPOT (transient label absence after reinstall)
+                    except Exception:
+                        pass  # Redis unavailable — preserve current lifecycle
+                else:
+                    inst.lifecycle = lifecycle  # OD→OD: safe to update directly
                 if not inst.node_name:
                     inst.node_name = node_name
                 inst.updated_at = datetime.utcnow()
@@ -161,6 +202,34 @@ async def receive_metrics_batch(
                 # No record — create one. The daemon set is the source of truth.
                 # Use short hostname as instance_id placeholder (VARCHAR(20) safe).
                 # Real EC2 instance ID will be updated when register-node is called.
+                # Skip creation if instance_type is unknown (no K8s labels yet) to
+                # prevent ghost "unknown-node" records from appearing in the UI.
+                if instance_type == 'unknown' or az == 'unknown':
+                    logger.debug(
+                        f"[metrics] Skipping Instance creation for {node_name}: "
+                        f"instance_type or AZ not yet labelled (K8s labels pending). "
+                        f"Will create on next metrics push once labels propagate."
+                    )
+                    continue
+                # When no K8s lifecycle label is present (lifecycle=None), check whether
+                # the cluster already has any known spot instances. If so, default to
+                # SPOT (safer) rather than ON_DEMAND to avoid false rebalancing.
+                # The aws_sync worker will correct the lifecycle within 15s if wrong.
+                # Defaulting to ON_DEMAND caused cluster growth: spot nodes with missing
+                # K8s labels were registered as OD, then the rebalancer launched
+                # replacements thinking they needed to be converted to spot.
+                _default_lc = InstanceLifecycle.ON_DEMAND  # safe fallback
+                if lifecycle is None:
+                    try:
+                        _has_spot = db.query(Instance).filter(
+                            Instance.cluster_id == cluster_id,
+                            Instance.lifecycle == InstanceLifecycle.SPOT,
+                            Instance.state == 'running',
+                        ).first()
+                        if _has_spot:
+                            _default_lc = InstanceLifecycle.SPOT  # cluster is spot-heavy
+                    except Exception:
+                        pass
                 new_inst = Instance(
                     id=generate_uuid(),
                     cluster_id=cluster_id,
@@ -168,7 +237,7 @@ async def receive_metrics_batch(
                     node_name=node_name,
                     instance_type=instance_type,
                     az=az,
-                    lifecycle=lifecycle,
+                    lifecycle=lifecycle if lifecycle is not None else _default_lc,
                     state="running",
                     cpu_util=cpu_util_pct,
                     memory_util=mem_util_pct,

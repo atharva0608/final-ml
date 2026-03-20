@@ -23,6 +23,8 @@ class AgentActionType(enum.Enum):
     TERMINATE_NODE = "TERMINATE_NODE"  # Terminate EC2 instance after drain so Karpenter sees Pending pods
     UNCORDON_NODE = "UNCORDON_NODE"  # Uncordon a node (e.g., activate standby during emergency)
     FORCE_DELETE_NODE = "FORCE_DELETE_NODE"  # Force-delete K8s Node object for ghost/hardware-failed nodes
+    # Issue #12 / Task-1.x: Remove stuck finalizers from Terminating pods after force-delete
+    REMOVE_POD_FINALIZERS = "REMOVE_POD_FINALIZERS"
 
 
 class AgentActionStatus(enum.Enum):
@@ -72,6 +74,13 @@ class AgentAction(Base):
     # Result and error tracking
     result = Column(JSONB, nullable=True)  # Success result details
     error_message = Column(String(1024), nullable=True)  # Error message if failed
+
+    # Issue #7: Priority field for FIFO-with-pre-emption ordering.
+    # 0 = normal (auto-rebalancer), 10 = emergency (spot interruption / IMDS event).
+    # ORDER BY priority DESC, created_at ASC ensures emergency actions are processed first
+    # while normal actions among the same priority keep strict FIFO order.
+    from sqlalchemy import Integer as _Int
+    priority = Column(_Int, nullable=False, default=0, index=True)
 
     # Relationships
     cluster = relationship("Cluster", back_populates="agent_actions")

@@ -133,6 +133,7 @@ class ClusterOptimizationSettings(Base):
     auto_rightsizing_enabled = Column(Boolean, default=False)
     auto_stateful_rightsizing_enabled = Column(Boolean, default=False)
     cooldown_override_minutes = Column(Integer, nullable=True)
+    spot_join_timeout_minutes = Column(Integer, nullable=True)  # How long to wait for new spot node to join (default 30 min)
     conservative_mode_enabled = Column(Boolean, default=True)
     manual_approval_required = Column(Boolean, default=False)
     target_spot_exposure_pct = Column(Integer, default=100)
@@ -140,6 +141,7 @@ class ClusterOptimizationSettings(Base):
     # New platform v3.5 properties
     maintain_standby = Column(Boolean, default=False)
     diversify_pools = Column(Boolean, default=False)
+    max_family_diversification_cap_pct = Column(Integer, default=40)
     failure_cooldown_minutes = Column(Integer, default=30)
     
     # Billing model preference for right-sizing: "spot" or "on_demand".
@@ -150,6 +152,33 @@ class ClusterOptimizationSettings(Base):
     # Instance-Aware Rightsizing: when True, only generate recommendations
     # if a better spot pool exists (double gate: risk < current AND price < OD).
     instance_aware_rightsizing = Column(Boolean, default=False)
+
+    # Task 4.8: Max instance types to attempt during spot launch cascade.
+    # Replaces hardcoded [:6] slice in auto_rebalancer._launch_spot_instance_direct().
+    max_instance_type_attempts = Column(Integer, default=6, nullable=False)
+
+    # Dynamic autoscaler settings (mini-CA built into the rebalancer)
+    # min_node_count  — hard floor: watchdog never scales below this value.
+    #                   Default 1 ensures at least 1 node is always running.
+    # scale_down_threshold_pct — avg CPU+mem utilization below which a node is
+    #                   considered idle. Idle nodes are removed one-at-a-time
+    #                   (respecting min_node_count). Default 20%.
+    # scale_down_stabilization_minutes — how long avg util must be below threshold
+    #                   before a scale-down fires. Prevents thrashing. Default 15 min.
+    min_node_count = Column(Integer, default=1, nullable=False)
+    scale_down_threshold_pct = Column(Integer, default=20, nullable=False)
+    scale_down_stabilization_minutes = Column(Integer, default=15, nullable=False)
+
+    # ASCP built-in auto-scaler (optional — off by default).
+    # When True, auto_scaler.py task monitors pending pods and adjusts ASG
+    # desired capacity, using a per-cluster Redis target as the source of truth.
+    # When False (default), the platform never changes ASG desired automatically;
+    # any external scaler (CA / Karpenter) remains in full control.
+    enable_ascp_auto_scaler = Column(Boolean, default=False, nullable=False)
+
+    # Per-cluster rebalance check interval (seconds). Default 15 s matches the
+    # Celery beat schedule. Increase to reduce check frequency for stable clusters.
+    check_interval_seconds = Column(Integer, default=15, nullable=False)
 
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     

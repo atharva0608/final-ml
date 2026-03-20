@@ -53,6 +53,9 @@ class Instance(Base):
     # Node name in Kubernetes (e.g., "ip-10-0-1-234.ec2.internal")
     node_name = Column(String(255), nullable=True, index=True)
 
+    # Identifies instances launched by the platform (e.g., 'platform')
+    launched_by = Column(String(50), nullable=True, index=True)
+
     # Standby flag: True = hot standby node (cordoned, ready for emergency activation)
     standby = Column(Boolean, nullable=False, default=False, index=True)
 

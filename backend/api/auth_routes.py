@@ -69,7 +69,7 @@ def signup(
         email=user.email,
         role=user.role.value,
         organization_id=user.organization_id,
-        org_role=None,  # Deprecated - using unified role instead
+        org_role=None,  # DEPRECATED (Task 4.7): unified 'role' field used instead. Remove after schema migration.
         organization_name=user.organization.name if user.organization else None,
         access_level=user.access_level.value if user.access_level else None,
         must_reset_password=user.must_reset_password,
@@ -163,7 +163,7 @@ def login(
         email=user.email,
         role=user.role.value,
         organization_id=user.organization_id,
-        org_role=None,  # Deprecated - using unified role instead
+        org_role=None,  # DEPRECATED (Task 4.7): unified 'role' field used instead. Remove after schema migration.
         organization_name=user.organization.name if user.organization else None,
         access_level=user.access_level.value if user.access_level else None,
         must_reset_password=user.must_reset_password,

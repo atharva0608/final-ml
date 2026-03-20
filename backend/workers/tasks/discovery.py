@@ -684,16 +684,22 @@ def scan_ec2_instances(account: Account, ec2_client, db: Session) -> int:
                         monthly_price = 50.00  # Ultimate fallback
                         hourly_price = monthly_price / 730.0
 
-                    # Find associated cluster (via tags)
+                    # Find associated cluster and platform tags
                     tags = instance_data.get('Tags', [])
                     cluster_name = None
+                    launched_by = None
                     for tag in tags:
-                        if tag.get('Key') == 'eks:cluster-name' or tag.get('Key', '').startswith('kubernetes.io/cluster/'):
-                            if tag.get('Key') == 'eks:cluster-name':
-                                cluster_name = tag.get('Value')
-                            else:
-                                cluster_name = tag.get('Key').replace('kubernetes.io/cluster/', '')
-                            break
+                        key = tag.get('Key', '')
+                        val = tag.get('Value', '')
+                        
+                        if key == 'eks:cluster-name':
+                            cluster_name = val
+                        elif key.startswith('kubernetes.io/cluster/') and not cluster_name:
+                            cluster_name = key.replace('kubernetes.io/cluster/', '')
+                        elif key in ('spot-optimizer:launched-by', 'spot-optimizer/launched-by'):
+                            launched_by = val
+                            
+                        # If we have both, we can break early, but let's just loop through all tags (usually <10)
 
                     cluster_id = None
                     if cluster_name:
@@ -735,7 +741,16 @@ def scan_ec2_instances(account: Account, ec2_client, db: Session) -> int:
                                     pass
                             existing.lifecycle = lifecycle
                         elif existing.lifecycle == InstanceLifecycle.ON_DEMAND:
-                            # Already OD — always update (no downgrade risk)
+                            # Already OD — always update (no downgrade risk).
+                            # Issue #10 / Task 2.2: Also reset RC3 streak counter on
+                            # confirmed OD read. Without this, a stale counter can persist
+                            # across lifecycle transitions (OD→SPOT→OD) and either fire
+                            # prematurely or expire silently without triggering downgrade.
+                            if _rc3_redis:
+                                try:
+                                    _rc3_redis.delete(_rc3_key)
+                                except Exception:
+                                    pass
                             existing.lifecycle = lifecycle
                         elif existing.lifecycle == InstanceLifecycle.SPOT:
                             # Potential SPOT→OD downgrade — use consecutive-count gate
@@ -769,6 +784,7 @@ def scan_ec2_instances(account: Account, ec2_client, db: Session) -> int:
                         existing.az = az
                         existing.state = 'running'  # Confirm still running (was seen in scan)
                         existing.price = hourly_price  # Store HOURLY price (converted from monthly)
+                        existing.launched_by = launched_by  # Update platform tag
                         existing.updated_at = datetime.utcnow()
                     else:
                         # Create new instance
@@ -781,7 +797,8 @@ def scan_ec2_instances(account: Account, ec2_client, db: Session) -> int:
                             az=az,
                             price=hourly_price,  # Store HOURLY price (converted from monthly)
                             cpu_util=None,  # Will be updated by metrics collection
-                            memory_util=None
+                            memory_util=None,
+                            launched_by=launched_by
                         )
                         db.add(new_instance)
 

@@ -298,6 +298,38 @@ class AWSPricingService:
             if self.get_ondemand_price(instance_type, region, validate_freshness=False):
                 ondemand_count += 1
 
+        # ── Task 2.1 / Issue #5: Detect partial-staleness ─────────────
+        # A refresh that fetches only some of the requested types can still
+        # update `pricing:last_updated`, suppressing the 15-minute gate.
+        # To surface this, set per-cluster `partial_stale` flag when <80%
+        # of requested instance types were actually refreshed.
+        _total_requested = len(instance_types) if instance_types else 1
+        _total_fetched = spot_count + ondemand_count
+        _coverage_pct = (_total_fetched / max(1, _total_requested * 2)) * 100  # ×2: spot+OD
+        if _coverage_pct < 80 and _total_requested > 0:
+            logger.warning(
+                f"[pricing] Partial refresh for {region}: "
+                f"coverage {_coverage_pct:.0f}% ({_total_fetched}/{_total_requested * 2})"
+            )
+            try:
+                _clusters = self.db.query(Cluster).filter(Cluster.region == region).all()
+                for _c in _clusters:
+                    _ps_key = f"spot:pricing:partial_stale:{_c.id}"
+                    self.redis.setex(_ps_key, 900, json.dumps({
+                        "region": region,
+                        "coverage_pct": round(_coverage_pct, 1),
+                        "spot_fetched": spot_count,
+                        "od_fetched": ondemand_count,
+                        "total_requested": _total_requested,
+                        "detected_at": datetime.utcnow().isoformat(),
+                    }))
+                logger.info(
+                    f"[pricing] Set partial_stale flag on {len(_clusters)} "
+                    f"clusters in {region} (15-min TTL)"
+                )
+            except Exception as _ps_err:
+                logger.error(f"[pricing] Failed to set partial_stale flags: {_ps_err}")
+
         # Update last_updated timestamp
         last_updated_key = f"pricing:last_updated:{region}"
         self.redis.set(last_updated_key, datetime.utcnow().isoformat())

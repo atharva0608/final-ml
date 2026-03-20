@@ -85,6 +85,15 @@ class Agent:
         self.running = False
         self.shutdown_event = threading.Event()
 
+        # Task-1.8: Thread restart counters and backoff state (Issue #9)
+        # Prevents runaway restarts: max 5 attempts per component, then DEAD.
+        self._restart_counts: Dict[str, int] = {}
+        self._restart_backoffs: Dict[str, float] = {}
+        _components = ['collector', 'actuator', 'heartbeat', 'websocket', 'spot_poller', 'pod_metrics']
+        for _c in _components:
+            self._restart_counts[_c] = 0
+            self._restart_backoffs[_c] = 0.0
+
         logger.info(f"Agent initialized: cluster={self.cluster_id}, agent={self.agent_id}")
 
     def _generate_agent_id(self) -> str:
@@ -412,70 +421,59 @@ class Agent:
         self.shutdown_event.set()
         self.running = False
 
+    def _restart_thread(self, name: str, target, thread_attr: str) -> None:
+        """
+        Task-1.8 (Issue #9): Restart a dead component thread with exponential backoff.
+
+        Increments the restart counter for `name`. If the counter exceeds 5,
+        the component is marked DEAD and no further restart is attempted.
+        Otherwise, waits ``min(2**count, 60)`` seconds then starts a new thread.
+        """
+        MAX_RESTARTS = 5
+        count = self._restart_counts.get(name, 0) + 1
+        self._restart_counts[name] = count
+
+        if count > MAX_RESTARTS:
+            logger.critical(
+                f"[monitor] Component '{name}' has crashed {count} times — marking DEAD, "
+                f"no further restarts. Manual intervention required."
+            )
+            return
+
+        backoff = min(2 ** count, 60)  # 2s, 4s, 8s, 16s, 32s, then capped at 60s
+        logger.error(
+            f"[monitor] Component '{name}' thread died (attempt {count}/{MAX_RESTARTS}). "
+            f"Restarting in {backoff}s..."
+        )
+        time.sleep(backoff)
+
+        new_thread = threading.Thread(target=target, name=name.title().replace('_', ''), daemon=True)
+        new_thread.start()
+        setattr(self, thread_attr, new_thread)
+        logger.info(f"[monitor] Component '{name}' restarted (attempt {count}).")
+
     def monitor_components(self):
         """
         Monitor component health and restart if necessary.
         """
         while self.running and not self.shutdown_event.is_set():
-            # Check collector thread
             if self.collector_thread and not self.collector_thread.is_alive():
-                logger.error("Metrics collector thread died, restarting...")
-                self.collector_thread = threading.Thread(
-                    target=self.collector.run,
-                    name="MetricsCollector",
-                    daemon=True
-                )
-                self.collector_thread.start()
+                self._restart_thread('collector', self.collector.run, 'collector_thread')
 
-            # Check actuator thread
             if self.actuator_thread and not self.actuator_thread.is_alive():
-                logger.error("Action actuator thread died, restarting...")
-                self.actuator_thread = threading.Thread(
-                    target=self.actuator.run,
-                    name="ActionActuator",
-                    daemon=True
-                )
-                self.actuator_thread.start()
+                self._restart_thread('actuator', self.actuator.run, 'actuator_thread')
 
-            # Check heartbeat thread
             if self.heartbeat_thread and not self.heartbeat_thread.is_alive():
-                logger.error("Heartbeat sender thread died, restarting...")
-                self.heartbeat_thread = threading.Thread(
-                    target=self.heartbeat.run,
-                    name="HeartbeatSender",
-                    daemon=True
-                )
-                self.heartbeat_thread.start()
+                self._restart_thread('heartbeat', self.heartbeat.run, 'heartbeat_thread')
 
-            # Check WebSocket thread
             if self.websocket_thread and not self.websocket_thread.is_alive():
-                logger.error("WebSocket client thread died, restarting...")
-                self.websocket_thread = threading.Thread(
-                    target=self._run_websocket_client,
-                    name="WebSocketClient",
-                    daemon=True
-                )
-                self.websocket_thread.start()
+                self._restart_thread('websocket', self._run_websocket_client, 'websocket_thread')
 
-            # Check Spot Poller thread
             if self.spot_poller_thread and not self.spot_poller_thread.is_alive():
-                logger.error("Spot Poller thread died, restarting...")
-                self.spot_poller_thread = threading.Thread(
-                    target=self.spot_poller.run,
-                    name="SpotPoller",
-                    daemon=True
-                )
-                self.spot_poller_thread.start()
+                self._restart_thread('spot_poller', self.spot_poller.run, 'spot_poller_thread')
 
-            # Check Pod Metrics Collector thread
             if self.pod_metrics_thread and not self.pod_metrics_thread.is_alive():
-                logger.error("Pod Metrics Collector thread died, restarting...")
-                self.pod_metrics_thread = threading.Thread(
-                    target=self.pod_metrics_collector.run,
-                    name="PodMetricsCollector",
-                    daemon=True
-                )
-                self.pod_metrics_thread.start()
+                self._restart_thread('pod_metrics', self.pod_metrics_collector.run, 'pod_metrics_thread')
 
             # Sleep before next check
             time.sleep(30)

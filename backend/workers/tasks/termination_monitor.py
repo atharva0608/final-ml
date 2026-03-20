@@ -97,6 +97,25 @@ def detect_termination_notice(
     try:
         pool_key = f"{instance_type}:{az}"
 
+        # ── Issue #20 / Task 2.3: Deduplicate emergency events ───────────
+        # SQS, IMDS, and EventBridge can all fire for the same interruption.
+        # Use a Redis NX lock per instance_id with a 2-minute TTL so only
+        # the first event triggers blacklist + rebalancer.  Subsequent events
+        # within the window are silently skipped.
+        if instance_id:
+            _dedup_key = f"emergency:dedup:{instance_id}"
+            if not redis_client.set(_dedup_key, "1", nx=True, ex=120):
+                logger.info(
+                    f"[termination_monitor] Dedup: skipping duplicate event "
+                    f"for {instance_id} (pool={pool_key}, source={source})"
+                )
+                return {
+                    "status": "deduplicated",
+                    "instance_id": instance_id,
+                    "pool_key": pool_key,
+                    "message": "Duplicate event suppressed (2-min dedup window)",
+                }
+
         logger.info(f"Termination notice detected: {pool_key} (source: {source})")
 
         # 1. Flag pool in global blacklist (Redis, 12-hour TTL)

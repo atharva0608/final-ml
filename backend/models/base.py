@@ -47,18 +47,39 @@ def get_db():
         db.close()
 
 
+from contextlib import contextmanager
+
+@contextmanager
+def get_db_contextmanager():
+    """
+    Context manager for database sessions in Celery workers and background tasks.
+    Usage:
+        with get_db_contextmanager() as db:
+            db.query(...)
+    """
+    db = SessionLocal()
+    try:
+        yield db
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
 def create_tables():
     """
-    Create all database tables if they don't exist
-    This is called on application startup
+    Create all database tables if they don't exist.
+    Uses SQLAlchemy create_all (idempotent — only creates missing tables, never drops existing ones).
     """
-    # Import all models to ensure they're registered with Base
+    # Import ALL models so they register with Base.metadata before create_all
     from backend.models.organization import Organization
     from backend.models.user import User
     from backend.models.account import Account
     from backend.models.cluster import Cluster
     from backend.models.instance import Instance
-    from backend.models.node_template import NodeTemplate
+    from backend.models.node_template import NodeTemplate, NodeTemplateVersion, ClusterTemplateMapping
     from backend.models.onboarding import OnboardingState
     from backend.models.cluster_policy import ClusterPolicy
     from backend.models.hibernation_schedule import HibernationSchedule
@@ -69,16 +90,81 @@ def create_tables():
     from backend.models.agent_action import AgentAction
     from backend.models.api_key import APIKey
     from backend.models.invitation import OrganizationInvitation
-    from backend.models.system_config import SystemConfig  # For Safe Mode & Platform Identity
+    from backend.models.system_config import SystemConfig
+    from backend.models.agent_identity import AgentIdentity
+    from backend.models.rebalancing_action import RebalancingAction
+    from backend.models.termination_event import TerminationEvent
+    from backend.models.substitute_state import SubstituteState
+    from backend.models.rightsizing_proposal import RightsizingProposal
+    from backend.models.approval import Approval
+    from backend.models.daily_cluster_stats import DailyClusterStat
+    from backend.models.spot_advisor_rates import SpotAdvisorRate
+    from backend.models.optimizer_proposal import OptimizerProposal
+    from backend.models.substitute_nodes import SubstituteNode
+    from backend.models.node_metrics import NodeMetric
+    from backend.models.worker_registration import WorkerRegistration
+    from backend.models.team import Team
+    from backend.models.role import Role
+    from backend.models.permission import Permission
+    from backend.models.instance_catalog import InstanceCatalog
+    from backend.models.billing import DailyCost, CostExplorerSyncStatus
+    from backend.models.pricing import SpotPriceHistory, OnDemandPricing, SpotAdvisorData
+    from backend.models.platform_settings import PlatformSettings
+    from backend.models.tag_policy import TagPolicy
+    from backend.models.tag_template import TagTemplate
+    from backend.models.tag_automation_rule import TagAutomationRule
+    from backend.models.tag_automation_log import TagAutomationLog
+    from backend.models.tag_compliance_score import TagComplianceScore
+    from backend.models.tag_scoring_config import TagScoringConfig
+    from backend.models.cluster_metric import ClusterMetric
+    from backend.models.cluster_cooldown import ClusterCooldown
+    from backend.models.pool_cooldown import PoolCooldown
+    from backend.models.pod_metric import PodMetric
+    from backend.models.hygiene_policy import HygienePolicy
+    from backend.models.circuit_breaker_state import CircuitBreakerState
+    from backend.models.execution_state import ExecutionState
+    from backend.models.family_hour_baseline import FamilyHourBaseline
+    from backend.models.model_registry import ModelRegistry
+    from backend.models.optimizer_state import OptimizerState
+    from backend.models.rds_analysis import RDSInstanceAnalysis
+    from backend.models.ri_utilization import RIUtilization
+    from backend.models.s3_analysis import S3BucketAnalysis
+    from backend.models.savings_plan_utilization import SavingsPlanUtilization
+    from backend.models.transfer_analysis import DataTransferAnalysis
+    from backend.models.chaos_experiment import ChaosExperiment
+    try:
+        from backend.models.alert_config import AlertConfig
+        from backend.models.alert_history import AlertHistory
+    except Exception:
+        pass
+    try:
+        from backend.models.authorized_resource import AuthorizedResource
+    except Exception:
+        pass
+    try:
+        from backend.models.auto_tag_rule import AutoTagRule
+    except Exception:
+        pass
+    try:
+        from backend.models.credential_cache import CredentialCache
+    except Exception:
+        pass
 
-    # Create all tables (Commented out to let Alembic handle migrations)
-    # Base.metadata.create_all(bind=engine)
+    # Create all tables (idempotent — only creates tables that don't exist yet)
+    Base.metadata.create_all(bind=engine)
 
 
 def seed_demo_data():
     """
-    Create default admin and demo client users if they don't exist
+    Create default admin and demo client users if they don't exist.
+
+    SAFETY: Refuses to run in production environments.
     """
+    _env = os.getenv("ENV", os.getenv("ENVIRONMENT", "development")).lower()
+    if _env in ("production", "prod"):
+        print("⚠️  seed_demo_data() skipped — ENV is production")
+        return
+
     from backend.models.user import User, UserRole, AccessLevel
     from backend.models.organization import Organization
     from backend.models.account import Account, AccountStatus
@@ -155,6 +241,40 @@ def seed_demo_data():
             
             db.commit()
             print(f"✅ Created demo client user: {demo_email} (password from SEED_DEMO_PASSWORD env var)")
+
+        # 3. Seed Atharva user (ath@gmail.com / Atharva@123)
+        ath_email = "ath@gmail.com"
+        ath_user = db.query(User).filter(User.email == ath_email).first()
+
+        if not ath_user:
+            # Reuse or create org
+            ath_org = db.query(Organization).filter(Organization.slug == "demo-org").first()
+            if not ath_org:
+                ath_org = Organization(
+                    name="Demo Corp",
+                    slug="demo-org",
+                    status="active"
+                )
+                db.add(ath_org)
+                db.flush()
+
+            ath_user = User(
+                email=ath_email,
+                password_hash=hash_password("Atharva@123"),
+                role=UserRole.SUPER_ADMIN,
+                organization_id=ath_org.id,
+                access_level=AccessLevel.FULL
+            )
+            db.add(ath_user)
+            db.commit()
+            print(f"✅ Created user: {ath_email}")
+        else:
+            # Ensure password is correct (update if needed)
+            from backend.core.crypto import verify_password
+            if not verify_password("Atharva@123", ath_user.password_hash):
+                ath_user.password_hash = hash_password("Atharva@123")
+                db.commit()
+                print(f"✅ Updated password for: {ath_email}")
 
     except Exception as e:
         print(f"⚠️  Failed to seed demo data: {e}")

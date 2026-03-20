@@ -363,13 +363,21 @@ class AutomationControlsSchema(BaseModel):
     auto_rightsizing_enabled: bool = False
     instance_aware_rightsizing: bool = False
     cooldown_override_minutes: Optional[int] = None
+    spot_join_timeout_minutes: Optional[int] = None  # How long to wait for new spot node to join (default 30 min)
     conservative_mode_enabled: bool = True
     manual_approval_required: bool = False
     target_spot_exposure_pct: int = 100
     
     maintain_standby: bool = False
     diversify_pools: bool = False
+    max_family_diversification_cap_pct: int = 40
     failure_cooldown_minutes: int = 30
+    optimization_target: str = "spot"
+    min_node_count: int = 1
+    scale_down_threshold_pct: int = 20
+    scale_down_stabilization_minutes: int = 15
+    enable_ascp_auto_scaler: bool = False
+    check_interval_seconds: int = 15
 
 class OptimizationStrategySchema(BaseModel):
     strategy_type: str = "BALANCED"

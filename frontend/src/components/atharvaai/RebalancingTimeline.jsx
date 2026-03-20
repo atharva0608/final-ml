@@ -31,37 +31,55 @@ const T = {
 };
 
 const REBALANCE_STEPS = [
-    { key: 'step_1_spot_provisioning', label: 'New Pool Provisioned', desc: 'Karpenter NodePool updated with ML-ranked spot pools' },
-    { key: 'step_2_cordon', label: 'Node Cordoned', desc: 'No new pods scheduled on the source node' },
-    { key: 'step_3_draining_pods', label: 'Pods Draining', desc: 'Existing pods gracefully evicted to other nodes' },
-    { key: 'step_4_new_node_joined', label: 'New Node Joined', desc: 'Replacement spot node provisioned and joined the cluster' },
-    { key: 'step_5_old_node_terminated', label: 'Old Node Terminated', desc: 'Source EC2 instance terminated' },
-    { key: 'step_6_optimization_complete', label: 'Complete', desc: 'Node migration finished' },
+    { key: 'step_1_spot_provisioning',     label: 'New Pool Provisioned', desc: 'New spot instance launched in the target pool' },
+    { key: 'step_4_new_node_joined',       label: 'New Node Joined',      desc: 'Replacement spot node joined the cluster and is ready' },
+    { key: 'step_2_cordon',               label: 'Node Cordoned',         desc: 'No new pods scheduled on the source node' },
+    { key: 'step_3_draining_pods',        label: 'Pods Draining',         desc: 'Existing pods gracefully evicted to other nodes' },
+    { key: 'step_5_old_node_terminated',  label: 'Old Node Terminated',   desc: 'Source EC2 instance terminated' },
+    { key: 'step_6_optimization_complete',label: 'Complete',              desc: 'Node migration finished' },
 ];
 
 const STEP_CURRENT_MAP = {
     provisioning_spot_pool: 0,
-    cordoning_node: 1,
-    draining_pods: 2,
-    waiting_for_spot_node: 3,
+    waiting_for_spot_node: 1,
+    cordoning_node: 2,
+    draining_pods: 3,
     old_node_terminating: 4,
     old_node_terminating_timeout: 4,
     optimization_complete: 5,
 };
 
-const formatRemainingTime = (seconds) => {
-    if (!seconds || seconds <= 0) return '0m';
+const formatCountdown = (seconds) => {
+    if (!seconds || seconds <= 0) return '00:00';
     const hrs = Math.floor(seconds / 3600);
     const mins = Math.floor((seconds % 3600) / 60);
-    if (hrs > 0) return `${hrs}h ${mins}m`;
-    return `${mins}m`;
+    const secs = seconds % 60;
+    if (hrs > 0) return `${hrs}:${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+    return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
 };
 
 const RebalancingTimeline = ({ clusterId, actions: externalActions }) => {
     const [actions, setActions] = useState(externalActions || []);
     const [cooldownData, setCooldownData] = useState(null);
     const [nextNodeData, setNextNodeData] = useState(null);
+    const [optimizationInProgress, setOptimizationInProgress] = useState(false);
+    const [dailyLimitReached, setDailyLimitReached] = useState(false);
+    const [dailyLimitInfo, setDailyLimitInfo] = useState({ used: 0, max: 5 });
     const [loading, setLoading] = useState(!externalActions);
+
+    // Absolute timestamps from backend — survive page refresh
+    const [cooldownExpiresAt, setCooldownExpiresAt] = useState(null);   // ISO "...Z"
+    const [nextCheckAt, setNextCheckAt] = useState(null);               // ISO "...Z"
+    // Tick counter just to force re-renders every second
+    const [, setTick] = useState(0);
+
+    // Compute live seconds from absolute timestamps (stable across page refresh)
+    const liveSeconds = cooldownExpiresAt
+        ? Math.max(0, Math.floor((new Date(cooldownExpiresAt) - Date.now()) / 1000))
+        : 0;
+    const nextCycleSeconds = nextCheckAt
+        ? Math.max(0, Math.floor((new Date(nextCheckAt) - Date.now()) / 1000))
+        : 15;
 
     // Fetch data if no external actions are provided (when rendered directly on dashboard)
     useEffect(() => {
@@ -78,8 +96,24 @@ const RebalancingTimeline = ({ clusterId, actions: externalActions }) => {
                     // Fetch unified rebalancing context (cooldown + next target)
                     const ctxRes = await atharvaaiAPI.getRebalancingContext(clusterId).catch(() => ({ data: null }));
                     if (ctxRes.data) {
-                        setCooldownData(ctxRes.data.cooldown?.active ? ctxRes.data.cooldown : null);
+                        const inProg = ctxRes.data.optimization_in_progress || false;
+                        setOptimizationInProgress(inProg);
+                        const cd = ctxRes.data.cooldown;
+                        // Only show cooldown when NOT actively optimizing
+                        if (!inProg && cd?.active && cd.expires_at) {
+                            setCooldownData(cd);
+                            setCooldownExpiresAt(cd.expires_at);
+                        } else {
+                            setCooldownData(null);
+                            setCooldownExpiresAt(null);
+                        }
+                        // Always update next-check timestamp from backend
+                        if (ctxRes.data.next_check_at) {
+                            setNextCheckAt(ctxRes.data.next_check_at);
+                        }
                         setNextNodeData(ctxRes.data.next_target || null);
+                        setDailyLimitReached(ctxRes.data.daily_limit_reached || false);
+                        setDailyLimitInfo({ used: ctxRes.data.daily_limit_used || 0, max: ctxRes.data.daily_limit_max || 5 });
                     }
                 }
             } catch (err) {
@@ -94,6 +128,12 @@ const RebalancingTimeline = ({ clusterId, actions: externalActions }) => {
         return () => clearInterval(intervalId);
     }, [clusterId, externalActions]);
 
+    // Per-second tick — only triggers re-renders, countdown computed from absolute timestamps
+    useEffect(() => {
+        const tick = setInterval(() => setTick(t => t + 1), 1000);
+        return () => clearInterval(tick);
+    }, []);
+
     // Use latest available actions (internal state or props)
     const displayActions = externalActions || actions;
 
@@ -101,7 +141,8 @@ const RebalancingTimeline = ({ clusterId, actions: externalActions }) => {
     const now = Date.now();
     const visible = (displayActions || []).filter(a => {
         if (['in_progress', 'waiting_agent'].includes(a.status)) return true;
-        if (a.status === 'completed' && a.completed_at) {
+        // Show completed AND failed migrations from the last hour so failures are visible
+        if ((a.status === 'completed' || a.status === 'failed') && a.completed_at) {
             return (now - new Date(a.completed_at).getTime()) < 3600_000;
         }
         return false;
@@ -134,25 +175,92 @@ const RebalancingTimeline = ({ clusterId, actions: externalActions }) => {
                     )}
                 </div>
 
-                {/* Cooldown Timer */}
-                <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8, padding: '12px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', boxShadow: T.shadow }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                        <div style={{ background: cooldownData && cooldownData.active ? T.amberLight : T.greenLight, color: cooldownData && cooldownData.active ? T.amber : T.green, width: 32, height: 32, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16 }}>
-                            {cooldownData && cooldownData.active ? '⏳' : '✅'}
-                        </div>
-                        <div>
-                            <div style={{ fontSize: 11, fontWeight: 700, color: T.textFaint, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Stabilization</div>
-                            <div style={{ fontSize: 14, fontWeight: 600, color: T.text }}>
-                                {cooldownData && cooldownData.active ? 'Cooldown Active' : 'Ready'}
+                {/* Cooldown / In-Progress / Next Cycle Timer */}
+                <div style={{
+                    background: T.surface,
+                    border: `1px solid ${optimizationInProgress ? T.primary : cooldownData && liveSeconds > 0 ? T.amber : dailyLimitReached ? '#f97316' : T.border}`,
+                    borderRadius: 8, padding: '12px 16px', boxShadow: T.shadow
+                }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                            <div style={{
+                                background: optimizationInProgress ? T.primaryLight : cooldownData && liveSeconds > 0 ? T.amberLight : dailyLimitReached ? '#fff7ed' : T.greenLight,
+                                color: optimizationInProgress ? T.primary : cooldownData && liveSeconds > 0 ? T.amber : dailyLimitReached ? '#f97316' : T.green,
+                                width: 32, height: 32, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16
+                            }}>
+                                {optimizationInProgress ? '🔄' : cooldownData && liveSeconds > 0 ? '⏳' : dailyLimitReached ? '⚠️' : '✅'}
+                            </div>
+                            <div>
+                                <div style={{ fontSize: 11, fontWeight: 700, color: T.textFaint, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                                    {optimizationInProgress ? 'Optimization Status' : cooldownData && liveSeconds > 0 ? 'Stabilization Cooldown' : dailyLimitReached ? 'Daily Limit' : 'Stabilization'}
+                                </div>
+                                <div style={{ fontSize: 14, fontWeight: 600, color: T.text }}>
+                                    {optimizationInProgress
+                                        ? 'Optimization in progress'
+                                        : cooldownData && liveSeconds > 0
+                                            ? `${cooldownData.reason === 'post_rebalance' ? 'Post-rebalance' : 'Cluster'} cooldown`
+                                            : dailyLimitReached
+                                                ? `Daily limit reached`
+                                                : 'Ready'}
+                                </div>
                             </div>
                         </div>
-                    </div>
-                    {cooldownData && cooldownData.active && (
                         <div style={{ textAlign: 'right' }}>
-                            <div style={{ fontSize: 14, fontWeight: 700, color: T.amber }}>{formatRemainingTime(cooldownData.remaining_seconds)}</div>
-                            <div style={{ fontSize: 11, color: T.textMuted }}>Remaining</div>
+                            {optimizationInProgress ? (
+                                <>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                        <span style={{ width: 8, height: 8, borderRadius: '50%', background: T.primary, display: 'inline-block', animation: 'pulse 1.2s infinite' }} />
+                                        <span style={{ fontSize: 13, fontWeight: 700, color: T.primary }}>In Progress</span>
+                                    </div>
+                                    <div style={{ fontSize: 10, color: T.textMuted }}>Cooldown starts after completion</div>
+                                </>
+                            ) : dailyLimitReached ? (
+                                <>
+                                    <div style={{ fontSize: 13, fontWeight: 700, color: '#f97316' }}>{dailyLimitInfo.used}/{dailyLimitInfo.max}</div>
+                                    <div style={{ fontSize: 10, color: T.textMuted }}>Resets in 24h · OD nodes bypass limit</div>
+                                </>
+                            ) : cooldownData && liveSeconds > 0 ? (
+                                <>
+                                    <div style={{ fontSize: 22, fontWeight: 800, color: T.amber, fontFamily: 'monospace', letterSpacing: '0.05em' }}>
+                                        {formatCountdown(liveSeconds)}
+                                    </div>
+                                    <div style={{ fontSize: 10, color: T.textMuted }}>Stabilization lock (backend)</div>
+                                </>
+                            ) : (
+                                <>
+                                    <div style={{ fontSize: 16, fontWeight: 700, color: T.green }}>Ready</div>
+                                    <div style={{ fontSize: 10, color: T.textMuted }}>No active cooldown</div>
+                                </>
+                            )}
                         </div>
-                    )}
+                    </div>
+
+                    {/* Bottom row: always show both cooldown remaining + next check countdown */}
+                    <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${T.borderLight}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <div style={{ display: 'flex', gap: 20 }}>
+                            {cooldownData && liveSeconds > 0 && (
+                                <div>
+                                    <div style={{ fontSize: 9, fontWeight: 700, color: T.textFaint, textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 2 }}>
+                                        {cooldownData.reason === 'post_rebalance' ? 'Post-Rebalance Lock' : 'Cluster Cooldown'}
+                                    </div>
+                                    <div style={{ fontFamily: 'monospace', fontSize: 15, fontWeight: 800, color: T.amber }}>
+                                        {formatCountdown(liveSeconds)}
+                                    </div>
+                                </div>
+                            )}
+                            <div>
+                                <div style={{ fontSize: 9, fontWeight: 700, color: T.textFaint, textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 2 }}>
+                                    Next Check
+                                </div>
+                                <div style={{ fontFamily: 'monospace', fontSize: 15, fontWeight: 800, color: nextCycleSeconds <= 3 ? T.primary : T.textMid }}>
+                                    {formatCountdown(nextCycleSeconds)}
+                                </div>
+                            </div>
+                        </div>
+                        <div style={{ fontSize: 10, color: T.textFaint, fontStyle: 'italic' }}>
+                            ⏱ Synced from backend
+                        </div>
+                    </div>
                 </div>
             </div>
 
@@ -186,7 +294,7 @@ const RebalancingTimeline = ({ clusterId, actions: externalActions }) => {
                     const borderColor = isS2S ? '#f59e0b' : T.border;
 
                     return (
-                    <div key={ai} style={{ background: T.surface, border: `1px solid ${borderColor}`, borderRadius: 10, padding: '16px 20px', marginBottom: 12, boxShadow: T.shadow }}>
+                    <div key={ai} style={{ background: T.surface, border: `1px solid ${action.status === 'failed' ? T.red : borderColor}`, borderRadius: 10, padding: '16px 20px', marginBottom: 12, boxShadow: T.shadow }}>
                             {/* Header */}
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16 }}>
                                 <div style={{ flex: 1, minWidth: 0 }}>
@@ -290,6 +398,17 @@ const RebalancingTimeline = ({ clusterId, actions: externalActions }) => {
                             {action.current_step === 'waiting_for_spot_node' && (
                                 <div style={{ marginTop: 12, padding: '8px 12px', background: T.amberLight, borderRadius: 6, fontSize: 12, color: T.amber, fontWeight: 500 }}>
                                     ⏳ Waiting for {action.provisioner_type === 'karpenter' ? 'Karpenter' : 'agent'} to provision a new spot node ({Math.round((action.spot_wait_elapsed_s || 0) / 60)} min elapsed, max 30 min)
+                                </div>
+                            )}
+                            {/* Failed migration: show error + pool change trail */}
+                            {action.status === 'failed' && action.error_message && (
+                                <div style={{ marginTop: 12, padding: '8px 12px', background: T.redLight, borderRadius: 6, fontSize: 12, color: T.red, fontWeight: 500 }}>
+                                    ✗ {action.error_message}
+                                </div>
+                            )}
+                            {action.pool_change_reason && (
+                                <div style={{ marginTop: 8, padding: '6px 10px', background: '#eff6ff', borderRadius: 6, fontSize: 11, color: '#1d4ed8', fontWeight: 500 }}>
+                                    ℹ Pool change: {action.pool_change_reason}
                                 </div>
                             )}
                     </div>

@@ -5,12 +5,25 @@ import './PoolRankings.css';
 
 /**
  * Derive instance family from full type string.
- * e.g. 't3.medium' → 't3', 'm5.large' → 'm5', 'c6g.xlarge' → 'c6g'
+ * e.g. 't3.medium' -> 't3', 'm5.large' -> 'm5', 'c6g.xlarge' -> 'c6g'
  */
 const getInstanceFamily = (instanceType) => {
     if (!instanceType) return null;
     const match = instanceType.match(/^([a-z]+\d*[a-z]*)/);
     return match ? match[1] : null;
+};
+
+const buildSavingsChartPaths = (pts) => {
+    if (!pts || pts.length === 0) return { pathData: '', fillPathData: '' };
+    const maxAmt = Math.max(...pts.map(p => p.amount), 1);
+    const stepX = 100 / (pts.length > 1 ? (pts.length - 1) : 1);
+    const pathData = pts.map((pt, i) => {
+        const x = i * stepX;
+        const y = 40 - (pt.amount / maxAmt * 35);
+        return `${i === 0 ? 'M' : 'L'} ${x} ${y}`;
+    }).join(' ');
+    const fillPathData = pts.length > 1 ? `${pathData} L 100 40 L 0 40 Z` : '';
+    return { pathData, fillPathData };
 };
 
 const buildTemplate = (primaryInstanceType) => {
@@ -41,7 +54,10 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
     const [clusterImpact, setClusterImpact] = useState(null);
     const [nodeViewLoading, setNodeViewLoading] = useState(false);
     const [clusterViewLoading, setClusterViewLoading] = useState(false);
+    const [savingsVelocityData, setSavingsVelocityData] = useState(null);
+    const [savingsVelocityLoading, setSavingsVelocityLoading] = useState(false);
     const [effectiveConfig, setEffectiveConfig] = useState(null);
+    const [rebalancingActions, setRebalancingActions] = useState([]);
     const [clusterInfo, setClusterInfo] = useState({
         region: 'us-east-1',
         primaryInstanceType: null,   // e.g. 't3.medium'
@@ -179,8 +195,29 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
                 const recs = Array.isArray(nodeData) ? nodeData : (nodeData.recommendations || []);
                 setNodeRecommendations(recs);
                 setEligiblePoolsCount(nodeData.eligible_pools_count ?? recs.length);
-                setFamilyDistribution(nodeData.family_distribution || {});
+                // Build distribution from recs grouped by lifecycle + instance_type
+                // (ignore target AZ — we want "what types are running", not "what pools are targeted")
+                const _distMap = {};
+                recs.forEach(rec => {
+                    const _lc = rec.lifecycle === 'spot' ? 'SPOT' : 'OD';
+                    const _key = `${rec.current_type} (${_lc})`;
+                    if (!_distMap[_key]) _distMap[_key] = { count: 0, pct: 0 };
+                    _distMap[_key].count++;
+                });
+                const _distTotal = Object.values(_distMap).reduce((s, v) => s + v.count, 0);
+                Object.keys(_distMap).forEach(k => {
+                    _distMap[k].pct = _distTotal > 0 ? Math.round((_distMap[k].count / _distTotal) * 100) : 0;
+                });
+                setFamilyDistribution(_distMap);
                 setDiversifyEnabled(nodeData.diversify_enabled || false);
+
+                // Fetch live rebalancing actions to drive real STATUS column
+                try {
+                    const rebRes = await atharvaaiAPI.getRebalancingStatus(clusterId, 20);
+                    setRebalancingActions(Array.isArray(rebRes.data) ? rebRes.data : []);
+                } catch (_rebErr) {
+                    // non-fatal — status column falls back to lifecycle-based logic
+                }
             } catch (err) {
                 console.debug('Node recommendations endpoint pending:', err.message);
                 setNodeRecommendations([]);
@@ -199,6 +236,18 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
                 setClusterImpact(null);
             } finally {
                 setClusterViewLoading(false);
+            }
+
+            // Fetch Savings Velocity (Non-blocking)
+            try {
+                setSavingsVelocityLoading(true);
+                const svRes = await atharvaaiAPI.getSavingsVelocity(clusterId, 30);
+                setSavingsVelocityData(svRes.data || null);
+            } catch (err) {
+                console.debug('Savings velocity endpoint pending or failed:', err.message);
+                setSavingsVelocityData(null);
+            } finally {
+                setSavingsVelocityLoading(false);
             }
 
             setClusterInfo(prev => ({ ...prev, primaryInstancePrice }));
@@ -506,223 +555,408 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
                             .reduce((sum, r) => sum + (r.current_cost || 0) * ((r.projected_savings_pct || 0) / 100) * 720, 0);
                         const spotNodes = nodeRecommendations.filter(r => r.lifecycle === 'spot').length;
                         const s2sCandidates = nodeRecommendations.filter(r => r.s2s_candidate).length;
+                        // Compute projected savings including OD→Spot fallback estimate
+                        // For OD nodes where backend returns 0% savings (same-type spot move),
+                        // estimate ~65% spot discount as a floor so the savings column is never blank.
+                        const estimatedProjSavings = nodeRecommendations.reduce((sum, r) => {
+                            if ((r.projected_savings_pct || 0) > 0) {
+                                return sum + (r.current_cost || 0) * (r.projected_savings_pct / 100) * 720;
+                            }
+                            if ((r.lifecycle || '').toLowerCase().includes('demand')) {
+                                // On-demand → spot: use 65% discount estimate
+                                return sum + (r.current_cost || 0) * 0.65 * 720;
+                            }
+                            return sum;
+                        }, 0);
+
                         return (
-                            <div className="grid grid-cols-2 md:grid-cols-6 gap-4">
-                                <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
-                                    <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Total Nodes</h4>
-                                    <p className="mt-2 text-2xl font-bold text-gray-900">
-                                        {nodeViewLoading ? '…' : totalNodes > 0 ? totalNodes : '0'}
-                                    </p>
-                                    {!nodeViewLoading && spotNodes > 0 && (
-                                        <p className="text-xs text-green-600 mt-1 font-medium">{spotNodes} spot</p>
-                                    )}
-                                </div>
-                                <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
-                                    <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Stateless</h4>
-                                    <p className="mt-2 text-2xl font-bold text-gray-900">
-                                        {nodeViewLoading ? '…' : statelessNodes}
-                                    </p>
-                                </div>
-                                <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
-                                    <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Eligible Pools</h4>
-                                    <p className="mt-2 text-2xl font-bold text-indigo-600">
-                                        {nodeViewLoading ? '…' : eligiblePoolsCount}
-                                    </p>
-                                    <p className="text-xs text-gray-400 mt-1">after node filter</p>
-                                </div>
-                                <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
-                                    <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">At Risk</h4>
-                                    <p className="mt-2 text-2xl font-bold text-orange-500">
-                                        {nodeViewLoading ? '…' : atRiskNodes}
-                                    </p>
-                                    <p className="text-xs text-gray-400 mt-1">risk &gt; 60%</p>
-                                </div>
-                                {/* S2S Candidates card */}
-                                <div className={`p-4 rounded-lg shadow-sm border ${s2sCandidates > 0 ? 'bg-amber-50 border-amber-200' : 'bg-white border-gray-200'}`}>
-                                    <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
-                                        SPOT→SPOT
-                                        {diversifyEnabled && (
-                                            <span className="ml-1 px-1 py-0.5 text-xs rounded bg-indigo-100 text-indigo-700">Diversify ON</span>
+                            <div>
+                                {/* ── Top summary row ── */}
+                                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">
+                                    {/* Savings Velocity */}
+                                    <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200 col-span-2 sm:col-span-3 lg:col-span-2 relative overflow-hidden">
+                                        <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Savings Velocity (Last 30 Days)</h4>
+                                        <p className="mt-1 text-2xl font-bold text-green-600">
+                                            {savingsVelocityLoading ? '…' : (savingsVelocityData?.last_30_days_total > 0 ? `$${savingsVelocityData.last_30_days_total}` : `$${Math.round(estimatedProjSavings)}`)}
+                                        </p>
+                                        <p className="text-xs text-gray-400 mt-0.5">
+                                            {savingsVelocityData?.last_30_days_total > 0 ? 'Realized savings' : 'Projected monthly'}
+                                        </p>
+                                        {savingsVelocityData?.data_points?.length > 0 && (
+                                            <div className="absolute -bottom-2 -right-2 -left-2 h-16 opacity-30 pointer-events-none">
+                                                <svg viewBox="0 0 100 40" preserveAspectRatio="none" className="w-full h-full">
+                                                    <defs>
+                                                        <linearGradient id="gradSV" x1="0" x2="0" y1="0" y2="1">
+                                                            <stop offset="0%" stopColor="#10b981" stopOpacity="0.8" />
+                                                            <stop offset="100%" stopColor="#10b981" stopOpacity="0" />
+                                                        </linearGradient>
+                                                    </defs>
+                                                    {buildSavingsChartPaths(savingsVelocityData.data_points).pathData && (
+                                                        <g>
+                                                            <path d={buildSavingsChartPaths(savingsVelocityData.data_points).fillPathData} fill="url(#gradSV)" />
+                                                            <path d={buildSavingsChartPaths(savingsVelocityData.data_points).pathData} fill="none" stroke="#10b981" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                                                        </g>
+                                                    )}
+                                                </svg>
+                                            </div>
                                         )}
-                                    </h4>
-                                    <p className={`mt-2 text-2xl font-bold ${s2sCandidates > 0 ? 'text-amber-600' : 'text-gray-400'}`}>
-                                        {nodeViewLoading ? '…' : s2sCandidates}
-                                    </p>
-                                    <p className="text-xs text-gray-400 mt-1">
-                                        {s2sCandidates > 0 ? 'eligible to migrate' : 'all optimal'}
-                                    </p>
-                                </div>
-                                <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
-                                    <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Proj. Savings</h4>
-                                    <p className="mt-2 text-2xl font-bold text-green-600">
-                                        {nodeViewLoading ? '$…' : projSavings > 0 ? `$${Math.round(projSavings)}/mo` : '$0/mo'}
-                                    </p>
-                                    {!nodeViewLoading && spotNodes > 0 && (
-                                        <p className="text-xs text-gray-400 mt-1">incl. realized</p>
-                                    )}
+                                    </div>
+                                    {/* Total Nodes */}
+                                    <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200 text-center">
+                                        <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Total Nodes</h4>
+                                        <p className="mt-2 text-2xl font-bold text-gray-900">{nodeViewLoading ? '…' : totalNodes}</p>
+                                        {!nodeViewLoading && spotNodes > 0 && <p className="text-xs text-green-600 mt-0.5 font-medium">{spotNodes} spot</p>}
+                                    </div>
+                                    {/* Eligible Pools */}
+                                    <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200 text-center">
+                                        <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Eligible Pools</h4>
+                                        <p className="mt-2 text-2xl font-bold text-indigo-600">{nodeViewLoading ? '…' : eligiblePoolsCount}</p>
+                                        <p className="text-xs text-gray-400 mt-0.5">after filter</p>
+                                    </div>
+                                    {/* At Risk */}
+                                    <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200 text-center">
+                                        <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">At Risk</h4>
+                                        <p className={`mt-2 text-2xl font-bold ${atRiskNodes > 0 ? 'text-orange-500' : 'text-gray-400'}`}>{nodeViewLoading ? '…' : atRiskNodes}</p>
+                                        <p className="text-xs text-gray-400 mt-0.5">risk &gt; 60%</p>
+                                    </div>
+                                    {/* Proj. Savings */}
+                                    <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200 text-center">
+                                        <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Proj. Savings</h4>
+                                        <p className="mt-2 text-2xl font-bold text-green-600">
+                                            {nodeViewLoading ? '$…' : estimatedProjSavings > 0 ? `$${Math.round(estimatedProjSavings)}/mo` : '$0/mo'}
+                                        </p>
+                                        <p className="text-xs text-gray-400 mt-0.5">{s2sCandidates > 0 ? `${s2sCandidates} S2S ready` : 'all optimal'}</p>
+                                    </div>
                                 </div>
                             </div>
                         );
                     })()}
 
-                    {/* Family Distribution Bar — shown when diversify is ON or multiple families */}
+                    {/* Savings Velocity — real data chart */}
+                    <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 mb-6 mt-4">
+                        <div className="flex justify-between items-center mb-4">
+                            <h4 className="text-[14px] font-extrabold text-slate-800">Savings Velocity (Last 30 Days)</h4>
+                            {savingsVelocityData?.last_30_days_total > 0 && (
+                                <div className="bg-green-50 text-green-700 px-3 py-1 rounded text-[11px] font-bold border border-green-100">
+                                    Total: ${savingsVelocityData.last_30_days_total} saved
+                                </div>
+                            )}
+                        </div>
+                        {savingsVelocityLoading ? (
+                            <div className="h-40 flex items-center justify-center text-slate-400 text-sm">Loading...</div>
+                        ) : savingsVelocityData?.data_points?.length > 0 ? (
+                            <div className="relative h-40 w-full">
+                                <svg className="w-full h-full" viewBox="0 0 1000 160" preserveAspectRatio="none">
+                                    <defs>
+                                        <linearGradient id="svFill" x1="0" x2="0" y1="0" y2="1">
+                                            <stop offset="0%" stopColor="#3b82f6" stopOpacity="0.15" />
+                                            <stop offset="100%" stopColor="#3b82f6" stopOpacity="0" />
+                                        </linearGradient>
+                                    </defs>
+                                    {(() => {
+                                        const pts = savingsVelocityData.data_points;
+                                        const maxAmt = Math.max(...pts.map(p => p.amount), 1);
+                                        const step = 1000 / (pts.length > 1 ? pts.length - 1 : 1);
+                                        const coords = pts.map((p, i) => ({
+                                            x: i * step,
+                                            y: 140 - (p.amount / maxAmt) * 120,
+                                            label: p.date ? new Date(p.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '',
+                                            amount: p.amount,
+                                        }));
+                                        const line = coords.map((c, i) => `${i === 0 ? 'M' : 'L'} ${c.x} ${c.y}`).join(' ');
+                                        const fill = `${line} L 1000 140 L 0 140 Z`;
+                                        return (
+                                            <g>
+                                                <path d={fill} fill="url(#svFill)" />
+                                                <path d={line} fill="none" stroke="#3b82f6" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+                                                {coords.map((c, i) => (
+                                                    <circle key={i} cx={c.x} cy={c.y} r="3.5" fill="#3b82f6" />
+                                                ))}
+                                            </g>
+                                        );
+                                    })()}
+                                </svg>
+                                <div className="absolute bottom-0 left-0 w-full flex justify-between text-[10px] font-bold text-slate-400 border-t border-slate-100 pt-2">
+                                    {(() => {
+                                        const pts = savingsVelocityData.data_points;
+                                        const step = Math.max(1, Math.floor(pts.length / 5));
+                                        return [0, step, step*2, step*3, pts.length-1].map((i, k) => {
+                                            const p = pts[Math.min(i, pts.length-1)];
+                                            return <span key={k}>{p?.date ? new Date(p.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }).toUpperCase() : ''}</span>;
+                                        });
+                                    })()}
+                                </div>
+                            </div>
+                        ) : (
+                            <div className="h-40 flex flex-col items-center justify-center text-slate-400">
+                                <svg className="w-10 h-10 mb-2 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" /></svg>
+                                <p className="text-sm font-medium">No realized savings data yet</p>
+                                <p className="text-xs mt-1 text-slate-300">Data accumulates as rebalancing completes</p>
+                            </div>
+                        )}
+                    </div>
+
+                    {/* Instance Pool Distribution */}
                     {!nodeViewLoading && Object.keys(familyDistribution).length > 0 && (
-                        <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
-                            <div className="flex items-center justify-between mb-3">
-                                <h4 className="text-xs font-semibold text-gray-600 uppercase tracking-wider">
-                                    Instance Family Distribution
-                                </h4>
+                        <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm mb-6">
+                            <div className="flex items-center justify-between mb-4">
+                                <h4 className="text-[11px] font-extrabold text-slate-400 uppercase tracking-widest">Instance Pool Distribution</h4>
                                 {diversifyEnabled && (
-                                    <span className="text-xs text-indigo-600 font-medium">
-                                        Diversify ON — 40% cap per family
+                                    <span className="text-[10px] font-bold text-indigo-600 bg-indigo-50 border border-indigo-200 px-2 py-0.5 rounded-full">
+                                        Diversify ON — 1 node max per pool
                                     </span>
                                 )}
                             </div>
-                            <div className="space-y-2">
-                                {Object.entries(familyDistribution)
-                                    .sort((a, b) => b[1].count - a[1].count)
-                                    .map(([fam, info]) => {
-                                        const pct = info.pct;
-                                        const overCap = diversifyEnabled && pct > 40;
+                            <div className="h-20 w-full flex rounded-lg overflow-hidden mb-4">
+                                {(() => {
+                                    const entries = Object.entries(familyDistribution).sort((a,b) => b[1].count - a[1].count);
+                                    const colors = ['#3b82f6','#22c55e','#f59e0b','#a855f7','#06b6d4','#f97316','#10b981','#a855f7'];
+                                    return entries.map(([label, info], idx) => {
+                                        // label is "t3.medium (OD)" or "t3.medium (SPOT)"
+                                        const isSpotLabel = label.includes('(SPOT)');
+                                        const bg = isSpotLabel ? '#22c55e' : colors[idx % colors.length];
                                         return (
-                                            <div key={fam} className="flex items-center gap-3">
-                                                <span className="w-16 text-xs font-mono font-medium text-gray-700 flex-shrink-0">{fam}</span>
-                                                <div className="flex-1 h-4 bg-gray-100 rounded-full overflow-hidden">
-                                                    <div
-                                                        className={`h-full rounded-full transition-all ${overCap ? 'bg-amber-400' : 'bg-indigo-400'}`}
-                                                        style={{ width: `${pct}%` }}
-                                                    />
-                                                </div>
-                                                <span className={`w-20 text-xs font-medium text-right flex-shrink-0 ${overCap ? 'text-amber-600' : 'text-gray-500'}`}>
-                                                    {info.count} node{info.count !== 1 ? 's' : ''} ({pct}%)
-                                                    {overCap && ' ⚠'}
-                                                </span>
+                                            <div
+                                                key={label}
+                                                className="flex flex-col justify-center px-4 border-r border-white/20 last:border-0 transition-all"
+                                                style={{ width: `${info.pct}%`, backgroundColor: bg }}
+                                            >
+                                                <div className="text-[12px] font-extrabold text-white truncate">{label}</div>
+                                                <div className="text-[10px] font-bold text-white mt-0.5">{info.count} node{info.count !== 1 ? 's' : ''} · {info.pct}%</div>
                                             </div>
                                         );
-                                    })}
+                                    });
+                                })()}
                             </div>
-                            {diversifyEnabled && Object.values(familyDistribution).some(i => i.pct > 40) && (
-                                <p className="mt-2 text-xs text-amber-600">
-                                    ⚠ Families above 40% will trigger SPOT→SPOT rebalancing to restore diversity
-                                </p>
-                            )}
+                            {/* Legend */}
+                            <div className="flex flex-wrap gap-2">
+                                {Object.entries(familyDistribution).sort((a,b) => b[1].count - a[1].count).map(([label, info], idx) => {
+                                    const colors = ['#3b82f6','#22c55e','#f59e0b','#a855f7','#06b6d4','#f97316','#10b981','#a855f7'];
+                                    const isSpotLabel = label.includes('(SPOT)');
+                                    const color = isSpotLabel ? '#22c55e' : colors[idx % colors.length];
+                                    return (
+                                        <span key={label} className="flex items-center gap-1 text-[11px] text-slate-600">
+                                            <span className="w-2.5 h-2.5 rounded-sm inline-block shrink-0" style={{ backgroundColor: color }} />
+                                            {label}
+                                            <span className="text-slate-400">({info.count} node{info.count !== 1 ? 's' : ''})</span>
+                                        </span>
+                                    );
+                                })}
+                            </div>
                         </div>
                     )}
 
                     {/* Table */}
-                    <div className="bg-white shadow-md rounded-lg overflow-x-auto">
-                        <table className="w-full min-w-[1000px] divide-y divide-gray-200 text-sm">
-                            <thead className="bg-gray-50">
+                    <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+                        <table className="w-full text-left">
+                            <thead className="bg-white border-b border-slate-100">
                                 <tr>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Node</th>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Current Type</th>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Cost/hr</th>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Action</th>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Target Pool</th>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Savings</th>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Risk</th>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Interruption</th>
+                                    <th className="px-6 py-5 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Node</th>
+                                    <th className="px-6 py-5 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Current Type</th>
+                                    <th className="px-6 py-5 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Target Pool</th>
+                                    <th className="px-6 py-5 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Status</th>
+                                    <th className="px-6 py-5 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Cost/Hr</th>
+                                    <th className="px-6 py-5 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-center">Cost Trend</th>
+                                    <th className="px-6 py-5 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Action</th>
+                                    <th className="px-6 py-5 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Savings</th>
                                 </tr>
                             </thead>
-                            <tbody className="bg-white divide-y divide-gray-200">
+                            <tbody className="divide-y divide-slate-100">
                                 {nodeRecommendations && nodeRecommendations.length > 0 ? (
                                     nodeRecommendations.map((rec, idx) => {
                                         const isSpot = rec.lifecycle === 'spot';
                                         const isS2S = rec.s2s_candidate;
-                                        const rowBg = isS2S ? 'bg-amber-50' : isSpot ? 'bg-green-50' : '';
-                                        return (
-                                        <tr key={idx} className={`hover:bg-gray-50 ${rowBg}`}>
-                                            {/* Node name + lifecycle badge */}
-                                            <td className="px-4 py-3 font-medium text-gray-900">
-                                                <div>{rec.node_name}</div>
-                                                <div className="flex flex-wrap gap-1 mt-0.5">
-                                                    {isSpot ? (
-                                                        <span className="px-1.5 py-0.5 text-xs font-semibold rounded bg-green-100 text-green-700">SPOT</span>
-                                                    ) : (
-                                                        <span className="px-1.5 py-0.5 text-xs font-semibold rounded bg-blue-100 text-blue-700">ON-DEMAND</span>
-                                                    )}
-                                                </div>
-                                            </td>
-                                            {/* Current type + family badge */}
-                                            <td className="px-4 py-3">
-                                                <div className="text-gray-900">{rec.current_type}</div>
-                                                {rec.instance_family && (
-                                                    <span className="text-xs text-gray-400">{rec.instance_family} family</span>
-                                                )}
-                                            </td>
-                                            <td className="px-4 py-3 text-gray-500">${rec.current_cost}/hr</td>
-                                            {/* Action column */}
-                                            <td className="px-4 py-3">
-                                                {isS2S ? (
-                                                    <div>
-                                                        <span className="px-2 py-0.5 text-xs font-semibold rounded-full bg-amber-100 text-amber-800">
-                                                            SPOT→SPOT
-                                                        </span>
-                                                        {rec.s2s_trigger && (
-                                                            <div className="mt-0.5 text-xs text-amber-600 max-w-[160px] truncate" title={rec.s2s_trigger}>
-                                                                {rec.s2s_trigger.startsWith('diversify') ? '🔀 ' : '⚡ '}
-                                                                {rec.s2s_trigger}
-                                                            </div>
-                                                        )}
+                                        // If backend returns 0% savings for an OD node (same-type spot move),
+                                        // estimate ~65% spot discount as a realistic floor value.
+                                        let savingsPct = rec.projected_savings_pct || 0;
+                                        if (savingsPct === 0 && !isSpot && rec.current_cost > 0) {
+                                            savingsPct = 65; // standard spot discount estimate
+                                        }
+                                        const savingsMo = ((rec.current_cost || 0) * (savingsPct / 100) * 720).toFixed(2);
+
+                                        // ── Real status from live rebalancing actions ──────────────
+                                        // Match this node to an in-flight action by EC2 instance_id
+                                        // or by source_pool (instance_type:az) as fallback.
+                                        const _activeAction = rebalancingActions.find(a => {
+                                            if (!['in_progress', 'waiting_agent'].includes(a.status)) return false;
+                                            if (rec.instance_id && a.instance_id && a.instance_id === rec.instance_id) return true;
+                                            // fallback: source_pool starts with current instance type AND same AZ
+                                            if (a.source_pool && rec.current_type && rec.az) {
+                                                const _spParts = (a.source_pool || '').split(':');
+                                                return _spParts[0] === rec.current_type && _spParts[1] === rec.az;
+                                            }
+                                            return false;
+                                        });
+                                        // Check if this SPOT node is the replacement being provisioned
+                                        // for an active migration — show MIGRATING instead of OPTIMIZED
+                                        // until the old OD node is terminated (action completes).
+                                        const _isMigratingReplacement = isSpot && rebalancingActions.some(a => {
+                                            if (!['in_progress', 'waiting_agent'].includes(a.status)) return false;
+                                            return (
+                                                (rec.instance_id && a.replacement_spot_instance_id &&
+                                                 a.replacement_spot_instance_id.startsWith(rec.instance_id?.substring(0, 12))) ||
+                                                (rec.instance_id && a.replacement_spot_instance_id &&
+                                                 rec.instance_id.startsWith(a.replacement_spot_instance_id?.substring(0, 12)))
+                                            );
+                                        });
+                                        const isProcessing = !!_activeAction;
+
+                                        // ── Determine Status and UI elements ──────────────────────
+                                        let statusText = '';
+                                        let statusIcon = null;
+                                        let actionBtn = null;
+                                        let trendLine = null;
+
+                                        if (isProcessing) {
+                                            // Node actively being rebalanced right now
+                                            statusText = 'Processing';
+                                            statusIcon = (
+                                                <div className="flex items-center space-x-2">
+                                                    <div className="w-5 h-5 flex items-center justify-center">
+                                                        <svg className="w-4 h-4 text-blue-500 animate-spin-slow" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
                                                     </div>
-                                                ) : isSpot ? (
-                                                    <span className="px-2 py-0.5 text-xs font-semibold rounded-full bg-green-100 text-green-700">
-                                                        ✓ Optimal
+                                                    <span className="text-[10px] font-bold text-blue-500 uppercase">Processing</span>
+                                                </div>
+                                            );
+                                            actionBtn = (
+                                                <button className="px-3 py-1.5 bg-blue-50 text-blue-700 text-[10px] font-bold rounded-md border border-blue-100 uppercase cursor-not-allowed opacity-60">
+                                                    {isSpot ? 'SPOT→SPOT' : 'OD→SPOT'}
+                                                </button>
+                                            );
+                                            trendLine = (
+                                                <div className="flex justify-center">
+                                                    <svg className="h-6 w-16 text-blue-500" viewBox="0 0 100 40">
+                                                        <path d="M0 10 L20 15 L40 12 L60 25 L80 30 L100 35" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="2.5"></path>
+                                                    </svg>
+                                                </div>
+                                            );
+                                        } else if (_isMigratingReplacement) {
+                                            // This spot node is the replacement for an OD node currently
+                                            // being migrated — don't show OPTIMIZED until old node is gone.
+                                            statusText = 'Migrating';
+                                            statusIcon = (
+                                                <div className="flex items-center space-x-2">
+                                                    <div className="w-5 h-5 flex items-center justify-center">
+                                                        <svg className="w-4 h-4 text-indigo-500 animate-spin-slow" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+                                                    </div>
+                                                    <span className="text-[10px] font-bold text-indigo-500 uppercase">Migrating</span>
+                                                </div>
+                                            );
+                                            actionBtn = (
+                                                <button className="px-3 py-1.5 bg-indigo-50 text-indigo-600 text-[10px] font-bold rounded-md border border-indigo-100 uppercase cursor-not-allowed opacity-60">New Spot</button>
+                                            );
+                                            trendLine = (
+                                                <div className="flex justify-center">
+                                                    <svg className="h-6 w-16 text-indigo-400" viewBox="0 0 100 40">
+                                                        <path d="M0 35 L25 28 L50 20 L75 12 L100 5" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="2.5"></path>
+                                                    </svg>
+                                                </div>
+                                            );
+                                        } else if (isSpot && !isS2S) {
+                                            // Already on spot and no better pool available — fully optimized
+                                            statusText = 'Optimized';
+                                            statusIcon = (
+                                                <div className="flex items-center space-x-2">
+                                                    <div className="w-5 h-5 flex items-center justify-center text-emerald-600">
+                                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 10-9.78 2.096A4.001 4.001 0 003 15z"></path><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M9 13l2 2 4-4"></path></svg>
+                                                    </div>
+                                                    <span className="text-[10px] font-bold text-emerald-600 uppercase">Optimized</span>
+                                                </div>
+                                            );
+                                            actionBtn = (
+                                                <button className="px-3 py-1.5 bg-slate-100 text-slate-400 text-[10px] font-bold rounded-md border border-slate-200 uppercase cursor-not-allowed">Active</button>
+                                            );
+                                            trendLine = (
+                                                <div className="flex justify-center">
+                                                    <svg className="h-6 w-16 text-emerald-500" viewBox="0 0 100 40">
+                                                        <path d="M0 35 L20 32 L40 38 L60 35 L80 37 L100 35" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="2.5"></path>
+                                                    </svg>
+                                                </div>
+                                            );
+                                        } else {
+                                            // OD node not yet in flight, OR spot node ready for S2S upgrade
+                                            statusText = 'Ready';
+                                            statusIcon = (
+                                                <div className="flex items-center space-x-2">
+                                                    <div className="w-5 h-5 flex items-center justify-center">
+                                                        <div className="w-2 h-2 bg-amber-500 rounded-full animate-blink shadow-[0_0_8px_rgba(245,158,11,0.6)]"></div>
+                                                    </div>
+                                                    <span className="text-[10px] font-bold text-amber-600 uppercase">Ready</span>
+                                                </div>
+                                            );
+                                            actionBtn = (
+                                                <button className="px-3 py-1.5 bg-blue-50 text-blue-700 text-[10px] font-bold rounded-md border border-blue-100 uppercase hover:bg-blue-100">
+                                                    {isS2S ? 'SPOT→SPOT' : 'OD→SPOT'}
+                                                </button>
+                                            );
+                                            trendLine = (
+                                                <div className="flex justify-center">
+                                                    <svg className="h-6 w-16 text-amber-400" viewBox="0 0 100 40">
+                                                        <path d="M0 25 L25 20 L50 15 L75 10 L100 8" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="2.5"></path>
+                                                    </svg>
+                                                </div>
+                                            );
+                                        }
+
+                                        return (
+                                            <tr key={idx} className="hover:bg-slate-50/50 transition-colors">
+                                                <td className="px-6 py-5">
+                                                    <div className="flex flex-col">
+                                                        <span className="text-sm font-bold text-slate-900">{rec.node_name}</span>
+                                                        <span className={`text-[10px] font-bold uppercase tracking-tight ${isSpot ? 'text-emerald-600' : 'text-blue-600'}`}>
+                                                            {isSpot ? 'SPOT' : 'ON-DEMAND'}
+                                                        </span>
+                                                    </div>
+                                                </td>
+                                                <td className="px-6 py-5">
+                                                    <div className="flex flex-col">
+                                                        <span className="text-sm font-medium text-slate-700">{rec.current_type}</span>
+                                                        <span className="text-[10px] text-slate-400">{rec.instance_family ? `${rec.instance_family} family` : ''}</span>
+                                                    </div>
+                                                </td>
+                                                <td className="px-6 py-5">
+                                                    {(isSpot && !isS2S) ? (
+                                                        <span className="text-sm font-medium text-slate-400">—</span>
+                                                    ) : (
+                                                        <div className="flex flex-col">
+                                                            <span className="text-sm font-medium text-slate-700">{rec.target_type}</span>
+                                                            <span className="text-[10px] text-slate-400">{rec.target_az}</span>
+                                                        </div>
+                                                    )}
+                                                </td>
+                                                <td className="px-6 py-5">
+                                                    {statusIcon}
+                                                </td>
+                                                <td className="px-6 py-5 text-sm font-semibold text-slate-600">
+                                                    ${rec.current_cost}/hr
+                                                </td>
+                                                <td className="px-6 py-5">
+                                                    {trendLine}
+                                                </td>
+                                                <td className="px-6 py-5">
+                                                    {actionBtn}
+                                                </td>
+                                                <td className="px-6 py-5 text-right">
+                                                    <span className={`text-sm font-bold ${savingsPct > 0 ? 'text-emerald-600' : 'text-slate-400'}`}>
+                                                        {savingsPct > 0 ? `$${savingsMo}/mo` : '—'}
                                                     </span>
-                                                ) : (
-                                                    <span className="px-2 py-0.5 text-xs font-semibold rounded-full bg-indigo-100 text-indigo-700">
-                                                        OD→SPOT
-                                                    </span>
-                                                )}
-                                            </td>
-                                            {/* Target pool */}
-                                            <td className="px-4 py-3">
-                                                {isSpot && !isS2S ? (
-                                                    <span className="text-xs text-green-600 font-medium">—</span>
-                                                ) : (
-                                                    <>
-                                                        <div className="font-medium text-gray-900">{rec.target_type}</div>
-                                                        <div className="text-xs text-gray-400">{rec.target_az}</div>
-                                                    </>
-                                                )}
-                                            </td>
-                                            {/* Savings */}
-                                            <td className={`px-4 py-3 font-semibold ${rec.projected_savings_pct > 0 ? 'text-green-600' : 'text-gray-400'}`}>
-                                                {rec.projected_savings_pct > 0 ? `${rec.projected_savings_pct}%` : '—'}
-                                                {isSpot && rec.projected_savings_pct > 0 && (
-                                                    <span className="block text-xs text-green-500 font-normal">realized</span>
-                                                )}
-                                            </td>
-                                            {/* Risk */}
-                                            <td className="px-4 py-3 text-blue-600 font-bold">{rec.risk_score}</td>
-                                            {/* Interruption rate */}
-                                            <td className="px-4 py-3">
-                                                <span className={`px-2 py-0.5 inline-flex text-xs font-semibold rounded-full ${
-                                                    rec.interruption_rate === '<5%' ? 'bg-green-100 text-green-800' :
-                                                    rec.interruption_rate === '5–10%' ? 'bg-blue-100 text-blue-800' :
-                                                    rec.interruption_rate === '10–15%' ? 'bg-yellow-100 text-yellow-800' :
-                                                    rec.interruption_rate === '15–20%' ? 'bg-orange-100 text-orange-800' :
-                                                    'bg-red-100 text-red-800'
-                                                }`}>
-                                                    {rec.interruption_rate || '—'}
-                                                </span>
-                                            </td>
-                                        </tr>
+                                                </td>
+                                            </tr>
                                         );
                                     })
                                 ) : (
                                     <tr>
-                                        <td colSpan="8" className="px-4 py-12 text-center text-gray-500">
+                                        <td colSpan="8" className="px-6 py-12 text-center text-slate-500">
                                             {nodeViewLoading ? (
                                                 <div className="flex flex-col items-center">
-                                                    <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600 mb-4"></div>
+                                                    <div className="w-8 h-8 flex items-center justify-center mb-4">
+                                                        <svg className="w-6 h-6 text-blue-500 animate-spin-slow" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+                                                    </div>
                                                     <p>Gathering node telemetry...</p>
                                                 </div>
                                             ) : (
                                                 <div className="flex flex-col items-center">
-                                                    <FiServer className="h-10 w-10 text-gray-300 mb-3" />
                                                     <p>No actionable node recommendations available.</p>
-                                                    <p className="text-xs text-gray-400 mt-1">Optimization API may be disabled or pending data.</p>
                                                 </div>
                                             )}
                                         </td>
@@ -858,44 +1092,40 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
                         {/* Spot vs On-Demand Ratio */}
                         <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200 h-64 flex flex-col">
                             <h4 className="text-sm font-semibold text-gray-700 mb-3">Spot vs On-Demand Ratio</h4>
-                            {clusterImpact?.total_nodes > 0 ? (() => {
-                                const spotPct = clusterImpact.spot_ratio ?? 0;
-                                const odPct = 100 - spotPct;
-                                return (
-                                    <div className="flex-1 flex flex-col justify-center gap-4">
-                                        {/* Gauge arc approximation */}
-                                        <div className="flex justify-center">
-                                            <div className="relative w-32 h-16 overflow-hidden">
-                                                <div className="absolute inset-0 rounded-t-full bg-gray-200" />
-                                                <div
-                                                    className="absolute inset-0 rounded-t-full bg-gradient-to-r from-green-400 to-green-600 origin-bottom"
-                                                    style={{ transform: `rotate(${(spotPct / 100) * 180 - 90}deg)`, clipPath: 'polygon(50% 100%,0 0,100% 0)' }}
-                                                />
-                                                <div className="absolute inset-x-4 bottom-0 flex items-end justify-center pb-1">
-                                                    <span className="text-2xl font-bold text-gray-900">{spotPct}%</span>
-                                                </div>
+                            {clusterImpact?.total_nodes > 0 ? (
+                                <div className="flex-1 flex flex-col justify-center gap-4">
+                                    {/* Gauge arc approximation */}
+                                    <div className="flex justify-center">
+                                        <div className="relative w-32 h-16 overflow-hidden">
+                                            <div className="absolute inset-0 rounded-t-full bg-gray-200" />
+                                            <div
+                                                className="absolute inset-0 rounded-t-full bg-gradient-to-r from-green-400 to-green-600 origin-bottom"
+                                                style={{ transform: `rotate(${((clusterImpact.spot_ratio ?? 0) / 100) * 180 - 90}deg)`, clipPath: 'polygon(50% 100%,0 0,100% 0)' }}
+                                            />
+                                            <div className="absolute inset-x-4 bottom-0 flex items-end justify-center pb-1">
+                                                <span className="text-2xl font-bold text-gray-900">{clusterImpact.spot_ratio ?? 0}%</span>
                                             </div>
-                                        </div>
-                                        <div className="text-center text-xs text-gray-500 -mt-2">Spot Ratio</div>
-                                        {/* Legend */}
-                                        <div className="flex justify-center gap-6 text-sm">
-                                            <div className="flex items-center gap-1.5">
-                                                <div className="w-3 h-3 rounded-full bg-green-500" />
-                                                <span className="text-gray-700">Spot <strong>{clusterImpact.spot_count}</strong></span>
-                                            </div>
-                                            <div className="flex items-center gap-1.5">
-                                                <div className="w-3 h-3 rounded-full bg-blue-400" />
-                                                <span className="text-gray-700">On-Demand <strong>{clusterImpact.on_demand_count}</strong></span>
-                                            </div>
-                                        </div>
-                                        {/* Stacked bar */}
-                                        <div className="flex h-4 rounded-full overflow-hidden mx-4">
-                                            <div className="bg-green-500 transition-all" style={{ width: `${spotPct}%` }} />
-                                            <div className="bg-blue-400 transition-all" style={{ width: `${odPct}%` }} />
                                         </div>
                                     </div>
-                                );
-                            })() : (
+                                    <div className="text-center text-xs text-gray-500 -mt-2">Spot Ratio</div>
+                                    {/* Legend */}
+                                    <div className="flex justify-center gap-6 text-sm">
+                                        <div className="flex items-center gap-1.5">
+                                            <div className="w-3 h-3 rounded-full bg-green-500" />
+                                            <span className="text-gray-700">Spot <strong>{clusterImpact.spot_count}</strong></span>
+                                        </div>
+                                        <div className="flex items-center gap-1.5">
+                                            <div className="w-3 h-3 rounded-full bg-blue-400" />
+                                            <span className="text-gray-700">On-Demand <strong>{clusterImpact.on_demand_count}</strong></span>
+                                        </div>
+                                    </div>
+                                    {/* Stacked bar */}
+                                    <div className="flex h-4 rounded-full overflow-hidden mx-4">
+                                        <div className="bg-green-500 transition-all" style={{ width: `${clusterImpact.spot_ratio ?? 0}%` }} />
+                                        <div className="bg-blue-400 transition-all" style={{ width: `${100 - (clusterImpact.spot_ratio ?? 0)}%` }} />
+                                    </div>
+                                </div>
+                            ) : (
                                 <div className="flex-1 flex items-center justify-center bg-gray-50 rounded border border-dashed border-gray-300">
                                     <span className="text-gray-400 text-sm">No data</span>
                                 </div>

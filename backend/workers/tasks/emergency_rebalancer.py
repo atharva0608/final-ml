@@ -96,6 +96,20 @@ def emergency_rebalancer(
         db.add(action)
         db.commit()
 
+        # ── Task 3.1: Karpenter EC2 direct path ────────────────────────
+        # If Karpenter manages this cluster, skip all ASG interaction
+        # (detach / terminate-in-group would conflict with Karpenter's
+        # NodeClaim reconciler).  Use direct ec2.terminate_instances().
+        _karp_key = f"spot:karpenter:installed:{cluster_id}"
+        if redis.exists(_karp_key):
+            logger.info(
+                f"[emergency] Karpenter installed on {cluster.name} — "
+                f"using EC2 direct terminate path"
+            )
+            return _execute_karpenter_emergency(
+                db, redis, cluster, interrupted, action
+            )
+
         # Check cluster settings for standby
         settings = cluster.settings or {}
         auto_rebalance = settings.get("auto_rebalance", {})
@@ -284,3 +298,102 @@ def _execute_normal_emergency(db, redis, cluster, interrupted, action):
         logger.error(f"[emergency] Normal emergency flow failed: {e}")
         db.rollback()
         return {"status": "error", "method": "normal_emergency", "error": str(e)}
+
+
+def _execute_karpenter_emergency(db, redis, cluster, interrupted, action):
+    """
+    Karpenter emergency path — direct EC2 terminate, zero ASG interaction.
+
+    Steps:
+    1. CORDON the interrupted node (prevent new scheduling)
+    2. DRAIN with 90s grace + force (emergency mode)
+    3. Direct ec2.terminate_instances() — Karpenter will auto-provision replacement
+    4. Update action record
+
+    Karpenter's `consolidationPolicy: WhenUnderutilized` + NodePool constraints
+    ensure a replacement is launched automatically once the node is gone.
+    """
+    from backend.models.agent_action import AgentAction, AgentActionType, AgentActionStatus
+    from backend.models.base import generate_uuid
+
+    try:
+        # 1. Cordon interrupted node
+        cordon_action = AgentAction(
+            id=generate_uuid(),
+            cluster_id=cluster.id,
+            action_type=AgentActionType.CORDON_NODE,
+            payload={"node_name": interrupted.node_name},
+            status=AgentActionStatus.PENDING,
+            priority=10,  # Emergency priority
+        )
+        db.add(cordon_action)
+        db.commit()
+
+        # 2. Drain with emergency settings (90s grace, force=True)
+        drain_action = AgentAction(
+            id=generate_uuid(),
+            cluster_id=cluster.id,
+            action_type=AgentActionType.DRAIN_NODE,
+            payload={
+                "node_name": interrupted.node_name,
+                "grace_period": 90,
+                "ignore_daemonsets": True,
+                "force": True,
+                "emergency": True,
+            },
+            status=AgentActionStatus.PENDING,
+            priority=10,
+        )
+        db.add(drain_action)
+        db.commit()
+        logger.info(f"[emergency/karpenter] CORDON+DRAIN queued for {interrupted.node_name}")
+
+        # 3. Queue TERMINATE_NODE with termination_mode=karpenter
+        #    The agent actuator will call ec2.terminate_instances() directly,
+        #    with zero ASG detach/suspend/resume calls.
+        terminate_action = AgentAction(
+            id=generate_uuid(),
+            cluster_id=cluster.id,
+            action_type=AgentActionType.TERMINATE_NODE,
+            payload={
+                "node_name": interrupted.node_name,
+                "instance_id": interrupted.instance_id,
+                "termination_mode": "karpenter",
+                "reason": "emergency_karpenter",
+            },
+            status=AgentActionStatus.PENDING,
+            priority=10,
+        )
+        db.add(terminate_action)
+        db.commit()
+        logger.info(
+            f"[emergency/karpenter] TERMINATE_NODE queued for {interrupted.instance_id} "
+            f"(mode=karpenter, direct EC2 terminate)"
+        )
+
+        # 4. Mark interrupted as terminating
+        interrupted.state = "terminating"
+        db.commit()
+
+        # 5. Update action record
+        action.status = "completed"
+        action.completed_at = datetime.utcnow()
+        action.action_metadata = {
+            "emergency": True,
+            "method": "karpenter_direct",
+            "termination_mode": "karpenter",
+        }
+        db.commit()
+
+        return {
+            "status": "ok",
+            "method": "karpenter_direct",
+            "interrupted_node": interrupted.node_name,
+            "interrupted_instance": interrupted.instance_id,
+            "termination_mode": "karpenter",
+        }
+
+    except Exception as e:
+        logger.error(f"[emergency/karpenter] Karpenter emergency failed: {e}")
+        db.rollback()
+        return {"status": "error", "method": "karpenter_direct", "error": str(e)}

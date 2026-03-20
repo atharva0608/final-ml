@@ -73,8 +73,32 @@ def scrape_spot_advisor_data() -> Dict[str, Any]:
 
         logger.info(f"[SVC-SCRAPE-01] Fetched Spot Advisor data successfully")
 
+        # ── Issue #19 / Task 2.1: Spot Advisor versioning ─────────────
+        # Compute SHA-256 hash of the raw JSON. If it matches the cached
+        # version, skip DB + Redis writes entirely to avoid redundant churn
+        # when the upstream data hasn't changed between daily scrapes.
+        import hashlib
+        _raw_bytes = response.content  # original bytes from S3
+        _new_hash = hashlib.sha256(_raw_bytes).hexdigest()
+        _old_hash = redis_client.get("spot:advisor:version")
+        if _old_hash:
+            _old_hash = _old_hash.decode("utf-8") if isinstance(_old_hash, bytes) else _old_hash
+        if _new_hash == _old_hash:
+            logger.info(
+                "[SVC-SCRAPE-01] Spot Advisor data unchanged (hash match) — skipping write"
+            )
+            return {
+                "status": "skipped",
+                "reason": "data_unchanged",
+                "hash": _new_hash,
+                "timestamp": datetime.utcnow().isoformat(),
+            }
+
         # Parse and store data
         stats = parse_and_store_data(data, db, redis_client)
+
+        # Update version hash AFTER successful store
+        redis_client.set("spot:advisor:version", _new_hash)
 
         logger.info(f"[SVC-SCRAPE-01] Scrape complete: {stats}")
 

@@ -208,7 +208,8 @@ async def get_pending_actions(
             AgentAction.cluster_id == cluster.id,
             AgentAction.status == AgentActionStatus.PENDING,
         )
-        .order_by(AgentAction.created_at)
+        # Issue #7: FIFO with priority pre-emption — high-priority emergency actions first
+        .order_by(AgentAction.priority.desc(), AgentAction.created_at.asc())
         .limit(10)
         .all()
     )
@@ -358,11 +359,15 @@ class OrchestratorCommandResult(BaseModel):
 async def get_pending_commands(
     cluster_id: str,
     db: Session = Depends(get_db),
+    cluster: Cluster = Depends(validate_api_key),  # Issue #2: authentication
 ):
     """
     Return a list of PENDING AgentActions for the given cluster.
     Called by the orchestrator (not the DaemonSet agent) to poll for work.
     """
+    # Verify the API key belongs to the requested cluster
+    if cluster.id != cluster_id:
+        raise HTTPException(status_code=403, detail="API key does not match cluster_id")
     from backend.models.agent_action import AgentAction, AgentActionStatus
     from datetime import datetime as _dt
 
@@ -372,7 +377,8 @@ async def get_pending_commands(
             AgentAction.cluster_id == cluster_id,
             AgentAction.status == AgentActionStatus.PENDING,
         )
-        .order_by(AgentAction.created_at)
+        # Issue #7: FIFO with priority — emergency actions (higher priority) come first
+        .order_by(AgentAction.priority.desc(), AgentAction.created_at.asc())
         .limit(20)
         .all()
     )
@@ -400,11 +406,15 @@ async def report_command_result(
     cluster_id: str,
     result: OrchestratorCommandResult,
     db: Session = Depends(get_db),
+    cluster: Cluster = Depends(validate_api_key),  # Issue #2: authentication
 ):
     """
     Receive the execution result of a previously issued orchestrator command.
     Updates the AgentAction status to COMPLETED or FAILED.
     """
+    # Verify the API key belongs to the requested cluster
+    if cluster.id != cluster_id:
+        raise HTTPException(status_code=403, detail="API key does not match cluster_id")
     from backend.models.agent_action import AgentAction, AgentActionStatus
     from datetime import datetime as _dt
 

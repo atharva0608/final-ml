@@ -522,8 +522,17 @@ class PoolRotationService:
         return None
 
     def _get_region_azs(self, region: str) -> List[str]:
-        """Get all availability zones for a region."""
-        # Hardcoded for ap-south-1
+        """Get all availability zones for a region.
+
+        WARNING (Task 4.7): Hardcoded fallback. TODO: Query EC2 describe_availability_zones
+        dynamically and cache in Redis with 24h TTL.
+        """
+        # Hardcoded fallback — acceptable as boot default, but should be replaced
+        # with ec2.describe_availability_zones() cached in Redis (24h TTL).
+        logger.debug(
+            f"[_get_region_azs] Using hardcoded AZ list for region={region} "
+            f"(fallback — dynamic discovery not yet implemented)"
+        )
         if region == "ap-south-1":
             return ["aps1-az1", "aps1-az2", "aps1-az3"]
         else:

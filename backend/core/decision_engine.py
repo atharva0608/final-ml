@@ -650,13 +650,35 @@ class DecisionEngine:
             return DEFAULT_PROFILE
 
     def _load_global_rankings(self, region: str) -> Optional[Dict]:
-        """Load global rankings from Redis (Intelligence Layer output)."""
+        """Load global rankings from Redis (Intelligence Layer output).
+
+        Issue #6: On cache miss, triggers a synchronous rebuild via the pool
+        ranking pipeline instead of waiting for the next Celery beat cycle.
+        """
         try:
             cache_key = f"spot:global_rankings:{region}"
             data = self.redis.get(cache_key)
 
             if data:
                 return json.loads(data)
+
+            # Issue #6: Cache miss — attempt synchronous rebuild
+            logger.warning(
+                f"Global pool rankings cache miss for region {region}, "
+                f"triggering synchronous rebuild"
+            )
+            try:
+                from backend.services.pool_ranking_service import PoolRankingService
+                ranking_svc = PoolRankingService(self.redis, self.db)
+                ranking_svc.refresh_global_rankings(region)
+
+                # Retry read after rebuild
+                data = self.redis.get(cache_key)
+                if data:
+                    logger.info(f"Global rankings rebuilt successfully for {region}")
+                    return json.loads(data)
+            except Exception as rebuild_err:
+                logger.error(f"Synchronous rankings rebuild failed for {region}: {rebuild_err}")
 
             return None
 

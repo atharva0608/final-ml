@@ -14,6 +14,7 @@ Optional env vars:
 - NAMESPACE: Agent namespace (default: spot-optimizer)
 - DRY_RUN: Dry-run mode, log actions without executing (default: false)
 - WEBSOCKET_ENABLED: Enable WebSocket client (default: true)
+- CLUSTER_NAME: Kubernetes cluster name (used for Karpenter NodePool auto-create, Issue #11)
 """
 
 import os
@@ -47,6 +48,9 @@ class Config:
         self.namespace = os.getenv('NAMESPACE', 'spot-optimizer')
         self.dry_run = os.getenv('DRY_RUN', 'false').lower() == 'true'
         self.websocket_enabled = os.getenv('WEBSOCKET_ENABLED', 'true').lower() == 'true'
+        # ISSUE-11 FIX: Explicit cluster name for Karpenter NodePool auto-create.
+        # When set, actuator.py uses this directly instead of ConfigMap/node-label inference.
+        self.cluster_name = os.getenv('CLUSTER_NAME', '').strip()
 
         # Derived configuration
         self.agent_id = f"{self.cluster_id}-agent"
@@ -55,6 +59,7 @@ class Config:
         logger.info(f"[AGENT-CFG-01] Configuration loaded")
         logger.info(f"[AGENT-CFG-01]   API URL: {self.api_url}")
         logger.info(f"[AGENT-CFG-01]   Cluster ID: {self.cluster_id}")
+        logger.info(f"[AGENT-CFG-01]   Cluster Name: {self.cluster_name or '(not set — will infer)'}")
         logger.info(f"[AGENT-CFG-01]   Namespace: {self.namespace}")
         logger.info(f"[AGENT-CFG-01]   Collection Interval: {self.collection_interval}s")
         logger.info(f"[AGENT-CFG-01]   Heartbeat Interval: {self.heartbeat_interval}s")
