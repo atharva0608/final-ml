@@ -23,7 +23,7 @@ from backend.workers.app import app
 from backend.models.base import get_db
 from backend.models.instance import Instance, InstanceLifecycle
 from backend.models.rebalancing_action import RebalancingAction
-from backend.models.aws_account import AWSAccount
+from backend.models.account import Account as AWSAccount
 from backend.models.cluster import Cluster
 from backend.models.system_config import SystemConfig
 from backend.core.logger import logger
@@ -221,7 +221,7 @@ def reconciliation_worker():
 
             try:
                 # Get account for this cluster
-                account = db.query(AWSAccount).filter_by(id=cluster.aws_account_id).first()
+                account = db.query(AWSAccount).filter_by(id=cluster.account_id).first()
                 if not account:
                     logger.warning(f"[reconcile] No account found for cluster {cluster.id}")
                     continue

@@ -280,3 +280,87 @@ Migration command:
 ```
 docker compose exec backend alembic upgrade head
 ```
+
+---
+
+# Progress Log — changes.md Phase 1–4 Implementation (2026-03-20)
+
+## Validation Summary (before implementation)
+
+| Task | Component | Status Before | Action |
+|------|-----------|--------------|--------|
+| 1.1 | spot_advisor_scraper.py — per-region timestamp | MISSING | FIXED |
+| 1.2 | pricing_collector.py — no InstanceTypes filter, paginated | ALREADY OK | Skip |
+| 1.3 | instance_catalog table + DB-backed catalog | ALREADY EXISTS | Skip |
+| 1.4 | cache_builder.py — enrichment + savings filter | CRITICAL MISSING | FIXED |
+| 2.1 | category_mapping.json — all gen families present | ALREADY OK (78 families) | Skip |
+| 2.2 | Capacity validator — staleness (not vcpu gate) | Different function | Skip |
+| 2.3 | Architecture filter — not hardcoded to amd64 | ALREADY OK | Skip |
+| 2.6 | Rejection audit logging in decision_engine | MISSING | FIXED |
+| 2.7 | estimate_az_interruption + record_interruption_event | MISSING | FIXED |
+| 3.1 | Weighted scoring formula | ALREADY EXISTS (EV model) | Skip |
+| 3.2 | Remove [:10] pool cap in decision_engine.py | CONFIRMED REAL | FIXED |
+| 4.1 | /market-view API endpoint | MISSING | FIXED |
+| 4.3 | /pool-audit API endpoint | MISSING | FIXED |
+| 4.4 | Frontend funnel visualization in Cluster Impact View | MISSING | FIXED |
+
+**Critical root cause found:** `cache_builder.py` stored only default risk_tier for all pools — no OD price, no vcpu/memory/arch, no savings filter. `decision_engine.py` had a `[:10]` hard cap in tier expansion fallback. `reconciliation_worker.py` had wrong import (`aws_account` → `account`).
+
+---
+
+## Changes Implemented
+
+### Task 1.1 — Per-Region Timestamp (spot_advisor_scraper.py)
+- After each region's DB commit, writes `spot:advisor:last_scraped:{region}` per-region timestamp
+
+### Task 1.4 — Cache Builder Pool Enrichment (cache_builder.py) — CRITICAL
+- Looks up `ondemand_price:{region}:{instance_type}` from Redis → actual OD price
+- Looks up `spot_advisor:{region}:{instance_type}:Linux` → actual interruption rate
+- Looks up vcpu/memory_gb/architecture from 80-type `_FALLBACK_SPECS` dict
+- Assigns actual `risk_tier` via `assign_risk_tier(interruption_rate_pct)`
+- Computes `savings_pct = (od_price - spot_price) / od_price * 100`; skips if ≤ 0
+- Enriched pool dicts: `vcpu, memory_gb, architecture, ondemand_price, savings_pct, interruption_rate_pct, risk_tier`
+- Logs: `raw_spot_keys / no_od_price / negative_savings / no_specs / final_pool_count`
+
+### Task 2.6 — Rejection Audit Logging (decision_engine.py)
+- `rank_for_node()` tracks: `blacklisted`, `too_small_vcpu`, `too_small_memory`, `arch_incompatible`
+- Caches audit to Redis `pool_audit:{cluster_id}:{node_id}` TTL=300s
+
+### Task 2.7 — AZ Interruption Estimation (pool_ranking_service.py)
+- `estimate_az_interruption()`: 3-layer model (region rate + AZ price premium + EMA history)
+- `record_interruption_event()`: EMA update (`rate * 0.9 + 25 * 0.1`), TTL 7 days
+
+### Task 3.2 — Remove Pool Cap (decision_engine.py)
+- Removed `[:10]` from `_relax_with_tier_expansion()` — no artificial limit
+
+### Task 4.1 — Market View API (atharvaai_routes.py)
+- `GET /api/v1/atharvaai/clusters/{cluster_id}/market-view?page=1&page_size=20&sort_by=risk_tier`
+
+### Task 4.3 — Pool Audit API (atharvaai_routes.py)
+- `GET /api/v1/atharvaai/clusters/{cluster_id}/nodes/{node_id}/pool-audit`
+
+### Task 4.4 — Frontend Funnel Visualization (PoolRankings.jsx + api.js)
+- `getMarketView()` + `getPoolAudit()` added to `atharvaaiAPI`
+- Pool Eligibility Funnel panel added to Cluster Impact View (raw → rejections → eligible)
+
+### Bug Fix — reconciliation_worker.py
+- Fixed wrong import: `aws_account.AWSAccount` → `account.Account as AWSAccount`
+- Fixed `cluster.aws_account_id` → `cluster.account_id`
+
+---
+
+## Summary of Files Changed
+
+| File | Change |
+|------|--------|
+| `backend/workers/tasks/cache_builder.py` | Full enrichment rewrite |
+| `backend/core/decision_engine.py` | Remove `[:10]` + rejection audit |
+| `backend/scrapers/spot_advisor_scraper.py` | Per-region timestamp |
+| `backend/services/pool_ranking_service.py` | `estimate_az_interruption()` + `record_interruption_event()` |
+| `backend/api/atharvaai_routes.py` | `/market-view` + `/pool-audit` endpoints |
+| `frontend/src/services/api.js` | `getMarketView()` + `getPoolAudit()` |
+| `frontend/src/components/atharvaai/PoolRankings.jsx` | Funnel panel + state |
+| `backend/workers/tasks/reconciliation_worker.py` | Fix import + account_id field |
+
+## Docker Rebuild
+All containers rebuilt and healthy ✅

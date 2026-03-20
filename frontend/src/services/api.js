@@ -366,6 +366,16 @@ export const atharvaaiAPI = {
             params: { page, page_size: pageSize },
         }),
 
+    // Market View — full ranked pool list for a cluster's region (Task 4.1)
+    getMarketView: (clusterId, page = 1, pageSize = 20, sortBy = 'risk_tier', sortOrder = 'asc') =>
+        api.get(`/api/v1/atharvaai/clusters/${clusterId}/market-view`, {
+            params: { page, page_size: pageSize, sort_by: sortBy, sort_order: sortOrder },
+        }),
+
+    // Pool Audit — funnel breakdown for a specific node (Task 4.3)
+    getPoolAudit: (clusterId, nodeId) =>
+        api.get(`/api/v1/atharvaai/clusters/${clusterId}/nodes/${nodeId}/pool-audit`),
+
     // Enriched volatility status (includes az_pressure map)
     getVolatilityStatusEnriched: () => api.get('/api/v1/atharvaai/volatility/status'),
 

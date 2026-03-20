@@ -1800,6 +1800,128 @@ class PoolRankingService:
 
 # ── Module-level helper functions for pool scoring / launch tracking ──────────
 
+
+def estimate_az_interruption(
+    instance_type: str,
+    az: str,
+    region: str,
+    redis_client=None,
+) -> Optional[float]:
+    """
+    Task 2.7 — AZ-level interruption rate estimation (3-layer model).
+
+    Layer 1: AWS region-level base rate from spot_advisor:{region}:{type}:Linux
+    Layer 2: AZ price premium adjustment (+1 tier if AZ price > 20% above region avg)
+    Layer 3: Own historical interruption data from Redis (exponential moving average)
+
+    Returns the combined interruption rate (0-25 scale) or None if unknown.
+    """
+    if redis_client is None:
+        from backend.core.redis_client import get_redis_client
+        redis_client = get_redis_client()
+
+    # Layer 1: region-level base rate
+    try:
+        raw = redis_client.get(f"spot_advisor:{region}:{instance_type}:Linux")
+        if not raw:
+            return None
+        data = json.loads(raw)
+        idx = int(data.get("interruption_index", 4))
+        _idx_to_pct = {0: 5.0, 1: 10.0, 2: 15.0, 3: 20.0, 4: 25.0}
+        region_rate = _idx_to_pct.get(idx, 25.0)
+    except Exception:
+        return None
+
+    # Layer 2: AZ price adjustment
+    az_adjustment = 0.0
+    try:
+        az_price_raw = redis_client.get(f"spot_price:{region}:{az}:{instance_type}")
+        if az_price_raw:
+            az_price_data = json.loads(az_price_raw)
+            az_price = float(az_price_data.get('price', 0))
+
+            # Compute region avg as mean of available AZ prices for this type
+            all_az_prices = []
+            cursor = 0
+            while True:
+                cursor, keys = redis_client.scan(
+                    cursor, match=f"spot_price:{region}:*:{instance_type}", count=50
+                )
+                for k in keys:
+                    try:
+                        v = redis_client.get(k)
+                        if v:
+                            all_az_prices.append(float(json.loads(v).get('price', 0)))
+                    except Exception:
+                        pass
+                if cursor == 0:
+                    break
+
+            if all_az_prices and az_price > 0:
+                region_avg = sum(all_az_prices) / len(all_az_prices)
+                if region_avg > 0:
+                    price_ratio = az_price / region_avg
+                    if price_ratio > 1.20:
+                        az_adjustment = 1.0
+                    elif price_ratio > 1.10:
+                        az_adjustment = 0.5
+    except Exception:
+        pass
+
+    # Layer 3: Own historical data (EMA)
+    history_weight = 0.0
+    own_rate = region_rate
+    try:
+        history_key = f"interruption_history:{region}:{az}:{instance_type}"
+        history_raw = redis_client.get(history_key)
+        if history_raw:
+            history = json.loads(history_raw)
+            own_rate = history.get('rate', region_rate)
+            event_count = history.get('count', 0)
+            history_weight = min(event_count / 100.0, 0.5)
+    except Exception:
+        pass
+
+    aws_weight = 1.0 - history_weight
+    combined = (region_rate + az_adjustment) * aws_weight + own_rate * history_weight
+    return min(combined, 25.0)
+
+
+def record_interruption_event(
+    region: str,
+    az: str,
+    instance_type: str,
+    redis_client=None,
+):
+    """
+    Task 2.7 — Record a spot interruption event for a pool.
+
+    Updates interruption_history:{region}:{az}:{instance_type} with an
+    exponential moving average. Called by termination_monitor when a spot
+    interruption is detected.
+
+    History TTL: 7 days.
+    """
+    if redis_client is None:
+        from backend.core.redis_client import get_redis_client
+        redis_client = get_redis_client()
+
+    history_key = f"interruption_history:{region}:{az}:{instance_type}"
+    try:
+        raw = redis_client.get(history_key)
+        history = json.loads(raw) if raw else {"rate": 0.0, "count": 0}
+        history["count"] += 1
+        # EMA: each interruption event pushes rate toward 25 (max tier)
+        history["rate"] = history["rate"] * 0.9 + 25.0 * 0.1
+        redis_client.setex(history_key, 86400 * 7, json.dumps(history))
+        logger.info(
+            f"[pool_ranking] Recorded interruption event {region}/{az}/{instance_type} "
+            f"count={history['count']} rate={history['rate']:.1f}"
+        )
+    except Exception as e:
+        logger.warning(f"[pool_ranking] record_interruption_event failed: {e}")
+
+
 def assign_risk_tier(interruption_rate_pct: float) -> int:
     """
     Assign a risk tier (0-4) based on interruption rate percentage.

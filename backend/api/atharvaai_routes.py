@@ -2153,3 +2153,179 @@ def get_node_alternatives(
         "total_pages": max(1, (total + page_size - 1) // page_size),
         "alternatives": enriched,
     }
+
+
+# ── Market View API (Task 4.1) ─────────────────────────────────────────────────
+
+@router.get("/clusters/{cluster_id}/market-view")
+def get_market_view(
+    cluster_id: str,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    sort_by: str = Query("risk_tier"),
+    sort_order: str = Query("asc"),
+    db: Session = Depends(get_db),
+):
+    """
+    GET /api/v1/atharvaai/clusters/{cluster_id}/market-view
+    ?page=1&page_size=20&sort_by=risk_tier&sort_order=asc
+
+    Returns the full ranked pool list from global_pool_cache for the cluster's
+    region, paginated. Includes rejection audit stats for the primary OD node
+    (if available in Redis).
+
+    Response:
+      source_node: {instance_type, region, od_price}
+      pagination: {page, page_size, total, total_pages}
+      pools: paginated slice (each pool: instance_type, az, vcpu, memory_gb,
+             architecture, spot_price, ondemand_price, savings_pct, risk_tier, rank)
+    """
+    from backend.models.cluster import Cluster
+    from backend.core.redis_client import key_global_pool_rankings
+
+    redis = get_redis_client()
+
+    cluster = db.query(Cluster).filter_by(id=cluster_id).first()
+    if not cluster:
+        raise HTTPException(status_code=404, detail="Cluster not found")
+
+    region = getattr(cluster, 'region', None) or 'us-east-1'
+
+    # Load global pool cache
+    cache_key = key_global_pool_rankings(region)
+    raw = redis.get(cache_key)
+    if not raw:
+        return {
+            "cluster_id": cluster_id,
+            "region": region,
+            "message": "Pool cache not yet built. Run cache_builder task first.",
+            "pagination": {"page": page, "page_size": page_size, "total": 0, "total_pages": 0},
+            "pools": [],
+        }
+
+    payload = _json.loads(raw)
+    all_pools = payload.get('data', [])
+    last_updated = payload.get('last_updated')
+
+    # Sort
+    reverse = (sort_order == "desc")
+    try:
+        all_pools = sorted(all_pools, key=lambda p: p.get(sort_by, 0), reverse=reverse)
+    except Exception:
+        pass
+
+    # Add rank
+    for i, p in enumerate(all_pools):
+        p['rank'] = i + 1
+
+    # Paginate
+    total = len(all_pools)
+    start = (page - 1) * page_size
+    page_data = all_pools[start:start + page_size]
+
+    # Find primary OD node context
+    from backend.models.instance import Instance
+    primary_od = (
+        db.query(Instance)
+        .filter(
+            Instance.cluster_id == cluster_id,
+            Instance.state == 'running',
+            Instance.instance_id.like('i-%'),
+        )
+        .first()
+    )
+    source_node = None
+    if primary_od:
+        source_node = {
+            "instance_type": primary_od.instance_type,
+            "instance_id": primary_od.instance_id,
+            "region": region,
+            "od_price": primary_od.price or 0.0,
+        }
+
+    return {
+        "cluster_id": cluster_id,
+        "region": region,
+        "last_updated": last_updated,
+        "source_node": source_node,
+        "pagination": {
+            "page": page,
+            "page_size": page_size,
+            "total": total,
+            "total_pages": max(1, (total + page_size - 1) // page_size),
+        },
+        "pools": page_data,
+    }
+
+
+# ── Pool Audit API (Task 4.3) ──────────────────────────────────────────────────
+
+@router.get("/clusters/{cluster_id}/nodes/{node_id}/pool-audit")
+def get_pool_audit(
+    cluster_id: str,
+    node_id: str,
+    db: Session = Depends(get_db),
+):
+    """
+    GET /api/v1/atharvaai/clusters/{cluster_id}/nodes/{node_id}/pool-audit
+
+    Returns the most recent rejection audit for a specific node:
+      raw_pool_count, eligible_count, rejection_reasons (dict), computed_at
+
+    Populated after any call to rank_for_node() for this node.
+    TTL: 300s.
+    """
+    from backend.models.instance import Instance
+
+    redis = get_redis_client()
+
+    # Resolve node to get instance_id for the audit key
+    inst = (
+        db.query(Instance).filter(
+            Instance.cluster_id == cluster_id,
+            Instance.id == node_id,
+        ).first()
+        or db.query(Instance).filter(
+            Instance.cluster_id == cluster_id,
+            Instance.instance_id == node_id,
+        ).first()
+    )
+
+    # Audit key uses instance_id (or the node_id as fallback)
+    audit_node_key = inst.instance_id if inst else node_id
+
+    cached = redis.get(f"pool_audit:{cluster_id}:{audit_node_key}")
+    if cached:
+        return _json.loads(cached)
+
+    # If no cached audit yet, trigger a rank_for_node call to populate it
+    if inst:
+        from backend.models.cluster import Cluster
+        from backend.core.decision_engine import DecisionEngine
+        cluster = db.query(Cluster).filter_by(id=cluster_id).first()
+        if cluster:
+            region = getattr(cluster, 'region', None) or 'us-east-1'
+            node_info = {
+                'instance_type': inst.instance_type,
+                'az': inst.az,
+                'spot_price': inst.price or 0.0,
+                'risk_tier': 2,
+                'architecture': getattr(inst, 'architecture', None) or 'amd64',
+                'instance_id': inst.instance_id,
+            }
+            de = DecisionEngine(redis, db)
+            de.rank_for_node(cluster.id, node_info, region)
+            # Check again after compute
+            cached = redis.get(f"pool_audit:{cluster_id}:{audit_node_key}")
+            if cached:
+                return _json.loads(cached)
+
+    return {
+        "cluster_id": cluster_id,
+        "node_id": node_id,
+        "raw_pool_count": 0,
+        "eligible_count": 0,
+        "rejection_reasons": {},
+        "computed_at": None,
+        "message": "No audit data yet — pool ranking has not been run for this node.",
+    }

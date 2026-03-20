@@ -864,16 +864,33 @@ class DecisionEngine:
         current_price = float(node_info.get('spot_price', 0))
         current_risk_tier = int(node_info.get('risk_tier', 4))
 
-        # Step 5: Apply filters
-        pools = self._apply_filters(all_pools, node_info, cluster_id)
+        # Rejection audit counters (Task 2.6)
+        _audit = {
+            "raw_pool_count":          len(all_pools),
+            "blacklisted":             0,
+            "too_small_vcpu":          0,
+            "too_small_memory":        0,
+            "architecture_incompatible": 0,
+        }
+
+        # Step 5: Apply blacklist / price-shock filter
+        pools_after_blacklist = self._apply_filters(all_pools, node_info, cluster_id)
+        _audit["blacklisted"] = len(all_pools) - len(pools_after_blacklist)
+        pools = pools_after_blacklist
 
         # Resource profile gates (Part 2 per-node hard gates from changes.md)
         if min_vcpu > 0:
+            before = len(pools)
             pools = [p for p in pools if p.get('vcpu', 0) >= min_vcpu]
+            _audit["too_small_vcpu"] = before - len(pools)
         if min_memory_gb > 0:
+            before = len(pools)
             pools = [p for p in pools if p.get('memory_gb', 0.0) >= min_memory_gb]
+            _audit["too_small_memory"] = before - len(pools)
         if required_arch:
+            before = len(pools)
             pools = [p for p in pools if p.get('architecture', 'amd64') == required_arch]
+            _audit["architecture_incompatible"] = before - len(pools)
 
         # Step 6: Apply double gate — must be cheaper AND safer (lower tier)
         gated = self._apply_double_gate(pools, current_price, current_risk_tier)
@@ -886,6 +903,33 @@ class DecisionEngine:
         # Step 8: Expand tier if still empty
         if not gated:
             gated = self._relax_with_tier_expansion(all_pools, current_risk_tier)
+
+        # Log rejection audit (Task 2.6)
+        _node_id = node_info.get('instance_id', node_info.get('instance_type', '?'))
+        logger.info(
+            f"[DE.rank_for_node] Pool audit | node={_node_id} cluster={cluster_id} | "
+            f"raw={_audit['raw_pool_count']} eligible={len(gated)} | "
+            f"blacklisted={_audit['blacklisted']} "
+            f"too_small_vcpu={_audit['too_small_vcpu']} "
+            f"too_small_memory={_audit['too_small_memory']} "
+            f"arch_incompatible={_audit['architecture_incompatible']}"
+        )
+
+        # Cache pool audit in Redis for /pool-audit API (Task 4.3)
+        try:
+            import json as _j
+            r.setex(
+                f"pool_audit:{cluster_id}:{_node_id}",
+                300,
+                _j.dumps({
+                    "raw_pool_count": _audit["raw_pool_count"],
+                    "eligible_count": len(gated),
+                    "rejection_reasons": {k: v for k, v in _audit.items() if k != "raw_pool_count"},
+                    "computed_at": __import__('datetime').datetime.utcnow().isoformat(),
+                })
+            )
+        except Exception:
+            pass
 
         return gated
 
@@ -933,4 +977,4 @@ class DecisionEngine:
             candidates = [p for p in all_pools if p.get('risk_tier', 4) <= candidate_tier]
             if candidates:
                 return sorted(candidates, key=lambda p: p.get('spot_price', 9999))
-        return sorted(all_pools, key=lambda p: p.get('spot_price', 9999))[:10]
+        return sorted(all_pools, key=lambda p: p.get('spot_price', 9999))

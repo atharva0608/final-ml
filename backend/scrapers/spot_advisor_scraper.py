@@ -273,6 +273,11 @@ def parse_and_store_data(
             stats["cache_keys_set"] += 1
 
         db.commit()
+        # Task 1.1: write per-region last_scraped timestamp (in addition to global)
+        redis_client.set(
+            f"spot:advisor:last_scraped:{region}",
+            datetime.utcnow().isoformat(),
+        )
 
     return stats
 

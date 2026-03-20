@@ -57,6 +57,8 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
     // Per-node coverage (changes.md Cluster Impact View)
     const [coverageData, setCoverageData] = useState(null);
     const [coverageLoading, setCoverageLoading] = useState(false);
+    // Pool audit / funnel data (Task 4.3/4.4)
+    const [poolAuditData, setPoolAuditData] = useState(null);
     // Node-Specific View — selected node + alternatives
     const [selectedNodeId, setSelectedNodeId] = useState(null);
     const [nodeAlternatives, setNodeAlternatives] = useState(null);
@@ -90,7 +92,7 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [autoRefresh, clusterId]);
 
-    // Fetch node alternatives when selectedNodeId changes
+    // Fetch node alternatives + pool audit when selectedNodeId changes
     useEffect(() => {
         if (!clusterId || !selectedNodeId) return;
         setNodeAltLoading(true);
@@ -99,6 +101,10 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
             .then(res => setNodeAlternatives(res.data || null))
             .catch(err => { console.debug('Node alternatives error:', err.message); setNodeAlternatives(null); })
             .finally(() => setNodeAltLoading(false));
+        // Fetch pool audit for funnel visualization (Task 4.3/4.4)
+        atharvaaiAPI.getPoolAudit(clusterId, selectedNodeId)
+            .then(res => setPoolAuditData(res.data || null))
+            .catch(() => setPoolAuditData(null));
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [clusterId, selectedNodeId]);
 
@@ -1136,6 +1142,35 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
                                 <span><span className="inline-block w-2 h-2 rounded-full bg-red-500 mr-1" />{coverageData.stranded_nodes} Stranded</span>
                                 {coverageData.immovable_nodes > 0 && <span><span className="inline-block w-2 h-2 rounded-full bg-gray-400 mr-1" />{coverageData.immovable_nodes} Immovable</span>}
                                 <span className="ml-auto text-gray-400">Last computed: {coverageData.computed_at ? new Date(coverageData.computed_at).toLocaleTimeString() : '—'}</span>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Pool Eligibility Funnel — Task 4.4 */}
+                    {poolAuditData && poolAuditData.raw_pool_count > 0 && (
+                        <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
+                            <div className="flex items-center justify-between mb-3">
+                                <span className="text-sm font-bold text-gray-800">Pool Eligibility Funnel</span>
+                                <span className="text-xs text-gray-400">
+                                    node: {selectedNodeId?.slice(-12)}
+                                    {poolAuditData.computed_at ? ` · ${new Date(poolAuditData.computed_at).toLocaleTimeString()}` : ''}
+                                </span>
+                            </div>
+                            <div className="space-y-1 font-mono text-xs text-gray-700">
+                                <div className="flex justify-between">
+                                    <span className="text-gray-500">Raw pool universe</span>
+                                    <span className="font-semibold">{poolAuditData.raw_pool_count.toLocaleString()}</span>
+                                </div>
+                                {Object.entries(poolAuditData.rejection_reasons || {}).map(([reason, count]) => count > 0 && (
+                                    <div key={reason} className="flex justify-between pl-4 text-red-600">
+                                        <span>↓ {reason.replace(/_/g, ' ')}</span>
+                                        <span>-{count}</span>
+                                    </div>
+                                ))}
+                                <div className="border-t border-gray-200 pt-1 flex justify-between font-semibold text-green-700">
+                                    <span>✅ Eligible pools</span>
+                                    <span>{poolAuditData.eligible_count.toLocaleString()}</span>
+                                </div>
                             </div>
                         </div>
                     )}
