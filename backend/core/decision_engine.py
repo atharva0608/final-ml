@@ -819,9 +819,17 @@ class DecisionEngine:
         from backend.core.redis_client import (
             get_redis_client,
             key_global_pool_rankings,
+            key_market_view_cache,
             key_degraded_region,
         )
         from backend.core.config import PRICE_SPIKE_FACTOR
+
+        _node_label = node_info.get('instance_id', node_info.get('instance_type', '?'))
+        logger.info(
+            f"[DE.rank_for_node] START | node={_node_label} cluster={cluster_id} region={region} "
+            f"spot_price={node_info.get('spot_price')} risk_tier={node_info.get('risk_tier')} "
+            f"instance_type={node_info.get('instance_type')} az={node_info.get('az')}"
+        )
 
         # Step 1: Circuit breaker HALT check
         try:
@@ -829,31 +837,52 @@ class DecisionEngine:
             cb = CircuitBreaker(self.redis)
             state = cb.get_state(cluster_id)
             if state == "HALT":
-                logger.warning(f"[DE.rank_for_node] Cluster {cluster_id} circuit breaker HALT — skipping")
+                logger.warning(f"[DE.rank_for_node] GATE1_FAIL: Cluster {cluster_id} circuit breaker HALT — returning []")
                 return []
+            logger.debug(f"[DE.rank_for_node] GATE1_PASS: CB state={state}")
         except Exception as cb_err:
-            logger.debug(f"[DE.rank_for_node] Circuit breaker check error: {cb_err}")
+            logger.debug(f"[DE.rank_for_node] GATE1_WARN: Circuit breaker check error: {cb_err}")
 
         # Step 2: Degraded region check
         try:
             r = get_redis_client()
             if r.exists(key_degraded_region(region)):
-                logger.warning(f"[DE.rank_for_node] Region {region} is degraded — skipping")
+                logger.warning(f"[DE.rank_for_node] GATE2_FAIL: Region {region} is degraded — returning []")
                 return []
+            logger.debug(f"[DE.rank_for_node] GATE2_PASS: Region {region} not degraded")
         except Exception:
-            pass
+            r = get_redis_client()
 
         # Step 3: Load global pool cache
+        # Try market_view_cache first (written by cache_builder with 500+ pools),
+        # then fall back to global_pool_rankings (written by pool_ranking_service with ~42 pools)
         try:
-            cache_key = key_global_pool_rankings(region)
-            raw = r.get(cache_key)
+            mv_key = key_market_view_cache(region)
+            raw = r.get(mv_key)
+            cache_source = "market_view_cache"
             if not raw:
-                logger.info(f"[DE.rank_for_node] No global pool cache for region {region}")
+                logger.warning(
+                    f"[DE.rank_for_node] GATE3_WARN: market_view_cache:{region} empty — "
+                    f"falling back to global_pool_rankings:{region}"
+                )
+                fallback_key = key_global_pool_rankings(region)
+                raw = r.get(fallback_key)
+                cache_source = "global_pool_rankings"
+            if not raw:
+                logger.warning(
+                    f"[DE.rank_for_node] GATE3_FAIL: No pool cache found for region {region} "
+                    f"(checked market_view_cache and global_pool_rankings). "
+                    f"Run cache_builder Celery task to populate."
+                )
                 return []
             payload = _json.loads(raw)
             all_pools = payload.get('data', [])
+            logger.info(
+                f"[DE.rank_for_node] GATE3_PASS: Loaded {len(all_pools)} pools from "
+                f"{cache_source}:{region}"
+            )
         except Exception as cache_err:
-            logger.error(f"[DE.rank_for_node] Cache load error: {cache_err}")
+            logger.error(f"[DE.rank_for_node] GATE3_FAIL: Cache load error: {cache_err}")
             return []
 
         # Step 4: Derive floor from node_info — use resource_profile gates if provided
@@ -861,8 +890,14 @@ class DecisionEngine:
         min_vcpu = resource_profile.get('min_vcpu_required', 0)
         min_memory_gb = resource_profile.get('min_memory_required', 0.0)
         required_arch = resource_profile.get('architecture')  # e.g. 'amd64', 'arm64'
-        current_price = float(node_info.get('spot_price', 0))
-        current_risk_tier = int(node_info.get('risk_tier', 4))
+        # BUGFIX: if price is 0 (new node or price not yet fetched), skip price gate entirely
+        current_price = float(node_info.get('spot_price', 0) or 0)
+        current_risk_tier = int(node_info.get('risk_tier', 4) or 4)
+
+        logger.info(
+            f"[DE.rank_for_node] GATE4: node_info gates: min_vcpu={min_vcpu} min_memory={min_memory_gb} "
+            f"required_arch={required_arch} current_price={current_price} current_risk_tier={current_risk_tier}"
+        )
 
         # Rejection audit counters (Task 2.6)
         _audit = {
@@ -877,49 +912,82 @@ class DecisionEngine:
         pools_after_blacklist = self._apply_filters(all_pools, node_info, cluster_id)
         _audit["blacklisted"] = len(all_pools) - len(pools_after_blacklist)
         pools = pools_after_blacklist
+        logger.info(
+            f"[DE.rank_for_node] GATE5: After blacklist filter: {len(pools)}/{len(all_pools)} pools "
+            f"(removed {_audit['blacklisted']} blacklisted)"
+        )
 
         # Resource profile gates (Part 2 per-node hard gates from changes.md)
         if min_vcpu > 0:
             before = len(pools)
             pools = [p for p in pools if p.get('vcpu', 0) >= min_vcpu]
             _audit["too_small_vcpu"] = before - len(pools)
+            logger.info(f"[DE.rank_for_node] GATE5b: vcpu>={min_vcpu}: {len(pools)} remain (removed {_audit['too_small_vcpu']})")
         if min_memory_gb > 0:
             before = len(pools)
             pools = [p for p in pools if p.get('memory_gb', 0.0) >= min_memory_gb]
             _audit["too_small_memory"] = before - len(pools)
+            logger.info(f"[DE.rank_for_node] GATE5c: memory>={min_memory_gb}: {len(pools)} remain (removed {_audit['too_small_memory']})")
         if required_arch:
             before = len(pools)
             pools = [p for p in pools if p.get('architecture', 'amd64') == required_arch]
             _audit["architecture_incompatible"] = before - len(pools)
+            logger.info(f"[DE.rank_for_node] GATE5d: arch={required_arch}: {len(pools)} remain (removed {_audit['architecture_incompatible']})")
 
         # Step 6: Apply double gate — must be cheaper AND safer (lower tier)
+        # BUGFIX: if current_price == 0, skip price comparison (we don't know current price)
         gated = self._apply_double_gate(pools, current_price, current_risk_tier)
+        logger.info(
+            f"[DE.rank_for_node] GATE6 (double gate cheaper+safer): {len(gated)}/{len(pools)} pools passed "
+            f"(current_price={current_price}, current_risk_tier={current_risk_tier})"
+        )
 
         # Step 7: Relax with trade-off if empty
         if not gated:
             trade_off_pct = float(node_info.get('trade_off_pct', 20.0))
             gated = self._relax_with_trade_off(pools, current_price, current_risk_tier, trade_off_pct)
+            logger.info(
+                f"[DE.rank_for_node] GATE7 (trade-off relax ±{trade_off_pct}%): "
+                f"{len(gated)} pools after relaxation"
+            )
 
         # Step 8: Expand tier if still empty
         if not gated:
+            logger.warning(
+                f"[DE.rank_for_node] GATE8: Double-gate + trade-off both empty. "
+                f"Falling back to tier expansion from all {len(all_pools)} pools"
+            )
             gated = self._relax_with_tier_expansion(all_pools, current_risk_tier)
+            logger.info(f"[DE.rank_for_node] GATE8 (tier expansion): {len(gated)} pools after expansion")
 
-        # Log rejection audit (Task 2.6)
-        _node_id = node_info.get('instance_id', node_info.get('instance_type', '?'))
+        # Final summary
         logger.info(
-            f"[DE.rank_for_node] Pool audit | node={_node_id} cluster={cluster_id} | "
+            f"[DE.rank_for_node] RESULT | node={_node_label} cluster={cluster_id} | "
             f"raw={_audit['raw_pool_count']} eligible={len(gated)} | "
             f"blacklisted={_audit['blacklisted']} "
             f"too_small_vcpu={_audit['too_small_vcpu']} "
             f"too_small_memory={_audit['too_small_memory']} "
             f"arch_incompatible={_audit['architecture_incompatible']}"
         )
+        if gated:
+            top = gated[0]
+            logger.info(
+                f"[DE.rank_for_node] TOP_POOL: {top.get('instance_type')}:{top.get('az')} "
+                f"spot=${top.get('spot_price')} risk_tier={top.get('risk_tier')} "
+                f"savings={top.get('savings_pct')}%"
+            )
+        else:
+            logger.warning(
+                f"[DE.rank_for_node] NO_ALTERNATIVES: All gates eliminated all pools. "
+                f"Check: (1) pool cache populated? (2) current_price={current_price} vs pool prices "
+                f"(3) current_risk_tier={current_risk_tier}"
+            )
 
         # Cache pool audit in Redis for /pool-audit API (Task 4.3)
         try:
             import json as _j
             r.setex(
-                f"pool_audit:{cluster_id}:{_node_id}",
+                f"pool_audit:{cluster_id}:{_node_label}",
                 300,
                 _j.dumps({
                     "raw_pool_count": _audit["raw_pool_count"],
@@ -953,7 +1021,20 @@ class DecisionEngine:
             return pools
 
     def _apply_double_gate(self, pools: list, current_price: float, current_risk_tier: int) -> list:
-        """Keep pools that are both cheaper AND have lower or equal risk tier."""
+        """
+        Keep pools that are both cheaper AND have lower or equal risk tier.
+
+        BUGFIX: if current_price == 0 (node price unknown or pre-launch), skip the price
+        comparison entirely and only gate on risk tier. This prevents all pools from being
+        eliminated when the node's spot_price hasn't been fetched yet.
+        """
+        if current_price <= 0:
+            # Price unknown — only filter on risk tier (never eliminate all pools)
+            logger.debug(
+                f"[DE._apply_double_gate] current_price=0, skipping price gate. "
+                f"Only applying risk_tier<={current_risk_tier} gate."
+            )
+            return [p for p in pools if p.get('risk_tier', 4) <= current_risk_tier]
         return [
             p for p in pools
             if p.get('spot_price', 9999) < current_price
@@ -962,7 +1043,11 @@ class DecisionEngine:
 
     def _relax_with_trade_off(self, pools: list, current_price: float,
                                current_risk_tier: int, trade_off_pct: float) -> list:
-        """Allow up to trade_off_pct% more expensive but strictly safer (lower tier)."""
+        """Allow up to trade_off_pct% more expensive but strictly safer (lower tier).
+        If current_price==0, include all pools at a strictly lower risk tier.
+        """
+        if current_price <= 0:
+            return [p for p in pools if p.get('risk_tier', 4) < current_risk_tier]
         max_price = current_price * (1 + trade_off_pct / 100.0)
         return [
             p for p in pools
@@ -978,3 +1063,222 @@ class DecisionEngine:
             if candidates:
                 return sorted(candidates, key=lambda p: p.get('spot_price', 9999))
         return sorted(all_pools, key=lambda p: p.get('spot_price', 9999))
+
+    # ── Task 2.5 — ML Scoring Tiers ──────────────────────────────────────────
+
+    def get_ml_score(self, pool: dict, category_mapping: dict) -> tuple:
+        """
+        Return (ml_score, tier) for a pool using tier1/tier2/tier3 logic.
+
+        Tier 1: ONNX model trained on these families — direct inference, penalty 1.0
+        Tier 2: proxy family + penalty (0.85–0.90)
+        Tier 3: size-class average × 0.75
+
+        Never raises. Never drops a pool for unknown family.
+        Returns (score, tier) where score ∈ [0, 1].
+        """
+        import re
+
+        instance_type = pool.get('instance_type', '')
+        # Extract family: m7i.large → m7i, t3.medium → t3
+        match = re.match(r'^([a-z][a-z0-9]+)', instance_type)
+        family = match.group(1) if match else ''
+
+        tier1 = category_mapping.get('tier1', [])
+        tier2 = category_mapping.get('tier2', {})
+        tier3_penalty = float(category_mapping.get('tier3_penalty', 0.75))
+
+        raw_score = pool.get('ml_score', 0.5)  # pre-computed or default 0.5
+
+        if family in tier1:
+            # Direct ONNX inference — use pre-computed ml_score as-is
+            return min(1.0, max(0.0, raw_score)), 1
+
+        elif family in tier2:
+            penalty = float(tier2[family].get('penalty', 0.90))
+            # Use proxy family's score if available, else raw_score
+            proxy_score = pool.get('proxy_ml_score', raw_score)
+            return min(1.0, max(0.0, proxy_score * penalty)), 2
+
+        else:
+            # Tier 3: size-class average with 0.75 penalty
+            size_class_avg = pool.get('size_class_avg_ml_score', 0.5)
+            return min(1.0, max(0.0, size_class_avg * tier3_penalty)), 3
+
+    # ── Task 3.1 + 3.2 — Weighted Scoring Formula ────────────────────────────
+
+    # Profile weight table: {W_savings, W_risk, W_ml}
+    _PROFILE_WEIGHTS = {
+        'COST_FIRST':  {'savings': 0.60, 'risk': 0.20, 'ml': 0.20},
+        'BALANCED':    {'savings': 0.40, 'risk': 0.40, 'ml': 0.20},
+        'NO_DOWNTIME': {'savings': 0.20, 'risk': 0.60, 'ml': 0.20},
+    }
+
+    def score_and_rank_pools(
+        self,
+        eligible_pools: list,
+        profile: str = 'BALANCED',
+        source_od_price: float = 0.0,
+        category_mapping: dict = None,
+        redis=None,
+        cluster_pool_counts: dict = None,
+        max_single_pool_pct: float = 0.40,
+    ) -> list:
+        """
+        Apply weighted scoring formula and return pools sorted descending by final_score.
+
+        Pillars 3 + 4 + Dry Run Gate:
+        - savings_score        = intrinsic savings (pool OD vs spot) / 0.70 cap
+        - safety_score         = 1 - (az_interruption_rate / 25)
+        - ml_score             = ONNX / proxy / tier3 with confidence penalty
+        - soft_penalty         = 0.85 if pool has recent launch failures
+        - reputation_mult      = 0.5–1.2 from pool reputation history (Pillar 3)
+        - capacity_boost       = 1.05 if dry_run:pass, 0 (eliminate) if dry_run:fail, 1.0 unverified
+        - portfolio_penalty    = concentration penalty when pool already holds >max_single_pool_pct (Pillar 4)
+        - momentum_bonus       = ±0.02–0.05 based on recent uptime history (Pillar 4)
+        - final_score          = (W_s×savings_score + W_r×safety_score + W_ml×ml_score)
+                                 × soft_penalty × reputation_mult × capacity_boost
+                                 × (1 - portfolio_penalty) + momentum_bonus
+
+        cluster_pool_counts: dict of {pool_key: node_count} — current cluster node distribution.
+                             Pass this to enable portfolio concentration penalty.
+
+        Both intrinsic_savings_pct (for ranking) and customer_savings_pct (for UI) are
+        attached to each pool dict.
+        """
+        if category_mapping is None:
+            category_mapping = {}
+
+        # Get Redis client for dry run cache lookups
+        _redis = redis or self.redis
+        if _redis is None:
+            try:
+                from backend.core.redis_client import get_redis_client as _grc
+                _redis = _grc()
+            except Exception:
+                _redis = None
+
+        weights = self._PROFILE_WEIGHTS.get(profile, self._PROFILE_WEIGHTS['BALANCED'])
+        W_s = weights['savings']
+        W_r = weights['risk']
+        W_ml = weights['ml']
+
+        scored = []
+        eliminated_capacity_fail = 0
+        for pool in eligible_pools:
+            spot_price = float(pool.get('spot_price', 0.0) or 0.0)
+            od_price = float(pool.get('od_price', 0.0) or 0.0)
+            az_irr = float(pool.get('az_interruption_rate', pool.get('interruption_rate_pct', 25.0)) or 25.0)
+
+            # Task 3.2: intrinsic savings (for ranking)
+            if od_price > 0:
+                intrinsic_savings_pct = (od_price - spot_price) / od_price
+            else:
+                intrinsic_savings_pct = 0.0
+
+            # Task 3.2: customer savings (for UI display — vs source OD node)
+            if source_od_price > 0:
+                customer_savings_pct = (source_od_price - spot_price) / source_od_price
+            else:
+                customer_savings_pct = intrinsic_savings_pct
+
+            # Step 1: Absolute normalization
+            savings_score = max(0.0, min(intrinsic_savings_pct / 0.70, 1.0))
+            safety_score = max(0.0, 1.0 - (az_irr / 25.0))
+            ml_raw, _tier = self.get_ml_score(pool, category_mapping)
+            ml_score = min(1.0, max(0.0, ml_raw))
+
+            # Step 2: Soft penalty for pools with recent launch failures
+            recent_failures = int(pool.get('recent_failure_count', 0) or 0)
+            soft_penalty = 0.85 if recent_failures > 0 else 1.0
+
+            # Step 3: Dry run capacity boost / elimination
+            instance_type = pool.get('instance_type', '')
+            az = pool.get('az', '')
+            capacity_status = 'unverified'
+            capacity_boost = 1.0
+            if _redis and instance_type and az:
+                try:
+                    pool_key = f"{instance_type}:{az}"
+                    dr_cached = _redis.get(f"dry_run:{pool_key}")
+                    if dr_cached:
+                        dr_val = dr_cached.decode() if isinstance(dr_cached, bytes) else dr_cached
+                        if dr_val == 'pass':
+                            capacity_status = 'verified'
+                            capacity_boost = 1.05  # Capacity confirmed — float to top
+                        elif dr_val == 'fail':
+                            # Capacity unavailable — eliminate from scoring
+                            eliminated_capacity_fail += 1
+                            pool = dict(pool)
+                            pool['capacity_status'] = 'unavailable'
+                            pool['final_score'] = 0.0
+                            continue
+                except Exception:
+                    pass
+
+            # Step 4: Pillar 3 — Pool reputation multiplier
+            reputation_mult = 1.0
+            avg_uptime = None
+            pool_key_rep = f"{instance_type}:{az}"
+            if _redis:
+                try:
+                    from backend.services.pool_ranking_service import get_pool_reputation
+                    rep = get_pool_reputation(pool_key_rep, redis_client=_redis)
+                    reputation_mult = rep.get("reputation_multiplier", 1.0)
+                    avg_uptime = rep.get("avg_uptime_hours")
+                except Exception:
+                    pass
+
+            # Step 5: Pillar 4 — Portfolio concentration penalty
+            portfolio_penalty = 0.0
+            total_nodes = sum(cluster_pool_counts.values()) if cluster_pool_counts else 0
+            if cluster_pool_counts and total_nodes > 0:
+                pool_node_count = cluster_pool_counts.get(pool_key_rep, 0)
+                concentration = pool_node_count / total_nodes
+                if concentration > max_single_pool_pct:
+                    portfolio_penalty = (concentration - max_single_pool_pct) * 2.0
+                    portfolio_penalty = min(portfolio_penalty, 0.80)  # cap at 80% penalty
+
+            # Step 6: Pillar 4 — Momentum bonus from recent uptime
+            momentum_bonus = 0.0
+            if avg_uptime is not None:
+                if avg_uptime > 168:    # 7 days without interruption
+                    momentum_bonus = 0.05
+                elif avg_uptime > 72:   # 3 days stable
+                    momentum_bonus = 0.02
+                elif avg_uptime < 2:    # interrupted within 2 hours recently
+                    momentum_bonus = -0.10
+
+            # Step 7: Final score assembly
+            raw_score = (W_s * savings_score) + (W_r * safety_score) + (W_ml * ml_score)
+            final_score = (
+                raw_score * soft_penalty * reputation_mult * capacity_boost
+                * (1.0 - portfolio_penalty)
+                + momentum_bonus
+            )
+            final_score = max(0.0, final_score)
+
+            pool = dict(pool)
+            pool['intrinsic_savings_pct'] = round(intrinsic_savings_pct, 4)
+            pool['customer_savings_pct'] = round(customer_savings_pct, 4)
+            pool['savings_score'] = round(savings_score, 4)
+            pool['safety_score'] = round(safety_score, 4)
+            pool['ml_score_final'] = round(ml_score, 4)
+            pool['ml_tier'] = _tier
+            pool['soft_penalty_applied'] = soft_penalty < 1.0
+            pool['capacity_status'] = capacity_status
+            pool['capacity_boost'] = capacity_boost
+            pool['reputation_multiplier'] = round(reputation_mult, 4)
+            pool['portfolio_penalty'] = round(portfolio_penalty, 4)
+            pool['momentum_bonus'] = round(momentum_bonus, 4)
+            pool['final_score'] = round(final_score, 4)
+            pool['scoring_profile'] = profile
+            scored.append(pool)
+
+        if eliminated_capacity_fail > 0:
+            logger.info(
+                f"[score_and_rank_pools] Eliminated {eliminated_capacity_fail} pools "
+                f"with confirmed capacity unavailability (dry_run:fail)"
+            )
+
+        return sorted(scored, key=lambda p: p['final_score'], reverse=True)

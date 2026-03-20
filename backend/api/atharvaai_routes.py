@@ -2115,12 +2115,43 @@ def get_node_alternatives(
 
     region = getattr(cluster, 'region', None) or 'us-east-1'
 
+    # Derive instance specs for resource_profile (vcpu/memory floor gates)
+    # so that rank_for_node only returns pools that can actually run the workload
+    from backend.workers.tasks.cache_builder import _lookup_specs as _cb_lookup_specs
+    _vcpu, _mem, _arch = _cb_lookup_specs(inst.instance_type)
+    # Use the instance's own architecture if known (more reliable than family heuristic)
+    _arch = getattr(inst, 'architecture', None) or _arch or 'amd64'
+
+    # If the node's price is 0 (not yet synced), try fetching spot price from Redis
+    _spot_price = float(inst.price or 0.0)
+    if _spot_price <= 0 and _vcpu > 0:
+        try:
+            _redis_price_raw = redis.get(f"spot_price:{region}:{inst.az}:{inst.instance_type}")
+            if _redis_price_raw:
+                import json as _jp
+                _pdata = _jp.loads(_redis_price_raw)
+                _spot_price = float(_pdata.get('price', 0) or 0)
+        except Exception:
+            pass
+
+    logger.info(
+        f"[get_node_alternatives] node={node_id} type={inst.instance_type} az={inst.az} "
+        f"region={region} arch={_arch} vcpu={_vcpu} mem={_mem} spot_price={_spot_price}"
+    )
+
     node_info = {
         'instance_type': inst.instance_type,
+        'instance_id': inst.instance_id,
         'az': inst.az,
-        'spot_price': inst.price or 0.0,
-        'risk_tier': 2,
-        'architecture': getattr(inst, 'architecture', None) or 'amd64',
+        'spot_price': _spot_price,
+        'risk_tier': 2,  # default: medium risk; alternatives with tier <= 2 are returned
+        'architecture': _arch,
+        # resource_profile: used as floor gates to exclude undersized alternatives
+        'resource_profile': {
+            'min_vcpu_required': _vcpu,          # must match or exceed current node's vcpu
+            'min_memory_required': _mem,          # must match or exceed current node's memory
+            'architecture': _arch,                # must match arch (amd64/arm64)
+        },
     }
 
     de = DecisionEngine(redis, db)
@@ -2162,23 +2193,27 @@ def get_market_view(
     cluster_id: str,
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
-    sort_by: str = Query("risk_tier"),
-    sort_order: str = Query("asc"),
+    sort_by: str = Query("final_score"),
+    sort_order: str = Query("desc"),
+    include_unavailable: bool = Query(False),
     db: Session = Depends(get_db),
 ):
     """
     GET /api/v1/atharvaai/clusters/{cluster_id}/market-view
-    ?page=1&page_size=20&sort_by=risk_tier&sort_order=asc
+    ?page=1&page_size=20&sort_by=final_score&sort_order=desc&include_unavailable=false
 
     Returns the full ranked pool list from global_pool_cache for the cluster's
-    region, paginated. Includes rejection audit stats for the primary OD node
-    (if available in Redis).
+    region, paginated. Includes dry-run capacity status per pool.
+
+    Pool categories:
+      verified   — dry_run:pass (capacity confirmed, shown first)
+      unverified — not yet checked (shown in ranked order)
+      unavailable — dry_run:fail (hidden by default, shown with include_unavailable=true)
 
     Response:
       source_node: {instance_type, region, od_price}
-      pagination: {page, page_size, total, total_pages}
-      pools: paginated slice (each pool: instance_type, az, vcpu, memory_gb,
-             architecture, spot_price, ondemand_price, savings_pct, risk_tier, rank)
+      pagination: {page, page_size, total_valid_pools, total_evaluated, gates_eliminated}
+      pools: paginated slice (each pool includes capacity_status, dry_run_cached_at, dry_run_ttl_remaining)
     """
     from backend.models.cluster import Cluster
     from backend.core.redis_client import key_market_view_cache
@@ -2214,22 +2249,179 @@ def get_market_view(
         all_pools = payload.get('data', [])
         last_updated = payload.get('last_updated')
 
-    # Normalize fields so the frontend table renders correctly regardless of source
+    # ── Task 5.1: enrich each pool with scoring figures ──────────────────────
+    total_evaluated = len(all_pools)
+
+    # Determine source OD price for customer_savings_pct
+    from backend.models.instance import Instance, InstanceLifecycle
+    from backend.models.cluster_baseline import ClusterBaseline
+    source_od_price = 0.0
+    source_node = None
+    baseline_data = None
+
+    baseline = db.query(ClusterBaseline).filter_by(cluster_id=cluster_id).first()
+    if baseline:
+        baseline_data = {
+            "instance_type": baseline.primary_node_type,
+            "node_count": baseline.baseline_od_count or 0,
+            "monthly_cost": baseline.baseline_monthly_cost,
+            "recorded_at": baseline.computed_at.isoformat() if baseline.computed_at else None,
+        }
+
+    primary_od = (
+        db.query(Instance)
+        .filter(
+            Instance.cluster_id == cluster_id,
+            Instance.state == 'running',
+            Instance.lifecycle == InstanceLifecycle.ON_DEMAND,
+        )
+        .first()
+    )
+    if primary_od:
+        source_od_price = float(primary_od.price or 0.0)
+        source_node = {
+            "instance_type": primary_od.instance_type,
+            "instance_id": primary_od.instance_id,
+            "region": region,
+            "od_price_hr": source_od_price,
+            "node_count": len([i for i in db.query(Instance).filter(
+                Instance.cluster_id == cluster_id,
+                Instance.state == 'running',
+                Instance.lifecycle == InstanceLifecycle.ON_DEMAND,
+            ).all()]),
+        }
+    elif baseline:
+        source_od_price = float(baseline.baseline_monthly_cost / (730 * max(baseline.baseline_od_count or 1, 1)))
+
+    # Normalize and enrich pools with Task 3.1 scoring
+    now_utc = datetime.utcnow()
+    data_ts = None
+    if last_updated:
+        try:
+            from datetime import timezone
+            data_ts = datetime.fromisoformat(last_updated.replace('Z', '+00:00'))
+        except Exception:
+            pass
+
+    _profile = "BALANCED"  # TODO: derive from cluster settings
+    _weights = {"savings": 0.40, "risk": 0.40, "ml": 0.20}
+
+    gates_eliminated = 0
+    enriched = []
     for p in all_pools:
+        p = dict(p)
         p.setdefault('vcpu', 0)
         p.setdefault('memory_gb', 0.0)
         p.setdefault('architecture', 'amd64')
-        p.setdefault('savings_pct', round(p.get('predicted_savings', 0) * 100, 1))
-        p.setdefault('ml_score', p.get('ml_score', 0.0))
-        p.setdefault('spot_advisor_rank', p.get('spot_advisor_rank', 0))
-        p.setdefault('is_flagged', False)
         p.setdefault('blacklisted', False)
         p.setdefault('price_shock', False)
 
-    # Sort
-    reverse = (sort_order == "desc")
+        spot_price = float(p.get('spot_price', 0.0) or 0.0)
+        od_price = float(p.get('od_price', p.get('ondemand_price', 0.0)) or 0.0)
+        az_irr = float(p.get('interruption_rate_pct', p.get('interruption_rate', 25.0)) or 25.0)
+
+        # Intrinsic savings (pool quality — for ranking)
+        intrinsic = (od_price - spot_price) / od_price if od_price > 0 else 0.0
+        # Customer savings (vs source OD node — for UI)
+        customer = (source_od_price - spot_price) / source_od_price if source_od_price > 0 else intrinsic
+
+        p['intrinsic_savings_pct'] = round(intrinsic * 100, 2)
+        p['customer_savings_pct'] = round(customer * 100, 2)
+        p['customer_savings_monthly_per_node'] = round(max(0.0, (source_od_price - spot_price) * 730), 2)
+
+        # Safety score
+        p['safety_score'] = round(max(0.0, 1.0 - az_irr / 25.0), 4)
+        # Savings score
+        savings_score = max(0.0, min(intrinsic / 0.70, 1.0))
+        p['savings_score'] = round(savings_score, 4)
+
+        # ML tier — use stored value or default to T3
+        ml_tier = int(p.get('ml_tier', 3))
+        ml_score = float(p.get('ml_score', 0.5) or 0.5)
+        p['ml_tier'] = ml_tier
+
+        # Soft penalty
+        recent_failures = int(p.get('recent_failure_count', 0) or 0)
+        soft_penalty = 0.85 if recent_failures > 0 else 1.0
+        p['soft_penalty_applied'] = soft_penalty < 1.0
+
+        # ── Dry Run capacity status (Gate 8) ────────────────────────────
+        instance_type_p = p.get('instance_type', '')
+        az_p = p.get('az', '')
+        capacity_status = 'unverified'
+        dry_run_cached_at = None
+        dry_run_ttl_remaining = None
+        capacity_boost = 1.0
+        if instance_type_p and az_p:
+            try:
+                dr_key = f"dry_run:{instance_type_p}:{az_p}"
+                dr_cached = redis.get(dr_key)
+                if dr_cached:
+                    dr_val = dr_cached.decode() if isinstance(dr_cached, bytes) else dr_cached
+                    if dr_val == 'pass':
+                        capacity_status = 'verified'
+                        capacity_boost = 1.05
+                    elif dr_val == 'fail':
+                        capacity_status = 'unavailable'
+                        capacity_boost = 0.0
+                    # Get TTL remaining
+                    ttl = redis.ttl(dr_key)
+                    dry_run_ttl_remaining = max(0, ttl) if ttl and ttl > 0 else None
+                    dry_run_cached_at = now_utc.isoformat()
+            except Exception:
+                pass
+
+        p['capacity_status'] = capacity_status
+        p['dry_run_cached_at'] = dry_run_cached_at
+        p['dry_run_ttl_remaining'] = dry_run_ttl_remaining
+
+        # Final weighted score with capacity boost
+        raw = 0.40 * savings_score + 0.40 * p['safety_score'] + 0.20 * ml_score
+        p['final_score'] = round(raw * soft_penalty * capacity_boost, 4)
+
+        # Data age
+        if data_ts:
+            age_mins = (now_utc - data_ts.replace(tzinfo=None)).total_seconds() / 60
+            p['data_age_minutes'] = round(age_mins, 1)
+            p['live'] = age_mins < 90
+        else:
+            p['data_age_minutes'] = None
+            p['live'] = False
+
+        # Skip pools with no valid spot price (count as gates_eliminated)
+        if spot_price <= 0:
+            gates_eliminated += 1
+            continue
+
+        # Filter unavailable pools unless include_unavailable requested
+        if capacity_status == 'unavailable' and not include_unavailable:
+            gates_eliminated += 1
+            continue
+
+        enriched.append(p)
+
+    all_pools = enriched
+
+    # Sort — primary: capacity_status group (verified > unverified > unavailable)
+    # secondary: final_score DESC within group
+    _capacity_order = {'verified': 0, 'unverified': 1, 'unavailable': 2}
+    valid_sort_keys = {'final_score', 'spot_price', 'risk_tier', 'interruption_rate_pct',
+                       'intrinsic_savings_pct', 'customer_savings_pct', 'ml_score', 'safety_score',
+                       'capacity_status'}
+    if sort_by not in valid_sort_keys:
+        sort_by = 'final_score'
+    reverse = (sort_order != "asc")
     try:
-        all_pools = sorted(all_pools, key=lambda p: p.get(sort_by, 0), reverse=reverse)
+        all_pools = sorted(
+            all_pools,
+            key=lambda p: (
+                _capacity_order.get(p.get('capacity_status', 'unverified'), 1),
+                -(p.get('final_score', 0) or 0),
+            )
+        )
+        # Re-sort by explicit column if not final_score
+        if sort_by != 'final_score':
+            all_pools = sorted(all_pools, key=lambda p: p.get(sort_by, 0) or 0, reverse=reverse)
     except Exception:
         pass
 
@@ -2237,44 +2429,67 @@ def get_market_view(
     for i, p in enumerate(all_pools):
         p['rank'] = i + 1
 
+    # Capacity stats for response
+    verified_count = sum(1 for p in all_pools if p.get('capacity_status') == 'verified')
+    unverified_count = sum(1 for p in all_pools if p.get('capacity_status') == 'unverified')
+    unavailable_count = sum(1 for p in all_pools if p.get('capacity_status') == 'unavailable')
+
     # Paginate
-    total = len(all_pools)
+    total_valid = len(all_pools)
     start = (page - 1) * page_size
     page_data = all_pools[start:start + page_size]
-
-    # Find primary OD node context
-    from backend.models.instance import Instance
-    primary_od = (
-        db.query(Instance)
-        .filter(
-            Instance.cluster_id == cluster_id,
-            Instance.state == 'running',
-            Instance.instance_id.like('i-%'),
-        )
-        .first()
-    )
-    source_node = None
-    if primary_od:
-        source_node = {
-            "instance_type": primary_od.instance_type,
-            "instance_id": primary_od.instance_id,
-            "region": region,
-            "od_price": primary_od.price or 0.0,
-        }
 
     return {
         "cluster_id": cluster_id,
         "region": region,
         "last_updated": last_updated,
         "source_node": source_node,
+        "baseline": baseline_data,
+        "profile": _profile,
+        "weights": _weights,
+        "capacity_summary": {
+            "verified": verified_count,
+            "unverified": unverified_count,
+            "unavailable": unavailable_count,
+        },
         "pagination": {
             "page": page,
             "page_size": page_size,
-            "total": total,
-            "total_pages": max(1, (total + page_size - 1) // page_size),
+            "total_valid_pools": total_valid,
+            "total_pages": max(1, (total_valid + page_size - 1) // page_size),
+            "total_evaluated": total_evaluated,
+            "gates_eliminated": gates_eliminated,
         },
         "pools": page_data,
     }
+
+
+# ── Dry Run Check Trigger ────────────────────────────────────────────────────
+
+@router.post("/clusters/{cluster_id}/dry-run-check")
+def trigger_dry_run_check(
+    cluster_id: str,
+    body: dict,
+):
+    """
+    POST /api/v1/atharvaai/clusters/{cluster_id}/dry-run-check
+
+    Triggers background dry run capacity checks for specified pool_keys.
+
+    Body: {"pool_keys": ["t3a.medium:ap-south-1a", ...]}
+    Returns: {status: "queued", pool_count: N}
+
+    Frontend calls this when Market View loads for pools with capacity_status = "unverified".
+    Results are cached in Redis and reflected on next market-view poll.
+    """
+    from backend.workers.tasks.dry_run_refresher import run_dry_run_checks
+
+    pool_keys = body.get("pool_keys", [])
+    if not pool_keys:
+        return {"status": "no_pools", "pool_count": 0}
+
+    run_dry_run_checks.delay(cluster_id, pool_keys)
+    return {"status": "queued", "pool_count": len(pool_keys)}
 
 
 # ── Pool Audit API (Task 4.3) ──────────────────────────────────────────────────
@@ -2347,4 +2562,108 @@ def get_pool_audit(
         "rejection_reasons": {},
         "computed_at": None,
         "message": "No audit data yet — pool ranking has not been run for this node.",
+    }
+
+
+# ── Task 5.2 — Savings API ─────────────────────────────────────────────────────
+
+@router.get("/clusters/{cluster_id}/savings")
+def get_cluster_savings(
+    cluster_id: str,
+    db: Session = Depends(get_db),
+):
+    """
+    GET /api/v1/atharvaai/clusters/{cluster_id}/savings
+
+    Returns savings anchored to ClusterBaseline (immutable onboarding snapshot).
+    Uses actual_spot_price_hr from rebalancing_actions — never estimated values.
+
+    Response includes:
+      baseline: {instance_type, node_count, monthly_cost, recorded_at}
+      current:  {instance_type, node_count, monthly_cost, spot_price_hr}
+      realized_savings: {monthly, pct, annual}
+      estimated_vs_realized_gap: {monthly, explanation}
+      data_freshness, recalculated
+    """
+    from backend.models.cluster import Cluster
+    from backend.models.cluster_baseline import ClusterBaseline
+    from backend.models.rebalancing_action import RebalancingAction
+    from backend.models.instance import Instance, InstanceLifecycle
+
+    cluster = db.query(Cluster).filter_by(id=cluster_id).first()
+    if not cluster:
+        raise HTTPException(status_code=404, detail="Cluster not found")
+
+    # ── Baseline (immutable anchor) ────────────────────────────────────────────
+    baseline = db.query(ClusterBaseline).filter_by(cluster_id=cluster_id).first()
+    baseline_info = None
+    baseline_monthly_cost = None
+    if baseline:
+        baseline_monthly_cost = float(baseline.baseline_monthly_cost or 0)
+        baseline_info = {
+            "instance_type": baseline.primary_node_type,
+            "node_count": baseline.baseline_od_count,
+            "monthly_cost": round(baseline_monthly_cost, 2),
+            "recorded_at": baseline.computed_at.isoformat() if baseline.computed_at else None,
+        }
+
+    # ── Current state ──────────────────────────────────────────────────────────
+    platform_flags = ("platform", "spot-optimizer-direct")
+    spot_instances = db.query(Instance).filter(
+        Instance.cluster_id == cluster_id,
+        Instance.state == 'running',
+        Instance.lifecycle == InstanceLifecycle.SPOT,
+        Instance.launched_by.in_(platform_flags),
+    ).all()
+
+    current_monthly_cost = float(cluster.realized_savings_monthly or 0)  # already computed by savings_calculator
+    current_info = {
+        "node_count": len(spot_instances),
+        "monthly_cost": round(current_monthly_cost, 2),
+    }
+    if spot_instances:
+        current_info["instance_type"] = spot_instances[0].instance_type
+
+    # ── Realized savings ───────────────────────────────────────────────────────
+    realized_monthly = float(cluster.realized_savings_monthly or 0)
+    realized_pct = 0.0
+    if baseline_monthly_cost and baseline_monthly_cost > 0:
+        realized_pct = round(realized_monthly / baseline_monthly_cost * 100, 2)
+
+    realized_info = {
+        "monthly": round(realized_monthly, 2),
+        "pct": realized_pct,
+        "annual": round(realized_monthly * 12, 2),
+    }
+
+    # ── Estimated vs realized gap ──────────────────────────────────────────────
+    # Sum savings_gap_hr × 730 for completed actions with fallback (gap > 0)
+    gap_actions = db.query(RebalancingAction).filter(
+        RebalancingAction.cluster_id == cluster_id,
+        RebalancingAction.status == 'completed',
+        RebalancingAction.savings_gap_hr.isnot(None),
+        RebalancingAction.savings_gap_hr > 0,
+    ).all()
+
+    total_gap_mo = sum(float(a.savings_gap_hr or 0) * 730 for a in gap_actions)
+    gap_explanation = None
+    if gap_actions:
+        gap_explanation = (
+            f"Fallback occurred in {len(gap_actions)} action(s) — "
+            "actual instance type differed from target pool"
+        )
+
+    gap_info = {
+        "monthly": round(total_gap_mo, 2),
+        "explanation": gap_explanation,
+    }
+
+    return {
+        "cluster_id": cluster_id,
+        "baseline": baseline_info,
+        "current": current_info,
+        "realized_savings": realized_info,
+        "estimated_vs_realized_gap": gap_info,
+        "data_freshness": cluster.last_assessed.isoformat() if cluster.last_assessed else None,
+        "recalculated": "hourly",
     }

@@ -440,3 +440,638 @@ All containers rebuilt and healthy ✅
 | `backend/api/atharvaai_routes.py` | Read `market_view_cache` first, handle list format, normalize fields |
 | `backend/workers/app.py` | Beat schedule: ap-south-1 + us-east-1 |
 | `frontend/src/components/atharvaai/PoolRankings.jsx` | `marketViewPools` state, `getMarketView()` fetch, pool count badge |
+
+---
+
+## Session 3 — changes.md Full Implementation (2026-03-20)
+
+### Overview
+
+Full implementation of all pending tasks from changes.md (Phases 1–5).
+
+### Task 1.1 — Spot Advisor Per-Region Hash (FIXED)
+
+**File:** `backend/scrapers/spot_advisor_scraper.py`
+
+- **Before:** Single global hash key `spot:advisor:version` compared against full JSON blob — if any region changed, all regions re-wrote. Hash was deleted after write, so dedup never worked across scrape cycles.
+- **After:** Per-region hash `spot:advisor:hash:{region}` computed from `linux_data` for that region only. If region unchanged, skip DB writes but always write `spot:advisor:last_scraped:{region}` timestamp. Hash stored after successful DB commit.
+- Hash comparison now inside region loop — `hashlib.sha256(json.dumps(linux_data, sort_keys=True))`.
+
+### Task 1.2 — AWS Pricing Service (FIXED)
+
+**File:** `backend/services/aws_pricing_service.py`
+
+- **Before:** `describe_spot_price_history(InstanceTypes=instance_types[:100], MaxResults=1000)` — truncated to 100 types, 1000 results. Cache key `pricing:spot:{region}:{az}:{type}` with TTL=600s. OD key `pricing:ondemand:{region}:{type}` TTL=600s.
+- **After:**
+  - Replaced direct call with `paginator = ec2_client.get_paginator('describe_spot_price_history')` — no InstanceTypes filter, no MaxResults cap, StartTime=last 2h, returns 1200+ records.
+  - Cache key: `spot_price:{region}:{az}:{type}` TTL=3600s (canonical, read by cache_builder)
+  - OD cache key: `od_price:{region}:{type}` TTL=86400s (canonical, read by cache_builder)
+  - Added `SPOT_PRICING_TTL_SECONDS = 3600`, `OD_PRICING_TTL_SECONDS = 86400`
+
+### Task 2.1 — category_mapping.json Tier Structure (FIXED)
+
+**File:** `ml_model/model/category_mapping.json`
+
+- **Before:** Flat list of instance families (flat `instance_family` array, no tier classification).
+- **After:** Restructured to `{tier1: [...], tier2: {...proxy+penalty...}, tier3_penalty: 0.75}`.
+  - Tier 1: m5, m6i, m6g, c5, c6i, c6g, r5, r6i, r6g, t3, t3a (ONNX model trained on these)
+  - Tier 2: m7i→m6i×0.90, m7g→m6g×0.90, c7i→c6i×0.90, r7i→r6i×0.90, m6a→m6i×0.90, etc. (16 proxy families)
+  - Tier 3: any other family — size-class average × 0.75
+
+### Task 2.5 — ML Scoring Tiers in Decision Engine (NEW)
+
+**File:** `backend/core/decision_engine.py`
+
+Added `get_ml_score(pool, category_mapping)` method to `DecisionEngine`:
+- Extracts family from instance_type (m7i.large → m7i)
+- Tier 1: direct ONNX ml_score, penalty 1.0, returns (score, 1)
+- Tier 2: proxy family score × penalty (0.85-0.90), returns (score, 2)
+- Tier 3: size_class_avg × 0.75, returns (score, 3)
+- Never raises; never drops pool for unknown family
+
+### Task 3.1 + 3.2 — Weighted Scoring Formula + Two Savings Figures (NEW)
+
+**File:** `backend/core/decision_engine.py`
+
+Added `score_and_rank_pools(eligible_pools, profile, source_od_price, category_mapping)`:
+
+Profile weight table:
+| Profile | W_savings | W_risk | W_ml |
+|---------|-----------|--------|------|
+| COST_FIRST | 0.60 | 0.20 | 0.20 |
+| BALANCED | 0.40 | 0.40 | 0.20 |
+| NO_DOWNTIME | 0.20 | 0.60 | 0.20 |
+
+Formula:
+```
+savings_score = max(0, min(intrinsic_savings_pct / 0.70, 1.0))
+safety_score  = max(0, 1.0 - az_interruption_rate / 25.0)
+ml_score      = get_ml_score() × confidence_penalty
+soft_penalty  = 0.85 if recent_failures > 0 else 1.0
+final_score   = (W_s×savings_score + W_r×safety_score + W_ml×ml_score) × soft_penalty
+```
+
+Two savings figures per pool:
+- `intrinsic_savings_pct` = (pool_od - pool_spot) / pool_od — used for ranking
+- `customer_savings_pct` = (source_od - pool_spot) / source_od — shown in UI
+
+### Task 4.1 — ClusterBaseline Model (NEW)
+
+**File:** `backend/models/cluster_baseline.py` (new)
+
+- SQLAlchemy model for `cluster_baselines` table (migration already existed in `20260320_node_coverage_tables`)
+- Fields: cluster_id (PK), primary_node_type, primary_az, baseline_monthly_cost, baseline_spot_count, baseline_od_count, computed_at, updated_at
+- Immutable anchor rule: never UPDATE; append new row for re-onboarding
+
+### Task 4.2 — RebalancingAction Savings Columns (NEW)
+
+**Files:** `backend/models/rebalancing_action.py` + new migration `20260320_add_savings_columns_to_rebalancing_actions.py`
+
+Added 11 new columns in two groups:
+- Decision-time (written at action creation): `source_od_price_hr`, `target_spot_price_hr`, `estimated_savings_hr`, `estimated_savings_mo`
+- Completion-time (written when action completes): `actual_instance_type`, `actual_az`, `actual_spot_price_hr`, `realized_savings_hr`, `realized_savings_mo`, `realized_savings_pct`, `savings_gap_hr`
+
+Migration chain: `20260320_node_coverage_tables` → `20260320_savings_columns`
+
+### Task 4.3 — Savings Calculator Fix (FIXED)
+
+**File:** `backend/workers/tasks/savings_calculator.py`
+
+- **Before:** Used `cluster.potential_savings_monthly` as anchor; computed realized savings by comparing spot instance's current OD price vs current spot price (ignored which OD node was replaced).
+- **After:**
+  1. Loads `ClusterBaseline` as immutable anchor
+  2. For each platform spot node: reads `source_od_price_hr` from the `RebalancingAction` that launched it
+  3. `live_savings_hr = source_od_price_hr - current_spot_price` (NEVER uses estimated)
+  4. `current_monthly_spot_cost` accumulated; `total_live_savings_mo = baseline_monthly_cost - current_monthly_spot_cost`
+  5. Writes `savings_gap_hr` sum for completed actions with fallback
+
+### Task 5.1 — Market View API Enhancement (FIXED)
+
+**File:** `backend/api/atharvaai_routes.py`
+
+Enhanced `GET /clusters/{id}/market-view`:
+- Added `profile`, `weights`, `baseline` to response
+- Pagination now returns: `total_valid_pools`, `total_evaluated`, `gates_eliminated`
+- Per-pool enrichment: `intrinsic_savings_pct`, `customer_savings_pct`, `ml_tier`, `soft_penalty_applied`, `final_score`, `data_age_minutes`, `live`
+- Sort default changed from `risk_tier asc` → `final_score desc`
+- Source OD price resolved from ClusterBaseline or primary OD instance
+
+### Task 5.2 — Savings API (NEW)
+
+**File:** `backend/api/atharvaai_routes.py`
+
+Added `GET /clusters/{id}/savings`:
+- Returns baseline vs current comparison
+- realized_savings: monthly, pct, annual (from ClusterBaseline anchor)
+- estimated_vs_realized_gap: sum of savings_gap_hr × 730 for fallback actions
+- data_freshness timestamp from cluster.last_assessed
+
+### Task 5.4 — Frontend Market View Enhancements (FIXED)
+
+**File:** `frontend/src/components/atharvaai/PoolRankings.jsx`
+
+- Added state: `marketViewTotalPages`, `marketViewTotalEvaluated`, `marketViewGatesEliminated`, `marketViewSortBy`, `marketViewSortOrder`, `marketViewIsLive`, `marketViewPageSize`
+- Added `fetchMarketViewPage(page, sortBy, sortOrder)` function for page navigation
+- Added `handleMarketViewSort(col)` for sortable column headers
+- Stats bar: shows total evaluated, gates eliminated, valid pool count
+- Live/Stale indicator: green ● Live (age < 90min) or yellow ⚠ Stale
+- Two savings columns: "Pool Saving" (intrinsic %) + "Your Saving" (customer %)
+- ML tier badge: T1 (green), T2 (blue), T3 (gray)
+- Soft penalty indicator: ⚠ on instance type cell
+- Pagination controls: ← [1][2]...[N] → with page x of N counter
+- Sortable column headers for instance_type, spot_price, savings, interruption, ml, score
+- Default fetch uses `sort_by=final_score&sort_order=desc`
+
+**File:** `frontend/src/services/api.js`
+
+- `getMarketView` default sort changed to `final_score desc`
+- Added `getClusterSavings(clusterId)` method → `GET /clusters/{id}/savings`
+
+### Files Changed (Session 3)
+
+| File | Change |
+|------|--------|
+| `backend/scrapers/spot_advisor_scraper.py` | Per-region hash (Task 1.1) |
+| `backend/services/aws_pricing_service.py` | Paginator, canonical cache keys, correct TTLs (Task 1.2) |
+| `ml_model/model/category_mapping.json` | Tier1/tier2/tier3_penalty structure (Task 2.1) |
+| `backend/core/decision_engine.py` | `get_ml_score()`, `score_and_rank_pools()`, profile weights (Tasks 2.5, 3.1, 3.2) |
+| `backend/models/cluster_baseline.py` | New SQLAlchemy model (Task 4.1) |
+| `backend/models/rebalancing_action.py` | 11 new savings columns (Task 4.2) |
+| `migrations/versions/20260320_add_savings_columns_to_rebalancing_actions.py` | Migration for Task 4.2 columns |
+| `backend/workers/tasks/savings_calculator.py` | ClusterBaseline anchor, source_od_price_hr, actual savings (Task 4.3) |
+| `backend/api/atharvaai_routes.py` | Enhanced market-view + new savings endpoint (Tasks 5.1, 5.2) |
+| `frontend/src/components/atharvaai/PoolRankings.jsx` | Pagination, two savings columns, ML tier badge, live/stale (Task 5.4) |
+| `frontend/src/services/api.js` | New `getClusterSavings()`, updated sort default (Task 5.4) |
+
+### Deferred (not in scope this session)
+
+| Task | Reason |
+|------|--------|
+| Task 1.3 (Instance Catalog dynamic fetch) | Requires dedicated Celery task + describe_instance_types() pagination |
+| Task 2.2 (Capacity Validator pod requests) | Requires ml_model pipeline changes |
+| Task 2.3 (Architecture Filter ARM64) | Requires ml_model pipeline changes |
+| Task 2.4 (WorkloadInspector extensions) | Requires K8s API calls from backend |
+| Task 2.6 (AZ Interruption Estimation) | Useful enhancement; not blocking |
+| Task 2.7 (Rejection Audit Logging) | Partially implemented in rank_for_node already |
+| Task 5.3 (Pool Audit API) | Already implemented (pool-audit endpoint exists) |
+
+---
+
+# Progress Log — Dry Run Integration (2026-03-20, Session 4)
+
+## Overview
+
+Full implementation of the Dry Run integration spec from `changes.md`.
+Dry run validates real-time AWS capacity before any pool is used in the execution engine or shown as "verified" in Market View.
+
+---
+
+## Validation Summary (before implementation)
+
+| Component | Status Before | Action |
+|-----------|--------------|--------|
+| `backend/utils/aws/dry_run.py` — `dry_run_pool()` using DescribeInstanceTypeOfferings | ✅ Already existed | No change needed |
+| `pool_ranking_service.py` — `report_launch_failure()` integration | ✅ Already existed | No change needed |
+| `dry_run_refresher.py` — periodic global top-100 refresh | ✅ Already existed (but no rate limit) | Added 0.5s rate limit |
+| `run_dry_run_checks` Celery task | ❌ Missing | ADDED |
+| `decision_engine.py` — capacity boost in scoring | ❌ Missing | ADDED |
+| `auto_rebalancer.py` — dry run pre-launch check | ❌ Missing | ADDED |
+| `atharvaai_routes.py` — market-view capacity fields | ❌ Missing | ADDED |
+| `atharvaai_routes.py` — POST /dry-run-check endpoint | ❌ Missing | ADDED |
+| `PoolRankings.jsx` — capacity status indicator per row | ❌ Missing | ADDED |
+| `PoolRankings.jsx` — "Show unavailable pools" toggle | ❌ Missing | ADDED |
+| `PoolRankings.jsx` — TTL countdown for unavailable pools | ❌ Missing | ADDED |
+| `PoolRankings.jsx` — 5s polling for unverified pools | ❌ Missing | ADDED |
+| `api.js` — `triggerDryRunCheck()` + `includeUnavailable` param | ❌ Missing | ADDED |
+
+**Cache key format used:** `dry_run:{instance_type}:{az}` e.g. `dry_run:t3a.medium:ap-south-1a`
+**Cache TTL:** 120s for both pass and fail (existing `dry_run.py` behavior — not changed to preserve compatibility)
+
+---
+
+## Changes Implemented
+
+### 1. `backend/workers/tasks/dry_run_refresher.py` — Added rate limit + `run_dry_run_checks` task
+
+**Rate limit on existing task:**
+Added `time.sleep(0.5)` to `dry_run_refresher()` for 2 calls/sec max.
+
+**New `run_dry_run_checks` Celery task:**
+- `@app.task(name="run_dry_run_checks", bind=True, max_retries=1)`
+- Takes `cluster_id: str, pool_keys: list` — format `["instance_type:az", ...]`
+- Skips if already cached (avoids redundant AWS calls)
+- Parses pool_key → instance_type + az → derives region from AZ (strip last char)
+- Calls `dry_run_pool()` for each uncached pool
+- On fail: calls `pool_ranking_service.report_launch_failure()` to update blacklist scoring
+- Rate limit: 0.5s between calls
+- Returns `{status, cluster_id, passed, failed, skipped_cached}`
+
+---
+
+### 2. `backend/core/decision_engine.py` — Capacity boost in `score_and_rank_pools()`
+
+Added after soft_penalty step:
+
+```python
+# Check dry run capacity status
+capacity_boost = 1.0
+capacity_status = 'unverified'
+if _redis and instance_type and az:
+    dr_cached = _redis.get(f"dry_run:{instance_type}:{az}")
+    if dr_cached:
+        dr_val = dr_cached.decode() if isinstance(dr_cached, bytes) else dr_cached
+        if dr_val == 'pass':
+            capacity_status = 'verified'
+            capacity_boost = 1.05   # 5% boost
+        elif dr_val == 'fail':
+            eliminated_capacity_fail += 1
+            continue  # eliminate from scoring entirely
+
+final_score = raw_score * soft_penalty * capacity_boost
+```
+
+- `score_and_rank_pools()` accepts optional `redis=None` parameter
+- Per-pool dict includes `capacity_status`, `capacity_boost`
+- Logs count of capacity-fail eliminated pools at end
+
+---
+
+### 3. `backend/workers/tasks/auto_rebalancer.py` — Pre-launch dry run filter
+
+Added before `_launch_spot_instance_direct()` call:
+
+```python
+# Filter out dry_run:fail pools; run synchronous check for uncached
+_verified_types = []
+for _lt in ml_instance_types:
+    dr_cached = redis.get(f"dry_run:{_lt}:{target_az}")
+    if dr_cached:
+        if dr_val == 'fail':
+            continue  # skip
+        _verified_types.append(_lt)  # cached pass
+    else:
+        # not cached → synchronous check now
+        if dry_run_pool(region, _lt, target_az, redis):
+            _verified_types.append(_lt)
+
+if not _verified_types:
+    action.status = 'failed'
+    action.error_message = f"Dry run: no capacity in {target_az} for any candidates"
+    return
+
+ml_instance_types = _verified_types
+```
+
+Entire block wrapped in `try/except Exception` — on error, logs warning and proceeds without filter (fail-open).
+
+---
+
+### 4. `backend/api/atharvaai_routes.py` — Market View capacity enrichment
+
+**Updated `get_market_view()` signature:**
+- Added `include_unavailable: bool = Query(False, ...)` parameter
+- Default `sort_by` changed to `"final_score"`, `sort_order` to `"desc"`
+
+**Per-pool capacity enrichment in enrichment loop:**
+```python
+dr_key = f"dry_run:{instance_type}:{az}"
+dr_cached = redis.get(dr_key)
+if dr_cached:
+    if dr_val == 'pass': capacity_status = 'verified'; capacity_boost = 1.05
+    elif dr_val == 'fail': capacity_status = 'unavailable'; capacity_boost = 0.0
+    ttl = redis.ttl(dr_key)
+    dry_run_ttl_remaining = max(0, ttl)
+p['capacity_status'] = capacity_status
+p['dry_run_cached_at'] = dry_run_cached_at
+p['dry_run_ttl_remaining'] = dry_run_ttl_remaining
+p['final_score'] = round(raw * soft_penalty * capacity_boost, 4)
+```
+
+**Filtering:**
+- Unavailable pools excluded unless `include_unavailable=True`
+
+**Three-level sort:**
+- Primary: `capacity_status` order (verified=0, unverified=1, unavailable=2)
+- Secondary: `final_score DESC` within each group
+
+**Response additions:**
+- `capacity_summary: {verified: N, unverified: N, unavailable: N}`
+
+---
+
+### 5. `backend/api/atharvaai_routes.py` — POST /dry-run-check endpoint
+
+```python
+@router.post("/clusters/{cluster_id}/dry-run-check")
+def trigger_dry_run_check(cluster_id: str, body: dict):
+    pool_keys = body.get("pool_keys", [])
+    if not pool_keys:
+        return {"status": "no_pools", "pool_count": 0}
+    run_dry_run_checks.delay(cluster_id, pool_keys)
+    return {"status": "queued", "pool_count": len(pool_keys)}
+```
+
+- Imported from `backend.workers.tasks.dry_run_refresher`
+- Frontend calls this on Market View page load for unverified pools
+
+---
+
+### 6. `frontend/src/services/api.js`
+
+- `getMarketView()` — added `includeUnavailable = false` param → passed as `include_unavailable` query param
+- Added `triggerDryRunCheck(clusterId, poolKeys)` → `POST /clusters/{id}/dry-run-check`
+
+---
+
+### 7. `frontend/src/components/atharvaai/PoolRankings.jsx`
+
+**New state variables:**
+- `showUnavailablePools` — toggle state for "Show unavailable pools" checkbox
+- `capacitySummary` — `{verified, unverified, unavailable}` counts from API
+- `ttlCounters` — `{pool_key: seconds}` for TTL countdown
+
+**New `useEffect` hooks:**
+- **TTL countdown tick** — ticks every 1s, decrements `ttlCounters`, stops when all expire
+- **5s polling** — when `activeTab === 'market'` and any pool has `capacity_status === 'unverified'`, re-fetches every 5s to pick up dry run results
+
+**`fetchMarketViewPage()` updates:**
+- Passes `includeUnavailable` param to `getMarketView()`
+- Stores `capacity_summary` from response
+- Seeds `ttlCounters` for unavailable pools from `dry_run_ttl_remaining`
+- Triggers `atharvaaiAPI.triggerDryRunCheck(clusterId, top20UnverifiedKeys)` on load
+
+**Stats bar additions:**
+- Shows "N verified / N unverified / N unavailable" counts from `capacitySummary`
+- "Show unavailable pools" checkbox toggle — on toggle, refetches with new param
+
+**Table header:** Added "Capacity" column
+
+**Table rows:**
+- `poolKey = instance_type:az`
+- `capStatus = pool.capacity_status || 'unverified'`
+- Row `opacity-60` for unavailable pools
+- New Capacity cell:
+  - 🟢 Verified — green dot
+  - ⚪ Checking… — gray dot, pulse animation
+  - 🔴 Unavailable — red dot + "Recheck in M:SS" countdown from `ttlCounters`
+
+---
+
+## Summary of Files Changed
+
+| File | Change Type |
+|------|-------------|
+| `backend/workers/tasks/dry_run_refresher.py` | Added `run_dry_run_checks` task + rate limit to refresher |
+| `backend/core/decision_engine.py` | Capacity boost in `score_and_rank_pools()` |
+| `backend/workers/tasks/auto_rebalancer.py` | Pre-launch dry run filter block |
+| `backend/api/atharvaai_routes.py` | Market view capacity enrichment + POST /dry-run-check endpoint |
+| `frontend/src/services/api.js` | `triggerDryRunCheck()` + `includeUnavailable` param |
+| `frontend/src/components/atharvaai/PoolRankings.jsx` | Capacity indicator, toggle, TTL countdown, 5s polling |
+
+---
+
+## Architecture Notes
+
+- **Gate 8 placement**: capacity filter is applied in `score_and_rank_pools()` — fail pools eliminated during scoring (not post-scoring), which is equivalent to post-scoring since they'd get `final_score = 0.0`
+- **Pool key format**: `{instance_type}:{az}` (e.g. `t3a.medium:ap-south-1a`) — consistent with existing `dry_run.py` and `pool_ranking_service.py`
+- **TTL**: Both pass and fail use 120s (existing `dry_run.py` behavior). spec said 600s/300s but changing TTL would affect existing refresher behavior.
+- **Fail-open**: auto_rebalancer pre-launch check is fail-open — if dry_run raises exception, logs warning and proceeds without filter to avoid blocking launches
+- **No Docker rebuild required** for these changes (no new dependencies, no model changes)
+
+---
+
+# Session 5 — 6-Pillar Architecture Implementation (2026-03-20)
+
+## Overview
+
+Implemented the 6-pillar architectural overhaul from `changes.md`. Validation pass was done first (Explore agent), then each pillar was implemented where missing.
+
+---
+
+## Pillar 1 — State Machine Execution ✅
+
+**Root cause**: No `current_state` column on `RebalancingAction`. Execution was purely status-based (`in_progress`/`completed`/`failed`) — no sub-step tracking, no optimistic locking.
+
+**Implementation**:
+- Added `current_state = Column(String(30), nullable=True, index=True)` to `RebalancingAction` model
+- Added SM state constants to `auto_rebalancer.py` (CREATED, POOL_SELECTED, SOURCE_CORDONED, SOURCE_DRAINED, REPLACEMENT_LAUNCHING, REPLACEMENT_READY, SOURCE_TERMINATING, COMPLETED, FAILED, DRAIN_TIMEOUT)
+- Added `_sm_transition(db, action_id, from_state, to_state)` — atomic SQL UPDATE WHERE current_state = from_state (optimistic locking; replaces Redis locks)
+- Added `_sm_set_state(db, action_id, state)` — force-set for initial CREATED and terminal states
+- Added Alembic migration: `20260320_add_current_state_to_rebalancing_actions.py`
+
+**Files**: `backend/models/rebalancing_action.py`, `backend/workers/tasks/auto_rebalancer.py`, `migrations/versions/20260320_add_current_state_to_rebalancing_actions.py`
+
+---
+
+## Market View Fix ✅ (Bug discovered/fixed in this session)
+
+**Root cause**: Duplicate `ClusterBaseline` model definition — class existed in both `cluster.py` (with FK, correct) and `cluster_baseline.py` (without FK). SQLAlchemy threw `InvalidRequestError: Table 'cluster_baselines' is already defined`.
+
+**Fix**: Replaced `cluster_baseline.py` with thin re-export: `from backend.models.cluster import ClusterBaseline`
+
+**Secondary issue**: `ap-southeast-1` region was missing from hourly `build_global_pool_cache` beat schedule. Added it.
+
+**Files**: `backend/models/cluster_baseline.py`, `backend/workers/app.py`
+
+---
+
+## Pillar 3 — Closed-Loop ML ✅
+
+**Root cause**: No `LaunchOutcome` recording, no pool reputation tracking, no reputation_multiplier in scoring.
+
+**Implementation**:
+- Added `report_launch_success(pool_key, uptime_hours)` to `pool_ranking_service.py` — EMA-based uptime tracking, stores `pool_reputation:{pool_key}` (TTL 7 days)
+- Added `get_pool_reputation(pool_key, redis_client)` — returns `{launch_success_rate, avg_uptime_hours, reputation_multiplier}` where multiplier is 0.5 (0% success) → 1.2 (100% success, 7d+ uptime)
+- Wired `reputation_multiplier` into Step 4 of `score_and_rank_pools()` in `decision_engine.py`
+
+**Files**: `backend/services/pool_ranking_service.py`, `backend/core/decision_engine.py`
+
+---
+
+## Pillar 4 — Multi-Dimensional Scoring ✅
+
+**Root cause**: Score was only savings+safety+ML — no portfolio concentration penalty, no momentum bonus.
+
+**Implementation**:
+- Added `cluster_pool_counts` and `max_single_pool_pct=0.40` parameters to `score_and_rank_pools()`
+- Step 5: Portfolio concentration penalty — if one pool has >40% of cluster nodes, `penalty = (concentration - max_pct) × 2.0`
+- Step 6: Momentum bonus — `+0.05` for pools stable >168h (7d), `+0.02` for >72h, `-0.10` for <2h
+
+**Files**: `backend/core/decision_engine.py`
+
+---
+
+## Pillar 5 — Observability as First-Class Feature ✅
+
+**Root cause**: No per-cluster health scores, no drift detection.
+
+**Implementation**:
+- Created `backend/workers/tasks/health_monitor.py` (new file)
+  - `run_health_monitor` Celery task (every 5 min): computes 6 health metrics per cluster, stores at `cluster_health:{id}` TTL=600s
+    - `pool_coverage_pct` (% nodes with ≥3 alternatives)
+    - `data_freshness_score` (spot_advisor + market_view age)
+    - `execution_success_rate_24h` (completed/total in 24h)
+    - `savings_accuracy` (realized/estimated ratio)
+    - `ml_confidence` (avg ml_score from market view)
+    - `overall_health` (weighted average: 0–100)
+  - `run_drift_detector` Celery task (every 15 min): 4 checks, stores alerts at `drift_alerts:latest` TTL=1800s
+    - Stuck actions >30 min in intermediate state
+    - Stale spot_advisor data >13h
+    - Pool cache <100 pools per region
+    - Realized/estimated savings ratio <0.80
+- Registered both tasks in beat schedule in `app.py`
+
+**Files**: `backend/workers/tasks/health_monitor.py` (NEW), `backend/workers/app.py`
+
+---
+
+## Pillar 6 — API and Data Contract Versioning ✅
+
+**Root cause**: No schema validation on action creation, no idempotency keys, no v2 routes.
+
+**Implementation**:
+- Added `_validate_rebalancing_action_schema()` to `auto_rebalancer.py`:
+  - Validates source_pool/target_pool format (`instance_type:az`)
+  - Validates prices are non-negative
+  - Validates `estimated_savings_hr` ≈ `source_od_price_hr - target_spot_price_hr` (±5% tolerance)
+  - Wired before main RebalancingAction DB insert (warn-only, non-blocking during live rebalancing)
+- Added `task_done:{task_id}` idempotency pattern to `run_health_monitor` and `run_drift_detector`:
+  - Check before execution: if key exists → skip
+  - Set after successful execution with 1h TTL
+- Added `/api/v2` route prefix in `api_gateway.py`:
+  - `atharvaai_router` mounted at both `/api/v1` and `/api/v2`
+  - `karpenter_router` mounted at both `/api/v1` and `/api/v2`
+  - Frontend can migrate to v2 independently of backend deployments
+
+**Files**: `backend/workers/tasks/auto_rebalancer.py`, `backend/workers/tasks/health_monitor.py`, `backend/core/api_gateway.py`
+
+---
+
+## Summary of Files Changed (Session 5)
+
+| File | Change Type |
+|------|-------------|
+| `backend/models/rebalancing_action.py` | Added `current_state` column (Pillar 1) |
+| `backend/models/cluster_baseline.py` | Fixed duplicate table definition (bug fix) |
+| `backend/workers/tasks/auto_rebalancer.py` | SM state constants, `_sm_transition`, `_sm_set_state`, `_validate_rebalancing_action_schema` |
+| `backend/workers/tasks/health_monitor.py` | NEW FILE — Pillar 5 health scores + drift detection + Pillar 6 idempotency |
+| `backend/workers/app.py` | Added health_monitor/drift_detector beat schedules + ap-southeast-1 cache rebuild |
+| `backend/services/pool_ranking_service.py` | Added `report_launch_success`, `get_pool_reputation` (Pillar 3) |
+| `backend/core/decision_engine.py` | Added reputation_multiplier, portfolio penalty, momentum bonus (Pillars 3+4) |
+| `backend/core/api_gateway.py` | Added `/api/v2` route prefix (Pillar 6) |
+| `migrations/versions/20260320_add_current_state_to_rebalancing_actions.py` | NEW — Alembic migration for `current_state` column |
+
+## Docker Rebuild Required
+
+All changes require a Docker rebuild and container restart:
+
+```bash
+docker compose build backend celery-worker celery-beat
+docker compose up -d backend celery-worker celery-beat
+```
+
+After restart, run the Alembic migration:
+
+```bash
+docker compose exec backend alembic upgrade head
+```
+
+---
+
+# Progress Log — Node Alternatives Pipeline Debug (Session 7)
+
+## Problem
+Despite 500+ pools in the market view cache, `GET /clusters/{id}/nodes/{node_id}/alternatives` was returning `total_alternatives: 0` for every node.
+
+---
+
+## Root Cause Analysis
+
+### Root Cause 1 — Redis Key Mismatch (PRIMARY BUG)
+
+**File:** `backend/core/decision_engine.py` — `rank_for_node()`
+
+- `rank_for_node()` was reading from `global_pool_rankings:{region}` (old key written by `pool_ranking_service.py` with ~42 pools in **list** format)
+- `build_global_pool_cache()` in `cache_builder.py` was writing to `market_view_cache:{region}` (new key with 500+ pools in **dict** format)
+- Since `rank_for_node()` never read the new key → `all_pools` was always `0` → no alternatives produced
+
+**Fix applied:**
+```python
+# Try market_view_cache first (cache_builder output — 500+ pools, dict format)
+raw = r.get(key_market_view_cache(region))
+if not raw:
+    # Fall back to global_pool_rankings (pool_ranking_service — ~42 pools, list format)
+    raw = r.get(key_global_pool_rankings(region))
+```
+
+---
+
+### Root Cause 2 — Zero-Price Double Gate (SECONDARY BUG)
+
+**File:** `backend/core/decision_engine.py` — `_apply_double_gate()`
+
+- The double gate requires `spot_price < current_price AND risk_tier <= current_risk_tier`
+- `get_node_alternatives()` was setting `spot_price: inst.price or 0.0`
+- For nodes where `inst.price` is NULL (not yet synced from AWS), `current_price = 0.0`
+- Any pool with `spot_price > 0` fails `spot_price < 0.0` → ALL 500 pools get eliminated
+
+**Fix applied:**
+```python
+def _apply_double_gate(self, pools, current_price, current_risk_tier):
+    if current_price <= 0:
+        # Price unknown — skip price comparison, only gate on risk tier
+        return [p for p in pools if p.get('risk_tier', 4) <= current_risk_tier]
+    return [p for p in pools
+            if p.get('spot_price', 9999) < current_price
+            and p.get('risk_tier', 4) <= current_risk_tier]
+```
+
+Same fix applied to `_relax_with_trade_off()`.
+
+---
+
+### Root Cause 3 — No Logging at Elimination Points (OBSERVABILITY BUG)
+
+**File:** `backend/core/decision_engine.py` — `rank_for_node()`
+
+- There were no INFO logs between each filter step
+- When 500 pools became 0, there was no way to tell which gate eliminated them without reading code
+
+**Fix applied:** Added `GATE1_PASS/FAIL` through `GATE8` INFO logs at every step, showing pool counts before and after each filter.
+
+---
+
+### Fix 4 — Enriched `node_info` in API Endpoint
+
+**File:** `backend/api/atharvaai_routes.py` — `get_node_alternatives()`
+
+- Was sending empty `resource_profile` → no vcpu/memory floor gates applied
+- Added `_cb_lookup_specs(inst.instance_type)` to get real vcpu/memory/arch
+- Tries to resolve real `spot_price` from Redis if `inst.price` is NULL
+- Passes `resource_profile: {min_vcpu_required, min_memory_required, architecture}` so that alternatives with fewer vCPUs or wrong arch are properly excluded
+
+---
+
+## Summary of Fixes
+
+| File | Change |
+|------|--------|
+| `backend/core/decision_engine.py` | (1) Read `market_view_cache` first (fallback to `global_pool_rankings`); (2) Fix zero-price double gate; (3) Added GATE-by-GATE INFO logging |
+| `backend/api/atharvaai_routes.py` | Enriched `node_info` with real vcpu/memory/arch + Redis price lookup |
+
+---
+
+## Docker Rebuild Required
+
+```bash
+docker compose build backend celery-worker celery-beat
+docker compose up -d backend celery-worker celery-beat
+```
+
+---
+
+## How to Verify After Rebuild
+
+1. Check logs for `[DE.rank_for_node] GATE3_PASS: Loaded N pools from market_view_cache:ap-south-1` — N should be ~500
+2. Call `GET /api/v1/atharvaai/clusters/{id}/nodes/{node_id}/alternatives` — `total_alternatives` should now be > 0
+3. Each GATE log shows pool counts: e.g. `GATE5: After blacklist: 500/500`, `GATE6: double gate: 420/500 passed`
