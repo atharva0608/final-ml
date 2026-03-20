@@ -59,6 +59,11 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
     const [coverageLoading, setCoverageLoading] = useState(false);
     // Pool audit / funnel data (Task 4.3/4.4)
     const [poolAuditData, setPoolAuditData] = useState(null);
+    // Market View — full pool list from cache_builder (not filtered by template)
+    const [marketViewPools, setMarketViewPools] = useState([]);
+    const [marketViewLoading, setMarketViewLoading] = useState(false);
+    const [marketViewPage, setMarketViewPage] = useState(1);
+    const [marketViewTotal, setMarketViewTotal] = useState(0);
     // Node-Specific View — selected node + alternatives
     const [selectedNodeId, setSelectedNodeId] = useState(null);
     const [nodeAlternatives, setNodeAlternatives] = useState(null);
@@ -296,6 +301,22 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
             setClusterInfo(prev => ({ ...prev, primaryInstancePrice }));
             setPools(Array.isArray(rankings) ? rankings : []);
             setError(null);
+
+            // ── Step 5: Fetch full Market View from cache_builder endpoint ──
+            try {
+                setMarketViewLoading(true);
+                const mvRes = await atharvaaiAPI.getMarketView(clusterId, 1, 50);
+                const mvPools = mvRes.data?.pools || [];
+                setMarketViewPools(mvPools);
+                setMarketViewTotal(mvRes.data?.pagination?.total || mvPools.length);
+            } catch (mvErr) {
+                console.debug('Market view endpoint not yet available:', mvErr.message);
+                // Fall back to using the old rankings data
+                setMarketViewPools(Array.isArray(rankings) ? rankings : []);
+                setMarketViewTotal(Array.isArray(rankings) ? rankings.length : 0);
+            } finally {
+                setMarketViewLoading(false);
+            }
         } catch (err) {
             setError(err.response?.data?.detail || 'Failed to fetch pool rankings');
             console.error('Error fetching pool rankings:', err);
@@ -424,6 +445,11 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
                     >
                         <FiGlobe className="mr-2" />
                         Market View
+                        {marketViewTotal > 0 && (
+                            <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-indigo-100 text-indigo-700">
+                                {marketViewTotal}
+                            </span>
+                        )}
                     </button>
                     <button
                         onClick={() => setActiveTab('node')}
@@ -493,7 +519,7 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
             )}
 
             {/* Pool Rankings Table (Market View) */}
-            {!loading && pools.length > 0 && activeTab === 'market' && (
+            {!loading && !marketViewLoading && marketViewPools.length > 0 && activeTab === 'market' && (
                 <div className="bg-white shadow-md rounded-lg overflow-x-auto">
                     <table className="w-full min-w-[800px] divide-y divide-gray-200 text-sm">
                         <thead className="bg-gray-50">
@@ -512,7 +538,7 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
                             </tr>
                         </thead>
                         <tbody className="bg-white divide-y divide-gray-200">
-                            {pools.map((pool) => (
+                            {marketViewPools.map((pool) => (
                                 <tr
                                     key={`${pool.instance_type}-${pool.az}`}
                                     className={`hover:bg-gray-50 ${pool.is_flagged ? 'bg-red-50' : ''}`}
@@ -580,7 +606,7 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
             )}
 
             {/* Empty State */}
-            {!loading && pools.length === 0 && !error && clusterId && activeTab === 'market' && (
+            {!loading && !marketViewLoading && marketViewPools.length === 0 && !error && clusterId && activeTab === 'market' && (
                 <div className="text-center py-12 bg-white shadow-md rounded-lg">
                     <p className="text-gray-600">No pool rankings available. Adjust your filters and try again.</p>
                 </div>

@@ -29,6 +29,7 @@ def get_redis():
 # ── Redis Key Helpers ──────────────────────────────────────────────────────
 
 def key_global_pool_rankings(region: str) -> str: return f"global_pool_rankings:{region}"
+def key_market_view_cache(region: str) -> str: return f"market_view_cache:{region}"
 def key_cluster_pools(cluster_id: str) -> str: return f"cluster_pools:{cluster_id}"
 def key_cluster_cooldown(cluster_id: str) -> str: return f"spot:cooldown:cluster:{cluster_id}"
 def key_node_failure_cooldown(cluster_id: str, node_name: str) -> str: return f"spot:rebalance_failure:{cluster_id}:{node_name}"
@@ -40,7 +41,7 @@ def key_pool_launch_failures(pool_key: str) -> str: return f"pool_launch_failure
 def key_pool_launch_attempts(pool_key: str) -> str: return f"pool_launch_attempts:{pool_key}"
 def key_region_market_health(region: str) -> str: return f"region_market_health:{region}"
 def key_degraded_region(region: str) -> str: return f"degraded:region:{region}"
-def key_cache_builder_lock(region: str) -> str: return f"cache_builder:global_pool_rankings:{region}"
+def key_cache_builder_lock(region: str) -> str: return f"cache_builder:market_view_cache:{region}"
 def key_rebalance_lock(cluster_id: str) -> str: return f"rebalance:lock:{cluster_id}"
 def key_emergency_seen(instance_id: str) -> str: return f"emergency:seen:{instance_id}"
 def key_emergency_in_progress(cluster_id: str) -> str: return f"cluster:{cluster_id}:emergency_in_progress"

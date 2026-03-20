@@ -210,10 +210,17 @@ app.conf.beat_schedule = {
         'task': 'backend.workers.tasks.recovery_monitor.scan_orphans',
         'schedule': 300.0,
     },
-    # Global pool cache rebuild (every hour)
-    'global-pool-cache-rebuild-hourly': {
+    # Global pool cache rebuild (every hour) — ap-south-1
+    'global-pool-cache-rebuild-ap-south-1': {
         'task': 'build_global_pool_cache',
         'schedule': 3600.0,
+        'args': ['ap-south-1'],
+    },
+    # Global pool cache rebuild — us-east-1
+    'global-pool-cache-rebuild-us-east-1': {
+        'task': 'build_global_pool_cache',
+        'schedule': 3600.0,
+        'args': ['us-east-1'],
     },
     # Spot advisor scrape — every 12h (Bug 3: was daily/4h; 12h keeps data under 6h stale gate)
     # Re-writes all Redis keys each run to refresh 12h TTLs.

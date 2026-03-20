@@ -17,13 +17,57 @@ from datetime import datetime, timezone
 
 from backend.core.redis_client import (
     get_redis_client,
-    key_global_pool_rankings,
+    key_market_view_cache,
     key_cache_builder_lock,
 )
 from backend.core.config import GLOBAL_CACHE_SIZE, GLOBAL_POOL_LOCK_TTL
 from backend.services.pool_ranking_service import assign_risk_tier
 
 logger = logging.getLogger(__name__)
+
+# Per-region AZ list — used when building pools from spot_advisor data
+_REGION_AZS = {
+    'ap-south-1':    ['ap-south-1a', 'ap-south-1b', 'ap-south-1c'],
+    'us-east-1':     ['us-east-1a', 'us-east-1b', 'us-east-1c', 'us-east-1d'],
+    'us-east-2':     ['us-east-2a', 'us-east-2b', 'us-east-2c'],
+    'us-west-1':     ['us-west-1a', 'us-west-1b'],
+    'us-west-2':     ['us-west-2a', 'us-west-2b', 'us-west-2c'],
+    'eu-west-1':     ['eu-west-1a', 'eu-west-1b', 'eu-west-1c'],
+    'eu-west-2':     ['eu-west-2a', 'eu-west-2b', 'eu-west-2c'],
+    'eu-central-1':  ['eu-central-1a', 'eu-central-1b', 'eu-central-1c'],
+    'ap-southeast-1':['ap-southeast-1a', 'ap-southeast-1b', 'ap-southeast-1c'],
+    'ap-southeast-2':['ap-southeast-2a', 'ap-southeast-2b', 'ap-southeast-2c'],
+    'ap-northeast-1':['ap-northeast-1a', 'ap-northeast-1b', 'ap-northeast-1c'],
+}
+
+# Family base OD prices ($/hr for .large) — used for fallback pricing
+_FAMILY_BASE_OD = {
+    't2': 0.023, 't3': 0.0832, 't3a': 0.0752, 't4g': 0.0672,
+    'm5': 0.096, 'm5a': 0.086, 'm6i': 0.096, 'm6a': 0.086, 'm6g': 0.077,
+    'm7i': 0.099, 'm7g': 0.080,
+    'c5': 0.085, 'c5a': 0.077, 'c6i': 0.085, 'c6a': 0.077, 'c6g': 0.068,
+    'c7i': 0.088, 'c7g': 0.070,
+    'r5': 0.126, 'r5a': 0.113, 'r6i': 0.126, 'r6a': 0.113, 'r6g': 0.101,
+    'r7i': 0.130, 'r7g': 0.104,
+    'i3': 0.156, 'i4i': 0.182,
+}
+_SIZE_MULT = {
+    'nano': 0.25, 'micro': 0.5, 'small': 1.0, 'medium': 2.0, 'large': 4.0,
+    'xlarge': 8.0, '2xlarge': 16.0, '4xlarge': 32.0, '8xlarge': 64.0,
+    '12xlarge': 96.0, '16xlarge': 128.0, '24xlarge': 192.0, '32xlarge': 256.0,
+}
+
+
+def _estimate_od_price(instance_type: str) -> float:
+    """Estimate OD price from family/size tables."""
+    parts = instance_type.split('.')
+    if len(parts) != 2:
+        return 0.10
+    family, size = parts
+    base = _FAMILY_BASE_OD.get(family, 0.10)
+    mult = _SIZE_MULT.get(size, 4.0)
+    return base * (mult / 4.0)
+
 
 # Minimal fallback specs for common types (used when DB catalog is empty)
 # Format: instance_type → (vcpu, memory_gb, architecture)
@@ -108,7 +152,66 @@ def _lookup_interruption_rate(r, region: str, instance_type: str) -> float:
 
 def _lookup_specs(instance_type: str) -> tuple:
     """Return (vcpu, memory_gb, architecture) for an instance type."""
-    return _FALLBACK_SPECS.get(instance_type, (0, 0.0, "amd64"))
+    if instance_type in _FALLBACK_SPECS:
+        return _FALLBACK_SPECS[instance_type]
+    return _derive_specs_from_type(instance_type)
+
+
+def _derive_specs_from_type(instance_type: str) -> tuple:
+    """
+    Derive (vcpu, memory_gb, architecture) from instance family/size.
+    Returns (0, 0.0, 'amd64') only for completely unknown formats.
+    """
+    parts = instance_type.split('.')
+    if len(parts) != 2:
+        return (0, 0.0, 'amd64')
+    family, size = parts
+
+    # vCPU counts by size
+    vcpu_map = {
+        'nano': 2, 'micro': 2, 'small': 2, 'medium': 2, 'large': 2,
+        'xlarge': 4, '2xlarge': 8, '3xlarge': 12, '4xlarge': 16,
+        '6xlarge': 24, '8xlarge': 32, '9xlarge': 36, '10xlarge': 40,
+        '12xlarge': 48, '16xlarge': 64, '18xlarge': 72, '24xlarge': 96,
+        '32xlarge': 128, '48xlarge': 192, '56xlarge': 224, '112xlarge': 448,
+        'metal': 96,
+    }
+    vcpu = vcpu_map.get(size, 0)
+    if vcpu == 0:
+        return (0, 0.0, 'amd64')
+
+    # Architecture
+    arm_families = {'t4g', 'm6g', 'm7g', 'c6g', 'c7g', 'r6g', 'r7g', 'x2gd', 'im4gn', 'is4gen'}
+    arch = 'arm64' if any(family.startswith(af) for af in arm_families) else 'amd64'
+
+    # Memory-to-vCPU ratio by family type
+    # general purpose: ~4 GB/vCPU at large (8GB / 2vCPU)
+    # compute optimized: ~2 GB/vCPU at large (4GB / 2vCPU)
+    # memory optimized: ~8 GB/vCPU at large (16GB / 2vCPU)
+    # storage optimized: varies
+    family_prefix = family.rstrip('0123456789').lower()
+
+    if family_prefix in ('t2', 't3', 't3a', 't4g'):
+        # T-series: nano=0.5, micro=1, small=2, medium=4, large=8, xlarge=16, 2xl=32
+        _t_mem = {'nano': 0.5, 'micro': 1, 'small': 2, 'medium': 4, 'large': 8,
+                  'xlarge': 16, '2xlarge': 32}
+        mem = _t_mem.get(size, vcpu * 4.0)
+    elif family_prefix in ('c5', 'c5a', 'c5n', 'c6i', 'c6a', 'c6g', 'c7i', 'c7g', 'c7a',
+                           'c4', 'c3', 'cc2'):
+        mem = vcpu * 2.0  # compute optimized ~2GB/vCPU
+    elif family_prefix in ('r5', 'r5a', 'r5n', 'r6i', 'r6a', 'r6g', 'r7i', 'r7g', 'r7a',
+                           'r4', 'r3', 'x1', 'x1e', 'x2idn', 'x2iedn', 'u-', 'z1d'):
+        mem = vcpu * 8.0  # memory optimized ~8GB/vCPU
+    elif family_prefix in ('i3', 'i3en', 'i4i', 'i4g', 'i2', 'd2', 'd3', 'd3en', 'h1'):
+        mem = vcpu * 7.5  # storage optimized ~7.5GB/vCPU
+    elif family_prefix in ('g4dn', 'g5', 'g5g', 'p3', 'p4d', 'p4de', 'p3dn', 'inf1', 'inf2',
+                           'trn1', 'dl1'):
+        mem = vcpu * 4.0  # accelerated ~4GB/vCPU (rough estimate)
+    else:
+        # default general purpose: ~4GB/vCPU
+        mem = vcpu * 4.0
+
+    return (vcpu, round(mem, 2), arch)
 
 
 def build_global_pool_cache(region: str, db=None):
@@ -173,8 +276,54 @@ def build_global_pool_cache(region: str, db=None):
         raw_count = len(raw_pools)
 
         if not raw_pools:
-            logger.warning(f"[cache_builder] No spot_price keys found for region {region}")
-            return
+            logger.warning(
+                f"[cache_builder] No spot_price:* keys for {region} — "
+                f"falling back to spot_advisor data"
+            )
+            # Fallback: enumerate from spot_advisor:{region}:*:Linux keys
+            azs = _REGION_AZS.get(region, [f"{region}a", f"{region}b"])
+            adv_cursor = 0
+            seen_types = set()
+            while True:
+                adv_cursor, adv_keys = r.scan(
+                    adv_cursor, match=f"spot_advisor:{region}:*:Linux", count=200
+                )
+                for adv_key in adv_keys:
+                    try:
+                        adv_key_str = adv_key.decode() if isinstance(adv_key, bytes) else adv_key
+                        # key = spot_advisor:{region}:{instance_type}:Linux
+                        parts = adv_key_str.split(':')
+                        if len(parts) < 4:
+                            continue
+                        itype = ':'.join(parts[2:-1])  # handle types like 'm5.large'
+                        if itype in seen_types:
+                            continue
+                        seen_types.add(itype)
+                        # Estimate OD price and spot price
+                        od_est = _lookup_od_price(r, region, itype) or _estimate_od_price(itype)
+                        if od_est <= 0:
+                            continue
+                        spot_est = od_est * 0.30  # conservative 70% discount estimate
+                        for az in azs:
+                            raw_pools.append({
+                                'instance_type': itype,
+                                'az': az,
+                                'region': region,
+                                'spot_price': spot_est,
+                                '_is_estimated': True,
+                            })
+                    except Exception:
+                        pass
+                if adv_cursor == 0:
+                    break
+            raw_count = len(raw_pools)
+            if not raw_pools:
+                logger.warning(f"[cache_builder] No spot_advisor data for {region} either")
+                return
+            logger.info(
+                f"[cache_builder] Built {raw_count} raw pools from spot_advisor "
+                f"fallback ({len(seen_types)} types × {len(azs)} AZs) for {region}"
+            )
 
         # Enrich each pool and apply filters
         pools = []
@@ -185,8 +334,10 @@ def build_global_pool_cache(region: str, db=None):
         for p in raw_pools:
             itype = p['instance_type']
 
-            # OD price lookup
+            # OD price lookup — fall back to family-based estimate
             od_price = _lookup_od_price(r, region, itype)
+            if od_price <= 0:
+                od_price = _estimate_od_price(itype)
             if od_price <= 0:
                 no_od_price += 1
                 continue
@@ -208,6 +359,10 @@ def build_global_pool_cache(region: str, db=None):
             interruption_rate = _lookup_interruption_rate(r, region, itype)
             risk_tier = assign_risk_tier(interruption_rate)
 
+            # Simple ML score proxy: savings_pct scaled by safety (inverse of interruption)
+            _safety = max(0.0, 1.0 - interruption_rate / 100.0)
+            ml_score = round((savings_pct / 100.0) * _safety, 4)
+
             pools.append({
                 'instance_type': itype,
                 'az': p['az'],
@@ -215,11 +370,17 @@ def build_global_pool_cache(region: str, db=None):
                 'spot_price': p['spot_price'],
                 'ondemand_price': od_price,
                 'savings_pct': round(savings_pct, 1),
+                'predicted_savings': round(savings_pct / 100.0, 4),
                 'interruption_rate_pct': interruption_rate,
                 'risk_tier': risk_tier,
+                'spot_advisor_rank': risk_tier,  # 0=safest (<5%), 4=riskiest (>20%)
                 'vcpu': vcpu,
                 'memory_gb': memory_gb,
                 'architecture': arch,
+                'ml_score': ml_score,
+                'is_flagged': False,
+                'blacklisted': False,
+                'price_shock': False,
             })
 
         if not pools:
@@ -235,8 +396,8 @@ def build_global_pool_cache(region: str, db=None):
         # Limit to GLOBAL_CACHE_SIZE
         top_pools = pools[:GLOBAL_CACHE_SIZE]
 
-        # Store in Redis
-        cache_key = key_global_pool_rankings(region)
+        # Store in Redis — use market_view_cache key (separate from pool_ranking_service's global_pool_rankings)
+        cache_key = key_market_view_cache(region)
         payload = json.dumps({
             'data': top_pools,
             'last_updated': datetime.now(timezone.utc).isoformat(),

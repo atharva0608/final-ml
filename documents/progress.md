@@ -364,3 +364,79 @@ docker compose exec backend alembic upgrade head
 
 ## Docker Rebuild
 All containers rebuilt and healthy ✅
+
+---
+
+## Session 2 — Market View Fix (2026-03-20)
+
+### Problem: Market View Shows Only 7 Pools
+
+**Investigation findings:**
+- `spot_price:ap-south-1:*` = 0 keys in Redis (pricing_collector.py TTL=600s expired / never ran with credentials)
+- `ondemand_price:*` = 0 keys (same issue)
+- `spot_advisor:*` = 17,877 keys ✓ (scraper working)
+- `global_pool_rankings:ap-south-1` = OLD list format with 42 pools (pool_ranking_service writes this in list format)
+- `market_view_cache:ap-south-1` = did not exist yet (cache_builder uses new dict format)
+- Market View endpoint `payload.get('data', [])` on a list → returns empty `[]` → falls back to old `getRankings()` with limit=25 + template filter → 7 pools pass all gates
+
+### Root Causes
+
+1. **cache_builder reads `spot_price:*` which is always empty** → uses wrong data source
+2. **market-view endpoint expected dict format** but `global_pool_rankings` is list format from pool_ranking_service
+3. **PoolRankings.jsx Market View tab** called `getRankings()` (template-filtered, limit=25) not `getMarketView()`
+4. **cache_builder beat schedule** defaulted to `us-east-1` only (not `ap-south-1`)
+5. **cache_builder and pool_ranking_service conflict** — both wrote to `global_pool_rankings:{region}`, pool_ranking_service overwrote new dict format with old list format
+
+### Fixes Applied
+
+**1. `cache_builder.py` — Use spot_advisor as primary data source**
+- When `spot_price:*` keys are empty (no live pricing), scan `spot_advisor:{region}:*:Linux` keys
+- 676 instance types × 3 AZs = 2028 raw pools for ap-south-1
+- Fallback OD pricing uses `_estimate_od_price()` family/size table (no external API needed)
+- Added `_derive_specs_from_type()` — formula-based vcpu/memory/arch for any instance type
+  - no_specs dropped: 1764 → 72 (96% coverage)
+- Output now includes: `ml_score`, `predicted_savings`, `is_flagged`, `blacklisted`, `price_shock`, `spot_advisor_rank` (all required by Market View table)
+- Uses **new `market_view_cache:{region}` key** (avoids conflict with pool_ranking_service)
+
+**2. `redis_client.py` — Add `key_market_view_cache()`**
+- New helper `def key_market_view_cache(region): return f"market_view_cache:{region}"`
+- `key_cache_builder_lock` updated to use new key prefix
+
+**3. `atharvaai_routes.py` — Fix market-view endpoint**
+- Reads `market_view_cache:{region}` first, falls back to `global_pool_rankings:{region}`
+- Handles both old list format and new dict format (graceful normalization)
+- Normalizes missing fields: `vcpu`, `memory_gb`, `architecture`, `savings_pct`, `ml_score`, `spot_advisor_rank`, `is_flagged`, `blacklisted`, `price_shock`
+
+**4. `workers/app.py` — Fix Celery beat schedule**
+- Was: one entry defaulting to `us-east-1`
+- Now: `global-pool-cache-rebuild-ap-south-1` with `args: ['ap-south-1']` + `global-pool-cache-rebuild-us-east-1` with `args: ['us-east-1']`
+- Both run every 3600s (hourly)
+
+**5. `PoolRankings.jsx` — Market View uses getMarketView()**
+- Added `marketViewPools`, `marketViewLoading`, `marketViewPage`, `marketViewTotal` states
+- After `getRankings()` loads, calls `getMarketView(clusterId, 1, 50)` (non-blocking)
+- Market View tab renders `marketViewPools` (full cache data) instead of `pools` (template-filtered)
+- Falls back to old `pools` data if `getMarketView()` fails
+- Market View tab shows pool count badge: `total=500`
+- Empty state check uses `marketViewPools.length`
+
+### Result
+
+| Metric | Before | After |
+|--------|--------|-------|
+| Pools shown in Market View | 7 | **500** |
+| Market View data source | template-filtered old pipeline | cache_builder with spot_advisor |
+| Instance type coverage | 7 (filtered) | 676 unique types × 3 AZs |
+| Pools with correct vcpu/memory | N/A | 458/500 (91%) |
+| Cache freshness | stale (42 pools from hours ago) | rebuilt hourly via Celery beat |
+| Interruption badge | ✓ (spot_advisor_rank 0-4) | ✓ (same scale) |
+
+### Files Changed (Session 2)
+
+| File | Change |
+|------|--------|
+| `backend/workers/tasks/cache_builder.py` | spot_advisor fallback, `market_view_cache` key, `_derive_specs_from_type()`, ml_score/savings fields |
+| `backend/core/redis_client.py` | Add `key_market_view_cache()`, update lock key |
+| `backend/api/atharvaai_routes.py` | Read `market_view_cache` first, handle list format, normalize fields |
+| `backend/workers/app.py` | Beat schedule: ap-south-1 + us-east-1 |
+| `frontend/src/components/atharvaai/PoolRankings.jsx` | `marketViewPools` state, `getMarketView()` fetch, pool count badge |

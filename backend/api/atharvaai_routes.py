@@ -2181,7 +2181,7 @@ def get_market_view(
              architecture, spot_price, ondemand_price, savings_pct, risk_tier, rank)
     """
     from backend.models.cluster import Cluster
-    from backend.core.redis_client import key_global_pool_rankings
+    from backend.core.redis_client import key_market_view_cache
 
     redis = get_redis_client()
 
@@ -2191,9 +2191,10 @@ def get_market_view(
 
     region = getattr(cluster, 'region', None) or 'us-east-1'
 
-    # Load global pool cache
-    cache_key = key_global_pool_rankings(region)
-    raw = redis.get(cache_key)
+    # Load market_view_cache (cache_builder output) — fallback to global_pool_rankings (old pipeline)
+    raw = redis.get(key_market_view_cache(region))
+    if not raw:
+        raw = redis.get(f"global_pool_rankings:{region}")
     if not raw:
         return {
             "cluster_id": cluster_id,
@@ -2204,8 +2205,26 @@ def get_market_view(
         }
 
     payload = _json.loads(raw)
-    all_pools = payload.get('data', [])
-    last_updated = payload.get('last_updated')
+    # Handle both new dict format {data: [...], last_updated: ...}
+    # and old list format [...] written by pool_ranking_service
+    if isinstance(payload, list):
+        all_pools = payload
+        last_updated = None
+    else:
+        all_pools = payload.get('data', [])
+        last_updated = payload.get('last_updated')
+
+    # Normalize fields so the frontend table renders correctly regardless of source
+    for p in all_pools:
+        p.setdefault('vcpu', 0)
+        p.setdefault('memory_gb', 0.0)
+        p.setdefault('architecture', 'amd64')
+        p.setdefault('savings_pct', round(p.get('predicted_savings', 0) * 100, 1))
+        p.setdefault('ml_score', p.get('ml_score', 0.0))
+        p.setdefault('spot_advisor_rank', p.get('spot_advisor_rank', 0))
+        p.setdefault('is_flagged', False)
+        p.setdefault('blacklisted', False)
+        p.setdefault('price_shock', False)
 
     # Sort
     reverse = (sort_order == "desc")
