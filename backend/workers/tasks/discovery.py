@@ -714,9 +714,10 @@ def scan_ec2_instances(account: Account, ec2_client, db: Session) -> int:
                     _seen_instance_ids.add(instance_id)
 
                     # Check if instance already exists
+                    # Issue #11: lock row before updating lifecycle/state fields
                     existing = db.query(Instance).filter(
                         Instance.instance_id == instance_id
-                    ).first()
+                    ).with_for_update().first()
 
                     if existing:
                         # Update existing instance
@@ -813,10 +814,11 @@ def scan_ec2_instances(account: Account, ec2_client, db: Session) -> int:
         # in the DB must have been terminated in AWS.  Mark it terminated so the
         # dedup + visualization code stops showing it as a live node.
         try:
+            # Issue #11: lock rows before bulk state change to prevent dual-mark
             _stale_qs = db.query(Instance).filter(
                 Instance.account_id == account.id,
                 Instance.state == 'running',
-            ).all()
+            ).with_for_update().all()
             _stale_count = 0
             for _s in _stale_qs:
                 if (

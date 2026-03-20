@@ -453,12 +453,15 @@ class EnhancedSpotAdvisorScraper:
         spot_data = data.get("spot_advisor", {})
 
         for os_type, os_data in spot_data.items():
+            if os_type != "Linux":  # Bug 2: EKS only runs Linux nodes; skip Windows/SUSE
+                continue
             for region, region_data in os_data.items():
                 if region == "ranges":
                     continue  # Skip metadata
 
                 for instance_type, instance_data in region_data.items():
-                    interruption_index = instance_data.get("r", 0)
+                    raw_r = instance_data.get("r")
+                    interruption_index = int(raw_r) if raw_r is not None else 4  # Bug 1: missing = worst-case (not safest)
                     savings_percentage = instance_data.get("s", 0)
 
                     interruption_frequency = self.FREQUENCY_RATINGS.get(

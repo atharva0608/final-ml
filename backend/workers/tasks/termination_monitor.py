@@ -6,12 +6,13 @@ Detects spot instance termination notices from:
 3. Manual: User-initiated flags
 
 Actions on detection:
-- Flag pool in global blacklist (Redis, 12-hour TTL)
+- Flag pool in global blacklist (Redis, 15-min TTL for termination events)
 - Log event to termination_events table
 - Trigger emergency rebalancing (90 seconds)
 - Broadcast to all clusters using this pool
 
 Celery Task: Runs continuously monitoring EventBridge + periodic blacklist cleanup
+TTL: termination_detected pools are blacklisted for 15 min (spot capacity recovers quickly)
 """
 
 import json
@@ -118,12 +119,15 @@ def detect_termination_notice(
 
         logger.info(f"Termination notice detected: {pool_key} (source: {source})")
 
-        # 1. Flag pool in global blacklist (Redis, 12-hour TTL)
+        # 1. Flag pool in global blacklist (15-min TTL for termination_detected)
+        # Spot capacity typically recovers in minutes after an interruption event.
+        # 12-hour TTL was starving the cluster of viable pools for too long.
+        # 15 min (0.25h) allows the pool to be reconsidered quickly after recovery.
         flag_pool_in_blacklist(
             redis_client=redis_client,
             instance_type=instance_type,
             az=az,
-            ttl_hours=12,
+            ttl_hours=0.25,
             reason="termination_detected",
             metadata=metadata
         )
@@ -191,7 +195,7 @@ def detect_termination_notice(
             'status': 'success',
             'pool_key': pool_key,
             'flagged_at': datetime.utcnow().isoformat(),
-            'ttl_hours': 12,
+            'ttl_hours': 0.25,
             'termination_event_id': termination_event.id,
             'rebalancing_triggered': rebalancing_triggered,
             'emergency_result': emergency_result,
@@ -275,11 +279,12 @@ def trigger_emergency_rebalancing(
         instance_type = parts[0] if parts else ""
         az = parts[1] if len(parts) > 1 else ""
 
+        # Issue #11: lock row before dispatching emergency action to prevent dual dispatch
         interrupted_instance = db.query(Instance).filter(
             Instance.cluster_id == cluster_id,
             Instance.instance_type == instance_type,
             Instance.state == "running",
-        ).first()
+        ).with_for_update().first()
 
         if interrupted_instance:
             # Dispatch to emergency_rebalancer (standby-aware)

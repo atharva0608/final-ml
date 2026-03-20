@@ -856,12 +856,24 @@ class DecisionEngine:
             logger.error(f"[DE.rank_for_node] Cache load error: {cache_err}")
             return []
 
-        # Step 4: Derive floor from node_info
+        # Step 4: Derive floor from node_info — use resource_profile gates if provided
+        resource_profile = node_info.get('resource_profile', {})
+        min_vcpu = resource_profile.get('min_vcpu_required', 0)
+        min_memory_gb = resource_profile.get('min_memory_required', 0.0)
+        required_arch = resource_profile.get('architecture')  # e.g. 'amd64', 'arm64'
         current_price = float(node_info.get('spot_price', 0))
         current_risk_tier = int(node_info.get('risk_tier', 4))
 
         # Step 5: Apply filters
         pools = self._apply_filters(all_pools, node_info, cluster_id)
+
+        # Resource profile gates (Part 2 per-node hard gates from changes.md)
+        if min_vcpu > 0:
+            pools = [p for p in pools if p.get('vcpu', 0) >= min_vcpu]
+        if min_memory_gb > 0:
+            pools = [p for p in pools if p.get('memory_gb', 0.0) >= min_memory_gb]
+        if required_arch:
+            pools = [p for p in pools if p.get('architecture', 'amd64') == required_arch]
 
         # Step 6: Apply double gate — must be cheaper AND safer (lower tier)
         gated = self._apply_double_gate(pools, current_price, current_risk_tier)

@@ -5,7 +5,7 @@ Tracks auto-rebalancing actions triggered by:
 - Graceful: 10-minute proactive rebalancing to safer pools
 """
 
-from sqlalchemy import Column, Integer, String, DateTime, Text, func, Index
+from sqlalchemy import Column, Integer, String, DateTime, Float, Text, func, Index
 from sqlalchemy.dialects.postgresql import JSONB
 from backend.models.base import Base
 
@@ -31,6 +31,9 @@ class RebalancingAction(Base):
     duration_seconds = Column(Integer, nullable=True)
     error_message = Column(Text, nullable=True)
     action_metadata = Column('metadata', JSONB, nullable=True)  # Additional context (e.g., termination notice details)
+    # Issue #25: Actual realized savings written post-launch (ondemand_price - actual_spot_price)
+    realized_savings_hourly_usd = Column(Float, nullable=True)
+    realized_savings_monthly_usd = Column(Float, nullable=True)
     created_at = Column(DateTime, server_default=func.now())
 
     def __repr__(self):

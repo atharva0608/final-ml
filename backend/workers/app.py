@@ -35,6 +35,7 @@ app = Celery(
         'backend.workers.tasks.recovery_monitor',            # EE: Detect orphaned instances
         'backend.workers.tasks.daily_stats_aggregator',      # Multi-Cluster: Rollup stats
         'backend.workers.tasks.auto_scaler',                  # ASCP: built-in optional auto-scaler
+        'backend.workers.tasks.reconciliation_worker',        # Issue #34: EC2 vs DB reconciliation
     ]
 )
 
@@ -214,10 +215,11 @@ app.conf.beat_schedule = {
         'task': 'build_global_pool_cache',
         'schedule': 3600.0,
     },
-    # Spot advisor scrape (daily at 2 AM UTC)
-    'spot-advisor-scrape-daily': {
+    # Spot advisor scrape — every 12h (Bug 3: was daily/4h; 12h keeps data under 6h stale gate)
+    # Re-writes all Redis keys each run to refresh 12h TTLs.
+    'spot-advisor-scrape-12h': {
         'task': 'scrapers.spot_advisor.scrape',
-        'schedule': crontab(minute=0, hour=2),
+        'schedule': 43200.0,  # 12 hours
     },
     # Instance catalog refresh (daily at 3 AM UTC)
     'instance-catalog-refresh-daily-3am': {
@@ -238,6 +240,16 @@ app.conf.beat_schedule = {
     'circuit-breaker-audit-every-10-mins': {
         'task': 'circuit_breaker.audit_log',
         'schedule': 600.0,
+    },
+    # Issue #34: Reconciliation Worker (every 5 minutes) — EC2 vs DB instance state reconciliation
+    'reconciliation-worker-every-5-mins': {
+        'task': 'workers.reconciliation_worker',
+        'schedule': 300.0,
+    },
+    # Issue #23: Ghost Nodes Table Cleanup (nightly at 3:30 AM UTC) — purge terminated rows >30 days
+    'cleanup-terminated-instances-nightly': {
+        'task': 'workers.cleanup_terminated_instances',
+        'schedule': crontab(minute=30, hour=3),
     },
 }
 

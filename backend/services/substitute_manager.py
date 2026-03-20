@@ -134,6 +134,56 @@ def _lookup_instance_specs_aws(instance_type: str, cluster, db) -> tuple:
         return (2, 8)
 
 
+_SUBNET_CACHE_TTL = 60   # seconds — refresh subnet IP counts every 60s
+_MIN_SUBNET_IPS = 10     # Issue #18: Skip AZ if all subnets have < 10 available IPs
+
+
+def _get_az_available_ips(cluster, db, redis) -> dict:
+    """
+    Issue #18: Return {az: min_available_ips} for subnets tagged to this cluster.
+    Cached in Redis for 60s to avoid per-candidate DescribeSubnets calls.
+    Falls back to empty dict (all AZs pass) on any error.
+    """
+    _cache_key = f"subnet_capacity:{cluster.id}"
+    try:
+        _cached = redis.get(_cache_key)
+        if _cached:
+            import json as _json
+            return _json.loads(_cached)
+    except Exception:
+        pass
+
+    try:
+        import boto3 as _b3
+        import json as _json
+        from backend.utils.aws.asg import get_assumed_credentials as _gac
+        _creds = _gac(cluster, db)
+        _region = cluster.region or "ap-south-1"
+        _sess = _b3.Session(
+            aws_access_key_id=_creds.get("AccessKeyId"),
+            aws_secret_access_key=_creds.get("SecretAccessKey"),
+            aws_session_token=_creds.get("SessionToken"),
+        )
+        _ec2 = _sess.client("ec2", region_name=_region)
+        _resp = _ec2.describe_subnets(Filters=[
+            {"Name": f"tag:kubernetes.io/cluster/{cluster.name}", "Values": ["owned", "shared"]},
+        ])
+        _az_min: dict = {}
+        for _sn in _resp.get("Subnets", []):
+            _az = _sn.get("AvailabilityZone", "")
+            _avail = _sn.get("AvailableIpAddressCount", 999)
+            if _az:
+                _az_min[_az] = min(_az_min.get(_az, 999), _avail)
+        try:
+            redis.setex(_cache_key, _SUBNET_CACHE_TTL, _json.dumps(_az_min))
+        except Exception:
+            pass
+        return _az_min
+    except Exception as _err:
+        logger.warning(f"[SubstituteManager] subnet IP check failed for cluster {cluster.id}: {_err}")
+        return {}
+
+
 class SubstituteState(str, Enum):
     """Substitute instance lifecycle states"""
     IDLE = "IDLE"
@@ -496,8 +546,15 @@ class SubstituteManager:
                 seen_azs: set = set()
                 for scored_pool in ranked:
                     p = scored_pool.pool
-                    # Skip same AZ as target
-                    if p.az == target_az or p.az in seen_azs:
+                    # Fix #39: Only skip same-AZ if ALSO same instance-type as the dying node.
+                    # Previously skipped ALL same-AZ candidates, dropping every ML recommendation
+                    # for single-AZ clusters and PVC-constrained workloads.
+                    # Correct: allow same AZ with a different instance type.
+                    same_az_same_type = (
+                        p.az == target_az and
+                        p.instance_type == target_node.instance_type
+                    )
+                    if same_az_same_type or p.az in seen_azs:
                         continue
                     # Diversity check — validate family/AZ ratio cluster-wide
                     _passes, _reason = _de.check_candidate(
@@ -526,6 +583,14 @@ class SubstituteManager:
 
             # Fallback: ML returned nothing — use conservative family + size suffix
             if not candidates:
+                # WARNING: hardcoded family fallback invoked. Track frequency to diagnose
+                # ML ranking cache misses. Frequent invocations signal a deeper issue.
+                logger.warning(
+                    f"[SubstituteManager] _get_alternative_families hardcoded fallback invoked "
+                    f"for cluster={cluster.id} target={target_node.instance_type}:{target_az}. "
+                    f"ML returned 0 candidates (cache miss or all rejected by AZ/diversity filter). "
+                    f"Frequent occurrences indicate ML ranking cache warmup needed."
+                )
                 family = target_node.instance_type.split(".")[0]
                 size_suffix = (
                     target_node.instance_type.split(".", 1)[-1]
@@ -545,6 +610,21 @@ class SubstituteManager:
                             break
                     if len(candidates) >= self.MAX_CANDIDATES:
                         break
+
+        # Issue #18: Filter out candidates in AZs with < 10 available subnet IPs
+        _az_ips = _get_az_available_ips(cluster, self.db, self.redis)
+        if _az_ips:
+            _filtered = [
+                c for c in candidates
+                if _az_ips.get(c["az"], 999) >= _MIN_SUBNET_IPS
+            ]
+            if _filtered:
+                candidates = _filtered
+            else:
+                logger.warning(
+                    f"[SubstituteManager] All {len(candidates)} candidates filtered by subnet IP check "
+                    f"(all AZs have <{_MIN_SUBNET_IPS} IPs) — using unfiltered list"
+                )
 
         return candidates[:self.MAX_CANDIDATES]
 

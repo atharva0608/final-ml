@@ -2,6 +2,7 @@
 Fleet API utility — Launch spot instances via EC2 Fleet API with fallback.
 """
 import uuid
+import hashlib
 import logging
 from typing import Optional, List
 
@@ -39,10 +40,16 @@ def launch_via_fleet_api(ec2_client, launch_template_id: str, overrides: list,
     if overrides:
         top = overrides[0]
         try:
+            # Issue #17: Deterministic token — same action + type → same instance on retry
+            _fallback_itype = top.get('InstanceType', 't3.medium')
+            _fallback_token = hashlib.sha256(
+                f"{action_id}:{_fallback_itype}:fallback".encode()
+            ).hexdigest()
             r = ec2_client.run_instances(
-                InstanceType=top.get('InstanceType', 't3.medium'),
+                InstanceType=_fallback_itype,
                 MinCount=1, MaxCount=1,
                 SubnetId=subnet_id,
+                ClientToken=_fallback_token,
                 InstanceMarketOptions={'MarketType': 'spot'},
                 TagSpecifications=[{'ResourceType': 'instance', 'Tags': tags + [
                     {'Key': 'spot-optimizer:action-id', 'Value': action_id},

@@ -17,6 +17,7 @@ Celery Task: Runs every 15 seconds checking for active rebalancing actions
 from datetime import datetime, timedelta
 from typing import Dict, Optional
 from sqlalchemy.orm import Session
+import hashlib
 
 import boto3
 from botocore.exceptions import ClientError
@@ -579,10 +580,17 @@ def _launch_spot_instance_direct(
         _skipped: dict = {}  # {instance_type: "ErrorCode: message"}
         for _itype in (target_instance_types or ["t3.medium"])[:_max_attempts]:
             try:
+                # Issue #17: Deterministic idempotency token — same source+type always
+                # produces the same token, so a retry returns the existing instance
+                # instead of launching a duplicate.
+                _client_token = hashlib.sha256(
+                    f"{source_instance_id}:{_itype}".encode()
+                ).hexdigest()  # 64 hex chars — within AWS 64-char limit
                 _run_kwargs = {
                     "ImageId":      _ami_id,
                     "InstanceType": _itype,
                     "MinCount": 1, "MaxCount": 1,
+                    "ClientToken":  _client_token,
                     "NetworkInterfaces": [{
                         "DeviceIndex": 0,
                         "SubnetId": _target_subnet,
@@ -1759,17 +1767,34 @@ def execute_rebalancing():
 
     db = next(get_db())
 
+    _heartbeat_lock = None
+    _hb_stop_event = None
     try:
         from backend.core.redis_client import get_redis_client as _get_redis_outer
         _redis = _get_redis_outer()
         if _redis:
-            # Try to acquire execution lock to prevent overlapping Celery runs (Race Condition fix)
-            if not _redis.set("lock:workers.auto_rebalancer", "1", nx=True, ex=300):
+            # Use HeartbeatLock so the lock TTL is extended while the task runs.
+            # Previously: fixed 300s NX lock. If task ran >5 min, a second worker
+            # could start simultaneously (lock expired silently → race condition).
+            # Fix: heartbeat thread renews TTL every 150s (300/2). If Redis drops,
+            # stop_event is set and the main loop aborts cleanly.
+            import threading as _threading_reb
+            from backend.services.distributed_locks import HeartbeatLock as _HBLock
+            _hb_stop_event = _threading_reb.Event()
+            _heartbeat_lock = _HBLock(
+                _redis,
+                "lock:workers.auto_rebalancer",
+                timeout=300,
+                stop_event=_hb_stop_event,
+            )
+            if not _heartbeat_lock.acquire(blocking=False):
                 logger.info("Auto-rebalancer already running, skipping this scheduled run.")
                 db.close()
                 return
     except Exception:
         _redis = None
+        _heartbeat_lock = None
+        _hb_stop_event = None
 
     try:
         # ── STALE ACTION EXPIRY ───────────────────────────────────────────────
@@ -1925,52 +1950,58 @@ def execute_rebalancing():
                         Instance.state == 'running',
                     ).count()
 
-                    # Use the baseline recorded at Phase 1 creation time.
-                    # This ensures we wait for a NEW spot node to join for THIS specific
-                    # rebalancing action — not a pre-existing spot from another concurrent action.
+                    # Issue #13 fix: ID-first Phase 2 gate — use pinned replacement_spot_instance_id
+                    # when available, fall back to count comparison ONLY if no ID is recorded.
+                    # This prevents count-based false triggers when concurrent actions add/remove
+                    # spot nodes, changing the baseline independently of this action's replacement.
                     _spot_baseline = int(_wa_meta.get('spot_baseline_count', 0))
                     _new_spot_joined = False
-                    if _spot_count > _spot_baseline:
-                        # NEW spot instance joined — but also require it has been running for
-                        # at least 90 seconds so EC2 status checks pass and the node can register
-                        # with K8s before we drain the OD node underneath it.
-                        # Prefer the specific replacement instance recorded at Phase 1
-                        # launch — prevents grabbing a concurrent action's spot node.
-                        _replacement_id_pinned = _wa_meta.get('replacement_spot_instance_id')
-                        if _replacement_id_pinned:
-                            _newest_spot = db.query(Instance).filter(
-                                Instance.cluster_id == _wa.cluster_id,
-                                Instance.lifecycle == InstanceLifecycle.SPOT,
-                                Instance.state == 'running',
-                                Instance.instance_id == _replacement_id_pinned[:20],
-                            ).first()
-                            if not _newest_spot:
-                                # Not yet running (still pending) — don't fall through to newest-by-date
-                                # as that could grab a different action's replacement node
-                                logger.debug(
-                                    f"[auto_rebalancer] Action {_wa.id}: pinned replacement "
-                                    f"{_replacement_id_pinned[:12]} not yet running — waiting"
-                                )
-                                continue
-                        else:
-                            _newest_spot = db.query(Instance).filter(
-                                Instance.cluster_id == _wa.cluster_id,
-                                Instance.lifecycle == InstanceLifecycle.SPOT,
-                                Instance.state == 'running',
-                            ).order_by(Instance.created_at.desc()).first()
-                        _SPOT_STABILIZE_S = 90
+                    _SPOT_STABILIZE_S = 90
+                    _replacement_id_pinned = _wa_meta.get('replacement_spot_instance_id')
+                    _newest_spot = None
+
+                    if _replacement_id_pinned:
+                        # Primary path: look up the SPECIFIC replacement instance by ID.
+                        # Bypass count gate — count can be wrong when concurrent actions run.
+                        _newest_spot = db.query(Instance).filter(
+                            Instance.cluster_id == _wa.cluster_id,
+                            Instance.lifecycle == InstanceLifecycle.SPOT,
+                            Instance.state == 'running',
+                            Instance.instance_id == _replacement_id_pinned[:20],
+                        ).first()
+                        if not _newest_spot:
+                            # Pinned instance not yet running (still pending/launching)
+                            logger.debug(
+                                f"[auto_rebalancer] Action {_wa.id}: pinned replacement "
+                                f"{_replacement_id_pinned[:12]} not yet running — waiting"
+                            )
+                            continue
+                    elif _spot_count > _spot_baseline:
+                        # Fallback: count-based trigger (legacy path when Phase 1 did not pin an ID).
+                        # Log a warning so we can track how often this happens.
+                        logger.warning(
+                            f"[auto_rebalancer] Action {_wa.id}: Phase 2 count-fallback "
+                            f"(spot_count={_spot_count} > baseline={_spot_baseline}) — "
+                            f"no replacement_spot_instance_id in metadata (Phase 1 may be old)"
+                        )
+                        _newest_spot = db.query(Instance).filter(
+                            Instance.cluster_id == _wa.cluster_id,
+                            Instance.lifecycle == InstanceLifecycle.SPOT,
+                            Instance.state == 'running',
+                        ).order_by(Instance.created_at.desc()).first()
+
+                    if _newest_spot:
                         _spot_age_s = (
                             (datetime.utcnow() - _newest_spot.created_at).total_seconds()
-                            if (_newest_spot and _newest_spot.created_at) else 0
+                            if _newest_spot.created_at else 0
                         )
                         if _spot_age_s >= _SPOT_STABILIZE_S and _newest_spot.node_name:
                             _new_spot_joined = True
-                            # Fix 1: store replacement spot ID for reliable rollback
+                            # Pin replacement ID for rollback reliability
                             if _newest_spot.instance_id and not _wa_meta.get('replacement_spot_instance_id'):
                                 _wa_meta['replacement_spot_instance_id'] = _newest_spot.instance_id
                                 _wa.action_metadata = _wa_meta
-                            # Issue 3 fix: store node_name in metadata so we don't rely on
-                            # _newest_spot variable which may hold stale data from a prior loop iteration
+                            # Pin node_name so it survives loop iterations
                             if _newest_spot.node_name and not _wa_meta.get('replacement_spot_node_name'):
                                 _wa_meta['replacement_spot_node_name'] = _newest_spot.node_name
                                 _wa.action_metadata = _wa_meta
@@ -2583,9 +2614,10 @@ def execute_rebalancing():
                             # Without this, the rebalancer sees it as ON_DEMAND on the
                             # next 15s cycle and launches ANOTHER replacement → cluster growth.
                             try:
+                                # Issue #11: with_for_update — lock row before state write
                                 _src_db_inst = db.query(Instance).filter(
                                     Instance.instance_id == _wa_instance_id
-                                ).first()
+                                ).with_for_update().first()
                                 if _src_db_inst:
                                     _src_db_inst.state = 'terminated'
                                     db.flush()
@@ -2684,22 +2716,40 @@ def execute_rebalancing():
                     # even for failed actions (prevents incomplete/empty timeline dots)
                     _wa_meta['step_6_optimization_complete'] = datetime.utcnow().isoformat()
                     _wa.error_message = f"{_failed} agent action(s) failed"
-                    # Clear per-instance cooldown on failure so the rebalancer can retry.
-                    # The cooldown is set at queue time (to prevent in-flight re-targeting),
-                    # but must be cleared if the sequence ultimately fails.
+                    # Fix #14: On action failure, apply exponential backoff instead of
+                    # deleting the cooldown (which allowed immediate retry → rapid-fire loop).
+                    # Track failure count: rebalance_failures:{instance_id}
+                    # Backoff = min(300 × 2^failures, 3600) seconds.
+                    # Min 5 min, max 1 hour. Reset counter on success.
                     _wa_inst_id_clear = _wa_meta.get("instance_id", "")
                     if _wa_inst_id_clear and _redis:
                         try:
-                            _redis.delete(f"spot:rebalanced:instance:{_wa_inst_id_clear}")
+                            _failure_key = f"rebalance_failures:{_wa_inst_id_clear}"
+                            _failure_count = int(_redis.incr(_failure_key) or 1)
+                            _redis.expire(_failure_key, 86400)  # 24h failure counter TTL
+                            _backoff_s = min(300 * (2 ** (_failure_count - 1)), 3600)
+                            # Replace the 24h cooldown with the shorter backoff key
+                            _cd_key_fail = f"spot:rebalanced:instance:{_wa_inst_id_clear}"
+                            _redis.setex(_cd_key_fail, _backoff_s, "failure_backoff")
                             logger.info(
-                                f"[auto_rebalancer] Cleared cooldown for {_wa_inst_id_clear} "
-                                f"(action {_wa.id} failed — allowing retry)"
+                                f"[auto_rebalancer] Action {_wa.id} failed — "
+                                f"set {_backoff_s}s backoff for {_wa_inst_id_clear} "
+                                f"(failure #{_failure_count}, max 3600s)"
                             )
                         except Exception:
                             pass
                 else:
                     _wa_meta['current_step'] = 'optimization_complete'
                     _wa_meta['step_6_optimization_complete'] = datetime.utcnow().isoformat()
+
+                    # Fix #14 (success path): reset failure counter so the next OD→spot
+                    # migration on this instance starts from 5-min backoff, not escalated.
+                    _wa_inst_id_success = _wa_meta.get("instance_id", "")
+                    if _wa_inst_id_success and _redis:
+                        try:
+                            _redis.delete(f"rebalance_failures:{_wa_inst_id_success}")
+                        except Exception:
+                            pass
 
                     # ── POST-SUCCESS: Remove do-not-disrupt from replacement node ──
                     # The replacement node is now the primary; it should participate
@@ -2764,6 +2814,40 @@ def execute_rebalancing():
                     except Exception as _savings_err:
                         logger.warning(
                             f"[auto_rebalancer] Savings recalculation trigger failed: {_savings_err}"
+                        )
+
+                    # ── POST-SUCCESS: Write realized savings to action row (Issue #25) ──
+                    # realized = ondemand_price(source_type) - actual_spot_price(target_pool)
+                    try:
+                        _src_itype = (
+                            _wa.source_pool.split(':')[0] if _wa.source_pool and ':' in _wa.source_pool
+                            else _wa.source_pool or ""
+                        )
+                        _tgt_itype = _wa_meta.get("target_instance_type") or (
+                            _wa.target_pool.split(':')[0] if _wa.target_pool and ':' in _wa.target_pool
+                            else ""
+                        )
+                        _tgt_az = _wa_meta.get("target_az") or (
+                            _wa.target_pool.split(':')[1] if _wa.target_pool and ':' in _wa.target_pool
+                            else ""
+                        )
+                        if _src_itype and _tgt_itype and _tgt_az:
+                            from backend.utils.pricing_helper import get_pricing_helper as _gph
+                            _ph = _gph()
+                            _region = cluster.region or "ap-south-1"
+                            _od_price = _ph.get_ec2_price(_region, _src_itype) or 0.0
+                            _spot_price = _ph.get_spot_price(_region, _tgt_itype, _tgt_az) or 0.0
+                            _hourly_saved = max(_od_price - _spot_price, 0.0)
+                            _wa.realized_savings_hourly_usd = round(_hourly_saved, 6)
+                            _wa.realized_savings_monthly_usd = round(_hourly_saved * 730, 4)
+                            logger.info(
+                                f"[auto_rebalancer] Realized savings for action {_wa.id}: "
+                                f"${_hourly_saved:.4f}/hr (${_wa.realized_savings_monthly_usd:.2f}/mo) "
+                                f"[{_src_itype} OD → {_tgt_itype} spot]"
+                            )
+                    except Exception as _rs_err:
+                        logger.warning(
+                            f"[auto_rebalancer] Realized savings write failed for action {_wa.id}: {_rs_err}"
                         )
 
                 _wa.action_metadata = _wa_meta
@@ -3288,10 +3372,11 @@ def execute_rebalancing():
                                 continue
 
                             # Only act if discovery has seen this instance (else still launching)
+                            # Issue #11: lock row before potential state heal write
                             _spot_inst = db.query(Instance).filter(
                                 Instance.cluster_id == cluster.id,
                                 Instance.instance_id == _launched_spot_id,
-                            ).first()
+                            ).with_for_update().first()
                             if not _spot_inst:
                                 continue  # Not yet in DB — still launching
                             if _spot_inst.state == 'running':
@@ -3904,6 +3989,20 @@ def execute_rebalancing():
                         _s2s_src = f"{_sp_inst.instance_type}:{_sp_inst.az or cluster.region + 'a'}"
                         _s2s_tgt = f"{_best_s2s_pool.pool.instance_type}:{_best_s2s_pool.pool.az}"
 
+                        # Fix #10: S2S infinite migration loop prevention.
+                        # Check if this source→target pair was migrated in the last 2 hours.
+                        # Without this, the same pair can be re-triggered every 15s cycle.
+                        _s2s_dedup_key = f"s2s_migration:{cluster.id}:{_s2s_src}:{_s2s_tgt}"
+                        try:
+                            if _redis and _redis.exists(_s2s_dedup_key):
+                                logger.info(
+                                    f"[auto_rebalancer] S2S dedup: {_s2s_src}→{_s2s_tgt} "
+                                    f"migrated recently (2h window) — skipping to prevent loop"
+                                )
+                                continue
+                        except Exception:
+                            pass
+
                         _s2s_action = RebalancingAction(
                             cluster_id=cluster.id,
                             trigger='auto_rebalance',
@@ -3922,10 +4021,16 @@ def execute_rebalancing():
                         )
                         db.add(_s2s_action)
                         _s2s_created = True
+                        # Write dedup key so same pair is not re-triggered for 2 hours
+                        try:
+                            if _redis:
+                                _redis.setex(_s2s_dedup_key, 7200, "1")
+                        except Exception:
+                            pass
                         logger.info(
                             f'[auto_rebalancer] SPOT→SPOT action created: '
                             f'{_sp_inst.instance_id} ({_s2s_src} → {_s2s_tgt}) '
-                            f'reason={_s2s_trigger_reason}'
+                            f'reason={_s2s_trigger_reason} (2h dedup key set)'
                         )
                         break
                     except Exception as _s2s_err:
@@ -4070,6 +4175,26 @@ def execute_rebalancing():
                 except Exception:
                     pass
 
+                # ── FIX #15: Per-instance daily cap (10 attempts/day) ────────────────
+                # Prevents unbounded retry loop for a persistently failing cluster.
+                # Tracked in Redis: rebalance_daily_count:{instance_id}:{date_utc}
+                # Key expires at end of UTC day.
+                try:
+                    import time as _time_dlc
+                    _dlc_date = datetime.utcnow().strftime('%Y-%m-%d')
+                    _dlc_key = f"rebalance_daily_count:{instance.instance_id}:{_dlc_date}"
+                    _dlc_count = int(_redis.get(_dlc_key) or 0)
+                    _MAX_PER_INSTANCE_DAILY = 10
+                    if _dlc_count >= _MAX_PER_INSTANCE_DAILY:
+                        logger.info(
+                            f"[auto_rebalancer] Per-instance daily cap hit for "
+                            f"{instance.instance_id} ({_dlc_count}/{_MAX_PER_INSTANCE_DAILY}) "
+                            f"— skipping until tomorrow UTC"
+                        )
+                        continue
+                except Exception:
+                    pass
+
                 # ── CLUSTER GROWTH GUARD #2: recent completed action for this instance ──
                 # If a completed action already ran for this source instance in the last
                 # 2 hours (e.g. terminate succeeded but DB state wasn't updated yet),
@@ -4133,6 +4258,8 @@ def execute_rebalancing():
                             _BUF = 1.30  # 30% safety headroom above P95 usage
                             _req_vcpu = max(0.25, (_cur_specs[0] * _cpu_pct / 100) * _BUF)
                             _req_mem  = max(0.5,  (_cur_specs[1] * _mem_pct / 100) * _BUF)
+                            # Fix #24: bin-pack uses hardcoded VCPU/mem/price dict as fallback only.
+                            # Try AWSPricingService cache first for current-type OD price.
                             _PRICES = {
                                 "t3.nano":(2,0.5,0.0058),"t3.micro":(2,1.0,0.0116),
                                 "t3.small":(2,2.0,0.0232),"t3.medium":(2,4.0,0.0464),
@@ -4148,6 +4275,19 @@ def execute_rebalancing():
                                 "t4g.micro":(2,1.0,0.0092),"t4g.small":(2,2.0,0.0184),
                                 "t4g.medium":(2,4.0,0.0368),"t4g.large":(2,8.0,0.0736),
                             }
+                            # Try pricing cache to get live OD price for current instance type
+                            _bp_region = cluster.region or 'ap-south-1'
+                            _bp_cached = None
+                            try:
+                                _bp_cached_raw = _redis.get(f"pricing:od:{_bp_region}:{instance.instance_type}")
+                                if _bp_cached_raw:
+                                    _bp_cached = float(_bp_cached_raw)
+                            except Exception:
+                                pass
+                            # Override the hardcoded price for current instance type if cached
+                            if _bp_cached and instance.instance_type in _PRICES:
+                                _bp_entry = _PRICES[instance.instance_type]
+                                _PRICES[instance.instance_type] = (_bp_entry[0], _bp_entry[1], _bp_cached)
                             _cur_hourly = _PRICES.get(instance.instance_type, (None,None,_cur_specs[0]*0.05))[2]
                             # Sort by price ascending; only consider cheaper options
                             _candidates = sorted(
@@ -4300,8 +4440,11 @@ def execute_rebalancing():
                                 _ranked = _size_capped
 
                     # ── DOUBLE GATE: 3-step selection hierarchy ──────────────────
-                    # OD on-demand reference price for this instance type
-                    _OD_PRICES_G = {
+                    # OD on-demand reference price — try AWSPricingService cache first.
+                    # Fix #24: hardcoded dict was causing wrong savings comparisons when
+                    # real OD prices differed (different region/pricing tier).
+                    # Fallback to hardcoded dict with warning if cache miss.
+                    _OD_PRICES_FALLBACK = {
                         "t3.nano":0.0052,"t3.micro":0.0104,"t3.small":0.0208,
                         "t3.medium":0.0416,"t3.large":0.0832,"t3.xlarge":0.1664,
                         "t3.2xlarge":0.3328,"t3a.medium":0.0376,"t3a.large":0.0752,
@@ -4310,7 +4453,31 @@ def execute_rebalancing():
                         "c5.xlarge":0.17,"c6i.large":0.085,"c6g.large":0.077,
                         "r5.large":0.126,"r5.xlarge":0.252,"m6g.large":0.077,
                     }
-                    _od_price_g = _OD_PRICES_G.get(instance.instance_type, 0.10)
+                    _od_price_g = None
+                    try:
+                        # AWSPricingService caches OD prices as pricing:od:{region}:{instance_type}
+                        _pricing_region = cluster.region or 'ap-south-1'
+                        _pricing_key = f"pricing:od:{_pricing_region}:{instance.instance_type}"
+                        _cached_price = _redis.get(_pricing_key) if _redis else None
+                        if _cached_price:
+                            _od_price_g = float(_cached_price)
+                    except Exception:
+                        pass
+                    if _od_price_g is None:
+                        _od_price_g = _OD_PRICES_FALLBACK.get(instance.instance_type)
+                        if _od_price_g is None:
+                            logger.warning(
+                                f"[auto_rebalancer] OD price not found in cache or fallback "
+                                f"for {instance.instance_type} in {cluster.region}. "
+                                f"Using 0.10/hr default. Run pricing collector to populate cache."
+                            )
+                            _od_price_g = 0.10
+                        else:
+                            logger.debug(
+                                f"[auto_rebalancer] Using hardcoded OD price for "
+                                f"{instance.instance_type}: ${_od_price_g}/hr "
+                                f"(pricing cache miss for {_pricing_region})"
+                            )
                     try:
                         from backend.models.cluster import OptimizationStrategy as _OS_g
                         _os_g = db.query(_OS_g).filter_by(cluster_id=cluster.id).first()
@@ -4469,6 +4636,26 @@ def execute_rebalancing():
                     )
                 else:
                     logger.info(f"Created auto-rebalance action for {instance.instance_id} in cluster {cluster.name}")
+
+                # Fix #15: increment per-instance daily counter
+                try:
+                    _dlc_date2 = datetime.utcnow().strftime('%Y-%m-%d')
+                    _dlc_key2 = f"rebalance_daily_count:{instance.instance_id}:{_dlc_date2}"
+                    _dlc_new_val = _redis.incr(_dlc_key2)
+                    # Expire at end of the UTC day
+                    import time as _time_dlc2
+                    _dlc_now = datetime.utcnow()
+                    _dlc_seconds_left = int(
+                        ((_dlc_now.replace(hour=23, minute=59, second=59) - _dlc_now).total_seconds()) + 1
+                    )
+                    _redis.expire(_dlc_key2, max(1, _dlc_seconds_left))
+                    logger.debug(
+                        f"[auto_rebalancer] Per-instance daily count: "
+                        f"{instance.instance_id} = {_dlc_new_val}/10 today"
+                    )
+                except Exception:
+                    pass
+
                 break  # Only create 1 action per cluster per cycle
 
         db.commit()
@@ -4638,7 +4825,14 @@ def execute_rebalancing():
         raise
     finally:
         db.close()
-        if _redis:
+        # Release HeartbeatLock (stops heartbeat thread + deletes Redis key)
+        if _heartbeat_lock:
+            try:
+                _heartbeat_lock.release()
+            except Exception:
+                pass
+        elif _redis:
+            # Fallback: direct delete if HeartbeatLock was not acquired
             try:
                 _redis.delete("lock:workers.auto_rebalancer")
             except Exception:

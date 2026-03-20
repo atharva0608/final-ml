@@ -12,6 +12,7 @@ from typing import Dict, Optional
 from enum import Enum
 import json
 import logging
+import math
 import random
 
 logger = logging.getLogger(__name__)
@@ -339,6 +340,178 @@ class WorkloadInspector:
             logger.warning(f"PDB check failed for node {node_name}: {e}")
 
         return False
+
+    # ── Per-node resource profile ──────────────────────────────────────────────
+
+    NODE_PROFILES_TTL = 300  # 5 minutes
+
+    def build_node_profile(self, node: dict, pods: list, headroom_pct: float = 10.0) -> dict:
+        """
+        Build a per-node resource profile from live K8s node + pod data.
+
+        Returns NodeProfile dict with:
+          - vcpu_total, memory_gb_total (allocatable capacity)
+          - vcpu_requested, memory_gb_requested (sum of pod CPU/memory requests)
+          - min_vcpu_required, min_memory_required (with headroom)
+          - architecture, has_gpu_pods, has_local_pv, has_stateful_pods
+          - status: MOVABLE | IMMOVABLE
+        """
+        node_name = node.get("metadata", {}).get("name", "")
+        labels = node.get("metadata", {}).get("labels", {})
+
+        instance_type = (
+            labels.get("node.kubernetes.io/instance-type")
+            or labels.get("beta.kubernetes.io/instance-type", "unknown")
+        )
+        architecture = (
+            labels.get("kubernetes.io/arch")
+            or labels.get("beta.kubernetes.io/arch", "amd64")
+        )
+
+        allocatable = node.get("status", {}).get("allocatable", {})
+        capacity = node.get("status", {}).get("capacity", {})
+
+        vcpu_total = self._parse_cpu(allocatable.get("cpu") or capacity.get("cpu", "0"))
+        memory_gb_total = self._parse_memory_gb(
+            allocatable.get("memory") or capacity.get("memory", "0Ki")
+        )
+
+        vcpu_requested = 0.0
+        memory_gb_requested = 0.0
+        has_gpu_pods = False
+        has_local_pv = False
+        has_stateful_pods = False
+
+        for pod in pods:
+            phase = pod.get("status", {}).get("phase", "")
+            if phase in ("Succeeded", "Failed"):
+                continue
+
+            # StatefulSet check
+            for owner in pod.get("metadata", {}).get("ownerReferences", []):
+                if owner.get("kind") == "StatefulSet":
+                    has_stateful_pods = True
+
+            # Local PV check — emptyDir (memory-backed / sized) or hostPath
+            for vol in pod.get("spec", {}).get("volumes", []):
+                if "hostPath" in vol:
+                    has_local_pv = True
+                ed = vol.get("emptyDir", {})
+                if ed and (ed.get("medium") == "Memory" or ed.get("sizeLimit")):
+                    has_local_pv = True
+
+            # Sum resource requests
+            for container in pod.get("spec", {}).get("containers", []):
+                requests = container.get("resources", {}).get("requests", {})
+                vcpu_requested += self._parse_cpu(requests.get("cpu", "0"))
+                memory_gb_requested += self._parse_memory_gb(requests.get("memory", "0Ki"))
+                if "nvidia.com/gpu" in requests or "amd.com/gpu" in requests:
+                    has_gpu_pods = True
+
+        headroom_factor = 1.0 + headroom_pct / 100.0
+        min_vcpu_required = max(math.ceil(vcpu_requested * headroom_factor), 1)
+        min_memory_required = max(
+            math.ceil(memory_gb_requested * headroom_factor * 10) / 10, 0.5
+        )
+
+        return {
+            "node_name": node_name,
+            "instance_type": instance_type,
+            "architecture": architecture,
+            "vcpu_total": round(vcpu_total, 2),
+            "memory_gb_total": round(memory_gb_total, 2),
+            "vcpu_requested": round(vcpu_requested, 3),
+            "memory_gb_requested": round(memory_gb_requested, 3),
+            "min_vcpu_required": min_vcpu_required,
+            "min_memory_required": round(min_memory_required, 1),
+            "headroom_pct": headroom_pct,
+            "has_gpu_pods": has_gpu_pods,
+            "has_local_pv": has_local_pv,
+            "has_stateful_pods": has_stateful_pods,
+            "status": "IMMOVABLE" if has_local_pv else "MOVABLE",
+        }
+
+    def get_all_node_profiles(self, cluster_id: str, headroom_pct: float = 10.0) -> dict:
+        """
+        Build resource profiles for all nodes in a cluster.
+        Returns {node_name: NodeProfile, ...}
+        Cached in Redis: spot:node_profiles:{cluster_id} TTL=300s
+        """
+        cache_key = f"spot:node_profiles:{cluster_id}"
+        try:
+            cached = self.redis.get(cache_key)
+            if cached:
+                return json.loads(cached)
+        except Exception:
+            pass
+
+        if not self.k8s:
+            return {}
+
+        try:
+            nodes = self._fetch_nodes_with_retry(cluster_id)
+            profiles = {}
+            for node in nodes:
+                node_name = node.get("metadata", {}).get("name")
+                if not node_name:
+                    continue
+                pods = self._fetch_pods_on_node_with_retry(cluster_id, node_name)
+                profiles[node_name] = self.build_node_profile(node, pods, headroom_pct)
+
+            try:
+                self.redis.setex(cache_key, self.NODE_PROFILES_TTL, json.dumps(profiles))
+            except Exception:
+                pass
+
+            return profiles
+        except Exception as e:
+            logger.error(f"get_all_node_profiles failed for {cluster_id}: {e}")
+            return {}
+
+    # ── CPU / Memory parsers ───────────────────────────────────────────────────
+
+    def _parse_cpu(self, cpu_str: str) -> float:
+        """Parse K8s CPU string to vCPU float. '2' → 2.0, '500m' → 0.5"""
+        if not cpu_str:
+            return 0.0
+        s = str(cpu_str).strip()
+        if s.endswith('m'):
+            try:
+                return float(s[:-1]) / 1000.0
+            except ValueError:
+                return 0.0
+        try:
+            return float(s)
+        except ValueError:
+            return 0.0
+
+    def _parse_memory_gb(self, mem_str: str) -> float:
+        """Parse K8s memory string to GB float. '4096Mi' → 4.0, '4Gi' → 4.0"""
+        if not mem_str:
+            return 0.0
+        s = str(mem_str).strip()
+        try:
+            if s.endswith('Ki'):
+                return float(s[:-2]) / (1024 * 1024)
+            if s.endswith('Mi'):
+                return float(s[:-2]) / 1024
+            if s.endswith('Gi'):
+                return float(s[:-2])
+            if s.endswith('Ti'):
+                return float(s[:-2]) * 1024
+            if s.endswith('K') or s.endswith('k'):
+                return float(s[:-1]) / (1000 * 1000)
+            if s.endswith('M'):
+                return float(s[:-1]) / 1000
+            if s.endswith('G'):
+                return float(s[:-1])
+            if s.endswith('T'):
+                return float(s[:-1]) * 1000
+            return float(s) / (1024 ** 3)
+        except ValueError:
+            return 0.0
+
+    # ── Cluster workload type ──────────────────────────────────────────────────
 
     def _update_cluster_workload_type(self, cluster_id: str, classification: Dict):
         """

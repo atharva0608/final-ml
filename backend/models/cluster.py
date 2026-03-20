@@ -1,5 +1,6 @@
 
-from sqlalchemy import Column, String, DateTime, ForeignKey, Enum, Text, Boolean, Integer, JSON, Float
+from sqlalchemy import Column, String, DateTime, ForeignKey, Enum, Text, Boolean, Integer, JSON, Float, Index
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 from datetime import datetime
 import enum
@@ -223,5 +224,48 @@ class StatefulRules(Base):
     block_spot_for_stateful = Column(Boolean, default=True)
     max_downscale_percent = Column(Integer, default=25)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    
+
     cluster = relationship("Cluster", back_populates="stateful_rules")
+
+
+class NodeAlternativeCache(Base):
+    """
+    Per-node alternative pool list with coverage status.
+    Populated by reconciliation_worker every 5 min.
+    Primary storage: Redis cluster_coverage:{cluster_id} (TTL 300s).
+    This table provides historical record.
+    """
+    __tablename__ = 'node_alternative_cache'
+    __table_args__ = (
+        Index('idx_nac_cluster_node', 'cluster_id', 'node_name'),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    cluster_id = Column(String(36), ForeignKey("clusters.id", ondelete="CASCADE"), nullable=False, index=True)
+    node_id = Column(String(36), nullable=True, index=True)          # Instance.id (if available)
+    node_name = Column(String(255), nullable=False)                  # K8s node name / instance_id
+    instance_type = Column(String(50), nullable=True)
+    resource_profile = Column(JSONB, nullable=True)                  # NodeProfile dict
+    alternative_pools = Column(JSONB, nullable=True)                 # List of ranked pool dicts
+    alternative_count = Column(Integer, nullable=True, default=0)
+    best_pool = Column(String(150), nullable=True)                   # "t3a.medium:ap-south-1a"
+    best_saving_pct = Column(Float, nullable=True)
+    coverage_status = Column(String(20), nullable=True)              # COVERED/AT_RISK/STRANDED/IMMOVABLE
+    computed_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class ClusterBaseline(Base):
+    """
+    Cluster-level baseline snapshot.
+    Stores primary node type, region, and cost baseline for delta calculations.
+    """
+    __tablename__ = 'cluster_baselines'
+
+    cluster_id = Column(String(36), ForeignKey("clusters.id", ondelete="CASCADE"), primary_key=True)
+    primary_node_type = Column(String(50), nullable=True)
+    primary_az = Column(String(50), nullable=True)
+    baseline_monthly_cost = Column(Float, nullable=True)
+    baseline_spot_count = Column(Integer, nullable=True)
+    baseline_od_count = Column(Integer, nullable=True)
+    computed_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)

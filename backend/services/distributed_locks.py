@@ -6,6 +6,7 @@ Distributed concurrency control using Redis.
 
 Features:
 - NX EX locks (SET key value NX EX 120)
+- Heartbeat-extended locks (HeartbeatLock) — extends TTL while work runs
 - Atomic Lua rate limiting
 - Lock expiration to prevent permanent deadlock
 - Circuit breaker persistence
@@ -14,11 +15,15 @@ Enterprise Guardrails:
 - All locks MUST expire (prevent permanent deadlock on worker crash)
 - Lock keys: lock:substitute:{cluster_id}, lock:pool:{pool_id}, lock:circuit:{service}
 - DB is source of truth for circuit breaker state (Redis sync on startup)
+- HeartbeatLock: heartbeat thread renews TTL every timeout/2 seconds.
+  If Redis connection drops, heartbeat sets stop_event to signal the main thread.
 """
 import logging
+import threading
+import time as _time
 from typing import Optional, Callable, Any
 from contextlib import contextmanager
-from redis import Redis
+from redis import Redis, ConnectionError as RedisConnectionError
 from sqlalchemy.orm import Session
 
 from backend.core.redis_client import get_redis_client
@@ -118,6 +123,30 @@ class DistributedLock:
 
         self.lock_id = None
 
+    def extend_ttl(self, extra_seconds: int = None) -> bool:
+        """
+        Extend the TTL of the lock by resetting it to the original timeout.
+        Uses a Lua script to only extend if we still own the lock.
+
+        Returns True if extension succeeded, False if lock was lost.
+        """
+        if not self.lock_id:
+            return False
+        ttl = extra_seconds or self.timeout
+        lua_script = """
+        if redis.call("get", KEYS[1]) == ARGV[1] then
+            return redis.call("expire", KEYS[1], ARGV[2])
+        else
+            return 0
+        end
+        """
+        try:
+            result = self.redis.eval(lua_script, 1, self.lock_key, self.lock_id, ttl)
+            return bool(result)
+        except Exception as e:
+            logger.warning(f"[DistributedLock] extend_ttl failed for {self.lock_key}: {e}")
+            return False
+
     def __enter__(self):
         """Context manager entry."""
         if not self.acquire():
@@ -126,6 +155,106 @@ class DistributedLock:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Context manager exit."""
+        self.release()
+
+
+class HeartbeatLock:
+    """
+    Distributed lock with a background heartbeat thread that extends TTL
+    while the holder is still running.
+
+    Use this for long-running Celery tasks where the task can exceed the
+    lock TTL before completing.
+
+    Usage:
+        stop_event = threading.Event()
+        lock = HeartbeatLock(redis, "lock:key", timeout=300, stop_event=stop_event)
+        if lock.acquire():
+            try:
+                # Long-running work here.
+                # Check stop_event.is_set() between major operations.
+                while not stop_event.is_set():
+                    do_work()
+            finally:
+                lock.release()
+
+    The heartbeat thread renews the lock TTL every timeout/2 seconds.
+    If Redis connection drops, the heartbeat sets stop_event to signal abort.
+    """
+
+    def __init__(
+        self,
+        redis: Redis,
+        lock_key: str,
+        timeout: int = 300,
+        stop_event: Optional[threading.Event] = None,
+    ):
+        self.redis = redis
+        self.lock_key = lock_key
+        self.timeout = timeout
+        self.stop_event = stop_event or threading.Event()
+        self._lock = DistributedLock(redis, lock_key, timeout)
+        self._heartbeat_thread: Optional[threading.Thread] = None
+        self._heartbeat_stop = threading.Event()
+
+    def acquire(self, blocking: bool = True, wait_timeout: Optional[int] = None) -> bool:
+        """Acquire the lock and start the heartbeat thread."""
+        acquired = self._lock.acquire(blocking=blocking, timeout=wait_timeout)
+        if acquired:
+            self._start_heartbeat()
+        return acquired
+
+    def release(self):
+        """Stop heartbeat thread and release the lock."""
+        self._stop_heartbeat()
+        self._lock.release()
+
+    def _start_heartbeat(self):
+        """Start background thread that renews lock TTL every timeout/2 seconds."""
+        self._heartbeat_stop.clear()
+        interval = max(1, self.timeout // 2)
+
+        def _heartbeat_loop():
+            while not self._heartbeat_stop.wait(timeout=interval):
+                try:
+                    extended = self._lock.extend_ttl(self.timeout)
+                    if not extended:
+                        logger.warning(
+                            f"[HeartbeatLock] Lost lock {self.lock_key} — "
+                            f"signalling main thread to abort"
+                        )
+                        self.stop_event.set()
+                        return
+                    logger.debug(f"[HeartbeatLock] Renewed {self.lock_key} TTL (+{self.timeout}s)")
+                except RedisConnectionError as ce:
+                    logger.error(
+                        f"[HeartbeatLock] Redis connection lost for {self.lock_key}: {ce} "
+                        f"— signalling main thread to abort"
+                    )
+                    self.stop_event.set()
+                    return
+                except Exception as e:
+                    logger.warning(f"[HeartbeatLock] Heartbeat error for {self.lock_key}: {e}")
+
+        self._heartbeat_thread = threading.Thread(
+            target=_heartbeat_loop,
+            daemon=True,
+            name=f"heartbeat-{self.lock_key}",
+        )
+        self._heartbeat_thread.start()
+
+    def _stop_heartbeat(self):
+        """Signal and join the heartbeat thread."""
+        self._heartbeat_stop.set()
+        if self._heartbeat_thread and self._heartbeat_thread.is_alive():
+            self._heartbeat_thread.join(timeout=5)
+
+    def __enter__(self):
+        if not self.acquire():
+            raise RuntimeError(f"Failed to acquire HeartbeatLock: {self.lock_key}")
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
         self.release()
 
 

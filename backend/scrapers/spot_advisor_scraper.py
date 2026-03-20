@@ -51,6 +51,19 @@ FREQUENCY_RATINGS = {
     4: ">20%"
 }
 
+# Bug 4: Correct r-index → interruption-rate-percentage mapping.
+# AWS returns r=0 (<5%), r=1 (5-10%), ..., r=4 (>20%).
+# We store the UPPER BOUND of the range in SpotAdvisorRate.interruption_rate_pct.
+# Missing r → 100.0 (treat as completely unknown = maximum risk).
+INDEX_TO_PCT: dict = {
+    0: 5.0,
+    1: 10.0,
+    2: 15.0,
+    3: 20.0,
+    4: 25.0,
+}
+INDEX_TO_PCT_MISSING = 100.0  # sentinel for missing r-key
+
 
 def scrape_spot_advisor_data() -> Dict[str, Any]:
     """
@@ -85,20 +98,21 @@ def scrape_spot_advisor_data() -> Dict[str, Any]:
             _old_hash = _old_hash.decode("utf-8") if isinstance(_old_hash, bytes) else _old_hash
         if _new_hash == _old_hash:
             logger.info(
-                "[SVC-SCRAPE-01] Spot Advisor data unchanged (hash match) — skipping write"
+                "[SVC-SCRAPE-01] Spot Advisor data unchanged (hash match) — "
+                "re-writing keys to refresh 12h TTLs"
             )
-            return {
-                "status": "skipped",
-                "reason": "data_unchanged",
-                "hash": _new_hash,
-                "timestamp": datetime.utcnow().isoformat(),
-            }
+            # Bug 3: Do NOT skip writing on hash match. Re-write all keys to
+            # refresh the 12h Redis TTLs and update the last_scraped timestamp.
+            # The hash-dedup alone is NOT a sufficient freshness gate — time-based
+            # TTLs are the real guard (pool_ranking_service staleness check).
 
-        # Parse and store data
+        # Parse and store data (always — refreshes TTLs every 12h)
         stats = parse_and_store_data(data, db, redis_client)
 
-        # Update version hash AFTER successful store
-        redis_client.set("spot:advisor:version", _new_hash)
+        # Update last-scraped timestamp. Delete version hash so next cycle always
+        # re-checks and re-writes, ensuring Redis TTLs are refreshed on schedule.
+        redis_client.delete("spot:advisor:version")  # Bug 3: don't let hash block re-scrape
+        redis_client.set("spot:advisor:last_scraped", datetime.utcnow().isoformat())
 
         logger.info(f"[SVC-SCRAPE-01] Scrape complete: {stats}")
 
@@ -154,6 +168,9 @@ def parse_and_store_data(
     # Data structure: {"spot_advisor": {"Linux": {...}}}
     spot_data = data.get("spot_advisor", {})
 
+    from backend.models.spot_advisor_rates import SpotAdvisorRate
+    today = datetime.utcnow().date()
+
     # The actual AWS Spot Advisor JSON structure is: region → os_type → instance_type
     # e.g. {"ap-south-1": {"Linux": {"t3.medium": {"r": 0, "s": 73}}}}
     for region, region_data in spot_data.items():
@@ -162,65 +179,98 @@ def parse_and_store_data(
 
         logger.info(f"[SVC-SCRAPE-01] Processing region: {region}")
 
-        # Iterate through OS types within this region
-        for os_type, os_data in region_data.items():
-            if not isinstance(os_data, dict):
+        # Bug 2: Only process Linux — EKS nodes never run Windows/SUSE Linux.
+        # Processing all OS types with the same key namespace caused the last
+        # OS type written to win; hardcoding Linux avoids this entirely.
+        linux_data = region_data.get("Linux", {})
+        if not isinstance(linux_data, dict):
+            continue
+
+        os_type = "Linux"
+        stats["regions_processed"] += 1
+
+        # Iterate through instance types in this region+OS combo
+        for instance_type, instance_data in linux_data.items():
+            if not isinstance(instance_data, dict):
                 continue
+            stats["instance_types_processed"] += 1
 
-            stats["regions_processed"] += 1
+            # Parse instance data
+            # Format: {"r": interruption_frequency_index, "s": savings_percentage}
+            # Bug 1: r is sometimes absent for newer instance types not yet rated.
+            # Default was 0 (safest) — wrong. Unknown = treat as worst known (4 = >20%).
+            raw_r = instance_data.get("r")
+            if raw_r is None:
+                interruption_index = 4  # Unknown → worst-case (>20%)
+                logger.debug(
+                    f"[SVC-SCRAPE-01] Missing 'r' for {instance_type}/{region} "
+                    f"— defaulting to index 4 (>20% interruption)"
+                )
+            else:
+                interruption_index = int(raw_r)
+            savings_percentage = instance_data.get("s", 0)
 
-            # Iterate through instance types in this region+OS combo
-            for instance_type, instance_data in os_data.items():
-                if not isinstance(instance_data, dict):
-                    continue
-                stats["instance_types_processed"] += 1
+            interruption_frequency = FREQUENCY_RATINGS.get(interruption_index, ">20%")
 
-                # Parse instance data
-                # Format: {"r": interruption_frequency_index, "s": savings_percentage}
-                interruption_index = instance_data.get("r", 0)
-                savings_percentage = instance_data.get("s", 0)
+            # ── Write to SpotAdvisorData (stores raw 0-4 index for pool filter) ──
+            existing = db.query(SpotAdvisorData).filter(
+                and_(
+                    SpotAdvisorData.instance_type == instance_type,
+                    SpotAdvisorData.region == region,
+                    SpotAdvisorData.os_type == os_type
+                )
+            ).first()
 
-                interruption_frequency = FREQUENCY_RATINGS.get(interruption_index, "unknown")
+            if existing:
+                existing.interruption_frequency = interruption_frequency
+                existing.interruption_index = interruption_index
+                existing.savings_percentage = savings_percentage
+                existing.updated_at = datetime.utcnow()
+                stats["records_updated"] += 1
+            else:
+                advisor_data = SpotAdvisorData(
+                    instance_type=instance_type,
+                    region=region,
+                    os_type=os_type,
+                    interruption_frequency=interruption_frequency,
+                    interruption_index=interruption_index,
+                    savings_percentage=savings_percentage
+                )
+                db.add(advisor_data)
+                stats["records_created"] += 1
 
-                # Store in database
-                existing = db.query(SpotAdvisorData).filter(
-                    and_(
-                        SpotAdvisorData.instance_type == instance_type,
-                        SpotAdvisorData.region == region,
-                        SpotAdvisorData.os_type == os_type
-                    )
-                ).first()
+            # ── Bug 4: Write to SpotAdvisorRate (stores percentage for get_interruption_rate) ──
+            # INDEX_TO_PCT: r=0→5.0, r=1→10.0, r=2→15.0, r=3→20.0, r=4→25.0
+            # Missing r → INDEX_TO_PCT_MISSING (100.0) — excluded from ranking as too risky
+            rate_pct = INDEX_TO_PCT.get(interruption_index, INDEX_TO_PCT_MISSING) if raw_r is not None else INDEX_TO_PCT_MISSING
+            rate_category = interruption_frequency
+            existing_rate = db.query(SpotAdvisorRate).filter(
+                SpotAdvisorRate.region == region,
+                SpotAdvisorRate.instance_type == instance_type,
+                SpotAdvisorRate.valid_from == today,
+            ).first()
+            if existing_rate:
+                existing_rate.interruption_rate_pct = rate_pct
+                existing_rate.interruption_rate_category = rate_category
+                existing_rate.scraped_at = datetime.utcnow()
+            else:
+                db.add(SpotAdvisorRate(
+                    region=region,
+                    instance_type=instance_type,
+                    interruption_rate_category=rate_category,
+                    interruption_rate_pct=rate_pct,
+                    valid_from=today,
+                ))
 
-                if existing:
-                    # Update existing record
-                    existing.interruption_frequency = interruption_frequency
-                    existing.interruption_index = interruption_index
-                    existing.savings_percentage = savings_percentage
-                    existing.updated_at = datetime.utcnow()
-                    stats["records_updated"] += 1
-                else:
-                    # Create new record
-                    advisor_data = SpotAdvisorData(
-                        instance_type=instance_type,
-                        region=region,
-                        os_type=os_type,
-                        interruption_frequency=interruption_frequency,
-                        interruption_index=interruption_index,
-                        savings_percentage=savings_percentage
-                    )
-                    db.add(advisor_data)
-                    stats["records_created"] += 1
-
-                # Cache in Redis for fast lookup
-                cache_key = f"spot_advisor:{region}:{instance_type}:{os_type}"
-                cache_value = json.dumps({
-                    "interruption_frequency": interruption_frequency,
-                    "interruption_index": interruption_index,
-                    "savings_percentage": savings_percentage
-                })
-
-                redis_client.setex(cache_key, 86400, cache_value)  # Cache for 24 hours
-                stats["cache_keys_set"] += 1
+            # Cache in Redis for fast lookup (Bug 3: TTL reduced to 12h)
+            cache_key = f"spot_advisor:{region}:{instance_type}:{os_type}"
+            cache_value = json.dumps({
+                "interruption_frequency": interruption_frequency,
+                "interruption_index": interruption_index,
+                "savings_percentage": savings_percentage
+            })
+            redis_client.setex(cache_key, 43200, cache_value)  # Bug 3: 12h TTL (was 24h)
+            stats["cache_keys_set"] += 1
 
         db.commit()
 

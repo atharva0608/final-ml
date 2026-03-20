@@ -2,6 +2,7 @@
 Emergency Handler — Handles spot instance termination events.
 """
 import json
+import hashlib
 import logging
 from datetime import datetime
 from backend.core.redis_client import (
@@ -137,11 +138,16 @@ def _launch_od_emergency_fallback(
         )
         ec2 = session.client('ec2', region_name=region)
 
+        # Issue #17: Deterministic idempotency token prevents duplicate OD instances on retry
+        _od_token = hashlib.sha256(
+            f"od_fallback:{cluster_id}:{instance_type}:{az}".encode()
+        ).hexdigest()
         resp = ec2.run_instances(
             InstanceType=instance_type,
             MinCount=1,
             MaxCount=1,
             Placement={'AvailabilityZone': az},
+            ClientToken=_od_token,
             # Explicitly request on-demand — no spot market options
             TagSpecifications=[{
                 'ResourceType': 'instance',

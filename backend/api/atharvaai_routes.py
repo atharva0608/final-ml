@@ -8,6 +8,7 @@ Endpoints:
 - GET /api/v1/atharvaai/rebalancing/status - Get rebalancing actions status
 """
 
+import json as _json
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from typing import List, Optional
@@ -2022,3 +2023,133 @@ async def get_rebalancing_context(
             "next_check_at": (_fb_now + timedelta(seconds=15)).isoformat() + "Z",
             "timestamp": _fb_now.isoformat() + "Z",
         }
+
+
+# ── Per-Node Coverage & Alternatives (changes.md Part 8) ──────────────────────
+
+@router.get("/clusters/{cluster_id}/coverage")
+def get_cluster_coverage(cluster_id: str, db: Session = Depends(get_db)):
+    """
+    GET /api/v1/atharvaai/clusters/{cluster_id}/coverage
+
+    Returns ClusterCoverageReport:
+      - total_nodes, covered_nodes, at_risk_nodes, stranded_nodes, immovable_nodes
+      - cluster_coverage_pct
+      - per_node_summary: [{node_id, instance_type, az, status, alternative_count,
+                            best_pool, best_saving_pct, ...}]
+
+    Served from Redis cache (TTL 300s, refreshed by reconciliation_worker every 5 min).
+    On cache miss, computes on-demand.
+    """
+    redis = get_redis_client()
+    cache_key = f"cluster_coverage:{cluster_id}"
+
+    try:
+        cached = redis.get(cache_key)
+        if cached:
+            return _json.loads(cached)
+    except Exception:
+        pass
+
+    # Compute on-demand on cache miss
+    from backend.models.cluster import Cluster
+    from backend.workers.tasks.reconciliation_worker import _compute_cluster_coverage
+    cluster = db.query(Cluster).filter_by(id=cluster_id).first()
+    if not cluster:
+        raise HTTPException(status_code=404, detail="Cluster not found")
+
+    report = _compute_cluster_coverage(db, redis, cluster)
+    if not report:
+        return {
+            "cluster_id": cluster_id,
+            "total_nodes": 0,
+            "covered_nodes": 0,
+            "at_risk_nodes": 0,
+            "stranded_nodes": 0,
+            "immovable_nodes": 0,
+            "cluster_coverage_pct": 0.0,
+            "per_node_summary": [],
+            "computed_at": datetime.utcnow().isoformat(),
+        }
+    return report
+
+
+@router.get("/clusters/{cluster_id}/nodes/{node_id}/alternatives")
+def get_node_alternatives(
+    cluster_id: str,
+    node_id: str,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db),
+):
+    """
+    GET /api/v1/atharvaai/clusters/{cluster_id}/nodes/{node_id}/alternatives
+
+    Returns per-node alternative pool list for a specific node (instance_id or DB id).
+    Uses decision_engine.rank_for_node() with the node's actual resource profile.
+    Paginated: ?page=1&page_size=20
+    """
+    from backend.models.instance import Instance
+    from backend.models.cluster import Cluster
+    from backend.core.decision_engine import DecisionEngine
+
+    redis = get_redis_client()
+
+    cluster = db.query(Cluster).filter_by(id=cluster_id).first()
+    if not cluster:
+        raise HTTPException(status_code=404, detail="Cluster not found")
+
+    # Resolve node by DB id or instance_id
+    inst = (
+        db.query(Instance).filter(
+            Instance.cluster_id == cluster_id,
+            Instance.id == node_id,
+        ).first()
+        or db.query(Instance).filter(
+            Instance.cluster_id == cluster_id,
+            Instance.instance_id == node_id,
+        ).first()
+    )
+    if not inst:
+        raise HTTPException(status_code=404, detail="Node not found")
+
+    region = getattr(cluster, 'region', None) or 'us-east-1'
+
+    node_info = {
+        'instance_type': inst.instance_type,
+        'az': inst.az,
+        'spot_price': inst.price or 0.0,
+        'risk_tier': 2,
+        'architecture': getattr(inst, 'architecture', None) or 'amd64',
+    }
+
+    de = DecisionEngine(redis, db)
+    alternatives = de.rank_for_node(cluster.id, node_info, region)
+
+    total = len(alternatives)
+    start = (page - 1) * page_size
+    end = start + page_size
+    page_data = alternatives[start:end]
+
+    # Enrich each pool with rank and savings_pct
+    od_price = inst.price or 0.0
+    enriched = []
+    for rank_i, pool in enumerate(page_data, start=start + 1):
+        pool_price = pool.get('spot_price') or pool.get('price') or 0.0
+        saving_pct = round((1 - pool_price / od_price) * 100, 1) if od_price > 0 and pool_price > 0 else None
+        enriched.append({**pool, "rank": rank_i, "saving_pct": saving_pct})
+
+    return {
+        "cluster_id": cluster_id,
+        "node_id": node_id,
+        "instance_id": inst.instance_id,
+        "node_name": getattr(inst, 'node_name', None) or inst.instance_id,
+        "instance_type": inst.instance_type,
+        "az": inst.az,
+        "architecture": getattr(inst, 'architecture', 'amd64'),
+        "total_alternatives": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": max(1, (total + page_size - 1) // page_size),
+        "alternatives": enriched,
+    }

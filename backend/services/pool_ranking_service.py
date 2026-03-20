@@ -1503,11 +1503,43 @@ class PoolRankingService:
 
     def _ensure_spot_advisor_fresh(self, region: str) -> None:
         """
-        Ensure Spot Advisor data exists for the given region.
+        Ensure Spot Advisor data exists and is not stale for the given region.
+        Issue #28: Check spot:advisor:last_scraped key.
+          >6h old  → warn
+          >24h old → trigger inline re-scrape (same as missing data)
         If no records exist, trigger an inline scrape from AWS.
         """
         try:
             from backend.models.pricing import SpotAdvisorData
+
+            # Issue #28: Staleness gate via Redis timestamp
+            try:
+                _last_scraped_raw = self.redis.get("spot:advisor:last_scraped")
+                if _last_scraped_raw:
+                    _last_scraped_str = (
+                        _last_scraped_raw.decode("utf-8")
+                        if isinstance(_last_scraped_raw, bytes)
+                        else _last_scraped_raw
+                    )
+                    _last_scraped = datetime.fromisoformat(_last_scraped_str)
+                    _age_h = (datetime.utcnow() - _last_scraped).total_seconds() / 3600
+                    if _age_h > 24:
+                        logger.warning(
+                            f"[SPOT-ADVISOR] Data is {_age_h:.1f}h old (>24h threshold) — "
+                            f"triggering inline re-scrape"
+                        )
+                        from backend.scrapers.spot_advisor_scraper import scrape_spot_advisor_data
+                        result = scrape_spot_advisor_data()
+                        logger.info(f"[SPOT-ADVISOR] Re-scrape complete: {result.get('status')}")
+                        self.db.expire_all()
+                        return
+                    elif _age_h > 6:
+                        logger.warning(
+                            f"[SPOT-ADVISOR] Data is {_age_h:.1f}h old — eviction scores may "
+                            f"be stale (>6h). Will re-scrape after 24h."
+                        )
+            except Exception as _staleness_err:
+                logger.debug(f"[SPOT-ADVISOR] Staleness check skipped: {_staleness_err}")
 
             count = self.db.query(SpotAdvisorData).filter(
                 SpotAdvisorData.region == region,

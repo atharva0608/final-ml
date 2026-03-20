@@ -8,6 +8,7 @@ Prevents rapid oscillation between pools and clusters.
 
 from redis import Redis
 from typing import Tuple
+from datetime import datetime, timedelta
 import logging
 
 logger = logging.getLogger(__name__)
@@ -59,6 +60,11 @@ class CooldownController:
         try:
             ttl = self.redis.ttl(key)
 
+            # Issue #35: on Redis miss, check DB backup and rehydrate
+            if ttl <= 0:
+                self._rehydrate_from_db(key)
+                ttl = self.redis.ttl(key)
+
             if ttl > 0:
                 logger.info(f"Cluster {cluster_id} cooldown active: {ttl}s remaining")
                 return (False, ttl)
@@ -85,6 +91,11 @@ class CooldownController:
         try:
             ttl = self.redis.ttl(key)
 
+            # Issue #35: on Redis miss, check DB backup and rehydrate
+            if ttl <= 0:
+                self._rehydrate_from_db(key)
+                ttl = self.redis.ttl(key)
+
             if ttl > 0:
                 logger.info(f"Pool {pool_id} cooldown active: {ttl}s remaining")
                 return (False, ttl)
@@ -110,7 +121,9 @@ class CooldownController:
         key = f"spot:cooldown:cluster:{cluster_id}"
 
         try:
-            self.redis.setex(key, cooldown_minutes * 60, "active")
+            ttl_s = cooldown_minutes * 60
+            self.redis.setex(key, ttl_s, "active")
+            self._persist_cooldown(key, ttl_s)  # Issue #35: write-through to DB
             logger.info(f"Cluster {cluster_id} cooldown activated for {cooldown_minutes} min")
 
         except Exception as e:
@@ -130,11 +143,59 @@ class CooldownController:
         key = f"spot:cooldown:pool:{pool_id}"
 
         try:
-            self.redis.setex(key, cooldown_minutes * 60, "failed")
+            ttl_s = cooldown_minutes * 60
+            self.redis.setex(key, ttl_s, "failed")
+            self._persist_cooldown(key, ttl_s)  # Issue #35: write-through to DB
             logger.info(f"Pool {pool_id} cooldown activated for {cooldown_minutes} min")
 
         except Exception as e:
             logger.error(f"Error recording pool cooldown: {e}")
+
+    # ========================================================================
+    # Issue #35: DB PERSISTENCE — write-through backup + rehydrate on Redis miss
+    # ========================================================================
+
+    def _persist_cooldown(self, key: str, ttl_seconds: int) -> None:
+        """Write-through backup of cooldown to system_configs table.
+        On Redis restart, rehydrate via _rehydrate_from_db().
+        Uses key prefix 'cooldown:' to namespace entries.
+        """
+        try:
+            from backend.models.system_config import SystemConfig
+            from backend.models.base import get_db
+            _db = next(get_db())
+            expiry = datetime.utcnow() + timedelta(seconds=ttl_seconds)
+            cfg = _db.query(SystemConfig).filter_by(key=f"cooldown:{key}").first()
+            if cfg:
+                cfg.value = expiry.isoformat()
+            else:
+                cfg = SystemConfig(key=f"cooldown:{key}", value=expiry.isoformat())
+                _db.add(cfg)
+            _db.commit()
+            _db.close()
+        except Exception as e:
+            logger.warning(f"[CooldownController] DB persist failed for {key}: {e}")
+
+    def _rehydrate_from_db(self, key: str) -> bool:
+        """On Redis miss (ttl <= 0), check DB backup and restore if not expired.
+        Returns True if cooldown was successfully restored to Redis.
+        """
+        try:
+            from backend.models.system_config import SystemConfig
+            from backend.models.base import get_db
+            _db = next(get_db())
+            cfg = _db.query(SystemConfig).filter_by(key=f"cooldown:{key}").first()
+            _db.close()
+            if cfg and cfg.value:
+                expiry = datetime.fromisoformat(cfg.value)
+                remaining = int((expiry - datetime.utcnow()).total_seconds())
+                if remaining > 0:
+                    self.redis.setex(key, remaining, "rehydrated")
+                    logger.info(f"[CooldownController] Rehydrated {key} from DB (TTL {remaining}s)")
+                    return True
+        except Exception as e:
+            logger.warning(f"[CooldownController] DB rehydrate failed for {key}: {e}")
+        return False
 
     def override_for_emergency(self, cluster_id: str):
         """

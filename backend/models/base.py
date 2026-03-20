@@ -12,11 +12,14 @@ import uuid
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:password@localhost:5432/spot_optimizer")
 
 # Create engine
+# Issue #37: Increase max_overflow to 30 (was 10) to prevent 504s under load.
+# pool_recycle=1800 closes idle connections after 30 min to prevent "server closed the connection" errors.
 engine = create_engine(
     DATABASE_URL,
     pool_size=int(os.getenv("DB_POOL_SIZE", "20")),
-    max_overflow=int(os.getenv("DB_MAX_OVERFLOW", "10")),
+    max_overflow=int(os.getenv("DB_MAX_OVERFLOW", "30")),    # was 10
     pool_timeout=int(os.getenv("DB_POOL_TIMEOUT", "30")),
+    pool_recycle=int(os.getenv("DB_POOL_RECYCLE", "1800")),  # recycle connections every 30 min
     echo=os.getenv("DB_ECHO", "False").lower() == "true",
 )
 

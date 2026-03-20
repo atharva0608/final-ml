@@ -357,6 +357,15 @@ export const atharvaaiAPI = {
     // Cluster Impact (To be implemented in backend)
     getClusterImpact: (clusterId) => api.get(`/api/v1/atharvaai/clusters/${clusterId}/impact`),
 
+    // Per-Node Coverage Report (changes.md Part 8)
+    getClusterCoverage: (clusterId) => api.get(`/api/v1/atharvaai/clusters/${clusterId}/coverage`),
+
+    // Per-Node Alternative Pool List (changes.md Part 8)
+    getNodeAlternatives: (clusterId, nodeId, page = 1, pageSize = 20) =>
+        api.get(`/api/v1/atharvaai/clusters/${clusterId}/nodes/${nodeId}/alternatives`, {
+            params: { page, page_size: pageSize },
+        }),
+
     // Enriched volatility status (includes az_pressure map)
     getVolatilityStatusEnriched: () => api.get('/api/v1/atharvaai/volatility/status'),
 

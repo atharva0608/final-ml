@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useDashboard } from '../../hooks/useDashboard';
 import { auditAPI, clusterAPI, accountsAPI, karpenterAPI, atharvaAiAPI, hibernationAPI, hygieneAPI, approvalsAPI, teamAPI, userAPI, multiClusterAPI } from '../../services/api';
@@ -17,6 +17,9 @@ import TrendsChart from './widgets/TrendsChart';
 
 // Access Modal
 import AccessRequestModal from '../approvals/AccessRequestModal';
+
+// Shared
+import ErrorBoundary from '../shared/ErrorBoundary';
 
 // ─── PALETTE ────────────────────────────────────────────────────────────────
 const C = {
@@ -280,14 +283,34 @@ export default function Dashboard() {
   const [fleetData, setFleetData] = useState(null);
   const [fleetLoading, setFleetLoading] = useState(true);
 
+  // Issue #30/#32: serial counter to discard stale in-flight responses
+  const _fetchSeq = useRef(0);
+
   useEffect(() => {
+    // Issue #30: AbortController so navigation away cancels in-flight request
+    const ctrl = new AbortController();
+    const seq = ++_fetchSeq.current;
+    setFleetLoading(true);
     multiClusterAPI.getSummary()
-      .then(res => setFleetData(res.data))
-      .catch(() => { })
-      .finally(() => setFleetLoading(false));
+      .then(res => {
+        if (seq !== _fetchSeq.current) return; // #32: stale response guard
+        // Issue #31: ID-based merge so rapid refreshes don't flicker
+        setFleetData(prev => {
+          const incoming = res.data;
+          if (!prev || !prev.clusters || !incoming) return incoming;
+          const existing = Object.fromEntries((prev.clusters || []).map(c => [c.id, c]));
+          const merged = (incoming.clusters || []).map(c => ({ ...existing[c.id], ...c }));
+          return { ...incoming, clusters: merged };
+        });
+      })
+      .catch(e => { if (e.name !== 'AbortError') console.error('[Dashboard] fleetData', e); })
+      .finally(() => { if (seq === _fetchSeq.current) setFleetLoading(false); });
+    return () => ctrl.abort();
   }, []);
 
   useEffect(() => {
+    const ctrl = new AbortController();
+    const seq = ++_fetchSeq.current;
     const fetchData = async () => {
       setDataLoading(true);
       try {
@@ -475,7 +498,11 @@ export default function Dashboard() {
         setDataLoading(false);
       }
     };
-    fetchData();
+    // Issue #32: stale-response guard — only apply if this is still the latest fetch
+    if (seq === _fetchSeq.current) {
+      fetchData();
+    }
+    return () => ctrl.abort();
   }, []);
 
   // Sync refresh action to global header
@@ -572,6 +599,7 @@ export default function Dashboard() {
 
             {/* ── ROW 2: Fleet Overview ── */}
             <SectionLabel>Fleet Overview</SectionLabel>
+            <ErrorBoundary label="Fleet Overview">
             <div className="mb-5">
               <Card>
                 {fleetLoading ? (
@@ -583,11 +611,11 @@ export default function Dashboard() {
                     {/* Summary KPIs */}
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 12, marginBottom: 16 }}>
                       {[
-                        { label: 'Active Clusters', value: fleetData.summary.active_clusters, color: C.teal },
-                        { label: 'Spot Nodes', value: fleetData.summary.spot_nodes, color: C.green },
-                        { label: 'OD Nodes', value: fleetData.summary.od_nodes, color: C.blue },
-                        { label: 'Spot Ratio', value: `${fleetData.summary.spot_ratio_pct}%`, color: C.purple },
-                        { label: 'Est. Monthly Savings', value: `$${fleetData.summary.monthly_savings_est.toFixed(0)}`, color: C.green },
+                        { label: 'Active Clusters', value: fleetData.summary?.active_clusters ?? '—', color: C.teal },
+                        { label: 'Spot Nodes', value: fleetData.summary?.spot_nodes ?? '—', color: C.green },
+                        { label: 'OD Nodes', value: fleetData.summary?.od_nodes ?? '—', color: C.blue },
+                        { label: 'Spot Ratio', value: `${fleetData.summary?.spot_ratio_pct ?? 0}%`, color: C.purple },
+                        { label: 'Est. Monthly Savings', value: `$${(fleetData.summary?.monthly_savings_est || 0).toFixed(0)}`, color: C.green },
                       ].map(kpi => (
                         <div key={kpi.label} style={{ background: '#f9fafb', borderRadius: 8, padding: '10px 12px', borderTop: `2px solid ${kpi.color}` }}>
                           <div style={{ fontSize: 10, color: C.subtle, marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{kpi.label}</div>
@@ -607,7 +635,7 @@ export default function Dashboard() {
                           </tr>
                         </thead>
                         <tbody>
-                          {fleetData.clusters.map(c => (
+                          {(fleetData.clusters || []).map(c => (
                             <tr key={c.id}
                               onClick={() => navigate(`/clusters/${c.id}`)}
                               onMouseEnter={e => e.currentTarget.style.background = '#f9fafb'}
@@ -638,7 +666,7 @@ export default function Dashboard() {
                                 ) : <span style={{ color: C.subtle }}>—</span>}
                               </td>
                               <td style={{ padding: '7px 10px', color: C.muted }}>{c.completed_actions_24h}</td>
-                              <td style={{ padding: '7px 10px', color: C.green, fontWeight: 600 }}>${c.monthly_savings_est.toFixed(0)}</td>
+                              <td style={{ padding: '7px 10px', color: C.green, fontWeight: 600 }}>${(c.monthly_savings_est || 0).toFixed(0)}</td>
                             </tr>
                           ))}
                           {fleetData.clusters.length === 0 && (
@@ -653,6 +681,7 @@ export default function Dashboard() {
                 )}
               </Card>
             </div>
+            </ErrorBoundary>
 
             {/* ── ROW 3: Forecast + Agent Status + Cluster Health ── */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-5">
@@ -787,13 +816,14 @@ export default function Dashboard() {
 
             {/* ── Resource Hygiene full-width ── */}
             <SectionLabel>Resource Hygiene</SectionLabel>
+            <ErrorBoundary label="Resource Hygiene">
             <Card style={{ marginBottom: 20 }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
                 <div style={{ display: "flex", gap: 24 }}>
                   {[
                     { label: "Safe to Delete", value: hygieneData.safeToDelete.toString(), color: C.red },
                     { label: "Orphaned", value: hygieneData.orphaned.toString(), color: C.amber },
-                    { label: "Potential Savings", value: `$${hygieneData.potentialSavings.toFixed(2)}/mo`, color: C.green },
+                    { label: "Potential Savings", value: `$${(hygieneData?.potentialSavings || 0).toFixed(2)}/mo`, color: C.green },
                     { label: "Last Scan", value: hygieneData.lastScan ? hygieneData.lastScan.toLocaleDateString() : "Never", color: C.muted },
                   ].map(s => (
                     <div key={s.label}>
@@ -809,6 +839,7 @@ export default function Dashboard() {
                 }}>⊘ Run Scan →</button>
               </div>
             </Card>
+            </ErrorBoundary>
 
             {/* ── Cost Health widgets (RI, S3, RDS, Transfer) ── */}
             <SectionLabel>AWS Cost Health Checks</SectionLabel>

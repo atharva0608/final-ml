@@ -54,6 +54,14 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
     const [clusterImpact, setClusterImpact] = useState(null);
     const [nodeViewLoading, setNodeViewLoading] = useState(false);
     const [clusterViewLoading, setClusterViewLoading] = useState(false);
+    // Per-node coverage (changes.md Cluster Impact View)
+    const [coverageData, setCoverageData] = useState(null);
+    const [coverageLoading, setCoverageLoading] = useState(false);
+    // Node-Specific View — selected node + alternatives
+    const [selectedNodeId, setSelectedNodeId] = useState(null);
+    const [nodeAlternatives, setNodeAlternatives] = useState(null);
+    const [nodeAltLoading, setNodeAltLoading] = useState(false);
+    const [nodeAltPage, setNodeAltPage] = useState(1);
     const [savingsVelocityData, setSavingsVelocityData] = useState(null);
     const [savingsVelocityLoading, setSavingsVelocityLoading] = useState(false);
     const [effectiveConfig, setEffectiveConfig] = useState(null);
@@ -81,6 +89,18 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
         return () => clearInterval(interval);
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [autoRefresh, clusterId]);
+
+    // Fetch node alternatives when selectedNodeId changes
+    useEffect(() => {
+        if (!clusterId || !selectedNodeId) return;
+        setNodeAltLoading(true);
+        setNodeAltPage(1);
+        atharvaaiAPI.getNodeAlternatives(clusterId, selectedNodeId, 1, 20)
+            .then(res => setNodeAlternatives(res.data || null))
+            .catch(err => { console.debug('Node alternatives error:', err.message); setNodeAlternatives(null); })
+            .finally(() => setNodeAltLoading(false));
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [clusterId, selectedNodeId]);
 
     /**
      * Full data load:
@@ -236,6 +256,23 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
                 setClusterImpact(null);
             } finally {
                 setClusterViewLoading(false);
+            }
+
+            // Fetch Per-Node Coverage Report (changes.md Part 8)
+            try {
+                setCoverageLoading(true);
+                const covRes = await atharvaaiAPI.getClusterCoverage(clusterId);
+                setCoverageData(covRes.data || null);
+                // Pre-select first node if none selected
+                const nodes = covRes.data?.per_node_summary || [];
+                if (nodes.length > 0 && !selectedNodeId) {
+                    setSelectedNodeId(nodes[0].node_id);
+                }
+            } catch (err) {
+                console.debug('Coverage endpoint pending:', err.message);
+                setCoverageData(null);
+            } finally {
+                setCoverageLoading(false);
             }
 
             // Fetch Savings Velocity (Non-blocking)
@@ -965,222 +1002,219 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
                             </tbody>
                         </table>
                     </div>
+
+                    {/* Per-Node Alternatives Panel (changes.md Node-Specific View) */}
+                    {coverageData?.per_node_summary?.length > 0 && (
+                        <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+                            <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+                                <div>
+                                    <h3 className="text-sm font-bold text-gray-800">Per-Node Alternative Pools</h3>
+                                    <p className="text-xs text-gray-500 mt-0.5">Select a node to see its ranked spot replacement options</p>
+                                </div>
+                                <select
+                                    value={selectedNodeId || ''}
+                                    onChange={e => { setSelectedNodeId(e.target.value); setNodeAltPage(1); }}
+                                    className="px-3 py-1.5 text-sm border border-gray-200 rounded-lg bg-white text-gray-700 font-mono focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                                >
+                                    {coverageData.per_node_summary.map(n => (
+                                        <option key={n.node_id} value={n.node_id}>
+                                            {n.instance_type} — {n.node_name || n.instance_id} ({n.status})
+                                        </option>
+                                    ))}
+                                </select>
+                            </div>
+
+                            {nodeAltLoading ? (
+                                <div className="py-10 text-center">
+                                    <div className="inline-block animate-spin rounded-full h-7 w-7 border-b-2 border-indigo-500 mb-3" />
+                                    <p className="text-sm text-gray-500">Loading alternatives...</p>
+                                </div>
+                            ) : nodeAlternatives?.alternatives?.length > 0 ? (
+                                <>
+                                    <div className="px-5 py-3 bg-gray-50 border-b border-gray-100 flex items-center gap-4 text-xs text-gray-500">
+                                        <span><strong className="text-gray-700">{nodeAlternatives.total_alternatives}</strong> valid alternatives for {nodeAlternatives.instance_type} in {nodeAlternatives.az}</span>
+                                        <span className="text-gray-300">|</span>
+                                        <span>Arch: <strong className="text-gray-700">{nodeAlternatives.architecture}</strong></span>
+                                    </div>
+                                    <table className="w-full text-sm divide-y divide-gray-100">
+                                        <thead className="bg-gray-50 text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                            <tr>
+                                                <th className="px-4 py-2 text-left">Rank</th>
+                                                <th className="px-4 py-2 text-left">Type</th>
+                                                <th className="px-4 py-2 text-left">AZ</th>
+                                                <th className="px-4 py-2 text-left">Arch</th>
+                                                <th className="px-4 py-2 text-right">Spot/hr</th>
+                                                <th className="px-4 py-2 text-right">Saving</th>
+                                                <th className="px-4 py-2 text-center">Risk</th>
+                                                <th className="px-4 py-2 text-right">ML Score</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody className="bg-white divide-y divide-gray-100">
+                                            {nodeAlternatives.alternatives.map((alt, i) => {
+                                                const riskLabel = alt.spot_advisor_rank === 0 ? '<5%' : alt.spot_advisor_rank === 1 ? '5-10%' : alt.spot_advisor_rank === 2 ? '10-15%' : alt.spot_advisor_rank === 3 ? '15-20%' : '>20%';
+                                                const riskColor = alt.spot_advisor_rank <= 1 ? 'bg-green-50 text-green-700' : alt.spot_advisor_rank <= 2 ? 'bg-amber-50 text-amber-700' : 'bg-red-50 text-red-700';
+                                                return (
+                                                    <tr key={i} className="hover:bg-gray-50">
+                                                        <td className="px-4 py-2.5 font-bold text-gray-400">{alt.rank}</td>
+                                                        <td className="px-4 py-2.5 font-medium text-gray-900 font-mono">{alt.instance_type}</td>
+                                                        <td className="px-4 py-2.5 font-mono text-xs text-gray-500">{alt.az}</td>
+                                                        <td className="px-4 py-2.5 text-xs text-gray-500">{alt.architecture || '—'}</td>
+                                                        <td className="px-4 py-2.5 text-right font-mono text-gray-700">${(alt.spot_price || 0).toFixed(4)}</td>
+                                                        <td className="px-4 py-2.5 text-right font-semibold text-green-600">{alt.saving_pct != null ? `${alt.saving_pct}%` : '—'}</td>
+                                                        <td className="px-4 py-2.5 text-center"><span className={`px-2 py-0.5 rounded text-xs font-semibold ${riskColor}`}>{riskLabel}</span></td>
+                                                        <td className="px-4 py-2.5 text-right font-bold text-indigo-600">{(alt.ml_score || 0).toFixed(3)}</td>
+                                                    </tr>
+                                                );
+                                            })}
+                                        </tbody>
+                                    </table>
+                                    {/* Pagination */}
+                                    {nodeAlternatives.total_pages > 1 && (
+                                        <div className="px-5 py-3 border-t border-gray-100 flex items-center justify-between text-xs text-gray-500">
+                                            <span>Page {nodeAlternatives.page} of {nodeAlternatives.total_pages} ({nodeAlternatives.total_alternatives} total)</span>
+                                            <div className="flex gap-2">
+                                                <button
+                                                    disabled={nodeAlternatives.page <= 1}
+                                                    onClick={() => {
+                                                        const p = nodeAltPage - 1;
+                                                        setNodeAltPage(p);
+                                                        setNodeAltLoading(true);
+                                                        atharvaaiAPI.getNodeAlternatives(clusterId, selectedNodeId, p, 20)
+                                                            .then(r => setNodeAlternatives(r.data))
+                                                            .finally(() => setNodeAltLoading(false));
+                                                    }}
+                                                    className="px-3 py-1 rounded border border-gray-200 bg-white disabled:opacity-40 hover:bg-gray-50"
+                                                >← Prev</button>
+                                                <button
+                                                    disabled={nodeAlternatives.page >= nodeAlternatives.total_pages}
+                                                    onClick={() => {
+                                                        const p = nodeAltPage + 1;
+                                                        setNodeAltPage(p);
+                                                        setNodeAltLoading(true);
+                                                        atharvaaiAPI.getNodeAlternatives(clusterId, selectedNodeId, p, 20)
+                                                            .then(r => setNodeAlternatives(r.data))
+                                                            .finally(() => setNodeAltLoading(false));
+                                                    }}
+                                                    className="px-3 py-1 rounded border border-gray-200 bg-white disabled:opacity-40 hover:bg-gray-50"
+                                                >Next →</button>
+                                            </div>
+                                        </div>
+                                    )}
+                                </>
+                            ) : (
+                                <div className="py-10 text-center text-gray-500 text-sm">
+                                    {selectedNodeId ? 'No valid alternatives found for this node.' : 'Select a node above.'}
+                                </div>
+                            )}
+                        </div>
+                    )}
                 </div>
             )}
 
-            {/* Cluster Impact View */}
+            {/* Cluster Impact View — Per-Node Coverage Report */}
             {activeTab === 'cluster' && (
-                <div className="space-y-6">
-                    {/* Top Summary Cards — computed from nodeRecommendations (per-node hourly cost × 720) */}
-                    {(() => {
-                        const totalCurrentMonthly = nodeRecommendations.reduce(
-                            (sum, r) => sum + (r.current_cost || 0) * 720, 0
-                        );
-                        const totalProjMonthly = nodeRecommendations.reduce((sum, r) => {
-                            const savPct = r.status === 'ELIGIBLE' ? (r.projected_savings_pct || 0) : 0;
-                            return sum + (r.current_cost || 0) * (1 - savPct / 100) * 720;
-                        }, 0);
-                        const savingsAmt = totalCurrentMonthly - totalProjMonthly;
-                        const savingsPct = totalCurrentMonthly > 0
-                            ? Math.round(savingsAmt / totalCurrentMonthly * 100) : 0;
-                        const eligibleCount = nodeRecommendations.filter(r => r.status === 'ELIGIBLE').length;
-                        // Spot Adoption: use real AWS-synced ratio from cluster impact API.
-                        // Do NOT use eligible/total — that measures unmigrated nodes, not current spot state.
-                        const spotAdoptionPct = clusterImpact?.spot_ratio != null
-                            ? clusterImpact.spot_ratio
-                            : (nodeRecommendations.length > 0 ? Math.round(nodeRecommendations.filter(r => r.status === 'SPOT').length / nodeRecommendations.length * 100) : 0);
-                        const isLoading = clusterViewLoading || nodeViewLoading;
-                        const alreadyOptimized = eligibleCount === 0 && spotAdoptionPct >= 100;
-                        return (
-                            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-                                <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
-                                    <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Current Cost</h4>
-                                    <p className="mt-2 text-2xl font-bold text-gray-900">
-                                        {isLoading ? '$…' : totalCurrentMonthly > 0 ? `$${Math.round(totalCurrentMonthly)}/mo` : '$0/mo'}
-                                    </p>
+                <div className="space-y-5">
+                    {/* Coverage summary bar */}
+                    {coverageData && (
+                        <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
+                            <div className="flex items-center justify-between mb-3">
+                                <div>
+                                    <span className="text-sm font-bold text-gray-800">Cluster Coverage</span>
+                                    <span className="ml-2 text-xs text-gray-500">— how many nodes have valid spot fallback options</span>
                                 </div>
-                                <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
-                                    <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Projected Cost</h4>
-                                    <p className="mt-2 text-2xl font-bold text-green-600">
-                                        {isLoading ? '$…' : totalProjMonthly > 0 ? `$${Math.round(totalProjMonthly)}/mo` : '$0/mo'}
-                                    </p>
-                                </div>
-                                <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
-                                    <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
-                                        {alreadyOptimized ? 'Additional Savings' : 'Estimated Savings'}
-                                    </h4>
-                                    <p className="mt-2 text-2xl font-bold text-green-600">
-                                        {isLoading ? '…%' : alreadyOptimized ? '✓ Fully Optimized' : `${savingsPct}%`}
-                                    </p>
-                                    {alreadyOptimized && !isLoading && (
-                                        <p className="text-xs text-gray-400 mt-1">All nodes on spot</p>
-                                    )}
-                                </div>
-                                <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
-                                    <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Spot Adoption</h4>
-                                    <p className="mt-2 text-2xl font-bold text-indigo-600">
-                                        {isLoading ? '…%' : `${spotAdoptionPct}%`}
-                                    </p>
-                                    <p className="text-xs text-gray-400 mt-1">
-                                        {clusterImpact ? `${clusterImpact.spot_count ?? 0} spot / ${clusterImpact.on_demand_count ?? 0} on-demand` : ''}
-                                    </p>
-                                </div>
+                                <span className="text-xl font-bold text-indigo-600">{coverageData.cluster_coverage_pct ?? 0}%</span>
                             </div>
-                        );
-                    })()}
-
-                    {/* Chart Panels — driven by clusterImpact data */}
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                        {/* AZ Distribution */}
-                        <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200 h-64 flex flex-col">
-                            <h4 className="text-sm font-semibold text-gray-700 mb-3">AZ Distribution</h4>
-                            {clusterImpact?.az_distribution?.length > 0 ? (
-                                <div className="flex-1 flex flex-col justify-center gap-2 overflow-y-auto">
-                                    {clusterImpact.az_distribution.map((item, i) => {
-                                        const total = clusterImpact.total_nodes || 1;
-                                        const pct = Math.round(item.count / total * 100);
-                                        const colors = ['bg-indigo-500', 'bg-blue-400', 'bg-sky-400', 'bg-cyan-400'];
-                                        return (
-                                            <div key={i}>
-                                                <div className="flex justify-between text-xs text-gray-600 mb-1">
-                                                    <span className="font-mono">{item.az}</span>
-                                                    <span className="font-semibold">{item.count} node{item.count !== 1 ? 's' : ''} ({pct}%)</span>
-                                                </div>
-                                                <div className="w-full bg-gray-100 rounded-full h-3">
-                                                    <div className={`${colors[i % colors.length]} h-3 rounded-full transition-all`} style={{ width: `${pct}%` }} />
-                                                </div>
-                                            </div>
-                                        );
-                                    })}
-                                </div>
-                            ) : (
-                                <div className="flex-1 flex items-center justify-center bg-gray-50 rounded border border-dashed border-gray-300">
-                                    <span className="text-gray-400 text-sm">No data</span>
-                                </div>
-                            )}
+                            <div className="w-full bg-gray-100 rounded-full h-3 mb-3">
+                                <div
+                                    className="h-3 rounded-full bg-indigo-500 transition-all"
+                                    style={{ width: `${coverageData.cluster_coverage_pct ?? 0}%` }}
+                                />
+                            </div>
+                            <div className="flex gap-6 text-xs text-gray-500">
+                                <span><span className="inline-block w-2 h-2 rounded-full bg-green-500 mr-1" />{coverageData.covered_nodes} Covered</span>
+                                <span><span className="inline-block w-2 h-2 rounded-full bg-amber-400 mr-1" />{coverageData.at_risk_nodes} At Risk</span>
+                                <span><span className="inline-block w-2 h-2 rounded-full bg-red-500 mr-1" />{coverageData.stranded_nodes} Stranded</span>
+                                {coverageData.immovable_nodes > 0 && <span><span className="inline-block w-2 h-2 rounded-full bg-gray-400 mr-1" />{coverageData.immovable_nodes} Immovable</span>}
+                                <span className="ml-auto text-gray-400">Last computed: {coverageData.computed_at ? new Date(coverageData.computed_at).toLocaleTimeString() : '—'}</span>
+                            </div>
                         </div>
+                    )}
 
-                        {/* Instance Family Distribution */}
-                        <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200 h-64 flex flex-col">
-                            <h4 className="text-sm font-semibold text-gray-700 mb-3">Instance Family Distribution</h4>
-                            {clusterImpact?.family_distribution?.length > 0 ? (
-                                <div className="flex-1 flex flex-col justify-center gap-2 overflow-y-auto">
-                                    {clusterImpact.family_distribution.map((item, i) => {
-                                        const total = clusterImpact.total_nodes || 1;
-                                        const pct = Math.round(item.count / total * 100);
-                                        const colors = ['bg-purple-500', 'bg-violet-400', 'bg-fuchsia-400', 'bg-pink-400', 'bg-rose-400'];
-                                        return (
-                                            <div key={i}>
-                                                <div className="flex justify-between text-xs text-gray-600 mb-1">
-                                                    <span className="font-mono font-semibold">{item.family}.*</span>
-                                                    <span>{item.count} node{item.count !== 1 ? 's' : ''} ({pct}%)</span>
-                                                </div>
-                                                <div className="w-full bg-gray-100 rounded-full h-3">
-                                                    <div className={`${colors[i % colors.length]} h-3 rounded-full transition-all`} style={{ width: `${pct}%` }} />
-                                                </div>
-                                            </div>
-                                        );
-                                    })}
-                                </div>
-                            ) : (
-                                <div className="flex-1 flex items-center justify-center bg-gray-50 rounded border border-dashed border-gray-300">
-                                    <span className="text-gray-400 text-sm">No data</span>
-                                </div>
-                            )}
-                        </div>
-
-                        {/* Spot vs On-Demand Ratio */}
-                        <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200 h-64 flex flex-col">
-                            <h4 className="text-sm font-semibold text-gray-700 mb-3">Spot vs On-Demand Ratio</h4>
-                            {clusterImpact?.total_nodes > 0 ? (
-                                <div className="flex-1 flex flex-col justify-center gap-4">
-                                    {/* Gauge arc approximation */}
-                                    <div className="flex justify-center">
-                                        <div className="relative w-32 h-16 overflow-hidden">
-                                            <div className="absolute inset-0 rounded-t-full bg-gray-200" />
-                                            <div
-                                                className="absolute inset-0 rounded-t-full bg-gradient-to-r from-green-400 to-green-600 origin-bottom"
-                                                style={{ transform: `rotate(${((clusterImpact.spot_ratio ?? 0) / 100) * 180 - 90}deg)`, clipPath: 'polygon(50% 100%,0 0,100% 0)' }}
-                                            />
-                                            <div className="absolute inset-x-4 bottom-0 flex items-end justify-center pb-1">
-                                                <span className="text-2xl font-bold text-gray-900">{clusterImpact.spot_ratio ?? 0}%</span>
-                                            </div>
-                                        </div>
-                                    </div>
-                                    <div className="text-center text-xs text-gray-500 -mt-2">Spot Ratio</div>
-                                    {/* Legend */}
-                                    <div className="flex justify-center gap-6 text-sm">
-                                        <div className="flex items-center gap-1.5">
-                                            <div className="w-3 h-3 rounded-full bg-green-500" />
-                                            <span className="text-gray-700">Spot <strong>{clusterImpact.spot_count}</strong></span>
-                                        </div>
-                                        <div className="flex items-center gap-1.5">
-                                            <div className="w-3 h-3 rounded-full bg-blue-400" />
-                                            <span className="text-gray-700">On-Demand <strong>{clusterImpact.on_demand_count}</strong></span>
-                                        </div>
-                                    </div>
-                                    {/* Stacked bar */}
-                                    <div className="flex h-4 rounded-full overflow-hidden mx-4">
-                                        <div className="bg-green-500 transition-all" style={{ width: `${clusterImpact.spot_ratio ?? 0}%` }} />
-                                        <div className="bg-blue-400 transition-all" style={{ width: `${100 - (clusterImpact.spot_ratio ?? 0)}%` }} />
-                                    </div>
-                                </div>
-                            ) : (
-                                <div className="flex-1 flex items-center justify-center bg-gray-50 rounded border border-dashed border-gray-300">
-                                    <span className="text-gray-400 text-sm">No data</span>
-                                </div>
-                            )}
-                        </div>
-                    </div>
-
-                    {/* Table */}
-                    <div className="bg-white shadow-md rounded-lg overflow-x-auto">
-                        <table className="w-full min-w-[1000px] divide-y divide-gray-200 text-sm">
+                    {/* Per-Node Coverage Table */}
+                    <div className="bg-white shadow-sm rounded-lg overflow-x-auto border border-gray-200">
+                        <table className="w-full min-w-[860px] divide-y divide-gray-200 text-sm">
                             <thead className="bg-gray-50">
                                 <tr>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Target Pool</th>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Eligible Nodes</th>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Avg Savings</th>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Total Savings</th>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Avg Risk</th>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Health</th>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Cluster Usage</th>
+                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Node</th>
+                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Current Type</th>
+                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">AZ</th>
+                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Lifecycle</th>
+                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Alternatives</th>
+                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Best Option</th>
+                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Saving</th>
                                 </tr>
                             </thead>
                             <tbody className="bg-white divide-y divide-gray-200">
-                                {clusterImpact && clusterImpact.pools && clusterImpact.pools.length > 0 ? (
-                                    clusterImpact.pools.map((pool, idx) => (
-                                        <tr key={idx} className="hover:bg-gray-50">
-                                            <td className="px-4 py-3 font-medium text-gray-900">{pool.target_pool}</td>
-                                            <td className="px-4 py-3 text-gray-500">{pool.eligible_nodes}</td>
-                                            <td className="px-4 py-3 text-green-600 font-medium">${pool.avg_savings}/mo</td>
-                                            <td className="px-4 py-3 text-green-600 font-bold">${pool.total_savings}/mo</td>
-                                            <td className="px-4 py-3 text-blue-600">{pool.avg_risk}</td>
-                                            <td className="px-4 py-3">{getHealthBadge(pool.is_flagged)}</td>
-                                            <td className="px-4 py-3 text-gray-500">{pool.cluster_usage_pct}%</td>
-                                        </tr>
-                                    ))
+                                {coverageLoading ? (
+                                    <tr>
+                                        <td colSpan="8" className="px-4 py-12 text-center">
+                                            <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600 mb-3" />
+                                            <p className="text-gray-500 text-sm">Computing coverage...</p>
+                                        </td>
+                                    </tr>
+                                ) : coverageData?.per_node_summary?.length > 0 ? (
+                                    coverageData.per_node_summary.map((node, idx) => {
+                                        const statusBadge = {
+                                            COVERED: <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold bg-green-50 text-green-700 border border-green-200">✅ {node.alternative_count}</span>,
+                                            AT_RISK: <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold bg-amber-50 text-amber-700 border border-amber-200">⚠️ {node.alternative_count}</span>,
+                                            STRANDED: <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-red-50 text-red-700 border border-red-200">🔴 None</span>,
+                                            IMMOVABLE: <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-gray-100 text-gray-600 border border-gray-200">🔒 Locked</span>,
+                                        }[node.status] || <span className="text-gray-400 text-xs">—</span>;
+
+                                        return (
+                                            <tr key={idx} className={`hover:bg-gray-50 ${selectedNodeId === node.node_id ? 'bg-indigo-50' : ''}`}>
+                                                <td className="px-4 py-3 font-mono text-xs text-gray-700 max-w-[140px] truncate">{node.node_name || node.instance_id}</td>
+                                                <td className="px-4 py-3 font-medium text-gray-900">{node.instance_type}</td>
+                                                <td className="px-4 py-3 font-mono text-xs text-gray-500">{node.az}</td>
+                                                <td className="px-4 py-3">
+                                                    <span className={`px-2 py-0.5 rounded text-xs font-semibold ${node.lifecycle === 'spot' ? 'bg-green-50 text-green-700' : 'bg-blue-50 text-blue-700'}`}>
+                                                        {node.lifecycle === 'spot' ? 'Spot' : 'OD'}
+                                                    </span>
+                                                </td>
+                                                <td className="px-4 py-3">{statusBadge}</td>
+                                                <td className="px-4 py-3 text-center text-sm font-medium text-gray-700">{node.alternative_count ?? 0}</td>
+                                                <td className="px-4 py-3 font-mono text-xs text-gray-600">{node.best_pool ? node.best_pool.split(':')[0] : '—'}</td>
+                                                <td className="px-4 py-3 font-semibold text-green-600 text-sm">
+                                                    {node.best_saving_pct != null ? `${node.best_saving_pct}%` : '—'}
+                                                </td>
+                                            </tr>
+                                        );
+                                    })
                                 ) : (
                                     <tr>
-                                        <td colSpan="7" className="px-4 py-12 text-center text-gray-500">
-                                            {clusterViewLoading ? (
-                                                <div className="flex flex-col items-center">
-                                                    <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600 mb-4"></div>
-                                                    <p>Gathering cluster metrics...</p>
-                                                </div>
-                                            ) : (
-                                                <div className="flex flex-col items-center">
-                                                    <FiPieChart className="h-10 w-10 text-gray-300 mb-3" />
-                                                    <p>No aggregated cluster impact data available.</p>
-                                                    <p className="text-xs text-gray-400 mt-1">Optimization API may be disabled or pending data.</p>
-                                                </div>
-                                            )}
+                                        <td colSpan="8" className="px-4 py-12 text-center text-gray-500">
+                                            <FiPieChart className="h-10 w-10 text-gray-300 mb-3 mx-auto" />
+                                            <p>No coverage data yet.</p>
+                                            <p className="text-xs text-gray-400 mt-1">Coverage is computed every 5 minutes by the reconciliation worker.</p>
                                         </td>
                                     </tr>
                                 )}
                             </tbody>
                         </table>
                     </div>
+
+                    {/* Warnings for at-risk / stranded nodes */}
+                    {coverageData?.per_node_summary?.filter(n => n.status === 'AT_RISK').length > 0 && (
+                        <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-800">
+                            ⚠️ {coverageData.per_node_summary.filter(n => n.status === 'AT_RISK').length} node(s) have limited fallback options (1-2 alternatives). Consider enabling more instance families or relaxing the risk ceiling.
+                        </div>
+                    )}
+                    {coverageData?.per_node_summary?.filter(n => n.status === 'STRANDED').length > 0 && (
+                        <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-800">
+                            🔴 {coverageData.per_node_summary.filter(n => n.status === 'STRANDED').length} node(s) have no valid spot alternatives. All pools either cost more than OD or exceed the risk ceiling. Consider switching to COST_FIRST profile.
+                        </div>
+                    )}
                 </div>
             )}
 
