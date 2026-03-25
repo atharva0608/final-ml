@@ -225,16 +225,16 @@ gantt
 
 ## 7. API Endpoints Reference
 
-The frontend consumes the Decision Engine telemetry via the following real-time endpoints exposed in `backend/api/atharvaai_routes.py` and cluster services:
+The frontend consumes the Decision Engine telemetry via the following real-time endpoints exposed in `backend/api/ascpai_routes.py` and cluster services:
 
-- **`GET /api/v1/atharvaai/rankings/global`**: Fetches the top 10 cross-region ML pool rankings.
-- **`GET /api/v1/atharvaai/rankings/{cluster_id}`**: Fetches cluster-specific pool rankings filtered by the node template.
-- **`GET /api/v1/atharvaai/heatmap/{cluster_id}`**: Returns a 30-day interruption spread for a given cluster.
-- **`GET /api/v1/atharvaai/rebalancing/status`**: Yields the current status of all auto-rebalancing operations.
-- **`GET /api/v1/atharvaai/rebalancing/timeline`**: Returns historical timeline events for cluster rebalancing.
-- **`GET /api/v1/atharvaai/blacklist/status`**: Exposes the live Redis blacklist count and capacity staturation.
-- **`GET /api/v1/atharvaai/volatility/{cluster_id}`**: Live feed of the current price volatility regime (`NORMAL`, `VOLATILE`, `CRITICAL`).
-- **`GET /api/v1/atharvaai/decision-engine/{cluster_id}`**: Complete 15-step execution state for the timeline visualizer.
+- **`GET /api/v1/ascpai/rankings/global`**: Fetches the top 10 cross-region ML pool rankings.
+- **`GET /api/v1/ascpai/rankings/{cluster_id}`**: Fetches cluster-specific pool rankings filtered by the node template.
+- **`GET /api/v1/ascpai/heatmap/{cluster_id}`**: Returns a 30-day interruption spread for a given cluster.
+- **`GET /api/v1/ascpai/rebalancing/status`**: Yields the current status of all auto-rebalancing operations.
+- **`GET /api/v1/ascpai/rebalancing/timeline`**: Returns historical timeline events for cluster rebalancing.
+- **`GET /api/v1/ascpai/blacklist/status`**: Exposes the live Redis blacklist count and capacity staturation.
+- **`GET /api/v1/ascpai/volatility/{cluster_id}`**: Live feed of the current price volatility regime (`NORMAL`, `VOLATILE`, `CRITICAL`).
+- **`GET /api/v1/ascpai/decision-engine/{cluster_id}`**: Complete 15-step execution state for the timeline visualizer.
 - **`GET /api/v1/clusters/{id}/classification`**: Live WorkloadInspector evaluation (e.g. `STATELESS_ELIGIBLE`).
 - **`PATCH /api/v1/clusters/{id}`**: Modifies the `optimization_mode` (COST_FIRST, BALANCED, NO_DOWNTIME_FIRST).
 - **`GET /api/v1/substitute/status/{cluster_id}`**: Retrieves the live PREWARM state of any substitute instance.

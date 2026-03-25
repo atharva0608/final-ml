@@ -14,7 +14,7 @@ import {
 } from 'react-icons/fi';
 import toast from 'react-hot-toast';
 import { formatNumber } from '../../utils/formatters';
-import { api, atharvaAiAPI, adminAPI } from '../../services/api';
+import { api, ascpaiAPI, adminAPI } from '../../services/api';
 
 
 const AdminHealth = () => {
@@ -47,7 +47,7 @@ const AdminHealth = () => {
     try {
       const [sysRes, mlRes] = await Promise.all([
         api.get('/api/v1/health/system').catch(() => null),
-        atharvaAiAPI.getHealth().catch(() => null)
+        ascpaiAPI.getHealth().catch(() => null)
       ]);
 
       if (sysRes?.data) setHealth(sysRes.data);

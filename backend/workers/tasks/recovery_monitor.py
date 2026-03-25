@@ -240,8 +240,15 @@ def scan_orphans(self):
         base_secret = ps.value if ps else None
         default_region = pr.value if (pr and pr.value) else "ap-south-1"
 
-        # ── Pass 1: platform-creds (same-account clusters) ────────────────────
-        if base_key and base_secret:
+        # ── Pass 1: platform-creds (same-account clusters only) ──────────────
+        # P-M5 fix: only run Pass 1 if there are same-account clusters (no aws_role_arn).
+        # For all-cross-account deployments, Pass 1 scans the wrong account and always
+        # returns 0 results — wasting API quota every 5 min.
+        _same_account_exists = db.query(Cluster).filter(
+            Cluster.status == ClusterStatus.ACTIVE,
+            Cluster.aws_role_arn.is_(None),
+        ).count() > 0
+        if base_key and base_secret and _same_account_exists:
             try:
                 ec2_plat = boto3.client(
                     "ec2", region_name=default_region,
@@ -372,11 +379,40 @@ def detect_karpenter_stalls(self):
 
             try:
                 region = cluster.region or "ap-south-1"
-                ec2 = boto3.client(
-                    "ec2", region_name=region,
-                    aws_access_key_id=pk.value,
-                    aws_secret_access_key=ps.value,
-                )
+                # P-C4 fix: use assumed-role credentials for cross-account clusters.
+                # Platform credentials cannot describe instances in customer accounts.
+                ec2 = None
+                if cluster.aws_role_arn:
+                    try:
+                        sts = boto3.client(
+                            "sts", region_name=region,
+                            aws_access_key_id=pk.value,
+                            aws_secret_access_key=ps.value,
+                        )
+                        assumed = sts.assume_role(
+                            RoleArn=cluster.aws_role_arn,
+                            RoleSessionName="spot-karpenter-stall",
+                            DurationSeconds=900,
+                        )
+                        c = assumed["Credentials"]
+                        ec2 = boto3.client(
+                            "ec2", region_name=region,
+                            aws_access_key_id=c["AccessKeyId"],
+                            aws_secret_access_key=c["SecretAccessKey"],
+                            aws_session_token=c["SessionToken"],
+                        )
+                    except Exception as _assume_err:
+                        logger.warning(
+                            f"[recovery/karpenter-stall] assume_role failed for cluster "
+                            f"{cluster.name} ({_assume_err}) — skipping stall check"
+                        )
+                        continue
+                else:
+                    ec2 = boto3.client(
+                        "ec2", region_name=region,
+                        aws_access_key_id=pk.value,
+                        aws_secret_access_key=ps.value,
+                    )
 
                 # Check if instance is still running
                 resp = ec2.describe_instances(InstanceIds=[instance_id])
@@ -427,4 +463,149 @@ def recovery_monitor(self):
     r2 = scan_orphans.apply()
     r3 = detect_karpenter_stalls.apply()
     return {"sync": r1.result, "scan": r2.result, "karpenter_stalls": r3.result}
+
+
+# ── Task 4: Cluster coverage computation (Fix 13 from changes.md) ────────────
+
+@app.task(name="backend.workers.tasks.recovery_monitor.compute_all_cluster_coverage",
+          bind=True, max_retries=1)
+def compute_all_cluster_coverage(self):
+    """
+    Compute spot pool coverage for all active clusters and cache in Redis.
+
+    Key: cluster_coverage:{cluster_id}  (JSON, TTL 300s)
+
+    Coverage status per node:
+      COVERED    — ≥3 capacity-verified pools available
+      AT_RISK    — 1-2 capacity-verified pools available
+      STRANDED   — 0 capacity-verified pools available
+      STATEFUL   — node has stateful workloads, spot not applicable
+      UNCLASSIFIED — WorkloadInspector hasn't classified this node yet
+
+    Runs every 5 minutes via Celery beat.
+    """
+    from backend.models.base import get_db
+    from backend.models.cluster import Cluster, ClusterStatus
+    from backend.models.instance import Instance
+    from backend.core.redis_client import get_redis_client
+    from datetime import datetime
+    import json
+
+    db = next(get_db())
+    redis = get_redis_client()
+    results = {}
+
+    try:
+        clusters = db.query(Cluster).filter(Cluster.status == ClusterStatus.ACTIVE).all()
+
+        for cluster in clusters:
+            try:
+                nodes = db.query(Instance).filter(
+                    Instance.cluster_id == cluster.id,
+                    Instance.state == 'running',
+                ).all()
+
+                if not nodes:
+                    continue
+
+                coverage = {}
+                verified_key = f"verified_pools:{cluster.id}"
+                alt_count = redis.zcard(verified_key) or 0
+
+                # Get best pool from verified set
+                best_raw = redis.zrevrange(verified_key, 0, 0, withscores=True)
+                best_pool_key = None
+                if best_raw:
+                    pk = best_raw[0][0]
+                    best_pool_key = pk.decode() if isinstance(pk, bytes) else pk
+
+                for node in nodes:
+                    # Check workload classification
+                    classification = None
+                    try:
+                        raw_cls = redis.get(f"workload_classification:{node.instance_id}")
+                        if raw_cls:
+                            cls_data = json.loads(raw_cls)
+                            classification = cls_data.get("classification")
+                    except Exception:
+                        pass
+
+                    if classification in ("STATEFUL", "STATEFUL_PROTECTED"):
+                        coverage[node.instance_id] = {
+                            "status": "STATEFUL",
+                            "alternative_count": 0,
+                            "best_option": None,
+                            "saving_pct": 0,
+                            "node_type": node.instance_type,
+                        }
+                        continue
+
+                    if classification is None:
+                        coverage[node.instance_id] = {
+                            "status": "UNCLASSIFIED",
+                            "alternative_count": alt_count,
+                            "best_option": best_pool_key,
+                            "saving_pct": 0,
+                            "node_type": node.instance_type,
+                        }
+                        continue
+
+                    if alt_count >= 3:
+                        status = "COVERED"
+                    elif alt_count >= 1:
+                        status = "AT_RISK"
+                    else:
+                        status = "STRANDED"
+
+                    coverage[node.instance_id] = {
+                        "status": status,
+                        "alternative_count": alt_count,
+                        "best_option": best_pool_key,
+                        "saving_pct": 0,
+                        "node_type": node.instance_type,
+                        "az": node.az,
+                        "lifecycle": node.lifecycle,
+                    }
+
+                total_nodes = len(nodes)
+                stateful_count = sum(1 for v in coverage.values() if v["status"] == "STATEFUL")
+                rebalanceable = total_nodes - stateful_count
+                covered = sum(1 for v in coverage.values() if v["status"] == "COVERED")
+                at_risk = sum(1 for v in coverage.values() if v["status"] == "AT_RISK")
+                stranded = sum(1 for v in coverage.values() if v["status"] == "STRANDED")
+
+                coverage_pct = round(covered / rebalanceable * 100, 1) if rebalanceable > 0 else 0.0
+
+                result = {
+                    "cluster_id": cluster.id,
+                    "total_nodes": total_nodes,
+                    "covered": covered,
+                    "at_risk": at_risk,
+                    "stranded": stranded,
+                    "stateful": stateful_count,
+                    "coverage_pct": coverage_pct,
+                    "per_node": coverage,
+                    "computed_at": datetime.utcnow().isoformat(),
+                }
+
+                redis.setex(f"cluster_coverage:{cluster.id}", 360, json.dumps(result))  # Issue 3d: was 300s — must exceed beat period
+                results[cluster.id] = {"coverage_pct": coverage_pct, "covered": covered, "total": total_nodes}
+
+                if stranded > 0:
+                    logger.warning(
+                        f"[cluster_coverage] Cluster {cluster.name}: "
+                        f"{stranded} STRANDED node(s) — no verified pools available"
+                    )
+
+            except Exception as cluster_err:
+                logger.warning(f"[cluster_coverage] Failed for cluster {cluster.name}: {cluster_err}")
+
+        logger.info(f"[cluster_coverage] Computed coverage for {len(results)} clusters")
+        return {"status": "ok", "clusters": len(results), "results": results}
+
+    except Exception as e:
+        logger.error(f"[cluster_coverage] Fatal: {e}")
+        return {"status": "error", "error": str(e)}
+    finally:
+        db.close()
 

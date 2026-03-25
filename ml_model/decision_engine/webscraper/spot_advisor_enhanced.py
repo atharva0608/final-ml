@@ -12,7 +12,7 @@ Advanced web scraper for AWS Spot Instance Advisor with:
 Data Source: https://aws.amazon.com/ec2/spot/instance-advisor/
 API Endpoint: https://spot-bid-advisor.s3.amazonaws.com/spot-advisor-data.json
 
-Integration: AtharvaAi Pool Selection System (Step 3: Spot Advisor Filter)
+Integration: ASCPAi Pool Selection System (Step 3: Spot Advisor Filter)
 """
 
 import requests
@@ -141,7 +141,7 @@ class EnhancedSpotAdvisorScraper:
                 self.SPOT_ADVISOR_URL,
                 timeout=30,
                 headers={
-                    'User-Agent': 'AtharvaAi-SpotOptimizer/1.0'
+                    'User-Agent': 'ASCPAi-SpotOptimizer/1.0'
                 }
             )
             response.raise_for_status()
@@ -296,7 +296,7 @@ class EnhancedSpotAdvisorScraper:
         os_type: str = "Linux"
     ) -> int:
         """
-        Get interruption rank for AtharvaAi Step 3 filtering.
+        Get interruption rank for ASCPAi Step 3 filtering.
 
         Returns:
             Interruption index (0-4) or 5 if not found

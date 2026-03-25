@@ -87,7 +87,7 @@ services:
       context: ..
       dockerfile: docker/Dockerfile.backend
     container_name: spot-optimizer-celery-worker
-    command: celery -A backend.workers worker -l info --concurrency=4
+    command: celery -A backend.workers worker -l info --concurrency=4 -Q celery,pricing
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-password}@postgres:5432/${POSTGRES_DB:-spot_optimizer}
       REDIS_URL: redis://redis:6379/0

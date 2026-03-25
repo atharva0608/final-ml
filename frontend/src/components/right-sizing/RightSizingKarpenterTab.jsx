@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from "react";
 import { useSearchParams } from 'react-router-dom';
-import { clusterAPI, karpenterAPI, atharvaaiAPI, optimizerCoordinatorAPI } from "../../services/api";
+import { clusterAPI, karpenterAPI, ascpaiAPI, optimizerCoordinatorAPI } from "../../services/api";
 import { toast } from "react-hot-toast";
 import { FiCheckCircle, FiAlertTriangle, FiClock, FiLayers, FiTarget, FiDollarSign, FiActivity, FiServer, FiAlertCircle } from "react-icons/fi";
-import RebalancingTimeline from '../atharvaai/RebalancingTimeline';
+import RebalancingTimeline from '../ascpai/RebalancingTimeline';
 
 // ============================================================================
 // MODALS AND DRAWERS
@@ -146,7 +146,7 @@ export default function RightSizingMonitoringDashboard() {
   useEffect(() => {
     if (selectedClusterId === 'all' || !selectedClusterId) return;
     const fetchActions = () => {
-      atharvaaiAPI.getRebalancingStatus(selectedClusterId, 5)
+      ascpaiAPI.getRebalancingStatus(selectedClusterId, 5)
         .then(res => setRebalancingActions(Array.isArray(res.data) ? res.data : []))
         .catch(() => { });
     };

@@ -265,7 +265,7 @@ The auto-rebalancer runs every 15 seconds as a Celery task (`workers.auto_rebala
 | | `i-0e358b86f5ad2a176` t3.medium ap-south-1b — **RUNNING** (last node) |
 | Last action | 511: `t3.medium:ap-south-1a → t4g.small:ap-south-1c` — **COMPLETED** |
 | Next action | Blocked — only 1 node left. New fix (AR-7) will FAIL cleanly instead of terminating. |
-| ML suggestion | t4g.small ap-south-1c (spot) — available in AtharvaAI pool rankings |
+| ML suggestion | t4g.small ap-south-1c (spot) — available in ASCP.AI pool rankings |
 
 **To complete migration of second node:** Install Karpenter on spot-demo-1, or manually launch a t4g.small spot instance in ap-south-1c and tag it with the cluster. Once 2 nodes are visible (1 spot + 1 OD), the rebalancer will drain and terminate the OD node.
 

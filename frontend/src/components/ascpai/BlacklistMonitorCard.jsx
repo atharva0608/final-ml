@@ -1,23 +1,24 @@
-import React, { useState, useEffect } from 'react';
-import { atharvaAiAPI } from '../../services/api';
+import React, { useState, useCallback } from 'react';
+import { ascpaiAPI } from '../../services/api';
+import { useAdaptivePolling } from '../../hooks/useAdaptivePolling';
 
 const BlacklistMonitorCard = () => {
     const [status, setStatus] = useState(null);
     const [loading, setLoading] = useState(true);
 
-    useEffect(() => {
-        const fetchStatus = async () => {
-            try {
-                const res = await atharvaAiAPI.getBlacklistStatus();
-                setStatus(res.data);
-            } catch (err) {
-                console.error("Failed to fetch blacklist status", err);
-            } finally {
-                setLoading(false);
-            }
-        };
-        fetchStatus();
+    const fetchStatus = useCallback(async () => {
+        try {
+            const res = await ascpaiAPI.getBlacklistStatus();
+            setStatus(res.data);
+        } catch (err) {
+            console.error("Failed to fetch blacklist status", err);
+        } finally {
+            setLoading(false);
+        }
     }, []);
+
+    // Poll every 2 min — blacklist changes matter quickly
+    useAdaptivePolling({ fetchFn: fetchStatus, isActive: false, slowMs: 120_000 });
 
     if (loading) return null;
 

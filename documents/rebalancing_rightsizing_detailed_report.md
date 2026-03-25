@@ -122,7 +122,7 @@ If no pool qualifies → `target_pool = None` → skip this instance, try next c
 ### Manual Approval Gate
 If `manual_approval_required = True` on the cluster settings:
 - Action is created with `status = 'pending_approval'` instead of `'in_progress'`
-- Requires explicit approval via `POST /api/v1/atharvaai/rebalancing-actions/{id}/approve`
+- Requires explicit approval via `POST /api/v1/ascpai/rebalancing-actions/{id}/approve`
 
 ### Action Creation Limit
 - **One action per cluster per cycle** (`break` at L3277)

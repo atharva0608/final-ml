@@ -198,9 +198,10 @@ const OverviewTab = ({
     const calcSavings = (nodeRecommendations || [])
         .filter(r => r.lifecycle !== 'spot' && r.lifecycle !== 'SPOT')
         .reduce((s, r) => {
+            // Skip nodes with no real spot price — never fabricate savings with a multiplier
+            if (!(r.target_spot_price > 0)) return s;
             const od = r.current_cost || 0;
-            const sp = r.target_spot_price > 0 ? r.target_spot_price : od * 0.35;
-            return s + Math.max(0, od - sp) * 730;
+            return s + Math.max(0, od - r.target_spot_price) * 730;
         }, 0);
     const totalCost       = metrics?.monthly_cost || cluster?.monthly_cost || calcMonthly || 0;
     const realizedSavings = metrics?.realized_savings || 0;
@@ -270,7 +271,7 @@ const OverviewTab = ({
         (nodeRecommendations || []).forEach(r => {
             const t = r.target_type || r.current_type;
             if (!t) return;
-            const price = r.target_spot_price > 0 ? r.target_spot_price : (r.current_cost || 0) * 0.35;
+            const price = r.target_spot_price > 0 ? r.target_spot_price : null;
             const isSpot = r.target_type !== r.current_type || r.lifecycle === 'spot';
             if (!byType[t]) byType[t] = { qty: 0, hourly: price, isSpot };
             byType[t].qty++;
@@ -295,7 +296,7 @@ const OverviewTab = ({
     const trendData = useMemo(() => {
         const pts = costTrends?.data_points || costTrends?.points || [];
         if (!pts.length) return [];
-        const frac = totalCost > 0 && addlPotential > 0 ? addlPotential / totalCost : 0.35;
+        const frac = totalCost > 0 && addlPotential > 0 ? addlPotential / totalCost : 0;
         const now = Date.now();
         const cutoff = trendWindow === '24h' ? now - 86_400_000 : now - 7 * 86_400_000;
         return pts
@@ -314,7 +315,13 @@ const OverviewTab = ({
     /* ── Spot analysis rows ────────────────────────────────────────────── */
     const spotAnalysisRows = useMemo(() =>
         (nodeRecommendations || []).map(r => ({
-            workload: (r.node_name || r.instance_id || '').replace(/\..*$/, '').slice(0, 32),
+            workload: (() => {
+                const raw = (r.node_name || '').replace(/\..*$/, '');
+                // K8s assigns IP-based hostnames like "ip-192-168-x-x"; show instance_type instead
+                return (raw && !raw.startsWith('ip-'))
+                    ? raw.slice(0, 32)
+                    : (r.instance_type || r.instance_id || raw).slice(0, 32);
+            })(),
             replicas: 1,
             currentType: (r.lifecycle === 'spot' || r.lifecycle === 'SPOT') ? 'SPOT' : 'ON DEMAND',
             recommendation: (r.lifecycle === 'spot' || r.lifecycle === 'SPOT') ? 'STABLE' : 'SPOT',

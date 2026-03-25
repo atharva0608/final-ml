@@ -813,7 +813,7 @@ def update_cluster_optimization_settings(
             _redis_div.delete(f"spot:karpenter:nodepool_updated:{cluster_id}")
             _cluster_region = cluster.region or "ap-south-1"
             _redis_div.delete(f"global_pool_rankings:{_cluster_region}")
-            _redis_div.delete("atharvaai:pool_rankings")
+            _redis_div.delete("ascpai:pool_rankings")
         except Exception:
             pass  # Non-fatal — rebalancer will pick up diversity on next natural cycle
 

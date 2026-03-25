@@ -307,14 +307,14 @@ async def get_rightsizing_recommendations(
 @router.get(
     "/rightsizing/enriched",
     summary="Get enriched right-sizing recommendations",
-    description="Right-sizing recommendations validated against Node Templates and AtharvaAI blacklist"
+    description="Right-sizing recommendations validated against Node Templates and ASCP.AI blacklist"
 )
 async def get_enriched_rightsizing_recommendations(
     cluster_id: str = Query(..., description="Cluster ID"),
     analysis_window_hours: int = Query(168, ge=24, le=720),
     min_data_points: int = Query(100, ge=10),
     template_id: Optional[str] = Query(None, description="Node template ID to validate against"),
-    check_blacklist: bool = Query(True, description="Check AtharvaAI blacklist"),
+    check_blacklist: bool = Query(True, description="Check ASCP.AI blacklist"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -322,8 +322,8 @@ async def get_enriched_rightsizing_recommendations(
     Enriched right-sizing recommendations that validate each recommendation
     against:
     1. Node Template constraints (if template_id provided)
-    2. AtharvaAI blacklist (if check_blacklist=True)
-    3. AtharvaAI ML score (if available in Redis cache)
+    2. ASCP.AI blacklist (if check_blacklist=True)
+    3. ASCP.AI ML score (if available in Redis cache)
     """
     try:
         # Step A: Get base recommendations

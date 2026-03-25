@@ -219,13 +219,13 @@ This adds real-time per-node alternative pool ranking, coverage classification, 
   - Writes ClusterCoverageReport JSON to Redis `cluster_coverage:{cluster_id}` TTL=300s
 - Added call to `_compute_cluster_coverage()` after each cluster's reconciliation loop
 
-### 4. `backend/api/atharvaai_routes.py`
+### 4. `backend/api/ascpai_routes.py`
 - Added `import json as _json`
 - Added `GET /clusters/{cluster_id}/coverage` — serves Redis-cached ClusterCoverageReport; computes on-demand on miss
 - Added `GET /clusters/{cluster_id}/nodes/{node_id}/alternatives` — resolves node, calls `de.rank_for_node()`, returns paginated alternatives enriched with `rank` and `saving_pct`
 
 ### 5. `frontend/src/services/api.js`
-- Added to `atharvaaiAPI`:
+- Added to `ascpaiAPI`:
   - `getClusterCoverage(clusterId)`
   - `getNodeAlternatives(clusterId, nodeId, page, pageSize)`
 
@@ -240,7 +240,7 @@ This adds real-time per-node alternative pool ranking, coverage classification, 
   - `primary_node_type`, `primary_az`, `baseline_monthly_cost`
   - `baseline_spot_count`, `baseline_od_count`
 
-### 7. `frontend/src/components/atharvaai/PoolRankings.jsx`
+### 7. `frontend/src/components/ascpai/PoolRankings.jsx`
 - Added state: `coverageData`, `coverageLoading`, `selectedNodeId`, `nodeAlternatives`, `nodeAltLoading`, `nodeAltPage`
 - Added coverage fetch in `loadData()` (non-blocking, auto-selects first node)
 - Added `useEffect` hook to fetch node alternatives when `selectedNodeId` changes
@@ -263,10 +263,10 @@ This adds real-time per-node alternative pool ranking, coverage classification, 
 | `backend/services/workload_inspector.py` | Added `build_node_profile()`, `get_all_node_profiles()`, `_parse_cpu()`, `_parse_memory_gb()` |
 | `backend/core/decision_engine.py` | Added per-node resource profile gates in `rank_for_node()` |
 | `backend/workers/tasks/reconciliation_worker.py` | Added `_compute_cluster_coverage()` + coverage call per cluster |
-| `backend/api/atharvaai_routes.py` | Added `/coverage` and `/nodes/{id}/alternatives` endpoints |
+| `backend/api/ascpai_routes.py` | Added `/coverage` and `/nodes/{id}/alternatives` endpoints |
 | `frontend/src/services/api.js` | Added `getClusterCoverage`, `getNodeAlternatives` |
 | `backend/models/cluster.py` | Added `NodeAlternativeCache`, `ClusterBaseline` models |
-| `frontend/src/components/atharvaai/PoolRankings.jsx` | Rebuilt Cluster Impact View + Node-Specific View |
+| `frontend/src/components/ascpai/PoolRankings.jsx` | Rebuilt Cluster Impact View + Node-Specific View |
 | `migrations/versions/20260320_add_node_alternative_cache_and_cluster_baselines.py` | New migration for new tables |
 
 ---
@@ -333,14 +333,14 @@ docker compose exec backend alembic upgrade head
 ### Task 3.2 — Remove Pool Cap (decision_engine.py)
 - Removed `[:10]` from `_relax_with_tier_expansion()` — no artificial limit
 
-### Task 4.1 — Market View API (atharvaai_routes.py)
-- `GET /api/v1/atharvaai/clusters/{cluster_id}/market-view?page=1&page_size=20&sort_by=risk_tier`
+### Task 4.1 — Market View API (ascpai_routes.py)
+- `GET /api/v1/ascpai/clusters/{cluster_id}/market-view?page=1&page_size=20&sort_by=risk_tier`
 
-### Task 4.3 — Pool Audit API (atharvaai_routes.py)
-- `GET /api/v1/atharvaai/clusters/{cluster_id}/nodes/{node_id}/pool-audit`
+### Task 4.3 — Pool Audit API (ascpai_routes.py)
+- `GET /api/v1/ascpai/clusters/{cluster_id}/nodes/{node_id}/pool-audit`
 
 ### Task 4.4 — Frontend Funnel Visualization (PoolRankings.jsx + api.js)
-- `getMarketView()` + `getPoolAudit()` added to `atharvaaiAPI`
+- `getMarketView()` + `getPoolAudit()` added to `ascpaiAPI`
 - Pool Eligibility Funnel panel added to Cluster Impact View (raw → rejections → eligible)
 
 ### Bug Fix — reconciliation_worker.py
@@ -357,9 +357,9 @@ docker compose exec backend alembic upgrade head
 | `backend/core/decision_engine.py` | Remove `[:10]` + rejection audit |
 | `backend/scrapers/spot_advisor_scraper.py` | Per-region timestamp |
 | `backend/services/pool_ranking_service.py` | `estimate_az_interruption()` + `record_interruption_event()` |
-| `backend/api/atharvaai_routes.py` | `/market-view` + `/pool-audit` endpoints |
+| `backend/api/ascpai_routes.py` | `/market-view` + `/pool-audit` endpoints |
 | `frontend/src/services/api.js` | `getMarketView()` + `getPoolAudit()` |
-| `frontend/src/components/atharvaai/PoolRankings.jsx` | Funnel panel + state |
+| `frontend/src/components/ascpai/PoolRankings.jsx` | Funnel panel + state |
 | `backend/workers/tasks/reconciliation_worker.py` | Fix import + account_id field |
 
 ## Docker Rebuild
@@ -402,7 +402,7 @@ All containers rebuilt and healthy ✅
 - New helper `def key_market_view_cache(region): return f"market_view_cache:{region}"`
 - `key_cache_builder_lock` updated to use new key prefix
 
-**3. `atharvaai_routes.py` — Fix market-view endpoint**
+**3. `ascpai_routes.py` — Fix market-view endpoint**
 - Reads `market_view_cache:{region}` first, falls back to `global_pool_rankings:{region}`
 - Handles both old list format and new dict format (graceful normalization)
 - Normalizes missing fields: `vcpu`, `memory_gb`, `architecture`, `savings_pct`, `ml_score`, `spot_advisor_rank`, `is_flagged`, `blacklisted`, `price_shock`
@@ -437,9 +437,9 @@ All containers rebuilt and healthy ✅
 |------|--------|
 | `backend/workers/tasks/cache_builder.py` | spot_advisor fallback, `market_view_cache` key, `_derive_specs_from_type()`, ml_score/savings fields |
 | `backend/core/redis_client.py` | Add `key_market_view_cache()`, update lock key |
-| `backend/api/atharvaai_routes.py` | Read `market_view_cache` first, handle list format, normalize fields |
+| `backend/api/ascpai_routes.py` | Read `market_view_cache` first, handle list format, normalize fields |
 | `backend/workers/app.py` | Beat schedule: ap-south-1 + us-east-1 |
-| `frontend/src/components/atharvaai/PoolRankings.jsx` | `marketViewPools` state, `getMarketView()` fetch, pool count badge |
+| `frontend/src/components/ascpai/PoolRankings.jsx` | `marketViewPools` state, `getMarketView()` fetch, pool count badge |
 
 ---
 
@@ -547,7 +547,7 @@ Migration chain: `20260320_node_coverage_tables` → `20260320_savings_columns`
 
 ### Task 5.1 — Market View API Enhancement (FIXED)
 
-**File:** `backend/api/atharvaai_routes.py`
+**File:** `backend/api/ascpai_routes.py`
 
 Enhanced `GET /clusters/{id}/market-view`:
 - Added `profile`, `weights`, `baseline` to response
@@ -558,7 +558,7 @@ Enhanced `GET /clusters/{id}/market-view`:
 
 ### Task 5.2 — Savings API (NEW)
 
-**File:** `backend/api/atharvaai_routes.py`
+**File:** `backend/api/ascpai_routes.py`
 
 Added `GET /clusters/{id}/savings`:
 - Returns baseline vs current comparison
@@ -568,7 +568,7 @@ Added `GET /clusters/{id}/savings`:
 
 ### Task 5.4 — Frontend Market View Enhancements (FIXED)
 
-**File:** `frontend/src/components/atharvaai/PoolRankings.jsx`
+**File:** `frontend/src/components/ascpai/PoolRankings.jsx`
 
 - Added state: `marketViewTotalPages`, `marketViewTotalEvaluated`, `marketViewGatesEliminated`, `marketViewSortBy`, `marketViewSortOrder`, `marketViewIsLive`, `marketViewPageSize`
 - Added `fetchMarketViewPage(page, sortBy, sortOrder)` function for page navigation
@@ -599,8 +599,8 @@ Added `GET /clusters/{id}/savings`:
 | `backend/models/rebalancing_action.py` | 11 new savings columns (Task 4.2) |
 | `migrations/versions/20260320_add_savings_columns_to_rebalancing_actions.py` | Migration for Task 4.2 columns |
 | `backend/workers/tasks/savings_calculator.py` | ClusterBaseline anchor, source_od_price_hr, actual savings (Task 4.3) |
-| `backend/api/atharvaai_routes.py` | Enhanced market-view + new savings endpoint (Tasks 5.1, 5.2) |
-| `frontend/src/components/atharvaai/PoolRankings.jsx` | Pagination, two savings columns, ML tier badge, live/stale (Task 5.4) |
+| `backend/api/ascpai_routes.py` | Enhanced market-view + new savings endpoint (Tasks 5.1, 5.2) |
+| `frontend/src/components/ascpai/PoolRankings.jsx` | Pagination, two savings columns, ML tier badge, live/stale (Task 5.4) |
 | `frontend/src/services/api.js` | New `getClusterSavings()`, updated sort default (Task 5.4) |
 
 ### Deferred (not in scope this session)
@@ -636,8 +636,8 @@ Dry run validates real-time AWS capacity before any pool is used in the executio
 | `run_dry_run_checks` Celery task | ❌ Missing | ADDED |
 | `decision_engine.py` — capacity boost in scoring | ❌ Missing | ADDED |
 | `auto_rebalancer.py` — dry run pre-launch check | ❌ Missing | ADDED |
-| `atharvaai_routes.py` — market-view capacity fields | ❌ Missing | ADDED |
-| `atharvaai_routes.py` — POST /dry-run-check endpoint | ❌ Missing | ADDED |
+| `ascpai_routes.py` — market-view capacity fields | ❌ Missing | ADDED |
+| `ascpai_routes.py` — POST /dry-run-check endpoint | ❌ Missing | ADDED |
 | `PoolRankings.jsx` — capacity status indicator per row | ❌ Missing | ADDED |
 | `PoolRankings.jsx` — "Show unavailable pools" toggle | ❌ Missing | ADDED |
 | `PoolRankings.jsx` — TTL countdown for unavailable pools | ❌ Missing | ADDED |
@@ -726,7 +726,7 @@ Entire block wrapped in `try/except Exception` — on error, logs warning and pr
 
 ---
 
-### 4. `backend/api/atharvaai_routes.py` — Market View capacity enrichment
+### 4. `backend/api/ascpai_routes.py` — Market View capacity enrichment
 
 **Updated `get_market_view()` signature:**
 - Added `include_unavailable: bool = Query(False, ...)` parameter
@@ -759,7 +759,7 @@ p['final_score'] = round(raw * soft_penalty * capacity_boost, 4)
 
 ---
 
-### 5. `backend/api/atharvaai_routes.py` — POST /dry-run-check endpoint
+### 5. `backend/api/ascpai_routes.py` — POST /dry-run-check endpoint
 
 ```python
 @router.post("/clusters/{cluster_id}/dry-run-check")
@@ -783,7 +783,7 @@ def trigger_dry_run_check(cluster_id: str, body: dict):
 
 ---
 
-### 7. `frontend/src/components/atharvaai/PoolRankings.jsx`
+### 7. `frontend/src/components/ascpai/PoolRankings.jsx`
 
 **New state variables:**
 - `showUnavailablePools` — toggle state for "Show unavailable pools" checkbox
@@ -798,7 +798,7 @@ def trigger_dry_run_check(cluster_id: str, body: dict):
 - Passes `includeUnavailable` param to `getMarketView()`
 - Stores `capacity_summary` from response
 - Seeds `ttlCounters` for unavailable pools from `dry_run_ttl_remaining`
-- Triggers `atharvaaiAPI.triggerDryRunCheck(clusterId, top20UnverifiedKeys)` on load
+- Triggers `ascpaiAPI.triggerDryRunCheck(clusterId, top20UnverifiedKeys)` on load
 
 **Stats bar additions:**
 - Shows "N verified / N unverified / N unavailable" counts from `capacitySummary`
@@ -824,9 +824,9 @@ def trigger_dry_run_check(cluster_id: str, body: dict):
 | `backend/workers/tasks/dry_run_refresher.py` | Added `run_dry_run_checks` task + rate limit to refresher |
 | `backend/core/decision_engine.py` | Capacity boost in `score_and_rank_pools()` |
 | `backend/workers/tasks/auto_rebalancer.py` | Pre-launch dry run filter block |
-| `backend/api/atharvaai_routes.py` | Market view capacity enrichment + POST /dry-run-check endpoint |
+| `backend/api/ascpai_routes.py` | Market view capacity enrichment + POST /dry-run-check endpoint |
 | `frontend/src/services/api.js` | `triggerDryRunCheck()` + `includeUnavailable` param |
-| `frontend/src/components/atharvaai/PoolRankings.jsx` | Capacity indicator, toggle, TTL countdown, 5s polling |
+| `frontend/src/components/ascpai/PoolRankings.jsx` | Capacity indicator, toggle, TTL countdown, 5s polling |
 
 ---
 
@@ -939,7 +939,7 @@ Implemented the 6-pillar architectural overhaul from `changes.md`. Validation pa
   - Check before execution: if key exists → skip
   - Set after successful execution with 1h TTL
 - Added `/api/v2` route prefix in `api_gateway.py`:
-  - `atharvaai_router` mounted at both `/api/v1` and `/api/v2`
+  - `ascpai_router` mounted at both `/api/v1` and `/api/v2`
   - `karpenter_router` mounted at both `/api/v1` and `/api/v2`
   - Frontend can migrate to v2 independently of backend deployments
 
@@ -1043,7 +1043,7 @@ Same fix applied to `_relax_with_trade_off()`.
 
 ### Fix 4 — Enriched `node_info` in API Endpoint
 
-**File:** `backend/api/atharvaai_routes.py` — `get_node_alternatives()`
+**File:** `backend/api/ascpai_routes.py` — `get_node_alternatives()`
 
 - Was sending empty `resource_profile` → no vcpu/memory floor gates applied
 - Added `_cb_lookup_specs(inst.instance_type)` to get real vcpu/memory/arch
@@ -1057,7 +1057,7 @@ Same fix applied to `_relax_with_trade_off()`.
 | File | Change |
 |------|--------|
 | `backend/core/decision_engine.py` | (1) Read `market_view_cache` first (fallback to `global_pool_rankings`); (2) Fix zero-price double gate; (3) Added GATE-by-GATE INFO logging |
-| `backend/api/atharvaai_routes.py` | Enriched `node_info` with real vcpu/memory/arch + Redis price lookup |
+| `backend/api/ascpai_routes.py` | Enriched `node_info` with real vcpu/memory/arch + Redis price lookup |
 
 ---
 
@@ -1073,5 +1073,5 @@ docker compose up -d backend celery-worker celery-beat
 ## How to Verify After Rebuild
 
 1. Check logs for `[DE.rank_for_node] GATE3_PASS: Loaded N pools from market_view_cache:ap-south-1` — N should be ~500
-2. Call `GET /api/v1/atharvaai/clusters/{id}/nodes/{node_id}/alternatives` — `total_alternatives` should now be > 0
+2. Call `GET /api/v1/ascpai/clusters/{id}/nodes/{node_id}/alternatives` — `total_alternatives` should now be > 0
 3. Each GATE log shows pool counts: e.g. `GATE5: After blacklist: 500/500`, `GATE6: double gate: 420/500 passed`

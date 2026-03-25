@@ -4,7 +4,7 @@
  */
 import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { clusterAPI, metricsAPI, policyAPI, hibernationAPI, decisionEngineAPI, karpenterAPI, nativeSpotAPI, atharvaaiAPI, optimizationAPI } from '../../services/api';
+import { clusterAPI, metricsAPI, policyAPI, hibernationAPI, decisionEngineAPI, karpenterAPI, nativeSpotAPI, ascpaiAPI, optimizationAPI } from '../../services/api';
 import { Card, Button, Badge } from '../shared';
 import { FiX, FiRefreshCw, FiSettings, FiClock, FiCpu, FiHardDrive, FiDollarSign, FiActivity, FiSliders } from 'react-icons/fi';
 import toast from 'react-hot-toast';
@@ -125,8 +125,8 @@ const ClusterDetails = ({ clusterId, onClose }) => {
       try {
         const [nodesRes, rebalRes, recRes] = await Promise.allSettled([
           clusterAPI.getNodesDetailed(clusterId),
-          atharvaaiAPI.getRebalancingStatus(clusterId),
-          atharvaaiAPI.getNodeRecommendations(clusterId),
+          ascpaiAPI.getRebalancingStatus(clusterId),
+          ascpaiAPI.getNodeRecommendations(clusterId),
         ]);
         if (nodesRes.status === 'fulfilled') setNodesDetailed(nodesRes.value.data);
         if (rebalRes.status === 'fulfilled')
@@ -155,8 +155,8 @@ const ClusterDetails = ({ clusterId, onClose }) => {
         clusterAPI.getWorkloadType(clusterId),
         clusterAPI.getNodesDetailed(clusterId),
         clusterAPI.getOptimizationSettings(clusterId),
-        atharvaaiAPI.getNodeRecommendations(clusterId),
-        atharvaaiAPI.getRebalancingStatus(clusterId),
+        ascpaiAPI.getNodeRecommendations(clusterId),
+        ascpaiAPI.getRebalancingStatus(clusterId),
         optimizationAPI.getRightsizing(clusterId),
         metricsAPI.getCostTimeSeries({ cluster_id: clusterId }),
       ]);
@@ -699,6 +699,48 @@ const ClusterDetails = ({ clusterId, onClose }) => {
 
           {activeTab === 'Node Template' && (
             <NodeTemplateTab clusterId={clusterId} />
+          )}
+
+          {activeTab === 'Activity Log' && (
+            <Card className="p-4">
+              <h3 className="text-sm font-semibold text-gray-700 mb-3">Recent Rebalancing Actions</h3>
+              {rebalancingActions.length === 0 ? (
+                <p className="text-sm text-gray-400 text-center py-8">No rebalancing activity recorded for this cluster.</p>
+              ) : (
+                <div className="space-y-2">
+                  {rebalancingActions.map((action, idx) => (
+                    <div key={action.id || idx} className="flex items-start gap-3 p-3 rounded-lg bg-gray-50 border border-gray-100">
+                      <span className={`mt-0.5 w-2 h-2 rounded-full flex-shrink-0 ${
+                        action.status === 'completed' ? 'bg-green-500' :
+                        action.status === 'failed' ? 'bg-red-500' :
+                        action.status === 'in_progress' ? 'bg-blue-500' :
+                        'bg-gray-400'
+                      }`} />
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-xs font-medium text-gray-800 truncate">
+                            {action.source_instance_type || action.source_node_name || 'Node'} →{' '}
+                            {action.target_instance_type || 'spot'}
+                          </span>
+                          <span className="text-xs text-gray-400 whitespace-nowrap">
+                            {action.created_at ? formatDateTime(action.created_at) : ''}
+                          </span>
+                        </div>
+                        <div className="text-xs text-gray-500 mt-0.5">
+                          Status: <span className="capitalize">{action.status}</span>
+                          {action.savings_pct != null && (
+                            <span className="ml-2 text-green-600">· {(action.savings_pct * 100).toFixed(0)}% savings</span>
+                          )}
+                          {action.failure_reason && (
+                            <span className="ml-2 text-red-500">· {action.failure_reason}</span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </Card>
           )}
         </div>
 

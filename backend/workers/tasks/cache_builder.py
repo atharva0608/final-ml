@@ -122,13 +122,45 @@ _FALLBACK_SPECS = {
     "i3.large":    (2,  15.25,"amd64"), "i3.xlarge":   (4,  30.5, "amd64"),
     "i3.2xlarge":  (8,  61,   "amd64"),
     "i4i.large":   (2,  16,   "amd64"), "i4i.xlarge":  (4,  32,   "amd64"),
+    # Graviton 4 — compute optimized (c8g, c8gn)
+    "c8g.medium":  (1,  2,    "arm64"), "c8g.large":   (2,  4,    "arm64"),
+    "c8g.xlarge":  (4,  8,    "arm64"), "c8g.2xlarge": (8,  16,   "arm64"),
+    "c8g.4xlarge": (16, 32,   "arm64"), "c8g.8xlarge": (32, 64,   "arm64"),
+    "c8gn.medium": (1,  2,    "arm64"), "c8gn.large":  (2,  4,    "arm64"),
+    "c8gn.xlarge": (4,  8,    "arm64"), "c8gn.2xlarge":(8,  16,   "arm64"),
+    "c8gn.4xlarge":(16, 32,   "arm64"),
+    # Graviton 4 — general purpose (m8g)
+    "m8g.medium":  (1,  4,    "arm64"), "m8g.large":   (2,  8,    "arm64"),
+    "m8g.xlarge":  (4,  16,   "arm64"), "m8g.2xlarge": (8,  32,   "arm64"),
+    "m8g.4xlarge": (16, 64,   "arm64"), "m8g.8xlarge": (32, 128,  "arm64"),
+    # Graviton 4 — memory optimized (r8g)
+    "r8g.medium":  (1,  8,    "arm64"), "r8g.large":   (2,  16,   "arm64"),
+    "r8g.xlarge":  (4,  32,   "arm64"), "r8g.2xlarge": (8,  64,   "arm64"),
+    "r8g.4xlarge": (16, 128,  "arm64"),
+    # Graviton 3 — network/storage variants (c6gn, c6gd, m6gd, r6gd)
+    "c6gn.medium": (1,  2,    "arm64"), "c6gn.large":  (2,  4,    "arm64"),
+    "c6gn.xlarge": (4,  8,    "arm64"), "c6gn.2xlarge":(8,  16,   "arm64"),
+    "c6gd.medium": (1,  2,    "arm64"), "c6gd.large":  (2,  4,    "arm64"),
+    "c6gd.xlarge": (4,  8,    "arm64"), "c6gd.2xlarge":(8,  16,   "arm64"),
+    "m6gd.large":  (2,  8,    "arm64"), "m6gd.xlarge": (4,  16,   "arm64"),
+    "m6gd.2xlarge":(8,  32,   "arm64"),
+    "m6gn.large":  (2,  8,    "arm64"), "m6gn.xlarge": (4,  16,   "arm64"),
+    "r6gd.large":  (2,  16,   "arm64"), "r6gd.xlarge": (4,  32,   "arm64"),
+    # a1 (original Graviton)
+    "a1.medium":   (1,  2,    "arm64"), "a1.large":    (2,  4,    "arm64"),
+    "a1.xlarge":   (4,  8,    "arm64"), "a1.2xlarge":  (8,  16,   "arm64"),
 }
 
 
 def _lookup_od_price(r, region: str, instance_type: str) -> float:
-    """Get OD price from Redis. Returns 0.0 if not found."""
+    """Get OD price from Redis. Returns 0.0 if not found.
+    Tries both key formats: ondemand_price: (pricing_collector) and od_price: (aws_pricing_service)."""
     try:
         raw = r.get(f"ondemand_price:{region}:{instance_type}")
+        if raw:
+            return float(raw)
+        # Fallback: legacy key format written by aws_pricing_service.get_ondemand_price()
+        raw = r.get(f"od_price:{region}:{instance_type}")
         if raw:
             return float(raw)
     except Exception:
@@ -180,9 +212,12 @@ def _derive_specs_from_type(instance_type: str) -> tuple:
     if vcpu == 0:
         return (0, 0.0, 'amd64')
 
-    # Architecture
-    arm_families = {'t4g', 'm6g', 'm7g', 'c6g', 'c7g', 'r6g', 'r7g', 'x2gd', 'im4gn', 'is4gen'}
-    arch = 'arm64' if any(family.startswith(af) for af in arm_families) else 'amd64'
+    # Architecture: Graviton instances have "g" after a generation digit (e.g. c6g, m8g, c8gn, r6gd).
+    # This regex matches digit-then-g which is the Graviton marker in AWS naming.
+    # GPU instances (g4dn, g5, g6) start WITH "g" and don't match \dg.
+    import re as _re
+    _is_graviton = bool(_re.search(r'\dg', family)) or family == 'a1'
+    arch = 'arm64' if _is_graviton else 'amd64'
 
     # Memory-to-vCPU ratio by family type
     # general purpose: ~4 GB/vCPU at large (8GB / 2vCPU)
@@ -196,7 +231,8 @@ def _derive_specs_from_type(instance_type: str) -> tuple:
         _t_mem = {'nano': 0.5, 'micro': 1, 'small': 2, 'medium': 4, 'large': 8,
                   'xlarge': 16, '2xlarge': 32}
         mem = _t_mem.get(size, vcpu * 4.0)
-    elif family_prefix in ('c5', 'c5a', 'c5n', 'c6i', 'c6a', 'c6g', 'c7i', 'c7g', 'c7a',
+    elif family_prefix in ('c5', 'c5a', 'c5n', 'c6i', 'c6a', 'c6g', 'c6gn', 'c6gd',
+                           'c7i', 'c7g', 'c7a', 'c8g', 'c8gn',
                            'c4', 'c3', 'cc2'):
         mem = vcpu * 2.0  # compute optimized ~2GB/vCPU
     elif family_prefix in ('r5', 'r5a', 'r5n', 'r6i', 'r6a', 'r6g', 'r7i', 'r7g', 'r7a',
@@ -303,7 +339,19 @@ def build_global_pool_cache(region: str, db=None):
                         od_est = _lookup_od_price(r, region, itype) or _estimate_od_price(itype)
                         if od_est <= 0:
                             continue
-                        spot_est = od_est * 0.30  # conservative 70% discount estimate
+                        # Use actual savings_percentage from spot_advisor data if available
+                        # (spot_advisor:{region}:{itype}:Linux key has "savings_percentage" field)
+                        savings_frac = 0.70  # default: conservative 70% savings estimate
+                        try:
+                            adv_raw = r.get(f"spot_advisor:{region}:{itype}:Linux")
+                            if adv_raw:
+                                adv_json = json.loads(adv_raw)
+                                sa_savings_pct = adv_json.get("savings_percentage", 0)
+                                if sa_savings_pct and sa_savings_pct > 0:
+                                    savings_frac = sa_savings_pct / 100.0
+                        except Exception:
+                            pass
+                        spot_est = od_est * (1.0 - savings_frac)
                         for az in azs:
                             raw_pools.append({
                                 'instance_type': itype,
@@ -359,9 +407,10 @@ def build_global_pool_cache(region: str, db=None):
             interruption_rate = _lookup_interruption_rate(r, region, itype)
             risk_tier = assign_risk_tier(interruption_rate)
 
-            # Simple ML score proxy: savings_pct scaled by safety (inverse of interruption)
+            # ML score — computed after pool list is built via ONNX (see below).
+            # Placeholder so the pool dict is always complete.
             _safety = max(0.0, 1.0 - interruption_rate / 100.0)
-            ml_score = round((savings_pct / 100.0) * _safety, 4)
+            ml_score = round((savings_pct / 100.0) * _safety, 4)  # overwritten below if ONNX available
 
             pools.append({
                 'instance_type': itype,
@@ -389,6 +438,54 @@ def build_global_pool_cache(region: str, db=None):
                 f"(raw={raw_count}, no_od_price={no_od_price}, negative_savings={negative_savings})"
             )
             return
+
+        # ── ONNX ML scoring pass ──────────────────────────────────────────────
+        # Replace the simple formula ml_score with real ONNX scores when db is available.
+        # Without this, all pools use savings*safety which ignores historical volatility.
+        if db is not None:
+            try:
+                from backend.services.pool_ranking_service import (
+                    PoolRankingService, InstancePool
+                )
+                _prs = PoolRankingService(db, r)
+                if _prs.classifier_session and _prs.regressor_session:
+                    _instance_pools = [
+                        InstancePool(
+                            instance_type=p['instance_type'],
+                            az=p['az'],
+                            spot_price=p['spot_price'],
+                            ondemand_price=p['ondemand_price'],
+                            vcpu=p['vcpu'],
+                            memory_gb=p['memory_gb'],
+                            architecture=p['architecture'],
+                            spot_advisor_rank=int(p['risk_tier']),
+                        )
+                        for p in pools
+                    ]
+                    _scored = _prs._step7_ml_scoring(_instance_pools, region)
+                    # Build lookup: (instance_type, az) → (ml_score, predicted_savings, risk_prob)
+                    _score_map = {
+                        (sp.pool.instance_type, sp.pool.az): sp
+                        for sp in _scored
+                    }
+                    # Re-map ml_score and mark pools eliminated by risk gate
+                    onnx_pools = []
+                    for p in pools:
+                        sp = _score_map.get((p['instance_type'], p['az']))
+                        if sp is None:
+                            continue  # Eliminated by ONNX risk gate — skip
+                        p['ml_score'] = round(sp.ml_score, 6)
+                        p['predicted_savings'] = round(sp.predicted_savings, 4)
+                        p['risk_probability'] = round(sp.risk_probability, 4)
+                        onnx_pools.append(p)
+                    if onnx_pools:
+                        pools = onnx_pools
+                        logger.info(
+                            f"[cache_builder] ONNX scoring applied for {region}: "
+                            f"{len(pools)} pools (eliminated {raw_count - len(pools)} by risk gate)"
+                        )
+            except Exception as _onnx_err:
+                logger.warning(f"[cache_builder] ONNX scoring skipped: {_onnx_err}")
 
         # Sort by risk tier first, then by price ascending within tier
         pools.sort(key=lambda p: (p['risk_tier'], p['spot_price']))
@@ -424,7 +521,17 @@ try:
 
     @app.task(name='build_global_pool_cache', bind=False)
     def build_global_pool_cache_task(region: str = 'us-east-1', db=None):
-        """Celery task wrapper for build_global_pool_cache."""
+        """Celery task wrapper for build_global_pool_cache — creates a DB session for ONNX scoring."""
+        if db is None:
+            try:
+                from backend.models.base import SessionLocal
+                _db = SessionLocal()
+                try:
+                    return build_global_pool_cache(region, _db)
+                finally:
+                    _db.close()
+            except Exception:
+                pass
         return build_global_pool_cache(region, db)
 
 except ImportError:

@@ -19,7 +19,6 @@ from backend.api import (
     hibernation_router,
     metrics_router,
     admin_router,
-    lab_router,
     onboarding_router,
     organization_router,
     health_router,
@@ -37,8 +36,8 @@ from backend.api.s3_routes import router as s3_router
 from backend.api.rds_routes import router as rds_router
 from backend.api.transfer_routes import router as transfer_router
 
-# AtharvaAi Pool Selection & Termination Monitoring
-from backend.api.atharvaai_routes import router as atharvaai_router
+# ASCPAi Pool Selection & Termination Monitoring
+from backend.api.ascpai_routes import router as ascpai_router
 
 # Optimizer Coordinator (Decision Engine v3)
 from backend.api.optimizer_coordinator_routes import router as optimizer_coordinator_router
@@ -63,7 +62,6 @@ __all__ = [
     "hibernation_router",
     "metrics_router",
     "admin_router",
-    "lab_router",
     "onboarding_router",
     "organization_router",
     "health_router",
@@ -385,9 +383,6 @@ app.include_router(metrics_router, prefix="/api/v1")
 # Admin routes
 app.include_router(admin_router, prefix="/api/v1")
 
-# Lab routes
-app.include_router(lab_router, prefix="/api/v1")
-
 # Onboarding routes
 # Onboarding routes
 app.include_router(onboarding_router, prefix="/api/v1")
@@ -438,8 +433,8 @@ app.include_router(s3_router, prefix="/api/v1")
 app.include_router(rds_router, prefix="/api/v1")
 app.include_router(transfer_router, prefix="/api/v1")
 
-# AtharvaAi Pool Selection & Termination Monitoring routes
-app.include_router(atharvaai_router, prefix="/api/v1")
+# ASCPAi Pool Selection & Termination Monitoring routes
+app.include_router(ascpai_router, prefix="/api/v1")
 
 # Optimizer Coordinator routes (Decision Engine v3)
 app.include_router(optimizer_coordinator_router, prefix="/api/v1")
@@ -477,6 +472,14 @@ app.include_router(installer_router, prefix="/api")
 # Agent routes (used by Kubernetes agent for registration/heartbeat)
 from backend.api.agent_routes import router as agent_router
 app.include_router(agent_router, prefix="/api/v1")
+
+# ── Pillar 6 — API v2 versioning ──────────────────────────────────────────────
+# /api/v2/* routes serve the same handlers as v1 but frontend can migrate
+# to v2 independently of backend deployments (no coordinated deploy required).
+# Only the routes with significant behavioral fixes are re-exposed at v2.
+app.include_router(ascpai_router, prefix="/api/v2")
+app.include_router(karpenter_router, prefix="/api/v2")
+# ──────────────────────────────────────────────────────────────────────────────
 
 # Websocket endpoint for real-time agent communication
 from fastapi import WebSocket, WebSocketDisconnect

@@ -7,7 +7,7 @@
 │  Cluster Name: spot-demo-1                    [Instant Rebalance]  │
 │  ap-south-1 • AWS                              [Refresh] [✕]       │
 ├─────────────────────────────────────────────────────────────────────┤
-│  [Overview] [AtharvaAI] [Rightsizing] [Node Template] [Activity]   │
+│  [Overview] [ASCP.AI] [Rightsizing] [Node Template] [Activity]   │
 ├─────────────────────────────────────────────────────────────────────┤
 │                                                                      │
 │  ┌─────────────────────────────────────────────────────────────┐  │

@@ -1,7 +1,8 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState, useCallback } from 'react';
 import { Card } from '../shared';
 import { FiGrid, FiInfo, FiAlertCircle } from 'react-icons/fi';
 import api from '../../services/api';
+import { useAdaptivePolling } from '../../hooks/useAdaptivePolling';
 
 const InterruptionHeatmap = () => {
     const [heatmapData, setHeatmapData] = useState([]);
@@ -9,14 +10,9 @@ const InterruptionHeatmap = () => {
     const [selectedFamily, setSelectedFamily] = useState('ALL');
     const [azPressure, setAzPressure] = useState({});
 
-    useEffect(() => {
-        fetchHeatmap();
-        fetchAzPressure();
-    }, []);
-
-    const fetchHeatmap = async () => {
+    const fetchHeatmap = useCallback(async () => {
         try {
-            const response = await api.get('/api/v1/atharvaai/interruption-heatmap?days=30');
+            const response = await api.get('/api/v1/ascpai/interruption-heatmap?days=30');
             setHeatmapData(response.data || []);
         } catch (error) {
             console.error("Failed to fetch heatmap:", error);
@@ -24,17 +20,24 @@ const InterruptionHeatmap = () => {
         } finally {
             setLoading(false);
         }
-    };
+    }, []);
 
-    const fetchAzPressure = async () => {
+    const fetchAzPressure = useCallback(async () => {
         try {
-            const response = await api.get('/api/v1/atharvaai/volatility/status');
+            const response = await api.get('/api/v1/ascpai/volatility/status');
             const status = response.data || {};
             setAzPressure(status.az_pressure || {});
         } catch (error) {
             // AZ pressure data unavailable — don't show badges
         }
-    };
+    }, []);
+
+    const fetchAll = useCallback(async () => {
+        await Promise.all([fetchHeatmap(), fetchAzPressure()]);
+    }, [fetchHeatmap, fetchAzPressure]);
+
+    // Poll every 5 min — heatmap is slow-changing data
+    useAdaptivePolling({ fetchFn: fetchAll, isActive: false, slowMs: 300_000 });
 
     const getAzPressureBadgeColor = (pressure) => {
         if (pressure === undefined || pressure === null) return null;

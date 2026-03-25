@@ -3,7 +3,7 @@
 > Auto-generated deep scan of every file in the project.
 > Last updated: 2026-02-20 (12:20)
 >
-> **Recent Updates**: Right-Sizing consolidated from 12 separate files into single `RightSizingDashboard.jsx` (50KB all-in-one). Hibernation components (29 files) intact. Pages reduced from 9 to 7 (`HibernationDashboard.jsx`, `HibernationPage.jsx` removed — hibernation now accessed via component). Added: `REAL_IMPLEMENTATION_PLAN.md`, `Q&A.md` to documents. `CLAUDE.md` updated with comprehensive project reference. Backend: `REAL_IMPLEMENTATION_PLAN.md` created for AtharvaAI, Hibernation, and Right-Sizing real AWS API integration.
+> **Recent Updates**: Right-Sizing consolidated from 12 separate files into single `RightSizingDashboard.jsx` (50KB all-in-one). Hibernation components (29 files) intact. Pages reduced from 9 to 7 (`HibernationDashboard.jsx`, `HibernationPage.jsx` removed — hibernation now accessed via component). Added: `REAL_IMPLEMENTATION_PLAN.md`, `Q&A.md` to documents. `CLAUDE.md` updated with comprehensive project reference. Backend: `REAL_IMPLEMENTATION_PLAN.md` created for ASCP.AI, Hibernation, and Right-Sizing real AWS API integration.
 
 ---
 
@@ -104,7 +104,7 @@
 | `admin_routes.py` | Super-admin endpoints (tenants, health, config) |
 | `agent_routes.py` | Agent fleet management |
 | `approval_routes.py` | Approval/ticket workflow |
-| `atharvaai_routes.py` | Atharva AI assistant endpoints |
+| `ascpai_routes.py` | ASCP.AI assistant endpoints |
 | `audit_routes.py` | Audit log retrieval |
 | `auth_routes.py` | Authentication (login, signup, invite, password reset) |
 | `auto_tag_routes.py` | Auto-tag rule management |
@@ -379,7 +379,7 @@
 | `__init__.py` | Task exports |
 | `agent_tasks.py` | Agent management tasks |
 | `approval_cleanup.py` | Expired approval cleanup |
-| `atharvaai_worker.py` | AtharvaAI async processing |
+| `ascpai_worker.py` | ASCP.AI async processing |
 | `auto_rebalancer.py` | Automatic rebalancing task |
 | `cost_calculator.py` | Cost calculation task |
 | `cost_explorer.py` | AWS Cost Explorer data fetch |
@@ -430,7 +430,7 @@
 | `009_dynamic_auto_tags.py` | Dynamic auto-tag tables |
 | `010_tag_template_resource_scope.py` | Tag template scope column |
 | `011_add_cluster_costs.py` | Cluster cost columns |
-| `20260216_atharvaai_tables.py` | AtharvaAI tables |
+| `20260216_ascpai_tables.py` | ASCP.AI tables |
 
 ### Root-level `migrations/` (Alembic)
 
@@ -549,7 +549,7 @@ Compiled JS bundles (build artifacts).
 |------|---------|
 | `AccountAnalytics.jsx` | Account analytics page |
 | `Approvals.jsx` | Approval management page |
-| `AtharvaAiPage.jsx` | Atharva AI assistant page |
+| `ASCPAiPage.jsx` | ASCP.AI assistant page |
 | `Onboarding.jsx` | AWS onboarding wizard page |
 | `Roles.jsx` | Role management page |
 | `TeamDetails.jsx` | Team detail view page |
@@ -585,7 +585,7 @@ Compiled JS bundles (build artifacts).
 | `ActiveWindowBanner.jsx` | Active approval window banner |
 | `TicketRequestModal.jsx` | Ticket/approval request modal |
 
-### `components/atharvaai/` (5 files)
+### `components/ascpai/` (5 files)
 
 | File | Purpose |
 |------|---------|
@@ -842,7 +842,7 @@ Compiled JS bundles (build artifacts).
 
 | File | Purpose |
 |------|---------|
-| `useAtharvaStore.js` | AtharvaAI state store |
+| `useASCPStore.js` | ASCP.AI state store |
 | `useHibernationStore.js` | Hibernation state store |
 | `useStore.js` | Main application store |
 
@@ -958,7 +958,7 @@ See [Section 13](#13-backend--migrations) for the full migration listing.
 |------|---------|
 | `MASTER_SUMMARY.md` | Master project summary |
 | `README.md` | Documents directory README |
-| `REAL_IMPLEMENTATION_PLAN.md` | Real implementation plan for AtharvaAI, Hibernation, and Right-Sizing AWS API integration |
+| `REAL_IMPLEMENTATION_PLAN.md` | Real implementation plan for ASCP.AI, Hibernation, and Right-Sizing AWS API integration |
 | `Q&A.md` | Questions & answers documentation |
 | `all-components.md` | All UI components catalog (this companion doc) |
 | `all-files.md` | All files catalog (this document) |

@@ -81,17 +81,41 @@ def emergency_rebalancer(
         redis.setex(key_blacklist_global(pool_key), POOL_TERMINATION_BLACKLIST_HOURS * 3600, '1')
         logger.info(f"[emergency] Blacklisted pool {pool_key} for {POOL_TERMINATION_BLACKLIST_HOURS}h")
 
-        # Create rebalancing action record
+        # Issue 14: Event-driven pool ranking refresh — trigger incremental rebuild
+        # after a spot interruption so the ranking cache reflects the updated blacklist
+        # without waiting for the next hourly build. Debounced to at most 1 refresh/60s.
+        try:
+            _er_region = cluster.region or "ap-south-1"
+            _refresh_debounce_key = f'ranking_refresh_pending:{_er_region}'
+            if not redis.get(_refresh_debounce_key):
+                redis.setex(_refresh_debounce_key, 60, '1')
+                from backend.workers.app import app as _celery_app
+                _celery_app.send_task(
+                    'build_global_pool_cache',
+                    args=[_er_region],
+                    countdown=5,
+                    queue='celery',
+                )
+                logger.debug(
+                    '[emergency] Triggered incremental pool ranking refresh for region %s '
+                    'after spot interruption of pool %s', _er_region, pool_key
+                )
+        except Exception as _pref_err:
+            logger.debug('[emergency] Ranking refresh trigger failed (non-fatal): %s', _pref_err)
+
+        # Create rebalancing action record — use actual model fields:
+        # trigger (NOT NULL), source_pool (NOT NULL), target_pool (NOT NULL), started_at (NOT NULL)
+        # source_pool / target_pool format: "{instance_type}:{az}"
+        _pool_key = f"{interrupted.instance_type}:{interrupted.az}"
         action = RebalancingAction(
-            id=generate_uuid(),
             cluster_id=cluster_id,
-            source_instance_id=interrupted.instance_id,
-            source_instance_type=interrupted.instance_type,
-            source_az=interrupted.az,
+            trigger='emergency',
+            source_pool=_pool_key,
+            target_pool=_pool_key,
             status="in_progress",
-            action_type="emergency",
-            trigger_reason=reason,
-            created_at=datetime.utcnow(),
+            started_at=datetime.utcnow(),
+            source_instance_id=interrupted.instance_id,
+            action_metadata={"trigger_reason": reason},
         )
         db.add(action)
         db.commit()
@@ -111,9 +135,10 @@ def emergency_rebalancer(
             )
 
         # Check cluster settings for standby
-        settings = cluster.settings or {}
-        auto_rebalance = settings.get("auto_rebalance", {})
-        maintain_standby = auto_rebalance.get("maintain_standby", False)
+        # Use cluster.optimization_settings (ClusterOptimizationSettings relationship)
+        # cluster.settings does not exist as a Cluster model attribute
+        opt_settings = cluster.optimization_settings
+        maintain_standby = opt_settings.maintain_standby if opt_settings else False
 
         if maintain_standby:
             standby = _find_ready_standby(db, cluster_id)
@@ -122,17 +147,24 @@ def emergency_rebalancer(
                     f"[emergency] Using standby {standby.node_name} "
                     f"({standby.instance_type}) for failover"
                 )
-                return _execute_standby_failover(
+                result = _execute_standby_failover(
                     db, redis, cluster, interrupted, standby, action
                 )
+                # Set 2-hour emergency cooldown after standby failover
+                redis.setex(
+                    key_cluster_cooldown(cluster_id),
+                    EMERGENCY_COOLDOWN_MINUTES * 60,
+                    '1'
+                )
+                logger.info(f"[emergency] Set {EMERGENCY_COOLDOWN_MINUTES}min cooldown for cluster {cluster_id}")
+                return result
 
         # Fallback: no standby — normal emergency flow
         logger.info(
             f"[emergency] No standby available for {cluster.name}, "
             f"using normal emergency flow"
         )
-        return _execute_normal_emergency(db, redis, cluster, interrupted, action)
-
+        result = _execute_normal_emergency(db, redis, cluster, interrupted, action)
         # Set 2-hour emergency cooldown after completion
         redis.setex(
             key_cluster_cooldown(cluster_id),
@@ -140,6 +172,7 @@ def emergency_rebalancer(
             '1'
         )
         logger.info(f"[emergency] Set {EMERGENCY_COOLDOWN_MINUTES}min cooldown for cluster {cluster_id}")
+        return result
 
     except Exception as e:
         logger.error(f"[emergency] Failed for cluster {cluster_id}: {e}")

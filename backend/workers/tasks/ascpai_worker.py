@@ -1,5 +1,5 @@
 """
-AtharvaAi Celery Workers - Pool Selection & Spot Price Collection
+ASCPAi Celery Workers - Pool Selection & Spot Price Collection
 
 Scheduled Tasks:
 1. execute_pool_ranking_pipeline - Runs 8-step pool selection every 1 hour
@@ -23,10 +23,10 @@ from backend.models.pricing import SpotPriceHistory
 logger = logging.getLogger(__name__)
 
 
-@app.task(bind=True, name="workers.atharvaai.execute_pool_ranking_pipeline")
+@app.task(bind=True, name="workers.ascpai.execute_pool_ranking_pipeline")
 def execute_pool_ranking_pipeline(self: Task) -> Dict[str, Any]:
     """
-    Execute AtharvaAi 8-step pool selection pipeline.
+    Execute ASCPAi 8-step pool selection pipeline.
 
     Runs every 1 hour to provide ML-ranked pool recommendations.
 
@@ -43,7 +43,7 @@ def execute_pool_ranking_pipeline(self: Task) -> Dict[str, Any]:
     Returns:
         Dict with execution statistics
     """
-    logger.info("[AtharvaAi] Starting pool ranking pipeline execution")
+    logger.info("[ASCPAi] Starting pool ranking pipeline execution")
 
     db = next(get_db())
     redis = get_redis_client()
@@ -68,7 +68,7 @@ def execute_pool_ranking_pipeline(self: Task) -> Dict[str, Any]:
             limit=20
         )
 
-        logger.info(f"[AtharvaAi] Pipeline complete: {len(ranked_pools)} pools ranked")
+        logger.info(f"[ASCPAi] Pipeline complete: {len(ranked_pools)} pools ranked")
 
         return {
             "status": "success",
@@ -82,7 +82,7 @@ def execute_pool_ranking_pipeline(self: Task) -> Dict[str, Any]:
         }
 
     except Exception as e:
-        logger.error(f"[AtharvaAi] Pipeline execution failed: {e}")
+        logger.error(f"[ASCPAi] Pipeline execution failed: {e}")
         return {
             "status": "error",
             "error": str(e),
@@ -93,7 +93,7 @@ def execute_pool_ranking_pipeline(self: Task) -> Dict[str, Any]:
         db.close()
 
 
-@app.task(bind=True, name="workers.atharvaai.collect_spot_prices")
+@app.task(bind=True, name="workers.ascpai.collect_spot_prices")
 def collect_spot_prices(self: Task) -> Dict[str, Any]:
     """
     Collect current spot prices from AWS and store in spot_price_history table.
@@ -108,7 +108,7 @@ def collect_spot_prices(self: Task) -> Dict[str, Any]:
     Returns:
         Dict with collection statistics
     """
-    logger.info("[AtharvaAi] Starting spot price collection")
+    logger.info("[ASCPAi] Starting spot price collection")
 
     db = next(get_db())
 
@@ -155,7 +155,7 @@ def collect_spot_prices(self: Task) -> Dict[str, Any]:
         # Cleanup old data (keep only last 24 hours = 144 entries per pool)
         cleanup_old_spot_prices(db)
 
-        logger.info(f"[AtharvaAi] Collected {prices_collected} spot prices")
+        logger.info(f"[ASCPAi] Collected {prices_collected} spot prices")
 
         return {
             "status": "success",
@@ -164,7 +164,7 @@ def collect_spot_prices(self: Task) -> Dict[str, Any]:
         }
 
     except Exception as e:
-        logger.error(f"[AtharvaAi] Spot price collection failed: {e}")
+        logger.error(f"[ASCPAi] Spot price collection failed: {e}")
         db.rollback()
         return {
             "status": "error",
@@ -188,14 +188,14 @@ def cleanup_old_spot_prices(db):
         db.commit()
 
         if deleted_count > 0:
-            logger.info(f"[AtharvaAi] Cleaned up {deleted_count} old spot price entries")
+            logger.info(f"[ASCPAi] Cleaned up {deleted_count} old spot price entries")
 
     except Exception as e:
-        logger.error(f"[AtharvaAi] Cleanup failed: {e}")
+        logger.error(f"[ASCPAi] Cleanup failed: {e}")
         db.rollback()
 
 
-@app.task(bind=True, name="workers.atharvaai.compute_family_baselines")
+@app.task(bind=True, name="workers.ascpai.compute_family_baselines")
 def compute_family_baselines(self: Task) -> Dict[str, Any]:
     """
     Compute family-hour baselines from historical spot price data.
@@ -213,7 +213,7 @@ def compute_family_baselines(self: Task) -> Dict[str, Any]:
     Returns:
         Dict with computation statistics
     """
-    logger.info("[AtharvaAi] Starting family baseline computation")
+    logger.info("[ASCPAi] Starting family baseline computation")
 
     db = next(get_db())
 
@@ -222,7 +222,7 @@ def compute_family_baselines(self: Task) -> Dict[str, Any]:
         # This requires aggregating historical spot_price_history data
 
         # Placeholder
-        logger.info("[AtharvaAi] Family baseline computation not yet implemented")
+        logger.info("[ASCPAi] Family baseline computation not yet implemented")
 
         return {
             "status": "pending",
@@ -231,7 +231,7 @@ def compute_family_baselines(self: Task) -> Dict[str, Any]:
         }
 
     except Exception as e:
-        logger.error(f"[AtharvaAi] Family baseline computation failed: {e}")
+        logger.error(f"[ASCPAi] Family baseline computation failed: {e}")
         return {
             "status": "error",
             "error": str(e),
@@ -242,7 +242,7 @@ def compute_family_baselines(self: Task) -> Dict[str, Any]:
         db.close()
 
 
-@app.task(bind=True, name="workers.atharvaai.sync_karpenter_nodepools")
+@app.task(bind=True, name="workers.ascpai.sync_karpenter_nodepools")
 def sync_karpenter_nodepools(self: Task) -> Dict[str, Any]:
     """
     Syncs ML-ranked instance types to Karpenter NodePools.

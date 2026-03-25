@@ -21,7 +21,7 @@ import Onboarding from './pages/Onboarding';
 import ClusterList from './components/clusters/ClusterList';
 import PolicyConfig from './components/policies/PolicyConfig';
 import { HibernationDashboard } from './components/hibernation';
-import AtharvaAiPage from './pages/AtharvaAiPage';
+import ASCPAiPage from './pages/ASCPAiPage';
 import AuditLog from './components/audit/AuditLog';
 import Settings from './components/settings/Settings';
 import AdminDashboard from './components/admin/AdminDashboard';
@@ -49,6 +49,8 @@ import Approvals from './pages/Approvals';
 import TicketRequestModal from './components/approvals/TicketRequestModal';
 import PermissionGate from './components/governance/PermissionGate';
 import NodeTemplates from './pages/NodeTemplates';
+import VolatilityMonitor from './components/ascpai/VolatilityMonitor';
+import ErrorBoundary from './components/shared/ErrorBoundary';
 
 // Protected Route Component
 const ProtectedRoute = ({ children }) => {
@@ -152,6 +154,12 @@ function App() {
 
   return (
     <BrowserRouter>
+      {/* VolatilityMonitor runs above the router so its lifecycle is independent
+          of layout rendering and route changes (Gap 18 fix). ErrorBoundary ensures
+          a crash here never affects the rest of the application. */}
+      <ErrorBoundary label="VolatilityMonitor">
+        <VolatilityMonitor />
+      </ErrorBoundary>
       <div className="App">
         <TicketRequestModal
           isOpen={governanceModalOpen}
@@ -350,7 +358,7 @@ function App() {
             <Route path="s3-analysis" element={<S3Analysis />} />
             <Route path="rds-analysis" element={<RDSAnalysis />} />
             <Route path="transfer-analysis" element={<TransferAnalysis />} />
-            <Route path="atharva-ai" element={<AtharvaAiPage />} />
+            <Route path="ascp-ai" element={<ASCPAiPage />} />
 
             {/* Admin Routes (SUPER_ADMIN only) */}
             <Route path="admin" element={<AdminRoute><AdminDashboard /></AdminRoute>} />

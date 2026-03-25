@@ -7,7 +7,7 @@ Thin helper module that provides functions to fetch instance metadata
 (backed by AWS APIs), with graceful fallback to hardcoded estimates.
 
 Used by:
-- atharvaai_routes.py  (get_node_recommendations, get_cluster_impact)
+- ascpai_routes.py  (get_node_recommendations, get_cluster_impact)
 - pool_ranking_service.py (_load_instance_catalog)
 """
 
@@ -88,7 +88,7 @@ def get_instance_vcpu(
     except Exception as e:
         logger.debug(f"InstanceCatalog lookup failed for {instance_type}: {e}")
 
-    return _FALLBACK_VCPU.get(instance_type, 2)
+    return _FALLBACK_VCPU.get(instance_type) or _estimate_vcpu(instance_type)
 
 
 def get_instance_hourly_price(
@@ -254,10 +254,10 @@ def bulk_get_vcpu_counts(
     except Exception as e:
         logger.debug(f"Bulk InstanceCatalog query failed: {e}")
 
-    # 2. Fill in any missing types from fallback
+    # 2. Fill in any missing types from fallback then heuristic
     for it in instance_types:
         if it not in vcpus:
-            vcpus[it] = _FALLBACK_VCPU.get(it, 2)
+            vcpus[it] = _FALLBACK_VCPU.get(it) or _estimate_vcpu(it)
 
     return vcpus
 
@@ -300,6 +300,30 @@ def bulk_get_memory_gb(
 # ──────────────────────────────────────────────────────────────────────
 # Private
 # ──────────────────────────────────────────────────────────────────────
+
+def _estimate_vcpu(instance_type: str) -> int:
+    """Heuristic vCPU estimate based on size suffix.
+
+    AWS instance vCPU counts follow a consistent doubling pattern by size,
+    independent of family. This covers any instance type not in the hardcoded dict.
+    """
+    parts = instance_type.split(".")
+    if len(parts) != 2:
+        return 2
+
+    size = parts[1]
+
+    size_vcpu = {
+        "nano": 2, "micro": 2, "small": 2, "medium": 2,
+        "large": 2, "xlarge": 4, "2xlarge": 8, "3xlarge": 12,
+        "4xlarge": 16, "6xlarge": 24, "8xlarge": 32, "9xlarge": 36,
+        "12xlarge": 48, "16xlarge": 64, "18xlarge": 72,
+        "24xlarge": 96, "32xlarge": 128, "48xlarge": 192,
+        "metal": 48,
+    }
+
+    return size_vcpu.get(size, 2)
+
 
 def _estimate_price(instance_type: str) -> float:
     """Heuristic price estimate based on family and size."""

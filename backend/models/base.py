@@ -89,7 +89,6 @@ def create_tables():
     from backend.models.audit_log import AuditLog
     from backend.models.ml_model import MLModel
     from backend.models.optimization_job import OptimizationJob
-    from backend.models.lab_experiment import LabExperiment
     from backend.models.agent_action import AgentAction
     from backend.models.api_key import APIKey
     from backend.models.invitation import OrganizationInvitation

@@ -1,8 +1,8 @@
 import { create } from 'zustand';
-import { atharvaaiAPI } from '../services/api';
+import { ascpaiAPI } from '../services/api';
 import toast from 'react-hot-toast';
 
-const useAtharvaStore = create((set, get) => ({
+const useASCPStore = create((set, get) => ({
     // Pool Rankings state
     poolRankings: null,
     filteringStats: null,
@@ -30,7 +30,7 @@ const useAtharvaStore = create((set, get) => ({
                 excluded_instance_types: []
             };
 
-            const res = await atharvaaiAPI.getRankings(requestTemplate, region, limit);
+            const res = await ascpaiAPI.getRankings(requestTemplate, region, limit);
             set({ poolRankings: res.data, filteringStats: { total_pools: res.data.length } });
         } catch (err) {
             console.error("Failed to fetch pool rankings:", err);
@@ -45,7 +45,7 @@ const useAtharvaStore = create((set, get) => ({
 
     fetchBlacklist: async () => {
         try {
-            const res = await atharvaaiAPI.getBlacklist();
+            const res = await ascpaiAPI.getBlacklist();
             set({ blacklist: res.data || [] });
         } catch (err) {
             console.error("Failed to fetch blacklist:", err);
@@ -53,4 +53,4 @@ const useAtharvaStore = create((set, get) => ({
     }
 }));
 
-export default useAtharvaStore;
+export default useASCPStore;

@@ -122,6 +122,25 @@ def _reset_stale_agents(db: Session, stale_minutes: int = 5):
         cluster.agent_installed = 'N'
         cluster.status = ClusterStatus.DISCOVERED
 
+        # Issue 5: Clear stale utilization data so ASCP auto-scaler doesn't act
+        # on ghost metrics from a disconnected agent.
+        try:
+            from backend.models.instance import Instance
+            _cleared = db.query(Instance).filter(
+                Instance.cluster_id == cluster.id,
+                Instance.state == 'running'
+            ).update(
+                {'cpu_util': None, 'memory_util': None},
+                synchronize_session=False
+            )
+            if _cleared > 0:
+                logger.info(
+                    f"[MOD-HEALTH-02] Cleared utilization data for {_cleared} instance(s) "
+                    f"in disconnected cluster {cluster.name}"
+                )
+        except Exception as _util_err:
+            logger.warning(f"[MOD-HEALTH-02] Failed to clear utilization for {cluster.name}: {_util_err}")
+
     if stale:
         db.commit()
         # Bust Redis cluster cache so API reflects the change immediately

@@ -1,4 +1,4 @@
-// AtharvaAI Components Export Index
+// ASCP.AI Components Export Index
 
 // Decision Engine v3 Components
 export { default as DecisionEngineV3Dashboard } from './DecisionEngineV3Dashboard';

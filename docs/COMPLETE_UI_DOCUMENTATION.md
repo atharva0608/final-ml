@@ -11,7 +11,7 @@
 ## TABLE OF CONTENTS
 
 1. [Dashboard (16 files, ~1,200 lines)](#section-1-dashboard)
-2. [AtharvaAI (5 files, ~690 lines)](#section-2-atharvaai)
+2. [ASCP.AI (5 files, ~690 lines)](#section-2-ascpai)
 3. [Right-Sizing (2 files, ~1,400 lines)](#section-3-right-sizing)
 4. [Cleanup/Hygiene (9 files, ~1,700 lines)](#section-4-cleanup)
 5. [Hibernation (29 files, ~3,800 lines)](#section-5-hibernation)
@@ -114,10 +114,10 @@ s3Health, rdsHealth, transferHealth
 - CTA: "Go to Right-Sizing →" (blue border button)
 - Click: Navigate to `/right-sizing/manual`
 
-#### AtharvaAI Card
+#### ASCP.AI Card
 ```
 ┌─────────────────────────────────────────────┐
-│ ◈  AtharvaAI                 [Run Rankings→]│
+│ ◈  ASCP.AI                 [Run Rankings→]│
 │    ML Scoring                               │
 ├─────────────────────────────────────────────┤
 │ ML status: Healthy(green) │  Pools: 0      │
@@ -129,7 +129,7 @@ s3Health, rdsHealth, transferHealth
 - Badge: "ML Scoring" (indigo)
 - Metric "Healthy" renders in green text
 - CTA: "Run Pool Rankings →" (indigo border button)
-- Click: Navigate to `/atharvaai/rankings`
+- Click: Navigate to `/ascpai/rankings`
 
 #### Hibernation Card
 ```
@@ -211,7 +211,7 @@ Each card:
 │ Node Templates                  [Manage →] │
 ├────────────────────────────────────────────┤
 │ Templates filter instance pools for        │
-│ AtharvaAI rankings.                        │
+│ ASCP.AI rankings.                        │
 │                                            │
 │ [+ Create Template] (dashed border)       │
 └────────────────────────────────────────────┘
@@ -642,14 +642,14 @@ export const roleDefaults = {
 
 ---
 
-<a name="section-2-atharvaai"></a>
-## SECTION 2: ATHARVAAI (7 files, ~1050 lines)
+<a name="section-2-ascpai"></a>
+## SECTION 2: ASCPAI (7 files, ~1050 lines)
 
 ### File Inventory
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| AtharvaAiPage.jsx | 83 | Top-level page with tab navigation |
+| ASCPAiPage.jsx | 83 | Top-level page with tab navigation |
 | PoolRankings.jsx | 353 | Main ML rankings table |
 | InterruptionHeatmap.jsx | 159 | Interruption frequency heatmap |
 | RebalancingTimeline.jsx | 125 | Auto-rebalancing event timeline |
@@ -698,9 +698,9 @@ autoRefresh: boolean
 |----------|--------|---------|--------------|----------|
 | `/api/v1/templates` | GET | Load templates | — | `{ templates: Template[] }` |
 | `/api/v1/templates/default` | GET | Get default template | — | `Template` |
-| `/api/v1/atharvaai/rankings/template/{id}` | GET | Template-based rankings | Query: region, limit | `{ pools: Pool[] }` |
-| `/api/v1/atharvaai/rankings` | POST | Body-based rankings | `{ template: TemplateConfig }` | `{ pools: Pool[] }` |
-| `/api/v1/atharvaai/blacklist` | GET | Globally flagged pools | — | `{ blacklist: [{ instance_type, az, expires_at }] }` |
+| `/api/v1/ascpai/rankings/template/{id}` | GET | Template-based rankings | Query: region, limit | `{ pools: Pool[] }` |
+| `/api/v1/ascpai/rankings` | POST | Body-based rankings | `{ template: TemplateConfig }` | `{ pools: Pool[] }` |
+| `/api/v1/ascpai/blacklist` | GET | Globally flagged pools | — | `{ blacklist: [{ instance_type, az, expires_at }] }` |
 
 **Pool Object Structure:**
 ```javascript
@@ -727,7 +727,7 @@ autoRefresh: boolean
 **1. Header**
 ```
 ┌──────────────────────────────────────────────────────┐
-│ AtharvaAi Pool Rankings                              │
+│ ASCPAi Pool Rankings                              │
 │ ML-driven spot instance pool recommendations         │
 │                          [Refresh] [☑ Auto (30s)]    │
 └──────────────────────────────────────────────────────┘
@@ -831,7 +831,7 @@ heatmapData: HeatmapCell[][]
 loading: boolean
 ```
 
-**API:** `GET /api/v1/atharvaai/interruption-heatmap?region={region}&days={days}`
+**API:** `GET /api/v1/ascpai/interruption-heatmap?region={region}&days={days}`
 
 **Response:**
 ```javascript
@@ -881,7 +881,7 @@ loading: boolean
 limit: number // default: 50
 ```
 
-**API:** `GET /api/v1/atharvaai/rebalancing-history?limit={limit}`
+**API:** `GET /api/v1/ascpai/rebalancing-history?limit={limit}`
 
 **Event Types:**
 
@@ -917,7 +917,7 @@ events: RebalanceEvent[]
 loading: boolean
 ```
 
-**API:** `GET /api/v1/atharvaai/rebalancing-history?limit=5`
+**API:** `GET /api/v1/ascpai/rebalancing-history?limit=5`
 
 **Layout:**
 ```
@@ -939,11 +939,11 @@ loading: boolean
 ```
 
 - Max height: 300px with scroll
-- Click "View all →": Navigate to `/atharvaai/rebalancing`
+- Click "View all →": Navigate to `/ascpai/rebalancing`
 
 ---
 
-### AtharvaAiPage.jsx (83 lines)
+### ASCPAiPage.jsx (83 lines)
 
 **Purpose:** Top-level page with tab routing
 
@@ -962,7 +962,7 @@ const queryParams = new URLSearchParams(location.search)
 const activeTab = queryParams.get('tab') || 'rankings'
 
 const handleTabChange = (tabId) => {
-  navigate(`/atharvaai?tab=${tabId}`)
+  navigate(`/ascpai?tab=${tabId}`)
 }
 ```
 
@@ -1057,7 +1057,7 @@ const CLUSTERS = [
 
 **Pool Health Logic:**
 ```javascript
-// Cross-reference with AtharvaAI blacklist
+// Cross-reference with ASCP.AI blacklist
 const poolKey = `${rec.recommended_type}:${rec.az}`
 const isRisky = blacklist.includes(poolKey)
 const poolHealth = isRisky ? 'risky' : 'healthy'

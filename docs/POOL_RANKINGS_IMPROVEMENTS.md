@@ -8,7 +8,7 @@
 
 ## 📋 Summary
 
-Implemented two major improvements to the AtharvaAI Pool Rankings system:
+Implemented two major improvements to the ASCP.AI Pool Rankings system:
 
 1. **Removed Global ML Pool Rankings** - Now showing only cluster-specific pool rankings (node templates are cluster-specific)
 2. **Fixed Ranking Tie-Breaker** - When ML scores are equal, rankings now prioritize pools with higher savings
@@ -53,7 +53,7 @@ Rankings Tab:
 
 ### Files Modified
 
-**frontend/src/pages/AtharvaAiPage.jsx** (-4 lines)
+**frontend/src/pages/ASCPAiPage.jsx** (-4 lines)
 - Removed `import GlobalRankingsCard` (line 6)
 - Removed `<GlobalRankingsCard />` from dashboard tab (line 76)
 - Removed `<GlobalRankingsCard />` from rankings tab (line 91)
@@ -193,7 +193,7 @@ TOKEN=$(curl -s -X POST http://localhost:8000/api/v1/auth/login \
   | jq -r '.access_token')
 
 # Get rankings
-curl -s -X POST http://localhost:8000/api/v1/atharvaai/pools/rankings \
+curl -s -X POST http://localhost:8000/api/v1/ascpai/pools/rankings \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"region": "ap-south-1", "limit": 10}' \
@@ -229,7 +229,7 @@ curl -s -X POST http://localhost:8000/api/v1/atharvaai/pools/rankings \
 ## 📁 Files Modified
 
 ### Frontend (3 lines changed)
-1. **frontend/src/pages/AtharvaAiPage.jsx**
+1. **frontend/src/pages/ASCPAiPage.jsx**
    - Line 6: Removed `import GlobalRankingsCard`
    - Line 76: Removed `<GlobalRankingsCard />` from dashboard
    - Line 91: Removed `<GlobalRankingsCard />` from rankings tab
@@ -256,7 +256,7 @@ curl -s -X POST http://localhost:8000/api/v1/atharvaai/pools/rankings \
 └─────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────┐
-│ AtharvaAI Pool Rankings                     │
+│ ASCP.AI Pool Rankings                     │
 │ ML-driven spot instance pool recommendations│
 ├─────────────────────────────────────────────┤
 │ 1  m5.large   71.5%  0.57  (Flagged)        │
@@ -268,7 +268,7 @@ curl -s -X POST http://localhost:8000/api/v1/atharvaai/pools/rankings \
 ### After
 ```
 ┌─────────────────────────────────────────────┐
-│ AtharvaAI Pool Rankings                     │
+│ ASCP.AI Pool Rankings                     │
 │ ML-driven spot instance pool recommendations│
 ├─────────────────────────────────────────────┤
 │ 1  m5.large   71.5%  0.57  (Flagged)        │
@@ -320,7 +320,7 @@ Or: Open incognito/private window
 ```
 URL: http://localhost
 Expected: No "Global ML Pool Rankings" card
-Expected: Only cluster-specific "AtharvaAI Pool Rankings" shown
+Expected: Only cluster-specific "ASCP.AI Pool Rankings" shown
 ```
 
 ### Step 3: Navigate to Pool Rankings Tab
@@ -378,7 +378,7 @@ Example: If 3 pools have ML score 0.57:
 ## 📚 Related Documentation
 
 - **Pool Ranking Algorithm:** `backend/services/pool_ranking_service.py`
-- **Frontend Component:** `frontend/src/pages/AtharvaAiPage.jsx`
+- **Frontend Component:** `frontend/src/pages/ASCPAiPage.jsx`
 - **Previous Fix:** `GLOBAL_RANKINGS_FIX.md` (100% savings bug)
 - **Node Templates:** `backend/api/node_template_routes.py`
 

@@ -10,7 +10,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Backend:** FastAPI + Python 3.11, PostgreSQL 13, Redis 6, Celery 5.3
 - **Frontend:** React 18, served via Nginx (uses both Tailwind CSS and inline styles)
 - **Infrastructure:** Docker Compose (6 containers: backend, frontend, postgres, redis, celery-worker, celery-beat)
-- **ML/AI:** XGBoost for spot pool risk prediction (AtharvaAI engine)
+- **ML/AI:** XGBoost for spot pool risk prediction (ASCP.AI engine)
 - **Deployment:** Kubernetes agent DaemonSet for live pod metrics collection
 - **State Management:** Zustand (frontend), SQLAlchemy ORM (backend)
 
@@ -142,7 +142,7 @@ backend/
 │   ├── pod_metrics_routes.py    # Agent pod metric ingestion & analysis
 │   ├── hibernation_routes.py    # Hibernation schedule CRUD
 │   ├── hygiene_routes.py        # Resource cleanup scanning
-│   ├── atharvaai_routes.py      # ML pool rankings, decision engine telemetry, blacklist (17KB)
+│   ├── ascpai_routes.py      # ML pool rankings, decision engine telemetry, blacklist (17KB)
 │   ├── billing_routes.py        # Billing & usage tracking (17KB)
 │   ├── metrics_routes.py        # Instance metrics, cost metrics (19KB)
 │   ├── admin_routes.py          # Super admin operations (12KB)
@@ -280,7 +280,7 @@ backend/
 frontend/src/
 ├── App.js                       # Main routing & layout (382 lines)
 │                                  Routes: /dashboard, /right-sizing, /hibernation,
-│                                  /atharvaai, /templates, /cleanup, /settings, etc.
+│                                  /ascpai, /templates, /cleanup, /settings, etc.
 │
 ├── services/
 │   ├── api.js                   # Axios API client (19KB) — ALL backend endpoints
@@ -292,7 +292,7 @@ frontend/src/
 │   └── useStore.js              # Zustand store (clusters, auth, selectedCluster)
 │
 ├── pages/                       # 7 top-level page components
-│   ├── AtharvaAiPage.jsx        # ML pool rankings page
+│   ├── ASCPAiPage.jsx        # ML pool rankings page
 │   ├── Approvals.jsx            # Change approval workflows (29KB)
 │   ├── TeamDetails.jsx          # Team details & members (28KB)
 │   ├── AccountAnalytics.jsx     # AWS account analytics
@@ -321,7 +321,7 @@ frontend/src/
 │   ├── admin/                   # 10 files — Admin panel
 │   ├── settings/                # 12 files — Platform settings
 │   ├── shared/                  # 11 files — Reusable primitives (Button, Card, Modal, etc.)
-│   ├── atharvaai/               # 5 files — ML pool rankings
+│   ├── ascpai/               # 5 files — ML pool rankings
 │   ├── auth/                    # 4 files — Login, registration
 │   ├── governance/              # 4 files — PermissionGate, governance views
 │   ├── onboarding/              # 4 files — Onboarding wizard
@@ -345,13 +345,13 @@ frontend/src/
 
 The platform has **three interconnected systems** that share data:
 
-**1. Node Templates → AtharvaAI → Right-Sizing Flow:**
+**1. Node Templates → ASCP.AI → Right-Sizing Flow:**
 ```
 User creates template (instance families, architecture constraints)
     ↓
-Template ID passed to AtharvaAI: /atharvaai?template=abc123
+Template ID passed to ASCP.AI: /ascpai?template=abc123
     ↓
-AtharvaAI filters pools by template, ranks by ML risk score
+ASCP.AI filters pools by template, ranks by ML risk score
     ↓
 Right-sizing validates recommendations against template blacklist
     ↓
@@ -360,11 +360,11 @@ Pool health (Healthy/Risky) displayed in recommendations table
 
 **Key files:**
 - `frontend/src/components/templates/TemplateList.jsx` — Template management
-- `frontend/src/components/atharvaai/PoolRankings.jsx` — ML pool rankings
-- `frontend/src/components/atharvaai/DecisionEngine.jsx` — Execution Timeline UI
+- `frontend/src/components/ascpai/PoolRankings.jsx` — ML pool rankings
+- `frontend/src/components/ascpai/DecisionEngine.jsx` — Execution Timeline UI
 - `frontend/src/components/right-sizing/RightSizingDashboard.jsx` — Consolidated recommendations dashboard
 - `backend/api/template_routes.py` — Template CRUD
-- `backend/api/atharvaai_routes.py` — ML rankings + blacklist checking + Execution Status
+- `backend/api/ascpai_routes.py` — ML rankings + blacklist checking + Execution Status
 - `backend/api/pod_metrics_routes.py` — Enriched recommendations endpoint
 - `backend/core/decision_engine.py` — 15-step execution Rules Layer
 
@@ -375,7 +375,7 @@ The pipeline controls how Spot pool replacements actually happen without impacti
 **1. Workload Classification:** Differentiates `STATEFUL`, `STATELESS_ELIGIBLE`, and `SYSTEM` pods.
 **2. Substitute Prewarming:** Launches an identical backup node (`PREWARMING` state).
 **3. Safe Swap:** Waits for the substitute to reach `READY` in Kubernetes, then Cordons and Drains the target node.
-**4. Execution Tracking:** Frontend visualizes all 15 steps via `GET /api/v1/atharvaai/decision-engine/{cluster_id}`.
+**4. Execution Tracking:** Frontend visualizes all 15 steps via `GET /api/v1/ascpai/decision-engine/{cluster_id}`.
 
 ### Dual-Mode Architecture (Karpenter)
 

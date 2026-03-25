@@ -426,13 +426,13 @@ Each change entry contains:
 
 | Field | Value |
 |---|---|
-| **Change** | Track circuit breaker activations in Redis: `atharvaai:ml_fail_count` (INCR, 10-min TTL) and `atharvaai:ml_degraded` (10-min TTL). |
-| **Current Logic** | `backend/workers/tasks/atharvaai_worker.py` + `backend/services/pool_ranking_service.py` — ML circuit breaker partially exists. Verify the exact Redis keys match. |
+| **Change** | Track circuit breaker activations in Redis: `ascpai:ml_fail_count` (INCR, 10-min TTL) and `ascpai:ml_degraded` (10-min TTL). |
+| **Current Logic** | `backend/workers/tasks/ascpai_worker.py` + `backend/services/pool_ranking_service.py` — ML circuit breaker partially exists. Verify the exact Redis keys match. |
 | **Primary File** | `backend/services/pool_ranking_service.py` |
-| **Dependency Files** | `backend/workers/tasks/atharvaai_worker.py`, `backend/core/redis_client.py` |
+| **Dependency Files** | `backend/workers/tasks/ascpai_worker.py`, `backend/core/redis_client.py` |
 | **Operation** | `MODIFY` (verify existing implementation matches doc) |
 | **UI Component** | Admin Dashboard → ML Status section. Show circuit breaker state (Normal / Degraded). **Location**: Admin panel or Cluster detail → ML/AI section. |
-| **Name Mapping** | Doc: `atharvaai:ml_fail_count`, `atharvaai:ml_degraded` → verify against code Redis key names. |
+| **Name Mapping** | Doc: `ascpai:ml_fail_count`, `ascpai:ml_degraded` → verify against code Redis key names. |
 
 ---
 
@@ -464,7 +464,7 @@ Each change entry contains:
 | **Change** | When `global_pool_rankings:{region}` is missing from Redis, consider triggering a synchronous rebuild or having a fast-path recalculation instead of waiting up to 1 hour for the next Celery beat. |
 | **Current Logic** | `backend/core/decision_engine.py` → `_load_global_rankings()` — returns `None` if key missing. Pipeline rejects the decision with reason `"no_global_rankings"`. No synchronous fallback. |
 | **Primary File** | `backend/core/decision_engine.py` |
-| **Dependency Files** | `backend/workers/tasks/atharvaai_worker.py` (`execute_pool_ranking_pipeline`), `backend/services/pool_ranking_service.py` |
+| **Dependency Files** | `backend/workers/tasks/ascpai_worker.py` (`execute_pool_ranking_pipeline`), `backend/services/pool_ranking_service.py` |
 | **Operation** | `MODIFY` |
 | **UI Component** | Cluster Details → Health / Status indicators. Show "Pool rankings stale" warning. **Location**: Cluster detail page → Overview tab → Health badges. |
 | **Name Mapping** | None |

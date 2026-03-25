@@ -533,27 +533,39 @@ class ClusterService:
         ).limit(filters.page_size).all()
         
         # Convert to ClusterListItem schemas
+        # Batch-fetch all instance counts for this page in ONE aggregated query
+        # instead of 3 COUNT queries per cluster (N+1 → 1 query total).
+        from sqlalchemy import func
+        cluster_ids_page = [c.id for c in clusters]
+        _count_rows = self.db.query(
+            Instance.cluster_id,
+            Instance.lifecycle,
+            func.count(Instance.id).label('cnt')
+        ).filter(
+            Instance.cluster_id.in_(cluster_ids_page),
+            Instance.state == 'running',
+            Instance.instance_type.isnot(None),
+            Instance.instance_type != '',
+            Instance.instance_type != 'unknown',
+        ).group_by(Instance.cluster_id, Instance.lifecycle).all()
+
+        _counts_map: dict = {}  # {cluster_id: {total, spot, on_demand}}
+        for _row in _count_rows:
+            _cid = _row.cluster_id
+            if _cid not in _counts_map:
+                _counts_map[_cid] = {'total': 0, 'spot': 0, 'on_demand': 0}
+            _counts_map[_cid]['total'] += _row.cnt
+            if _row.lifecycle == InstanceLifecycle.SPOT:
+                _counts_map[_cid]['spot'] += _row.cnt
+            elif _row.lifecycle == InstanceLifecycle.ON_DEMAND:
+                _counts_map[_cid]['on_demand'] += _row.cnt
+
         cluster_list_items = []
         for cluster in clusters:
-            # Count only RUNNING instances with a real instance_type.
-            # Exclude: null/empty type, literal 'unknown' (K8s labels not yet propagated),
-            # and 'orphan' state (termination failed, awaiting manual cleanup).
-            _valid_inst_filter = [
-                Instance.cluster_id == cluster.id,
-                Instance.state == 'running',
-                Instance.instance_type.isnot(None),
-                Instance.instance_type != '',
-                Instance.instance_type != 'unknown',
-            ]
-            total_instances = self.db.query(Instance).filter(*_valid_inst_filter).count()
-            spot_instances = self.db.query(Instance).filter(
-                *_valid_inst_filter,
-                Instance.lifecycle == InstanceLifecycle.SPOT,
-            ).count()
-            on_demand_instances = self.db.query(Instance).filter(
-                *_valid_inst_filter,
-                Instance.lifecycle == InstanceLifecycle.ON_DEMAND,
-            ).count()
+            _cluster_counts = _counts_map.get(cluster.id, {'total': 0, 'spot': 0, 'on_demand': 0})
+            total_instances = _cluster_counts['total']
+            spot_instances = _cluster_counts['spot']
+            on_demand_instances = _cluster_counts['on_demand']
 
             cluster_list_items.append(ClusterListItem(
                 id=cluster.id,
@@ -1467,6 +1479,53 @@ echo "✅ Agent successfully deployed!"
         nodes_detailed = []
         pod_nodes_items = list(pods_by_node.items())
 
+        # Pre-fetch latest NodeMetric per instance/node to avoid N+1 queries.
+        # Two lookups: by instance_id (preferred) and by node_name (fallback).
+        if instances:
+            from backend.models.node_metrics import NodeMetric as _NM_pre
+            from sqlalchemy import func as _func_pre
+            _nm_cutoff_pre = datetime.utcnow() - timedelta(minutes=5)
+            _all_inst_ids = [i.instance_id for i in instances if i.instance_id]
+            _all_node_names_pre = [i.node_name for i in instances if i.node_name]
+
+            _nm_by_inst_id: dict = {}
+            if _all_inst_ids:
+                _nm_id_subq = self.db.query(
+                    _NM_pre.instance_id,
+                    _func_pre.max(_NM_pre.timestamp).label('max_ts')
+                ).filter(
+                    _NM_pre.cluster_id == cluster_id,
+                    _NM_pre.timestamp >= _nm_cutoff_pre,
+                    _NM_pre.instance_id.in_(_all_inst_ids),
+                ).group_by(_NM_pre.instance_id).subquery()
+                for _nm_row in self.db.query(_NM_pre).join(
+                    _nm_id_subq,
+                    (_NM_pre.instance_id == _nm_id_subq.c.instance_id) &
+                    (_NM_pre.timestamp == _nm_id_subq.c.max_ts)
+                ).all():
+                    _nm_by_inst_id[_nm_row.instance_id] = _nm_row
+
+            _nm_by_node_name: dict = {}
+            if _all_node_names_pre:
+                _nm_name_subq = self.db.query(
+                    _NM_pre.node_name,
+                    _func_pre.max(_NM_pre.timestamp).label('max_ts')
+                ).filter(
+                    _NM_pre.cluster_id == cluster_id,
+                    _NM_pre.timestamp >= _nm_cutoff_pre,
+                    _NM_pre.node_name.in_(_all_node_names_pre),
+                ).group_by(_NM_pre.node_name).subquery()
+                for _nm_row in self.db.query(_NM_pre).join(
+                    _nm_name_subq,
+                    (_NM_pre.node_name == _nm_name_subq.c.node_name) &
+                    (_NM_pre.timestamp == _nm_name_subq.c.max_ts)
+                ).all():
+                    _nm_by_node_name[_nm_row.node_name] = _nm_row
+
+            # Pre-fetch OptimizationStrategy once (it's the same per cluster, not per node).
+            from backend.models.cluster import OptimizationStrategy as _OS_nd
+            _strat_nd_prefetched = self.db.query(_OS_nd).filter_by(cluster_id=cluster_id).first()
+
         if instances:
             for idx, inst in enumerate(instances):
                 instance_type = inst.instance_type or "Unknown"
@@ -1485,28 +1544,18 @@ echo "✅ Agent successfully deployed!"
                 node_cpu_util_pct = float(inst.cpu_util) if inst.cpu_util is not None and inst.cpu_util > 0 else 0
                 node_mem_util_pct = float(inst.memory_util) if inst.memory_util is not None and inst.memory_util > 0 else 0
 
-                # Override with fresher data from node_metrics table if available (last 5 min)
+                # Override with fresher data from pre-fetched node_metrics dict (no N+1).
                 try:
-                    from backend.models.node_metrics import NodeMetric as _NM
-                    from sqlalchemy import func as _func2
-                    _nm_cutoff = datetime.utcnow() - timedelta(minutes=5)
-                    _nm_filter = [_NM.cluster_id == cluster_id]
-                    if inst.instance_id:
-                        _nm_filter.append(_NM.instance_id == inst.instance_id)
-                    elif inst.node_name:
-                        _nm_filter.append(_NM.node_name == inst.node_name)
-                    else:
-                        _nm_filter = None
-                    if _nm_filter:
-                        _nm = self.db.query(_NM).filter(
-                            *_nm_filter,
-                            _NM.timestamp >= _nm_cutoff,
-                        ).order_by(_NM.timestamp.desc()).first()
-                        if _nm:
-                            if _nm.cpu_usage_millicores and _nm.cpu_capacity_millicores and _nm.cpu_capacity_millicores > 0:
-                                node_cpu_util_pct = round((_nm.cpu_usage_millicores / _nm.cpu_capacity_millicores) * 100, 2)
-                            if _nm.memory_usage_bytes and _nm.memory_capacity_bytes and _nm.memory_capacity_bytes > 0:
-                                node_mem_util_pct = round((_nm.memory_usage_bytes / _nm.memory_capacity_bytes) * 100, 2)
+                    _nm = (
+                        _nm_by_inst_id.get(inst.instance_id) if inst.instance_id
+                        else _nm_by_node_name.get(inst.node_name) if inst.node_name
+                        else None
+                    )
+                    if _nm:
+                        if _nm.cpu_usage_millicores and _nm.cpu_capacity_millicores and _nm.cpu_capacity_millicores > 0:
+                            node_cpu_util_pct = round((_nm.cpu_usage_millicores / _nm.cpu_capacity_millicores) * 100, 2)
+                        if _nm.memory_usage_bytes and _nm.memory_capacity_bytes and _nm.memory_capacity_bytes > 0:
+                            node_mem_util_pct = round((_nm.memory_usage_bytes / _nm.memory_capacity_bytes) * 100, 2)
                 except Exception:
                     pass
 
@@ -1559,10 +1608,8 @@ echo "✅ Agent successfully deployed!"
                             ]
                             if _better_nd:
                                 _node_best_pool = f"{_better_nd[0]['instance_type']}:{_better_nd[0]['az']}"
-                        # Determine condition using cluster's risk ceiling
-                        from backend.models.cluster import OptimizationStrategy as _OS_nd
-                        _strat_nd = self.db.query(_OS_nd).filter_by(cluster_id=cluster_id).first()
-                        _ceil_nd = (getattr(_strat_nd, 'risk_ceiling_percent', 25) or 25) / 100.0
+                        # Determine condition using cluster's risk ceiling (pre-fetched before loop)
+                        _ceil_nd = (getattr(_strat_nd_prefetched, 'risk_ceiling_percent', 25) or 25) / 100.0
                         if lifecycle == "on-demand":
                             _node_condition = "AWAITING_SPOT"
                         elif _node_risk_score is not None and _node_risk_score > _ceil_nd:

@@ -1263,7 +1263,7 @@ class SubstituteManager:
         # Scan all substitute keys in Redis
         pattern = "spot:substitute:state:*"
         for key in self.redis.scan_iter(match=pattern):
-            cluster_id = key.decode("utf-8").split(":")[-1]
+            cluster_id = (key.decode("utf-8") if isinstance(key, bytes) else key).split(":")[-1]
             state = self.get_state(cluster_id)
             metadata = self._get_metadata(cluster_id) or {}
 

@@ -881,6 +881,25 @@ class DecisionEngine:
                 f"[DE.rank_for_node] GATE3_PASS: Loaded {len(all_pools)} pools from "
                 f"{cache_source}:{region}"
             )
+            # Issue 9: Warn if pool rankings are stale (>70 min since last rebuild).
+            # Emit at most once per hour per region to avoid log flood.
+            try:
+                _generated_at_str = payload.get('generated_at')
+                if _generated_at_str:
+                    from datetime import datetime as _dt_s
+                    _generated_at = _dt_s.fromisoformat(_generated_at_str)
+                    _age_s = (_dt_s.utcnow() - _generated_at).total_seconds()
+                    if _age_s > 4200:
+                        _stale_warn_key = f'ranking_stale_warned:{region}'
+                        if not r.get(_stale_warn_key):
+                            logger.critical(
+                                '[DE] Global pool rankings for region %s are %d minutes old! '
+                                'Hourly rebuild job (cache_builder) may have failed.',
+                                region, int(_age_s // 60)
+                            )
+                            r.setex(_stale_warn_key, 3600, '1')
+            except Exception:
+                pass
         except Exception as cache_err:
             logger.error(f"[DE.rank_for_node] GATE3_FAIL: Cache load error: {cache_err}")
             return []
@@ -951,14 +970,33 @@ class DecisionEngine:
                 f"{len(gated)} pools after relaxation"
             )
 
-        # Step 8: Expand tier if still empty
+        # Step 8: Expand tier if still empty — use size-filtered pools to preserve memory/vcpu constraints
         if not gated:
             logger.warning(
                 f"[DE.rank_for_node] GATE8: Double-gate + trade-off both empty. "
-                f"Falling back to tier expansion from all {len(all_pools)} pools"
+                f"Falling back to tier expansion from {len(pools)} size-filtered pools"
             )
-            gated = self._relax_with_tier_expansion(all_pools, current_risk_tier)
+            gated = self._relax_with_tier_expansion(pools, current_risk_tier)
             logger.info(f"[DE.rank_for_node] GATE8 (tier expansion): {len(gated)} pools after expansion")
+
+        # Step 9: Same-type other-AZ synthesis
+        # When the market view cache is missing the source instance type (e.g. only small
+        # instances in cache but node is t3.medium), scan Redis spot_price keys directly
+        # for the same instance type in other AZs. This is the last-resort fallback.
+        if not gated and node_info.get('instance_type') and node_info.get('az'):
+            gated = self._get_same_type_az_alternatives(
+                r, region, node_info, min_vcpu, min_memory_gb, required_arch
+            )
+            if gated:
+                logger.info(
+                    f"[DE.rank_for_node] GATE9 (same-type other-AZ synthesis): "
+                    f"{len(gated)} alternatives found for {node_info.get('instance_type')}"
+                )
+            else:
+                logger.warning(
+                    f"[DE.rank_for_node] GATE9: No same-type alternatives in other AZs. "
+                    f"instance_type={node_info.get('instance_type')} region={region}"
+                )
 
         # Final summary
         logger.info(
@@ -1063,6 +1101,126 @@ class DecisionEngine:
             if candidates:
                 return sorted(candidates, key=lambda p: p.get('spot_price', 9999))
         return sorted(all_pools, key=lambda p: p.get('spot_price', 9999))
+
+    def _get_same_type_az_alternatives(
+        self,
+        r,
+        region: str,
+        node_info: dict,
+        min_vcpu: int = 0,
+        min_memory_gb: float = 0.0,
+        required_arch: str = None,
+    ) -> list:
+        """
+        Step 9 fallback: synthesize alternatives for the same instance type in other AZs.
+
+        When the market view cache contains only small instances and the source node's
+        instance type is absent (e.g. pricing worker fetched only nano/micro/small),
+        this method scans Redis spot_price:{region}:*:{instance_type} keys directly
+        for the exact instance type in AZs other than the source AZ.
+        """
+        import json as _j
+        instance_type = node_info.get('instance_type', '')
+        source_az = node_info.get('az', '')
+        if not instance_type or not source_az:
+            return []
+
+        vcpu, memory_gb, arch = self._derive_specs_heuristic(instance_type)
+
+        # Hard-gate: architecture must match
+        if required_arch and arch and arch != required_arch:
+            return []
+        # Hard-gate: size constraints
+        if min_vcpu > 0 and vcpu > 0 and vcpu < min_vcpu:
+            return []
+        if min_memory_gb > 0 and memory_gb > 0 and memory_gb < min_memory_gb:
+            return []
+
+        results = []
+        try:
+            cursor = 0
+            pattern = f"spot_price:{region}:*:{instance_type}"
+            while True:
+                cursor, keys = r.scan(cursor, match=pattern, count=200)
+                for key in keys:
+                    try:
+                        key_str = key.decode() if isinstance(key, bytes) else key
+                        parts = key_str.split(':')
+                        if len(parts) < 4:
+                            continue
+                        az = parts[2]
+                        if az == source_az:
+                            continue  # same AZ — not an alternative
+                        raw = r.get(key)
+                        if not raw:
+                            continue
+                        data = _j.loads(raw)
+                        spot_price = float(data.get('price', 0) or 0)
+                        if spot_price <= 0:
+                            continue
+                        results.append({
+                            'instance_type': instance_type,
+                            'az': az,
+                            'region': region,
+                            'spot_price': spot_price,
+                            'risk_tier': 2,
+                            'vcpu': vcpu,
+                            'memory_gb': memory_gb,
+                            'architecture': arch,
+                            '_source': 'same_type_az_synthesis',
+                        })
+                    except Exception:
+                        pass
+                if cursor == 0:
+                    break
+        except Exception as scan_err:
+            logger.debug(f"[DE._get_same_type_az_alternatives] scan error: {scan_err}")
+            return []
+
+        return sorted(results, key=lambda p: p.get('spot_price', 9999))
+
+    def _derive_specs_heuristic(self, instance_type: str) -> tuple:
+        """Return (vcpu, memory_gb, architecture) derived from instance type string."""
+        _KNOWN = {
+            't3.nano': (2, 0.5, 'amd64'), 't3.micro': (2, 1.0, 'amd64'),
+            't3.small': (2, 2.0, 'amd64'), 't3.medium': (2, 4.0, 'amd64'),
+            't3.large': (2, 8.0, 'amd64'), 't3.xlarge': (4, 16.0, 'amd64'),
+            't3.2xlarge': (8, 32.0, 'amd64'),
+            't3a.medium': (2, 4.0, 'amd64'), 't3a.large': (2, 8.0, 'amd64'),
+            't4g.medium': (2, 4.0, 'arm64'), 't4g.large': (2, 8.0, 'arm64'),
+            'm5.large': (2, 8.0, 'amd64'), 'm5.xlarge': (4, 16.0, 'amd64'),
+            'm5.2xlarge': (8, 32.0, 'amd64'), 'm5.4xlarge': (16, 64.0, 'amd64'),
+            'm6i.large': (2, 8.0, 'amd64'), 'm6i.xlarge': (4, 16.0, 'amd64'),
+            'm6g.large': (2, 8.0, 'arm64'), 'm6g.xlarge': (4, 16.0, 'arm64'),
+            'c5.large': (2, 4.0, 'amd64'), 'c5.xlarge': (4, 8.0, 'amd64'),
+            'c6i.large': (2, 4.0, 'amd64'), 'c6i.xlarge': (4, 8.0, 'amd64'),
+            'r5.large': (2, 16.0, 'amd64'), 'r5.xlarge': (4, 32.0, 'amd64'),
+        }
+        if instance_type in _KNOWN:
+            return _KNOWN[instance_type]
+        parts = instance_type.split('.')
+        if len(parts) != 2:
+            return (0, 0.0, 'amd64')
+        family, size = parts
+        vcpu_map = {
+            'nano': 2, 'micro': 2, 'small': 2, 'medium': 2, 'large': 2,
+            'xlarge': 4, '2xlarge': 8, '4xlarge': 16, '8xlarge': 32,
+            '12xlarge': 48, '16xlarge': 64, '24xlarge': 96,
+        }
+        mem_map = {
+            'nano': 0.5, 'micro': 1.0, 'small': 2.0, 'medium': 4.0, 'large': 8.0,
+            'xlarge': 16.0, '2xlarge': 32.0, '4xlarge': 64.0, '8xlarge': 128.0,
+            '12xlarge': 192.0, '16xlarge': 256.0, '24xlarge': 384.0,
+        }
+        vcpu = vcpu_map.get(size, 0)
+        mem = mem_map.get(size, 0.0)
+        # Graviton families end with 'g' (m6g, c6g, r6g, t4g, etc.)
+        family_lower = family.lower()
+        arch = 'arm64' if (
+            family_lower.endswith('g') or family_lower.endswith('gd') or
+            family_lower.endswith('gn') or family_lower in ('t4g',)
+        ) else 'amd64'
+        return (vcpu, mem, arch)
 
     # ── Task 2.5 — ML Scoring Tiers ──────────────────────────────────────────
 

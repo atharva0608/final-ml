@@ -52,8 +52,8 @@
 - **Tasks Loaded:** 40+ tasks including:
   - ✅ workers.auto_rebalancer
   - ✅ workers.termination_monitor
-  - ✅ workers.atharvaai.sync_karpenter_nodepools
-  - ✅ workers.atharvaai.execute_pool_ranking_pipeline
+  - ✅ workers.ascpai.sync_karpenter_nodepools
+  - ✅ workers.ascpai.execute_pool_ranking_pipeline
   - ✅ workers.optimization.optimize_cluster
   - ✅ workers.pod_metrics.cleanup_old_metrics
   - ✅ workers.pricing.refresh_all_resource_prices
@@ -66,7 +66,7 @@
   - ✅ auto-rebalancer-every-15-secs (every 15s)
   - ✅ termination-monitor-every-30-secs (every 30s)
   - ✅ karpenter-nodepool-sync-every-30-secs (every 30s)
-  - ✅ atharvaai-pool-ranking-every-30-secs (every 30s)
+  - ✅ ascpai-pool-ranking-every-30-secs (every 30s)
 
 ---
 
@@ -82,7 +82,7 @@
 ### React Application
 - **Build:** ✅ Production build served
 - **Routes:** ✅ All routes configured
-- **Decision Engine v3 Dashboard:** ✅ Available at `/atharvaai?tab=decision-engine-v3`
+- **Decision Engine v3 Dashboard:** ✅ Available at `/ascpai?tab=decision-engine-v3`
 
 ---
 
@@ -105,7 +105,7 @@
 | Blacklist Service | ✅ | +200 | `backend/services/blacklist_service.py` |
 | Karpenter Service | ✅ | +100 | `backend/services/karpenter_service.py` |
 | Rightsizing Service | ✅ | +50 | `backend/services/rightsizing_service.py` |
-| v3 API Endpoints | ✅ | +150 | `backend/api/atharvaai_routes.py`, `backend/api/karpenter_routes.py` |
+| v3 API Endpoints | ✅ | +150 | `backend/api/ascpai_routes.py`, `backend/api/karpenter_routes.py` |
 
 **Total Backend Code:** ~2,840 lines
 
@@ -113,14 +113,14 @@
 
 | Component | Status | Lines | Location |
 |-----------|--------|-------|----------|
-| OptimizationModeSelector | ✅ | 150 | `frontend/src/components/atharvaai/OptimizationModeSelector.jsx` |
-| DiversityGauge | ✅ | 140 | `frontend/src/components/atharvaai/DiversityGauge.jsx` |
-| GlobalIntelligencePanel | ✅ | 150 | `frontend/src/components/atharvaai/GlobalIntelligencePanel.jsx` |
-| WorkloadClassificationPanel | ✅ | 190 | `frontend/src/components/atharvaai/WorkloadClassificationPanel.jsx` |
-| SubstituteStateViewer | ✅ | 165 | `frontend/src/components/atharvaai/SubstituteStateViewer.jsx` |
-| DecisionEngineV3Dashboard | ✅ | 120 | `frontend/src/components/atharvaai/DecisionEngineV3Dashboard.jsx` |
+| OptimizationModeSelector | ✅ | 150 | `frontend/src/components/ascpai/OptimizationModeSelector.jsx` |
+| DiversityGauge | ✅ | 140 | `frontend/src/components/ascpai/DiversityGauge.jsx` |
+| GlobalIntelligencePanel | ✅ | 150 | `frontend/src/components/ascpai/GlobalIntelligencePanel.jsx` |
+| WorkloadClassificationPanel | ✅ | 190 | `frontend/src/components/ascpai/WorkloadClassificationPanel.jsx` |
+| SubstituteStateViewer | ✅ | 165 | `frontend/src/components/ascpai/SubstituteStateViewer.jsx` |
+| DecisionEngineV3Dashboard | ✅ | 120 | `frontend/src/components/ascpai/DecisionEngineV3Dashboard.jsx` |
 | API Integration | ✅ | +12 endpoints | `frontend/src/services/api.js` |
-| Page Integration | ✅ | +tabs | `frontend/src/pages/AtharvaAiPage.jsx` |
+| Page Integration | ✅ | +tabs | `frontend/src/pages/ASCPAiPage.jsx` |
 
 **Total Frontend Code:** ~915 lines
 
@@ -136,7 +136,7 @@
 - **Health Check:** http://localhost:8000/health
 
 ### Decision Engine v3 Dashboard
-- **URL:** http://localhost/atharvaai?tab=decision-engine-v3
+- **URL:** http://localhost/ascpai?tab=decision-engine-v3
 - **Features:**
   - ✅ Optimization Mode Selector (3 profiles)
   - ✅ Global Intelligence Panel (DryRun budget, capacity stats)

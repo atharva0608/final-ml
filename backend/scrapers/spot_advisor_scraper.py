@@ -28,6 +28,9 @@ import requests
 from datetime import datetime, timedelta, date
 from typing import Dict, Any, List, Optional
 import json
+from uuid import uuid4
+
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from sqlalchemy.orm import Session
 from sqlalchemy import and_
@@ -86,32 +89,11 @@ def scrape_spot_advisor_data() -> Dict[str, Any]:
 
         logger.info(f"[SVC-SCRAPE-01] Fetched Spot Advisor data successfully")
 
-        # ── Issue #19 / Task 2.1: Spot Advisor versioning ─────────────
-        # Compute SHA-256 hash of the raw JSON. If it matches the cached
-        # version, skip DB + Redis writes entirely to avoid redundant churn
-        # when the upstream data hasn't changed between daily scrapes.
-        import hashlib
-        _raw_bytes = response.content  # original bytes from S3
-        _new_hash = hashlib.sha256(_raw_bytes).hexdigest()
-        _old_hash = redis_client.get("spot:advisor:version")
-        if _old_hash:
-            _old_hash = _old_hash.decode("utf-8") if isinstance(_old_hash, bytes) else _old_hash
-        if _new_hash == _old_hash:
-            logger.info(
-                "[SVC-SCRAPE-01] Spot Advisor data unchanged (hash match) — "
-                "re-writing keys to refresh 12h TTLs"
-            )
-            # Bug 3: Do NOT skip writing on hash match. Re-write all keys to
-            # refresh the 12h Redis TTLs and update the last_scraped timestamp.
-            # The hash-dedup alone is NOT a sufficient freshness gate — time-based
-            # TTLs are the real guard (pool_ranking_service staleness check).
-
-        # Parse and store data (always — refreshes TTLs every 12h)
+        # Task 1.1: Per-region hash dedup happens inside parse_and_store_data().
+        # We pass the full JSON data to it and let it skip unchanged regions.
         stats = parse_and_store_data(data, db, redis_client)
 
-        # Update last-scraped timestamp. Delete version hash so next cycle always
-        # re-checks and re-writes, ensuring Redis TTLs are refreshed on schedule.
-        redis_client.delete("spot:advisor:version")  # Bug 3: don't let hash block re-scrape
+        # Write global last_scraped so monitoring can check overall freshness.
         redis_client.set("spot:advisor:last_scraped", datetime.utcnow().isoformat())
 
         logger.info(f"[SVC-SCRAPE-01] Scrape complete: {stats}")
@@ -156,12 +138,15 @@ def parse_and_store_data(
     Returns:
         Dict with parsing statistics
     """
+    import hashlib as _hashlib
+
     stats = {
         "instance_types_processed": 0,
         "regions_processed": 0,
         "records_created": 0,
         "records_updated": 0,
-        "cache_keys_set": 0
+        "cache_keys_set": 0,
+        "regions_skipped_unchanged": 0,
     }
 
     # Extract instance type data
@@ -177,15 +162,29 @@ def parse_and_store_data(
         if region == "ranges":
             continue  # Skip the ranges metadata
 
-        logger.info(f"[SVC-SCRAPE-01] Processing region: {region}")
-
-        # Bug 2: Only process Linux — EKS nodes never run Windows/SUSE Linux.
-        # Processing all OS types with the same key namespace caused the last
-        # OS type written to win; hardcoding Linux avoids this entirely.
+        # Task 1.1: Per-region hash dedup — skip DB writes if this region unchanged.
+        # Key: spot:advisor:hash:{region}  (NOT a global blob hash)
         linux_data = region_data.get("Linux", {})
         if not isinstance(linux_data, dict):
             continue
+        _region_hash = _hashlib.sha256(
+            json.dumps(linux_data, sort_keys=True).encode()
+        ).hexdigest()
+        _old_region_hash = redis_client.get(f"spot:advisor:hash:{region}")
+        if _old_region_hash:
+            _old_region_hash = _old_region_hash.decode("utf-8") if isinstance(_old_region_hash, bytes) else _old_region_hash
+        if _region_hash == _old_region_hash:
+            # Data unchanged — skip DB writes only, but STILL refresh Redis keys
+            # (Redis TTL is 12h; if we only run every 12h and skip writes, keys expire before next run)
+            redis_client.set(f"spot:advisor:last_scraped:{region}", datetime.utcnow().isoformat())
+            stats["regions_skipped_unchanged"] += 1
+            logger.debug(f"[SVC-SCRAPE-01] Region {region} hash unchanged — refreshing Redis TTL only (skipping DB writes)")
+            # Fall through to refresh Redis keys below — do NOT continue
 
+        logger.info(f"[SVC-SCRAPE-01] Processing region: {region}")
+
+        # Bug 2: Hardcode Linux — EKS nodes never run Windows/SUSE.
+        # linux_data already computed above for hash comparison.
         os_type = "Linux"
         stats["regions_processed"] += 1
 
@@ -244,23 +243,28 @@ def parse_and_store_data(
             # Missing r → INDEX_TO_PCT_MISSING (100.0) — excluded from ranking as too risky
             rate_pct = INDEX_TO_PCT.get(interruption_index, INDEX_TO_PCT_MISSING) if raw_r is not None else INDEX_TO_PCT_MISSING
             rate_category = interruption_frequency
-            existing_rate = db.query(SpotAdvisorRate).filter(
-                SpotAdvisorRate.region == region,
-                SpotAdvisorRate.instance_type == instance_type,
-                SpotAdvisorRate.valid_from == today,
-            ).first()
-            if existing_rate:
-                existing_rate.interruption_rate_pct = rate_pct
-                existing_rate.interruption_rate_category = rate_category
-                existing_rate.scraped_at = datetime.utcnow()
-            else:
-                db.add(SpotAdvisorRate(
-                    region=region,
-                    instance_type=instance_type,
-                    interruption_rate_category=rate_category,
-                    interruption_rate_pct=rate_pct,
-                    valid_from=today,
-                ))
+            # Use PostgreSQL ON CONFLICT DO UPDATE (atomic upsert) to handle:
+            # 1. Records from a previous day (valid_from mismatch → INSERT would fail constraint)
+            # 2. Concurrent scraper calls racing on the same (region, instance_type)
+            # The DB unique constraint "uq_spot_advisor_region_type" is on (region, instance_type).
+            upsert_stmt = pg_insert(SpotAdvisorRate.__table__).values(
+                id=str(uuid4()),
+                region=region,
+                instance_type=instance_type,
+                interruption_rate_category=rate_category,
+                interruption_rate_pct=rate_pct,
+                valid_from=today,
+                scraped_at=datetime.utcnow(),
+            ).on_conflict_do_update(
+                index_elements=['region', 'instance_type'],
+                set_={
+                    'interruption_rate_category': rate_category,
+                    'interruption_rate_pct': rate_pct,
+                    'valid_from': today,
+                    'scraped_at': datetime.utcnow(),
+                }
+            )
+            db.execute(upsert_stmt)
 
             # Cache in Redis for fast lookup (Bug 3: TTL reduced to 12h)
             cache_key = f"spot_advisor:{region}:{instance_type}:{os_type}"
@@ -273,11 +277,9 @@ def parse_and_store_data(
             stats["cache_keys_set"] += 1
 
         db.commit()
-        # Task 1.1: write per-region last_scraped timestamp (in addition to global)
-        redis_client.set(
-            f"spot:advisor:last_scraped:{region}",
-            datetime.utcnow().isoformat(),
-        )
+        # Task 1.1: write per-region hash + timestamp after successful write
+        redis_client.set(f"spot:advisor:hash:{region}", _region_hash)
+        redis_client.set(f"spot:advisor:last_scraped:{region}", datetime.utcnow().isoformat())
 
     return stats
 

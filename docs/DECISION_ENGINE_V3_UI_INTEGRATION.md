@@ -8,7 +8,7 @@
 ## ✅ UI Components Created (6 New Components)
 
 ### 1. **OptimizationModeSelector.jsx** (150 lines)
-**Location:** `frontend/src/components/atharvaai/OptimizationModeSelector.jsx`
+**Location:** `frontend/src/components/ascpai/OptimizationModeSelector.jsx`
 
 **Features:**
 - 3-mode selector: COST_FIRST, BALANCED, NO_DOWNTIME_FIRST
@@ -31,7 +31,7 @@
 ---
 
 ### 2. **DiversityGauge.jsx** (140 lines)
-**Location:** `frontend/src/components/atharvaai/DiversityGauge.jsx`
+**Location:** `frontend/src/components/ascpai/DiversityGauge.jsx`
 
 **Features:**
 - Family distribution bars (e.g., m5: 35%, c5: 25%)
@@ -52,7 +52,7 @@
 ---
 
 ### 3. **GlobalIntelligencePanel.jsx** (150 lines)
-**Location:** `frontend/src/components/atharvaai/GlobalIntelligencePanel.jsx`
+**Location:** `frontend/src/components/ascpai/GlobalIntelligencePanel.jsx`
 
 **Features:**
 - Pools evaluated count with model version badge
@@ -74,7 +74,7 @@
 ---
 
 ### 4. **WorkloadClassificationPanel.jsx** (190 lines)
-**Location:** `frontend/src/components/atharvaai/WorkloadClassificationPanel.jsx`
+**Location:** `frontend/src/components/ascpai/WorkloadClassificationPanel.jsx`
 
 **Features:**
 - Summary stats: Eligible vs Protected nodes
@@ -98,7 +98,7 @@
 ---
 
 ### 5. **SubstituteStateViewer.jsx** (165 lines)
-**Location:** `frontend/src/components/atharvaai/SubstituteStateViewer.jsx`
+**Location:** `frontend/src/components/ascpai/SubstituteStateViewer.jsx`
 
 **Features:**
 - State machine visualization (IDLE → PREWARMING → READY → ACTIVE → RELEASING)
@@ -120,7 +120,7 @@
 ---
 
 ### 6. **DecisionEngineV3Dashboard.jsx** (120 lines)
-**Location:** `frontend/src/components/atharvaai/DecisionEngineV3Dashboard.jsx`
+**Location:** `frontend/src/components/ascpai/DecisionEngineV3Dashboard.jsx`
 
 **Features:**
 - Unified dashboard integrating all 5 sub-components
@@ -151,15 +151,15 @@
 
 ```javascript
 // Decision Engine v3 endpoints
-getGlobalIntelligenceStatus: (region) => api.get('/api/v1/atharvaai/v3/global-intelligence/status', { params: { region } }),
-getDiversityStatus: (clusterId) => api.get(`/api/v1/atharvaai/v3/diversity/${clusterId}`),
-getCooldownStatusV3: (clusterId) => api.get(`/api/v1/atharvaai/v3/cooldown/${clusterId}`),
-getSubstituteStatusV3: (clusterId) => api.get(`/api/v1/atharvaai/v3/substitute/${clusterId}`),
-getStateMachine: (clusterId) => api.get(`/api/v1/atharvaai/v3/state-machine/${clusterId}`),
-setOptimizationMode: (clusterId, mode) => api.put(`/api/v1/atharvaai/v3/cluster/${clusterId}/optimization-mode`, null, { params: { mode } }),
-upgradeModelVersion: (clusterId, version) => api.put(`/api/v1/atharvaai/v3/cluster/${clusterId}/model-version`, null, { params: { version } }),
-getDecisionMetrics: () => api.get('/api/v1/atharvaai/v3/metrics'),
-getWorkloadStatus: (clusterId) => api.get(`/api/v1/atharvaai/v3/workload-status/${clusterId}`),
+getGlobalIntelligenceStatus: (region) => api.get('/api/v1/ascpai/v3/global-intelligence/status', { params: { region } }),
+getDiversityStatus: (clusterId) => api.get(`/api/v1/ascpai/v3/diversity/${clusterId}`),
+getCooldownStatusV3: (clusterId) => api.get(`/api/v1/ascpai/v3/cooldown/${clusterId}`),
+getSubstituteStatusV3: (clusterId) => api.get(`/api/v1/ascpai/v3/substitute/${clusterId}`),
+getStateMachine: (clusterId) => api.get(`/api/v1/ascpai/v3/state-machine/${clusterId}`),
+setOptimizationMode: (clusterId, mode) => api.put(`/api/v1/ascpai/v3/cluster/${clusterId}/optimization-mode`, null, { params: { mode } }),
+upgradeModelVersion: (clusterId, version) => api.put(`/api/v1/ascpai/v3/cluster/${clusterId}/model-version`, null, { params: { version } }),
+getDecisionMetrics: () => api.get('/api/v1/ascpai/v3/metrics'),
+getWorkloadStatus: (clusterId) => api.get(`/api/v1/ascpai/v3/workload-status/${clusterId}`),
 deploySubstitute: (clusterId, targetNodeName) => api.post(`/api/v1/karpenter/v3/substitute/${clusterId}/deploy`, null, { params: { target_node_name: targetNodeName } }),
 getSubstituteStatusDetailed: (clusterId) => api.get(`/api/v1/karpenter/v3/substitute/${clusterId}/status`),
 getCooldownDetailed: (clusterId) => api.get(`/api/v1/karpenter/v3/cooldown/${clusterId}`),
@@ -171,7 +171,7 @@ getCooldownDetailed: (clusterId) => api.get(`/api/v1/karpenter/v3/cooldown/${clu
 
 ## 🔌 Page Integration
 
-### Updated File: `frontend/src/pages/AtharvaAiPage.jsx`
+### Updated File: `frontend/src/pages/ASCPAiPage.jsx`
 
 **Changes Made:**
 1. Added `DecisionEngineV3Dashboard` import
@@ -187,15 +187,15 @@ getCooldownDetailed: (clusterId) => api.get(`/api/v1/karpenter/v3/cooldown/${clu
 5. Pass `clusterRegion` to DecisionEngineV3Dashboard
 
 **Navigation URL:**
-- Access via: `/atharvaai?tab=decision-engine-v3`
+- Access via: `/ascpai?tab=decision-engine-v3`
 
 ---
 
 ## 📦 Component Export Index
 
-### Created File: `frontend/src/components/atharvaai/index.js`
+### Created File: `frontend/src/components/ascpai/index.js`
 
-**Purpose:** Central export point for all AtharvaAI components
+**Purpose:** Central export point for all ASCP.AI components
 
 **Exports:**
 ```javascript
@@ -255,7 +255,7 @@ export { default as DecisionEngine } from './DecisionEngine';
 
 ### Decision Engine v3 Dashboard Usage:
 
-1. **Navigate to AtharvaAI page** → `/atharvaai`
+1. **Navigate to ASCP.AI page** → `/ascpai`
 2. **Select target cluster** from dropdown
 3. **Click "Decision Engine v3" tab**
 4. **View Dashboard with 6 panels:**
@@ -298,7 +298,7 @@ All components have auto-refresh intervals:
 | **New UI Components** | 6 |
 | **New Lines of Code (UI)** | ~915 |
 | **New API Endpoints Integrated** | 12 |
-| **Files Modified** | 2 (api.js, AtharvaAiPage.jsx) |
+| **Files Modified** | 2 (api.js, ASCPAiPage.jsx) |
 | **Files Created** | 7 (6 components + 1 index) |
 | **Total UI Integration** | ✅ 100% Complete |
 
@@ -313,7 +313,7 @@ All components have auto-refresh intervals:
 - [x] Create SubstituteStateViewer component
 - [x] Create DecisionEngineV3Dashboard component
 - [x] Update api.js with v3 endpoints
-- [x] Integrate into AtharvaAiPage with navigation tabs
+- [x] Integrate into ASCPAiPage with navigation tabs
 - [x] Create component export index
 - [x] Ensure design system consistency
 - [x] Add auto-refresh intervals

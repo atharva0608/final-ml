@@ -1,13 +1,13 @@
 /**
  * VolatilityMonitor — Self-contained volatility banner (Task 7.5)
  * 
- * Polls GET /api/v1/atharvaai/volatility every 10 minutes (matches 2hr Redis TTL).
+ * Polls GET /api/v1/ascpai/volatility every 10 minutes (matches 2hr Redis TTL).
  * Previously this logic was inline in MainLayout.jsx, causing re-fetches on
  * every route change. Now isolated so a slow/failing endpoint only delays
  * the banner — the rest of the UI renders immediately.
  */
 import React, { useState, useEffect } from 'react';
-import { atharvaAiAPI } from '../../services/api';
+import { ascpaiAPI } from '../../services/api';
 
 const VolatilityMonitor = () => {
     const [volatility, setVolatility] = useState({ regime: 'NORMAL' });
@@ -17,7 +17,7 @@ const VolatilityMonitor = () => {
 
         const fetchVolatility = async () => {
             try {
-                const res = await atharvaAiAPI.getVolatilityStatus();
+                const res = await ascpaiAPI.getVolatilityStatus();
                 if (mounted) {
                     setVolatility(res.data || { regime: 'NORMAL' });
                 }
@@ -49,4 +49,5 @@ const VolatilityMonitor = () => {
     );
 };
 
-export default VolatilityMonitor;
+// React.memo prevents re-renders on parent re-mount (route changes in MainLayout)
+export default React.memo(VolatilityMonitor);

@@ -325,10 +325,39 @@ class HibernationService:
 
 
     def _check_matrix_overlap(self, m1: str, m2: str, t1: ScheduleType, t2: ScheduleType) -> int:
-        """Check overlap between matrices"""
-        if t1 != ScheduleType.WEEKLY or t2 != ScheduleType.WEEKLY:
-            return 0
-        return sum(1 for i in range(min(len(m1), len(m2))) if m1[i] == "1" and m2[i] == "1")
+        """
+        Count overlapping active slots between two hibernation schedules.
+
+        All schedule types are normalised to a 744-slot monthly array (24h × 31d)
+        before comparison so DAILY and MONTHLY conflicts are detected alongside WEEKLY.
+
+        Slot counts per type:
+          WEEKLY  → 168 slots (7d × 24h)  — expanded ×4.43 to 744 slots
+          DAILY   → 24 slots              — tiled ×31 to 744 slots
+          MONTHLY → 744 slots             — used directly
+        """
+        MONTHLY_SLOTS = 744  # 24 × 31
+
+        def _expand(matrix: str, schedule_type: ScheduleType) -> str:
+            if schedule_type == ScheduleType.MONTHLY:
+                # Already full-month; pad/trim to exactly 744 slots
+                return (matrix + "0" * MONTHLY_SLOTS)[:MONTHLY_SLOTS]
+            if schedule_type == ScheduleType.DAILY:
+                # 24-slot day → tile across 31 days
+                day = (matrix + "0" * 24)[:24]
+                tiled = (day * 32)[:MONTHLY_SLOTS]
+                return tiled
+            if schedule_type == ScheduleType.WEEKLY:
+                # 168-slot week → tile across ~4.43 weeks
+                week = (matrix + "0" * 168)[:168]
+                tiled = (week * 5)[:MONTHLY_SLOTS]
+                return tiled
+            # Unknown type — treat as no active slots
+            return "0" * MONTHLY_SLOTS
+
+        e1 = _expand(m1, t1)
+        e2 = _expand(m2, t2)
+        return sum(1 for a, b in zip(e1, e2) if a == "1" and b == "1")
 
     def get_savings_history(self, months: int, organization_id: str) -> List[Dict[str, Any]]:
         """

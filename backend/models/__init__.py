@@ -11,7 +11,6 @@ from backend.models.audit_log import AuditLog
 from backend.models.ml_model import MLModel
 from backend.models.node_template import NodeTemplate, NodeTemplateVersion, ClusterTemplateMapping
 from backend.models.optimization_job import OptimizationJob
-from backend.models.lab_experiment import LabExperiment
 from backend.models.agent_action import AgentAction, AgentActionStatus, AgentActionType
 from backend.models.cluster_metric import ClusterMetric
 from backend.models.pod_metric import PodMetric
@@ -100,7 +99,6 @@ __all__ = [
     "NodeTemplateVersion",
     "ClusterTemplateMapping",
     "OptimizationJob",
-    "LabExperiment",
     "AgentAction",
     "AgentActionStatus",
     "AgentActionType",

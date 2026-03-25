@@ -97,20 +97,6 @@ from backend.schemas.admin_schemas import (
     ImpersonateResponse,
 )
 
-# Lab schemas
-from backend.schemas.lab_schemas import (
-    TelemetryData,
-    LabExperimentCreate,
-    LabExperimentResponse,
-    MLModelUpload,
-    MLModelResponse,
-    MLModelList,
-    ABTestConfig,
-    ABTestVariant,
-    ABTestResults,
-    ModelPromoteRequest,
-)
-
 __all__ = [
     # Auth
     "SignupRequest",
@@ -181,15 +167,4 @@ __all__ = [
     "CreateUserRequest",
     "ImpersonateRequest",
     "ImpersonateResponse",
-    # Lab
-    "TelemetryData",
-    "LabExperimentCreate",
-    "LabExperimentResponse",
-    "MLModelUpload",
-    "MLModelResponse",
-    "MLModelList",
-    "ABTestConfig",
-    "ABTestVariant",
-    "ABTestResults",
-    "ModelPromoteRequest",
 ]

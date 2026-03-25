@@ -13,7 +13,6 @@ from backend.services.policy_service import PolicyService, get_policy_service
 from backend.services.hibernation_service import HibernationService, get_hibernation_service
 from backend.services.metrics_service import MetricsService, get_metrics_service
 from backend.services.admin_service import AdminService, get_admin_service
-from backend.services.lab_service import LabService, get_lab_service
 
 __all__ = [
     "AuthService",
@@ -34,6 +33,4 @@ __all__ = [
     "get_metrics_service",
     "AdminService",
     "get_admin_service",
-    "LabService",
-    "get_lab_service",
 ]

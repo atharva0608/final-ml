@@ -70,7 +70,7 @@ FULL 15-STEP PIPELINE
            Reads from Redis cache or falls back to BALANCED
 
   STEP 5:  Load global rankings
-           Source: Intelligence Layer (atharvaai_worker.py)
+           Source: Intelligence Layer (ascpai_worker.py)
            Reads: spot:global_rankings:{region} from Redis
            Blocks: Rankings not available (intelligence layer not running)
 

@@ -239,7 +239,6 @@ class MetricsCollector:
                 if local_metric:
                     node_metrics.append(local_metric)
                     logger.info("Collected local node metrics (X-Ray Vision enabled)")
-                    return node_metrics
             except Exception as e:
                 logger.warning(f"Direct host access denied. Falling back to API Metrics. Data may be delayed. Error: {e}")
                 # Fallback to API method below if local fails

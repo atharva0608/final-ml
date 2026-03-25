@@ -16,8 +16,8 @@ spot:substitute:state:{id}          TTL: Variable SubstituteManager
 spot:dryrun_count:{region}          TTL: 1h       PoolRankingService
 spot:dryrun_failures_24h:{pool}     TTL: 24h      PoolRankingService
 hibernation:lock:{sched}:{cluster}  TTL: 180s     HibernationWorker
-atharvaai:ml_fail_count             TTL: 10min    PoolRankingService
-atharvaai:ml_degraded               TTL: 10min    PoolRankingService
+ascpai:ml_fail_count             TTL: 10min    PoolRankingService
+ascpai:ml_degraded               TTL: 10min    PoolRankingService
 
 NEW KEYS (added by hardening):
 spot:cluster_state:{cluster_id}     TTL: NONE     risk_engine.py

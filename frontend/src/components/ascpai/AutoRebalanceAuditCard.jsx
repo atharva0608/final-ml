@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Card } from '../shared';
 import { FiSliders, FiCheckCircle, FiAlertTriangle, FiArrowUpRight, FiActivity, FiInbox, FiShield, FiClock, FiThumbsUp, FiThumbsDown } from 'react-icons/fi';
-import api, { clusterAPI, adminAPI, atharvaaiAPI } from '../../services/api';
+import api, { clusterAPI, adminAPI, ascpaiAPI } from '../../services/api';
 import AutoRebalanceAuditModal from './AutoRebalanceAuditModal';
 
 const AutoRebalanceAuditCard = ({ clusterId, initialEnabled = false }) => {
@@ -47,8 +47,8 @@ const AutoRebalanceAuditCard = ({ clusterId, initialEnabled = false }) => {
     const fetchAuditLog = async () => {
         try {
             const params = clusterId
-                ? `/api/v1/atharvaai/rebalancing/status?limit=5&cluster_id=${clusterId}`
-                : '/api/v1/atharvaai/rebalancing/status?limit=5';
+                ? `/api/v1/ascpai/rebalancing/status?limit=5&cluster_id=${clusterId}`
+                : '/api/v1/ascpai/rebalancing/status?limit=5';
             const response = await api.get(params);
             if (response.data && Array.isArray(response.data)) {
                 setDecisions(response.data);
@@ -92,7 +92,7 @@ const AutoRebalanceAuditCard = ({ clusterId, initialEnabled = false }) => {
     const handleApprove = async (actionId) => {
         setApproving(actionId);
         try {
-            await atharvaaiAPI.approveRebalancingAction(actionId);
+            await ascpaiAPI.approveRebalancingAction(actionId);
             await fetchAuditLog();
         } catch (e) {
             alert('Failed to approve: ' + (e.response?.data?.detail || e.message));
@@ -104,7 +104,7 @@ const AutoRebalanceAuditCard = ({ clusterId, initialEnabled = false }) => {
     const handleDeny = async (actionId) => {
         setApproving(actionId);
         try {
-            await atharvaaiAPI.denyRebalancingAction(actionId);
+            await ascpaiAPI.denyRebalancingAction(actionId);
             await fetchAuditLog();
         } catch (e) {
             alert('Failed to deny: ' + (e.response?.data?.detail || e.message));

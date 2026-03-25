@@ -41,7 +41,7 @@ The Pool Rankings page was showing manual input fields for:
 **Before:**
 ```jsx
 ┌─────────────────────────────────────────────┐
-│ AtharvaAi Pool Rankings                     │
+│ ASCPAi Pool Rankings                     │
 │ ML-driven spot instance pool recommendations│
 └─────────────────────────────────────────────┘
 
@@ -61,7 +61,7 @@ The Pool Rankings page was showing manual input fields for:
 **After:**
 ```jsx
 ┌─────────────────────────────────────────────┐
-│ AtharvaAi Pool Rankings                     │
+│ ASCPAi Pool Rankings                     │
 │ ML-driven spot pool recommendations         │
 │ (using cluster's node template)             │  ← ✅ Clarified
 └─────────────────────────────────────────────┘
@@ -76,7 +76,7 @@ The Pool Rankings page was showing manual input fields for:
 
 ## 📁 Files Modified
 
-**frontend/src/components/atharvaai/PoolRankings.jsx** (-22 lines)
+**frontend/src/components/ascpai/PoolRankings.jsx** (-22 lines)
 
 **Changes:**
 1. **Removed lines 145-166:** Entire "Node Template Constraints" filter section
@@ -170,7 +170,7 @@ URL: http://localhost?tab=rankings
 Expected: Rankings refresh with cluster-specific template constraints
 
 # Expected API Call:
-POST /api/v1/atharvaai/pools/rankings
+POST /api/v1/ascpai/pools/rankings
 {
   "template": {
     "vcpu_min": 2,      // From cluster's template
@@ -293,7 +293,7 @@ This removal is part of a larger cleanup effort:
 ## 📚 Documentation
 
 **Related Files:**
-- Pool Rankings Component: `frontend/src/components/atharvaai/PoolRankings.jsx`
+- Pool Rankings Component: `frontend/src/components/ascpai/PoolRankings.jsx`
 - Pool Ranking Service: `backend/services/pool_ranking_service.py`
 - Node Template API: `backend/api/node_template_routes.py`
 - Previous Changes: `POOL_RANKINGS_IMPROVEMENTS.md`

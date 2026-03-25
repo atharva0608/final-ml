@@ -95,11 +95,11 @@
 
 | Task # | Component | Status | Lines | Files |
 |--------|-----------|--------|-------|-------|
-| **#17** | **v3 API Endpoints** | ✅ **COMPLETE** | ~150 | `atharvaai_routes.py`, `karpenter_routes.py` |
+| **#17** | **v3 API Endpoints** | ✅ **COMPLETE** | ~150 | `ascpai_routes.py`, `karpenter_routes.py` |
 
 **New Endpoints Added:**
 
-**atharvaai_routes.py (10 endpoints):**
+**ascpai_routes.py (10 endpoints):**
 1. `GET /v3/global-intelligence/status` - Global rankings status
 2. `GET /v3/diversity/{cluster_id}` - Diversity gauges
 3. `GET /v3/cooldown/{cluster_id}` - Cooldown status
@@ -318,7 +318,7 @@ beat_schedule = {
 5. `backend/services/blacklist_service.py` (+7 methods, ~200 lines)
 6. `backend/services/karpenter_service.py` (+100 lines)
 7. `backend/services/rightsizing_service.py` (+50 lines)
-8. `backend/api/atharvaai_routes.py` (+10 endpoints)
+8. `backend/api/ascpai_routes.py` (+10 endpoints)
 9. `backend/api/karpenter_routes.py` (+2 endpoints)
 10. `ml_model/risk_threshold.json` (removed weights, added model_version)
 

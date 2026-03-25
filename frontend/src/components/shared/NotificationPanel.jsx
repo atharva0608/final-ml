@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { Link } from "react-router-dom";
-import { karpenterAPI, tagAutomationAPI, approvalAPI, atharvaaiAPI, hibernationAPI } from "../../services/api";
+import { karpenterAPI, tagAutomationAPI, approvalAPI, ascpaiAPI, hibernationAPI } from "../../services/api";
 
 // ─── Design tokens — strict app theme ────────────────────────────────────────
 const C = {
@@ -412,9 +412,9 @@ export function NotificationPanel({ isOpen, onClose, onUnreadCount }) {
                 console.error("Failed fetching approvals for notifications:", e);
             }
 
-            // 4. Fetch Alerts / AtharvaAI Rebalancing
+            // 4. Fetch Alerts / ASCP.AI Rebalancing
             try {
-                const alertRes = await atharvaaiAPI.getRebalancingStatus(null, 3);
+                const alertRes = await ascpaiAPI.getRebalancingStatus(null, 3);
                 if (alertRes.data && Array.isArray(alertRes.data)) {
                     alertRes.data.forEach((r, i) => {
                         compiledNotifs.push({
@@ -426,7 +426,7 @@ export function NotificationPanel({ isOpen, onClose, onUnreadCount }) {
                             body: `Pool ${r.az || 'Region'} showing elevated interruption rate. Rebalancing active.`,
                             meta: { Pool: r.az || '-', Rate: `${r.interruption_rate || 0}%`, Status: "Rebalancing" },
                             sourceLabel: "ASCP.ai",
-                            link: "/atharva-ai"
+                            link: "/ascp-ai"
                         });
                     });
                 }

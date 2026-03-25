@@ -156,7 +156,7 @@ class KarpenterService:
                     },
                     "annotations": {
                         "last-updated": datetime.utcnow().isoformat(),
-                        "updated-by": "atharvaai-fallback",
+                        "updated-by": "ascpai-fallback",
                         "fallback-reason": "no-safe-spot-pools"
                     }
                 },
@@ -303,7 +303,7 @@ class KarpenterService:
                 "metadata": {
                     "annotations": {
                         "last-updated": datetime.utcnow().isoformat(),
-                        "updated-by": "atharvaai-fallback-revert"
+                        "updated-by": "ascpai-fallback-revert"
                     }
                 }
             }
@@ -690,7 +690,7 @@ class KarpenterService:
                     "labels": {"managed-by": "spot-optimizer", "ml-optimized": "true"},
                     "annotations": {
                         "last-updated": datetime.utcnow().isoformat(),
-                        "updated-by": "atharvaai-ml-pipeline"
+                        "updated-by": "ascpai-ml-pipeline"
                     }
                 },
                 "spec": {
@@ -836,10 +836,10 @@ class KarpenterService:
             if not cluster:
                 return {'detected': False, 'reason': 'cluster_not_found'}
 
-            # Check karpenter_mode in cluster settings
-            settings = cluster.settings or {}
-            karpenter_mode = settings.get('karpenter_mode', 'none')
-            detected = karpenter_mode not in ('none', 'disabled', None, '')
+            # Check karpenter_mode via direct Cluster column (cluster.karpenter_mode)
+            # cluster.settings does not exist as a Cluster model attribute
+            karpenter_mode = cluster.karpenter_mode.value if cluster.karpenter_mode else 'none'
+            detected = cluster.karpenter_mode is not None
 
             result = {
                 'detected': detected,

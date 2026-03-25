@@ -349,11 +349,11 @@ Interpretation:
 
 ---
 
-**Status**: ✅ Feature set identified - **ACTIVE in AtharvaAi Pool Selection System**
+**Status**: ✅ Feature set identified - **ACTIVE in ASCPAi Pool Selection System**
 
 ---
 
-## 🎯 Usage in AtharvaAi Pool Selection System
+## 🎯 Usage in ASCPAi Pool Selection System
 
 ### Integration Context
 
@@ -362,7 +362,7 @@ The 39-feature ML models are integrated into **System A: Pool Selection Pipeline
 ### System Architecture
 
 ```
-AtharvaAi Pool Selection & Termination Monitoring
+ASCPAi Pool Selection & Termination Monitoring
 ├── System A: Pool Selection Pipeline (Scheduled - Every 30s)
 │   ├── Step 1: Node Template Filtering
 │   ├── Step 2: AZ Filtering (User preferences)
@@ -642,4 +642,4 @@ Pool drops in ranking, avoided by all clients
 
 ---
 
-**Status**: ✅ Feature set identified - **ACTIVE in AtharvaAi Pool Selection System**
+**Status**: ✅ Feature set identified - **ACTIVE in ASCPAi Pool Selection System**

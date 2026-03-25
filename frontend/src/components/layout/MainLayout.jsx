@@ -2,10 +2,9 @@ import React, { useState, useEffect } from 'react';
 import { Outlet, Link, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../../hooks/useAuth';
 import { useHeaderStore } from '../../store/useStore';
-import { clusterAPI, atharvaAiAPI, approvalsAPI } from '../../services/api';
+import { clusterAPI, ascpaiAPI, approvalsAPI } from '../../services/api';
 import { FiHome, FiServer, FiFileText, FiSettings, FiTarget, FiClock, FiBarChart2, FiUsers, FiActivity, FiLogOut, FiClipboard, FiBriefcase, FiCheckSquare, FiShield, FiLock, FiTag, FiZap, FiCpu } from 'react-icons/fi';
 import { NotificationPanel, ICONS } from '../shared/NotificationPanel';
-import VolatilityMonitor from '../atharvaai/VolatilityMonitor';
 
 // Pending Approvals Badge — polls for real-time count
 const PendingApprovalsBadge = () => {
@@ -92,12 +91,12 @@ const routeMap = {
   "dashboard-cost": "/dashboard?tab=cost",
   "dashboard-infra": "/dashboard?tab=infra",
   "dashboard-gov": "/dashboard?tab=governance",
-  "atharvaai": "/atharva-ai",
-  "atharvaai-dashboard": "/atharva-ai?tab=dashboard",
-  "atharvaai-decision-engine-v3": "/atharva-ai?tab=decision-engine-v3",
-  "atharvaai-rankings": "/atharva-ai?tab=rankings",
-  "atharvaai-heatmap": "/atharva-ai?tab=heatmap",
-  "atharvaai-rebalancing": "/atharva-ai?tab=rebalancing",
+  "ascpai": "/ascp-ai",
+  "ascpai-dashboard": "/ascp-ai?tab=dashboard",
+  "ascpai-decision-engine-v3": "/ascp-ai?tab=decision-engine-v3",
+  "ascpai-rankings": "/ascp-ai?tab=rankings",
+  "ascpai-heatmap": "/ascp-ai?tab=heatmap",
+  "ascpai-rebalancing": "/ascp-ai?tab=rebalancing",
   "rightsizing": "/right-sizing",
   "rs-karpenter": "/right-sizing?tab=karpenter",
   "rs-config": "/right-sizing?tab=config",
@@ -145,18 +144,18 @@ const NAV_STRUCTURE = [
     section: "COST INTELLIGENCE",
     items: [
       {
-        id: "atharvaai",
+        id: "ascpai",
         label: "ASCP.ai",
         icon: "◈",
         badge: "ML",
         badgeColor: "#6366f1",
         description: "ML pool rankings & interruption heatmap",
         sub: [
-          { id: "atharvaai-dashboard", label: "Dashboard" },
-          { id: "atharvaai-decision-engine-v3", label: "Decision Engine v3" },
-          { id: "atharvaai-rankings", label: "Pool Rankings" },
-          { id: "atharvaai-heatmap", label: "Interruption Heatmap" },
-          { id: "atharvaai-rebalancing", label: "Rebalancing" }
+          { id: "ascpai-dashboard", label: "Dashboard" },
+          { id: "ascpai-decision-engine-v3", label: "Decision Engine v3" },
+          { id: "ascpai-rankings", label: "Pool Rankings" },
+          { id: "ascpai-heatmap", label: "Interruption Heatmap" },
+          { id: "ascpai-rebalancing", label: "Rebalancing" }
         ]
       },
       {
@@ -273,7 +272,7 @@ const NAV_STRUCTURE = [
 ];
 
 const SEARCH_INDEX = [
-  { id: "atharvaai", terms: ["ml", "machine learning", "pool", "rankings", "onnx", "spot advisor", "interruption", "heatmap", "rebalancing", "blacklist", "capacity", "ascp.ai", "ascp"] },
+  { id: "ascpai", terms: ["ml", "machine learning", "pool", "rankings", "onnx", "spot advisor", "interruption", "heatmap", "rebalancing", "blacklist", "capacity", "ascp.ai", "ascp"] },
   { id: "rightsizing", terms: ["karpenter", "right sizing", "rightsizing", "downsize", "recommendations", "cpu", "memory", "utilization", "overprovisioned", "savings"] },
   { id: "resource-hygiene", terms: ["zombie", "cleanup", "ebs", "ec2", "elastic ip", "s3", "snapshot", "stopped", "orphaned", "waste", "idle", "unused", "delete", "scan"] },
   { id: "hibernation", terms: ["sleep", "wake", "schedule", "namespace sleep", "nuclear", "snapshot restore", "cost schedule", "off hours", "weekends", "nights"] },
@@ -330,9 +329,6 @@ const MainLayout = () => {
 
   const isSuperAdmin = user?.role === 'SUPER_ADMIN' || user?.role === 'super_admin';
 
-  // Task 7.5: Volatility monitoring is now handled by VolatilityMonitor component
-  // The inline fetch was removed to prevent re-fetching on every route change
-
   // Navigation active state determined by current pathname and hash
   const currentPath = location.pathname;
   let activeId = "dashboard";
@@ -348,7 +344,7 @@ const MainLayout = () => {
   }
 
   // Pre-expand sections
-  const [expanded, setExpanded] = useState(new Set(["atharvaai", "rightsizing", "hibernation"]));
+  const [expanded, setExpanded] = useState(new Set(["ascpai", "rightsizing", "hibernation"]));
   const [search, setSearch] = useState("");
 
   const searchResults = searchNav(search);
@@ -785,9 +781,6 @@ const MainLayout = () => {
 
       {/* Main Content */}
       <div className="flex-1 flex flex-col min-w-0 transition-all duration-300 relative">
-        {/* Task 7.5: Self-contained VolatilityMonitor — manages own fetch + state */}
-        <VolatilityMonitor />
-
         {/* Glass Pill Navbar */}
         <div className={`px-6 pt-5 pb-2 z-20 sticky top-0 bg-[#f0f2f5]/80 backdrop-blur-md`}>
           <div style={{

@@ -79,12 +79,22 @@ def _compute_cluster_coverage(db: Session, redis, cluster) -> dict:
         per_node_summary = []
 
         for inst in instances:
+            try:
+                from backend.workers.tasks.cache_builder import _lookup_specs as _cb_specs
+                _vcpu, _mem, _arch = _cb_specs(inst.instance_type)
+            except Exception:
+                _vcpu, _mem, _arch = 0, 0.0, 'amd64'
             node_info = {
                 'instance_type': inst.instance_type,
                 'az': inst.az,
                 'spot_price': inst.price or 0.0,
                 'risk_tier': 2,  # conservative default for OD nodes
-                'architecture': getattr(inst, 'architecture', None) or 'amd64',
+                'architecture': _arch or getattr(inst, 'architecture', None) or 'amd64',
+                'resource_profile': {
+                    'min_vcpu_required': _vcpu,
+                    'min_memory_required': _mem,
+                    'architecture': _arch or 'amd64',
+                },
             }
             alternatives = de.rank_for_node(cluster.id, node_info, region)
             alt_count = len(alternatives)

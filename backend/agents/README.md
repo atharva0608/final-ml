@@ -63,7 +63,7 @@ This directory contains a complete 8-agent autonomous architecture for intellige
 
 ## The 8 Agents
 
-### 1. Global Intelligence Agent (AtharvaAI Core)
+### 1. Global Intelligence Agent (ASCP.AI Core)
 
 **Purpose:** Generate region-wide spot pool intelligence for all tenants.
 

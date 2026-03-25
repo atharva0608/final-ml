@@ -2,13 +2,13 @@
 
 **Last Updated**: 2026-02-16 (PRODUCTION INTEGRATION COMPLETE)
 **Model Directory**: `/ml_model/model/`
-**Status**: ✅ **ACTIVELY DEPLOYED in AtharvaAi Pool Selection System**
+**Status**: ✅ **ACTIVELY DEPLOYED in ASCPAi Pool Selection System**
 
 ---
 
 ## 🚀 PRODUCTION STATUS
 
-### ✅ Integration Complete - AtharvaAi System
+### ✅ Integration Complete - ASCPAi System
 
 **Deployment**: Production-ready, integrated into **System A: Pool Selection Pipeline**
 
@@ -25,9 +25,9 @@
 **Production Services**:
 - `backend/services/pool_ranking_service.py` - ML scoring orchestrator
 - `backend/services/ml_feature_service.py` - 45-feature engineering pipeline
-- `backend/api/atharvaai_routes.py` - API endpoints
+- `backend/api/ascpai_routes.py` - API endpoints
 
-**API Endpoint**: `GET /api/v1/atharvaai/pools/rankings`
+**API Endpoint**: `GET /api/v1/ascpai/pools/rankings`
 
 ### Production Integration Flow
 
@@ -75,7 +75,7 @@ System B: Termination Monitoring (Event-driven)
 1. **BOTH models require 45 features** - ✅ RESOLVED (39 numerical + 6 categorical)
 2. **BOTH models are TreeEnsembleRegressors** - ✅ CONFIRMED (LightGBM trained)
 3. **Full feature set identified** - ✅ ALL 39 features documented in `FEATURE_MAPPING_COMPLETE.md`
-4. **Production integration complete** - ✅ DEPLOYED in AtharvaAi pool ranking system
+4. **Production integration complete** - ✅ DEPLOYED in ASCPAi pool ranking system
 5. **95% model accuracy** with full feature set - ✅ VALIDATED against real AWS data
 
 ### 📊 Quick Comparison
@@ -121,7 +121,7 @@ Nodes: 1 (TreeEnsembleRegressor)
 ### Purpose (PRODUCTION CONFIRMED)
 **Regression model** that predicts **Spot Savings Percentage** (how much cheaper spot is vs on-demand).
 
-**Production Use**: Primary scoring metric in AtharvaAi pool ranking - higher savings = better pool ranking.
+**Production Use**: Primary scoring metric in ASCPAi pool ranking - higher savings = better pool ranking.
 
 ### Actual Inputs (CONFIRMED via Inspection)
 

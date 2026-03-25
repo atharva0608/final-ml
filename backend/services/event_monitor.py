@@ -53,7 +53,7 @@ class EventMonitor:
 
     VOLATILITY_TTL_HOURS = 2  # Flag lifetime (survives one ranking cycle)
     VOLATILITY_PERCENTILE = 95  # Threshold for high volatility regime
-    TERMINATION_BLACKLIST_HOURS = 24  # Fixed 24h for termination events
+    TERMINATION_BLACKLIST_HOURS = 0.25  # 15 min — spot capacity recovers quickly
 
     def __init__(self, db: Session, redis: Redis):
         """
@@ -193,11 +193,14 @@ class EventMonitor:
                 self._emit_alert(cluster_id, pool_key, "drain_failed")
 
         # Step 4: Blacklist pool (DETERMINISTIC — bypasses cascade suspension)
-        blacklist_result = self.blacklist.blacklist_pool(
+        # Use tiered method with explicit 15-min TTL: spot capacity recovers quickly,
+        # and 24h blacklists cascade to block too many pools simultaneously.
+        blacklist_result = self.blacklist.blacklist_pool_tiered(
             instance_type=instance_type,
             az=az,
             region=region,
-            reason="spot_termination_notice"
+            reason="spot_termination_notice",
+            ttl_hours=self.TERMINATION_BLACKLIST_HOURS,
         )
         result["pool_blacklisted"] = True
 

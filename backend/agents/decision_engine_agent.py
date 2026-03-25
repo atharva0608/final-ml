@@ -203,8 +203,19 @@ No explanations beyond JSON."""
         family_counts = {}
         total_instances = len(existing_instances)
 
+        # Pre-calculate existing pool keys for faster lookup
+        existing_pool_keys = set()
         for inst in existing_instances:
-            family = inst.split('.')[0]  # e.g., m5.large → m5
+            # Handle both string and dict formats for robustness
+            if isinstance(inst, dict):
+                itype = inst.get('type') or inst.get('instance_type')
+                iaz = inst.get('az')
+                if itype and iaz:
+                    existing_pool_keys.add(f"{itype}:{iaz}")
+                family = itype.split('.')[0] if itype else "unknown"
+            else:
+                family = inst.split('.')[0]
+            
             family_counts[family] = family_counts.get(family, 0) + 1
 
         for pool in global_pools:
@@ -221,8 +232,8 @@ No explanations beyond JSON."""
                 continue
 
             # 3. Apply diversity rules
-            # Check for duplicate instance_type + AZ
-            if pool_key in [f"{i['type']}:{i['az']}" for i in existing_instances]:
+            # Check for duplicate instance_type + AZ (EXCLUDES CURRENT POOL)
+            if pool_key in existing_pool_keys:
                 continue
 
             # Check max_same_family_ratio <= 0.4

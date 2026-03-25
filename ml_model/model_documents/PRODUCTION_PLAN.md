@@ -699,7 +699,7 @@ class GlobalPoolCacheService:
 **API Changes:**
 
 ```python
-# backend/api/atharvaai_routes.py
+# backend/api/ascpai_routes.py
 
 @router.get("/pools/rankings")
 async def get_pool_rankings(

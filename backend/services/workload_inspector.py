@@ -42,7 +42,7 @@ class WorkloadInspector:
               Never trust cluster.workload_type column for safety decisions.
     """
 
-    CLASSIFICATION_TTL = 600  # 10 minutes
+    CLASSIFICATION_TTL = 540  # 9 minutes (Issue 3a: was 600s — beat fires every 9min, TTL must be < period)
 
     def __init__(self, redis: Redis, k8s_client=None):
         self.redis = redis

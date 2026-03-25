@@ -1,14 +1,24 @@
 """
-Dry-Run Helper — CreateFleet DryRun for capacity validation
-============================================================
+Dry-Run Helper — RunInstances DryRun for real spot capacity validation
+======================================================================
 
-Validates that a specific instance type in a specific AZ has spot capacity
-by calling EC2 CreateFleet with DryRun=True. Results are cached in Redis
-(TTL 5 minutes) to avoid repeated API calls.
+Validates that a specific instance type in a specific AZ has ACTUAL spot
+capacity by calling EC2 RunInstances with DryRun=True.
+
+DryRun=True with InstanceMarketOptions.MarketType=spot returns:
+  - DryRunOperation  → capacity available (treat as PASS)
+  - InsufficientInstanceCapacity → no capacity (treat as FAIL)
+  - Other ClientError → fail-safe (treat as FAIL)
+
+Results cached in Redis:
+  pass → 600s TTL (10 min)
+  fail → 300s TTL  (5 min, retry sooner on constrained pools)
+
+AMI ID is resolved once per region via describe_images and cached 24h.
 """
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict
 
 from redis import Redis
@@ -16,7 +26,48 @@ from redis import Redis
 from backend.core.logger import logger
 
 
-DRY_RUN_CACHE_TTL = 120  # 2 minutes — shorter TTL reduces stale capacity decisions
+DRY_RUN_PASS_TTL = 480  # 8 minutes (Issue 3b: was 600s — must refresh before next beat cycle)
+DRY_RUN_FAIL_TTL = 300  # 5 minutes — retry failed pools sooner
+DRY_RUN_CACHE_TTL = DRY_RUN_PASS_TTL  # backward-compat alias
+
+_AMI_CACHE_TTL = 86400  # 24 hours
+
+
+def _get_ami_for_region(ec2, region: str, redis: Optional[Redis]) -> Optional[str]:
+    """
+    Return a recent Amazon Linux 2 AMI ID for the given region.
+    Cached in Redis for 24 hours to avoid repeated describe_images calls.
+    """
+    cache_key = f"dry_run:ami:{region}"
+    if redis:
+        try:
+            cached = redis.get(cache_key)
+            if cached:
+                return cached.decode() if isinstance(cached, bytes) else cached
+        except Exception:
+            pass
+
+    try:
+        resp = ec2.describe_images(
+            Owners=['amazon'],
+            Filters=[
+                {'Name': 'name', 'Values': ['amzn2-ami-hvm-*-x86_64-gp2']},
+                {'Name': 'state', 'Values': ['available']},
+            ],
+        )
+        images = sorted(resp.get('Images', []), key=lambda x: x.get('CreationDate', ''), reverse=True)
+        if not images:
+            return None
+        ami_id = images[0]['ImageId']
+        if redis:
+            try:
+                redis.setex(cache_key, _AMI_CACHE_TTL, ami_id)
+            except Exception:
+                pass
+        return ami_id
+    except Exception as e:
+        logger.debug(f"[dry_run] describe_images failed for {region}: {e}")
+        return None
 
 
 def dry_run_pool(
@@ -27,17 +78,12 @@ def dry_run_pool(
     credentials: Optional[Dict] = None,
 ) -> bool:
     """
-    Validate capacity for instance_type in az via CreateFleet DryRun.
+    Validate ACTUAL spot capacity for instance_type in az via RunInstances DryRun.
 
-    Args:
-        region: AWS region
-        instance_type: EC2 instance type (e.g., "m5.large")
-        az: Availability zone (e.g., "ap-south-1a")
-        redis: Redis client for result caching
-        credentials: Optional dict with aws_access_key_id, aws_secret_access_key
+    Uses ec2.run_instances(DryRun=True, InstanceMarketOptions=spot) to check real
+    spot capacity — not just whether the type is offered in the AZ.
 
-    Returns:
-        True if capacity is available, False otherwise
+    Returns True if capacity is available, False otherwise.
     """
     pool_key = f"{instance_type}:{az}"
     cache_key = f"dry_run:{pool_key}"
@@ -52,7 +98,7 @@ def dry_run_pool(
         except Exception:
             pass
 
-    # Perform actual dry-run
+    # Build boto3 client
     try:
         import boto3
         from botocore.exceptions import ClientError
@@ -61,60 +107,120 @@ def dry_run_pool(
         if credentials:
             client_kwargs.update(credentials)
         else:
-            # Load platform credentials
-            from backend.models.base import get_db
-            from backend.models.system_config import SystemConfig
-
-            db = next(get_db())
             try:
-                pk = db.query(SystemConfig).filter(
-                    SystemConfig.key == "PLATFORM_AWS_ACCESS_KEY"
-                ).first()
-                ps = db.query(SystemConfig).filter(
-                    SystemConfig.key == "PLATFORM_AWS_SECRET"
-                ).first()
-                if pk and ps and pk.value and ps.value:
-                    client_kwargs["aws_access_key_id"] = pk.value
-                    client_kwargs["aws_secret_access_key"] = ps.value
-            finally:
-                db.close()
+                from backend.models.base import get_db
+                from backend.models.system_config import SystemConfig
+                db = next(get_db())
+                try:
+                    pk = db.query(SystemConfig).filter(SystemConfig.key == "PLATFORM_AWS_ACCESS_KEY").first()
+                    ps = db.query(SystemConfig).filter(SystemConfig.key == "PLATFORM_AWS_SECRET").first()
+                    if pk and ps and pk.value and ps.value:
+                        client_kwargs["aws_access_key_id"] = pk.value
+                        client_kwargs["aws_secret_access_key"] = ps.value
+                finally:
+                    db.close()
+            except Exception:
+                pass
 
         ec2 = boto3.client("ec2", **client_kwargs)
 
-        # Use DescribeInstanceTypeOfferings — checks whether the instance type is
-        # offered in the target AZ. This avoids RunInstances DryRun which requires
-        # an ImageId (causing ParamValidationError before any API call is made).
-        _resp = ec2.describe_instance_type_offerings(
-            LocationType="availability-zone",
-            Filters=[
-                {"Name": "instance-type", "Values": [instance_type]},
-                {"Name": "location", "Values": [az]},
-            ],
-        )
-        _available = bool(_resp.get("InstanceTypeOfferings"))
-        _cache_result(redis, cache_key, _available)
-        if not _available:
-            logger.info(f"[dry_run] {instance_type} not offered in {az} ({region})")
-        return _available
+        # Get AMI ID for this region (needed by run_instances)
+        ami_id = _get_ami_for_region(ec2, region, redis)
+        if not ami_id:
+            # Fall back to describe_instance_type_offerings if AMI lookup fails
+            logger.debug(f"[dry_run] AMI lookup failed for {region}, falling back to offerings check")
+            _resp = ec2.describe_instance_type_offerings(
+                LocationType="availability-zone",
+                Filters=[
+                    {"Name": "instance-type", "Values": [instance_type]},
+                    {"Name": "location", "Values": [az]},
+                ],
+            )
+            _available = bool(_resp.get("InstanceTypeOfferings"))
+            _cache_result(redis, cache_key, _available)
+            return _available
 
-    except ClientError as e:
-        error_code = e.response.get("Error", {}).get("Code", "")
-        # Any auth/access error — assume available (conservative)
-        logger.warning(f"[dry_run] Ambiguous result for {pool_key}: {error_code} — assuming available")
-        return True
+        # Real capacity check via RunInstances DryRun=True
+        try:
+            ec2.run_instances(
+                DryRun=True,
+                ImageId=ami_id,
+                InstanceType=instance_type,
+                MinCount=1,
+                MaxCount=1,
+                Placement={'AvailabilityZone': az},
+                InstanceMarketOptions={
+                    'MarketType': 'spot',
+                    'SpotOptions': {'SpotInstanceType': 'one-time'},
+                },
+            )
+            # Should never reach here — DryRun always raises ClientError
+            _cache_result(redis, cache_key, True)
+            return True
+
+        except ClientError as ce:
+            error_code = ce.response.get("Error", {}).get("Code", "")
+            if error_code == "DryRunOperation":
+                # Expected success: capacity IS available
+                logger.debug(f"[dry_run] {instance_type} in {az}: capacity available (DryRunOperation)")
+                _cache_result(redis, cache_key, True)
+                return True
+            elif error_code == "InsufficientInstanceCapacity":
+                logger.info(f"[dry_run] {instance_type} in {az}: InsufficientInstanceCapacity")
+                _cache_result(redis, cache_key, False)
+                return False
+            elif error_code in ("UnauthorizedOperation", "AuthFailure"):
+                # DryRun auth check itself passed but we got unauth — treat as available
+                # (UnauthorizedOperation on DryRun means the action would be allowed)
+                if "DryRun" in str(ce):
+                    logger.debug(f"[dry_run] {instance_type} in {az}: capacity available (UnauthorizedOperation+DryRun)")
+                    _cache_result(redis, cache_key, True)
+                    return True
+                logger.warning(f"[dry_run] Auth error for {pool_key}: {error_code} — assuming unavailable")
+                _cache_result(redis, cache_key, False)
+                return False
+            else:
+                # Throttle, param error, etc. — conservative fail
+                logger.warning(f"[dry_run] {pool_key}: unexpected error {error_code} — assuming unavailable")
+                _cache_result(redis, cache_key, False)
+                return False
 
     except Exception as e:
         logger.warning(f"[dry_run] Exception for {pool_key}: {e}")
-        return True  # Assume capacity on error
+        return False  # Assume NO capacity on error (conservative)
 
 
 def _cache_result(redis: Optional[Redis], cache_key: str, passed: bool):
-    """Cache dry-run result with 2-minute TTL."""
+    """Cache dry-run result: pass=600s TTL, fail=300s TTL."""
     if redis:
         try:
-            redis.setex(cache_key, DRY_RUN_CACHE_TTL, "pass" if passed else "fail")
+            ttl = DRY_RUN_PASS_TTL if passed else DRY_RUN_FAIL_TTL
+            redis.setex(cache_key, ttl, "pass" if passed else "fail")
         except Exception:
             pass
+
+
+def invalidate_dry_run_cache(
+    instance_type: str,
+    az: str,
+    redis: Optional[Redis],
+    mark_failed: bool = True,
+):
+    """
+    Immediately invalidate (or mark failed) the dry_run cache for a pool.
+    Called when InsufficientInstanceCapacity is caught at launch time.
+    """
+    if not redis:
+        return
+    cache_key = f"dry_run:{instance_type}:{az}"
+    try:
+        if mark_failed:
+            redis.setex(cache_key, DRY_RUN_FAIL_TTL, "fail")
+            logger.info(f"[dry_run] Marked {instance_type}:{az} as FAIL (capacity error at launch)")
+        else:
+            redis.delete(cache_key)
+    except Exception:
+        pass
 
 
 def batch_dry_run(

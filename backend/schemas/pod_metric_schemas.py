@@ -173,6 +173,10 @@ class RightSizingRecommendation(BaseModel):
     is_undersized: bool = Field(False, description="Current requests below P99 usage (risky)")
     recommendation_action: str = Field(..., description="REDUCE, INCREASE, NO_CHANGE")
 
+    # Instance-aware fields (populated post-construction by caller)
+    is_actionable: bool = Field(True, description="Whether a better spot pool exists for this recommendation")
+    best_pool: Optional[dict] = Field(None, description="Best available spot pool if actionable")
+
     class Config:
         json_schema_extra = {
             "example": {

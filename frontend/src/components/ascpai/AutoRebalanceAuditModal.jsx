@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { FiX, FiCheckCircle, FiAlertTriangle, FiActivity, FiClock, FiServer, FiInfo, FiSliders } from 'react-icons/fi';
-import { atharvaaiAPI } from '../../services/api';
+import { ascpaiAPI } from '../../services/api';
 
 const getStatusBadge = (status) => {
     switch (status) {
@@ -119,7 +119,7 @@ const AutoRebalanceAuditModal = ({ isOpen, onClose, clusterId }) => {
         setError(null);
         try {
             // Fetch up to 100 recent actions for the detailed log
-            const response = await atharvaaiAPI.getRebalancingStatus(clusterId, 100);
+            const response = await ascpaiAPI.getRebalancingStatus(clusterId, 100);
             if (response.data && Array.isArray(response.data)) {
                 setActions(response.data);
                 if (response.data.length > 0) {

@@ -23,7 +23,7 @@ The **Global ML Pool Rankings** card on the Dashboard was showing **100% savings
 
 ### The Bug
 
-In `frontend/src/components/atharvaai/GlobalRankingsCard.jsx` (line 14-16):
+In `frontend/src/components/ascpai/GlobalRankingsCard.jsx` (line 14-16):
 
 ```javascript
 const currentNodeContext = {
@@ -38,7 +38,7 @@ const currentNodeContext = {
 
 **Step 2:** Backend fetches spot price of m5.large in first ranked pool's AZ (aps1-az1):
 ```python
-# backend/api/atharvaai_routes.py:177-186
+# backend/api/ascpai_routes.py:177-186
 if current_instance_lifecycle and current_instance_lifecycle.lower() == 'spot':
     azs = [pool.pool.az for pool in ranked_pools[:3]]
     if azs:
@@ -52,7 +52,7 @@ if current_instance_lifecycle and current_instance_lifecycle.lower() == 'spot':
 
 **Step 3:** For each ranked pool, calculate savings:
 ```python
-# backend/api/atharvaai_routes.py:206-209
+# backend/api/ascpai_routes.py:206-209
 suggested_spot_price = scored_pool.pool.spot_price
 real_savings = (current_node_price - suggested_spot_price) / current_node_price
 real_savings_pct = max(0.0, min(1.0, real_savings))
@@ -77,7 +77,7 @@ real_savings = (0.0288 - 0) / 0.0288 = 1.0 = 100%
 
 Changed the baseline from **spot** to **on-demand** for global rankings.
 
-**File:** `frontend/src/components/atharvaai/GlobalRankingsCard.jsx`
+**File:** `frontend/src/components/ascpai/GlobalRankingsCard.jsx`
 
 **Before:**
 ```javascript
@@ -156,7 +156,7 @@ m5.large (aps1-az1)      65.2%     28.5%    0.4672
 
 ---
 
-### 2. **AtharvaAI Pool Rankings** (Pool Rankings Tab)
+### 2. **ASCP.AI Pool Rankings** (Pool Rankings Tab)
 
 **Purpose:** Cluster-specific pool recommendations with template filtering
 
@@ -227,7 +227,7 @@ TOKEN=$(curl -s -X POST http://localhost:8000/api/v1/auth/login \
   | jq -r '.access_token')
 
 # Test global rankings
-curl -s -X POST http://localhost:8000/api/v1/atharvaai/pools/rankings \
+curl -s -X POST http://localhost:8000/api/v1/ascpai/pools/rankings \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -258,7 +258,7 @@ curl -s -X POST http://localhost:8000/api/v1/atharvaai/pools/rankings \
 
 ## 📁 Files Modified
 
-**1. frontend/src/components/atharvaai/GlobalRankingsCard.jsx** (+2 lines modified)
+**1. frontend/src/components/ascpai/GlobalRankingsCard.jsx** (+2 lines modified)
 - Line 15: Changed `lifecycle: 'spot'` → `lifecycle: 'on-demand'`
 - Line 37: Updated description to clarify baseline
 
@@ -298,10 +298,10 @@ Top 10 highest Expected Value (EV) spot pools (savings vs m5.large on-demand)
 ## 📚 Related Documentation
 
 - **Pool Ranking Logic:** `backend/services/pool_ranking_service.py`
-- **Savings Calculation:** `backend/api/atharvaai_routes.py:203-209`
+- **Savings Calculation:** `backend/api/ascpai_routes.py:203-209`
 - **Pricing Service:** `backend/services/aws_pricing_service.py`
-- **Frontend Component:** `frontend/src/components/atharvaai/GlobalRankingsCard.jsx`
-- **Pool Rankings Page:** `frontend/src/pages/AtharvaAiPage.jsx`
+- **Frontend Component:** `frontend/src/components/ascpai/GlobalRankingsCard.jsx`
+- **Pool Rankings Page:** `frontend/src/pages/ASCPAiPage.jsx`
 
 ---
 

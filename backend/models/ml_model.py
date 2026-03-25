@@ -48,8 +48,5 @@ class MLModel(Base):
     validated_at = Column(DateTime, nullable=True)
     promoted_at = Column(DateTime, nullable=True)
 
-    # Relationships
-    lab_experiments = relationship("LabExperiment", back_populates="ml_model", cascade="all, delete-orphan")
-
     def __repr__(self):
         return f"<MLModel(id={self.id}, version={self.version}, status={self.status.value})>"

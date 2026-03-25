@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useDashboard } from '../../hooks/useDashboard';
-import { auditAPI, clusterAPI, accountsAPI, karpenterAPI, atharvaAiAPI, hibernationAPI, hygieneAPI, approvalsAPI, teamAPI, userAPI, multiClusterAPI } from '../../services/api';
+import { auditAPI, clusterAPI, accountsAPI, karpenterAPI, ascpaiAPI, hibernationAPI, hygieneAPI, approvalsAPI, teamAPI, userAPI, multiClusterAPI } from '../../services/api';
 import api from '../../services/api';
 import { useAuthStore, useHeaderStore } from '../../store/useStore';
 import toast from 'react-hot-toast';
@@ -247,7 +247,7 @@ export default function Dashboard() {
     clusterCount: 0,
     lastRecommendation: null
   });
-  const [atharvaAioData, setAtharvaAioData] = useState({
+  const [ascpaiData, setAscpaiData] = useState({
     poolsAnalyzed: 0,
     topScore: 0,
     regions: 0,
@@ -283,17 +283,18 @@ export default function Dashboard() {
   const [fleetData, setFleetData] = useState(null);
   const [fleetLoading, setFleetLoading] = useState(true);
 
-  // Issue #30/#32: serial counter to discard stale in-flight responses
-  const _fetchSeq = useRef(0);
+  // Issue #30/#32: serial counters — each effect has its own ref to avoid cross-invalidation
+  const _fleetSeq = useRef(0);
+  const _dataSeq = useRef(0);
 
   useEffect(() => {
     // Issue #30: AbortController so navigation away cancels in-flight request
     const ctrl = new AbortController();
-    const seq = ++_fetchSeq.current;
+    const seq = ++_fleetSeq.current;
     setFleetLoading(true);
     multiClusterAPI.getSummary()
       .then(res => {
-        if (seq !== _fetchSeq.current) return; // #32: stale response guard
+        if (seq !== _fleetSeq.current) return; // #32: stale response guard
         // Issue #31: ID-based merge so rapid refreshes don't flicker
         setFleetData(prev => {
           const incoming = res.data;
@@ -304,13 +305,13 @@ export default function Dashboard() {
         });
       })
       .catch(e => { if (e.name !== 'AbortError') console.error('[Dashboard] fleetData', e); })
-      .finally(() => { if (seq === _fetchSeq.current) setFleetLoading(false); });
+      .finally(() => { if (seq === _fleetSeq.current) setFleetLoading(false); });
     return () => ctrl.abort();
   }, []);
 
   useEffect(() => {
     const ctrl = new AbortController();
-    const seq = ++_fetchSeq.current;
+    const seq = ++_dataSeq.current;
     const fetchData = async () => {
       setDataLoading(true);
       try {
@@ -384,17 +385,17 @@ export default function Dashboard() {
           console.error("RightSizing fetch error", e);
         }
 
-        // Fetch AtharvaAI Data
+        // Fetch ASCP.AI Data
         try {
           const [globalRes, hrRes] = await Promise.allSettled([
-            api.get('/api/v1/atharvaai/v3/global-intelligence/status'),
-            atharvaAiAPI.getHealth(),
+            api.get('/api/v1/ascpai/v3/global-intelligence/status'),
+            ascpaiAPI.getHealth(),
           ]);
 
           const d = globalRes.status === 'fulfilled' ? (globalRes.value.data || {}) : {};
           const hr = hrRes.status === 'fulfilled' ? (hrRes.value.data || {}) : {};
 
-          setAtharvaAioData({
+          setAscpaiData({
             poolsAnalyzed: d.pools_evaluated || d.pools_analyzed_count || 0,
             topScore: d.capacity_validated_count || 0,
             regions: d.active_clusters || 1,
@@ -402,8 +403,8 @@ export default function Dashboard() {
             status: hr.ml_degraded ? 'degraded' : 'healthy',
           });
         } catch (e) {
-          console.error("AtharvaAI fetch error", e);
-          setAtharvaAioData(prev => ({ ...prev, status: 'error' }));
+          console.error("ASCP.AI fetch error", e);
+          setAscpaiData(prev => ({ ...prev, status: 'error' }));
         }
 
         // Fetch Hibernation Data (Task 9.7)
@@ -499,7 +500,7 @@ export default function Dashboard() {
       }
     };
     // Issue #32: stale-response guard — only apply if this is still the latest fetch
-    if (seq === _fetchSeq.current) {
+    if (seq === _dataSeq.current) {
       fetchData();
     }
     return () => ctrl.abort();
@@ -746,26 +747,26 @@ export default function Dashboard() {
                 }}>Go to Right-Sizing →</button>
               </Card>
 
-              {/* AtharvaAI */}
+              {/* ASCP.AI */}
               <Card style={{ borderTop: `3px solid ${C.indigo}` }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
                   <div style={{ width: 32, height: 32, borderRadius: 8, background: C.indigoLight, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16 }}>◈</div>
                   <div>
                     <div style={{ fontWeight: 600, fontSize: 13, display: "flex", alignItems: "center", gap: 6 }}>
                       ASCP.ai
-                      {atharvaAioData.status === 'healthy' && <Dot color={C.green} />}
-                      {atharvaAioData.status === 'degraded' && <Dot color={C.amber} />}
-                      {atharvaAioData.status === 'error' && <Dot color={C.red} />}
+                      {ascpaiData.status === 'healthy' && <Dot color={C.green} />}
+                      {ascpaiData.status === 'degraded' && <Dot color={C.amber} />}
+                      {ascpaiData.status === 'error' && <Dot color={C.red} />}
                     </div>
                     <Badge color={C.indigo} bg={C.indigoLight} style={{ marginTop: 2 }}>ML Scoring</Badge>
                   </div>
                 </div>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 12 }}>
                   {[
-                    { label: "ML status", value: atharvaAioData.status === 'healthy' ? "Healthy" : atharvaAioData.status === 'degraded' ? "Degraded" : "Error" },
-                    { label: "Pools ranked", value: atharvaAioData.poolsAnalyzed.toString() },
-                    { label: "Top score", value: atharvaAioData.topScore.toString() },
-                    { label: "Regions covered", value: atharvaAioData.regions.toString() },
+                    { label: "ML status", value: ascpaiData.status === 'healthy' ? "Healthy" : ascpaiData.status === 'degraded' ? "Degraded" : "Error" },
+                    { label: "Pools ranked", value: ascpaiData.poolsAnalyzed.toString() },
+                    { label: "Top score", value: ascpaiData.topScore.toString() },
+                    { label: "Regions covered", value: ascpaiData.regions.toString() },
                   ].map(s => (
                     <div key={s.label} style={{ background: "#f9fafb", borderRadius: 8, padding: "8px 10px" }}>
                       <div style={{ fontSize: 10, color: C.subtle, marginBottom: 2 }}>{s.label}</div>
@@ -773,7 +774,7 @@ export default function Dashboard() {
                     </div>
                   ))}
                 </div>
-                <button onClick={() => navigate('/atharvaai/rankings')} style={{
+                <button onClick={() => navigate('/ascpai/rankings')} style={{
                   width: "100%", padding: "7px 0", borderRadius: 8,
                   border: `1px solid ${C.indigo}`, background: "transparent",
                   color: C.indigo, fontWeight: 600, fontSize: 12, cursor: "pointer", fontFamily: "inherit"
@@ -933,12 +934,12 @@ export default function Dashboard() {
 
               <div>
                 <Card title="Node Templates" titleRight={
-                  <button onClick={() => navigate('/atharva-ai?tab=rankings')} style={{ fontSize: 11, color: C.blue, background: "none", border: "none", cursor: "pointer" }}>Manage →</button>
+                  <button onClick={() => navigate('/ascp-ai?tab=rankings')} style={{ fontSize: 11, color: C.blue, background: "none", border: "none", cursor: "pointer" }}>Manage →</button>
                 }>
                   <div style={{ color: C.subtle, fontSize: 12, marginBottom: 12 }}>
                     Templates filter instance pools for ASCP.ai rankings.
                   </div>
-                  <button onClick={() => navigate('/atharva-ai?tab=rankings')} style={{
+                  <button onClick={() => navigate('/ascp-ai?tab=rankings')} style={{
                     width: "100%", padding: "7px 0", borderRadius: 8,
                     border: `1px dashed ${C.border}`, background: "transparent",
                     color: C.muted, fontSize: 12, cursor: "pointer", fontFamily: "inherit"

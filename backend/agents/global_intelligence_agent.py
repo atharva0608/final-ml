@@ -1,5 +1,5 @@
 """
-Global Intelligence Agent (AtharvaAI Core)
+Global Intelligence Agent (ASCP.AI Core)
 ==========================================
 
 Generates region-wide Spot Pool Intelligence for all tenants.
@@ -16,7 +16,7 @@ from .base import BaseAgent, AgentResponse
 
 class GlobalIntelligenceAgent(BaseAgent):
     """
-    Global Intelligence Agent (AtharvaAI Core)
+    Global Intelligence Agent (ASCP.AI Core)
 
     Produces ranked list of Spot pools with:
     - risk probability (next 1 hour)
@@ -27,7 +27,7 @@ class GlobalIntelligenceAgent(BaseAgent):
 
     @property
     def system_prompt(self) -> str:
-        return """You are **Global Intelligence Agent (AtharvaAI Core)**.
+        return """You are **Global Intelligence Agent (ASCP.AI Core)**.
 
 Your role is to generate region-wide Spot Pool Intelligence for all tenants.
 
@@ -273,7 +273,10 @@ Do NOT include text outside JSON."""
                 short_spike = avg_1h > 0 and spot_price > avg_1h * 1.5
                 sustained = avg_24h > 0 and spot_price > avg_24h * 1.2
                 if short_spike and sustained:
-                    spike_score = 0.25  # Dual-window spike → imminent eviction warning
+                    # Reduced from 0.25 to 0.10 to prevent hyper-sensitivity
+                    spike_score = 0.10
                 break
 
-        return min(ir_score + price_pressure_score + spike_score, 1.0)
+        # Apply stability multiplier: lower base risk for historically stable pools
+        base_risk = min(ir_score + price_pressure_score + spike_score, 1.0)
+        return base_risk * 0.9 if ir_score < 0.05 else base_risk

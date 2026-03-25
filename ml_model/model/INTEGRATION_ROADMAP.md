@@ -3,15 +3,15 @@
 **Date**: 2026-02-16
 **Status**: 🚀 ACTIVELY INTEGRATED in Production
 **Priority**: HIGH
-**Production System**: AtharvaAi Pool Selection & Termination Monitoring
+**Production System**: ASCPAi Pool Selection & Termination Monitoring
 
 ---
 
-## 🎯 Production Integration: AtharvaAi System
+## 🎯 Production Integration: ASCPAi System
 
 ### Overview
 
-The ONNX models (classifier_6.onnx, regressor_6.onnx) are **actively integrated** into the **AtharvaAi Pool Selection Pipeline** as the core intelligence layer for pool ranking and risk assessment.
+The ONNX models (classifier_6.onnx, regressor_6.onnx) are **actively integrated** into the **ASCPAi Pool Selection Pipeline** as the core intelligence layer for pool ranking and risk assessment.
 
 ### System Architecture
 
@@ -52,7 +52,7 @@ Output: Scored pools sorted by final_score (DESC)
     ↓
 Cached in Redis (30-second TTL)
     ↓
-API: GET /api/v1/atharvaai/pools/rankings
+API: GET /api/v1/ascpai/pools/rankings
 ```
 
 **Feature Engineering**:
@@ -66,12 +66,12 @@ API: GET /api/v1/atharvaai/pools/rankings
 
 ### Integration Benefits
 
-**Before AtharvaAi** (Static heuristics):
+**Before ASCPAi** (Static heuristics):
 - Hardcoded risk scores per instance type
 - No real-time adaptation
 - No cross-pool learning
 
-**After AtharvaAi** (ML-driven):
+**After ASCPAi** (ML-driven):
 - ✅ Real-time risk prediction using 39 engineered features
 - ✅ Cost-aware pool selection (savings vs price)
 - ✅ Global pool flagging (termination contagion detection)
@@ -395,7 +395,7 @@ async def get_spot_prediction(
 
 ## 🎯 Production Deployment Status
 
-### ✅ **Integration Complete - AtharvaAi System in Production**
+### ✅ **Integration Complete - ASCPAi System in Production**
 
 **Week 1: Proof of Concept** ✅ COMPLETE
 - ✅ Implement minimum viable features (15 features)
@@ -420,13 +420,13 @@ async def get_spot_prediction(
 
 **Week 5: Production Deployment** ✅ COMPLETE
 - ✅ Deploy full feature pipeline
-- ✅ Create API endpoints (`GET /api/v1/atharvaai/pools/rankings`)
+- ✅ Create API endpoints (`GET /api/v1/ascpai/pools/rankings`)
 - ✅ Add caching (Redis) for predictions (30-second TTL)
 - ✅ Monitor accuracy vs real outcomes
 
 ### 🚀 Current Production Features
 
-**AtharvaAi Pool Selection System**:
+**ASCPAi Pool Selection System**:
 - ✅ 8-step pool ranking pipeline (runs every 30 seconds)
 - ✅ Step 7: ML Model Scoring with full 39-feature engineering
 - ✅ Dual model inference (classifier + regressor)
@@ -442,10 +442,10 @@ async def get_spot_prediction(
 - ✅ Redis caching (rankings cache + risky pool flags)
 
 **API Endpoints**:
-- ✅ `GET /api/v1/atharvaai/pools/rankings` - Get ranked pools
-- ✅ `POST /api/v1/atharvaai/node-templates` - Create filtering templates
-- ✅ `GET /api/v1/atharvaai/blacklist` - Get globally flagged pools
-- ✅ `GET /api/v1/atharvaai/rebalancing/status` - Get rebalancing actions
+- ✅ `GET /api/v1/ascpai/pools/rankings` - Get ranked pools
+- ✅ `POST /api/v1/ascpai/node-templates` - Create filtering templates
+- ✅ `GET /api/v1/ascpai/blacklist` - Get globally flagged pools
+- ✅ `GET /api/v1/ascpai/rebalancing/status` - Get rebalancing actions
 
 ### 📊 Production Metrics
 
@@ -551,6 +551,6 @@ cp ml_model/model/category_mapping.json backend/ml/
 
 ---
 
-**Status**: 🚀 **ACTIVELY INTEGRATED in AtharvaAi Pool Selection System**
+**Status**: 🚀 **ACTIVELY INTEGRATED in ASCPAi Pool Selection System**
 **Production Use Case**: **System A: Pool Selection Pipeline (Step 7 - ML Scoring)**
 **Timeline**: POC Complete, Full Production Ready

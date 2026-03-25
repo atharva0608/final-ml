@@ -285,3 +285,105 @@ def get_active_regions(db: Session) -> List[str]:
         regions = ['us-east-1']
 
     return regions
+
+
+@app.task(name='workers.pricing.ingest_spot_prices')
+def ingest_spot_prices(region: str = None):
+    """
+    Ingest spot prices for all active regions (or a specific region).
+
+    Called by beat schedule 'spot-price-ingest-every-10-mins' (every 10 minutes).
+    Delegates to AWSPricingService._refresh_regional_pricing() which uses the
+    describe_spot_price_history paginator — no AZ filter, covers all AZs.
+
+    Spot prices are stored in Redis as JSON:
+      spot_price:{region}:{az}:{instance_type} → {"price": "0.0124", "timestamp": "..."}
+
+    Args:
+        region: Specific region to ingest. If None, ingests all active regions.
+    """
+    db = SessionLocal()
+    redis = get_redis_client()
+
+    try:
+        pricing_service = AWSPricingService(db, redis)
+        regions_to_ingest = [region] if region else get_active_regions(db)
+
+        results = {}
+        for reg in regions_to_ingest:
+            try:
+                count = pricing_service._refresh_regional_pricing(reg, [])
+                results[reg] = {"status": "success", "spot_prices_fetched": count}
+                logger.info(f"[ingest_spot_prices] {reg}: {count} spot prices ingested")
+
+                # Update freshness timestamp so _enforce_pricing_freshness() sees fresh data.
+                # refresh_regional_pricing_batch() updates this, but ingest_spot_prices()
+                # calls _refresh_regional_pricing() directly and was not updating it — leaving
+                # the gate stale even when spot prices were fresh.
+                if count > 0:
+                    redis.set(f"pricing:last_updated:{reg}", datetime.utcnow().isoformat())
+
+                # Rebuild market-view cache immediately after fresh spot prices are stored.
+                # This keeps market_view_cache:{region} in sync with the 10-min ingest cadence
+                # rather than waiting for the hourly build_global_pool_cache beat task.
+                if count > 0:
+                    try:
+                        app.send_task('build_global_pool_cache', args=[reg], queue='celery')
+                    except Exception as _cb_err:
+                        logger.debug(f"[ingest_spot_prices] cache rebuild dispatch failed: {_cb_err}")
+
+            except Exception as e:
+                logger.error(f"[ingest_spot_prices] Failed for {reg}: {e}", exc_info=True)
+                results[reg] = {"status": "failed", "error": str(e)}
+
+        return results
+
+    except Exception as e:
+        logger.error(f"[ingest_spot_prices] Task failed: {e}", exc_info=True)
+        raise
+    finally:
+        db.close()
+
+
+@app.task(name='workers.pricing.refresh_ondemand')
+def refresh_ondemand(region: str = None):
+    """
+    Refresh on-demand prices for all active regions (or a specific region).
+
+    Called by beat schedule 'ondemand-price-refresh-12h' (every 12 hours).
+    Fetches OD prices via AWS Pricing API and writes both:
+      od_price:{region}:{type}           (aws_pricing_service read path)
+      ondemand_price:{region}:{type}     (cache_builder._lookup_od_price read path)
+
+    Args:
+        region: Specific region to refresh. If None, refreshes all active regions.
+    """
+    db = SessionLocal()
+    redis = get_redis_client()
+
+    try:
+        pricing_service = AWSPricingService(db, redis)
+        regions_to_refresh = [region] if region else get_active_regions(db)
+
+        results = {}
+        for reg in regions_to_refresh:
+            try:
+                instance_types = pricing_service._get_required_instance_types_for_region(reg)
+                od_count = 0
+                for itype in instance_types:
+                    price = pricing_service.get_ondemand_price(itype, reg, validate_freshness=False)
+                    if price:
+                        od_count += 1
+                results[reg] = {"status": "success", "ondemand_prices_fetched": od_count}
+                logger.info(f"[refresh_ondemand] {reg}: {od_count} OD prices refreshed")
+            except Exception as e:
+                logger.error(f"[refresh_ondemand] Failed for {reg}: {e}", exc_info=True)
+                results[reg] = {"status": "failed", "error": str(e)}
+
+        return results
+
+    except Exception as e:
+        logger.error(f"[refresh_ondemand] Task failed: {e}", exc_info=True)
+        raise
+    finally:
+        db.close()

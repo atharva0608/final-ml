@@ -1406,7 +1406,7 @@ const ClusterDetail = ({ cluster, onClose }) => {
         {/* ── Optimization Stack ── */}
         <SectionHeader>Optimization</SectionHeader>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10, marginBottom: 10 }}>
-          {/* AtharvaAI */}
+          {/* ASCP.AI */}
           <div style={{
             background: C.surface,
             border: `1px solid ${C.border}`,
@@ -1812,7 +1812,9 @@ export default function ClustersPage() {
   const mappedClustersRef = useRef([]);
 
   const fetchData = useCallback(async () => {
-    setLoading(true);
+    // Only show loading spinner on initial empty load — background polls
+    // must NOT blank out the existing cluster list.
+    if (!clusters || clusters.length === 0) setLoading(true);
     try {
       const clusterRes = await clusterAPI.list({});
       const newClusters = clusterRes.data.clusters || [];
@@ -1830,10 +1832,11 @@ export default function ClustersPage() {
     } finally {
       setLoading(false);
     }
-  }, [setClusters, setLoading]);
+  }, [clusters, setClusters, setLoading]);
 
   const handleRefresh = useCallback(() => {
-    setNodeDetails({}); // Force node details to re-fetch to resolve stale detail pane
+    // Don't clear nodeDetails — keep showing stale data while new data loads
+    // to avoid blanking the detail panel on every refresh.
     fetchData();
   }, [fetchData]);
 

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { decisionEngineAPI, clusterAPI, atharvaaiAPI, poolRotationAPI, metricsAPI, atharvaAiAPI } from '../../services/api';
+import { decisionEngineAPI, clusterAPI, ascpaiAPI, poolRotationAPI, metricsAPI } from '../../services/api';
 import OptimizationModeSelector from './OptimizationModeSelector';
 import { toast } from 'react-hot-toast';
 import { FiActivity, FiSliders, FiCpu, FiRefreshCw } from 'react-icons/fi';
@@ -14,12 +14,13 @@ const DecisionEngineV3Dashboard = ({ clusterId, clusterRegion = 'ap-south-1', cl
 
     // Task 7.3: Pool Rotation Status
     const [poolRotation, setPoolRotation] = useState(null);
-    // Task 7.4: AtharvaAI Health
+    // Task 7.4: ASCP.AI Health
     const [aiHealth, setAiHealth] = useState(null);
     // Task 7.6: Rejection Counters
     const [rejectionCounters, setRejectionCounters] = useState(null);
     // Substitute live state
     const [substituteStatus, setSubstituteStatus] = useState(null);
+    const [error, setError] = useState(null);
 
     const [config, setConfig] = useState({
         rightsizing: cluster?.rightsizing_enabled || false,
@@ -57,7 +58,7 @@ const DecisionEngineV3Dashboard = ({ clusterId, clusterRegion = 'ap-south-1', cl
                     decisionEngineAPI.getStateMachine(clusterId),
                     decisionEngineAPI.getDecisionMetrics(),
                     clusterAPI.getOptimizationSettings(clusterId).catch(() => ({ data: null })),
-                    atharvaaiAPI.getEffectiveConfiguration(clusterId).catch(() => ({ data: null }))
+                    ascpaiAPI.getEffectiveConfiguration(clusterId).catch(() => ({ data: null }))
                 ]);
 
                 setStateMachine(stateRes.data);
@@ -77,8 +78,8 @@ const DecisionEngineV3Dashboard = ({ clusterId, clusterRegion = 'ap-south-1', cl
                     .then(res => setPoolRotation(res.data))
                     .catch(() => setPoolRotation(null));
 
-                // Task 7.4: AtharvaAI Health
-                atharvaAiAPI.getHealth()
+                // Task 7.4: ASCP.AI Health
+                ascpaiAPI.getHealth()
                     .then(res => setAiHealth(res.data))
                     .catch(() => setAiHealth(null));
 
@@ -93,6 +94,7 @@ const DecisionEngineV3Dashboard = ({ clusterId, clusterRegion = 'ap-south-1', cl
                     .catch(() => setSubstituteStatus(null));
             } catch (err) {
                 console.error('Failed to fetch decision engine data:', err);
+                setError(err.message || 'Failed to load decision engine data');
             } finally {
                 setLoading(false);
             }
@@ -139,6 +141,20 @@ const DecisionEngineV3Dashboard = ({ clusterId, clusterRegion = 'ap-south-1', cl
 
     return (
         <div className="space-y-8 mt-8 border-t pt-8">
+            {error && (
+                <div className="p-4 bg-red-50 border border-red-200 rounded-lg flex items-center justify-between">
+                    <div>
+                        <p className="text-sm font-medium text-red-800">Failed to load decision engine data</p>
+                        <p className="text-xs text-red-600 mt-0.5">{error}</p>
+                    </div>
+                    <button
+                        onClick={() => { setError(null); setLoading(true); }}
+                        className="px-3 py-1.5 text-xs font-medium text-red-700 bg-white border border-red-300 rounded-md hover:bg-red-50"
+                    >
+                        Retry
+                    </button>
+                </div>
+            )}
             {/* Automation Controls removed as requested */}
             {/* Effective Configuration Summary & Execution Flow */}
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -204,7 +220,7 @@ const DecisionEngineV3Dashboard = ({ clusterId, clusterRegion = 'ap-south-1', cl
                 )}
             </div>
 
-            {/* Task 7.4: AtharvaAI Health Status */}
+            {/* Task 7.4: ASCP.AI Health Status */}
             {aiHealth && (
                 <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
                     <h4 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">

@@ -731,6 +731,19 @@ def scan_ec2_instances(account: Account, ec2_client, db: Session) -> int:
                         # return OD (or omit lifecycle) before allowing a SPOT→OD downgrade.
                         # A confirmed SPOT reading resets the counter immediately.
                         #
+                        # SPOT ASSERTION GUARD: If the auto-rebalancer pre-registered this
+                        # instance as spot (spot:asserted_spot:{instance_id} in Redis with 5m TTL),
+                        # override the AWS API response and treat as SPOT for the assertion window.
+                        # This prevents newly-launched spot instances from being downgraded to OD
+                        # while AWS API is still propagating the InstanceLifecycle field.
+                        if lifecycle != InstanceLifecycle.SPOT and _rc3_redis:
+                            try:
+                                _assert_key = f"spot:asserted_spot:{instance_id}"
+                                if _rc3_redis.exists(_assert_key):
+                                    lifecycle = InstanceLifecycle.SPOT
+                            except Exception:
+                                pass
+                        #
                         # Counter key: "rc3:od_streak:{instance_id}"  (int, TTL=30 min)
                         _rc3_key = f"rc3:od_streak:{instance_id}"
                         if lifecycle == InstanceLifecycle.SPOT:

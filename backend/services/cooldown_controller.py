@@ -353,13 +353,16 @@ class CooldownController:
     # STABILIZATION LOCK (Task 4.1)
     # ========================================================================
 
-    STABILIZATION_LOCK_TTL = 300  # 5 minutes
+    STABILIZATION_LOCK_TTL = 60  # 1 minute (Issue 1: was 300s — too long, stalls rebalancer)
 
     def acquire_stabilization_lock(self, cluster_id: str, reason: str = "execution") -> bool:
         """
         Acquire a stabilization lock after any execution action.
-        Prevents any optimization for 5 minutes, giving the cluster time
+        Prevents any optimization for 60 seconds, giving the cluster time
         to reach a new steady state.
+
+        Issue 13: Also persists stabilization_until to ClusterCooldownState table so
+        the lock survives Redis restarts. auto_rebalancer re-hydrates from this on cache miss.
 
         Returns True if lock was acquired, False if already locked.
         """
@@ -368,6 +371,27 @@ class CooldownController:
             acquired = self.redis.set(key, reason, nx=True, ex=self.STABILIZATION_LOCK_TTL)
             if acquired:
                 logger.info(f"Stabilization lock acquired for {cluster_id}: {reason}")
+                # Issue 13: Persist to DB so lock survives Redis restarts
+                try:
+                    from backend.models.cluster import ClusterCooldownState
+                    from backend.models.base import get_db
+                    from datetime import timedelta
+                    _db = next(get_db())
+                    _until = datetime.utcnow() + timedelta(seconds=self.STABILIZATION_LOCK_TTL)
+                    _existing = _db.query(ClusterCooldownState).filter_by(cluster_id=cluster_id).first()
+                    if _existing:
+                        _existing.stabilization_until = _until
+                        _existing.last_action_at = datetime.utcnow()
+                    else:
+                        _db.add(ClusterCooldownState(
+                            cluster_id=cluster_id,
+                            stabilization_until=_until,
+                            last_action_at=datetime.utcnow()
+                        ))
+                    _db.commit()
+                    _db.close()
+                except Exception as _db_err:
+                    logger.warning('Could not persist stabilization state for cluster %s: %s', cluster_id, _db_err)
             else:
                 logger.info(f"Stabilization lock already held for {cluster_id}")
             return bool(acquired)

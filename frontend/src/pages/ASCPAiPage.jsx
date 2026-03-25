@@ -1,29 +1,25 @@
 import React from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
-import PoolRankings from '../components/atharvaai/PoolRankings';
-import InterruptionHeatmap from '../components/atharvaai/InterruptionHeatmap';
-import RebalancingTimeline from '../components/atharvaai/RebalancingTimeline';
-import AutoRebalanceAuditCard from '../components/atharvaai/AutoRebalanceAuditCard';
+import PoolRankings from '../components/ascpai/PoolRankings';
+import InterruptionHeatmap from '../components/ascpai/InterruptionHeatmap';
+import RebalancingTimeline from '../components/ascpai/RebalancingTimeline';
+import AutoRebalanceAuditCard from '../components/ascpai/AutoRebalanceAuditCard';
 // GlobalRankingsCard removed - using cluster-specific Pool Rankings only
-import BlacklistMonitorCard from '../components/atharvaai/BlacklistMonitorCard';
-import DecisionEngineV3Dashboard from '../components/atharvaai/DecisionEngineV3Dashboard';
+import BlacklistMonitorCard from '../components/ascpai/BlacklistMonitorCard';
+import DecisionEngineV3Dashboard from '../components/ascpai/DecisionEngineV3Dashboard';
 
-const AtharvaAiPage = () => {
+const ASCPAiPage = () => {
     const [searchParams] = useSearchParams();
     const navigate = useNavigate();
     const [selectedClusterId, setSelectedClusterId] = React.useState('');
     const [clusters, setClusters] = React.useState([]);
+    const [error, setError] = React.useState(null);
     const currentTab = searchParams.get('tab') || 'dashboard';
 
     React.useEffect(() => {
-        // Fetch clusters for dropdown
         const fetchClusters = async () => {
-            // Mock fetch for now, replace with actual API call if available or import from store/api
-            // Assuming clusterAPI is imported or available via context/store
-            // For now, let's use a simple placeholder if API import is needed
-            // In a real implementation, import { clusterAPI } from '../services/api';
             try {
-                //Dynamic import to avoid top-level dependency issues if not already present
+                setError(null);
                 const { clusterAPI } = await import('../services/api');
                 const res = await clusterAPI.list();
                 const clusterList = res.data.clusters || res.data || [];
@@ -33,6 +29,7 @@ const AtharvaAiPage = () => {
                 }
             } catch (e) {
                 console.error("Failed to fetch clusters", e);
+                setError(e.message || 'Failed to load clusters');
             }
         };
         fetchClusters();
@@ -66,6 +63,21 @@ const AtharvaAiPage = () => {
                     </select>
                 </div>
             </div>
+
+            {error && (
+                <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg flex items-center justify-between">
+                    <div>
+                        <p className="text-sm font-medium text-red-800">Failed to load clusters</p>
+                        <p className="text-xs text-red-600 mt-0.5">{error}</p>
+                    </div>
+                    <button
+                        onClick={() => window.location.reload()}
+                        className="px-3 py-1.5 text-xs font-medium text-red-700 bg-white border border-red-300 rounded-md hover:bg-red-50"
+                    >
+                        Retry
+                    </button>
+                </div>
+            )}
 
 
 
@@ -119,4 +131,4 @@ const AtharvaAiPage = () => {
     );
 };
 
-export default AtharvaAiPage;
+export default ASCPAiPage;

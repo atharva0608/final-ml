@@ -14,7 +14,7 @@ The platform has successfully transitioned from a prototype state to **100% Real
 1. **Mock Data Elimination:** Upgraded from 77.5% real to 100% real implementation.
 2. **Hibernation System:** Full database schema integration, Redis distributed locking, and real-time AWS API synchronization.
 3. **Right-Sizing & Karpenter:** Multi-tier pricing cache (Redis → Family Rates → Fallback), integrated Karpenter Insights (dry-run) and Auto-Optimize modes.
-4. **AtharvaAI ML Pool Optimizer:** Real AWS Spot Advisor integration, dynamic pricing fetched via Celery workers, and robust cache invalidation.
+4. **ASCP.AI ML Pool Optimizer:** Real AWS Spot Advisor integration, dynamic pricing fetched via Celery workers, and robust cache invalidation.
 5. **UI & Component Audit:** Verified ~130 components, removed 22+ legacy/dead components (saving ~160KB bundle size), and mapped 34 active backend routes.
 
 ---
@@ -31,10 +31,10 @@ The platform has successfully transitioned from a prototype state to **100% Real
 - **Karpenter Modes:** Integrated dual-mode operation (Insights-Only vs Auto-Optimize).
 - **Pricing:** Replaced flat core costs with a multi-tier family-specific fallback strategy (e.g., c5, m5, r5, t3 rates) powered by Redis.
 
-### 3. AtharvaAI ML Pool Optimizer (100% Real)
+### 3. ASCP.AI ML Pool Optimizer (100% Real)
 - **Pricing Scraper:** Celery beat tasks scrape real AWS Spot configurations every 10 minutes.
 - **Spot Advisor Integration:** Models replaced broken import paths with robust database queries against the `SpotAdvisorData` table.
-- **Cache Invalidation:** Template updates accurately clear Redis cache (`atharvaai:pool_rankings`), logging "TEMPLATE_UPDATED_CACHE_INVALIDATED" in audit logs.
+- **Cache Invalidation:** Template updates accurately clear Redis cache (`ascpai:pool_rankings`), logging "TEMPLATE_UPDATED_CACHE_INVALIDATED" in audit logs.
 
 ### 4. Codebase Cleanup
 - **Deleted Dead APIs:** Cleaned up unused endpoints (`settings_routes`, `smart_tag_routes`, `auto_tag_routes`, etc.).

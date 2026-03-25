@@ -1,5 +1,5 @@
 """
-Pool Ranking Service - AtharvaAi System A: Pool Selection Pipeline
+Pool Ranking Service - ASCPAi System A: Pool Selection Pipeline
 
 8-step filtering and ranking pipeline:
 1. Node Template Filtering - User-defined requirements (arch, vCPU, memory, families, sizes, AZs)
@@ -33,7 +33,7 @@ from backend.core.logger import logger
 
 # ── Two-tier global cache constants ──────────────────────────────────────────
 GLOBAL_CACHE_TTL = 65 * 60    # 65 minutes — balances freshness vs compute cost
-GLOBAL_CACHE_LIMIT = 500      # Top 500 safest pools cached per region (no template filter)
+GLOBAL_CACHE_LIMIT = 1500     # Top 1500 safest pools cached per region (no template filter)
 
 
 @dataclass
@@ -46,6 +46,7 @@ class NodeTemplate:
     allowed_sizes: Optional[List[str]] = None  # ["xlarge", "2xlarge"]
     allowed_azs: Optional[List[str]] = None  # ["aps1-az1", "aps1-az2"]
     excluded_instance_types: Optional[List[str]] = None  # ["m5.metal", "c5.24xlarge"]
+    source_od_price: Optional[float] = None  # Source node's OD hourly price — used as price ceiling
 
 
 @dataclass
@@ -87,7 +88,7 @@ class ScoredPool:
 
 class PoolRankingService:
     """
-    AtharvaAi Pool Selection Pipeline - System A.
+    ASCPAi Pool Selection Pipeline - System A.
 
     Orchestrates 8-step filtering and scoring to provide ranked pool recommendations.
     """
@@ -234,7 +235,8 @@ class PoolRankingService:
         self,
         node_template: NodeTemplate,
         region: str = "ap-south-1",
-        limit: int = 10
+        limit: int = 10,
+        node_id: Optional[str] = None,
     ) -> List[ScoredPool]:
         """
         Two-tier pool selection pipeline.
@@ -254,6 +256,9 @@ class PoolRankingService:
             node_template: User-defined filtering requirements
             region: AWS region
             limit: Maximum number of pools to return
+            node_id: Optional EC2 instance ID of the source node. When provided,
+                     pod request profile (node_resource_profile:{node_id}) is used
+                     to lower the vCPU/memory floor, enabling smaller replacements.
 
         Returns:
             List of scored and ranked instance pools
@@ -268,7 +273,7 @@ class PoolRankingService:
             return []
 
         # ── Tier 2: Apply client template + per-client blacklist filter ────────
-        filtered_pools = self._apply_client_filters(global_pools, node_template, region, limit)
+        filtered_pools = self._apply_client_filters(global_pools, node_template, region, limit, node_id=node_id)
 
         if not filtered_pools:
             logger.warning("No pools matched client template filters — global cache may need expansion")
@@ -365,10 +370,15 @@ class PoolRankingService:
         Returns top `global_limit` pools sorted by ML score.
         Called by _get_or_compute_global_rankings on a cache miss.
 
-        Tiered Spot Advisor filtering (3 passes, stops when global_limit met):
+        Tiered Spot Advisor filtering (5 passes, stops when global_limit met):
           Pass 0: max_rank=0 (<5% interruption only — safest pools)
           Pass 1: max_rank=1 (≤10% interruption — <5% and 5-10%)
           Pass 2: max_rank=2 (≤15% interruption — includes 10-15% overflow)
+          Pass 3: max_rank=3 (≤20% interruption — needed for COST_FIRST profiles)
+          Pass 4: max_rank=4 (≤25% interruption — maximum ceiling, all profiles)
+        Note: Global cache must retain ALL pools up to rank 4 so per-cluster
+        COST_FIRST filters (which accept up to 25%) can find their candidates.
+        Filtering at global tier before per-cluster filter = silent pool loss.
         """
         logger.info(f"Global pipeline START for region={region} (no template filter)")
 
@@ -441,6 +451,55 @@ class PoolRankingService:
                 )
                 scored_pools.extend(overflow_scored)
 
+        # Pass 3: If still not enough, expand to ≤20% interruption (rank 3)
+        # Required for COST_FIRST profiles which accept up to 25% interruption.
+        # Without this pass, COST_FIRST never sees 15-20% pools (silent loss).
+        if len(scored_pools) < global_limit:
+            pass012_keys = {
+                f"{p.pool.instance_type}:{p.pool.az}" for p in scored_pools
+            }
+            expanded_pools = self._step3_spot_advisor_filter(
+                all_candidate_pools, region, max_rank=3
+            )
+            overflow_pools = [
+                p for p in expanded_pools
+                if f"{p.instance_type}:{p.az}" not in pass012_keys
+            ]
+            logger.info(
+                f"Global Step 3 (pass 3, ≤20%%): {len(overflow_pools)} "
+                f"additional 15-20%% pools added"
+            )
+
+            if overflow_pools:
+                overflow_scored = self._score_candidates(
+                    overflow_pools, region
+                )
+                scored_pools.extend(overflow_scored)
+
+        # Pass 4: If still not enough, expand to ≤25% interruption (rank 4)
+        # Maximum ceiling — covers all possible profile ceilings (COST_FIRST: 25%).
+        if len(scored_pools) < global_limit:
+            pass0123_keys = {
+                f"{p.pool.instance_type}:{p.pool.az}" for p in scored_pools
+            }
+            expanded_pools = self._step3_spot_advisor_filter(
+                all_candidate_pools, region, max_rank=4
+            )
+            overflow_pools = [
+                p for p in expanded_pools
+                if f"{p.instance_type}:{p.az}" not in pass0123_keys
+            ]
+            logger.info(
+                f"Global Step 3 (pass 4, ≤25%%): {len(overflow_pools)} "
+                f"additional 20-25%% pools added"
+            )
+
+            if overflow_pools:
+                overflow_scored = self._score_candidates(
+                    overflow_pools, region
+                )
+                scored_pools.extend(overflow_scored)
+
         if not scored_pools:
             return []
 
@@ -470,6 +529,9 @@ class PoolRankingService:
         Run steps 4→7 on a list of candidate pools and return scored pools
         that pass the risk cutoff.
         """
+        if not candidate_pools:
+            return []
+
         # Step 4: Hard-reject repeat blacklist offenders (failure_count >= 3)
         candidate_pools = self._step4_blacklist_check(candidate_pools, region)
 
@@ -479,7 +541,16 @@ class PoolRankingService:
         # Step 7: ML scoring
         scored_pools = self._step7_ml_scoring(candidate_pools, region)
 
-        # Intelligence risk cutoff
+        # Safety net: if ML scoring eliminated all candidates (ONNX rejected all or all
+        # threw exceptions), fall back to heuristic scoring so rankings are never empty.
+        if not scored_pools and candidate_pools:
+            logger.warning(
+                f"[pool_ranking] _step7_ml_scoring returned 0 pools for {len(candidate_pools)} "
+                f"candidates in {region} — activating fallback scoring"
+            )
+            scored_pools = self._fallback_scoring(candidate_pools)
+
+        # Intelligence risk cutoff (fallback gives risk=0.20, always passes 0.50 gate)
         scored_pools = [p for p in scored_pools if p.risk_probability <= 0.50]
 
         return scored_pools
@@ -507,18 +578,47 @@ class PoolRankingService:
             logger.warning(f"Global cache read failed for {region}: {e}")
 
         # Cache miss — run full global pipeline
+        # Acquire a short-lived Redis lock so concurrent requests don't all pile
+        # into the pipeline simultaneously (OOM pressure, duplicate work).
+        _pipeline_lock_key = f"global_pipeline_running:{region}"
+        _lock_acquired = False
+        try:
+            _lock_acquired = bool(self.redis.set(_pipeline_lock_key, '1', nx=True, ex=120))
+            if not _lock_acquired:
+                # Another worker is building the cache — wait briefly and re-check
+                import time as _t
+                for _ in range(6):
+                    _t.sleep(5)
+                    _retry = self.redis.get(cache_key)
+                    if _retry:
+                        pool_dicts = json.loads(_retry)
+                        pools = [self._pool_from_dict(d) for d in pool_dicts]
+                        logger.info(f"Global cache HIT (waited for pipeline) for {region}: {len(pools)} pools")
+                        return pools
+                logger.warning(f"Global pipeline lock wait timed out for {region}, running pipeline anyway")
+        except Exception:
+            pass  # Redis unavailable — proceed without lock
+
         logger.info(f"Global cache MISS for {region} — running full pipeline")
         global_pools = self._run_global_pipeline(region, global_limit)
 
-        try:
-            cache_data = [self._pool_to_dict(p) for p in global_pools]
-            self.redis.setex(cache_key, GLOBAL_CACHE_TTL, json.dumps(cache_data))
-            logger.info(
-                f"Global cache STORED for {region}: {len(global_pools)} pools "
-                f"(TTL={GLOBAL_CACHE_TTL}s)"
+        # Only cache non-empty results — caching [] would cause subsequent calls to
+        # read an empty "hit" instead of retrying the full pipeline on next request.
+        if global_pools:
+            try:
+                cache_data = [self._pool_to_dict(p) for p in global_pools]
+                self.redis.setex(cache_key, GLOBAL_CACHE_TTL, json.dumps(cache_data))
+                logger.info(
+                    f"Global cache STORED for {region}: {len(global_pools)} pools "
+                    f"(TTL={GLOBAL_CACHE_TTL}s)"
+                )
+            except Exception as e:
+                logger.error(f"Global cache write failed for {region}: {e}")
+        else:
+            logger.warning(
+                f"Global pipeline returned 0 pools for {region} — skipping cache write "
+                f"so next request retries the full pipeline"
             )
-        except Exception as e:
-            logger.error(f"Global cache write failed for {region}: {e}")
 
         return global_pools
 
@@ -528,6 +628,7 @@ class PoolRankingService:
         template: NodeTemplate,
         region: str,
         limit: int,
+        node_id: Optional[str] = None,
     ) -> List["ScoredPool"]:
         """
         Tier 2: Apply node-template + per-client blacklist filters to the cached
@@ -535,8 +636,8 @@ class PoolRankingService:
 
         Filters applied (in order):
           • Architecture
-          • vCPU range
-          • Memory range
+          • vCPU range  (can be tightened from pod requests via node_resource_profile:{node_id})
+          • Memory range (same)
           • Allowed families (template.allowed_families)
           • Allowed sizes   (template.allowed_sizes)
           • Allowed AZs     (template.allowed_azs)
@@ -547,6 +648,29 @@ class PoolRankingService:
         """
         blacklist_failures_prefix = "blacklist_failures:"
         filtered: List["ScoredPool"] = []
+
+        # ── Fix 11: Pod-request-based capacity floor ─────────────────────────
+        # If a node_resource_profile exists for node_id, use actual pod requests
+        # (+ 10% headroom) as the minimum vCPU/memory floor instead of node total.
+        # This allows smaller, cheaper replacements when the node is underutilized.
+        effective_vcpu_min = template.vcpu_range[0]
+        effective_mem_min = template.memory_range[0]
+        if node_id:
+            try:
+                raw_profile = self.redis.get(f"node_resource_profile:{node_id}")
+                if raw_profile:
+                    import json as _json
+                    profile = _json.loads(raw_profile)
+                    vcpu_req = profile.get("vcpu_requested")
+                    mem_req = profile.get("memory_gb_requested")
+                    headroom = profile.get("replacement_headroom_pct", 10)
+                    if vcpu_req and vcpu_req > 0:
+                        effective_vcpu_min = max(1, int(vcpu_req * (1 + headroom / 100) + 0.999))
+                    if mem_req and mem_req > 0:
+                        import math
+                        effective_mem_min = math.ceil(mem_req * (1 + headroom / 100))
+            except Exception:
+                pass  # fallback to template values on any error
 
         # Normalize architecture names: treat x86_64 and amd64 as equivalent
         # (frontend sends "x86_64", catalog stores "amd64")
@@ -563,12 +687,12 @@ class PoolRankingService:
             if p.architecture not in normalized_archs:
                 continue
 
-            # vCPU range
-            if not (template.vcpu_range[0] <= p.vcpu <= template.vcpu_range[1]):
+            # vCPU range (lower bound from pod requests if available, upper from template)
+            if not (effective_vcpu_min <= p.vcpu <= template.vcpu_range[1]):
                 continue
 
-            # Memory range
-            if not (template.memory_range[0] <= p.memory_gb <= template.memory_range[1]):
+            # Memory range (lower bound from pod requests if available, upper from template)
+            if not (effective_mem_min <= p.memory_gb <= template.memory_range[1]):
                 continue
 
             # Allowed families
@@ -602,6 +726,12 @@ class PoolRankingService:
                     continue
             except Exception:
                 pass
+
+            # Price gate: only include pools where spot is cheaper than the source OD price.
+            # Without this, a pool whose spot price >= source OD provides negative savings.
+            if template.source_od_price and template.source_od_price > 0:
+                if p.spot_price >= template.source_od_price:
+                    continue
 
             filtered.append(pool)
             if len(filtered) >= limit:
@@ -812,7 +942,9 @@ class PoolRankingService:
 
         Args:
             max_rank: Maximum allowed interruption index.
-                      Default 1 (≤10%).  Called with 2 (≤15%) for overflow.
+                      Default 1 (≤10%).  Called with 2/3/4 for overflow passes.
+                      Unknown instance types receive rank=4 (worst-case) so they
+                      only survive pass 4, never appearing as falsely-safe.
         """
         spot_advisor_data = self._get_spot_advisor_data()
 
@@ -825,7 +957,7 @@ class PoolRankingService:
             if rank is None:
                 rank = spot_advisor_data.get(f"{pool.instance_type}:{region}")
                 if rank is None:
-                    rank = 1  # Conservative fallback
+                    rank = 4  # Worst-case fallback — unknown families rank last, not safe
                     fallback_count += 1
 
             pool.spot_advisor_rank = rank
@@ -836,7 +968,8 @@ class PoolRankingService:
         if fallback_count > 0:
             logger.warning(
                 f"[SPOT-ADVISOR] {fallback_count}/{len(pools)} pools used "
-                f"fallback rank=1 (no Spot Advisor data found). "
+                f"fallback rank=4 (worst-case — no Spot Advisor data found). "
+                f"These pools will only appear in pass 4 (≤25%% ceiling). "
                 f"Ensure the Spot Advisor scraper has run for region={region}."
             )
 
@@ -993,9 +1126,9 @@ class PoolRankingService:
         6. Calculate composite score = (savings × savings_weight) - (risk × risk_weight)
         """
         # ── Circuit Breaker Check ──────────────────────────────────
-        ml_fail_count = int(self.redis.get("atharvaai:ml_fail_count") or 0)
+        ml_fail_count = int(self.redis.get("ascpai:ml_fail_count") or 0)
         if ml_fail_count > 5:
-            self.redis.set("atharvaai:ml_degraded", "true", ex=600)  # 10-minute flag
+            self.redis.set("ascpai:ml_degraded", "true", ex=600)  # 10-minute flag
             logger.error("ML circuit breaker OPEN — using fallback scoring (>5 failures in 10 min)")
             return self._fallback_scoring(pools)
 
@@ -1003,8 +1136,8 @@ class PoolRankingService:
             logger.error("ONNX models not loaded - using fallback scoring")
             # Increment circuit breaker counter
             pipe = self.redis.pipeline()
-            pipe.incr("atharvaai:ml_fail_count")
-            pipe.expire("atharvaai:ml_fail_count", 600)  # 10-minute window
+            pipe.incr("ascpai:ml_fail_count")
+            pipe.expire("ascpai:ml_fail_count", 600)  # 10-minute window
             pipe.execute()
             return self._fallback_scoring(pools)
 
@@ -1027,6 +1160,17 @@ class PoolRankingService:
         scored_pools = []
         rejected_risky = 0
         timestamp = datetime.utcnow()
+
+        # ── Batch-fetch reputation multipliers (Step 15 / Stage 5.3) ──────────
+        # Avoid per-pool Redis round-trips in a tight loop.
+        _reputation_mults: Dict[str, float] = {}
+        try:
+            from backend.services.pool_reputation_service import PoolReputationService as _RepSvc
+            _rep_svc = _RepSvc(self.db, self.redis)
+            _pool_keys = [f"{p.instance_type}:{p.az}" for p in pools]
+            _reputation_mults = _rep_svc.bulk_get_multipliers(_pool_keys)
+        except Exception as _rep_init_err:
+            logger.debug(f"[pool_ranking] Reputation prefetch skipped: {_rep_init_err}")
 
         for pool in pools:
             try:
@@ -1105,6 +1249,12 @@ class PoolRankingService:
                 from backend.core.scoring import compute_expected_value
                 final_score = compute_expected_value(effective_savings, risk_probability)
 
+                # Stage 5.3 — Apply pool reputation multiplier
+                _pool_key_rep = f"{pool.instance_type}:{pool.az}"
+                _rep_mult = _reputation_mults.get(_pool_key_rep, 1.00)
+                if _rep_mult != 1.00:
+                    final_score = round(final_score * _rep_mult, 6)
+
                 scored_pools.append(ScoredPool(
                     pool=pool,
                     predicted_savings=predicted_savings,
@@ -1119,14 +1269,14 @@ class PoolRankingService:
                 logger.error(f"ML scoring failed for {pool.instance_type}/{pool.az}: {e}")
                 # Increment circuit breaker counter on per-pool ML failure
                 pipe = self.redis.pipeline()
-                pipe.incr("atharvaai:ml_fail_count")
-                pipe.expire("atharvaai:ml_fail_count", 600)
+                pipe.incr("ascpai:ml_fail_count")
+                pipe.expire("ascpai:ml_fail_count", 600)
                 pipe.execute()
                 continue
 
         # Clear degraded flag on successful pipeline completion
         if scored_pools:
-            self.redis.delete("atharvaai:ml_degraded")
+            self.redis.delete("ascpai:ml_degraded")
 
         logger.info(
             f"Step 7 complete: {len(scored_pools)} safe pools, "
@@ -1441,7 +1591,7 @@ class PoolRankingService:
     def _cache_rankings(self, ranked_pools: List[ScoredPool]):
         """Cache ranked pools in Redis with 1-hour TTL (matches model prediction horizon)."""
         try:
-            cache_key = "atharvaai:pool_rankings"
+            cache_key = "ascpai:pool_rankings"
             cache_data = [
                 {
                     "instance_type": p.pool.instance_type,
@@ -1596,67 +1746,124 @@ class PoolRankingService:
 
     def _get_pricing_data(self, region: str) -> Dict[str, Dict[str, float]]:
         """
-        Get current spot and on-demand prices from database and AWS Pricing API.
+        Get current spot and on-demand prices.
 
         Returns: Dict mapping "instance_type:az" to {"spot": float, "ondemand": float}
+
+        Priority order (fast-path first):
+        1. Redis spot_price:{region}:{az}:{type} keys (written by pricing worker, ~1991 entries)
+        2. DB SpotPriceHistory ONLY if Redis is empty (164K rows — expensive, avoid)
+        OD prices: Redis od_price/ondemand_price keys → DB OnDemandPricing → _ONDEMAND_FALLBACK
+        AWS Pricing API is NEVER called inline (too slow for 825+ pools).
         """
-        try:
-            from backend.models.pricing import SpotPriceHistory, OnDemandPricing
-            from backend.services.resource_pricing_service import ResourcePricingService
-            from datetime import datetime, timedelta
+        pricing_data = {}
 
-            pricing_data = {}
+        # ── Fast path: Redis spot_price:* keys ────────────────────────────────
+        if hasattr(self, 'redis') and self.redis:
+            try:
+                # Build OD lookup from Redis (od_price and ondemand_price keys)
+                _od_redis: Dict[str, float] = {}
+                for _od_key_fmt in [f"od_price:{region}:*", f"ondemand_price:{region}:*"]:
+                    _od_cur = 0
+                    while True:
+                        _od_cur, _od_keys = self.redis.scan(_od_cur, match=_od_key_fmt, count=200)
+                        for _ok in _od_keys:
+                            try:
+                                _ok_str = _ok.decode() if isinstance(_ok, bytes) else _ok
+                                _itype = _ok_str.rsplit(':', 1)[-1]
+                                _raw = self.redis.get(_ok)
+                                if _raw:
+                                    _od_redis[_itype] = float(_raw)
+                            except Exception:
+                                pass
+                        if _od_cur == 0:
+                            break
 
-            # Get recent spot prices from database (within last hour)
-            one_hour_ago = datetime.utcnow() - timedelta(hours=1)
-            spot_prices = self.db.query(SpotPriceHistory).filter(
-                SpotPriceHistory.region == region,
-                SpotPriceHistory.timestamp >= one_hour_ago
-            ).all()
-
-            # Build spot price lookup
-            spot_lookup = {}
-            for record in spot_prices:
-                key = f"{record.instance_type}:{record.availability_zone}"
-                spot_lookup[key] = float(record.price)
-
-            # Get on-demand prices
-            pricing_service = ResourcePricingService(self.db)
-            ondemand_prices = self.db.query(OnDemandPricing).filter(
-                OnDemandPricing.region == region
-            ).all()
-
-            # Build combined pricing data
-            for spot_record in spot_prices:
-                key = f"{spot_record.instance_type}:{spot_record.availability_zone}"
-
-                # Get on-demand price from database or API
-                ondemand = None
-                for od_record in ondemand_prices:
-                    if od_record.instance_type == spot_record.instance_type:
-                        ondemand = float(od_record.price)
+                cursor = 0
+                while True:
+                    cursor, keys = self.redis.scan(
+                        cursor, match=f"spot_price:{region}:*", count=500
+                    )
+                    for key in keys:
+                        try:
+                            raw = self.redis.get(key)
+                            if not raw:
+                                continue
+                            key_str = key.decode() if isinstance(key, bytes) else key
+                            parts = key_str.split(':')
+                            if len(parts) >= 4:
+                                _az = parts[2]
+                                _itype = ':'.join(parts[3:])
+                                _data = json.loads(raw)
+                                _spot = float(_data.get('price', 0) or 0)
+                                if _spot <= 0:
+                                    continue
+                                # OD: Redis → _ONDEMAND_FALLBACK (no AWS API call)
+                                _od = (
+                                    _od_redis.get(_itype)
+                                    or self._ONDEMAND_FALLBACK.get(_itype)
+                                    or _spot * 3.0
+                                )
+                                pricing_data[f"{_itype}:{_az}"] = {"spot": _spot, "ondemand": _od}
+                        except Exception:
+                            pass
+                    if cursor == 0:
                         break
 
-                # Fallback chain: ResourcePricingService API → hardcoded table → spot * 3.0
-                if ondemand is None:
-                    try:
-                        ondemand_cost = pricing_service.calculate_instance_cost(
-                            spot_record.instance_type, region, hours=1
-                        )
-                        ondemand = float(ondemand_cost)
-                    except Exception as e:
-                        logger.warning(f"Failed to get on-demand price for {spot_record.instance_type}: {e}")
-                        # Use hardcoded accurate OD prices instead of spot * 3.0 (which
-                        # gives constant 67% headroom for ALL instance types).
-                        ondemand = self._ONDEMAND_FALLBACK.get(
-                            spot_record.instance_type,
-                            spot_lookup.get(key, 0.0) * 3.0  # Last resort
-                        )
+                if pricing_data:
+                    logger.info(
+                        f"[pricing_data] Redis fast-path: {len(pricing_data)} pools for {region}"
+                    )
+                    return pricing_data
+            except Exception as _redis_err:
+                logger.warning(f"[pricing_data] Redis fast-path failed: {_redis_err}")
 
-                pricing_data[key] = {
-                    "spot": spot_lookup.get(key, 0.0),
-                    "ondemand": ondemand
-                }
+        # ── Slow path: DB SpotPriceHistory (only reached if Redis empty) ──────
+        try:
+            from backend.models.pricing import SpotPriceHistory, OnDemandPricing
+            from datetime import datetime, timedelta
+
+            # Load only one row per (instance_type, az) — most recent price
+            one_hour_ago = datetime.utcnow() - timedelta(hours=1)
+            from sqlalchemy import func as _sqlfunc
+            latest_subq = (
+                self.db.query(
+                    SpotPriceHistory.instance_type,
+                    SpotPriceHistory.availability_zone,
+                    _sqlfunc.max(SpotPriceHistory.timestamp).label('max_ts'),
+                )
+                .filter(
+                    SpotPriceHistory.region == region,
+                    SpotPriceHistory.timestamp >= one_hour_ago,
+                )
+                .group_by(SpotPriceHistory.instance_type, SpotPriceHistory.availability_zone)
+                .subquery()
+            )
+            spot_prices = (
+                self.db.query(SpotPriceHistory)
+                .join(latest_subq, (
+                    (SpotPriceHistory.instance_type == latest_subq.c.instance_type) &
+                    (SpotPriceHistory.availability_zone == latest_subq.c.availability_zone) &
+                    (SpotPriceHistory.timestamp == latest_subq.c.max_ts)
+                ))
+                .all()
+            )
+
+            # OD lookup from DB
+            od_map: Dict[str, float] = {}
+            od_rows = self.db.query(OnDemandPricing).filter(OnDemandPricing.region == region).all()
+            for r in od_rows:
+                od_map[r.instance_type] = float(r.price)
+
+            for sp in spot_prices:
+                key = f"{sp.instance_type}:{sp.availability_zone}"
+                _spot = float(sp.price)
+                _od = (
+                    od_map.get(sp.instance_type)
+                    or self._ONDEMAND_FALLBACK.get(sp.instance_type)
+                    or _spot * 3.0
+                )
+                pricing_data[key] = {"spot": _spot, "ondemand": _od}
 
             logger.info(f"Loaded pricing data for {len(pricing_data)} instance/AZ combinations")
             return pricing_data
@@ -1668,8 +1875,8 @@ class PoolRankingService:
                     self.db.rollback()
                 except Exception:
                     pass
-            # Fallback to empty dict (will use fallback pricing in ML features)
             return {}
+
 
     # ========================================================================
     # SIZE-CONSTRAINED RANKING (Unified Optimizer Coordination)
@@ -1975,6 +2182,88 @@ def report_launch_failure(pool_key: str):
             )
     except Exception as e:
         logger.warning(f"[pool_ranking] report_launch_failure failed: {e}")
+
+
+def report_launch_success(pool_key: str, uptime_hours: float = None):
+    """
+    Pillar 3 — Closed-Loop ML: record a successful launch outcome for a pool.
+
+    Updates pool_reputation:{pool_key} in Redis with:
+      - launch_success_rate (rolling window)
+      - avg_uptime_hours (EMA)
+      - last_success_at timestamp
+    TTL: 7 days.
+    """
+    try:
+        from backend.core.redis_client import get_redis_client
+        import time
+        r = get_redis_client()
+        rep_key = f"pool_reputation:{pool_key}"
+        raw = r.get(rep_key)
+        rep = json.loads(raw) if raw else {
+            "successes": 0, "attempts": 0, "avg_uptime_hours": None,
+            "last_success_at": None,
+        }
+        rep["successes"] = rep.get("successes", 0) + 1
+        rep["attempts"] = rep.get("attempts", 0) + 1
+        rep["last_success_at"] = time.time()
+        # EMA for uptime
+        if uptime_hours is not None:
+            prev = rep.get("avg_uptime_hours")
+            if prev is None:
+                rep["avg_uptime_hours"] = uptime_hours
+            else:
+                rep["avg_uptime_hours"] = prev * 0.8 + uptime_hours * 0.2
+        r.setex(rep_key, 86400 * 7, json.dumps(rep))
+    except Exception as e:
+        logger.warning(f"[pool_ranking] report_launch_success failed: {e}")
+
+
+def get_pool_reputation(pool_key: str, redis_client=None) -> dict:
+    """
+    Pillar 3 — Closed-Loop ML: get pool reputation metrics.
+
+    Returns dict with:
+      - launch_success_rate: float 0.0–1.0
+      - avg_uptime_hours: float or None
+      - reputation_multiplier: float 0.5–1.2 (for scoring)
+    """
+    try:
+        if redis_client is None:
+            from backend.core.redis_client import get_redis_client
+            redis_client = get_redis_client()
+        raw = redis_client.get(f"pool_reputation:{pool_key}")
+        if not raw:
+            # Also check failure counters for pools we've attempted but not succeeded
+            from backend.core.redis_client import key_pool_launch_attempts, key_pool_launch_failures
+            attempts = int(redis_client.get(key_pool_launch_attempts(pool_key)) or 0)
+            failures = int(redis_client.get(key_pool_launch_failures(pool_key)) or 0)
+            if attempts > 0:
+                rate = max(0.0, (attempts - failures) / attempts)
+                rep_mult = 0.5 + (rate * 0.7)  # 0.5 (all fail) → 1.2 (all success)
+                return {"launch_success_rate": rate, "avg_uptime_hours": None, "reputation_multiplier": rep_mult}
+            return {"launch_success_rate": None, "avg_uptime_hours": None, "reputation_multiplier": 1.0}
+
+        rep = json.loads(raw)
+        successes = rep.get("successes", 0)
+        attempts = rep.get("attempts", 1)
+        rate = successes / max(attempts, 1)
+        avg_uptime = rep.get("avg_uptime_hours")
+
+        # reputation_multiplier: 0.5 (terrible) → 1.0 (neutral) → 1.2 (excellent)
+        rep_mult = 0.5 + (rate * 0.7)  # rate=0 → 0.5, rate=1 → 1.2
+
+        # Momentum: recent uptime bonus
+        if avg_uptime is not None:
+            if avg_uptime > 168:  # 7 days stable
+                rep_mult = min(1.2, rep_mult + 0.05)
+            elif avg_uptime < 2:  # interrupted within 2 hours recently
+                rep_mult = max(0.5, rep_mult - 0.10)
+
+        return {"launch_success_rate": rate, "avg_uptime_hours": avg_uptime, "reputation_multiplier": rep_mult}
+    except Exception as e:
+        logger.warning(f"[pool_ranking] get_pool_reputation failed: {e}")
+        return {"launch_success_rate": None, "avg_uptime_hours": None, "reputation_multiplier": 1.0}
 
 
 def blacklist_pool_temporary(pool_key: str, ttl_seconds: int = 3600):

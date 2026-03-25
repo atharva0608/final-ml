@@ -18,22 +18,22 @@
 
 | Menu Item | Icon | Route | Component | Has Submenu | Submenu Items | File Location |
 |-----------|------|-------|-----------|-------------|---------------|---------------|
-| **AtharvaAI Optimizer** | ◈ | `/atharva-ai` | AtharvaAiPage.jsx | ✅ Yes | • Pool Rankings<br>• Interruption Heatmap<br>• Rebalancing Timeline | pages/AtharvaAiPage.jsx |
+| **ASCP.AI Optimizer** | ◈ | `/ascp-ai` | ASCPAiPage.jsx | ✅ Yes | • Pool Rankings<br>• Interruption Heatmap<br>• Rebalancing Timeline | pages/ASCPAiPage.jsx |
 | **Right-Sizing** | ⇄ | `/right-sizing` | RightSizingDashboard.jsx | ✅ Yes | • Karpenter<br>• Configuration<br>• Optimization History<br>• Savings Tracker | components/right-sizing/RightSizingDashboard.jsx |
 | **Resource Hygiene** | ⊘ | `/hygiene` | CleanupDashboard.jsx | ❌ No | — | components/cleanup/CleanupDashboard.jsx |
 | **Hibernation** | ◑ | `/hibernation/:clusterId?` | HibernationDashboard | ✅ Yes | • Schedules<br>• Strategies<br>• Execution History | components/hibernation/HibernationDashboardNew.jsx |
 
-### AtharvaAI Components (5 files)
+### ASCP.AI Components (5 files)
 
 | Component | Purpose | Lines | File Name |
 |-----------|---------|-------|-----------|
-| **PoolRankings.jsx** | Main pool rankings dashboard | ~420 | atharvaai/PoolRankings.jsx |
-| **InterruptionHeatmap.jsx** | Interruption frequency heatmap visualization | ~280 | atharvaai/InterruptionHeatmap.jsx |
-| **RebalancingTimeline.jsx** | Auto-rebalancing event timeline | ~240 | atharvaai/RebalancingTimeline.jsx |
-| **AutoRebalanceAuditCard.jsx** | Audit card for rebalancing events | ~180 | atharvaai/AutoRebalanceAuditCard.jsx |
-| **PoolRankings.css** | Styles for pool rankings | — | atharvaai/PoolRankings.css |
+| **PoolRankings.jsx** | Main pool rankings dashboard | ~420 | ascpai/PoolRankings.jsx |
+| **InterruptionHeatmap.jsx** | Interruption frequency heatmap visualization | ~280 | ascpai/InterruptionHeatmap.jsx |
+| **RebalancingTimeline.jsx** | Auto-rebalancing event timeline | ~240 | ascpai/RebalancingTimeline.jsx |
+| **AutoRebalanceAuditCard.jsx** | Audit card for rebalancing events | ~180 | ascpai/AutoRebalanceAuditCard.jsx |
+| **PoolRankings.css** | Styles for pool rankings | — | ascpai/PoolRankings.css |
 
-**Total AtharvaAI Files:** 5 files (4 JSX + 1 CSS) = ~1,120 lines
+**Total ASCP.AI Files:** 5 files (4 JSX + 1 CSS) = ~1,120 lines
 
 ### Right-Sizing Submenu (Internal Tabs)
 
@@ -170,7 +170,7 @@ All routes use `PermissionGate` HOC for RBAC enforcement:
 
 ## Component Count Corrections
 
-### AtharvaAI
+### ASCP.AI
 - **Old (wrong):** 4 components
 - **New (correct):** 5 components (4 JSX + 1 CSS)
   - PoolRankings.jsx ✓
@@ -198,7 +198,7 @@ All routes use `PermissionGate` HOC for RBAC enforcement:
 **Total Sidebar Sections:** 7 (Overview, Cost Intelligence, Infrastructure, Governance, Organization, System, Admin)
 
 **Sections with Submenus:** 4
-- AtharvaAI Optimizer (3 submenu items)
+- ASCP.AI Optimizer (3 submenu items)
 - Right-Sizing (4 submenu items - internal tabs)
 - Hibernation (3 submenu items - internal tabs)
 - Tag Governance (submenu TBD)

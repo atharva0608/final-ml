@@ -391,7 +391,7 @@ class PoolRotationService:
             actions_taken.append("No backup AZ available - keeping current primary")
 
         # Action 2: Clear pool ranking cache (forces re-rank)
-        cache_key = f"atharvaai:pool_rankings:{cluster_id}"
+        cache_key = f"ascpai:pool_rankings:{cluster_id}"
         self.redis.delete(cache_key)
         actions_taken.append("Cleared pool ranking cache")
 

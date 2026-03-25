@@ -99,7 +99,7 @@ export const clusterAPI = {
     fallback: (clusterId) => api.post(`/api/v1/clusters/${clusterId}/fallback`),
     getOptimizationSettings: (clusterId) => api.get(`/api/v1/clusters/${clusterId}/optimization-settings`),
     updateOptimizationSettings: (clusterId, settings) => api.put(`/api/v1/clusters/${clusterId}/optimization-settings`, settings),
-    getWarmSpareStatus: (clusterId) => api.get(`/api/v1/atharvaai/v3/substitute/${clusterId}`),
+    getWarmSpareStatus: (clusterId) => api.get(`/api/v1/ascpai/v3/substitute/${clusterId}`),
 };
 export const clustersAPI = clusterAPI;
 
@@ -299,11 +299,11 @@ export const hygieneAPI = {
     }),
 };
 
-// AtharvaAi Pool Selection & Termination Monitoring API
-export const atharvaaiAPI = {
+// ASCPAi Pool Selection & Termination Monitoring API
+export const ascpaiAPI = {
     // Pool Rankings - Get ML-scored pool recommendations
     getRankings: (template, region = 'ap-south-1', limit = 10, clusterId = null, currentNodeContext = null) => {
-        const params = { region, limit };
+        const params = { region: region || 'ap-south-1', limit };
         if (clusterId) params.cluster_id = clusterId;
 
         // Add current node context for real savings calculation
@@ -312,75 +312,87 @@ export const atharvaaiAPI = {
             if (currentNodeContext.lifecycle) params.current_instance_lifecycle = currentNodeContext.lifecycle;
         }
 
-        return api.post('/api/v1/atharvaai/pools/rankings', template, { params });
+        return api.post('/api/v1/ascpai/pools/rankings', template, { params });
     },
 
     // Get rankings using a saved template ID
     getRankingsForTemplate: (templateId, region = 'ap-south-1', limit = 10) =>
-        api.post('/api/v1/atharvaai/pools/rankings', null, {
+        api.post('/api/v1/ascpai/pools/rankings', null, {
             params: { template_id: templateId, region, limit }
         }),
 
     // Get globally flagged risky pools (System B)
-    getBlacklist: () => api.get('/api/v1/atharvaai/blacklist'),
+    getBlacklist: () => api.get('/api/v1/ascpai/blacklist'),
 
     // Check if specific pool is blacklisted
     checkBlacklist: (instanceType, az) =>
-        api.get('/api/v1/atharvaai/blacklist/check', {
+        api.get('/api/v1/ascpai/blacklist/check', {
             params: { instance_type: instanceType, az }
         }),
 
     // Get auto-rebalancing status (System B)
     getRebalancingStatus: (clusterId = null, limit = 10) =>
-        api.get('/api/v1/atharvaai/rebalancing/status', {
+        api.get('/api/v1/ascpai/rebalancing/status', {
             params: clusterId ? { cluster_id: clusterId, limit } : { limit }
         }),
 
     // Approve / deny a pending_approval rebalancing action (manual_approval_required=True)
     approveRebalancingAction: (actionId) =>
-        api.post(`/api/v1/atharvaai/rebalancing-actions/${actionId}/approve`),
+        api.post(`/api/v1/ascpai/rebalancing-actions/${actionId}/approve`),
     denyRebalancingAction: (actionId) =>
-        api.post(`/api/v1/atharvaai/rebalancing-actions/${actionId}/deny`),
+        api.post(`/api/v1/ascpai/rebalancing-actions/${actionId}/deny`),
 
     // Get rebalancing context: cooldown + next target (unified, works for non-Karpenter clusters)
-    getRebalancingContext: (clusterId) => api.get(`/api/v1/atharvaai/v3/rebalancing-context/${clusterId}`),
+    getRebalancingContext: (clusterId) => api.get(`/api/v1/ascpai/v3/rebalancing-context/${clusterId}`),
 
     // Health check
-    getHealth: () => api.get('/api/v1/atharvaai/health'),
+    getHealth: () => api.get('/api/v1/ascpai/health'),
 
     // Effective Configuration
-    getEffectiveConfiguration: (clusterId) => api.get(`/api/v1/atharvaai/clusters/${clusterId}/effective-configuration`),
+    getEffectiveConfiguration: (clusterId) => api.get(`/api/v1/ascpai/clusters/${clusterId}/effective-configuration`),
 
     // Node-Specific Rankings (To be implemented in backend)
-    getNodeRecommendations: (clusterId) => api.get(`/api/v1/atharvaai/clusters/${clusterId}/node-recommendations`),
+    getNodeRecommendations: (clusterId) => api.get(`/api/v1/ascpai/clusters/${clusterId}/node-recommendations`),
 
     // Cluster Impact (To be implemented in backend)
-    getClusterImpact: (clusterId) => api.get(`/api/v1/atharvaai/clusters/${clusterId}/impact`),
+    getClusterImpact: (clusterId) => api.get(`/api/v1/ascpai/clusters/${clusterId}/impact`),
 
     // Per-Node Coverage Report (changes.md Part 8)
-    getClusterCoverage: (clusterId) => api.get(`/api/v1/atharvaai/clusters/${clusterId}/coverage`),
+    getClusterCoverage: (clusterId) => api.get(`/api/v1/ascpai/clusters/${clusterId}/coverage`),
 
     // Per-Node Alternative Pool List (changes.md Part 8)
     getNodeAlternatives: (clusterId, nodeId, page = 1, pageSize = 20) =>
-        api.get(`/api/v1/atharvaai/clusters/${clusterId}/nodes/${nodeId}/alternatives`, {
+        api.get(`/api/v1/ascpai/clusters/${clusterId}/nodes/${nodeId}/alternatives`, {
             params: { page, page_size: pageSize },
         }),
 
-    // Market View — full ranked pool list for a cluster's region (Task 4.1)
-    getMarketView: (clusterId, page = 1, pageSize = 20, sortBy = 'risk_tier', sortOrder = 'asc') =>
-        api.get(`/api/v1/atharvaai/clusters/${clusterId}/market-view`, {
-            params: { page, page_size: pageSize, sort_by: sortBy, sort_order: sortOrder },
+    // Market View — full ranked pool list for a cluster's region (Task 5.1)
+    getMarketView: (clusterId, page = 1, pageSize = 20, sortBy = 'final_score', sortOrder = 'desc', includeUnavailable = false) =>
+        api.get(`/api/v1/ascpai/clusters/${clusterId}/market-view`, {
+            params: { page, page_size: pageSize, sort_by: sortBy, sort_order: sortOrder, include_unavailable: includeUnavailable },
         }),
 
-    // Pool Audit — funnel breakdown for a specific node (Task 4.3)
+    // Dry Run Check — trigger background capacity check for specified pools
+    triggerDryRunCheck: (clusterId, poolKeys) =>
+        api.post(`/api/v1/ascpai/clusters/${clusterId}/dry-run-check`, { pool_keys: poolKeys }),
+
+    // Pool Audit — funnel breakdown for a specific node (Task 5.3)
     getPoolAudit: (clusterId, nodeId) =>
-        api.get(`/api/v1/atharvaai/clusters/${clusterId}/nodes/${nodeId}/pool-audit`),
+        api.get(`/api/v1/ascpai/clusters/${clusterId}/nodes/${nodeId}/pool-audit`),
+
+    // Savings — baseline-anchored realized savings (Task 5.2)
+    getClusterSavings: (clusterId) =>
+        api.get(`/api/v1/ascpai/clusters/${clusterId}/savings`),
 
     // Enriched volatility status (includes az_pressure map)
-    getVolatilityStatusEnriched: () => api.get('/api/v1/atharvaai/volatility/status'),
+    getVolatilityStatusEnriched: () => api.get('/api/v1/ascpai/volatility/status'),
+
+    // Compatibility aliases used by existing ASCP.AI dashboard widgets
+    getVolatilityStatus: () => api.get('/api/v1/ascpai/volatility/status'),
+    getBlacklistStatus: () => api.get('/api/v1/ascpai/blacklist'),
 
     // Savings Velocity history
-    getSavingsVelocity: (clusterId, days = 30) => api.get('/api/v1/atharvaai/savings-velocity', {
+    getSavingsVelocity: (clusterId, days = 30) => api.get('/api/v1/ascpai/savings-velocity', {
         params: { cluster_id: clusterId, days }
     }),
 };
@@ -519,13 +531,6 @@ export const tagComplianceAPI = {
     getHeatmap: (params) => api.get('/api/v1/tags/compliance/heatmap', { params }),
 };
 
-export const atharvaAiAPI = {
-    getVolatilityStatus: () => api.get('/api/v1/atharvaai/volatility/status'),
-    getHealth: () => api.get('/api/v1/atharvaai/health'),
-    getRankings: () => api.post('/api/v1/atharvaai/pools/rankings', { architecture: ["amd64", "arm64"], vcpu_min: 2, vcpu_max: 64, memory_gb_min: 4, memory_gb_max: 256, allowed_families: null, allowed_sizes: null, allowed_azs: null, excluded_instance_types: null }, { params: { region: 'ap-south-1', limit: 10 } }),
-    getBlacklistStatus: () => api.get('/api/v1/atharvaai/blacklist'),
-};
-
 // Decision Engine v3 API
 export const decisionEngineAPI = {
     // Legacy endpoints (keep for backwards compatibility)
@@ -538,15 +543,15 @@ export const decisionEngineAPI = {
     updateOptimizationMode: (clusterId, mode) => api.patch(`/api/v1/clusters/${clusterId}`, { optimization_mode: mode }),
 
     // Decision Engine v3 endpoints
-    getGlobalIntelligenceStatus: (region) => api.get('/api/v1/atharvaai/v3/global-intelligence/status', { params: { region } }),
-    getDiversityStatus: (clusterId) => api.get(`/api/v1/atharvaai/v3/diversity/${clusterId}`),
-    getCooldownStatusV3: (clusterId) => api.get(`/api/v1/atharvaai/v3/cooldown/${clusterId}`),
-    getSubstituteStatusV3: (clusterId) => api.get(`/api/v1/atharvaai/v3/substitute/${clusterId}`),
-    getStateMachine: (clusterId) => api.get(`/api/v1/atharvaai/v3/state-machine/${clusterId}`),
-    setOptimizationMode: (clusterId, mode) => api.put(`/api/v1/atharvaai/v3/cluster/${clusterId}/optimization-mode`, null, { params: { mode } }),
-    upgradeModelVersion: (clusterId, version) => api.put(`/api/v1/atharvaai/v3/cluster/${clusterId}/model-version`, null, { params: { version } }),
-    getDecisionMetrics: () => api.get('/api/v1/atharvaai/v3/metrics'),
-    getWorkloadStatus: (clusterId) => api.get(`/api/v1/atharvaai/v3/workload-status/${clusterId}`),
+    getGlobalIntelligenceStatus: (region) => api.get('/api/v1/ascpai/v3/global-intelligence/status', { params: { region } }),
+    getDiversityStatus: (clusterId) => api.get(`/api/v1/ascpai/v3/diversity/${clusterId}`),
+    getCooldownStatusV3: (clusterId) => api.get(`/api/v1/ascpai/v3/cooldown/${clusterId}`),
+    getSubstituteStatusV3: (clusterId) => api.get(`/api/v1/ascpai/v3/substitute/${clusterId}`),
+    getStateMachine: (clusterId) => api.get(`/api/v1/ascpai/v3/state-machine/${clusterId}`),
+    setOptimizationMode: (clusterId, mode) => api.put(`/api/v1/ascpai/v3/cluster/${clusterId}/optimization-mode`, null, { params: { mode } }),
+    upgradeModelVersion: (clusterId, version) => api.put(`/api/v1/ascpai/v3/cluster/${clusterId}/model-version`, null, { params: { version } }),
+    getDecisionMetrics: () => api.get('/api/v1/ascpai/v3/metrics'),
+    getWorkloadStatus: (clusterId) => api.get(`/api/v1/ascpai/v3/workload-status/${clusterId}`),
     deploySubstitute: (clusterId, targetNodeName) => api.post(`/api/v1/karpenter/v3/substitute/${clusterId}/deploy`, null, { params: { target_node_name: targetNodeName } }),
     getSubstituteStatusDetailed: (clusterId) => api.get(`/api/v1/karpenter/v3/substitute/${clusterId}/status`),
     getCooldownDetailed: (clusterId) => api.get(`/api/v1/karpenter/v3/cooldown/${clusterId}`),

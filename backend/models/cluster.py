@@ -78,7 +78,7 @@ class Cluster(Base):
     # Karpenter operating mode: null = not installed, dry_run = insights only, auto = full management
     karpenter_mode = Column(Enum(KarpenterMode), nullable=True, default=None)
 
-    # AtharvaAI v3 Decision Engine settings
+    # ASCP.AI v3 Decision Engine settings
     optimization_mode = Column(
         String(20), nullable=False, default="BALANCED", server_default="BALANCED"
     )  # "COST_FIRST", "BALANCED", "NO_DOWNTIME_FIRST"
@@ -181,6 +181,11 @@ class ClusterOptimizationSettings(Base):
     # Celery beat schedule. Increase to reduce check frequency for stable clusters.
     check_interval_seconds = Column(Integer, default=15, nullable=False)
 
+    # Issue 12: Configurable concurrent rebalancing actions per cluster.
+    # Default NULL (treated as 1) preserves existing one-at-a-time behavior.
+    # Set to >1 for clusters that can safely handle parallel node replacements.
+    max_concurrent_rebalance_actions = Column(Integer, nullable=True)
+
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     cluster = relationship("Cluster", back_populates="optimization_settings")
@@ -269,3 +274,17 @@ class ClusterBaseline(Base):
     baseline_od_count = Column(Integer, nullable=True)
     computed_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class ClusterCooldownState(Base):
+    """
+    Issue 13: DB-backed stabilization state so the 60s stabilization lock survives
+    Redis restarts. auto_rebalancer re-hydrates the Redis key from this table on cache miss.
+    cooldown_controller.acquire_stabilization_lock() writes here after setting the Redis key.
+    """
+    __tablename__ = 'cluster_cooldown_states'
+
+    cluster_id = Column(String(36), ForeignKey("clusters.id", ondelete="CASCADE"), primary_key=True)
+    stabilization_until = Column(DateTime, nullable=True)
+    last_action_at = Column(DateTime, nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

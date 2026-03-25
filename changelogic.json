@@ -359,10 +359,10 @@
         "task_id": "T27",
         "description": "Add AZ pressure badges to InterruptionHeatmap.jsx (\u00a714.1)",
         "files": [
-            "frontend/src/components/atharvaai/InterruptionHeatmap.jsx"
+            "frontend/src/components/ascpai/InterruptionHeatmap.jsx"
         ],
         "current_logic": "`InterruptionHeatmap.jsx` displays a heatmap of interruption rates across AZs. It currently does NOT show AZ pressure badges (numeric overlay showing event frequency). \u00a714.1 specifies adding small numeric badges to each cell using data from the enhanced `/volatility/status` endpoint.",
-        "change_instructions": "1. Add a small numeric badge to each heatmap cell showing AZ pressure value.\n2. Fetch AZ pressure data from the `/volatility/status` endpoint (already exists in `atharvaai_routes.py`).\n3. Display badge with styling: small, positioned top-right of cell, color-coded (green < 3, yellow 3-5, red > 5).\n4. If AZ pressure data is unavailable, don't show badge.",
+        "change_instructions": "1. Add a small numeric badge to each heatmap cell showing AZ pressure value.\n2. Fetch AZ pressure data from the `/volatility/status` endpoint (already exists in `ascpai_routes.py`).\n3. Display badge with styling: small, positioned top-right of cell, color-coded (green < 3, yellow 3-5, red > 5).\n4. If AZ pressure data is unavailable, don't show badge.",
         "dependencies": [],
         "acceptance_criteria": "Heatmap cells show numeric AZ pressure badge when data available. Badge color changes based on pressure level."
     },
@@ -383,7 +383,7 @@
         "task_id": "T29",
         "description": "Add Blacklist indicator and Price Shock signal columns to PoolRankings.jsx (\u00a714.3)",
         "files": [
-            "frontend/src/components/atharvaai/PoolRankings.jsx"
+            "frontend/src/components/ascpai/PoolRankings.jsx"
         ],
         "current_logic": "`PoolRankings.jsx` displays pool ranking data in a table. It currently does NOT have 'Blacklist' or 'Signal' columns. \u00a714.3 specifies adding: Blacklist (\u25cf dot indicator), Signal (\u26a1 for price shock).",
         "change_instructions": "1. Add 'Blacklist' column: show red \u25cf dot if pool is blacklisted (from enriched pool rankings endpoint).\n2. Add 'Signal' column: show \u26a1 icon if pool has `price_shock: true`.\n3. Enrich the data fetch to include blacklist and signal information.\n4. Style the indicators with appropriate colors (red for blacklist, yellow for price shock).",
@@ -405,7 +405,7 @@
         "task_id": "T31",
         "description": "Add circuit breaker state badge to AutoRebalanceAuditCard.jsx (\u00a714.5)",
         "files": [
-            "frontend/src/components/atharvaai/AutoRebalanceAuditCard.jsx"
+            "frontend/src/components/ascpai/AutoRebalanceAuditCard.jsx"
         ],
         "current_logic": "`AutoRebalanceAuditCard.jsx` displays rebalancing status. It does NOT show circuit breaker state. \u00a714.5 specifies adding a state badge (NORMAL/CONSERVATIVE/HALT) next to the cluster name.",
         "change_instructions": "1. Fetch circuit breaker state for each cluster from the enriched status endpoint or `/admin/circuit-breakers`.\n2. Display a color-coded badge next to the cluster name: green=NORMAL, yellow=CONSERVATIVE, red=HALT.\n3. Tooltip on hover shows rollback count and time in state.",
@@ -420,19 +420,19 @@
         "files": [
             "frontend/src/services/api.js"
         ],
-        "current_logic": "`api.js` contains API client methods for various backend endpoints. \u00a714.6 specifies adding: `adminAPI.getCircuitBreakers()`, `adminAPI.resetCircuitBreaker(clusterId)`, `atharvaaiAPI.getVolatilityStatusEnriched(region)`, `karpenterAPI.detectKarpenter(clusterId)`.",
-        "change_instructions": "1. Add `adminAPI.getCircuitBreakers()` \u2192 `GET /admin/circuit-breakers`.\n2. Add `adminAPI.resetCircuitBreaker(clusterId)` \u2192 `POST /admin/circuit-breakers/{clusterId}/reset`.\n3. Add `atharvaaiAPI.getVolatilityStatusEnriched(region)` \u2192 `GET /api/v1/atharvaai/volatility/status?enriched=true&region={region}`.\n4. Add `karpenterAPI.detectKarpenter(clusterId)` \u2192 `GET /api/v1/karpenter/detect/{clusterId}`.\n5. Follow existing patterns for error handling and authentication headers.",
+        "current_logic": "`api.js` contains API client methods for various backend endpoints. \u00a714.6 specifies adding: `adminAPI.getCircuitBreakers()`, `adminAPI.resetCircuitBreaker(clusterId)`, `ascpaiAPI.getVolatilityStatusEnriched(region)`, `karpenterAPI.detectKarpenter(clusterId)`.",
+        "change_instructions": "1. Add `adminAPI.getCircuitBreakers()` \u2192 `GET /admin/circuit-breakers`.\n2. Add `adminAPI.resetCircuitBreaker(clusterId)` \u2192 `POST /admin/circuit-breakers/{clusterId}/reset`.\n3. Add `ascpaiAPI.getVolatilityStatusEnriched(region)` \u2192 `GET /api/v1/ascpai/volatility/status?enriched=true&region={region}`.\n4. Add `karpenterAPI.detectKarpenter(clusterId)` \u2192 `GET /api/v1/karpenter/detect/{clusterId}`.\n5. Follow existing patterns for error handling and authentication headers.",
         "dependencies": [],
         "acceptance_criteria": "All 4 new API methods are callable and return promises. URLs match backend endpoint patterns."
     },
     {
         "task_id": "T33",
-        "description": "Enrich pool rankings and volatility endpoints in atharvaai_routes.py (\u00a714.3, \u00a714.1 backend support)",
+        "description": "Enrich pool rankings and volatility endpoints in ascpai_routes.py (\u00a714.3, \u00a714.1 backend support)",
         "files": [
-            "backend/api/atharvaai_routes.py"
+            "backend/api/ascpai_routes.py"
         ],
-        "current_logic": "`atharvaai_routes.py` (59382 bytes) has pool rankings and volatility endpoints. They do NOT include blacklist status, price shock signals, or AZ pressure in their responses. \u00a714.3 and \u00a714.1 require enriched responses.",
-        "change_instructions": "1. In `atharvaai_routes.py`, modify the pool rankings endpoint response:\n   For each pool object in the response, add two new fields:\n   ```python\n   pool_key = f'{pool.instance_type}:{pool.az}'\n   pool_data['blacklisted'] = bool(redis_client.exists(key_blacklist_global(pool_key)))\n   pool_data['price_shock'] = _detect_price_shock(pool.spot_price, pool.instance_type, pool.az, region)\n   ```\n   Where `_detect_price_shock()` checks if current price > `PRICE_SPIKE_FACTOR` \u00d7 1-hour average:\n   ```python\n   def _detect_price_shock(current_price, instance_type, az, region):\n       avg_key = f'spot:price_avg_1h:{region}:{instance_type}:{az}'\n       avg_raw = redis_client.get(avg_key)\n       if not avg_raw: return False\n       avg = float(avg_raw)\n       return current_price > (avg * PRICE_SPIKE_FACTOR)  # 1.6x\n   ```\n2. In the volatility status endpoint, add AZ pressure data:\n   ```python\n   az_pressure = {}\n   for az in ['a', 'b', 'c', 'd']:\n       count = redis_client.get(key_az_pressure(region, f'{region}{az}'))\n       if count: az_pressure[f'{region}{az}'] = int(count)\n   response['az_pressure'] = az_pressure\n   ```\n3. Import key helpers from `redis_client` and `PRICE_SPIKE_FACTOR` from config.",
+        "current_logic": "`ascpai_routes.py` (59382 bytes) has pool rankings and volatility endpoints. They do NOT include blacklist status, price shock signals, or AZ pressure in their responses. \u00a714.3 and \u00a714.1 require enriched responses.",
+        "change_instructions": "1. In `ascpai_routes.py`, modify the pool rankings endpoint response:\n   For each pool object in the response, add two new fields:\n   ```python\n   pool_key = f'{pool.instance_type}:{pool.az}'\n   pool_data['blacklisted'] = bool(redis_client.exists(key_blacklist_global(pool_key)))\n   pool_data['price_shock'] = _detect_price_shock(pool.spot_price, pool.instance_type, pool.az, region)\n   ```\n   Where `_detect_price_shock()` checks if current price > `PRICE_SPIKE_FACTOR` \u00d7 1-hour average:\n   ```python\n   def _detect_price_shock(current_price, instance_type, az, region):\n       avg_key = f'spot:price_avg_1h:{region}:{instance_type}:{az}'\n       avg_raw = redis_client.get(avg_key)\n       if not avg_raw: return False\n       avg = float(avg_raw)\n       return current_price > (avg * PRICE_SPIKE_FACTOR)  # 1.6x\n   ```\n2. In the volatility status endpoint, add AZ pressure data:\n   ```python\n   az_pressure = {}\n   for az in ['a', 'b', 'c', 'd']:\n       count = redis_client.get(key_az_pressure(region, f'{region}{az}'))\n       if count: az_pressure[f'{region}{az}'] = int(count)\n   response['az_pressure'] = az_pressure\n   ```\n3. Import key helpers from `redis_client` and `PRICE_SPIKE_FACTOR` from config.",
         "dependencies": [
             "T1",
             "T2"

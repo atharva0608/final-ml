@@ -217,7 +217,7 @@ def apply_rightsizing_validated(
 ):
     """
     Applies a right-sizing recommendation with real-time validation:
-    1. Checks AtharvaAI blacklist for target pool
+    1. Checks ASCP.AI blacklist for target pool
     2. Validates target type against org's default Node Template
     3. Returns 409 Conflict if validation fails
     4. Proceeds with normal apply if validation passes

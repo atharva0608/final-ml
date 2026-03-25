@@ -18,7 +18,7 @@ app = Celery(
         'backend.workers.tasks.approval_cleanup',
         'backend.workers.tasks.resource_pricing_worker',
         'backend.workers.tasks.hibernation_worker',
-        'backend.workers.tasks.atharvaai_worker',
+        'backend.workers.tasks.ascpai_worker',
         'backend.workers.tasks.termination_monitor',
         'backend.workers.tasks.auto_rebalancer',
         'backend.workers.tasks.pod_metrics_cleanup',
@@ -36,6 +36,7 @@ app = Celery(
         'backend.workers.tasks.daily_stats_aggregator',      # Multi-Cluster: Rollup stats
         'backend.workers.tasks.auto_scaler',                  # ASCP: built-in optional auto-scaler
         'backend.workers.tasks.reconciliation_worker',        # Issue #34: EC2 vs DB reconciliation
+        'backend.workers.tasks.health_monitor',              # Pillar 5: health scores + drift detection
     ]
 )
 
@@ -145,7 +146,7 @@ app.conf.beat_schedule = {
     },
     # Karpenter NodePool Sync (Every 30 seconds) - Syncs ML rankings to Karpenter NodePools
     'karpenter-nodepool-sync-every-30-secs': {
-        'task': 'workers.atharvaai.sync_karpenter_nodepools',
+        'task': 'workers.ascpai.sync_karpenter_nodepools',
         'schedule': 30.0,  # 30 seconds
     },
     # Pod Metrics Cleanup (Daily at 2 AM UTC) - Deletes metrics older than 7 days
@@ -158,11 +159,8 @@ app.conf.beat_schedule = {
         'task': 'workers.pricing.refresh_regional_pricing',
         'schedule': 600.0,  # 10 minutes (15-min freshness threshold)
     },
-    # PHASE 1 REMEDIATION: Instance Catalog Refresh (Nightly at 3 AM UTC) - Live AWS instance specifications
-    'instance-catalog-refresh-nightly': {
-        'task': 'workers.instance_catalog.refresh_catalog',
-        'schedule': 86400.0,  # 24 hours
-    },
+    # Instance catalog refresh is registered below via crontab(3 AM) as 'instance-catalog-refresh-daily-3am'
+    # (GAP-14 fix: removed duplicate 86400s interval entry to prevent double-fire)
     # POOL AUTO-ROTATION: Check rotation status for all clusters (Every 5 minutes) - Maintains fresh pool availability
     'pool-rotation-check-every-5-mins': {
         'task': 'pool_rotation.check_all_clusters',
@@ -200,10 +198,20 @@ app.conf.beat_schedule = {
         'task': 'dry_run_refresher',
         'schedule': 300.0,  # 5 minutes
     },
+    # DE: Verified Pool Set maintenance (5 min) - Maintain per-cluster capacity-confirmed pool sets
+    'de-verified-pools-every-5-mins': {
+        'task': 'maintain_all_verified_pool_sets',
+        'schedule': 300.0,  # 5 minutes
+    },
     # EE: Recovery Monitor (60 sec) - Detect orphaned instances and trigger recovery
     'ee-recovery-monitor-every-60-secs': {
         'task': 'recovery_monitor',
         'schedule': 60.0,  # 60 seconds
+    },
+    # EE: Cluster coverage computation (5 min) - Compute per-cluster spot pool coverage
+    'ee-cluster-coverage-every-5-mins': {
+        'task': 'backend.workers.tasks.recovery_monitor.compute_all_cluster_coverage',
+        'schedule': 300.0,  # 5 minutes
     },
     # Orphan instance scan (every 5 minutes)
     'recovery-monitor-scan-every-5-mins': {
@@ -221,6 +229,12 @@ app.conf.beat_schedule = {
         'task': 'build_global_pool_cache',
         'schedule': 3600.0,
         'args': ['us-east-1'],
+    },
+    # Global pool cache rebuild — ap-southeast-1
+    'global-pool-cache-rebuild-ap-southeast-1': {
+        'task': 'build_global_pool_cache',
+        'schedule': 3600.0,
+        'args': ['ap-southeast-1'],
     },
     # Spot advisor scrape — every 12h (Bug 3: was daily/4h; 12h keeps data under 6h stale gate)
     # Re-writes all Redis keys each run to refresh 12h TTLs.
@@ -247,6 +261,16 @@ app.conf.beat_schedule = {
     'circuit-breaker-audit-every-10-mins': {
         'task': 'circuit_breaker.audit_log',
         'schedule': 600.0,
+    },
+    # Pillar 5: Cluster Health Monitor (every 5 minutes) — per-cluster health scores + drift alerts
+    'health-monitor-every-5-mins': {
+        'task': 'health_monitor',
+        'schedule': 300.0,  # 5 minutes
+    },
+    # Pillar 5: Drift Detector (every 15 minutes) — stuck actions, stale data, savings gap checks
+    'drift-detector-every-15-mins': {
+        'task': 'drift_detector',
+        'schedule': 900.0,  # 15 minutes
     },
     # Issue #34: Reconciliation Worker (every 5 minutes) — EC2 vs DB instance state reconciliation
     'reconciliation-worker-every-5-mins': {

@@ -1,31 +1,44 @@
-import React, { useState, useEffect } from 'react';
-import { atharvaAiAPI } from '../../services/api';
+import React, { useState, useCallback } from 'react';
+import { ascpaiAPI } from '../../services/api';
+import { useAdaptivePolling } from '../../hooks/useAdaptivePolling';
 
 const GlobalRankingsCard = () => {
     const [rankings, setRankings] = useState([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
 
-    useEffect(() => {
-        const fetchRankings = async () => {
-            try {
-                // Use m5.large on-demand as baseline for global rankings comparison
-                // This provides meaningful savings % vs spot pools (spot vs on-demand)
-                const currentNodeContext = {
-                    instance_type: 'm5.large',
-                    lifecycle: 'on-demand'  // Changed from 'spot' to 'on-demand' for accurate global savings
-                };
-                const res = await atharvaAiAPI.getRankings(null, 'ap-south-1', 10, null, currentNodeContext);
-                setRankings(res.data?.rankings || []);
-            } catch (err) {
-                console.error("Failed to fetch global rankings", err);
-                setError("Failed to load global pool rankings.");
-            } finally {
-                setLoading(false);
-            }
-        };
-        fetchRankings();
+    const defaultTemplate = {
+        architecture: ['amd64', 'arm64'],
+        vcpu_min: 1,
+        vcpu_max: 128,
+        memory_gb_min: 1,
+        memory_gb_max: 512,
+        allowed_families: null,
+        allowed_sizes: null,
+        allowed_azs: null,
+        excluded_instance_types: [],
+    };
+
+    const fetchRankings = useCallback(async () => {
+        try {
+            // m5.large on-demand as reference baseline for global savings comparison
+            const currentNodeContext = {
+                instance_type: 'm5.large',
+                lifecycle: 'on-demand'
+            };
+            const res = await ascpaiAPI.getRankings(defaultTemplate, 'ap-south-1', 10, null, currentNodeContext);
+            setRankings(res.data?.rankings || []);
+            setError(null);
+        } catch (err) {
+            console.error("Failed to fetch global rankings", err);
+            setError("Failed to load global pool rankings.");
+        } finally {
+            setLoading(false);
+        }
     }, []);
+
+    // Poll every 60 s — pool prices change frequently
+    useAdaptivePolling({ fetchFn: fetchRankings, isActive: false, slowMs: 60_000 });
 
     if (loading) return <div className="p-4 bg-white rounded-lg shadow border border-gray-100 animate-pulse h-64"></div>;
     if (error) return <div className="p-4 bg-white rounded-lg shadow border border-red-100 text-red-500 text-sm">{error}</div>;

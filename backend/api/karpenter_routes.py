@@ -520,7 +520,7 @@ def update_karpenter_config(
             # Two keys: tier-1 global cache (65-min TTL) + legacy per-request cache.
             _cluster_region = cluster.region or "ap-south-1"
             _redis_d.delete(f"global_pool_rankings:{_cluster_region}")
-            _redis_d.delete("atharvaai:pool_rankings")
+            _redis_d.delete("ascpai:pool_rankings")
 
             logger.info(
                 f"[karpenter_routes] diversify_pools enabled for {cluster_id}: "
@@ -1855,20 +1855,16 @@ def get_karpenter_install_status(
     ).order_by(AgentAction.created_at.desc()).first()
 
     if not latest:
-        # Fall back to cluster.karpenter_mode column as source of truth.
-        # Clusters migrated manually (or whose agent action records were lost)
-        # still report the correct state via the DB column.
-        from backend.models.cluster import Cluster as _Cluster
-        _cl = db.query(_Cluster).filter(_Cluster.id == cluster_id).first()
-        _mode = getattr(_cl, "karpenter_mode", None)
-        _installed = _mode is not None and str(_mode).upper() != "NONE"
+        # No INSTALL/UNINSTALL action on record — Karpenter was never installed
+        # via this platform.  karpenter_mode column alone is NOT sufficient proof
+        # of installation (it can be set by config saves without a real install).
+        # Only a completed INSTALL_KARPENTER AgentAction is authoritative.
         return {
             "cluster_id": cluster_id,
-            "karpenter_installed": _installed,
+            "karpenter_installed": False,
             "last_action": None,
-            "status": "active" if _installed else "unknown",
-            "message": "Karpenter active (mode={})".format(_mode) if _installed
-                       else "No install/uninstall action found for this cluster",
+            "status": "not_installed",
+            "message": "No install action found. Install Karpenter via the Karpenter Manager.",
         }
 
     action_type = latest.action_type.value

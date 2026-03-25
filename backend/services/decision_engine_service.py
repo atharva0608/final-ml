@@ -27,7 +27,9 @@ from backend.services.blacklist_service import BlacklistService
 
 # ── Configuration ────────────────────────────────────────────────────────────
 FAILURE_THRESHOLD = 3          # Auto-blacklist after this many failures in 24h
-BLACKLIST_TTL_HOURS = 24       # Default blacklist duration
+LAUNCH_FAILURE_WINDOW_HOURS = 24  # Rolling window for counting launch failures (sorted set expiry only)
+                                   # NOT a blacklist duration — all blacklisting goes through
+                                   # blacklist_pool_tiered() with per-severity explicit TTLs.
 DRY_RUN_CACHE_TTL = 300        # 5 minutes
 RANKING_CACHE_TTL = 3600       # 1 hour
 
@@ -100,10 +102,13 @@ class DecisionEngineService:
         region = cluster.region or "ap-south-1"
 
         # 2. Determine min requirements from instance catalog
+        from backend.services.dynamic_instance_helpers import _estimate_vcpu, _estimate_memory_gb
         catalog = self.ranking_service.instance_catalog
         inst_specs = catalog.get(instance.instance_type, {})
-        min_vcpu = inst_specs.get("vcpu", 2)
-        min_memory = inst_specs.get("memory_gb", 4)
+        # Use heuristic estimators for unknowns — prevents 2 vCPU/4 GB defaults
+        # being used for large nodes (e.g. m5.8xlarge = 32 vCPU/128 GB) not in catalog.
+        min_vcpu = inst_specs.get("vcpu") or _estimate_vcpu(instance.instance_type)
+        min_memory = inst_specs.get("memory_gb") or _estimate_memory_gb(instance.instance_type)
 
         # 3. Check per-profile cache
         ph = _profile_hash(min_vcpu, int(min_memory), None, None)
@@ -193,17 +198,21 @@ class DecisionEngineService:
 
         instance_type, az = parts
 
-        result = self.blacklist_service.blacklist_pool(
+        # Use tiered (explicit-TTL) blacklist with 15-min window for ITN events.
+        # Spot capacity typically recovers in minutes; a 24-h exponential blackout
+        # would cascade-blacklist all pools after a wave of simultaneous ITNs.
+        result = self.blacklist_service.blacklist_pool_tiered(
             instance_type=instance_type,
             az=az,
             region=region,
             reason="spot_interruption",
+            ttl_hours=0.25,  # 15 minutes — matches event_monitor.py TERMINATION_BLACKLIST_HOURS
         )
 
-        # Also track in pool_failures sorted set
+        # Track in pool_failures sorted set; TTL matches the 15-min blacklist window
         fail_key = f"pool_failures:{pool_key}"
         self.redis.zadd(fail_key, {str(datetime.utcnow().timestamp()): datetime.utcnow().timestamp()})
-        self.redis.expire(fail_key, 86400)
+        self.redis.expire(fail_key, 900)  # 15 min — was 86400 (24h)
 
         logger.info(f"[DE] report_termination: blacklisted {pool_key}")
         return {"status": "ok", "blacklist": result}

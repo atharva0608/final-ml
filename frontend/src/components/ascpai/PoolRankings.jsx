@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { FiGlobe, FiServer, FiPieChart, FiInfo, FiLock, FiAlertTriangle, FiCheckCircle } from 'react-icons/fi';
-import { atharvaaiAPI, clusterAPI, nodeTemplateAPI } from '../../services/api';
+import { ascpaiAPI, clusterAPI, nodeTemplateAPI } from '../../services/api';
 import './PoolRankings.css';
 
 /**
@@ -63,7 +63,18 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
     const [marketViewPools, setMarketViewPools] = useState([]);
     const [marketViewLoading, setMarketViewLoading] = useState(false);
     const [marketViewPage, setMarketViewPage] = useState(1);
+    const [marketViewPageSize] = useState(20);
     const [marketViewTotal, setMarketViewTotal] = useState(0);
+    const [marketViewTotalPages, setMarketViewTotalPages] = useState(1);
+    const [marketViewTotalEvaluated, setMarketViewTotalEvaluated] = useState(0);
+    const [marketViewGatesEliminated, setMarketViewGatesEliminated] = useState(0);
+    const [marketViewSortBy, setMarketViewSortBy] = useState('final_score');
+    const [marketViewSortOrder, setMarketViewSortOrder] = useState('desc');
+    const [marketViewIsLive, setMarketViewIsLive] = useState(null);
+    // Dry Run capacity states
+    const [showUnavailablePools, setShowUnavailablePools] = useState(false);
+    const [capacitySummary, setCapacitySummary] = useState(null);
+    const [ttlCounters, setTtlCounters] = useState({});  // pool_key -> remaining seconds
     // Node-Specific View — selected node + alternatives
     const [selectedNodeId, setSelectedNodeId] = useState(null);
     const [nodeAlternatives, setNodeAlternatives] = useState(null);
@@ -97,17 +108,48 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [autoRefresh, clusterId]);
 
+    // TTL countdown: tick every second for unavailable pools
+    useEffect(() => {
+        const hasUnavailable = Object.keys(ttlCounters).length > 0;
+        if (!hasUnavailable) return;
+        const tick = setInterval(() => {
+            setTtlCounters(prev => {
+                const updated = {};
+                let anyLeft = false;
+                Object.entries(prev).forEach(([key, secs]) => {
+                    const newVal = Math.max(0, secs - 1);
+                    updated[key] = newVal;
+                    if (newVal > 0) anyLeft = true;
+                });
+                return anyLeft ? updated : {};
+            });
+        }, 1000);
+        return () => clearInterval(tick);
+    }, [ttlCounters]);
+
+    // 5s polling when unverified pools exist in market view (capacity results arrive async)
+    useEffect(() => {
+        if (activeTab !== 'market' || !clusterId) return;
+        const hasUnverified = marketViewPools.some(p => p.capacity_status === 'unverified');
+        if (!hasUnverified) return;
+        const poll = setInterval(() => {
+            fetchMarketViewPage(marketViewPage, marketViewSortBy, marketViewSortOrder, showUnavailablePools);
+        }, 5000);
+        return () => clearInterval(poll);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [activeTab, clusterId, marketViewPools, marketViewPage, marketViewSortBy, marketViewSortOrder, showUnavailablePools]);
+
     // Fetch node alternatives + pool audit when selectedNodeId changes
     useEffect(() => {
         if (!clusterId || !selectedNodeId) return;
         setNodeAltLoading(true);
         setNodeAltPage(1);
-        atharvaaiAPI.getNodeAlternatives(clusterId, selectedNodeId, 1, 20)
+        ascpaiAPI.getNodeAlternatives(clusterId, selectedNodeId, 1, 20)
             .then(res => setNodeAlternatives(res.data || null))
             .catch(err => { console.debug('Node alternatives error:', err.message); setNodeAlternatives(null); })
             .finally(() => setNodeAltLoading(false));
         // Fetch pool audit for funnel visualization (Task 4.3/4.4)
-        atharvaaiAPI.getPoolAudit(clusterId, selectedNodeId)
+        ascpaiAPI.getPoolAudit(clusterId, selectedNodeId)
             .then(res => setPoolAuditData(res.data || null))
             .catch(() => setPoolAuditData(null));
         // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -203,7 +245,7 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
 
         // ── Step 4: Fetch rankings ──────────────────────────────────────
         try {
-            const response = await atharvaaiAPI.getRankings(
+            const response = await ascpaiAPI.getRankings(
                 template,
                 region,
                 25,
@@ -214,13 +256,17 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
             const rankings = response.data.rankings || response.data.pools || response.data;
             const primaryInstancePrice = response.data.current_node_context?.price || null;
 
-            const configResponse = await atharvaaiAPI.getEffectiveConfiguration(clusterId);
-            setEffectiveConfig(configResponse.data);
+            try {
+                const configResponse = await ascpaiAPI.getEffectiveConfiguration(clusterId);
+                setEffectiveConfig(configResponse.data);
+            } catch (cfgErr) {
+                console.debug('Effective configuration fetch failed (non-fatal):', cfgErr?.message);
+            }
 
             // Fetch Node-Specific Recommendations (Non-blocking)
             try {
                 setNodeViewLoading(true);
-                const nodeRes = await atharvaaiAPI.getNodeRecommendations(clusterId);
+                const nodeRes = await ascpaiAPI.getNodeRecommendations(clusterId);
                 const nodeData = nodeRes.data || {};
                 // Backend now returns { recommendations: [...], eligible_pools_count: N }
                 const recs = Array.isArray(nodeData) ? nodeData : (nodeData.recommendations || []);
@@ -244,7 +290,7 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
 
                 // Fetch live rebalancing actions to drive real STATUS column
                 try {
-                    const rebRes = await atharvaaiAPI.getRebalancingStatus(clusterId, 20);
+                    const rebRes = await ascpaiAPI.getRebalancingStatus(clusterId, 20);
                     setRebalancingActions(Array.isArray(rebRes.data) ? rebRes.data : []);
                 } catch (_rebErr) {
                     // non-fatal — status column falls back to lifecycle-based logic
@@ -260,7 +306,7 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
             // Fetch Cluster Impact Measurements (Non-blocking)
             try {
                 setClusterViewLoading(true);
-                const impactRes = await atharvaaiAPI.getClusterImpact(clusterId);
+                const impactRes = await ascpaiAPI.getClusterImpact(clusterId);
                 setClusterImpact(impactRes.data || null);
             } catch (err) {
                 console.debug('Cluster impact endpoint pending:', err.message);
@@ -272,7 +318,7 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
             // Fetch Per-Node Coverage Report (changes.md Part 8)
             try {
                 setCoverageLoading(true);
-                const covRes = await atharvaaiAPI.getClusterCoverage(clusterId);
+                const covRes = await ascpaiAPI.getClusterCoverage(clusterId);
                 setCoverageData(covRes.data || null);
                 // Pre-select first node if none selected
                 const nodes = covRes.data?.per_node_summary || [];
@@ -289,7 +335,7 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
             // Fetch Savings Velocity (Non-blocking)
             try {
                 setSavingsVelocityLoading(true);
-                const svRes = await atharvaaiAPI.getSavingsVelocity(clusterId, 30);
+                const svRes = await ascpaiAPI.getSavingsVelocity(clusterId, 30);
                 setSavingsVelocityData(svRes.data || null);
             } catch (err) {
                 console.debug('Savings velocity endpoint pending or failed:', err.message);
@@ -305,15 +351,51 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
             // ── Step 5: Fetch full Market View from cache_builder endpoint ──
             try {
                 setMarketViewLoading(true);
-                const mvRes = await atharvaaiAPI.getMarketView(clusterId, 1, 50);
-                const mvPools = mvRes.data?.pools || [];
+                const mvRes = await ascpaiAPI.getMarketView(
+                    clusterId, 1, marketViewPageSize, 'final_score', 'desc', showUnavailablePools
+                );
+                const mvData = mvRes.data || {};
+                let mvPools = mvData.pools || [];
+                // If market-view returned empty but getRankings had results, use rankings as fallback
+                // (this happens on cold start before cache_builder has run)
+                if (mvPools.length === 0 && Array.isArray(rankings) && rankings.length > 0) {
+                    mvPools = rankings;
+                }
+                const pg = mvData.pagination || {};
                 setMarketViewPools(mvPools);
-                setMarketViewTotal(mvRes.data?.pagination?.total || mvPools.length);
+                setMarketViewTotal(pg.total_valid_pools || mvPools.length);
+                setMarketViewTotalPages(pg.total_pages || 1);
+                setMarketViewTotalEvaluated(pg.total_evaluated || 0);
+                setMarketViewGatesEliminated(pg.gates_eliminated || 0);
+                setCapacitySummary(mvData.capacity_summary || null);
+                setMarketViewPage(1);
+                // Determine live/stale from first pool's data_age_minutes
+                const firstAge = mvPools[0]?.data_age_minutes;
+                setMarketViewIsLive(firstAge != null ? firstAge < 90 : null);
+
+                // Seed TTL counters for unavailable pools
+                const newTtl = {};
+                mvPools.forEach(p => {
+                    if (p.capacity_status === 'unavailable' && p.dry_run_ttl_remaining != null) {
+                        newTtl[`${p.instance_type}:${p.az}`] = p.dry_run_ttl_remaining;
+                    }
+                });
+                if (Object.keys(newTtl).length > 0) setTtlCounters(prev => ({ ...prev, ...newTtl }));
+
+                // Trigger dry run check for top 20 unverified pools
+                const unverifiedKeys = mvPools
+                    .filter(p => p.capacity_status === 'unverified')
+                    .slice(0, 20)
+                    .map(p => `${p.instance_type}:${p.az}`);
+                if (unverifiedKeys.length > 0) {
+                    ascpaiAPI.triggerDryRunCheck(clusterId, unverifiedKeys).catch(() => {});
+                }
             } catch (mvErr) {
                 console.debug('Market view endpoint not yet available:', mvErr.message);
-                // Fall back to using the old rankings data
                 setMarketViewPools(Array.isArray(rankings) ? rankings : []);
                 setMarketViewTotal(Array.isArray(rankings) ? rankings.length : 0);
+                setMarketViewTotalPages(1);
+                setMarketViewIsLive(null);
             } finally {
                 setMarketViewLoading(false);
             }
@@ -325,9 +407,60 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
         }
     };
 
+    const fetchMarketViewPage = async (page, sortBy = marketViewSortBy, sortOrder = marketViewSortOrder, includeUnavailable = showUnavailablePools) => {
+        if (!clusterId) return;
+        try {
+            setMarketViewLoading(true);
+            const mvRes = await ascpaiAPI.getMarketView(
+                clusterId, page, marketViewPageSize, sortBy, sortOrder, includeUnavailable
+            );
+            const mvData = mvRes.data || {};
+            const mvPools = mvData.pools || [];
+            const pg = mvData.pagination || {};
+            setMarketViewPools(mvPools);
+            setMarketViewPage(page);
+            setMarketViewTotal(pg.total_valid_pools || mvPools.length);
+            setMarketViewTotalPages(pg.total_pages || 1);
+            setMarketViewTotalEvaluated(pg.total_evaluated || 0);
+            setMarketViewGatesEliminated(pg.gates_eliminated || 0);
+            setCapacitySummary(mvData.capacity_summary || null);
+            const firstAge = mvPools[0]?.data_age_minutes;
+            setMarketViewIsLive(firstAge != null ? firstAge < 90 : null);
+
+            // Seed TTL counters for unavailable pools
+            const newTtl = {};
+            mvPools.forEach(p => {
+                if (p.capacity_status === 'unavailable' && p.dry_run_ttl_remaining != null) {
+                    newTtl[`${p.instance_type}:${p.az}`] = p.dry_run_ttl_remaining;
+                }
+            });
+            if (Object.keys(newTtl).length > 0) setTtlCounters(prev => ({ ...prev, ...newTtl }));
+
+            // Trigger background dry run check for top 20 unverified pools
+            const unverifiedKeys = mvPools
+                .filter(p => p.capacity_status === 'unverified')
+                .slice(0, 20)
+                .map(p => `${p.instance_type}:${p.az}`);
+            if (unverifiedKeys.length > 0) {
+                ascpaiAPI.triggerDryRunCheck(clusterId, unverifiedKeys).catch(() => {});
+            }
+        } catch (err) {
+            console.error('Market view page fetch error:', err);
+        } finally {
+            setMarketViewLoading(false);
+        }
+    };
+
+    const handleMarketViewSort = (col) => {
+        const newOrder = marketViewSortBy === col && marketViewSortOrder === 'desc' ? 'asc' : 'desc';
+        setMarketViewSortBy(col);
+        setMarketViewSortOrder(newOrder);
+        fetchMarketViewPage(1, col, newOrder);
+    };
+
     const fetchBlacklist = async () => {
         try {
-            const response = await atharvaaiAPI.getBlacklist();
+            const response = await ascpaiAPI.getBlacklist();
             setBlacklist(response.data);
         } catch (err) {
             console.error('Error fetching blacklist:', err);
@@ -519,90 +652,217 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
             )}
 
             {/* Pool Rankings Table (Market View) */}
-            {!loading && !marketViewLoading && marketViewPools.length > 0 && activeTab === 'market' && (
-                <div className="bg-white shadow-md rounded-lg overflow-x-auto">
-                    <table className="w-full min-w-[800px] divide-y divide-gray-200 text-sm">
-                        <thead className="bg-gray-50">
-                            <tr>
-                                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-14">Rank</th>
-                                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Instance Type</th>
-                                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">AZ</th>
-                                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">vCPU / Mem</th>
-                                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Spot Price</th>
-                                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Interruption</th>
-                                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">ML Score</th>
-                                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Health</th>
-                                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Blacklist</th>
-                                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Signal</th>
+            {!loading && activeTab === 'market' && (
+                <>
+                    {/* Live/Stale indicator + stats bar */}
+                    <div className="flex items-center justify-between mb-2 px-1">
+                        <div className="flex items-center gap-4 text-xs text-gray-500">
+                            {marketViewTotalEvaluated > 0 && (
+                                <span>{marketViewTotalEvaluated.toLocaleString()} evaluated · {marketViewGatesEliminated.toLocaleString()} eliminated · <span className="font-semibold text-gray-700">{marketViewTotal.toLocaleString()} valid</span></span>
+                            )}
+                            {capacitySummary && (
+                                <span className="flex items-center gap-2 ml-2">
+                                    {(capacitySummary.verified ?? 0) > 0 && <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-green-500 inline-block"></span>{capacitySummary.verified} verified</span>}
+                                    {(capacitySummary.unverified ?? 0) > 0 && <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-gray-400 inline-block"></span>{capacitySummary.unverified} unverified</span>}
+                                    {(capacitySummary.unavailable ?? 0) > 0 && <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-red-400 inline-block"></span>{capacitySummary.unavailable} unavailable</span>}
+                                </span>
+                            )}
+                        </div>
+                        <div className="flex items-center gap-3">
+                            <label className="flex items-center gap-1.5 text-xs text-gray-500 cursor-pointer select-none">
+                                <input
+                                    type="checkbox"
+                                    checked={showUnavailablePools}
+                                    onChange={e => {
+                                        setShowUnavailablePools(e.target.checked);
+                                        fetchMarketViewPage(1, marketViewSortBy, marketViewSortOrder, e.target.checked);
+                                    }}
+                                    className="rounded border-gray-300 text-blue-600"
+                                />
+                                Show unavailable pools
+                            </label>
+                            {marketViewIsLive === true && (
+                                <span className="flex items-center gap-1 text-xs text-green-600 font-medium">
+                                    <span className="w-2 h-2 rounded-full bg-green-500 inline-block animate-pulse"></span> Live
+                                </span>
+                            )}
+                            {marketViewIsLive === false && (
+                                <span className="flex items-center gap-1 text-xs text-yellow-600 font-medium">
+                                    <span className="w-2 h-2 rounded-full bg-yellow-500 inline-block"></span> Stale
+                                </span>
+                            )}
+                            {marketViewLoading && <span className="text-xs text-gray-400">Loading…</span>}
+                        </div>
+                    </div>
 
-                            </tr>
-                        </thead>
-                        <tbody className="bg-white divide-y divide-gray-200">
-                            {marketViewPools.map((pool) => (
-                                <tr
-                                    key={`${pool.instance_type}-${pool.az}`}
-                                    className={`hover:bg-gray-50 ${pool.is_flagged ? 'bg-red-50' : ''}`}
+                    {!marketViewLoading && marketViewPools.length > 0 && (
+                        <div className="bg-white shadow-md rounded-lg overflow-x-auto">
+                            <table className="w-full min-w-[900px] divide-y divide-gray-200 text-sm">
+                                <thead className="bg-gray-50">
+                                    <tr>
+                                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-14">Rank</th>
+                                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:text-gray-700" onClick={() => handleMarketViewSort('instance_type')}>Instance Type</th>
+                                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">AZ</th>
+                                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">vCPU / Mem</th>
+                                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:text-gray-700" onClick={() => handleMarketViewSort('spot_price')}>Spot Price</th>
+                                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:text-gray-700" onClick={() => handleMarketViewSort('intrinsic_savings_pct')} title="How good is this pool in the spot market">Pool Saving</th>
+                                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:text-gray-700" onClick={() => handleMarketViewSort('customer_savings_pct')} title="What you actually save vs current OD price">Your Saving</th>
+                                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:text-gray-700" onClick={() => handleMarketViewSort('interruption_rate_pct')}>Interruption</th>
+                                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:text-gray-700" onClick={() => handleMarketViewSort('ml_score_final')}>ML</th>
+                                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:text-gray-700" onClick={() => handleMarketViewSort('final_score')}>Score</th>
+                                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider" title="AWS real-time capacity check result">Capacity</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="bg-white divide-y divide-gray-200">
+                                    {marketViewPools.map((pool) => {
+                                        const spotPrice = pool.spot_price ?? pool.spot_price_hr ?? 0;
+                                        const odPrice = pool.od_price ?? pool.ondemand_price ?? pool.od_price_hr ?? 0;
+                                        const intrinsicPct = pool.intrinsic_savings_pct ?? (odPrice > 0 ? ((odPrice - spotPrice) / odPrice * 100) : 0);
+                                        const customerPct = pool.customer_savings_pct ?? intrinsicPct;
+                                        const mlTier = pool.ml_tier ?? 3;
+                                        const mlTierLabel = mlTier === 1 ? 'T1' : mlTier === 2 ? 'T2' : 'T3';
+                                        const mlTierColor = mlTier === 1 ? 'bg-green-100 text-green-700' : mlTier === 2 ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-500';
+                                        const irrRate = pool.interruption_rate_pct ?? pool.interruption_rate ?? pool.az_interruption_rate ?? null;
+                                        const irrLabel = irrRate != null ? `${irrRate}%` : getInterruptionLabel(pool.spot_advisor_rank ?? 0);
+                                        const irrColor = irrRate != null
+                                            ? (irrRate <= 5 ? 'bg-green-100 text-green-800' : irrRate <= 10 ? 'bg-yellow-100 text-yellow-800' : irrRate <= 15 ? 'bg-orange-100 text-orange-800' : 'bg-red-100 text-red-800')
+                                            : getInterruptionColor(pool.spot_advisor_rank ?? 0);
+                                        const poolKey = `${pool.instance_type}:${pool.az}`;
+                                        const capStatus = pool.capacity_status || 'unverified';
+                                        const ttlLeft = ttlCounters[poolKey];
+                                        const ttlStr = ttlLeft != null && ttlLeft > 0
+                                            ? `${Math.floor(ttlLeft / 60)}:${String(ttlLeft % 60).padStart(2, '0')}`
+                                            : null;
+                                        return (
+                                            <tr
+                                                key={`${pool.instance_type}-${pool.az}-${pool.rank}`}
+                                                className={`hover:bg-gray-50 ${pool.is_flagged ? 'bg-red-50' : ''} ${capStatus === 'unavailable' ? 'opacity-60' : ''}`}
+                                            >
+                                                <td className="px-4 py-3 whitespace-nowrap">
+                                                    <span className={`inline-flex items-center justify-center w-7 h-7 rounded-full text-sm ${pool.rank === 1 ? 'bg-yellow-100 text-yellow-800' : pool.rank <= 3 ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-700'} font-bold`}>
+                                                        {pool.rank}
+                                                    </span>
+                                                </td>
+                                                <td className="px-4 py-3 whitespace-nowrap">
+                                                    <div className="font-medium text-gray-900 flex items-center gap-1">
+                                                        {pool.instance_type}
+                                                        {pool.soft_penalty_applied && (
+                                                            <span className="ml-1 text-orange-500 text-xs" title="Recent launch failures — soft penalty applied">⚠</span>
+                                                        )}
+                                                        {pool.blacklisted && (
+                                                            <span className="ml-1 w-2 h-2 rounded-full bg-red-500 inline-block" title="Blacklisted"></span>
+                                                        )}
+                                                    </div>
+                                                    <div className="text-xs text-gray-400">{pool.architecture}</div>
+                                                </td>
+                                                <td className="px-4 py-3 whitespace-nowrap text-gray-700">{pool.az}</td>
+                                                <td className="px-4 py-3 whitespace-nowrap text-gray-700">
+                                                    {pool.vcpu}c / {pool.memory_gb}GB
+                                                </td>
+                                                <td className="px-4 py-3 whitespace-nowrap">
+                                                    <div className="font-medium text-gray-900">${(spotPrice || 0).toFixed(4)}/hr</div>
+                                                    <div className="text-xs text-gray-400">OD: ${(odPrice || 0).toFixed(4)}</div>
+                                                </td>
+                                                <td className="px-4 py-3 whitespace-nowrap">
+                                                    <span className="font-semibold text-emerald-600">{intrinsicPct.toFixed(1)}%</span>
+                                                    <div className="text-xs text-gray-400">pool quality</div>
+                                                </td>
+                                                <td className="px-4 py-3 whitespace-nowrap">
+                                                    <span className="font-semibold text-blue-600">{customerPct.toFixed(1)}%</span>
+                                                    <div className="text-xs text-gray-400">vs your OD</div>
+                                                </td>
+                                                <td className="px-4 py-3 whitespace-nowrap">
+                                                    <span className={`px-2 py-0.5 inline-flex text-xs font-semibold rounded-full ${irrColor}`}>
+                                                        {irrLabel}
+                                                    </span>
+                                                </td>
+                                                <td className="px-4 py-3 whitespace-nowrap">
+                                                    <div className="flex items-center gap-1.5">
+                                                        <span className="text-sm font-bold text-blue-600">{(pool.ml_score_final ?? pool.ml_score ?? 0).toFixed(2)}</span>
+                                                        <span className={`px-1 py-0.5 rounded text-xs font-semibold ${mlTierColor}`}>{mlTierLabel}</span>
+                                                    </div>
+                                                </td>
+                                                <td className="px-4 py-3 whitespace-nowrap">
+                                                    <span className="text-sm font-bold text-gray-800">{(pool.final_score ?? 0).toFixed(3)}</span>
+                                                    {pool.data_age_minutes != null && (
+                                                        <div className="text-xs text-gray-400">{pool.data_age_minutes.toFixed(0)}m old</div>
+                                                    )}
+                                                </td>
+                                                <td className="px-4 py-3 whitespace-nowrap">
+                                                    {capStatus === 'verified' && (
+                                                        <span className="flex items-center gap-1 text-xs text-green-700 font-medium">
+                                                            <span className="w-2 h-2 rounded-full bg-green-500 inline-block"></span>Verified
+                                                        </span>
+                                                    )}
+                                                    {capStatus === 'unverified' && (
+                                                        <span className="flex items-center gap-1 text-xs text-gray-500">
+                                                            <span className="w-2 h-2 rounded-full bg-gray-400 inline-block animate-pulse"></span>Checking…
+                                                        </span>
+                                                    )}
+                                                    {capStatus === 'unavailable' && (
+                                                        <span className="flex items-center gap-1 text-xs text-red-600 font-medium">
+                                                            <span className="w-2 h-2 rounded-full bg-red-500 inline-block"></span>
+                                                            <span>
+                                                                Unavailable
+                                                                {ttlStr && <div className="text-xs text-gray-400 font-normal">Recheck in {ttlStr}</div>}
+                                                            </span>
+                                                        </span>
+                                                    )}
+                                                </td>
+                                            </tr>
+                                        );
+                                    })}
+                                </tbody>
+                            </table>
+                        </div>
+                    )}
+
+                    {/* Pagination controls */}
+                    {marketViewTotalPages > 1 && (
+                        <div className="flex items-center justify-center gap-2 mt-3">
+                            <button
+                                onClick={() => fetchMarketViewPage(marketViewPage - 1)}
+                                disabled={marketViewPage <= 1 || marketViewLoading}
+                                className="px-3 py-1 text-sm rounded border border-gray-300 hover:bg-gray-50 disabled:opacity-40"
+                            >
+                                ←
+                            </button>
+                            {Array.from({ length: Math.min(7, marketViewTotalPages) }, (_, i) => {
+                                const p = i + 1;
+                                return (
+                                    <button
+                                        key={p}
+                                        onClick={() => fetchMarketViewPage(p)}
+                                        disabled={marketViewLoading}
+                                        className={`px-3 py-1 text-sm rounded border ${marketViewPage === p ? 'bg-blue-600 text-white border-blue-600' : 'border-gray-300 hover:bg-gray-50'}`}
+                                    >
+                                        {p}
+                                    </button>
+                                );
+                            })}
+                            {marketViewTotalPages > 7 && <span className="text-gray-400">…</span>}
+                            {marketViewTotalPages > 7 && (
+                                <button
+                                    onClick={() => fetchMarketViewPage(marketViewTotalPages)}
+                                    disabled={marketViewLoading}
+                                    className={`px-3 py-1 text-sm rounded border ${marketViewPage === marketViewTotalPages ? 'bg-blue-600 text-white border-blue-600' : 'border-gray-300 hover:bg-gray-50'}`}
                                 >
-                                    <td className="px-4 py-3 whitespace-nowrap">
-                                        <span className={`inline-flex items-center justify-center w-7 h-7 rounded-full text-sm ${pool.rank === 1 ? 'bg-yellow-100 text-yellow-800' :
-                                            pool.rank <= 3 ? 'bg-green-100 text-green-800' :
-                                                'bg-gray-100 text-gray-700'
-                                            } font-bold`}>
-                                            {pool.rank}
-                                        </span>
-                                    </td>
-                                    <td className="px-4 py-3 whitespace-nowrap">
-                                        <div className="font-medium text-gray-900 flex items-center gap-1">
-                                            {pool.instance_type}
-                                            {pool.is_flagged && (
-                                                <FiAlertTriangle className="text-red-600" size={14} />
-                                            )}
-                                            <FiCheckCircle className="text-blue-500 ml-1" title="Capacity Validated" size={14} />
-                                        </div>
-                                        <div className="text-xs text-gray-400">{pool.architecture}</div>
-                                    </td>
-                                    <td className="px-4 py-3 whitespace-nowrap text-gray-700">{pool.az}</td>
-                                    <td className="px-4 py-3 whitespace-nowrap text-gray-700">
-                                        {pool.vcpu}c / {pool.memory_gb}GB
-                                    </td>
-                                    <td className="px-4 py-3 whitespace-nowrap">
-                                        <div className="font-medium text-gray-900">${pool.spot_price.toFixed(4)}/hr</div>
-                                        <div className="text-xs text-gray-400">OD: ${pool.ondemand_price.toFixed(4)}</div>
-                                    </td>
-                                    <td className="px-4 py-3 whitespace-nowrap">
-                                        <span className={`px-2 py-0.5 inline-flex text-xs font-semibold rounded-full ${getInterruptionColor(pool.spot_advisor_rank)}`}>
-                                            {getInterruptionLabel(pool.spot_advisor_rank)}
-                                        </span>
-                                    </td>
-                                    <td className="px-4 py-3 whitespace-nowrap">
-                                        <span className="text-base font-bold text-blue-600">{pool.ml_score.toFixed(3)}</span>
-                                    </td>
-                                    <td className="px-4 py-3 whitespace-nowrap">
-                                        {getHealthBadge(pool.is_flagged)}
-                                    </td>
-                                    <td className="px-4 py-3 whitespace-nowrap">
-                                        {pool.blacklisted ? (
-                                            <span className="inline-flex items-center gap-1">
-                                                <span className="w-2.5 h-2.5 rounded-full bg-red-500 inline-block"></span>
-                                                <span className="text-xs text-red-600 font-semibold">Blacklisted</span>
-                                            </span>
-                                        ) : (
-                                            <span className="text-xs text-gray-400">—</span>
-                                        )}
-                                    </td>
-                                    <td className="px-4 py-3 whitespace-nowrap">
-                                        {pool.price_shock ? (
-                                            <span className="text-base" title="Price shock detected">&#9889;</span>
-                                        ) : (
-                                            <span className="text-xs text-gray-400">—</span>
-                                        )}
-                                    </td>
-
-                                </tr>
-                            ))}
-                        </tbody>
-                    </table>
-                </div>
+                                    {marketViewTotalPages}
+                                </button>
+                            )}
+                            <button
+                                onClick={() => fetchMarketViewPage(marketViewPage + 1)}
+                                disabled={marketViewPage >= marketViewTotalPages || marketViewLoading}
+                                className="px-3 py-1 text-sm rounded border border-gray-300 hover:bg-gray-50 disabled:opacity-40"
+                            >
+                                →
+                            </button>
+                            <span className="text-xs text-gray-500 ml-2">
+                                Page {marketViewPage} of {marketViewTotalPages} ({marketViewTotal} pools)
+                            </span>
+                        </div>
+                    )}
+                </>
             )}
 
             {/* Empty State */}
@@ -1111,7 +1371,7 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
                                                         const p = nodeAltPage - 1;
                                                         setNodeAltPage(p);
                                                         setNodeAltLoading(true);
-                                                        atharvaaiAPI.getNodeAlternatives(clusterId, selectedNodeId, p, 20)
+                                                        ascpaiAPI.getNodeAlternatives(clusterId, selectedNodeId, p, 20)
                                                             .then(r => setNodeAlternatives(r.data))
                                                             .finally(() => setNodeAltLoading(false));
                                                     }}
@@ -1123,7 +1383,7 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
                                                         const p = nodeAltPage + 1;
                                                         setNodeAltPage(p);
                                                         setNodeAltLoading(true);
-                                                        atharvaaiAPI.getNodeAlternatives(clusterId, selectedNodeId, p, 20)
+                                                        ascpaiAPI.getNodeAlternatives(clusterId, selectedNodeId, p, 20)
                                                             .then(r => setNodeAlternatives(r.data))
                                                             .finally(() => setNodeAltLoading(false));
                                                     }}

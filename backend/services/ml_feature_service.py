@@ -1,5 +1,5 @@
 """
-ML Feature Engineering Service for AtharvaAi Pool Selection
+ML Feature Engineering Service for ASCPAi Pool Selection
 
 This service generates the 45 features required by ONNX models (classifier_6.onnx, regressor_6.onnx).
 Used in System A: Pool Selection Pipeline - Step 7 (ML Model Scoring).
@@ -36,18 +36,38 @@ class MLFeatureService:
         self.holidays = self._load_holiday_calendar()
 
     def _load_category_mapping(self) -> Dict[str, List[str]]:
-        """Load category mapping for instance family, size, and AZ encoding."""
+        """Load category mapping for instance family, size, and AZ encoding.
+
+        category_mapping.json uses a tiered scoring format (tier1/tier2/tier3_penalty)
+        designed for decision_engine.py. This method extracts instance_family and
+        instance_size lists needed for ONNX feature encoding from that tiered structure.
+        """
+        _FALLBACK = {
+            "instance_family": ["m5", "c5", "r5", "t3", "m6i", "c6i", "r6i",
+                                 "m7i", "c7i", "m6g", "c6g", "r6g", "t3a", "t4g"],
+            "instance_size": ["nano", "micro", "small", "medium", "large",
+                              "xlarge", "2xlarge", "4xlarge", "8xlarge",
+                              "12xlarge", "16xlarge", "24xlarge", "48xlarge"],
+            "AZ": ["aps1-az1", "aps1-az2", "aps1-az3"]
+        }
         try:
             with open('ml_model/model/category_mapping.json', 'r') as f:
-                return json.load(f)
+                data = json.load(f)
+            # category_mapping.json uses tiered scoring format; convert to
+            # feature-encoding format expected by _encode_categorical
+            if 'tier1' in data:
+                tier1 = data.get('tier1', [])
+                tier2_families = list(data.get('tier2', {}).keys())
+                return {
+                    "instance_family": sorted(set(tier1 + tier2_families)),
+                    "instance_size": _FALLBACK["instance_size"],
+                    "AZ": _FALLBACK["AZ"]
+                }
+            # File already has instance_family/instance_size/AZ keys
+            return data
         except Exception as e:
             logger.error(f"Failed to load category mapping: {e}")
-            # Fallback minimal mapping
-            return {
-                "instance_family": ["m5", "c5", "r5", "t3", "m6i", "c6i", "r6i"],
-                "instance_size": ["nano", "micro", "small", "medium", "large", "xlarge", "2xlarge", "4xlarge"],
-                "AZ": ["aps1-az1", "aps1-az2", "aps1-az3"]
-            }
+            return _FALLBACK
 
     def _load_holiday_calendar(self) -> List[datetime]:
         """Load holiday calendar for event feature engineering."""

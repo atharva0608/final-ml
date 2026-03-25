@@ -117,7 +117,7 @@ The Auto-Rebalancer History card on the cluster dashboard showed history from AL
 ### Root Cause
 `AutoRebalanceAuditCard.jsx` `fetchAuditLog` function called:
 ```javascript
-api.get('/api/v1/atharvaai/rebalancing/status?limit=3')
+api.get('/api/v1/ascpai/rebalancing/status?limit=3')
 ```
 No `cluster_id` query parameter was passed, so the backend returned all clusters' history.
 

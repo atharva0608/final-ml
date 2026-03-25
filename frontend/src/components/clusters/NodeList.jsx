@@ -7,6 +7,7 @@ import { formatDateTime } from '../../utils/formatters';
 const NodeList = ({ clusterId }) => {
     const [nodes, setNodes] = useState([]);
     const [loading, setLoading] = useState(true);
+    const [error, setError] = useState(null);
 
     useEffect(() => {
         fetchNodes();
@@ -14,16 +15,14 @@ const NodeList = ({ clusterId }) => {
 
     const fetchNodes = async () => {
         try {
+            setError(null);
+            setLoading(true);
             const response = await clusterAPI.getNodes(clusterId);
             setNodes(response.data.nodes || []);
-        } catch (error) {
-            console.error('Failed to fetch nodes', error);
-            // Mock data for now if API fails (since backend might not be ready)
-            setNodes([
-                { id: 'i-0123456789abcdef0', type: 'c5.large', lifecycle: 'SPOT', cpu_util: 45, memory_util: 60, az: 'us-east-1a', launch_time: new Date().toISOString() },
-                { id: 'i-0abcdef1234567890', type: 'm5.large', lifecycle: 'ON_DEMAND', cpu_util: 12, memory_util: 30, az: 'us-east-1b', launch_time: new Date().toISOString() },
-                { id: 'i-0987654321fedcba0', type: 'r5.xlarge', lifecycle: 'SPOT', cpu_util: 78, memory_util: 85, az: 'us-east-1a', launch_time: new Date().toISOString() },
-            ]);
+        } catch (err) {
+            console.error('Failed to fetch nodes', err);
+            setError(err.message || 'Failed to load nodes');
+            setNodes([]);
         } finally {
             setLoading(false);
         }
@@ -35,6 +34,40 @@ const NodeList = ({ clusterId }) => {
 
     if (loading) {
         return <div className="text-center py-4">Loading nodes...</div>;
+    }
+
+    if (error) {
+        return (
+            <Card>
+                <div className="flex flex-col items-center justify-center py-8 px-4">
+                    <div className="p-3 bg-red-50 rounded-full mb-3">
+                        <FiActivity className="w-6 h-6 text-red-500" />
+                    </div>
+                    <p className="text-sm font-medium text-gray-900 mb-1">Failed to load nodes</p>
+                    <p className="text-xs text-gray-500 mb-4">{error}</p>
+                    <button
+                        onClick={fetchNodes}
+                        className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors"
+                    >
+                        Retry
+                    </button>
+                </div>
+            </Card>
+        );
+    }
+
+    if (nodes.length === 0) {
+        return (
+            <Card>
+                <div className="flex flex-col items-center justify-center py-8 px-4">
+                    <div className="p-3 bg-gray-100 rounded-full mb-3">
+                        <FiServer className="w-6 h-6 text-gray-400" />
+                    </div>
+                    <p className="text-sm font-medium text-gray-900 mb-1">No nodes found</p>
+                    <p className="text-xs text-gray-500">No node data is available for this cluster yet.</p>
+                </div>
+            </Card>
+        );
     }
 
     return (

@@ -95,6 +95,9 @@ class BlacklistService:
         removal_key = f"blacklist_removal:{pool_key}"
         self.redis.setex(removal_key, ttl_seconds, pool_key)
 
+        # Increment ranking version so downstream consumers can detect stale execution plans
+        self.redis.incr(f"ranking_version:{region}")
+
         logger.warning(
             f"BLACKLISTED {pool_key} for {ttl_hours:.0f}h "
             f"(failures: {failure_count}, reason: {reason}, region: {region})"
@@ -129,6 +132,17 @@ class BlacklistService:
         blacklist_set_key = f"risky_pools:{region}"
 
         is_flagged = self.redis.sismember(blacklist_set_key, pool_key)
+        if is_flagged:
+            # Issue 4: Lazy cleanup — if the meta key has expired but the set entry
+            # remains, the pool is no longer truly blacklisted. Remove the stale entry.
+            meta_key = f"risky_pool_meta:{pool_key}"
+            if not self.redis.exists(meta_key):
+                self.redis.srem(blacklist_set_key, pool_key)
+                logger.debug(
+                    'Lazy cleanup: removed expired blacklist entry %s from region %s',
+                    pool_key, region
+                )
+                return False, 0
         failure_count = int(self.redis.get(f"blacklist_failures:{pool_key}") or 0)
 
         return bool(is_flagged), failure_count
@@ -259,6 +273,9 @@ class BlacklistService:
         }
 
         self.redis.setex(meta_key, ttl_seconds, json.dumps(meta))
+
+        # Increment ranking version so downstream consumers can detect stale execution plans
+        self.redis.incr(f"ranking_version:{region}")
 
         logger.warning(
             f"Blacklisted {pool_key} for {ttl_hours}h "

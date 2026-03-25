@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Card } from '../shared';
-import { atharvaaiAPI } from '../../services/api';
+import { ascpaiAPI } from '../../services/api';
 
 // Theme primitives to match the original layout
 const T = {
@@ -88,13 +88,13 @@ const RebalancingTimeline = ({ clusterId, actions: externalActions }) => {
         const fetchData = async () => {
             try {
                 if (!externalActions && clusterId) {
-                    const statusRes = await atharvaaiAPI.getRebalancingStatus(clusterId, 5);
+                    const statusRes = await ascpaiAPI.getRebalancingStatus(clusterId, 5);
                     setActions(Array.isArray(statusRes.data) ? statusRes.data : []);
                 }
 
                 if (clusterId) {
                     // Fetch unified rebalancing context (cooldown + next target)
-                    const ctxRes = await atharvaaiAPI.getRebalancingContext(clusterId).catch(() => ({ data: null }));
+                    const ctxRes = await ascpaiAPI.getRebalancingContext(clusterId).catch(() => ({ data: null }));
                     if (ctxRes.data) {
                         const inProg = ctxRes.data.optimization_in_progress || false;
                         setOptimizationInProgress(inProg);

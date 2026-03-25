@@ -58,7 +58,7 @@ def job_scan_clusters():
     """Every 10 min: Scan clusters for node classification (with jitter)"""
     try:
         redis_client = get_redis_client()
-        svc = WorkloadInspector(redis_client=redis_client)
+        svc = WorkloadInspector(redis=redis_client)
         clusters = get_active_clusters()
         
         for cluster in clusters:

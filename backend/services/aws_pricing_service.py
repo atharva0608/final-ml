@@ -43,7 +43,9 @@ class AWSPricingService:
     """
 
     FRESHNESS_THRESHOLD_MINUTES = 15
-    PRICING_TTL_SECONDS = 600  # 10 minutes (within 15-min freshness window)
+    SPOT_PRICING_TTL_SECONDS = 3600    # 1 hour — spot prices drift slowly
+    OD_PRICING_TTL_SECONDS = 86400     # 24 hours — OD prices rarely change
+    PRICING_TTL_SECONDS = 3600         # kept for backward compat in freshness check
     MAX_BATCH_SIZE = 100
 
     def __init__(self, db: Session, redis: Redis):
@@ -88,8 +90,15 @@ class AWSPricingService:
             ).first()
 
             if not access_key_config or not secret_key_config:
+                # Fall back to environment variable credentials before giving up
+                import os
+                env_key = os.environ.get('AWS_ACCESS_KEY_ID') or os.environ.get('PLATFORM_AWS_ACCESS_KEY')
+                env_secret = os.environ.get('AWS_SECRET_ACCESS_KEY') or os.environ.get('PLATFORM_AWS_SECRET')
+                if env_key and env_secret:
+                    logger.info("Platform AWS credentials not in SystemConfig — using environment variable credentials")
+                    return {'access_key_id': env_key, 'secret_access_key': env_secret}
                 logger.warning(
-                    "Platform AWS credentials not configured in SystemConfig. "
+                    "Platform AWS credentials not configured in SystemConfig or environment. "
                     "Pricing data will not be available. "
                     "Configure credentials in Admin > Platform Settings."
                 )
@@ -148,19 +157,34 @@ class AWSPricingService:
         if validate_freshness:
             self._enforce_pricing_freshness(region)
 
-        # Try cache first
-        cache_key = f"pricing:spot:{region}:{availability_zone}:{instance_type}"
+        # Try cache first — canonical key: spot_price:{region}:{az}:{type}
+        cache_key = f"spot_price:{region}:{availability_zone}:{instance_type}"
         cached = self.redis.get(cache_key)
 
         if cached:
-            return float(cached)
+            try:
+                raw = cached.decode() if isinstance(cached, bytes) else cached
+                # Values stored by _refresh_regional_pricing are JSON {"price": "0.026", ...}
+                if raw.startswith('{'):
+                    return float(json.loads(raw).get('price', 0))
+                return float(raw)
+            except Exception:
+                pass
 
         # Fetch from AWS (this will trigger regional refresh)
         self._refresh_regional_pricing(region, [instance_type])
 
-        # Try cache again after refresh
+        # Try cache again after refresh — same canonical key
         cached = self.redis.get(cache_key)
-        return float(cached) if cached else None
+        if cached:
+            try:
+                raw = cached.decode() if isinstance(cached, bytes) else cached
+                if raw.startswith('{'):
+                    return float(json.loads(raw).get('price', 0))
+                return float(raw)
+            except Exception:
+                pass
+        return None
 
     def get_ondemand_price(
         self,
@@ -185,7 +209,8 @@ class AWSPricingService:
         if validate_freshness:
             self._enforce_pricing_freshness(region)
 
-        cache_key = f"pricing:ondemand:{region}:{instance_type}"
+        # Canonical key: od_price:{region}:{type}
+        cache_key = f"od_price:{region}:{instance_type}"
         cached = self.redis.get(cache_key)
 
         if cached:
@@ -228,8 +253,14 @@ class AWSPricingService:
                     for price_dimension in term['priceDimensions'].values():
                         price_per_hour = float(price_dimension['pricePerUnit']['USD'])
 
-                        # Cache for 10 minutes
-                        self.redis.setex(cache_key, self.PRICING_TTL_SECONDS, str(price_per_hour))
+                        # OD prices rarely change — cache for 24h
+                        self.redis.setex(cache_key, self.OD_PRICING_TTL_SECONDS, str(price_per_hour))
+                        # Also write canonical key consumed by cache_builder._lookup_od_price()
+                        self.redis.setex(
+                            f"ondemand_price:{region}:{instance_type}",
+                            self.OD_PRICING_TTL_SECONDS,
+                            str(price_per_hour)
+                        )
 
                         # Persist to database for historical tracking
                         try:
@@ -374,11 +405,13 @@ class AWSPricingService:
                 config=self.boto_config
             )
 
-            # Fetch spot price history (most recent)
-            response = ec2_client.describe_spot_price_history(
-                InstanceTypes=instance_types[:self.MAX_BATCH_SIZE],
+            # Task 1.2: Use paginator — no InstanceTypes filter, no MaxResults cap.
+            # Returns ALL current spot prices for the region (400+ types × 3 AZs).
+            from datetime import timezone
+            paginator = ec2_client.get_paginator('describe_spot_price_history')
+            page_iter = paginator.paginate(
                 ProductDescriptions=['Linux/UNIX'],
-                MaxResults=1000
+                StartTime=datetime.now(timezone.utc) - timedelta(hours=2),
             )
 
             prices_fetched = 0
@@ -387,33 +420,46 @@ class AWSPricingService:
             # Import pricing model
             from backend.models.pricing import SpotPriceHistory
 
-            for item in response.get('SpotPriceHistory', []):
-                instance_type = item['InstanceType']
-                az = item['AvailabilityZone']
-                price = float(item['SpotPrice'])
-                product_description = item.get('ProductDescription', 'Linux/UNIX')
+            # AWS returns spot price history in descending order (newest first).
+            # Track keys already written so we never overwrite a newer price with
+            # an older one from the same 2-hour window.
+            written_keys: set = set()
 
-                # Cache in Redis
-                cache_key = f"pricing:spot:{region}:{az}:{instance_type}"
-                self.redis.setex(cache_key, self.PRICING_TTL_SECONDS, str(price))
+            for page in page_iter:
+                for item in page.get('SpotPriceHistory', []):
+                    instance_type = item['InstanceType']
+                    az = item['AvailabilityZone']
+                    price = float(item['SpotPrice'])
+                    product_description = item.get('ProductDescription', 'Linux/UNIX')
 
-                # Persist to database for historical tracking
-                try:
-                    spot_record = SpotPriceHistory(
-                        instance_type=instance_type,
-                        availability_zone=az,
-                        region=region,
-                        product_description=product_description,
-                        price=price,
-                        timestamp=timestamp,
-                        created_at=timestamp
-                    )
-                    self.db.add(spot_record)
-                except Exception as db_error:
-                    logger.warning(f"Failed to insert spot price to database: {db_error}")
-                    # Continue even if database insert fails (Redis cache is still updated)
+                    # Task 1.2: canonical cache key + 1h TTL
+                    # Store as JSON so cache_builder.py can parse price via data.get('price')
+                    cache_key = f"spot_price:{region}:{az}:{instance_type}"
 
-                prices_fetched += 1
+                    # Only write the first (= most recent) occurrence for this pool.
+                    if cache_key in written_keys:
+                        continue
+                    written_keys.add(cache_key)
+
+                    cache_value = json.dumps({"price": str(price), "timestamp": timestamp.isoformat()})
+                    self.redis.setex(cache_key, self.SPOT_PRICING_TTL_SECONDS, cache_value)
+
+                    # Persist to database for historical tracking
+                    try:
+                        spot_record = SpotPriceHistory(
+                            instance_type=instance_type,
+                            availability_zone=az,
+                            region=region,
+                            product_description=product_description,
+                            price=price,
+                            timestamp=timestamp,
+                            created_at=timestamp
+                        )
+                        self.db.add(spot_record)
+                    except Exception as db_error:
+                        logger.warning(f"Failed to insert spot price to database: {db_error}")
+
+                    prices_fetched += 1
 
             # Commit all records at once
             try:

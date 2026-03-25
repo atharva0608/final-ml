@@ -257,7 +257,7 @@ recs.forEach(rec => {
 // e.g. result: { "t3.medium (OD)": { count: 3, pct: 100 } }
 ```
 
-**File:** `frontend/src/components/atharvaai/PoolRankings.jsx`
+**File:** `frontend/src/components/ascpai/PoolRankings.jsx`
 
 ---
 
@@ -278,7 +278,7 @@ The display condition checked `rec.projected_savings_pct > 0` (the raw API field
 {savingsPct > 0 ? `${savingsMo}/mo` : '—'}
 ```
 
-Also improved the backend savings calculation (`backend/api/atharvaai_routes.py`) to:
+Also improved the backend savings calculation (`backend/api/ascpai_routes.py`) to:
 1. First try real savings from Redis pool rankings cache (`global_pool_rankings:{region}`)
 2. Fall back to `chosen_pool.predicted_savings` if available
 3. Final fallback: 65% savings (35% of on-demand price)

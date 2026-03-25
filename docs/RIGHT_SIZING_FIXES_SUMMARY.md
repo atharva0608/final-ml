@@ -5,7 +5,7 @@
 
 ## Issues Fixed
 
-### 1. ✅ AtharvaAI Pool Rankings Savings Calculation
+### 1. ✅ ASCP.AI Pool Rankings Savings Calculation
 
 **Problem:**
 Pool rankings were showing confusing savings percentages (some 100%, some 0%) because the comparison baseline wasn't clear.
@@ -21,7 +21,7 @@ The backend was correctly calculating real savings by comparing suggested spot p
    - Confirmed correct API parameter passing: `current_instance_type=m5.large` and `current_instance_lifecycle=on-demand`
    - Added better error handling and array safety checks
 
-2. **Backend (`atharvaai_routes.py`):**
+2. **Backend (`ascpai_routes.py`):**
    - Already working correctly! The savings calculation logic was sound:
    ```python
    real_savings = (current_node_price - suggested_spot_price) / current_node_price
@@ -93,7 +93,7 @@ Execution scheduling controls (immediate/6h/24h) were embedded in the Karpenter 
 ## Files Modified
 
 ### Frontend
-1. **`/frontend/src/components/atharvaai/PoolRankings.jsx`**
+1. **`/frontend/src/components/ascpai/PoolRankings.jsx`**
    - Added baseline indicator to page header
    - Improved API parameter passing
    - Added array safety checks for response data
@@ -111,10 +111,10 @@ No changes required - backend was already working correctly!
 
 ## Testing Performed
 
-### 1. AtharvaAI Savings Calculation
+### 1. ASCP.AI Savings Calculation
 ✅ **API Test:**
 ```bash
-curl -X POST 'http://localhost:8000/api/v1/atharvaai/pools/rankings?...'
+curl -X POST 'http://localhost:8000/api/v1/ascpai/pools/rankings?...'
 ```
 **Results:**
 - m5.large: 71.5% savings ✅
@@ -134,7 +134,7 @@ curl -X POST 'http://localhost:8000/api/v1/atharvaai/pools/rankings?...'
 
 ## User-Facing Changes
 
-### AtharvaAI Page
+### ASCP.AI Page
 - **NEW:** Baseline indicator shows "💡 Savings shown vs. m5.large on-demand baseline ($0.101/hr)"
 - **IMPROVED:** Clearer understanding of why some pools show 0% or 100% savings
 
@@ -207,7 +207,7 @@ docker logs spot-optimizer-frontend  # Check for errors
 ### Rollback Plan
 ```bash
 # Revert to previous image
-git checkout HEAD~1 frontend/src/components/atharvaai/PoolRankings.jsx
+git checkout HEAD~1 frontend/src/components/ascpai/PoolRankings.jsx
 git checkout HEAD~1 frontend/src/components/right-sizing/RightSizingDashboard.jsx
 docker-compose -f docker/docker-compose.yml build frontend
 docker-compose -f docker/docker-compose.yml up -d frontend

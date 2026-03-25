@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useRef } from "react";
 import { useSearchParams } from 'react-router-dom';
-import { clusterAPI, karpenterAPI, atharvaaiAPI, optimizerCoordinatorAPI } from "../../services/api";
+import { clusterAPI, karpenterAPI, ascpaiAPI, optimizerCoordinatorAPI } from "../../services/api";
 import { toast } from "react-hot-toast";
 import { FiCheckCircle, FiAlertTriangle, FiAlertCircle, FiClock } from "react-icons/fi";
-import RebalancingTimeline from '../atharvaai/RebalancingTimeline';
+import RebalancingTimeline from '../ascpai/RebalancingTimeline';
 // Theme primitives
 const T = {
   bg: "#f8f9fb",
@@ -53,7 +53,7 @@ function Badge({ children, color = T.primary, bg = T.primaryLight, style = {} })
   );
 }
 
-// Timeline component is now imported safely from '../atharvaai/RebalancingTimeline'
+// Timeline component is now imported safely from '../ascpai/RebalancingTimeline'
 
 
 // Global Status Banner — shows both automation toggles
@@ -842,6 +842,7 @@ export default function RightSizingMonitoringDashboard() {
   const [autoState, setAutoState] = useState(false);       // auto_rightsizing_enabled
   const [rebalanceState, setRebalanceState] = useState(false); // auto_rebalance_enabled
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
   const [searchParams] = useSearchParams();
   const activeTab = searchParams.get('tab') || 'karpenter';
 
@@ -888,7 +889,7 @@ export default function RightSizingMonitoringDashboard() {
   useEffect(() => {
     if (selectedClusterId === 'all' || !selectedClusterId || activeTab !== 'karpenter') return;
     const fetchActions = () => {
-      atharvaaiAPI.getRebalancingStatus(selectedClusterId, 5)
+      ascpaiAPI.getRebalancingStatus(selectedClusterId, 5)
         .then(res => setRebalancingActions(Array.isArray(res.data) ? res.data : []))
         .catch(() => { });
     };
@@ -923,6 +924,7 @@ export default function RightSizingMonitoringDashboard() {
     if (selectedClusterId === "all" || !selectedClusterId) return;
 
     setLoading(true);
+    setError(null);
     Promise.all([
       clusterAPI.getOptimizationSettings(selectedClusterId).catch(() => ({ data: null })),
       karpenterAPI.getRecommendations(selectedClusterId).catch(() => ({ data: { recommendations: [] } }))
@@ -987,6 +989,10 @@ export default function RightSizingMonitoringDashboard() {
       setStatelessNodes(sNodes);
       setStatefulNodes(stNodes);
       setLoading(false);
+    }).catch(err => {
+      console.error('Failed to load right-sizing data:', err);
+      setError(err.message || 'Failed to load recommendations');
+      setLoading(false);
     });
   }, [selectedClusterId]);
 
@@ -1009,6 +1015,21 @@ export default function RightSizingMonitoringDashboard() {
       </div>
 
       {/* TOP TABS */}
+
+      {error && (
+        <div style={{ padding: "12px 16px", background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 8, marginBottom: 16, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <div>
+            <span style={{ fontSize: 13, fontWeight: 600, color: "#dc2626" }}>Failed to load data</span>
+            <span style={{ fontSize: 12, color: "#ef4444", marginLeft: 8 }}>{error}</span>
+          </div>
+          <button
+            onClick={() => { setError(null); setSelectedClusterId(prev => { setLoading(true); return prev; }); }}
+            style={{ padding: "4px 12px", fontSize: 12, fontWeight: 600, color: "#dc2626", background: "#fff", border: "1px solid #fca5a5", borderRadius: 6, cursor: "pointer" }}
+          >
+            Retry
+          </button>
+        </div>
+      )}
 
       {!loading && selectedClusterId !== "all" && (
         <>

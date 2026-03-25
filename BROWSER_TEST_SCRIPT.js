@@ -56,13 +56,13 @@
     // Test each component's endpoint
     await testEndpoint(
         '1. Interruption Heatmap',
-        `${API_BASE}/atharvaai/interruption-heatmap`,
+        `${API_BASE}/ascpai/interruption-heatmap`,
         'Should return heatmap data or graceful fallback'
     );
 
     await testEndpoint(
         '2. Auto-Rebalancer',
-        `${API_BASE}/atharvaai/rebalancing/status`,
+        `${API_BASE}/ascpai/rebalancing/status`,
         'Should return rebalancing status or graceful fallback'
     );
 

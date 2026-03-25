@@ -185,7 +185,7 @@ async def receive_metrics_batch(
                         _rm2 = _grc_m2()
                         _sk_m = f"rc3:metrics_od_streak:{inst.instance_id}"
                         _streak_m = int(_rm2.incr(_sk_m) or 0)
-                        _rm2.expire(_sk_m, 1800)  # 30-min TTL
+                        _rm2.expire(_sk_m, 300)  # 5-min TTL (Issue 3c: was 1800s — streak window should match rebalancer cycle)
                         if _streak_m >= 3:
                             inst.lifecycle = lifecycle
                             _rm2.delete(_sk_m)

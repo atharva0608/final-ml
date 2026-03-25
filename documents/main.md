@@ -269,8 +269,8 @@ From `decision_engine.py` **Step 1b** (L195-230):
 | Spot Advisor | Daily 2 AM | `spot_advisor_scraper` → AWS JSON |
 | EC2 instances (discovery) | 5 min | `discovery_worker` → AWS EC2 |
 | EKS clusters (discovery) | 5 min | `discovery_worker` → AWS EKS |
-| ML pipeline (pool ranking) | 1 hour | `atharvaai_worker` → ONNX inference |
-| Family baselines | Weekly | `atharvaai_worker` |
+| ML pipeline (pool ranking) | 1 hour | `ascpai_worker` → ONNX inference |
+| Family baselines | Weekly | `ascpai_worker` |
 | Agent heartbeat | 30s | Agent → `/clusters/{id}/heartbeat` |
 
 ### 2.3 Database Tables (Key Tables)
@@ -566,8 +566,8 @@ When BOTH `auto_rebalance_enabled=True` AND `auto_rightsizing_enabled=True`:
 ### 4.4 ML Circuit Breaker
 
 If ONNX inference fails 3+ times in 10 minutes:
-- Redis: `atharvaai:ml_fail_count` (INCR, 10-min TTL)
-- Redis: `atharvaai:ml_degraded` (10-min TTL)
+- Redis: `ascpai:ml_fail_count` (INCR, 10-min TTL)
+- Redis: `ascpai:ml_degraded` (10-min TTL)
 - Fallback: heuristic scoring `savings × (1 - advisor_risk)`
 
 ### 4.5 Additional Clarifications (Code-Verified)
