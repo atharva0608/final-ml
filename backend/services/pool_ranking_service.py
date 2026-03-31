@@ -15,6 +15,7 @@ Outputs: Ranked list of diverse instance pools with predicted savings, risk prob
 """
 
 import os
+import uuid
 try:
     import onnxruntime as ort
 except ImportError:
@@ -111,7 +112,7 @@ class PoolRankingService:
                 "ml_model/model/regressor_6.onnx",
                 providers=['CPUExecutionProvider']
             )
-            logger.info("ONNX models loaded successfully")
+            logger.debug("ONNX models loaded successfully")
         except Exception as e:
             logger.error(f"Failed to load ONNX models: {e}")
             self.classifier_session = None
@@ -132,7 +133,7 @@ class PoolRankingService:
             with open(config_path) as f:
                 config = json.load(f)
             threshold = config.get("optimal_threshold", 0.35)
-            logger.info(f"Risk config loaded: threshold={threshold}")
+            logger.debug(f"Risk config loaded: threshold={threshold}")
             return threshold
         except FileNotFoundError:
             logger.warning(f"Risk config not found at {config_path}, using defaults")
@@ -263,7 +264,7 @@ class PoolRankingService:
         Returns:
             List of scored and ranked instance pools
         """
-        logger.info(f"Starting two-tier pool ranking for region={region}, limit={limit}")
+        logger.debug(f"Starting two-tier pool ranking for region={region}, limit={limit}")
 
         # ── Tier 1: Get/compute global top-N (cached in Redis) ────────────────
         global_pools = self._get_or_compute_global_rankings(region, GLOBAL_CACHE_LIMIT)
@@ -281,7 +282,7 @@ class PoolRankingService:
 
         # ── Step 9: Post-score capacity check on client-filtered results ───────
         ranked_pools = self._step9_post_score_capacity_check(filtered_pools, region)
-        logger.info(f"Two-tier pipeline complete: returning {len(ranked_pools)} pools")
+        logger.debug(f"Two-tier pipeline complete: returning {len(ranked_pools)} pools")
 
         # Cache final results (legacy key for backward compat)
         self._cache_rankings(ranked_pools)
@@ -541,12 +542,14 @@ class PoolRankingService:
         # Step 7: ML scoring
         scored_pools = self._step7_ml_scoring(candidate_pools, region)
 
-        # Safety net: if ML scoring eliminated all candidates (ONNX rejected all or all
-        # threw exceptions), fall back to heuristic scoring so rankings are never empty.
-        if not scored_pools and candidate_pools:
+        # Safety net: if ONNX risk gate is over-aggressive (<10 pools survive), or
+        # all were rejected, fall back to heuristic scoring.
+        # Threshold of 10: fewer than 10 ONNX-approved pools from 800+ candidates
+        # indicates the model is miscalibrated for this region/pool mix.
+        if len(scored_pools) < 10 and candidate_pools:
             logger.warning(
-                f"[pool_ranking] _step7_ml_scoring returned 0 pools for {len(candidate_pools)} "
-                f"candidates in {region} — activating fallback scoring"
+                f"[pool_ranking] _step7_ml_scoring returned only {len(scored_pools)} pools "
+                f"for {len(candidate_pools)} candidates in {region} — activating fallback scoring"
             )
             scored_pools = self._fallback_scoring(candidate_pools)
 
@@ -571,9 +574,13 @@ class PoolRankingService:
             cached = self.redis.get(cache_key)
             if cached:
                 pool_dicts = json.loads(cached)
-                pools = [self._pool_from_dict(d) for d in pool_dicts]
-                logger.info(f"Global cache HIT for {region}: {len(pools)} pools")
-                return pools
+                if not isinstance(pool_dicts, list):
+                    logger.warning(f"Global cache corrupt for {region}: expected list, got {type(pool_dicts).__name__}")
+                    self.redis.delete(cache_key)
+                else:
+                    pools = [self._pool_from_dict(d) for d in pool_dicts]
+                    logger.debug(f"Global cache HIT for {region}: {len(pools)} pools")
+                    return pools
         except Exception as e:
             logger.warning(f"Global cache read failed for {region}: {e}")
 
@@ -582,8 +589,9 @@ class PoolRankingService:
         # into the pipeline simultaneously (OOM pressure, duplicate work).
         _pipeline_lock_key = f"global_pipeline_running:{region}"
         _lock_acquired = False
+        _lock_value = str(uuid.uuid4())  # Fencing token — only owner may release
         try:
-            _lock_acquired = bool(self.redis.set(_pipeline_lock_key, '1', nx=True, ex=120))
+            _lock_acquired = bool(self.redis.set(_pipeline_lock_key, _lock_value, nx=True, ex=120))
             if not _lock_acquired:
                 # Another worker is building the cache — wait briefly and re-check
                 import time as _t
@@ -593,14 +601,24 @@ class PoolRankingService:
                     if _retry:
                         pool_dicts = json.loads(_retry)
                         pools = [self._pool_from_dict(d) for d in pool_dicts]
-                        logger.info(f"Global cache HIT (waited for pipeline) for {region}: {len(pools)} pools")
+                        logger.debug(f"Global cache HIT (waited for pipeline) for {region}: {len(pools)} pools")
                         return pools
                 logger.warning(f"Global pipeline lock wait timed out for {region}, running pipeline anyway")
         except Exception:
             pass  # Redis unavailable — proceed without lock
 
         logger.info(f"Global cache MISS for {region} — running full pipeline")
-        global_pools = self._run_global_pipeline(region, global_limit)
+        try:
+            global_pools = self._run_global_pipeline(region, global_limit)
+        finally:
+            # Only release the lock if we still own it (fenced: compare stored value)
+            if _lock_acquired:
+                try:
+                    _current = self.redis.get(_pipeline_lock_key)
+                    if _current == _lock_value:
+                        self.redis.delete(_pipeline_lock_key)
+                except Exception:
+                    pass
 
         # Only cache non-empty results — caching [] would cause subsequent calls to
         # read an empty "hit" instead of retrying the full pipeline on next request.
@@ -741,7 +759,7 @@ class PoolRankingService:
         for i, pool in enumerate(filtered, start=1):
             pool.rank = i
 
-        logger.info(
+        logger.debug(
             f"Client filter: {len(global_pools)} global → {len(filtered)} matching "
             f"(limit={limit})"
         )
@@ -1001,7 +1019,7 @@ class PoolRankingService:
 
             if is_flagged:
                 # Check failure count to decide hard-reject vs soft-flag
-                failure_count = int(self.redis.get(f"blacklist_failures:{pool_key}") or 1)
+                failure_count = int(self.redis.get(f"blacklist_failures:{pool_key}") or 0)  # P-M22 fix: consistent default 0
 
                 if failure_count >= 3:
                     # Hard reject repeat offenders
@@ -1153,7 +1171,7 @@ class PoolRankingService:
             ).all()
             for r in sa_records:
                 sa_savings_map[r.instance_type] = float(r.savings_percentage)
-            logger.info(f"Loaded {len(sa_savings_map)} SA savings% for scoring differentiation")
+            logger.debug(f"Loaded {len(sa_savings_map)} SA savings% for scoring differentiation")
         except Exception as _e:
             logger.warning(f"Could not load SA savings data for scoring: {_e}")
 
@@ -1216,13 +1234,24 @@ class PoolRankingService:
                         price_headroom = (pool.ondemand_price - pool.spot_price) / pool.ondemand_price
                         predicted_savings = max(0.0, min(0.95, price_headroom))
 
-                # ── Differentiated risk: weighted blend of ONNX + Spot Advisor ─
-                # 50/50 blend gives all 4 SA rank buckets distinct, meaningful risk scores
-                # while keeping sa_rank=2 (10-15% interruption) pools available:
-                #   sa_rank=0 (< 5%): risk ≈ 0.14   sa_rank=2 (10-15%): risk ≈ 0.34
-                #   sa_rank=1 (5-10%): risk ≈ 0.24  sa_rank=3 (15-20%): risk ≈ 0.44
-                sa_risk = pool.spot_advisor_rank / 5.0  # 0.0 (safest) → 0.8 (riskiest)
-                risk_probability = min(1.0, 0.5 * risk_probability + 0.5 * sa_risk)
+                # ── Differentiated risk: 4-signal blend (changes.md §6.2) ────
+                # Signals: ONNX (0.40), Price pressure (0.35), Spot Advisor (0.25), + optional EMA
+                _pool_key_ema = f"{pool.instance_type}:{pool.az}"
+                _ema_risk_val, _ema_weight_val = 0.0, 0.0
+                try:
+                    from backend.services.global_ema_service import get_ema_risk
+                    _ema_risk_val, _ema_weight_val = get_ema_risk(self.redis, self.db, _pool_key_ema)
+                except Exception:
+                    pass
+
+                risk_probability = PoolRankingService.compute_blended_risk(
+                    onnx_risk=risk_probability,
+                    sa_rank=pool.spot_advisor_rank,
+                    spot_price=pool.spot_price,
+                    od_price=pool.ondemand_price,
+                    ema_risk=_ema_risk_val,
+                    ema_weight=_ema_weight_val,
+                )
 
                 # ── Hard filter: REJECT pools above risk threshold ──
                 if risk_probability > self.risk_threshold:
@@ -1245,15 +1274,48 @@ class PoolRankingService:
                 if is_flagged:
                     effective_savings = max(0.0, predicted_savings - 0.20)  # -20% savings penalty
 
-                # ── Expected Value scoring (Decision Engine v3) ──
-                from backend.core.scoring import compute_expected_value
-                final_score = compute_expected_value(effective_savings, risk_probability)
-
-                # Stage 5.3 — Apply pool reputation multiplier
+                # ── Unified Score (changes.md §6.1) ──
+                # Replaces the simple EV scoring with a multi-signal unified score.
+                # unified_score = (savings × weight) × (1 - risk) × reputation × capacity
+                # ml_score is kept as deprecated alias pointing to unified_score.
                 _pool_key_rep = f"{pool.instance_type}:{pool.az}"
                 _rep_mult = _reputation_mults.get(_pool_key_rep, 1.00)
-                if _rep_mult != 1.00:
-                    final_score = round(final_score * _rep_mult, 6)
+                _rep_mult = max(0.1, min(10.0, _rep_mult))  # Clamp to prevent score corruption
+
+                # Capacity multiplier from dry-run cache
+                _cap_mult = 1.0
+                try:
+                    _dr_key = f"dry_run:{pool.instance_type}:{pool.az}"
+                    _dr_val = self.redis.get(_dr_key)
+                    if _dr_val:
+                        _dr_str = _dr_val.decode() if isinstance(_dr_val, bytes) else _dr_val
+                        if _dr_str == 'pass':
+                            _cap_mult = 1.0
+                        elif _dr_str == 'fail':
+                            _cap_mult = 0.0
+                        else:
+                            _cap_mult = 0.9  # stale / unknown
+                except Exception:
+                    pass
+
+                # Apply blacklist + dryrun hard overrides to blended risk
+                _final_risk_adjusted = PoolRankingService.compute_blended_risk(
+                    onnx_risk=risk_probability,  # already blended above, but re-apply overrides
+                    sa_rank=pool.spot_advisor_rank,
+                    spot_price=pool.spot_price,
+                    od_price=pool.ondemand_price,
+                    ema_risk=_ema_risk_val,
+                    ema_weight=_ema_weight_val,
+                    is_blacklisted=bool(is_flagged),
+                    dryrun_failed=(_cap_mult == 0.0),
+                )
+
+                final_score = PoolRankingService.compute_unified_score(
+                    savings_pct=effective_savings,
+                    final_risk=_final_risk_adjusted,
+                    reputation_mult=_rep_mult,
+                    capacity_mult=_cap_mult,
+                )
 
                 scored_pools.append(ScoredPool(
                     pool=pool,
@@ -1283,6 +1345,88 @@ class PoolRankingService:
             f"{rejected_risky} rejected (risk > {self.risk_threshold})"
         )
         return scored_pools
+
+    # ── Unified Score (changes.md §6) ────────────────────────────────────
+
+    @staticmethod
+    def compute_unified_score(
+        savings_pct: float,
+        final_risk: float,
+        reputation_mult: float = 1.0,
+        capacity_mult: float = 1.0,
+        savings_weight: float = 0.8,
+    ) -> float:
+        """
+        Unified score = (savings_pct × savings_weight) × (1 - final_risk) × reputation_mult × capacity_mult
+
+        Args:
+            savings_pct:      0-1 (customer savings vs OD baseline)
+            final_risk:       0-1 (blended risk from compute_blended_risk)
+            reputation_mult:  0.5-1.2 from PoolReputationService
+            capacity_mult:    1.0 (pass), 0.9 (stale), 0.0 (fail)
+            savings_weight:   default 0.8
+        """
+        return round(
+            (savings_pct * savings_weight) * (1.0 - final_risk) * reputation_mult * capacity_mult,
+            6,
+        )
+
+    @staticmethod
+    def compute_blended_risk(
+        onnx_risk: float,
+        sa_rank: int,
+        spot_price: float,
+        od_price: float,
+        ema_risk: float = 0.0,
+        ema_weight: float = 0.0,
+        is_blacklisted: bool = False,
+        dryrun_failed: bool = False,
+    ) -> float:
+        """
+        3-signal blended risk with EMA smoothing (changes.md §6.2).
+
+        Base signals (when EMA weight = 0):
+          ONNX: 0.40, Price pressure: 0.35, Spot Advisor: 0.25
+
+        When EMA data is present, EMA weight is injected (max 40%) and
+        base weights are renormalized to (1 - ema_weight).
+        EMA is an interpolation modifier, not an independent 4th signal.
+
+        Hard overrides:
+          - blacklisted (ITN in last 24h) → max(0.75, risk)
+          - dryrun failed               → max(0.65, risk)
+        """
+        # Price pressure signal
+        headroom = (od_price - spot_price) / od_price if od_price > 0 else 0.0
+        price_pressure = max(0.0, 1.0 - headroom / 0.40)
+
+        # Spot Advisor signal
+        sa_risk = min(sa_rank / 5.0, 0.8)
+
+        # Base weights
+        base_onnx = 0.40
+        base_price = 0.35
+        base_sa = 0.25
+        base_sum = base_onnx + base_price + base_sa
+
+        weighted_sum = base_onnx * onnx_risk + base_price * price_pressure + base_sa * sa_risk
+        base_risk = weighted_sum / base_sum
+
+        # Blend with EMA if available
+        if ema_weight > 0:
+            final_risk = (1.0 - ema_weight) * base_risk + ema_weight * ema_risk
+        else:
+            final_risk = base_risk
+
+        final_risk = min(1.0, max(0.0, final_risk))
+
+        # Hard overrides
+        if is_blacklisted:
+            final_risk = max(0.75, final_risk)
+        if dryrun_failed:
+            final_risk = max(0.65, final_risk)
+
+        return round(final_risk, 6)
 
     def _step8_final_ranking(
         self,
@@ -1344,11 +1488,22 @@ class PoolRankingService:
 
         if remaining_budget <= 0:
             logger.warning(f"DryRun budget exhausted for {region} (used {current_count}/{MAX_DRYRUN_PER_HOUR})")
+            # Retry: reuse recently-cached validation results from Redis
+            _reused = 0
             for p in scored_pools[:TARGET_VALID]:
-                p.capacity_status = "unvalidated"
-                p.capacity_validated_at = None
+                _vk = f"spot:validated:{region}:{p.pool.instance_type}:{p.pool.az}"
+                _cached_ts = self.redis.get(_vk) if self.redis else None
+                if _cached_ts:
+                    p.capacity_status = "validated"
+                    p.capacity_validated_at = _cached_ts
+                    _reused += 1
+                else:
+                    p.capacity_status = "unvalidated"
+                    p.capacity_validated_at = None
             if self.redis:
                 self.redis.incr("spot:metrics:dryrun_starvation_ratio")
+            if _reused:
+                logger.info(f"DryRun starvation: reused {_reused}/{TARGET_VALID} cached validations for {region}")
             return scored_pools[:TARGET_VALID]
 
         validated = []
@@ -1384,6 +1539,12 @@ class PoolRankingService:
                     pool.capacity_status = "validated"
                     pool.capacity_validated_at = now.isoformat()
                     validated.append(pool)
+                    # Cache validation result for starvation retry (1 hour TTL)
+                    try:
+                        _vk = f"spot:validated:{region}:{pool.pool.instance_type}:{pool.pool.az}"
+                        self.redis.setex(_vk, 3600, now.isoformat())
+                    except Exception:
+                        pass
                     logger.debug(f"Offering PASS: {pool.pool.instance_type}:{pool.pool.az}")
                 else:
                     # Not offered — mark unvalidated (do NOT blacklist; offering availability
@@ -1412,12 +1573,12 @@ class PoolRankingService:
                 if ck_count == 1:
                     self.redis.expire(cluster_dryrun_key, 3600)
 
-        logger.info(f"DryRun validated {len(validated)}/{TARGET_VALID} pools (budget: {MAX_DRYRUN_PER_HOUR - current_count - len(validated)}/{MAX_DRYRUN_PER_HOUR} remaining)")
+        logger.debug(f"DryRun validated {len(validated)}/{TARGET_VALID} pools (budget: {MAX_DRYRUN_PER_HOUR - current_count - len(validated)}/{MAX_DRYRUN_PER_HOUR} remaining)")
 
         # FALLBACK: If no pools validated (e.g., all DryRun failed due to missing params),
         # return top pools anyway marked as "unvalidated" so UI can still show rankings
         if len(validated) == 0 and len(scored_pools) > 0:
-            logger.warning(f"No pools validated via DryRun - returning top {TARGET_VALID} as unvalidated")
+            logger.debug(f"No pools validated via DryRun - returning top {TARGET_VALID} as unvalidated")
             for pool in scored_pools[:TARGET_VALID]:
                 pool.capacity_status = "unvalidated"
                 pool.capacity_validated_at = None
@@ -1650,6 +1811,7 @@ class PoolRankingService:
                     self.db.rollback()
                 except Exception:
                     pass
+            return {}
 
     def _ensure_spot_advisor_fresh(self, region: str) -> None:
         """
@@ -1798,12 +1960,14 @@ class PoolRankingService:
                                 _spot = float(_data.get('price', 0) or 0)
                                 if _spot <= 0:
                                     continue
-                                # OD: Redis → _ONDEMAND_FALLBACK (no AWS API call)
+                                # OD: Redis → _ONDEMAND_FALLBACK → skip pool (no fabricated pricing)
                                 _od = (
                                     _od_redis.get(_itype)
                                     or self._ONDEMAND_FALLBACK.get(_itype)
-                                    or _spot * 3.0
                                 )
+                                if not _od:
+                                    logger.debug(f"[pricing_data] Skipping {_itype}:{_az}: no OD price available")
+                                    continue
                                 pricing_data[f"{_itype}:{_az}"] = {"spot": _spot, "ondemand": _od}
                         except Exception:
                             pass
@@ -1861,8 +2025,10 @@ class PoolRankingService:
                 _od = (
                     od_map.get(sp.instance_type)
                     or self._ONDEMAND_FALLBACK.get(sp.instance_type)
-                    or _spot * 3.0
                 )
+                if not _od:
+                    logger.debug(f"[pricing_data] Skipping {sp.instance_type}:{sp.availability_zone}: no OD price available")
+                    continue
                 pricing_data[key] = {"spot": _spot, "ondemand": _od}
 
             logger.info(f"Loaded pricing data for {len(pricing_data)} instance/AZ combinations")
@@ -1926,7 +2092,7 @@ class PoolRankingService:
         """
         # Create size-constrained template with flexible range (±1 vCPU, ±2 GB)
         # This allows near-matches in case exact size isn't available
-        vcpu_min = max(1, vcpu - 1)
+        vcpu_min = max(1, vcpu)
         vcpu_max = vcpu + 1
         memory_min = max(1, int(memory_gb - 2))
         memory_max = int(memory_gb + 2)
@@ -2003,6 +2169,420 @@ class PoolRankingService:
             "ml_score": best.ml_score,
             "pool_key": f"{best.pool.instance_type}:{best.pool.az}"
         }
+
+    def rank_pools_for_node(
+        self,
+        node_info: dict,
+        cluster_id: str,
+        region: str,
+        include_dynamic_filters: bool = True,
+        force_type: Optional[str] = None,
+    ) -> List[dict]:
+        """
+        Unified ranked pool list for a specific node.
+
+        Single source of truth used by:
+        - GET /alternatives UI endpoint
+        - Rebalancing action creation
+        - Execution-time pool re-ranking in auto_rebalancer
+
+        Sort key: expected_value = savings_pct × (1 - risk_probability), DESC
+        where savings_pct is relative to the source node's on-demand price.
+
+        Args:
+            node_info: Dict with keys: instance_type, az, od_price (optional),
+                       resource_profile (optional dict with min_vcpu_required,
+                       min_memory_required, architecture).
+            cluster_id: Cluster ID (used to load settings and occupancy).
+            region: AWS region.
+            include_dynamic_filters: When True, apply occupancy, family allow/block,
+                                      allowed zones, and cross-AZ constraints from
+                                      the cluster's NodeTemplate.
+            force_type: Restrict output to this instance type only (for S2S same-type).
+
+        Returns:
+            List of pool dicts sorted by expected_value DESC.
+        """
+        import json as _json
+        from backend.core.redis_client import key_market_view_cache, key_global_pool_rankings
+
+        # ── Load cluster settings ─────────────────────────────────────────────
+        risk_ceiling = 0.25
+        tradeoff_pct = 0.20
+        arch_pref = 'both'
+        diversify_enabled = False
+        _min_savings_setting = 0
+        try:
+            from backend.models.cluster import ClusterOptimizationSettings, OptimizationStrategy
+            _cos = self.db.query(ClusterOptimizationSettings).filter_by(cluster_id=cluster_id).first()
+            _os = self.db.query(OptimizationStrategy).filter_by(cluster_id=cluster_id).first()
+            if _cos:
+                arch_pref = getattr(_cos, 'architecture_preference', 'both') or 'both'
+                diversify_enabled = bool(getattr(_cos, 'diversify_pools', False))
+            if _os:
+                risk_ceiling = (getattr(_os, 'risk_ceiling_percent', 25) or 25) / 100.0
+                tradeoff_pct = (getattr(_os, 'risk_savings_tradeoff_pct', 20) or 20) / 100.0
+                # N2 fix: Load min_savings_percent so we can enforce it in the filter loop
+                _min_savings_setting = getattr(_os, 'min_savings_percent', 0) or 0
+        except Exception:
+            pass
+        # Apply regional market factor to risk ceiling (same as auto_rebalancer)
+        try:
+            _mf_raw = self.redis.get(f"market_factor:{region}")
+            if _mf_raw:
+                risk_ceiling *= max(0.8, min(1.2, float(_mf_raw)))
+        except Exception:
+            pass
+
+        # ── Load NodeTemplate constraints ─────────────────────────────────────
+        allowed_families: Optional[List[str]] = None
+        excluded_families: List[str] = ["metal", "g", "p", "trn", "inf", "i"]
+        allowed_zones: Optional[List[str]] = None
+        cross_az_rebalance: bool = True
+        if include_dynamic_filters:
+            try:
+                from backend.models.node_template import ClusterTemplateMapping
+                _ctm = self.db.query(ClusterTemplateMapping).filter_by(
+                    cluster_id=cluster_id, is_default=True
+                ).first()
+                if _ctm and _ctm.version and _ctm.version.constraints_json:
+                    _tc = _ctm.version.constraints_json
+                    if isinstance(_tc, dict):
+                        _af = _tc.get('allowed_families') or []
+                        if _af:
+                            allowed_families = list(_af)
+                        _ef = _tc.get('excluded_families')
+                        if _ef:
+                            excluded_families = list(_ef)
+                        _az_list = _tc.get('allowed_zones') or []
+                        if _az_list:
+                            allowed_zones = list(_az_list)
+                        cross_az_rebalance = bool(_tc.get('cross_az_rebalance', True))
+            except Exception:
+                pass
+
+        # ── Derive node requirements ──────────────────────────────────────────
+        instance_type = node_info.get('instance_type', '')
+        source_az = node_info.get('az', '')
+        rp = node_info.get('resource_profile', {})
+        min_vcpu = int(rp.get('min_vcpu_required', 0) or 0)
+        min_memory_gb = float(rp.get('min_memory_required', 0.0) or 0.0)
+        required_arch = rp.get('architecture')
+
+        if (min_vcpu <= 0 or min_memory_gb <= 0) and instance_type:
+            try:
+                from backend.workers.tasks.cache_builder import _lookup_specs
+                _v, _m, _a, _is_fallback = _lookup_specs(instance_type)
+                if _is_fallback:
+                    logger.critical(
+                        "Instance type %s not in spec table — cannot determine vCPU/memory floor. "
+                        "Skipping pool ranking for this node to prevent undersized replacement. "
+                        "Add the type to _FALLBACK_SPECS in cache_builder.py to re-enable.",
+                        instance_type
+                    )
+                    return []
+                if min_vcpu <= 0 and _v:
+                    min_vcpu = int(_v)
+                if min_memory_gb <= 0 and _m:
+                    min_memory_gb = float(_m)
+                if not required_arch and _a:
+                    required_arch = _a
+            except Exception:
+                pass
+
+        # N9 fix: If min_vcpu is still 0 after lookup, abort ranking entirely.
+        # A zero floor would allow any pool to pass, potentially replacing a
+        # 72-vCPU node with a 2-vCPU instance (causing OOMKill/throttling).
+        if min_vcpu <= 0:
+            logger.critical(
+                "[rank_pools_for_node] min_vcpu=0 for node %s (type=%s) — "
+                "refusing to rank pools to prevent undersized replacement",
+                node_info.get('node_name', '?'), instance_type,
+            )
+            return []
+
+        # Architecture override from cluster preference
+        if arch_pref == 'amd64':
+            required_arch = 'amd64'
+        elif arch_pref == 'arm64':
+            required_arch = 'arm64'
+        elif arch_pref == 'both':
+            required_arch = None  # allow all architectures through the filter
+
+        # Source OD price (used for OD nodes and as fallback for spot nodes)
+        node_od_price = float(node_info.get('od_price', 0) or 0)
+        if node_od_price <= 0 and instance_type:
+            try:
+                from backend.workers.tasks.cache_builder import _lookup_od_price
+                node_od_price = float(_lookup_od_price(self.redis, region, instance_type) or 0)
+            except Exception:
+                pass
+        # Savings baseline: use actual current price (spot price for spot nodes).
+        # For spot source nodes, savings should be relative to what the node is
+        # currently paying, not the hypothetical OD price.
+        _node_current_price = float(node_info.get('current_price', 0) or 0)
+        _savings_baseline = _node_current_price if _node_current_price > 0 else node_od_price
+
+        # ── Load pool cache ───────────────────────────────────────────────────
+        raw = self.redis.get(key_market_view_cache(region))
+        if not raw:
+            raw = self.redis.get(key_global_pool_rankings(region))
+        if not raw:
+            logger.warning(
+                f"[rank_pools_for_node] No pool cache for region={region} cluster={cluster_id}"
+            )
+            return []
+        payload = _json.loads(raw)
+        all_pools = payload.get('data', []) if isinstance(payload, dict) else payload
+
+        # ── Load blacklist ────────────────────────────────────────────────────
+        _blacklisted: set = set()
+        try:
+            _bl = self.redis.smembers("risky_pools")
+            if _bl:
+                _blacklisted = {(m.decode() if isinstance(m, bytes) else m) for m in _bl}
+        except Exception:
+            pass
+
+        # ── Build occupied set (dynamic: running + pending instances in cluster) ──
+        _occupied_pools: set = set()
+        if include_dynamic_filters and diversify_enabled:
+            try:
+                from backend.models.instance import Instance
+                _running = self.db.query(Instance.instance_type, Instance.az).filter(
+                    Instance.cluster_id == cluster_id,
+                    Instance.state.in_(['running', 'pending']),
+                    Instance.instance_type.isnot(None),
+                ).all()
+                _occupied_pools = {
+                    f"{r.instance_type}:{r.az}" for r in _running if r.instance_type and r.az
+                }
+                # Remove the source node's own pool so it remains eligible.
+                # Without this, the best pool is excluded if the node already
+                # runs it — making diversification drop the safest option.
+                _source_pk = f"{instance_type}:{source_az}"
+                _occupied_pools.discard(_source_pk)
+            except Exception:
+                pass
+
+        # ── Score and filter pools ────────────────────────────────────────────
+        results: List[dict] = []
+        _seen_families: Dict[str, int] = {}  # for family diversification cap
+
+        for p in all_pools:
+            p = dict(p)
+            itype = p.get('instance_type', '')
+            az = p.get('az', '')
+
+            # force_type gate
+            if force_type and itype != force_type:
+                continue
+
+            # Blacklist
+            pk = f"{itype}:{az}"
+            if pk in _blacklisted:
+                continue
+
+            spot_price = float(p.get('spot_price', 0) or 0)
+            if spot_price <= 0:
+                continue
+
+            # vCPU and memory floor
+            pool_vcpu = int(p.get('vcpu', 0) or 0)
+            pool_mem = float(p.get('memory_gb', 0.0) or 0.0)
+            if pool_vcpu <= 0 or pool_mem <= 0:
+                continue
+            if min_vcpu > 0 and pool_vcpu < min_vcpu:
+                continue
+            if min_memory_gb > 0 and pool_mem < min_memory_gb:
+                continue
+
+            # Architecture filter
+            pool_arch = (p.get('architecture') or 'amd64').lower()
+            if required_arch:
+                _ok_arch = (pool_arch == required_arch) or (
+                    required_arch == 'amd64' and pool_arch == 'x86_64'
+                )
+                if not _ok_arch:
+                    continue
+
+            # Risk ceiling (prefer ml-blended risk_probability, fall back to AWS rate)
+            aws_irr_pct = float(p.get('interruption_rate_pct', 15.0) or 15.0)
+            pool_risk = float(p.get('risk_probability', aws_irr_pct / 100.0) or aws_irr_pct / 100.0)
+            if pool_risk > 1.0:
+                pool_risk /= 100.0
+            if pool_risk > risk_ceiling:
+                continue
+
+            # Dynamic filters (template constraints + occupancy)
+            if include_dynamic_filters:
+                family = itype.split('.')[0] if '.' in itype else itype
+
+                # Template: allowed/excluded families
+                if allowed_families and family not in allowed_families:
+                    continue
+                if excluded_families and family in excluded_families:
+                    continue
+
+                # Template: allowed zones
+                if allowed_zones and az not in allowed_zones:
+                    continue
+
+                # Template: cross-AZ restriction
+                if not cross_az_rebalance and source_az and az != source_az:
+                    continue
+
+                # Occupancy (when diversify is enabled): skip pools already running
+                if diversify_enabled and pk in _occupied_pools:
+                    continue
+
+            # Compute savings relative to the node's actual current price.
+            # For OD nodes: _savings_baseline == node_od_price.
+            # For spot nodes: _savings_baseline == current spot price (not OD price).
+            if _savings_baseline > 0:
+                savings_pct = (_savings_baseline - spot_price) / _savings_baseline
+            else:
+                savings_pct = float(p.get('predicted_savings', 0) or 0)
+
+            # Only positive-savings pools (negative savings removed per unified design)
+            if savings_pct < 0:
+                continue
+
+            # N2 fix: Enforce min_savings_percent from OptimizationStrategy.
+            # savings_pct is a fraction (e.g. 0.20 = 20%), _min_savings_setting
+            # is an integer percentage (e.g. 20 = 20%).
+            if _min_savings_setting > 0 and savings_pct < (_min_savings_setting / 100.0):
+                continue
+
+            # Family diversification cap (moved AFTER savings/price filters so
+            # oversized pools that fail on price don't consume family cap slots,
+            # allowing affordable same-family pools through).
+            if include_dynamic_filters and diversify_enabled:
+                family = itype.split('.')[0] if '.' in itype else itype
+                _seen_families[family] = _seen_families.get(family, 0) + 1
+                if _seen_families[family] > 2:
+                    continue
+
+            ev = savings_pct * (1.0 - pool_risk)
+
+            # Unified score (for display)
+            _rep_mult = float(p.get('reputation_mult', 1.0) or 1.0)
+            _cap_mult = 1.1 if bool(p.get('has_capacity')) else 1.0
+            _uni_score = (savings_pct * 0.8) * (1.0 - pool_risk) * _rep_mult * _cap_mult
+
+            # Derive spot_advisor_rank for display
+            orig_sa_rank = p.get('spot_advisor_rank')
+            if orig_sa_rank is None:
+                if aws_irr_pct <= 5:
+                    orig_sa_rank = 0
+                elif aws_irr_pct <= 10:
+                    orig_sa_rank = 1
+                elif aws_irr_pct <= 15:
+                    orig_sa_rank = 2
+                elif aws_irr_pct <= 20:
+                    orig_sa_rank = 3
+                else:
+                    orig_sa_rank = 4
+
+            p['savings_pct'] = round(savings_pct * 100, 2)
+            p['saving_pct'] = p['savings_pct']
+            p['customer_savings_pct'] = p['savings_pct']
+            p['expected_value'] = round(ev, 6)
+            p['unified_score'] = round(_uni_score, 6)
+            p['risk_probability'] = round(pool_risk, 4)
+            p['interruption_rate_pct'] = aws_irr_pct
+            p['spot_advisor_rank'] = int(orig_sa_rank)
+            p['node_od_baseline'] = round(node_od_price, 6)
+            p['spot_price_raw'] = spot_price
+            results.append(p)
+
+        # Sort by expected_value DESC (best first)
+        results.sort(key=lambda x: x['expected_value'], reverse=True)
+
+        # ── Rebalancer double-gate annotation ─────────────────────────────────
+        # Run the exact same 4-pass selection logic as auto_rebalancer.py so the
+        # UI shows which pools would actually be launched — not just which pass
+        # the ML+risk filters. Each pool gets:
+        #   rebalancer_eligible: bool — passes the gate (would be a valid launch target)
+        #   rebalancer_pass: int 1-4 or null — which pass accepted it
+        #   would_be_launched: bool — the single pool the rebalancer would pick this cycle
+        #
+        # Pass 1: spot < OD price AND risk < ceiling
+        # Pass 2: spot <= cheapest + tradeoff*(OD-cheapest) AND risk < ceiling
+        # Pass 3: risk override — node itself is risky, any safer pool accepted
+        # Pass 4: OD→Spot fallback — any cheaper spot (OD nodes only)
+        _gate_od_price = node_od_price if node_od_price > 0 else 0.10
+        _valid_spot_prices = [p['spot_price_raw'] for p in results if p['spot_price_raw'] > 0]
+        _cheapest_spot_price = min(_valid_spot_prices) if _valid_spot_prices else _gate_od_price * 0.3
+        _max_tradeoff_price = _cheapest_spot_price + (_gate_od_price - _cheapest_spot_price) * tradeoff_pct
+
+        # Initialise all pools as not eligible
+        for p in results:
+            p['rebalancer_eligible'] = False
+            p['rebalancer_pass'] = None
+            p['would_be_launched'] = False
+
+        # Pass 1
+        _pass1_pools = [
+            p for p in results
+            if (
+                (p['spot_price_raw'] > 0 and p['spot_price_raw'] < _gate_od_price) or
+                (p['spot_price_raw'] == 0 and (p.get('expected_value', 0) or 0) > 0.05)
+            ) and p['risk_probability'] < risk_ceiling
+        ]
+        for p in _pass1_pools:
+            p['rebalancer_eligible'] = True
+            p['rebalancer_pass'] = 1
+
+        # Pass 2 (tradeoff) — only for pools that didn't pass Pass 1
+        if not _pass1_pools:
+            _pass2_pools = [
+                p for p in results
+                if (
+                    (p['spot_price_raw'] > 0 and p['spot_price_raw'] <= _max_tradeoff_price) or
+                    p['spot_price_raw'] == 0
+                ) and p['risk_probability'] < risk_ceiling
+                and not p['rebalancer_eligible']
+            ]
+            for p in _pass2_pools:
+                p['rebalancer_eligible'] = True
+                p['rebalancer_pass'] = 2
+
+        # Pass 3 (risk override) — only if passes 1+2 found nothing
+        if not any(p['rebalancer_eligible'] for p in results):
+            _node_risk_from_info = float(node_info.get('risk_score', 0) or 0)
+            if _node_risk_from_info > risk_ceiling:
+                for p in results:
+                    if p['risk_probability'] < _node_risk_from_info:
+                        p['rebalancer_eligible'] = True
+                        p['rebalancer_pass'] = 3
+
+        # Pass 4 (OD→Spot final fallback) — any pool cheaper than OD price
+        if not any(p['rebalancer_eligible'] for p in results):
+            for p in results:
+                if p['spot_price_raw'] == 0 or p['spot_price_raw'] < _gate_od_price:
+                    p['rebalancer_eligible'] = True
+                    p['rebalancer_pass'] = 4
+
+        # Mark the single pool the rebalancer would pick (top eligible by expected_value)
+        _eligible = [p for p in results if p['rebalancer_eligible']]
+        if _eligible:
+            # Pick same way rebalancer does: first Pass-1 by expected_value, else lowest risk
+            _p1 = [p for p in _eligible if p['rebalancer_pass'] == 1]
+            if _p1:
+                _p1[0]['would_be_launched'] = True
+            else:
+                # Pass 2/3/4: lowest risk wins
+                _best = min(_eligible, key=lambda x: x['risk_probability'])
+                _best['would_be_launched'] = True
+
+        logger.info(
+            f"[rank_pools_for_node] cluster={cluster_id} region={region} "
+            f"node={instance_type} → {len(results)} eligible pools "
+            f"({sum(1 for p in results if p['rebalancer_eligible'])} pass rebalancer gate, "
+            f"dynamic_filters={include_dynamic_filters})"
+        )
+        return results
 
 
 # ── Module-level helper functions for pool scoring / launch tracking ──────────

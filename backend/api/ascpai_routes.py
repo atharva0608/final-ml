@@ -132,7 +132,39 @@ def get_effective_configuration(
     template_name = "None"
     if active_mapping and active_mapping.template:
         template_name = active_mapping.template.name
-        
+
+    # Resolve effective architecture (intersection of cluster preference + template)
+    _arch_pref = getattr(automation, 'architecture_preference', 'both') if automation else 'both'
+    _template_archs = None
+    _arch_conflict = False
+    if active_mapping and active_mapping.version and active_mapping.version.constraints_json:
+        _tc = active_mapping.version.constraints_json
+        if isinstance(_tc, dict) and 'architecture' in _tc:
+            _template_archs = _tc['architecture']  # e.g. ["amd64", "arm64"]
+
+    # Compute resolved architecture
+    if _arch_pref in ('amd64', 'arm64') and _template_archs:
+        # Normalize: treat x86_64 as amd64 equivalent
+        _normalized = set()
+        for a in _template_archs:
+            _normalized.add(a)
+            if a == 'x86_64':
+                _normalized.add('amd64')
+            elif a == 'amd64':
+                _normalized.add('x86_64')
+        if _arch_pref not in _normalized:
+            _arch_conflict = True
+            _resolved_arch = _arch_pref  # User setting wins but flag conflict
+        else:
+            _resolved_arch = _arch_pref
+    elif _arch_pref in ('amd64', 'arm64'):
+        _resolved_arch = _arch_pref
+    elif _template_archs and len(_template_archs) == 1:
+        _a = _template_archs[0]
+        _resolved_arch = 'amd64' if _a in ('amd64', 'x86_64') else _a
+    else:
+        _resolved_arch = 'both'
+
     # Build effective config unifying the override hierarchy (Cluster Policy > Template > Strategy)
     config = {
         "auto_rebalance": "ON" if (automation and automation.auto_rebalance_enabled) else "OFF",
@@ -141,7 +173,11 @@ def get_effective_configuration(
         "template": template_name,
         "stateful_spot": "BLOCKED" if (stateful and stateful.block_spot_for_stateful) else "ALLOWED",
         "substitute_mode": (stateless.substitute_strategy or 'prewarmed').capitalize() if stateless else "Prewarmed",
-        "target_spot_exposure_pct": automation.target_spot_exposure_pct if automation else 100
+        "target_spot_exposure_pct": automation.target_spot_exposure_pct if automation else 100,
+        "architecture_preference": _arch_pref,
+        "resolved_architecture": _resolved_arch,
+        "template_architectures": _template_archs,
+        "architecture_conflict": _arch_conflict,
     }
     
     return config
@@ -222,6 +258,32 @@ async def get_pool_rankings(
             allowed_azs=template.allowed_azs,
             excluded_instance_types=template.excluded_instance_types
         )
+
+        # ── Enforce minimum floor at current instance type's specs ────────
+        # When current_instance_type is provided, raise vcpu_min / memory_gb_min
+        # so that no pool smaller than the source node can appear in the list.
+        # e.g. t3.medium = 2 vCPU / 4 GB → t2.micro (1 vCPU / 1 GB) is excluded.
+        if current_instance_type:
+            try:
+                from backend.workers.tasks.cache_builder import (
+                    _lookup_specs as _cb_lookup_specs_r,
+                )
+                _cur_vcpu, _cur_mem, _, _ = _cb_lookup_specs_r(current_instance_type)
+                _cur_vcpu = _cur_vcpu or 2
+                _cur_mem = _cur_mem or 4.0
+                _new_vcpu_min = max(node_template.vcpu_range[0], _cur_vcpu)
+                _new_mem_min = max(node_template.memory_range[0], _cur_mem)
+                node_template = NodeTemplate(
+                    architecture=node_template.architecture,
+                    vcpu_range=(_new_vcpu_min, node_template.vcpu_range[1]),
+                    memory_range=(_new_mem_min, node_template.memory_range[1]),
+                    allowed_families=node_template.allowed_families,
+                    allowed_sizes=node_template.allowed_sizes,
+                    allowed_azs=node_template.allowed_azs,
+                    excluded_instance_types=node_template.excluded_instance_types,
+                )
+            except Exception:
+                pass  # Non-fatal — fall back to original template ranges
 
         # Execute pool ranking pipeline
         ranking_service = PoolRankingService(db, redis)
@@ -1339,6 +1401,7 @@ async def get_node_recommendations(
         Instance.instance_type != 'unknown',
         Instance.instance_id.isnot(None),
         Instance.instance_id != '',
+        Instance.status.notin_(['UNKNOWN']),  # exclude orphaned: EC2 alive but K8s node gone
     ).all()
     _seen: dict = {}
     for _inst in _all_instances:
@@ -1391,11 +1454,17 @@ async def get_node_recommendations(
             self.spot_price = float(d.get('spot_price', 0) or 0)
 
     class _ScoredPoolWrapper:
-        __slots__ = ['pool', 'risk_probability', 'predicted_savings']
+        __slots__ = ['pool', 'risk_probability', 'predicted_savings', 'interruption_rate_pct']
         def __init__(self, d):
             self.pool = _PoolInfo(d)
-            # interruption_rate_pct → risk probability (0–1 scale)
-            self.risk_probability = float(d.get('interruption_rate_pct', 5) or 5) / 100.0
+            # Prefer ONNX-blended risk_probability when available (from cache_builder ONNX pass),
+            # fall back to interruption_rate_pct → risk scale for non-ONNX pools
+            if d.get('risk_probability') is not None and d.get('risk_probability') != 0.20:
+                self.risk_probability = float(d['risk_probability'])
+            else:
+                self.risk_probability = float(d.get('interruption_rate_pct', 5) or 5) / 100.0
+            # Raw AWS interruption bucket (for display label — NOT for risk filtering)
+            self.interruption_rate_pct = float(d.get('interruption_rate_pct', 10) or 10)
             # predicted_savings: prefer explicit field, fall back to savings_pct/100
             self.predicted_savings = float(
                 d.get('predicted_savings') or (d.get('savings_pct', 0) / 100.0)
@@ -1422,7 +1491,7 @@ async def get_node_recommendations(
                         'architecture': _p.get('architecture', 'amd64') or 'amd64',
                     }
                     top_pools.append(_ScoredPoolWrapper(_p))
-            logger.info(f"node-recommendations: loaded {len(top_pools)} pools from market_view_cache:{region}")
+            logger.debug(f"node-recommendations: loaded {len(top_pools)} pools from market_view_cache:{region}")
         else:
             logger.warning(f"node-recommendations: market_view_cache:{region} not found — no pool candidates")
     except Exception as _mv_err:
@@ -1468,7 +1537,7 @@ async def get_node_recommendations(
             _mv_pool_meta[_cur_itype] = {'vcpu': _vcpu_fb, 'memory_gb': _mem_fb, 'architecture': _arch_fb}
             _supplemental_added = True
         if _supplemental_added:
-            logger.info(f"node-recommendations: supplemented {_cur_itype} spot prices from Redis (not in market_view_cache)")
+            logger.debug(f"node-recommendations: supplemented {_cur_itype} spot prices from Redis (not in market_view_cache)")
 
     # Total eligible pools after filter (used by UI summary card)
     eligible_pools_count = len(top_pools)
@@ -1480,9 +1549,33 @@ async def get_node_recommendations(
     risk_tradeoff_pct = (strategy.risk_savings_tradeoff_pct if strategy else 20) or 20
     risk_ceiling = ((strategy.risk_ceiling_percent if strategy else 25) or 25) / 100.0
 
-    # ── Load diversify_pools setting ────────────────────────────────────────
+    # ── Load diversify_pools + architecture_preference settings ────────────────
     opt = cluster.optimization_settings
     _diversify_enabled = bool(getattr(opt, 'diversify_pools', False)) if opt else False
+    _arch_pref = getattr(opt, 'architecture_preference', 'both') or 'both' if opt else 'both'
+    # Instance type diversification: 100% = each node must have a unique type;
+    # lower % allows more nodes to share the same type (across different AZs).
+    _inst_type_div_pct = int(getattr(opt, 'instance_type_diversification_pct', 100) or 100) if opt else 100
+
+    # ── Build occupied pools set for diversification ──────────────────────
+    # When diversify is ON, we avoid recommending instance_type:az combos
+    # already running in the cluster. This makes the table's Target Pool
+    # truly diverse — maximizing savings while not doubling up on pools.
+    _occupied_pools = set()   # (instance_type, az) already running in cluster
+    _occupied_types = set()   # instance_type already running in cluster
+    if _diversify_enabled:
+        try:
+            _running_for_occ = db.query(Instance.instance_type, Instance.az).filter(
+                Instance.cluster_id == cluster_id,
+                Instance.state == 'running',
+                Instance.instance_type.isnot(None),
+            ).all()
+            _occupied_pools = {
+                (r.instance_type, r.az) for r in _running_for_occ if r.instance_type and r.az
+            }
+            _occupied_types = {r.instance_type for r in _running_for_occ if r.instance_type}
+        except Exception:
+            pass
 
     # ── Sort pools risk-first (lowest risk → highest), savings as tiebreaker ──
     if top_pools:
@@ -1508,9 +1601,67 @@ async def get_node_recommendations(
             "cpu_util": float(inst.cpu_util) if getattr(inst, 'cpu_util', None) else 0.0,
             "memory_util": float(inst.memory_util) if getattr(inst, 'memory_util', None) else 0.0,
             "risk_score": float(inst.risk_score) if getattr(inst, 'risk_score', None) else None,
+            # K8s health: READY=in cluster, UNKNOWN=EC2 alive but K8s node gone (orphaned)
+            "node_health_status": getattr(inst, 'status', None) or 'READY',
         }
         for inst in instances
     ]
+
+    # ── Active migration awareness ─────────────────────────────────────────
+    # Find active rebalancing actions for this cluster. Replacement instances
+    # are NOT shown as separate nodes — they are part of the migration.
+    # Source nodes are marked with migration_info so the UI shows "Migrating".
+    _active_replacement_ids = set()  # instance IDs of active replacements (hide from node list)
+    _migration_map = {}  # source_instance_id → {replacement_id, replacement_type, action_id}
+    try:
+        from backend.models.rebalancing_action import RebalancingAction as _RA_mig
+        from sqlalchemy import or_ as _or_mig
+        # Include actively-running actions AND recently-failed drain actions where the source
+        # EC2 is still alive (current_step='failed_drain_ec2_protected').  These nodes are
+        # pending a rebalancer retry and must NOT be shown as "Ready" in the UI.
+        _active_actions = db.query(_RA_mig).filter(
+            _RA_mig.cluster_id == cluster_id,
+            _or_mig(
+                _RA_mig.status.in_(['in_progress', 'waiting_agent', 'pending']),
+                # Drain-failed: action is 'failed' but source EC2 still running; retry imminent
+                _RA_mig.action_metadata['current_step'].astext == 'failed_drain_ec2_protected',
+            ),
+        ).all()
+        for _aa in _active_actions:
+            _meta = _aa.action_metadata or {}
+            _repl_id = _meta.get('replacement_spot_instance_id')
+            _src_id = _meta.get('instance_id')
+            if _repl_id:
+                _active_replacement_ids.add(_repl_id)
+            if _src_id:
+                _migration_map[_src_id] = {
+                    'replacement_instance_id': _repl_id,
+                    'replacement_type': (
+                        _meta.get('target_instance_type')
+                        or (_aa.target_pool.split(':')[0] if _aa.target_pool else None)
+                    ),
+                    'replacement_node_name': _meta.get('replacement_spot_node_name'),
+                    'action_id': _aa.id,
+                    'current_step': _meta.get('current_step'),
+                    # Expose action status so UI can distinguish retrying from actively migrating
+                    'action_status': _aa.status,
+                }
+    except Exception as _mig_err:
+        logger.warning(f"node-recommendations: migration filter failed: {_mig_err}")
+
+    # Filter out replacement instances — they are part of the migration, not new nodes
+    _node_list = [n for n in _node_list if n['instance_id'] not in _active_replacement_ids]
+
+    # ── Instance-type diversification cap ─────────────────────────────────
+    # _max_same_type: how many nodes in this batch can share the same instance type.
+    # Formula: max(1, round(total_nodes × (1 − div_pct / 100)))
+    #   100% → 1  (every node must have a unique type — strictest)
+    #   50%, 3 nodes → round(1.5) = 2 (up to 2 nodes may share a type)
+    #   0% → total_nodes (no restriction)
+    import math as _math
+    _total_nodes = len(_node_list)
+    _max_same_type = max(1, round(_total_nodes * (1.0 - _inst_type_div_pct / 100.0))) if _total_nodes > 0 else 1
+    _type_counts: dict = {}  # instance_type → count of nodes already assigned that type
 
     for node in _node_list:
         instance_type = node["instance_type"]
@@ -1533,9 +1684,12 @@ async def get_node_recommendations(
         required_vcpu_exact = (current_vcpu * (cpu_util_pct / 100.0)) * 1.25
         required_mem_exact = (current_mem * (mem_util_pct / 100.0)) * 1.25
         
-        # Minimum absolute values to avoid extreme micro-sizing
-        required_vcpu = max(1.0, required_vcpu_exact)
-        required_mem = max(2.0, required_mem_exact)
+        # Minimum: floor at current instance specs to prevent recommending a smaller instance.
+        # e.g. t3.medium (2vCPU/4GB) must get a 2vCPU/4GB target, not t3a.small (2vCPU/2GB).
+        # This aligns node-recommendations with Per-Node Alternative Pools which also enforces
+        # pool_vcpu >= node_vcpu and pool_mem >= node_mem.
+        required_vcpu = max(float(current_vcpu), required_vcpu_exact)
+        required_mem = max(float(current_mem), required_mem_exact)
 
         # ── Workload type from WorkloadInspector cache ────────────────────
         cached_status = node_classification.get(node_name)
@@ -1551,7 +1705,7 @@ async def get_node_recommendations(
         target_az = az
         spot_price_hourly = on_demand_hourly  # default: no savings
         spot_savings_pct = 0                  # default: no savings (not hardcoded 70%)
-        risk_score = float(node["risk_score"]) if node.get("risk_score") is not None else 0.25
+        risk_score = float(node["risk_score"]) if node.get("risk_score") is not None else 0.10
 
         # Price ceilings (two tiers):
         #   OD→SPOT (different type): spot must be strictly cheaper than current OD
@@ -1561,7 +1715,8 @@ async def get_node_recommendations(
         _s2s_max_price = (on_demand_hourly * 1.20) if on_demand_hourly > 0 else float('inf')
         # max_acceptable_price is set per-pool in the selection loop based on type match
 
-        chosen_pool = None  # reset per node
+        chosen_pool = None       # reset per node
+        chosen_pool_dict = None  # unified ranking result dict (replaces ORM chosen_pool)
 
         # For already-SPOT nodes: compute their actual realized savings vs on-demand
         # so the table shows real data ("t3.medium spot saving 54% vs OD") not 0%
@@ -1607,167 +1762,100 @@ async def get_node_recommendations(
             _src_arch = "arm64" if (
                 bool(_arch_re.search(r'\dg', _src_family)) or _src_family == "a1"
             ) else "amd64"
-            # Filter global pool list to only architectures compatible with this node.
-            # This prevents recommending arm64 (Graviton) pools for x86_64-only workloads.
-            _arch_pools = [p for p in top_pools if p.pool.architecture == _src_arch]
-            _candidate_pools = _arch_pools if _arch_pools else top_pools  # fallback: all pools
 
-            # Sort candidate pools by actual spot price ascending (cheapest first).
-            # This ensures we always recommend the cheapest valid pool, not just the
-            # highest savings-rate pool (which can be expensive in absolute terms).
-            def _pool_actual_price(p):
-                return (
-                    _mv_spot_prices.get((p.pool.instance_type, p.pool.az or ''))
-                    or (p.pool.spot_price if p.pool.spot_price > 0 else float('inf'))
-                )
-            _candidate_pools = sorted(_candidate_pools, key=_pool_actual_price)
+            # Use unified ranking function — same formula as UI Per-Node Alternatives.
+            from backend.services.pool_ranking_service import PoolRankingService as _PRS_action
+            from backend.core.redis_client import get_redis_client as _grc_action
+            _prs_action = _PRS_action(db, _grc_action())
+            _ranked_pools = _prs_action.rank_pools_for_node(
+                node_info={
+                    'instance_type': instance_type,
+                    'az': az or '',
+                    'od_price': on_demand_hourly,
+                    'resource_profile': {
+                        'min_vcpu_required': required_vcpu,
+                        'min_memory_required': required_mem,
+                        'architecture': _src_arch,
+                    },
+                },
+                cluster_id=cluster_id,
+                region=cluster.region or 'ap-south-1',
+                include_dynamic_filters=True,
+            )
 
-            # Build set of already-used types for diversify enforcement
-            _used_types_set = {itype for (itype, _) in used_pools}
-
-            # Pass 1: Fits required compute + within price ceiling + below risk ceiling + unused pool
-            for pool in _candidate_pools:
-                _pk = (pool.pool.instance_type, pool.pool.az or "")
-                if _pk in used_pools:
+            # Pick first ranked pool that also satisfies batch-level dedup + price ceiling.
+            for _rp in _ranked_pools:
+                _pk = (_rp['instance_type'], _rp.get('az', '') or '')
+                if _diversify_enabled and _pk in used_pools:
                     continue
-
-                # Diversify toggle: when ON, each node must get a DIFFERENT instance type.
-                # When OFF, same type in different AZs is fine (S2S cross-AZ behaviour).
-                if _diversify_enabled and pool.pool.instance_type in _used_types_set:
+                if _diversify_enabled and _type_counts.get(_rp['instance_type'], 0) >= _max_same_type:
                     continue
-
-                pool_vcpu = pool.pool.vcpu
-                pool_mem = pool.pool.memory_gb
-
-                # Dynamic Rightsizing check: Does the pool fit the required load?
-                # Max 1.5× current size to prevent recommending much-larger instance types
-                # (e.g. c6i.xlarge for a t3.medium node).
-                fits_load = (pool_vcpu >= required_vcpu) and (pool_mem >= required_mem)
-                not_too_large = (pool_vcpu <= current_vcpu * 1.5) and (pool_mem <= current_mem * 1.5)
-
-                if not (fits_load and not_too_large):
+                _rp_price = float(_rp.get('spot_price', 0) or 0)
+                if _rp_price > 0:
+                    _is_same = (_rp['instance_type'] == instance_type)
+                    _ceil = _s2s_max_price if _is_same else _od_max_price
+                    if _rp_price >= _ceil:
+                        continue
+                elif float(_rp.get('predicted_savings', 0) or 0) <= 0.25:
                     continue
+                chosen_pool_dict = _rp
+                target_type = _rp['instance_type']
+                target_az = _rp.get('az', '') or az
+                risk_score = float(_rp.get('risk_probability', 0.1))
+                if _diversify_enabled:
+                    used_pools.add(_pk)
+                    _type_counts[_rp['instance_type']] = _type_counts.get(_rp['instance_type'], 0) + 1
+                _pool_counts[_pk] = _pool_counts.get(_pk, 0) + 1
+                break
 
-                # Risk gate: reject pools above risk ceiling
-                if pool.risk_probability > risk_ceiling:
-                    continue
-
-                # Price gate: use real spot price from market_view_cache first, then DB.
-                # Two-tier ceiling:
-                #   Same type (S2S cross-AZ): up to OD * 1.20 — AZ diversity matters more than pure cost
-                #   Different type (OD→SPOT): must be strictly cheaper than OD
-                _p_real_price = (
-                    _mv_spot_prices.get((pool.pool.instance_type, pool.pool.az or ''))
-                    or _mv_spot_prices.get((pool.pool.instance_type, ''))
-                    or next((v for (t, _), v in _mv_spot_prices.items() if t == pool.pool.instance_type), None)
-                )
-                _p_effective_price = _p_real_price or (pool.pool.spot_price if pool.pool.spot_price > 0 else 0)
-                _is_same_type = (pool.pool.instance_type == instance_type)
-                _this_max_price = _s2s_max_price if _is_same_type else _od_max_price
-                if _p_effective_price > 0:
-                    if _p_effective_price >= _this_max_price:
-                        continue
-                    chosen_pool = pool
-                    break
-                else:
-                    # No price data at all — require strong ML predicted savings (>25%)
-                    if pool.predicted_savings > 0.25:
-                        chosen_pool = pool
-                        break
-
-            # Pass 2: Relax diversity constraint, keep risk ceiling + load fit + price gate.
-            # Pass 2: Relax risk ceiling slightly, keep price gate + size + diversity
-            if chosen_pool is None:
-                for pool in _candidate_pools:
-                    _pk2 = (pool.pool.instance_type, pool.pool.az or "")
-                    if _pk2 in used_pools:
-                        continue
-                    if _diversify_enabled and pool.pool.instance_type in _used_types_set:
-                        continue
-                    if pool.risk_probability > risk_ceiling:
-                        continue
-
-                    pool_vcpu = pool.pool.vcpu
-                    pool_mem = pool.pool.memory_gb
-
-                    if not ((pool_vcpu >= required_vcpu and pool_mem >= required_mem) and
-                            (pool_vcpu <= current_vcpu * 1.5 and pool_mem <= current_mem * 1.5)):
-                        continue
-
-                    # Price gate — same two-tier ceiling as Pass 1
-                    _p2_real_price = (
-                        _mv_spot_prices.get((pool.pool.instance_type, pool.pool.az or ''))
-                        or _mv_spot_prices.get((pool.pool.instance_type, ''))
-                        or next((v for (t, _), v in _mv_spot_prices.items() if t == pool.pool.instance_type), None)
-                    )
-                    _p2_effective = _p2_real_price or (pool.pool.spot_price if pool.pool.spot_price > 0 else 0)
-                    _p2_is_same_type = (pool.pool.instance_type == instance_type)
-                    _p2_max = _s2s_max_price if _p2_is_same_type else _od_max_price
-                    if _p2_effective > 0 and _p2_effective >= _p2_max:
-                        continue
-
-                    chosen_pool = pool
-                    break
-
-            # NOTE: Pass 3 / Pass 4 removed — they ignored size constraints and caused
-            # upsizing (e.g. recommending r5.xlarge for a t3.medium node).
-            # If no same-size-or-smaller spot pool fits the constraints, we leave
-            # target_type = instance_type (node is already optimal / no suitable spot pool).
-
-            if chosen_pool:
-                _chosen_pk = (chosen_pool.pool.instance_type, chosen_pool.pool.az or "")
-                used_pools.add(_chosen_pk)
-                _pool_counts[_chosen_pk] = _pool_counts.get(_chosen_pk, 0) + 1
-                target_type = chosen_pool.pool.instance_type
-                target_az = chosen_pool.pool.az
-                risk_score = chosen_pool.risk_probability
-
-                # Savings relative to current node's OD price vs target spot price
-                # Priority: 1) DB spot_price  2) market_view_cache  3) global_pool_rankings  4) predicted_savings  5) 65% estimate
-                _target_itype = chosen_pool.pool.instance_type
-                _target_az = chosen_pool.pool.az or ''
-                # Try market_view_cache real spot price (exact AZ match, then any AZ)
-                _mv_price = (
-                    _mv_spot_prices.get((_target_itype, _target_az))
-                    or _mv_spot_prices.get((_target_itype, ''))
-                    or next((v for (t, _), v in _mv_spot_prices.items() if t == _target_itype), None)
-                )
-                # Use the most accurate price available: market_view_cache > DB spot_price
-                _best_price = _mv_price or (chosen_pool.pool.spot_price if chosen_pool.pool.spot_price > 0 else 0)
+            if chosen_pool_dict:
+                _best_price = float(chosen_pool_dict.get('spot_price', 0) or 0)
                 if _best_price > 0 and on_demand_hourly > 0:
                     spot_price_hourly = _best_price
-                    # Savings = (current_OD - target_spot) / current_OD — must be positive
                     raw_savings = (on_demand_hourly - _best_price) / on_demand_hourly * 100
-                    # Only show real savings; never use predicted_savings to mask a more-expensive pool
                     spot_savings_pct = max(0, round(raw_savings))
                 else:
-                    # No real spot price available for this pool — show 0 savings.
-                    # All pools in top_pools are sourced from market_view_cache (real prices),
-                    # so this branch should rarely trigger. If it does, show no savings rather
-                    # than a fabricated estimate.
                     spot_price_hourly = on_demand_hourly
                     spot_savings_pct = 0
 
         cpu_util = float(node.get("cpu_util") or 0.0)
 
-        # Derive interruption rate label from risk_score (risk_probability from market_view_cache)
-        if risk_score < 0.05:
+        # Derive interruption rate label from the raw AWS bucket (interruption_rate_pct),
+        # NOT from the ONNX composite risk_probability — these are different metrics.
+        # Per-Node Alternative Pools also uses interruption_rate_pct, so this keeps labels consistent.
+        if chosen_pool_dict:
+            _irr_pct = float(chosen_pool_dict.get('interruption_rate_pct', risk_score * 100))
+        else:
+            _irr_pct = risk_score * 100  # no target pool — use source node composite score
+        if _irr_pct < 5:
             interruption_rate = "<5%"
-        elif risk_score < 0.10:
+        elif _irr_pct <= 10:
             interruption_rate = "5–10%"
-        elif risk_score < 0.15:
+        elif _irr_pct <= 15:
             interruption_rate = "10–15%"
-        elif risk_score < 0.20:
+        elif _irr_pct <= 20:
             interruption_rate = "15–20%"
         else:
             interruption_rate = ">20%"
+
+        # ── Determine actual current price ──────────────────────────────────
+        # For spot nodes, use live spot price (not OD price) as current_cost.
+        # This gives the UI an accurate baseline for savings comparison.
+        _actual_current_cost = on_demand_hourly
+        if is_already_spot and spot_price_hourly > 0 and spot_price_hourly < on_demand_hourly:
+            _actual_current_cost = spot_price_hourly
+
+        # ── Check if this node has an active migration ────────────────────
+        _node_migration = _migration_map.get(node["instance_id"])
 
         recommendations.append({
             "instance_id": node["instance_id"],
             "node_name": node_name,
             "current_type": instance_type,
             "current_az": node["az"],
-            "current_cost": round(on_demand_hourly, 4),
+            "az": node["az"],    # alias used by frontend source_pool AZ match
+            "current_cost": round(_actual_current_cost, 4),
+            "od_cost": round(on_demand_hourly, 4),
             "target_type": target_type,
             "target_az": target_az,
             "target_spot_price": round(spot_price_hourly, 4),
@@ -1777,6 +1865,9 @@ async def get_node_recommendations(
             "workload_type": workload_type,
             "lifecycle": "spot" if is_already_spot else "on_demand",
             "instance_family": (instance_type or "").split(".")[0],
+            "migration_info": _node_migration,
+            # K8s / collector health status. UNKNOWN = EC2 running but not in K8s cluster.
+            "node_health_status": node.get("node_health_status") or "READY",
         })
 
     # ── Pool distribution for diversify visualisation (pool = current_type:az) ──
@@ -2236,13 +2327,22 @@ def get_node_alternatives(
     """
     GET /api/v1/ascpai/clusters/{cluster_id}/nodes/{node_id}/alternatives
 
-    Returns per-node alternative pool list for a specific node (instance_id or DB id).
-    Uses decision_engine.rank_for_node() with the node's actual resource profile.
+    Returns per-node alternative pool list for a specific node.
+    Pools are filtered by size/arch/risk ceiling, then split:
+      - Positive savings (spot < node OD price): always shown, ranked by expected_value desc
+      - Negative savings: shown ONLY if positive set is empty AND within trade-off AND lower risk
     Paginated: ?page=1&page_size=20
     """
+    import json as _json
     from backend.models.instance import Instance
     from backend.models.cluster import Cluster
-    from backend.core.decision_engine import DecisionEngine
+    from backend.core.redis_client import (
+        get_redis_client, key_market_view_cache, key_global_pool_rankings,
+    )
+    from backend.workers.tasks.cache_builder import (
+        _lookup_specs as _cb_lookup_specs,
+        _lookup_od_price as _cb_lookup_od,
+    )
 
     redis = get_redis_client()
 
@@ -2266,74 +2366,148 @@ def get_node_alternatives(
 
     region = getattr(cluster, 'region', None) or 'us-east-1'
 
-    # Derive instance specs for resource_profile (vcpu/memory floor gates)
-    # so that rank_for_node only returns pools that can actually run the workload
-    from backend.workers.tasks.cache_builder import _lookup_specs as _cb_lookup_specs
-    _vcpu, _mem, _arch = _cb_lookup_specs(inst.instance_type)
-    # Use the instance's own architecture if known (more reliable than family heuristic)
-    _arch = getattr(inst, 'architecture', None) or _arch or 'amd64'
+    # ── Node specs ────────────────────────────────────────────────────────
+    node_vcpu, node_mem, node_arch, _ = _cb_lookup_specs(inst.instance_type)
+    node_arch = getattr(inst, 'architecture', None) or node_arch or 'amd64'
 
-    # If the node's price is 0 (not yet synced), try fetching spot price from Redis
-    _spot_price = float(inst.price or 0.0)
-    if _spot_price <= 0 and _vcpu > 0:
-        try:
-            _redis_price_raw = redis.get(f"spot_price:{region}:{inst.az}:{inst.instance_type}")
-            if _redis_price_raw:
-                import json as _jp
-                _pdata = _jp.loads(_redis_price_raw)
-                _spot_price = float(_pdata.get('price', 0) or 0)
-        except Exception:
-            pass
+    # Fall back to safe minimums if lookup returned zeroes
+    node_vcpu = node_vcpu or 2
+    node_mem = node_mem or 4.0
 
-    logger.info(
-        f"[get_node_alternatives] node={node_id} type={inst.instance_type} az={inst.az} "
-        f"region={region} arch={_arch} vcpu={_vcpu} mem={_mem} spot_price={_spot_price}"
+    # ── Utilization-aware size requirements ───────────────────────────────
+    # Use actual CPU/RAM utilisation from the node's telemetry + 25% headroom,
+    # but never go below the current instance's provisioned specs.
+    # This prevents recommending a pool whose capacity is technically equal to
+    # the instance type but too small for the real workload load.
+    _cpu_util_pct = max(10.0, float(getattr(inst, 'cpu_util', 0) or 0))
+    _mem_util_pct = max(10.0, float(getattr(inst, 'memory_util', 0) or 0))
+    _required_vcpu_exact = (node_vcpu * (_cpu_util_pct / 100.0)) * 1.25
+    _required_mem_exact  = (node_mem  * (_mem_util_pct / 100.0)) * 1.25
+    # Floor at current provisioned specs — never recommend a smaller instance
+    required_vcpu = max(float(node_vcpu), _required_vcpu_exact)
+    required_mem  = max(float(node_mem),  _required_mem_exact)
+
+    # ── Node OD price (the baseline for savings) ──────────────────────────
+    node_od_price = _cb_lookup_od(redis, region, inst.instance_type)
+    if node_od_price <= 0:
+        from backend.services.dynamic_instance_helpers import bulk_get_hourly_prices
+        _od_lookup = bulk_get_hourly_prices(db, redis, [inst.instance_type], region)
+        node_od_price = _od_lookup.get(inst.instance_type) or 0.0
+
+    # ── Node lifecycle and current price (actual cost the node is running at) ──
+    import json as _json_alt
+    _node_lifecycle = (
+        inst.lifecycle.value if hasattr(inst.lifecycle, 'value')
+        else str(inst.lifecycle or 'on-demand')
+    ).lower()
+    _is_spot_node = 'spot' in _node_lifecycle
+    node_current_price = node_od_price  # default: OD price
+    if _is_spot_node:
+        # Look up actual spot price from Redis
+        _node_az = getattr(inst, 'az', None) or ''
+        _spot_key = f"spot_price:{region}:{_node_az}:{inst.instance_type}"
+        _raw_sp = redis.get(_spot_key)
+        if _raw_sp:
+            try:
+                _sp_data = _json_alt.loads(_raw_sp)
+                _sp_val = float(_sp_data.get('price', 0) or 0)
+                if _sp_val > 0:
+                    node_current_price = _sp_val
+            except Exception:
+                pass
+
+    if node_od_price <= 0:
+        return {
+            "cluster_id": cluster_id,
+            "node_id": node_id,
+            "instance_id": inst.instance_id,
+            "message": f"On-demand price unavailable for {inst.instance_type} in {region}",
+            "total_alternatives": 0, "page": page, "page_size": page_size,
+            "total_pages": 0, "alternatives": [],
+        }
+
+    # ── Node risk probability (for negative-savings trade-off filter) ─────
+    node_risk = None
+    try:
+        raw_risk = redis.get(f"spot_advisor:{region}:{inst.instance_type}:Linux")
+        if raw_risk:
+            _rd = _json.loads(raw_risk)
+            _idx = int(_rd.get("interruption_index", 4))
+            node_risk = {0: 0.05, 1: 0.10, 2: 0.15, 3: 0.20, 4: 0.25}.get(_idx, 0.25)
+    except Exception:
+        pass
+
+    # ── Unified ranking via rank_pools_for_node ────────────────────────────
+    from backend.services.pool_ranking_service import PoolRankingService
+    _prs = PoolRankingService(db, redis)
+    result = _prs.rank_pools_for_node(
+        node_info={
+            'instance_type': inst.instance_type,
+            'az': getattr(inst, 'az', None) or '',
+            'od_price': node_od_price,
+            'current_price': node_current_price,  # actual price: spot price for spot nodes, OD for OD nodes
+            'risk_score': float(getattr(inst, 'risk_score', 0) or 0),
+            'resource_profile': {
+                'min_vcpu_required': required_vcpu,
+                'min_memory_required': required_mem,
+                'architecture': node_arch,
+            },
+        },
+        cluster_id=cluster_id,
+        region=region,
+        include_dynamic_filters=True,
     )
 
-    node_info = {
-        'instance_type': inst.instance_type,
-        'instance_id': inst.instance_id,
-        'az': inst.az,
-        'spot_price': _spot_price,
-        'risk_tier': 2,  # default: medium risk; alternatives with tier <= 2 are returned
-        'architecture': _arch,
-        # resource_profile: used as floor gates to exclude undersized alternatives
-        'resource_profile': {
-            'min_vcpu_required': _vcpu,          # must match or exceed current node's vcpu
-            'min_memory_required': _mem,          # must match or exceed current node's memory
-            'architecture': _arch,                # must match arch (amd64/arm64)
-        },
-    }
+    # ── No-join block filter ─────────────────────────────────────────────
+    # Remove pools that recently failed to join the cluster (launch_blocked).
+    _node_az = getattr(inst, 'az', None) or ''
+    _nojoin_removed = 0
+    _filtered_result = []
+    for p in result:
+        _blk_key = f"spot:launch_blocked:{cluster_id}:{p.get('instance_type')}:{_node_az}"
+        if redis.get(_blk_key):
+            _nojoin_removed += 1
+            continue
+        _filtered_result.append(p)
+    result = _filtered_result
 
-    de = DecisionEngine(redis, db)
-    alternatives = de.rank_for_node(cluster.id, node_info, region)
+    # ── Dry-run capacity check ────────────────────────────────────────────
+    # Validate REAL spot capacity via cached RunInstances DryRun results.
+    # Only checks cached results (no AWS API calls) to keep the endpoint fast.
+    # Pools with cached dry_run:fail are marked; unchecked pools are kept.
+    _dryrun_removed = 0
+    _dryrun_checked = []
+    for p in result:
+        _dr_key = f"dry_run:{p.get('instance_type')}:{_node_az}"
+        _dr_cached = redis.get(_dr_key)
+        if _dr_cached:
+            _dr_val = _dr_cached.decode() if isinstance(_dr_cached, bytes) else _dr_cached
+            if _dr_val == "fail":
+                _dryrun_removed += 1
+                continue
+        _dryrun_checked.append(p)
+    result = _dryrun_checked
 
-    total = len(alternatives)
+    # Sort: would_be_launched first, then remaining rebalancer-eligible pools,
+    # then the rest — all within each group still sorted by expected_value DESC.
+    result_sorted = (
+        [p for p in result if p.get('would_be_launched')] +
+        [p for p in result if p.get('rebalancer_eligible') and not p.get('would_be_launched')] +
+        [p for p in result if not p.get('rebalancer_eligible')]
+    )
+
+    # Count eligible pools for metadata
+    _eligible_count = sum(1 for p in result_sorted if p.get('rebalancer_eligible'))
+    _launched_pool = next((p for p in result_sorted if p.get('would_be_launched')), None)
+
+    # ── Paginate ──────────────────────────────────────────────────────────
+    total = len(result_sorted)
     start = (page - 1) * page_size
-    end = start + page_size
-    page_data = alternatives[start:end]
+    page_data = result_sorted[start:start + page_size]
 
-    # Enrich each pool with rank and savings_pct
-    # Savings = (current_node_OD - target_spot) / current_node_OD
-    # Use the on-demand price of the current node's instance type as the baseline,
-    # NOT the stored inst.price (which may be a spot price or stale value).
-    from backend.services.dynamic_instance_helpers import bulk_get_hourly_prices
-    _od_lookup = bulk_get_hourly_prices(db, redis, [inst.instance_type], region)
-    od_price = _od_lookup.get(inst.instance_type) or 0.0
-    # Fallback: try Redis ondemand_price key directly
-    if od_price <= 0:
-        try:
-            import json as _odj
-            _od_raw = redis.get(f"ondemand_price:{region}:{inst.instance_type}")
-            if _od_raw:
-                od_price = float(_odj.loads(_od_raw).get('price', 0) or 0)
-        except Exception:
-            pass
-    enriched = []
-    for rank_i, pool in enumerate(page_data, start=start + 1):
-        pool_price = pool.get('spot_price') or pool.get('price') or 0.0
-        saving_pct = round((1 - pool_price / od_price) * 100, 1) if od_price > 0 and pool_price > 0 else None
-        enriched.append({**pool, "rank": rank_i, "saving_pct": saving_pct})
+    # Add rank
+    for i, p in enumerate(page_data, start=start + 1):
+        p['rank'] = i
 
     return {
         "cluster_id": cluster_id,
@@ -2342,12 +2516,42 @@ def get_node_alternatives(
         "node_name": getattr(inst, 'node_name', None) or inst.instance_id,
         "instance_type": inst.instance_type,
         "az": inst.az,
-        "architecture": getattr(inst, 'architecture', 'amd64'),
+        "architecture": node_arch,
+        "current_node": {
+            "instance_type": inst.instance_type,
+            "az": inst.az,
+            "od_price": round(node_od_price, 6),
+            "current_price": round(node_current_price, 6),
+            "lifecycle": "spot" if _is_spot_node else "on-demand",
+            "risk": node_risk,
+            "vcpu": node_vcpu,
+            "memory_gb": node_mem,
+        },
+        "rebalancer_gate": {
+            "eligible_count": _eligible_count,
+            "would_launch": {
+                "instance_type": _launched_pool.get('instance_type') if _launched_pool else None,
+                "az": _launched_pool.get('az') if _launched_pool else None,
+                "pass": _launched_pool.get('rebalancer_pass') if _launched_pool else None,
+                "savings_pct": _launched_pool.get('savings_pct') if _launched_pool else None,
+            } if _launched_pool else None,
+        },
+        "computed_at": datetime.utcnow().isoformat(),
+        "filters_applied": [
+            "blacklist", "vcpu", "memory", "architecture", "risk_ceiling",
+            "occupancy", "diversification", "allowed_families",
+            "allowed_zones", "cross_az", "rebalancer_double_gate",
+            "no_join_block", "dry_run_capacity",
+        ],
+        "filters_removed": {
+            "no_join_block": _nojoin_removed,
+            "dry_run_fail": _dryrun_removed,
+        },
         "total_alternatives": total,
         "page": page,
         "page_size": page_size,
         "total_pages": max(1, (total + page_size - 1) // page_size),
-        "alternatives": enriched,
+        "alternatives": page_data,
     }
 
 
@@ -2391,6 +2595,54 @@ def get_market_view(
 
     region = getattr(cluster, 'region', None) or 'us-east-1'
 
+    # ── Per-cluster resource profile for pool filtering ────────────────────
+    # Baseline: highest-cost OD node (maximises displayed savings)
+    # Min constraints: smallest node's vCPU / memory (no upper bound)
+    from backend.models.instance import Instance, InstanceLifecycle
+    from backend.workers.tasks.cache_builder import _lookup_specs as _cb_lookup_specs
+    from backend.workers.tasks.cache_builder import _lookup_od_price as _cb_lookup_od
+    _running_nodes = (
+        db.query(Instance)
+        .filter(Instance.cluster_id == cluster_id, Instance.state == 'running')
+        .all()
+    )
+    _node_specs = []
+    _primary_instance_type = None
+    _baseline_od_price = 0.0
+    _baseline_instance_type = None
+    if _running_nodes:
+        from collections import Counter as _Counter
+        _type_counts = _Counter(n.instance_type for n in _running_nodes)
+        _primary_instance_type = _type_counts.most_common(1)[0][0]
+        for _n in _running_nodes:
+            _v, _m, _a, _ = _cb_lookup_specs(_n.instance_type)
+            if _v > 0:
+                _node_specs.append((_v, _m, _n.architecture or _a))
+            # Track the highest OD price node
+            _n_od = float(_n.price or 0.0)
+            if _n_od <= 0:
+                _n_od = _cb_lookup_od(redis, region, _n.instance_type)
+            if _n_od > _baseline_od_price:
+                _baseline_od_price = _n_od
+                _baseline_instance_type = _n.instance_type
+    if _node_specs:
+        _nv = [s[0] for s in _node_specs]
+        _nm = [s[1] for s in _node_specs]
+        _na = {s[2] for s in _node_specs}
+        _filter_min_vcpu = min(_nv)
+        _filter_min_mem  = min(_nm) * 0.5
+        _filter_archs = set()
+        for _a in _na:
+            _filter_archs.add(_a)
+            if _a in ('amd64', 'x86_64'):
+                _filter_archs.update(('amd64', 'x86_64'))
+            elif _a == 'arm64':
+                _filter_archs.add('arm64')
+    else:
+        _filter_min_vcpu = 0
+        _filter_min_mem = 0.0
+        _filter_archs = set()
+
     # Load market_view_cache (cache_builder output) — fallback to global_pool_rankings (old pipeline)
     raw = redis.get(key_market_view_cache(region))
     _cache_source = "market_view_cache"
@@ -2429,12 +2681,11 @@ def get_market_view(
     # ── Task 5.1: enrich each pool with scoring figures ──────────────────────
     total_evaluated = len(all_pools)
 
-    # Determine source OD price for customer_savings_pct
-    from backend.models.instance import Instance, InstanceLifecycle
+    # Baseline: use highest-cost OD node for savings display & price gate
     from backend.models.cluster_baseline import ClusterBaseline
-    source_od_price = 0.0
-    source_node = None
+    source_od_price = _baseline_od_price  # highest OD node price
     baseline_data = None
+    source_node = None
 
     baseline = db.query(ClusterBaseline).filter_by(cluster_id=cluster_id).first()
     if baseline:
@@ -2445,30 +2696,25 @@ def get_market_view(
             "recorded_at": baseline.computed_at.isoformat() if baseline.computed_at else None,
         }
 
-    primary_od = (
-        db.query(Instance)
-        .filter(
-            Instance.cluster_id == cluster_id,
-            Instance.state == 'running',
-            Instance.lifecycle == InstanceLifecycle.ON_DEMAND,
-        )
-        .first()
-    )
-    if primary_od:
-        source_od_price = float(primary_od.price or 0.0)
+    if source_od_price > 0 and _baseline_instance_type:
         source_node = {
-            "instance_type": primary_od.instance_type,
-            "instance_id": primary_od.instance_id,
+            "instance_type": _baseline_instance_type,
+            "instance_id": "highest_od",
             "region": region,
             "od_price_hr": source_od_price,
-            "node_count": len([i for i in db.query(Instance).filter(
-                Instance.cluster_id == cluster_id,
-                Instance.state == 'running',
-                Instance.lifecycle == InstanceLifecycle.ON_DEMAND,
-            ).all()]),
+            "node_count": len(_running_nodes) if _running_nodes else 0,
+            "baseline_method": "highest_cost_od_node",
         }
     elif baseline:
         source_od_price = float(baseline.baseline_monthly_cost / (730 * max(baseline.baseline_od_count or 1, 1)))
+        source_node = {
+            "instance_type": baseline.primary_node_type,
+            "instance_id": "baseline",
+            "region": region,
+            "od_price_hr": source_od_price,
+            "node_count": baseline.baseline_od_count or 0,
+            "baseline_method": "cluster_baseline",
+        }
 
     # Normalize and enrich pools with Task 3.1 scoring
     now_utc = datetime.utcnow()
@@ -2495,34 +2741,61 @@ def get_market_view(
 
         spot_price = float(p.get('spot_price', 0.0) or 0.0)
         od_price = float(p.get('od_price', p.get('ondemand_price', 0.0)) or 0.0)
-        az_irr = float(p.get('interruption_rate_pct', p.get('interruption_rate', 25.0)) or 25.0)
+        az_irr = float(p.get('interruption_rate_pct', p.get('interruption_rate', 15.0)) or 15.0)
+        # risk_probability: 0-1 range (from ONNX or interruption_rate_pct/100)
+        risk_prob = float(p.get('risk_probability', az_irr / 100.0) or az_irr / 100.0)
+        if risk_prob > 1.0:
+            risk_prob = risk_prob / 100.0
 
-        # Intrinsic savings (pool quality — for ranking)
+        # Skip pools with no valid spot price
+        if spot_price <= 0:
+            gates_eliminated += 1
+            continue
+
+        # ── Per-cluster resource profile gates ──────────────────────────
+        if _filter_min_vcpu > 0:
+            _pool_vcpu = int(p.get('vcpu', 0) or 0)
+            _pool_mem  = float(p.get('memory_gb', 0.0) or 0.0)
+            _pool_arch = (p.get('architecture') or 'amd64').lower()
+            # Architecture gate
+            if _filter_archs and _pool_arch not in _filter_archs:
+                gates_eliminated += 1
+                continue
+            # Minimum vCPU gate (no upper bound — large pools are valid opportunities)
+            if _pool_vcpu > 0 and _pool_vcpu < _filter_min_vcpu:
+                gates_eliminated += 1
+                continue
+            # Minimum memory gate (no upper bound)
+            if _pool_mem > 0 and _pool_mem < _filter_min_mem:
+                gates_eliminated += 1
+                continue
+        # Price gate: spot must be cheaper than highest OD node price (only positive savings)
+        if source_od_price > 0 and spot_price >= source_od_price:
+            gates_eliminated += 1
+            continue
+
+        # ── Compute savings & expected value ────────────────────────────
+        # Intrinsic savings (pool's own OD vs spot — for reference)
         intrinsic = (od_price - spot_price) / od_price if od_price > 0 else 0.0
-        # Customer savings (vs source OD node — for UI)
+        # Customer savings (vs baseline highest OD node — primary display metric)
         customer = (source_od_price - spot_price) / source_od_price if source_od_price > 0 else intrinsic
+        # Expected value = savings × (1 - risk) — primary ranking metric
+        ev = customer * (1.0 - risk_prob)
 
         p['intrinsic_savings_pct'] = round(intrinsic * 100, 2)
         p['customer_savings_pct'] = round(customer * 100, 2)
         p['customer_savings_monthly_per_node'] = round(max(0.0, (source_od_price - spot_price) * 730), 2)
+        p['risk_probability'] = round(risk_prob, 4)
+        p['expected_value'] = round(ev, 6)
 
-        # Safety score
+        # Safety score (legacy compat)
         p['safety_score'] = round(max(0.0, 1.0 - az_irr / 25.0), 4)
-        # Savings score
         savings_score = max(0.0, min(intrinsic / 0.70, 1.0))
         p['savings_score'] = round(savings_score, 4)
 
-        # ML tier — use stored value or default to T3
-        ml_tier = int(p.get('ml_tier', 3))
         ml_score = float(p.get('ml_score', 0.5) or 0.5)
-        p['ml_tier'] = ml_tier
 
-        # Soft penalty
-        recent_failures = int(p.get('recent_failure_count', 0) or 0)
-        soft_penalty = 0.85 if recent_failures > 0 else 1.0
-        p['soft_penalty_applied'] = soft_penalty < 1.0
-
-        # ── Dry Run capacity status (Gate 8) ────────────────────────────
+        # ── Dry Run capacity status ─────────────────────────────────────
         instance_type_p = p.get('instance_type', '')
         az_p = p.get('az', '')
         capacity_status = 'unverified'
@@ -2541,7 +2814,6 @@ def get_market_view(
                     elif dr_val == 'fail':
                         capacity_status = 'unavailable'
                         capacity_boost = 0.0
-                    # Get TTL remaining
                     ttl = redis.ttl(dr_key)
                     dry_run_ttl_remaining = max(0, ttl) if ttl and ttl > 0 else None
                     dry_run_cached_at = now_utc.isoformat()
@@ -2552,9 +2824,13 @@ def get_market_view(
         p['dry_run_cached_at'] = dry_run_cached_at
         p['dry_run_ttl_remaining'] = dry_run_ttl_remaining
 
-        # Final weighted score with capacity boost
-        raw = 0.40 * savings_score + 0.40 * p['safety_score'] + 0.20 * ml_score
-        p['final_score'] = round(raw * soft_penalty * capacity_boost, 4)
+        # final_score: EV × capacity_boost (for sorting)
+        p['final_score'] = round(ev * capacity_boost, 6)
+
+        # Unified score (changes.md §6.1) — multi-signal ranking metric
+        _rep_mv = float(p.get('reputation_mult', 1.0) or 1.0)
+        _uni_mv = (max(0, customer) * 0.8) * (1.0 - risk_prob) * _rep_mv * capacity_boost
+        p['unified_score'] = round(_uni_mv, 6)
 
         # Data age
         if data_ts:
@@ -2565,11 +2841,6 @@ def get_market_view(
             p['data_age_minutes'] = None
             p['live'] = False
 
-        # Skip pools with no valid spot price (count as gates_eliminated)
-        if spot_price <= 0:
-            gates_eliminated += 1
-            continue
-
         # Filter unavailable pools unless include_unavailable requested
         if capacity_status == 'unavailable' and not include_unavailable:
             gates_eliminated += 1
@@ -2579,25 +2850,25 @@ def get_market_view(
 
     all_pools = enriched
 
-    # Sort — primary: capacity_status group (verified > unverified > unavailable)
-    # secondary: final_score DESC within group
+    # Sort — primary: capacity group, secondary: expected_value DESC (EV ranking)
     _capacity_order = {'verified': 0, 'unverified': 1, 'unavailable': 2}
-    valid_sort_keys = {'final_score', 'spot_price', 'risk_tier', 'interruption_rate_pct',
-                       'intrinsic_savings_pct', 'customer_savings_pct', 'ml_score', 'safety_score',
-                       'capacity_status'}
+    valid_sort_keys = {'expected_value', 'final_score', 'unified_score', 'spot_price', 'risk_tier',
+                       'interruption_rate_pct', 'intrinsic_savings_pct',
+                       'customer_savings_pct', 'ml_score', 'safety_score',
+                       'capacity_status', 'risk_probability'}
     if sort_by not in valid_sort_keys:
-        sort_by = 'final_score'
+        sort_by = 'expected_value'
     reverse = (sort_order != "asc")
     try:
         all_pools = sorted(
             all_pools,
             key=lambda p: (
                 _capacity_order.get(p.get('capacity_status', 'unverified'), 1),
-                -(p.get('final_score', 0) or 0),
+                -(p.get('expected_value', 0) or 0),
             )
         )
-        # Re-sort by explicit column if not final_score
-        if sort_by != 'final_score':
+        # Re-sort by explicit column if user explicitly chose one other than default
+        if sort_by not in ('expected_value', 'final_score'):
             all_pools = sorted(all_pools, key=lambda p: p.get(sort_by, 0) or 0, reverse=reverse)
     except Exception:
         pass
@@ -2622,6 +2893,14 @@ def get_market_view(
         "last_updated": last_updated,
         "source_node": source_node,
         "baseline": baseline_data,
+        "resource_filter": {
+            "min_vcpu": _filter_min_vcpu,
+            "min_memory_gb": round(_filter_min_mem, 1),
+            "architectures": sorted(_filter_archs) if _filter_archs else [],
+            "baseline_od_price_hr": round(source_od_price, 6),
+            "baseline_instance_type": _baseline_instance_type,
+            "baseline_method": "highest_cost_od_node",
+        } if _filter_min_vcpu > 0 else None,
         "profile": _profile,
         "weights": _weights,
         "capacity_summary": {
@@ -2801,24 +3080,30 @@ def get_pool_audit(
     # If no cached audit yet, trigger a rank_for_node call to populate it
     if inst:
         from backend.models.cluster import Cluster
-        from backend.core.decision_engine import DecisionEngine
+        from backend.services.pool_ranking_service import PoolRankingService as _PRS_audit
         cluster = db.query(Cluster).filter_by(id=cluster_id).first()
         if cluster:
             region = getattr(cluster, 'region', None) or 'us-east-1'
-            node_info = {
-                'instance_type': inst.instance_type,
-                'az': inst.az,
-                'spot_price': inst.price or 0.0,
-                'risk_tier': 2,
-                'architecture': getattr(inst, 'architecture', None) or 'amd64',
-                'instance_id': inst.instance_id,
+            _prs = _PRS_audit(db, redis)
+            _results = _prs.rank_pools_for_node(
+                node_info={
+                    'instance_type': inst.instance_type,
+                    'az': inst.az or '',
+                    'od_price': float(inst.price or 0),
+                    'instance_id': inst.instance_id,
+                },
+                cluster_id=cluster_id,
+                region=region,
+                include_dynamic_filters=True,
+            )
+            return {
+                "cluster_id": cluster_id,
+                "node_id": node_id,
+                "raw_pool_count": len(_results),
+                "eligible_count": len(_results),
+                "rejection_reasons": {},
+                "computed_at": __import__('datetime').datetime.utcnow().isoformat(),
             }
-            de = DecisionEngine(redis, db)
-            de.rank_for_node(cluster.id, node_info, region)
-            # Check again after compute
-            cached = redis.get(f"pool_audit:{cluster_id}:{audit_node_key}")
-            if cached:
-                return _json.loads(cached)
 
     return {
         "cluster_id": cluster_id,
@@ -2932,4 +3217,35 @@ def get_cluster_savings(
         "estimated_vs_realized_gap": gap_info,
         "data_freshness": cluster.last_assessed.isoformat() if cluster.last_assessed else None,
         "recalculated": "hourly",
+    }
+
+
+# ── EMA Debug Endpoint ──────────────────────────────────────────────────────
+@router.get("/pools/{pool_key}/ema-status")
+def get_pool_ema_status(
+    pool_key: str,
+    db: Session = Depends(get_db),
+):
+    """Return Global EMA stats for a single pool (debug / observability)."""
+    from backend.services.global_ema_service import GlobalEMAService
+
+    redis = get_redis_client()
+    stats = GlobalEMAService.get_ema_stats(redis, db, pool_key)
+    if stats is None:
+        return {"pool_key": pool_key, "ema_tracked": False}
+
+    ema_risk, ema_weight = GlobalEMAService.get_ema_risk(redis, db, pool_key)
+    confidence = min(0.95, 1.0 - 0.5 ** (stats.get("count", 0) / 200))
+
+    return {
+        "pool_key": pool_key,
+        "ema_tracked": True,
+        "rate": stats.get("rate", 0),
+        "count": stats.get("count", 0),
+        "peak_rate": stats.get("peak_rate", 0),
+        "last_event": stats.get("last_event"),
+        "confidence": round(confidence, 4),
+        "ema_risk": round(ema_risk, 4),
+        "ema_weight": round(ema_weight, 4),
+        "sample_clusters": stats.get("sample_clusters", 0),
     }
