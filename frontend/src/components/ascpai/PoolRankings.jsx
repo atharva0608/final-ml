@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { FiGlobe, FiServer, FiPieChart, FiInfo, FiLock, FiAlertTriangle, FiCheckCircle } from 'react-icons/fi';
+import { FiServer, FiPieChart, FiInfo, FiLock, FiAlertTriangle } from 'react-icons/fi';
 import { ascpaiAPI, clusterAPI, nodeTemplateAPI } from '../../services/api';
 import './PoolRankings.css';
 
@@ -45,7 +45,7 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
     const [loading, setLoading] = useState(!!clusterId);
     const [error, setError] = useState(null);
     const [blacklist, setBlacklist] = useState([]);
-    const [activeTab, setActiveTab] = useState('market'); // 'market', 'node', 'cluster'
+    const [activeTab, setActiveTab] = useState('node'); // 'node', 'cluster'
     const [autoRefresh, setAutoRefresh] = useState(true);
     const [nodeRecommendations, setNodeRecommendations] = useState([]);
     const [eligiblePoolsCount, setEligiblePoolsCount] = useState(0);
@@ -59,22 +59,6 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
     const [coverageLoading, setCoverageLoading] = useState(false);
     // Pool audit / funnel data (Task 4.3/4.4)
     const [poolAuditData, setPoolAuditData] = useState(null);
-    // Market View — full pool list from cache_builder (not filtered by template)
-    const [marketViewPools, setMarketViewPools] = useState([]);
-    const [marketViewLoading, setMarketViewLoading] = useState(false);
-    const [marketViewPage, setMarketViewPage] = useState(1);
-    const [marketViewPageSize] = useState(20);
-    const [marketViewTotal, setMarketViewTotal] = useState(0);
-    const [marketViewTotalPages, setMarketViewTotalPages] = useState(1);
-    const [marketViewTotalEvaluated, setMarketViewTotalEvaluated] = useState(0);
-    const [marketViewGatesEliminated, setMarketViewGatesEliminated] = useState(0);
-    const [marketViewSortBy, setMarketViewSortBy] = useState('final_score');
-    const [marketViewSortOrder, setMarketViewSortOrder] = useState('desc');
-    const [marketViewIsLive, setMarketViewIsLive] = useState(null);
-    // Dry Run capacity states
-    const [showUnavailablePools, setShowUnavailablePools] = useState(false);
-    const [capacitySummary, setCapacitySummary] = useState(null);
-    const [ttlCounters, setTtlCounters] = useState({});  // pool_key -> remaining seconds
     // Node-Specific View — selected node + alternatives
     const [selectedNodeId, setSelectedNodeId] = useState(null);
     const [nodeAlternatives, setNodeAlternatives] = useState(null);
@@ -107,37 +91,6 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
         return () => clearInterval(interval);
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [autoRefresh, clusterId]);
-
-    // TTL countdown: tick every second for unavailable pools
-    useEffect(() => {
-        const hasUnavailable = Object.keys(ttlCounters).length > 0;
-        if (!hasUnavailable) return;
-        const tick = setInterval(() => {
-            setTtlCounters(prev => {
-                const updated = {};
-                let anyLeft = false;
-                Object.entries(prev).forEach(([key, secs]) => {
-                    const newVal = Math.max(0, secs - 1);
-                    updated[key] = newVal;
-                    if (newVal > 0) anyLeft = true;
-                });
-                return anyLeft ? updated : {};
-            });
-        }, 1000);
-        return () => clearInterval(tick);
-    }, [ttlCounters]);
-
-    // 5s polling when unverified pools exist in market view (capacity results arrive async)
-    useEffect(() => {
-        if (activeTab !== 'market' || !clusterId) return;
-        const hasUnverified = marketViewPools.some(p => p.capacity_status === 'unverified');
-        if (!hasUnverified) return;
-        const poll = setInterval(() => {
-            fetchMarketViewPage(marketViewPage, marketViewSortBy, marketViewSortOrder, showUnavailablePools);
-        }, 5000);
-        return () => clearInterval(poll);
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [activeTab, clusterId, marketViewPools, marketViewPage, marketViewSortBy, marketViewSortOrder, showUnavailablePools]);
 
     // Fetch node alternatives + pool audit when selectedNodeId changes
     useEffect(() => {
@@ -297,8 +250,7 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
                 }
             } catch (err) {
                 console.debug('Node recommendations endpoint pending:', err.message);
-                setNodeRecommendations([]);
-                setEligiblePoolsCount(0);
+                // Keep stale data — do not blank the table on transient errors
             } finally {
                 setNodeViewLoading(false);
             }
@@ -320,10 +272,12 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
                 setCoverageLoading(true);
                 const covRes = await ascpaiAPI.getClusterCoverage(clusterId);
                 setCoverageData(covRes.data || null);
-                // Pre-select first node if none selected
+                // Pre-select first node if none selected, or reset if selected node is gone
                 const nodes = covRes.data?.per_node_summary || [];
-                if (nodes.length > 0 && !selectedNodeId) {
-                    setSelectedNodeId(nodes[0].node_id);
+                if (nodes.length > 0) {
+                    if (!selectedNodeId || !nodes.some(n => n.node_id === selectedNodeId)) {
+                        setSelectedNodeId(nodes[0].node_id);
+                    }
                 }
             } catch (err) {
                 console.debug('Coverage endpoint pending:', err.message);
@@ -347,115 +301,12 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
             setClusterInfo(prev => ({ ...prev, primaryInstancePrice }));
             setPools(Array.isArray(rankings) ? rankings : []);
             setError(null);
-
-            // ── Step 5: Fetch full Market View from cache_builder endpoint ──
-            try {
-                setMarketViewLoading(true);
-                const mvRes = await ascpaiAPI.getMarketView(
-                    clusterId, 1, marketViewPageSize, 'final_score', 'desc', showUnavailablePools
-                );
-                const mvData = mvRes.data || {};
-                let mvPools = mvData.pools || [];
-                // If market-view returned empty but getRankings had results, use rankings as fallback
-                // (this happens on cold start before cache_builder has run)
-                if (mvPools.length === 0 && Array.isArray(rankings) && rankings.length > 0) {
-                    mvPools = rankings;
-                }
-                const pg = mvData.pagination || {};
-                setMarketViewPools(mvPools);
-                setMarketViewTotal(pg.total_valid_pools || mvPools.length);
-                setMarketViewTotalPages(pg.total_pages || 1);
-                setMarketViewTotalEvaluated(pg.total_evaluated || 0);
-                setMarketViewGatesEliminated(pg.gates_eliminated || 0);
-                setCapacitySummary(mvData.capacity_summary || null);
-                setMarketViewPage(1);
-                // Determine live/stale from first pool's data_age_minutes
-                const firstAge = mvPools[0]?.data_age_minutes;
-                setMarketViewIsLive(firstAge != null ? firstAge < 90 : null);
-
-                // Seed TTL counters for unavailable pools
-                const newTtl = {};
-                mvPools.forEach(p => {
-                    if (p.capacity_status === 'unavailable' && p.dry_run_ttl_remaining != null) {
-                        newTtl[`${p.instance_type}:${p.az}`] = p.dry_run_ttl_remaining;
-                    }
-                });
-                if (Object.keys(newTtl).length > 0) setTtlCounters(prev => ({ ...prev, ...newTtl }));
-
-                // Trigger dry run check for top 20 unverified pools
-                const unverifiedKeys = mvPools
-                    .filter(p => p.capacity_status === 'unverified')
-                    .slice(0, 20)
-                    .map(p => `${p.instance_type}:${p.az}`);
-                if (unverifiedKeys.length > 0) {
-                    ascpaiAPI.triggerDryRunCheck(clusterId, unverifiedKeys).catch(() => {});
-                }
-            } catch (mvErr) {
-                console.debug('Market view endpoint not yet available:', mvErr.message);
-                setMarketViewPools(Array.isArray(rankings) ? rankings : []);
-                setMarketViewTotal(Array.isArray(rankings) ? rankings.length : 0);
-                setMarketViewTotalPages(1);
-                setMarketViewIsLive(null);
-            } finally {
-                setMarketViewLoading(false);
-            }
         } catch (err) {
             setError(err.response?.data?.detail || 'Failed to fetch pool rankings');
             console.error('Error fetching pool rankings:', err);
         } finally {
             setLoading(false);
         }
-    };
-
-    const fetchMarketViewPage = async (page, sortBy = marketViewSortBy, sortOrder = marketViewSortOrder, includeUnavailable = showUnavailablePools) => {
-        if (!clusterId) return;
-        try {
-            setMarketViewLoading(true);
-            const mvRes = await ascpaiAPI.getMarketView(
-                clusterId, page, marketViewPageSize, sortBy, sortOrder, includeUnavailable
-            );
-            const mvData = mvRes.data || {};
-            const mvPools = mvData.pools || [];
-            const pg = mvData.pagination || {};
-            setMarketViewPools(mvPools);
-            setMarketViewPage(page);
-            setMarketViewTotal(pg.total_valid_pools || mvPools.length);
-            setMarketViewTotalPages(pg.total_pages || 1);
-            setMarketViewTotalEvaluated(pg.total_evaluated || 0);
-            setMarketViewGatesEliminated(pg.gates_eliminated || 0);
-            setCapacitySummary(mvData.capacity_summary || null);
-            const firstAge = mvPools[0]?.data_age_minutes;
-            setMarketViewIsLive(firstAge != null ? firstAge < 90 : null);
-
-            // Seed TTL counters for unavailable pools
-            const newTtl = {};
-            mvPools.forEach(p => {
-                if (p.capacity_status === 'unavailable' && p.dry_run_ttl_remaining != null) {
-                    newTtl[`${p.instance_type}:${p.az}`] = p.dry_run_ttl_remaining;
-                }
-            });
-            if (Object.keys(newTtl).length > 0) setTtlCounters(prev => ({ ...prev, ...newTtl }));
-
-            // Trigger background dry run check for top 20 unverified pools
-            const unverifiedKeys = mvPools
-                .filter(p => p.capacity_status === 'unverified')
-                .slice(0, 20)
-                .map(p => `${p.instance_type}:${p.az}`);
-            if (unverifiedKeys.length > 0) {
-                ascpaiAPI.triggerDryRunCheck(clusterId, unverifiedKeys).catch(() => {});
-            }
-        } catch (err) {
-            console.error('Market view page fetch error:', err);
-        } finally {
-            setMarketViewLoading(false);
-        }
-    };
-
-    const handleMarketViewSort = (col) => {
-        const newOrder = marketViewSortBy === col && marketViewSortOrder === 'desc' ? 'asc' : 'desc';
-        setMarketViewSortBy(col);
-        setMarketViewSortOrder(newOrder);
-        fetchMarketViewPage(1, col, newOrder);
     };
 
     const fetchBlacklist = async () => {
@@ -573,18 +424,6 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
             <div className="border-b border-gray-200 mb-6">
                 <nav className="-mb-px flex space-x-8">
                     <button
-                        onClick={() => setActiveTab('market')}
-                        className={`${activeTab === 'market' ? 'border-indigo-500 text-indigo-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'} whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm flex items-center`}
-                    >
-                        <FiGlobe className="mr-2" />
-                        Market View
-                        {marketViewTotal > 0 && (
-                            <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-indigo-100 text-indigo-700">
-                                {marketViewTotal}
-                            </span>
-                        )}
-                    </button>
-                    <button
                         onClick={() => setActiveTab('node')}
                         className={`${activeTab === 'node' ? 'border-indigo-500 text-indigo-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'} whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm flex items-center`}
                     >
@@ -651,227 +490,6 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
                 </div>
             )}
 
-            {/* Pool Rankings Table (Market View) */}
-            {!loading && activeTab === 'market' && (
-                <>
-                    {/* Live/Stale indicator + stats bar */}
-                    <div className="flex items-center justify-between mb-2 px-1">
-                        <div className="flex items-center gap-4 text-xs text-gray-500">
-                            {marketViewTotalEvaluated > 0 && (
-                                <span>{marketViewTotalEvaluated.toLocaleString()} evaluated · {marketViewGatesEliminated.toLocaleString()} eliminated · <span className="font-semibold text-gray-700">{marketViewTotal.toLocaleString()} valid</span></span>
-                            )}
-                            {capacitySummary && (
-                                <span className="flex items-center gap-2 ml-2">
-                                    {(capacitySummary.verified ?? 0) > 0 && <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-green-500 inline-block"></span>{capacitySummary.verified} verified</span>}
-                                    {(capacitySummary.unverified ?? 0) > 0 && <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-gray-400 inline-block"></span>{capacitySummary.unverified} unverified</span>}
-                                    {(capacitySummary.unavailable ?? 0) > 0 && <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-red-400 inline-block"></span>{capacitySummary.unavailable} unavailable</span>}
-                                </span>
-                            )}
-                        </div>
-                        <div className="flex items-center gap-3">
-                            <label className="flex items-center gap-1.5 text-xs text-gray-500 cursor-pointer select-none">
-                                <input
-                                    type="checkbox"
-                                    checked={showUnavailablePools}
-                                    onChange={e => {
-                                        setShowUnavailablePools(e.target.checked);
-                                        fetchMarketViewPage(1, marketViewSortBy, marketViewSortOrder, e.target.checked);
-                                    }}
-                                    className="rounded border-gray-300 text-blue-600"
-                                />
-                                Show unavailable pools
-                            </label>
-                            {marketViewIsLive === true && (
-                                <span className="flex items-center gap-1 text-xs text-green-600 font-medium">
-                                    <span className="w-2 h-2 rounded-full bg-green-500 inline-block animate-pulse"></span> Live
-                                </span>
-                            )}
-                            {marketViewIsLive === false && (
-                                <span className="flex items-center gap-1 text-xs text-yellow-600 font-medium">
-                                    <span className="w-2 h-2 rounded-full bg-yellow-500 inline-block"></span> Stale
-                                </span>
-                            )}
-                            {marketViewLoading && <span className="text-xs text-gray-400">Loading…</span>}
-                        </div>
-                    </div>
-
-                    {!marketViewLoading && marketViewPools.length > 0 && (
-                        <div className="bg-white shadow-md rounded-lg overflow-x-auto">
-                            <table className="w-full min-w-[900px] divide-y divide-gray-200 text-sm">
-                                <thead className="bg-gray-50">
-                                    <tr>
-                                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-14">Rank</th>
-                                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:text-gray-700" onClick={() => handleMarketViewSort('instance_type')}>Instance Type</th>
-                                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">AZ</th>
-                                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">vCPU / Mem</th>
-                                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:text-gray-700" onClick={() => handleMarketViewSort('spot_price')}>Spot Price</th>
-                                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:text-gray-700" onClick={() => handleMarketViewSort('intrinsic_savings_pct')} title="How good is this pool in the spot market">Pool Saving</th>
-                                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:text-gray-700" onClick={() => handleMarketViewSort('customer_savings_pct')} title="What you actually save vs current OD price">Your Saving</th>
-                                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:text-gray-700" onClick={() => handleMarketViewSort('interruption_rate_pct')}>Interruption</th>
-                                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:text-gray-700" onClick={() => handleMarketViewSort('ml_score_final')}>ML</th>
-                                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:text-gray-700" onClick={() => handleMarketViewSort('final_score')}>Score</th>
-                                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider" title="AWS real-time capacity check result">Capacity</th>
-                                    </tr>
-                                </thead>
-                                <tbody className="bg-white divide-y divide-gray-200">
-                                    {marketViewPools.map((pool) => {
-                                        const spotPrice = pool.spot_price ?? pool.spot_price_hr ?? 0;
-                                        const odPrice = pool.od_price ?? pool.ondemand_price ?? pool.od_price_hr ?? 0;
-                                        const intrinsicPct = pool.intrinsic_savings_pct ?? (odPrice > 0 ? ((odPrice - spotPrice) / odPrice * 100) : 0);
-                                        const customerPct = pool.customer_savings_pct ?? intrinsicPct;
-                                        const mlTier = pool.ml_tier ?? 3;
-                                        const mlTierLabel = mlTier === 1 ? 'T1' : mlTier === 2 ? 'T2' : 'T3';
-                                        const mlTierColor = mlTier === 1 ? 'bg-green-100 text-green-700' : mlTier === 2 ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-500';
-                                        const irrRate = pool.interruption_rate_pct ?? pool.interruption_rate ?? pool.az_interruption_rate ?? null;
-                                        const irrLabel = irrRate != null ? `${irrRate}%` : getInterruptionLabel(pool.spot_advisor_rank ?? 0);
-                                        const irrColor = irrRate != null
-                                            ? (irrRate <= 5 ? 'bg-green-100 text-green-800' : irrRate <= 10 ? 'bg-yellow-100 text-yellow-800' : irrRate <= 15 ? 'bg-orange-100 text-orange-800' : 'bg-red-100 text-red-800')
-                                            : getInterruptionColor(pool.spot_advisor_rank ?? 0);
-                                        const poolKey = `${pool.instance_type}:${pool.az}`;
-                                        const capStatus = pool.capacity_status || 'unverified';
-                                        const ttlLeft = ttlCounters[poolKey];
-                                        const ttlStr = ttlLeft != null && ttlLeft > 0
-                                            ? `${Math.floor(ttlLeft / 60)}:${String(ttlLeft % 60).padStart(2, '0')}`
-                                            : null;
-                                        return (
-                                            <tr
-                                                key={`${pool.instance_type}-${pool.az}-${pool.rank}`}
-                                                className={`hover:bg-gray-50 ${pool.is_flagged ? 'bg-red-50' : ''} ${capStatus === 'unavailable' ? 'opacity-60' : ''}`}
-                                            >
-                                                <td className="px-4 py-3 whitespace-nowrap">
-                                                    <span className={`inline-flex items-center justify-center w-7 h-7 rounded-full text-sm ${pool.rank === 1 ? 'bg-yellow-100 text-yellow-800' : pool.rank <= 3 ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-700'} font-bold`}>
-                                                        {pool.rank}
-                                                    </span>
-                                                </td>
-                                                <td className="px-4 py-3 whitespace-nowrap">
-                                                    <div className="font-medium text-gray-900 flex items-center gap-1">
-                                                        {pool.instance_type}
-                                                        {pool.soft_penalty_applied && (
-                                                            <span className="ml-1 text-orange-500 text-xs" title="Recent launch failures — soft penalty applied">⚠</span>
-                                                        )}
-                                                        {pool.blacklisted && (
-                                                            <span className="ml-1 w-2 h-2 rounded-full bg-red-500 inline-block" title="Blacklisted"></span>
-                                                        )}
-                                                    </div>
-                                                    <div className="text-xs text-gray-400">{pool.architecture}</div>
-                                                </td>
-                                                <td className="px-4 py-3 whitespace-nowrap text-gray-700">{pool.az}</td>
-                                                <td className="px-4 py-3 whitespace-nowrap text-gray-700">
-                                                    {pool.vcpu}c / {pool.memory_gb}GB
-                                                </td>
-                                                <td className="px-4 py-3 whitespace-nowrap">
-                                                    <div className="font-medium text-gray-900">${(spotPrice || 0).toFixed(4)}/hr</div>
-                                                    <div className="text-xs text-gray-400">OD: ${(odPrice || 0).toFixed(4)}</div>
-                                                </td>
-                                                <td className="px-4 py-3 whitespace-nowrap">
-                                                    <span className="font-semibold text-emerald-600">{intrinsicPct.toFixed(1)}%</span>
-                                                    <div className="text-xs text-gray-400">pool quality</div>
-                                                </td>
-                                                <td className="px-4 py-3 whitespace-nowrap">
-                                                    <span className="font-semibold text-blue-600">{customerPct.toFixed(1)}%</span>
-                                                    <div className="text-xs text-gray-400">vs your OD</div>
-                                                </td>
-                                                <td className="px-4 py-3 whitespace-nowrap">
-                                                    <span className={`px-2 py-0.5 inline-flex text-xs font-semibold rounded-full ${irrColor}`}>
-                                                        {irrLabel}
-                                                    </span>
-                                                </td>
-                                                <td className="px-4 py-3 whitespace-nowrap">
-                                                    <div className="flex items-center gap-1.5">
-                                                        <span className="text-sm font-bold text-blue-600">{(pool.ml_score_final ?? pool.ml_score ?? 0).toFixed(2)}</span>
-                                                        <span className={`px-1 py-0.5 rounded text-xs font-semibold ${mlTierColor}`}>{mlTierLabel}</span>
-                                                    </div>
-                                                </td>
-                                                <td className="px-4 py-3 whitespace-nowrap">
-                                                    <span className="text-sm font-bold text-gray-800">{(pool.final_score ?? 0).toFixed(3)}</span>
-                                                    {pool.data_age_minutes != null && (
-                                                        <div className="text-xs text-gray-400">{pool.data_age_minutes.toFixed(0)}m old</div>
-                                                    )}
-                                                </td>
-                                                <td className="px-4 py-3 whitespace-nowrap">
-                                                    {capStatus === 'verified' && (
-                                                        <span className="flex items-center gap-1 text-xs text-green-700 font-medium">
-                                                            <span className="w-2 h-2 rounded-full bg-green-500 inline-block"></span>Verified
-                                                        </span>
-                                                    )}
-                                                    {capStatus === 'unverified' && (
-                                                        <span className="flex items-center gap-1 text-xs text-gray-500">
-                                                            <span className="w-2 h-2 rounded-full bg-gray-400 inline-block animate-pulse"></span>Checking…
-                                                        </span>
-                                                    )}
-                                                    {capStatus === 'unavailable' && (
-                                                        <span className="flex items-center gap-1 text-xs text-red-600 font-medium">
-                                                            <span className="w-2 h-2 rounded-full bg-red-500 inline-block"></span>
-                                                            <span>
-                                                                Unavailable
-                                                                {ttlStr && <div className="text-xs text-gray-400 font-normal">Recheck in {ttlStr}</div>}
-                                                            </span>
-                                                        </span>
-                                                    )}
-                                                </td>
-                                            </tr>
-                                        );
-                                    })}
-                                </tbody>
-                            </table>
-                        </div>
-                    )}
-
-                    {/* Pagination controls */}
-                    {marketViewTotalPages > 1 && (
-                        <div className="flex items-center justify-center gap-2 mt-3">
-                            <button
-                                onClick={() => fetchMarketViewPage(marketViewPage - 1)}
-                                disabled={marketViewPage <= 1 || marketViewLoading}
-                                className="px-3 py-1 text-sm rounded border border-gray-300 hover:bg-gray-50 disabled:opacity-40"
-                            >
-                                ←
-                            </button>
-                            {Array.from({ length: Math.min(7, marketViewTotalPages) }, (_, i) => {
-                                const p = i + 1;
-                                return (
-                                    <button
-                                        key={p}
-                                        onClick={() => fetchMarketViewPage(p)}
-                                        disabled={marketViewLoading}
-                                        className={`px-3 py-1 text-sm rounded border ${marketViewPage === p ? 'bg-blue-600 text-white border-blue-600' : 'border-gray-300 hover:bg-gray-50'}`}
-                                    >
-                                        {p}
-                                    </button>
-                                );
-                            })}
-                            {marketViewTotalPages > 7 && <span className="text-gray-400">…</span>}
-                            {marketViewTotalPages > 7 && (
-                                <button
-                                    onClick={() => fetchMarketViewPage(marketViewTotalPages)}
-                                    disabled={marketViewLoading}
-                                    className={`px-3 py-1 text-sm rounded border ${marketViewPage === marketViewTotalPages ? 'bg-blue-600 text-white border-blue-600' : 'border-gray-300 hover:bg-gray-50'}`}
-                                >
-                                    {marketViewTotalPages}
-                                </button>
-                            )}
-                            <button
-                                onClick={() => fetchMarketViewPage(marketViewPage + 1)}
-                                disabled={marketViewPage >= marketViewTotalPages || marketViewLoading}
-                                className="px-3 py-1 text-sm rounded border border-gray-300 hover:bg-gray-50 disabled:opacity-40"
-                            >
-                                →
-                            </button>
-                            <span className="text-xs text-gray-500 ml-2">
-                                Page {marketViewPage} of {marketViewTotalPages} ({marketViewTotal} pools)
-                            </span>
-                        </div>
-                    )}
-                </>
-            )}
-
-            {/* Empty State */}
-            {!loading && !marketViewLoading && marketViewPools.length === 0 && !error && clusterId && activeTab === 'market' && (
-                <div className="text-center py-12 bg-white shadow-md rounded-lg">
-                    <p className="text-gray-600">No pool rankings available. Adjust your filters and try again.</p>
-                </div>
-            )}
-
             {/* Node-Specific View */}
             {activeTab === 'node' && (
                 <div className="space-y-6">
@@ -880,20 +498,16 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
                         const totalNodes = nodeRecommendations.length;
                         const statelessNodes = nodeRecommendations.filter(r => r.workload_type === 'stateless').length;
                         const atRiskNodes = nodeRecommendations.filter(r => r.risk_score > 0.60).length;
-                        const projSavings = nodeRecommendations
-                            .reduce((sum, r) => sum + (r.current_cost || 0) * ((r.projected_savings_pct || 0) / 100) * 720, 0);
                         const spotNodes = nodeRecommendations.filter(r => r.lifecycle === 'spot').length;
                         const s2sCandidates = nodeRecommendations.filter(r => r.s2s_candidate).length;
-                        // Compute projected savings including OD→Spot fallback estimate
-                        // For OD nodes where backend returns 0% savings (same-type spot move),
-                        // estimate ~65% spot discount as a floor so the savings column is never blank.
+                        // Real projected monthly savings: (od_hourly - target_spot_hourly) × 730h/mo
+                        // Use od_cost (always OD price) or current_cost for OD nodes as baseline.
+                        // Never fabricate savings — only count nodes where a cheaper spot pool is confirmed.
                         const estimatedProjSavings = nodeRecommendations.reduce((sum, r) => {
-                            if ((r.projected_savings_pct || 0) > 0) {
-                                return sum + (r.current_cost || 0) * (r.projected_savings_pct / 100) * 720;
-                            }
-                            if ((r.lifecycle || '').toLowerCase().includes('demand')) {
-                                // On-demand → spot: use 65% discount estimate
-                                return sum + (r.current_cost || 0) * 0.65 * 720;
+                            const odHourly = r.od_cost || (r.lifecycle !== 'spot' ? r.current_cost : 0) || 0;
+                            const spotHourly = r.target_spot_price || 0;
+                            if (odHourly > 0 && spotHourly > 0 && spotHourly < odHourly) {
+                                return sum + (odHourly - spotHourly) * 730;
                             }
                             return sum;
                         }, 0);
@@ -906,7 +520,7 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
                                     <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200 col-span-2 sm:col-span-3 lg:col-span-2 relative overflow-hidden">
                                         <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Savings Velocity (Last 30 Days)</h4>
                                         <p className="mt-1 text-2xl font-bold text-green-600">
-                                            {savingsVelocityLoading ? '…' : (savingsVelocityData?.last_30_days_total > 0 ? `$${savingsVelocityData.last_30_days_total}` : `$${Math.round(estimatedProjSavings)}`)}
+                                            {savingsVelocityLoading ? '…' : (savingsVelocityData?.last_30_days_total > 0 ? `$${savingsVelocityData.last_30_days_total.toFixed(2)}` : `$${estimatedProjSavings.toFixed(2)}`)}
                                         </p>
                                         <p className="text-xs text-gray-400 mt-0.5">
                                             {savingsVelocityData?.last_30_days_total > 0 ? 'Realized savings' : 'Projected monthly'}
@@ -967,14 +581,27 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
                             <h4 className="text-[14px] font-extrabold text-slate-800">Savings Velocity (Last 30 Days)</h4>
                             {savingsVelocityData?.last_30_days_total > 0 && (
                                 <div className="bg-green-50 text-green-700 px-3 py-1 rounded text-[11px] font-bold border border-green-100">
-                                    Total: ${savingsVelocityData.last_30_days_total} saved
+                                    Total: ${savingsVelocityData.last_30_days_total.toFixed(2)} saved
                                 </div>
                             )}
                         </div>
                         {savingsVelocityLoading ? (
-                            <div className="h-40 flex items-center justify-center text-slate-400 text-sm">Loading...</div>
+                            <div className="h-64 flex items-center justify-center text-slate-400 text-sm">Loading...</div>
                         ) : savingsVelocityData?.data_points?.length > 0 ? (
-                            <div className="relative h-40 w-full">
+                            <div className="relative h-64 w-full pl-12">
+                                {/* Y-axis labels — show $0 at bottom, max at top */}
+                                {(() => {
+                                    const pts = savingsVelocityData.data_points;
+                                    const maxAmt = Math.max(...pts.map(p => p.amount), 1);
+                                    const fmt = v => v >= 1000 ? `$${(v/1000).toFixed(1)}k` : `$${v.toFixed(0)}`;
+                                    return (
+                                        <div className="absolute left-0 top-0 h-[calc(100%-24px)] flex flex-col justify-between text-[10px] font-semibold text-slate-400 pr-1 text-right w-11">
+                                            <span>{fmt(maxAmt)}</span>
+                                            <span>{fmt(maxAmt * 0.5)}</span>
+                                            <span>$0</span>
+                                        </div>
+                                    );
+                                })()}
                                 <svg className="w-full h-full" viewBox="0 0 1000 160" preserveAspectRatio="none">
                                     <defs>
                                         <linearGradient id="svFill" x1="0" x2="0" y1="0" y2="1">
@@ -989,7 +616,7 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
                                         const coords = pts.map((p, i) => ({
                                             x: i * step,
                                             y: 140 - (p.amount / maxAmt) * 120,
-                                            label: p.date ? new Date(p.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '',
+                                            label: p.date || '',
                                             amount: p.amount,
                                         }));
                                         const line = coords.map((c, i) => `${i === 0 ? 'M' : 'L'} ${c.x} ${c.y}`).join(' ');
@@ -1005,19 +632,19 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
                                         );
                                     })()}
                                 </svg>
-                                <div className="absolute bottom-0 left-0 w-full flex justify-between text-[10px] font-bold text-slate-400 border-t border-slate-100 pt-2">
+                                <div className="absolute bottom-0 left-12 right-0 flex justify-between text-[10px] font-bold text-slate-400 border-t border-slate-100 pt-2">
                                     {(() => {
                                         const pts = savingsVelocityData.data_points;
                                         const step = Math.max(1, Math.floor(pts.length / 5));
                                         return [0, step, step*2, step*3, pts.length-1].map((i, k) => {
                                             const p = pts[Math.min(i, pts.length-1)];
-                                            return <span key={k}>{p?.date ? new Date(p.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }).toUpperCase() : ''}</span>;
+                                            return <span key={k}>{p?.date || ''}</span>;
                                         });
                                     })()}
                                 </div>
                             </div>
                         ) : (
-                            <div className="h-40 flex flex-col items-center justify-center text-slate-400">
+                            <div className="h-64 flex flex-col items-center justify-center text-slate-400">
                                 <svg className="w-10 h-10 mb-2 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" /></svg>
                                 <p className="text-sm font-medium">No realized savings data yet</p>
                                 <p className="text-xs mt-1 text-slate-300">Data accumulates as rebalancing completes</p>
@@ -1036,7 +663,7 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
                                     </span>
                                 )}
                             </div>
-                            <div className="h-20 w-full flex rounded-lg overflow-hidden mb-4">
+                            <div className="w-full flex rounded-lg overflow-hidden mb-4" style={{ minHeight: '5rem', height: `${Math.max(5, Object.keys(familyDistribution).length * 2.5)}rem` }}>
                                 {(() => {
                                     const entries = Object.entries(familyDistribution).sort((a,b) => b[1].count - a[1].count);
                                     const colors = ['#3b82f6','#22c55e','#f59e0b','#a855f7','#06b6d4','#f97316','#10b981','#a855f7'];
@@ -1095,27 +722,48 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
                                     nodeRecommendations.map((rec, idx) => {
                                         const isSpot = rec.lifecycle === 'spot';
                                         const isS2S = rec.s2s_candidate;
-                                        // If backend returns 0% savings for an OD node (same-type spot move),
-                                        // estimate ~65% spot discount as a realistic floor value.
-                                        let savingsPct = rec.projected_savings_pct || 0;
-                                        if (savingsPct === 0 && !isSpot && rec.current_cost > 0) {
-                                            savingsPct = 65; // standard spot discount estimate
-                                        }
-                                        const savingsMo = ((rec.current_cost || 0) * (savingsPct / 100) * 720).toFixed(2);
+                                        // Savings from real prices: od_hourly - target_spot_hourly
+                                        // od_cost (always OD price) is the baseline; never use current_cost
+                                        // for spot nodes since that would be the spot price, not the OD price.
+                                        // Never fabricate savings — if no target_spot_price exists, show zero.
+                                        const _odHourly = rec.od_cost || (rec.lifecycle !== 'spot' ? rec.current_cost : 0) || 0;
+                                        const _spotHourly = rec.target_spot_price || 0;
+                                        const _hourlySaving = (_odHourly > 0 && _spotHourly > 0 && _spotHourly < _odHourly)
+                                            ? (_odHourly - _spotHourly) : 0;
+                                        const savingsMo = (_hourlySaving * 730).toFixed(2);
+                                        const savingsPct = _odHourly > 0 && _hourlySaving > 0
+                                            ? Math.round((_hourlySaving / _odHourly) * 100)
+                                            : (rec.projected_savings_pct || 0);
 
                                         // ── Real status from live rebalancing actions ──────────────
                                         // Match this node to an in-flight action by EC2 instance_id
                                         // or by source_pool (instance_type:az) as fallback.
+                                        const _recAz = rec.az || rec.current_az || '';
                                         const _activeAction = rebalancingActions.find(a => {
                                             if (!['in_progress', 'waiting_agent'].includes(a.status)) return false;
                                             if (rec.instance_id && a.instance_id && a.instance_id === rec.instance_id) return true;
                                             // fallback: source_pool starts with current instance type AND same AZ
-                                            if (a.source_pool && rec.current_type && rec.az) {
+                                            if (a.source_pool && rec.current_type && _recAz) {
                                                 const _spParts = (a.source_pool || '').split(':');
-                                                return _spParts[0] === rec.current_type && _spParts[1] === rec.az;
+                                                return _spParts[0] === rec.current_type && _spParts[1] === _recAz;
                                             }
                                             return false;
                                         });
+                                        // Drain-failed: action is 'failed' but source EC2 still running;
+                                        // rebalancer will retry on next cycle.
+                                        const _drainFailedAction = rebalancingActions.find(a => {
+                                            if (a.current_step !== 'failed_drain_ec2_protected') return false;
+                                            if (rec.instance_id && a.instance_id && a.instance_id === rec.instance_id) return true;
+                                            if (a.source_pool && rec.current_type && _recAz) {
+                                                const _spParts = (a.source_pool || '').split(':');
+                                                return _spParts[0] === rec.current_type && _spParts[1] === _recAz;
+                                            }
+                                            return false;
+                                        });
+                                        // Check if backend flagged this node as having an active migration
+                                        const _hasMigrationInfo = !!rec.migration_info;
+                                        // Check if backend flagged this as a drain-retry via migration_info.action_status
+                                        const _isDrainRetry = _drainFailedAction || rec.migration_info?.action_status === 'failed';
                                         // Check if this SPOT node is the replacement being provisioned
                                         // for an active migration — show MIGRATING instead of OPTIMIZED
                                         // until the old OD node is terminated (action completes).
@@ -1128,7 +776,9 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
                                                  rec.instance_id.startsWith(a.replacement_spot_instance_id?.substring(0, 12)))
                                             );
                                         });
-                                        const isProcessing = !!_activeAction;
+                                        // Node is in active migration: either Processing (from action match)
+                                        // or flagged by backend migration_info (excluding drain-retry which has its own state)
+                                        const isProcessing = (!!_activeAction || (_hasMigrationInfo && !_isDrainRetry)) && !_isDrainRetry;
 
                                         // ── Determine Status and UI elements ──────────────────────
                                         let statusText = '';
@@ -1136,19 +786,58 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
                                         let actionBtn = null;
                                         let trendLine = null;
 
-                                        if (isProcessing) {
-                                            // Node actively being rebalanced right now
-                                            statusText = 'Processing';
+                                        if (_isDrainRetry) {
+                                            // Drain failed due to PDB or conflict — source EC2 still running.
+                                            // Rebalancer cleared backoff; will retry automatically.
+                                            const _migInfo = rec.migration_info || {};
+                                            const _targetType = _migInfo.replacement_type
+                                                || _drainFailedAction?.target_pool?.split(':')[0]
+                                                || rec.target_type;
+                                            statusText = 'Retrying';
                                             statusIcon = (
                                                 <div className="flex items-center space-x-2">
                                                     <div className="w-5 h-5 flex items-center justify-center">
-                                                        <svg className="w-4 h-4 text-blue-500 animate-spin-slow" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+                                                        <svg className="w-4 h-4 text-amber-500 animate-spin-slow" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
                                                     </div>
-                                                    <span className="text-[10px] font-bold text-blue-500 uppercase">Processing</span>
+                                                    <div className="flex flex-col">
+                                                        <span className="text-[10px] font-bold text-amber-600 uppercase">Retrying</span>
+                                                        {_targetType && (
+                                                            <span className="text-[9px] text-amber-400">→ {_targetType}</span>
+                                                        )}
+                                                    </div>
                                                 </div>
                                             );
                                             actionBtn = (
-                                                <button className="px-3 py-1.5 bg-blue-50 text-blue-700 text-[10px] font-bold rounded-md border border-blue-100 uppercase cursor-not-allowed opacity-60">
+                                                <button title="Drain blocked by PodDisruptionBudget or conflict. Auto-retry queued." className="px-3 py-1.5 bg-amber-50 text-amber-700 text-[10px] font-bold rounded-md border border-amber-200 uppercase cursor-not-allowed opacity-80">
+                                                    PDB Retry
+                                                </button>
+                                            );
+                                            trendLine = (
+                                                <div className="flex justify-center">
+                                                    <svg className="h-6 w-16 text-amber-400" viewBox="0 0 100 40">
+                                                        <path d="M0 20 L20 25 L40 18 L60 23 L80 20 L100 22" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="2.5"></path>
+                                                    </svg>
+                                                </div>
+                                            );
+                                        } else if (isProcessing) {
+                                            // Node actively being rebalanced / migrating
+                                            const _migInfo = rec.migration_info;
+                                            statusText = 'Migrating';
+                                            statusIcon = (
+                                                <div className="flex items-center space-x-2">
+                                                    <div className="w-5 h-5 flex items-center justify-center">
+                                                        <svg className="w-4 h-4 text-indigo-500 animate-spin-slow" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+                                                    </div>
+                                                    <div className="flex flex-col">
+                                                        <span className="text-[10px] font-bold text-indigo-500 uppercase">Migrating</span>
+                                                        {(_migInfo?.replacement_type || _activeAction?.target_pool?.split(':')[0]) && (
+                                                            <span className="text-[9px] text-indigo-400">→ {_migInfo?.replacement_type || _activeAction?.target_pool?.split(':')[0]}</span>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                            );
+                                            actionBtn = (
+                                                <button className="px-3 py-1.5 bg-indigo-50 text-indigo-600 text-[10px] font-bold rounded-md border border-indigo-100 uppercase cursor-not-allowed opacity-60">
                                                     {isSpot ? 'SPOT→SPOT' : 'OD→SPOT'}
                                                 </button>
                                             );
@@ -1227,14 +916,23 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
                                             );
                                         }
 
+                                        const isOrphaned = rec.node_health_status === 'UNKNOWN';
+
                                         return (
-                                            <tr key={idx} className="hover:bg-slate-50/50 transition-colors">
+                                            <tr key={idx} className={`hover:bg-slate-50/50 transition-colors ${isOrphaned ? 'opacity-60' : ''}`}>
                                                 <td className="px-6 py-5">
                                                     <div className="flex flex-col">
                                                         <span className="text-sm font-bold text-slate-900">{rec.node_name}</span>
-                                                        <span className={`text-[10px] font-bold uppercase tracking-tight ${isSpot ? 'text-emerald-600' : 'text-blue-600'}`}>
-                                                            {isSpot ? 'SPOT' : 'ON-DEMAND'}
-                                                        </span>
+                                                        <div className="flex items-center gap-1 mt-0.5">
+                                                            <span className={`text-[10px] font-bold uppercase tracking-tight ${isSpot ? 'text-emerald-600' : 'text-blue-600'}`}>
+                                                                {isSpot ? 'SPOT' : 'ON-DEMAND'}
+                                                            </span>
+                                                            {isOrphaned && (
+                                                                <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-bold uppercase bg-amber-100 text-amber-700 border border-amber-200" title="EC2 instance is running in AWS but the Kubernetes node no longer exists. Excluded from rebalancing.">
+                                                                    ⚠ Orphaned
+                                                                </span>
+                                                            )}
+                                                        </div>
                                                     </div>
                                                 </td>
                                                 <td className="px-6 py-5">
@@ -1244,7 +942,9 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
                                                     </div>
                                                 </td>
                                                 <td className="px-6 py-5">
-                                                    {(isSpot && !isS2S) ? (
+                                                    {isOrphaned ? (
+                                                        <span className="text-sm font-medium text-slate-400">—</span>
+                                                    ) : (isSpot && !isS2S) ? (
                                                         <span className="text-sm font-medium text-slate-400">—</span>
                                                     ) : (
                                                         <div className="flex flex-col">
@@ -1254,7 +954,14 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
                                                     )}
                                                 </td>
                                                 <td className="px-6 py-5">
-                                                    {statusIcon}
+                                                    {isOrphaned ? (
+                                                        <div className="flex items-center space-x-2">
+                                                            <div className="w-5 h-5 flex items-center justify-center text-amber-500">
+                                                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+                                                            </div>
+                                                            <span className="text-[10px] font-bold text-amber-600 uppercase">Orphaned</span>
+                                                        </div>
+                                                    ) : statusIcon}
                                                 </td>
                                                 <td className="px-6 py-5 text-sm font-semibold text-slate-600">
                                                     ${rec.current_cost}/hr
@@ -1263,7 +970,11 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
                                                     {trendLine}
                                                 </td>
                                                 <td className="px-6 py-5">
-                                                    {actionBtn}
+                                                    {isOrphaned ? (
+                                                        <button title="This node's EC2 is running in AWS but the Kubernetes node is gone. Terminate the EC2 manually to resolve." className="px-3 py-1.5 bg-amber-50 text-amber-700 text-[10px] font-bold rounded-md border border-amber-200 uppercase cursor-not-allowed opacity-80">
+                                                            EC2 Orphan
+                                                        </button>
+                                                    ) : actionBtn}
                                                 </td>
                                                 <td className="px-6 py-5 text-right">
                                                     <span className={`text-sm font-bold ${savingsPct > 0 ? 'text-emerald-600' : 'text-slate-400'}`}>
@@ -1327,6 +1038,18 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
                                         <span><strong className="text-gray-700">{nodeAlternatives.total_alternatives}</strong> valid alternatives for {nodeAlternatives.instance_type} in {nodeAlternatives.az}</span>
                                         <span className="text-gray-300">|</span>
                                         <span>Arch: <strong className="text-gray-700">{nodeAlternatives.architecture}</strong></span>
+                                        {(nodeAlternatives.current_node?.current_price || nodeAlternatives.current_node?.od_price) > 0 && (
+                                            <><span className="text-gray-300">|</span>
+                                            <span>Baseline: <strong className="text-gray-700">${(nodeAlternatives.current_node.current_price || nodeAlternatives.current_node.od_price).toFixed(4)}/hr</strong> ({nodeAlternatives.current_node.lifecycle === 'spot' ? 'Spot' : 'OD'})</span></>
+                                        )}
+                                        {nodeAlternatives.rebalancer_gate?.eligible_count > 0 && (
+                                            <><span className="text-gray-300">|</span>
+                                            <span className="text-indigo-600 font-semibold">{nodeAlternatives.rebalancer_gate.eligible_count} pass gate</span></>
+                                        )}
+                                        {nodeAlternatives.rebalancer_gate?.would_launch && (
+                                            <><span className="text-gray-300">|</span>
+                                            <span className="text-green-700 font-semibold">▶ Would launch: {nodeAlternatives.rebalancer_gate.would_launch.instance_type} ({nodeAlternatives.rebalancer_gate.would_launch.savings_pct != null ? `${nodeAlternatives.rebalancer_gate.would_launch.savings_pct.toFixed(1)}%` : '—'} savings)</span></>
+                                        )}
                                     </div>
                                     <table className="w-full text-sm divide-y divide-gray-100">
                                         <thead className="bg-gray-50 text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -1338,23 +1061,39 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
                                                 <th className="px-4 py-2 text-right">Spot/hr</th>
                                                 <th className="px-4 py-2 text-right">Saving</th>
                                                 <th className="px-4 py-2 text-center">Risk</th>
-                                                <th className="px-4 py-2 text-right">ML Score</th>
+                                                <th className="px-4 py-2 text-right">Unified</th>
+                                                <th className="px-4 py-2 text-center">Gate</th>
                                             </tr>
                                         </thead>
                                         <tbody className="bg-white divide-y divide-gray-100">
                                             {nodeAlternatives.alternatives.map((alt, i) => {
                                                 const riskLabel = alt.spot_advisor_rank === 0 ? '<5%' : alt.spot_advisor_rank === 1 ? '5-10%' : alt.spot_advisor_rank === 2 ? '10-15%' : alt.spot_advisor_rank === 3 ? '15-20%' : '>20%';
                                                 const riskColor = alt.spot_advisor_rank <= 1 ? 'bg-green-50 text-green-700' : alt.spot_advisor_rank <= 2 ? 'bg-amber-50 text-amber-700' : 'bg-red-50 text-red-700';
+                                                const _isWouldLaunch = alt.would_be_launched === true;
+                                                const _eligible = alt.rebalancer_eligible !== false;
+                                                const _passLabel = { 1: 'P1', 2: 'P2', 3: 'P3', 4: 'P4' }[alt.rebalancer_pass] || null;
+                                                const rowBg = _isWouldLaunch ? 'bg-green-50 hover:bg-green-100' : !_eligible ? 'opacity-50 hover:bg-gray-50' : 'hover:bg-gray-50';
                                                 return (
-                                                    <tr key={i} className="hover:bg-gray-50">
+                                                    <tr key={i} className={rowBg}>
                                                         <td className="px-4 py-2.5 font-bold text-gray-400">{alt.rank}</td>
-                                                        <td className="px-4 py-2.5 font-medium text-gray-900 font-mono">{alt.instance_type}</td>
+                                                        <td className="px-4 py-2.5 font-medium text-gray-900 font-mono">
+                                                            {alt.instance_type}
+                                                            {_isWouldLaunch && <span className="ml-1.5 px-1.5 py-0.5 rounded text-[9px] font-bold bg-green-600 text-white align-middle">LAUNCH</span>}
+                                                        </td>
                                                         <td className="px-4 py-2.5 font-mono text-xs text-gray-500">{alt.az}</td>
                                                         <td className="px-4 py-2.5 text-xs text-gray-500">{alt.architecture || '—'}</td>
                                                         <td className="px-4 py-2.5 text-right font-mono text-gray-700">${(alt.spot_price || 0).toFixed(4)}</td>
-                                                        <td className="px-4 py-2.5 text-right font-semibold text-green-600">{alt.saving_pct != null ? `${alt.saving_pct}%` : '—'}</td>
+                                                        <td className={`px-4 py-2.5 text-right font-semibold ${alt.saving_pct != null && alt.saving_pct < 0 ? 'text-red-500' : 'text-green-600'}`}>{alt.saving_pct != null ? `${alt.saving_pct}%` : '—'}</td>
                                                         <td className="px-4 py-2.5 text-center"><span className={`px-2 py-0.5 rounded text-xs font-semibold ${riskColor}`}>{riskLabel}</span></td>
-                                                        <td className="px-4 py-2.5 text-right font-bold text-indigo-600">{(alt.ml_score || 0).toFixed(3)}</td>
+                                                        <td className="px-4 py-2.5 text-right font-bold text-indigo-600">{(alt.unified_score != null ? alt.unified_score : alt.expected_value != null ? alt.expected_value : (alt.ml_score || 0)).toFixed(3)}</td>
+                                                        <td className="px-4 py-2.5 text-center">
+                                                            {_isWouldLaunch
+                                                                ? <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-green-600 text-white">▶ P{alt.rebalancer_pass || '1'}</span>
+                                                                : _eligible && _passLabel
+                                                                ? <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-indigo-50 text-indigo-600 border border-indigo-100">{_passLabel}</span>
+                                                                : <span className="text-gray-300 text-xs">—</span>
+                                                            }
+                                                        </td>
                                                     </tr>
                                                 );
                                             })}
@@ -1539,40 +1278,6 @@ const PoolRankings = ({ clusterId, initialTemplateId = null }) => {
                 </div>
             )}
 
-            {/* Legend - Only show on Market */}
-            {activeTab === 'market' && (
-                <div className="mt-6 p-4 bg-gray-50 rounded-lg border border-gray-200">
-                    <h3 className="text-sm font-semibold text-gray-700 mb-2">Market Data Legend</h3>
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 text-sm">
-                        <div>
-                            <span className="font-semibold text-gray-800">ML Score:</span> Market theoretical value
-                        </div>
-                        <div>
-                            <span className="font-semibold text-gray-800">Interruption:</span> Spot Advisor frequency
-                        </div>
-                        <div className="flex items-center">
-                            <FiCheckCircle className="text-blue-500 inline mr-1" />
-                            <span className="font-semibold text-gray-800 mr-1">Validated:</span> Capacity confirmed
-                        </div>
-                    </div>
-                    {clusterInfo.primaryInstanceType && (
-                        <div className="mt-3 text-xs text-indigo-700 flex items-start">
-                            <FiInfo className="mr-1 mt-0.5 shrink-0" />
-                            <span>
-                                Savings baseline: <strong>{clusterInfo.primaryInstanceType}</strong> ({clusterInfo.primaryLifecycle}) in <strong>{clusterInfo.region}</strong>. Rankings show best spot pools including same-family and Graviton alternatives.
-                            </span>
-                        </div>
-                    )}
-                    {clusterInfo.templateName && (
-                        <div className="mt-1 text-xs text-green-700 flex items-center">
-                            <FiLock className="mr-1 shrink-0" />
-                            <span>
-                                Active node template <strong>{clusterInfo.templateName}</strong> — vCPU, memory, architecture and family bounds enforced.
-                            </span>
-                        </div>
-                    )}
-                </div>
-            )}
         </div>
     );
 };
