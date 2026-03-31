@@ -17,7 +17,7 @@ import signal
 import logging
 import threading
 import asyncio
-from typing import Optional
+from typing import Optional, Dict
 from datetime import datetime
 import requests
 
@@ -140,7 +140,7 @@ class Agent:
                 'action_execution',
                 'websocket_communication'
             ],
-            'version': '1.0.0'
+            'version': '1.0.1'
         }
 
         try:

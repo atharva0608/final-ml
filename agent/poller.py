@@ -181,7 +181,15 @@ class SpotPoller:
             if hasattr(self.actuator, 'handle_spot_interruption'):
                 self.actuator.handle_spot_interruption(notice)
             else:
-                logger.warning("Actuator missing 'handle_spot_interruption' method. Implementing basic fallback.")
+                # BUG-13 fix: Execute actual fallback instead of just logging
+                logger.warning(
+                    "Actuator missing 'handle_spot_interruption' method — "
+                    "executing direct cordon+drain fallback"
+                )
+                if hasattr(self.actuator, '_emergency_self_cordon_drain'):
+                    self.actuator._emergency_self_cordon_drain()
+                else:
+                    logger.error("Actuator has no emergency fallback — node will terminate unprotected")
         except Exception as e:
             logger.error(f"Failed to execute termination safeguards: {e}")
 

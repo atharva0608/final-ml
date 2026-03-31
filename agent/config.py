@@ -54,7 +54,7 @@ class Config:
 
         # Derived configuration
         self.agent_id = f"{self.cluster_id}-agent"
-        self.version = "1.0.0"
+        self.version = os.getenv('AGENT_VERSION', '1.0.1')
 
         logger.info(f"[AGENT-CFG-01] Configuration loaded")
         logger.info(f"[AGENT-CFG-01]   API URL: {self.api_url}")

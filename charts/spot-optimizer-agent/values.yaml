@@ -1,7 +1,7 @@
 image:
   repository: atharva608/spot-optimizer-agent
-  tag: latest
-  pullPolicy: Always
+  tag: "{{ .Chart.AppVersion }}"  # N4 fix: pin to chart version, never use 'latest' in production
+  pullPolicy: IfNotPresent
 
 config:
   apiKey: ""
@@ -22,13 +22,17 @@ serviceAccount:
 
 namespace: "spot-optimizer"
 
+# nodeSelector for the DaemonSet.
+# Multi-arch image (linux/amd64+arm64) is available — no architecture restriction.
+nodeSelector: {}
+
 orchestrator:
   enabled: true
   replicaCount: 1
   image:
     repository: atharva608/spot-optimizer-agent
-    tag: latest
-    pullPolicy: Always
+    tag: "{{ .Chart.AppVersion }}"  # N4 fix: pin to chart version
+    pullPolicy: IfNotPresent
   resources:
     requests:
       cpu: 100m

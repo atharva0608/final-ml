@@ -19,7 +19,23 @@ NC='\033[0m' # No Color
 
 # Configuration
 IMAGE_NAME="atharva608/spot-optimizer-agent"
-VERSION="v1.2-command-pipeline"
+
+# Read version from Chart.yaml (single source of truth)
+# Allow override via VERSION env variable: VERSION=1.0.1 ./build-and-push.sh
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+CHART_YAML="${SCRIPT_DIR}/../charts/spot-optimizer-agent/Chart.yaml"
+
+if [ -z "${VERSION:-}" ]; then
+    if [ ! -f "$CHART_YAML" ]; then
+        echo -e "${RED}Error: Chart.yaml not found at $CHART_YAML${NC}"
+        exit 1
+    fi
+    VERSION=$(grep '^appVersion:' "$CHART_YAML" | sed 's/appVersion: *"\([^"]*\)"/\1/' | tr -d ' ')
+    if [ -z "$VERSION" ]; then
+        echo -e "${RED}Error: could not parse appVersion from $CHART_YAML${NC}"
+        exit 1
+    fi
+fi
 
 # Parse arguments
 SKIP_PUSH=false
@@ -61,13 +77,48 @@ if [ ! -f "pod_metrics_collector.py" ]; then
 fi
 
 echo -e "${YELLOW}Building image: ${IMAGE_NAME}:${VERSION}${NC}"
+echo -e "${YELLOW}Platform: linux/amd64,linux/arm64 (multi-arch manifest)${NC}"
 echo ""
 
-# Build image with two tags
-docker build \
-    -t "${IMAGE_NAME}:latest" \
-    -t "${IMAGE_NAME}:${VERSION}" \
-    .
+# Use buildx for cross-platform builds (macOS ARM → linux/amd64).
+# Ensure a buildx builder exists. If pushing, use --push directly
+# (buildx multi-platform images can't be loaded into local docker).
+_BUILDX_BUILDER="spot-agent-builder"
+if ! docker buildx inspect "${_BUILDX_BUILDER}" &>/dev/null; then
+    echo -e "${YELLOW}Creating buildx builder: ${_BUILDX_BUILDER}${NC}"
+    docker buildx create --name "${_BUILDX_BUILDER}" --use
+else
+    docker buildx use "${_BUILDX_BUILDER}"
+fi
+
+if [ "$SKIP_PUSH" = false ]; then
+    # Check if logged in to Docker Hub
+    if ! docker info 2>/dev/null | grep -q "Username"; then
+        echo -e "${YELLOW}Not logged in to Docker Hub. Please login:${NC}"
+        docker login
+    fi
+
+    # Build and push multi-arch manifest (amd64 + arm64).
+    # --push is required for multi-platform buildx (can't --load multi-arch locally).
+    docker buildx build \
+        --platform linux/amd64,linux/arm64 \
+        --build-arg AGENT_VERSION="${VERSION}" \
+        -t "${IMAGE_NAME}:${VERSION}" \
+        -t "${IMAGE_NAME}:latest" \
+        --push \
+        .
+else
+    # Local build only — single platform (multi-arch --load not supported by Docker daemon).
+    # Defaults to host arch (amd64 on x86, arm64 on Apple Silicon).
+    _LOCAL_ARCH="linux/$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')"
+    echo -e "${YELLOW}Local build only: ${_LOCAL_ARCH}${NC}"
+    docker buildx build \
+        --platform "${_LOCAL_ARCH}" \
+        --build-arg AGENT_VERSION="${VERSION}" \
+        -t "${IMAGE_NAME}:${VERSION}" \
+        --load \
+        .
+fi
 
 if [ $? -eq 0 ]; then
     echo ""
@@ -97,7 +148,7 @@ if [ "$LOCAL_TEST" = true ]; then
         -e CLUSTER_ID=test-cluster \
         -e NODE_NAME=test-node \
         -e POD_METRICS_INTERVAL=60 \
-        "${IMAGE_NAME}:latest" &
+        "${IMAGE_NAME}:${VERSION}" &
 
     CONTAINER_PID=$!
 
@@ -119,32 +170,9 @@ fi
 
 # Push to Docker Hub
 if [ "$SKIP_PUSH" = false ]; then
-    echo -e "${GREEN}================================${NC}"
-    echo -e "${GREEN}Pushing to Docker Hub${NC}"
-    echo -e "${GREEN}================================${NC}"
     echo ""
-
-    # Check if logged in to Docker Hub
-    if ! docker info | grep -q "Username"; then
-        echo -e "${YELLOW}Not logged in to Docker Hub. Please login:${NC}"
-        docker login
-    fi
-
-    echo -e "${YELLOW}Pushing ${IMAGE_NAME}:latest${NC}"
-    docker push "${IMAGE_NAME}:latest"
-
+    echo -e "${GREEN}✓ Build and push successful!${NC}"
     echo ""
-    echo -e "${YELLOW}Pushing ${IMAGE_NAME}:${VERSION}${NC}"
-    docker push "${IMAGE_NAME}:${VERSION}"
-
-    if [ $? -eq 0 ]; then
-        echo ""
-        echo -e "${GREEN}✓ Push successful!${NC}"
-        echo ""
-    else
-        echo -e "${RED}✗ Push failed${NC}"
-        exit 1
-    fi
 
     # Verify on Docker Hub
     echo -e "${YELLOW}Verifying image on Docker Hub...${NC}"
@@ -160,13 +188,13 @@ echo -e "${GREEN}Summary${NC}"
 echo -e "${GREEN}================================${NC}"
 echo ""
 echo "Image built: ${IMAGE_NAME}:${VERSION}"
-echo "Image size: $(docker images ${IMAGE_NAME}:latest --format '{{.Size}}')"
+echo "Image size: $(docker images "${IMAGE_NAME}:${VERSION}" --format '{{.Size}}')"
 
 if [ "$SKIP_PUSH" = false ]; then
     echo "Status: Pushed to Docker Hub ✓"
     echo ""
     echo -e "${YELLOW}Next Steps:${NC}"
-    echo "1. Verify image: docker pull ${IMAGE_NAME}:latest"
+    echo "1. Verify image: docker pull ${IMAGE_NAME}:${VERSION}"
     echo "2. Restart DaemonSet: kubectl rollout restart daemonset/spot-agent -n spot-optimizer"
     echo "3. Check logs: kubectl logs -n spot-optimizer -l app=spot-agent | grep PodMetrics"
     echo "4. Query API: curl http://localhost:8000/api/v1/pod-metrics?cluster_id=test&limit=5"
@@ -174,7 +202,6 @@ else
     echo "Status: Built locally (not pushed)"
     echo ""
     echo -e "${YELLOW}To push manually:${NC}"
-    echo "docker push ${IMAGE_NAME}:latest"
     echo "docker push ${IMAGE_NAME}:${VERSION}"
 fi
 

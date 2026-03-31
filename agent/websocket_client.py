@@ -16,6 +16,7 @@ import time
 import json
 import logging
 import asyncio
+import threading
 from typing import Dict, Any, Optional, Callable
 from datetime import datetime
 import websockets
@@ -63,9 +64,20 @@ class WebSocketClient:
         # Reference to actuator for executing commands received via WebSocket
         self.actuator = None
 
-        # Message buffer for when disconnected
+        # BUG-1/N6 fix: Separate queues by criticality.
+        # Critical messages (action results, state transitions) must never be dropped.
+        # Best-effort messages (metrics, heartbeats) use a bounded ring buffer.
+        import collections
+        import queue
+        self.critical_queue = queue.Queue()       # unbounded — never drop action results
+        self.metrics_buffer = collections.deque(maxlen=200)  # ring buffer — oldest dropped when full
+
+        # Legacy buffer kept for backward compat but no longer used for new messages
         self.message_buffer = []
         self.max_buffer_size = 1000
+
+        # BUG-2 fix: Track current in-progress action for context recovery on reconnect
+        self._current_action_id = None
 
         logger.info(f"WebSocketClient initialized for agent: {agent_id}")
 
@@ -189,30 +201,72 @@ class WebSocketClient:
     def buffer_message(self, message: Dict[str, Any]):
         """
         Buffer a message for later sending.
-
-        Args:
-            message: Message dictionary
+        BUG-1/N6 fix: Critical messages (action_result, action_heartbeat,
+        action_still_running) go to an unbounded queue that is never dropped.
+        Everything else goes to a bounded ring buffer (metrics, heartbeats).
         """
-        if len(self.message_buffer) < self.max_buffer_size:
-            self.message_buffer.append(message)
-            logger.debug(f"Buffered message. Buffer size: {len(self.message_buffer)}")
+        msg_type = message.get("type", "")
+        if msg_type in ("action_result", "action_heartbeat", "action_still_running"):
+            self.critical_queue.put(message)
+            logger.debug(f"Buffered critical message ({msg_type}). Queue size: {self.critical_queue.qsize()}")
         else:
-            logger.warning("Message buffer full, dropping message")
+            self.metrics_buffer.append(message)
+            logger.debug(f"Buffered best-effort message ({msg_type}). Buffer size: {len(self.metrics_buffer)}")
 
     async def flush_buffer(self):
         """
         Send all buffered messages.
+        BUG-1/N6 fix: Critical messages (action results) sent first,
+        then best-effort metrics. Critical messages are never dropped.
         """
-        if not self.message_buffer:
+        _critical_count = self.critical_queue.qsize()
+        _metrics_count = len(self.metrics_buffer)
+        _legacy_count = len(self.message_buffer)
+        _total = _critical_count + _metrics_count + _legacy_count
+        if _total == 0:
             return
 
-        logger.info(f"Flushing {len(self.message_buffer)} buffered messages")
+        logger.info(
+            f"Flushing buffered messages: {_critical_count} critical, "
+            f"{_metrics_count} metrics, {_legacy_count} legacy"
+        )
 
-        messages_to_send = self.message_buffer.copy()
-        self.message_buffer.clear()
+        # BUG-2 fix: If an action is still running, notify backend immediately
+        if self._current_action_id:
+            await self.send_message({
+                "type": "action_still_running",
+                "action_id": self._current_action_id,
+                "timestamp": datetime.utcnow().isoformat(),
+            })
 
-        for message in messages_to_send:
-            await self.send_message(message)
+        # 1. Critical messages first (action results — must not be lost)
+        while not self.critical_queue.empty():
+            try:
+                msg = self.critical_queue.get_nowait()
+            except Exception:
+                break
+            try:
+                await self.send_message(msg)
+            except Exception as e:
+                logger.error(
+                    "flush_buffer: failed to send critical message type=%s, "
+                    "re-queuing. Error: %s",
+                    msg.get("type"), e
+                )
+                self.critical_queue.put(msg)  # re-queue so it isn't lost
+                break  # stop flush — connection may not be ready yet
+
+        # 2. Best-effort metrics buffer
+        for msg in list(self.metrics_buffer):
+            await self.send_message(msg)
+        self.metrics_buffer.clear()
+
+        # 3. Legacy buffer (backward compat)
+        if self.message_buffer:
+            messages_to_send = self.message_buffer.copy()
+            self.message_buffer.clear()
+            for message in messages_to_send:
+                await self.send_message(message)
 
     async def handle_message(self, message_json: str):
         """
@@ -290,6 +344,21 @@ class WebSocketClient:
             return
 
         # Execute synchronously in a thread pool to avoid blocking the async loop
+        # N5 fix: Start heartbeat thread during action execution
+        _hb_stop = threading.Event()
+        _hb_thread = None
+        _rebalancing_action_id = payload.get('rebalancing_action_id')
+        if _rebalancing_action_id and self.actuator:
+            _hb_thread = threading.Thread(
+                target=self.actuator._action_heartbeat_loop,
+                args=(str(_rebalancing_action_id), _hb_stop),
+                daemon=True,
+            )
+            _hb_thread.start()
+
+        # BUG-2 fix: Track current action for context recovery on reconnect
+        self._current_action_id = _rebalancing_action_id or action_id
+
         loop = asyncio.get_event_loop()
         try:
             result = await loop.run_in_executor(
@@ -298,15 +367,38 @@ class WebSocketClient:
         except Exception as e:
             result = {'success': False, 'message': str(e)}
             logger.error(f"[ws] Exception executing {action_type}: {e}", exc_info=True)
+        finally:
+            self._current_action_id = None
+            if _hb_thread:
+                _hb_stop.set()
+                _hb_thread.join(timeout=5)
 
         # Report result back to backend via WebSocket
-        await self.send_message({
+        _result_msg = {
             'type': 'action_result',
             'action_id': action_id,
             'success': result.get('success', False),
             'result': result,
             'error': result.get('message') if not result.get('success') else None,
-        })
+        }
+        ws_sent = await self.send_message(_result_msg)
+
+        # BUG-1 fix: If WebSocket send failed, try HTTP fallback so the backend
+        # always learns about the action outcome (prevents 45-min cluster lock).
+        if not ws_sent and self.actuator:
+            try:
+                import requests as _req
+                _req.post(
+                    f"{self.actuator.backend_url}/api/v1/agents/actions/{action_id}/result",
+                    json=_result_msg,
+                    headers={"Authorization": f"Bearer {self.actuator.api_key}"},
+                    timeout=10,
+                )
+                logger.info(f"[ws] Action result for {action_id} sent via HTTP fallback")
+            except Exception as _http_err:
+                logger.error(f"[ws] HTTP fallback also failed for action {action_id}: {_http_err}")
+                # Message is already in critical_queue — will flush on reconnect
+
         logger.info(f"[ws] Command {action_id} ({action_type}) done: success={result.get('success')}")
 
     async def handle_action_command(self, message: Dict[str, Any]):

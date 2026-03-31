@@ -217,6 +217,16 @@ class ActionActuator:
         Returns:
             Result dictionary with success status and message
         """
+        # Z3 fix: Refuse to cordon the node the agent is running on
+        _my_node = os.getenv('NODE_NAME')
+        if not uncordon and _my_node and node_name == _my_node:
+            logger.error("Refusing self-cordon on node %s", _my_node)
+            return {
+                'success': False,
+                'message': f'SELF_CORDON_ATTEMPT: refusing to cordon agent node {_my_node}',
+                'error': 'SELF_CORDON_ATTEMPT',
+            }
+
         action = "Uncordoning" if uncordon else "Cordoning"
         logger.info(f"{action} node {node_name}")
 
@@ -267,6 +277,16 @@ class ActionActuator:
         Terminating pods that were on the node — prevents StatefulSet pods from
         being stuck in Terminating state indefinitely when the node is gone.
         """
+        # Z3 fix: Refuse to force-delete the node the agent is running on
+        _my_node = os.getenv('NODE_NAME')
+        if _my_node and node_name == _my_node:
+            logger.error("Refusing self-delete on node %s — SELF_DELETE_ATTEMPT", _my_node)
+            return {
+                'success': False,
+                'message': f'SELF_DELETE_ATTEMPT: refusing to force-delete agent node {_my_node}',
+                'error': 'SELF_DELETE_ATTEMPT',
+            }
+
         logger.info(f"[force_delete_node] Force-deleting ghost node {node_name}")
         try:
             from kubernetes.client.rest import ApiException as _ApiEx
@@ -333,6 +353,16 @@ class ActionActuator:
         Returns:
             Result dictionary with success status and message
         """
+        # Z3 fix: Refuse to drain the node the agent is running on
+        _my_node = os.getenv('NODE_NAME')
+        if _my_node and node_name == _my_node:
+            logger.error("Refusing self-drain on node %s", _my_node)
+            return {
+                'success': False,
+                'message': f'SELF_DRAIN_ATTEMPT: refusing to drain agent node {_my_node}',
+                'error': 'SELF_DRAIN_ATTEMPT',
+            }
+
         logger.info(f"Draining node {node_name}")
 
         try:
@@ -1352,10 +1382,56 @@ class ActionActuator:
                             f"— falling back to scaledown path"
                         )
 
-                # ── MODE: "scaledown" (or fallback from failed replacement) ─────────────
+                # ── MODE: "asg_no_decrement" ──────────────────────────────────────────────
+                # Attach-to-ASG mode: replacement already attached to ASG before Phase 2.
+                # Terminate source node via terminate_instance_in_auto_scaling_group with
+                # ShouldDecrementDesiredCapacity=False so ASG DesiredCapacity stays the same.
+                if termination_mode == "asg_no_decrement":
+                    try:
+                        asg_client = _boto3.client("autoscaling", region_name=region)
+                        asg_name = payload.get("asg_name")
+                        if not asg_name:
+                            try:
+                                _resp = asg_client.describe_auto_scaling_instances(InstanceIds=[instance_id])
+                                _items = _resp.get("AutoScalingInstances", [])
+                                if _items:
+                                    asg_name = _items[0].get("AutoScalingGroupName")
+                            except Exception:
+                                pass
+
+                        if asg_name:
+                            asg_client.terminate_instance_in_auto_scaling_group(
+                                InstanceId=instance_id,
+                                ShouldDecrementDesiredCapacity=False,  # ← CAST-like: keep desired capacity
+                            )
+                            logger.info(
+                                f"[terminate/asg_no_decrement] Terminated {instance_id} via ASG "
+                                f"'{asg_name}' (DesiredCapacity unchanged). node: {node_name}"
+                            )
+                            return {
+                                "success": True,
+                                "method": "asg_terminate_no_decrement",
+                                "instance_id": instance_id,
+                                "node_name": node_name or "",
+                            }
+                        else:
+                            # ASG not found — fall through to EC2 direct terminate
+                            logger.warning(
+                                f"[terminate/asg_no_decrement] ASG name not found for "
+                                f"{instance_id} — falling back to EC2 terminate"
+                            )
+                    except Exception as _nd_err:
+                        logger.warning(
+                            f"[terminate/asg_no_decrement] ASG terminate failed for "
+                            f"{instance_id}: {_nd_err} — falling back to EC2 terminate"
+                        )
+
+                # ── MODE: "scaledown" ────────────────────────────────────────────────────
                 # Legacy: terminate via ASG with ShouldDecrementDesiredCapacity=True.
                 # Used only for OD consolidation where we want the ASG to shrink.
-                if termination_mode in ("scaledown", "replacement"):
+                # NOTE: "replacement" mode must NOT fall through here — it would incorrectly
+                # decrement desired capacity. Failed "replacement" falls to direct EC2 below.
+                if termination_mode == "scaledown":
                     try:
                         asg_client = _boto3.client("autoscaling", region_name=region)
                         asg_name = payload.get("asg_name")
@@ -1479,6 +1555,20 @@ class ActionActuator:
         except Exception as e:
             logger.error(f"Unexpected error uninstalling Karpenter: {e}", exc_info=True)
             return {"success": False, "message": str(e)}
+
+    # ── N5 fix: Agent-side action heartbeat ────────────────────────────────
+    def _action_heartbeat_loop(self, action_id: str, stop_event: threading.Event):
+        """Refresh action_heartbeat via HTTP POST every 30s while executing."""
+        while not stop_event.is_set():
+            try:
+                requests.post(
+                    f"{self.backend_url}/api/v1/agents/actions/{action_id}/heartbeat",
+                    headers={"Authorization": f"Bearer {self.api_key}"},
+                    timeout=5,
+                )
+            except Exception:
+                pass  # best-effort — backend Celery still writes as backup
+            stop_event.wait(30)
 
     def execute_action_v2(self, action_type: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -1701,7 +1791,24 @@ class ActionActuator:
                     if not action_id or not action_type:
                         continue
 
-                    result = self.execute_action_v2(action_type, payload)
+                    # N5 fix: Start heartbeat thread during action execution
+                    _hb_stop = threading.Event()
+                    _hb_thread = None
+                    _ra_id = payload.get('rebalancing_action_id')
+                    if _ra_id:
+                        _hb_thread = threading.Thread(
+                            target=self._action_heartbeat_loop,
+                            args=(str(_ra_id), _hb_stop),
+                            daemon=True,
+                        )
+                        _hb_thread.start()
+
+                    try:
+                        result = self.execute_action_v2(action_type, payload)
+                    finally:
+                        if _hb_thread:
+                            _hb_stop.set()
+                            _hb_thread.join(timeout=5)
                     self.report_action_result(action_id, result)
 
             except Exception as e:
@@ -1714,8 +1821,9 @@ class ActionActuator:
     def handle_spot_interruption(self, notice: Dict[str, Any]):
         """
         Handle a Spot Instance interruption event.
-        1. Cordon the node immediately.
+        1. Cordon the node immediately (bypasses self-guard — this IS the agent's node).
         2. Drain the node gracefully.
+        3. Request an OD fallback from the backend.
         """
         node_name = os.getenv('NODE_NAME')
         if not node_name:
@@ -1723,22 +1831,64 @@ class ActionActuator:
             return
 
         logger.critical(f"Executing Spot Interruption Protocol for node {node_name}")
-        
-        # 1. Cordon
-        cordon_res = self.cordon_node(node_name, uncordon=False)
-        if not cordon_res['success']:
-            logger.error(f"Failed to cordon node during spot interruption: {cordon_res.get('message')}")
-            # Continue anyway to try and drain what we can
-            
-        # 2. Drain (Force=True to ensure we clear it)
-        drain_res = self.drain_node(node_name, force=True, grace_period=30)
-        if drain_res.get('success'):
-            logger.info(f"Node {node_name} successfully drained ahead of termination")
-        else:
-            logger.error(f"Failed to drain node during spot interruption: {drain_res.get('message')}")
-            
+
+        # BUG-13 fix: Use emergency method that bypasses Z3 self-guard.
+        # The self-guard exists to prevent the *backend* from accidentally
+        # cordoning/draining the agent's own node during normal rebalancing.
+        # During a genuine spot interruption, self-cordon IS the correct action.
+        self._emergency_self_cordon_drain()
+
         # 3. Trigger Fallback (The Safety Net)
         self.request_fallback_node(node_name)
+
+    def _emergency_self_cordon_drain(self):
+        """
+        BUG-13 fix: Emergency self-cordon and drain on IMDS spot interruption.
+        Bypasses the Z3 self-guard intentionally — this is only called when
+        the agent's own node is being terminated by AWS.
+        """
+        my_node = os.getenv('NODE_NAME')
+        if not my_node:
+            logger.error("NODE_NAME not set — cannot self-cordon on interruption")
+            return
+
+        # 1. Cordon — call K8s directly, bypassing the self-guard
+        try:
+            body = {"spec": {"unschedulable": True}}
+            self.core_v1.patch_node(my_node, body)
+            logger.critical("Emergency self-cordon applied to %s", my_node)
+        except Exception as e:
+            logger.error("Emergency self-cordon failed for %s: %s", my_node, e)
+
+        # 2. Drain — evict all non-DaemonSet, non-mirror pods
+        try:
+            pods = self.core_v1.list_pod_for_all_namespaces(
+                field_selector=f"spec.nodeName={my_node}"
+            ).items
+            for pod in pods:
+                if self._is_daemonset_pod(pod) or self._is_mirror_pod(pod):
+                    continue
+                try:
+                    eviction = client.V1Eviction(
+                        metadata=client.V1ObjectMeta(
+                            name=pod.metadata.name,
+                            namespace=pod.metadata.namespace,
+                        ),
+                        delete_options=client.V1DeleteOptions(grace_period_seconds=30),
+                    )
+                    self.core_v1.create_namespaced_pod_eviction(
+                        pod.metadata.name, pod.metadata.namespace, eviction
+                    )
+                except ApiException as e:
+                    if e.status == 429:  # PDB violation — skip, best-effort
+                        logger.warning("PDB violation evicting %s/%s — skipping",
+                                       pod.metadata.namespace, pod.metadata.name)
+                    else:
+                        logger.error("Failed to evict %s/%s: %s",
+                                     pod.metadata.namespace, pod.metadata.name, e)
+            logger.critical("Emergency drain completed for %s", my_node)
+        except Exception as e:
+            logger.error("Emergency drain failed for %s: %s", my_node, e)
 
     def request_fallback_node(self, node_name: str):
         """

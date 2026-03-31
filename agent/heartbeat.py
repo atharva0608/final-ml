@@ -152,11 +152,13 @@ class HeartbeatSender:
         self.server_thread = None
 
         # Component health status
+        # BUG-14 fix: Protected by _health_lock — accessed from multiple threads
         self.component_health = {
             'collector': False,
             'actuator': False,
             'websocket': False
         }
+        self._health_lock = threading.Lock()
 
         logger.info(f"HeartbeatSender initialized for agent: {agent_id}")
 
@@ -201,12 +203,13 @@ class HeartbeatSender:
             component: Component name (collector, actuator, websocket)
             healthy: Health status
         """
-        if component in self.component_health:
-            self.component_health[component] = healthy
-            logger.info(f"Component {component} health set to: {healthy}")
+        with self._health_lock:
+            if component in self.component_health:
+                self.component_health[component] = healthy
+        logger.info(f"Component {component} health set to: {healthy}")
 
-            # Update readiness based on component health
-            self.update_readiness()
+        # Update readiness based on component health
+        self.update_readiness()
 
     def update_readiness(self):
         """Update server readiness based on component health."""
@@ -274,8 +277,12 @@ class HeartbeatSender:
                     'memory_bytes': process_memory,
                     'cpu_percent': process_cpu
                 },
-                'components': self.component_health
+                'components': {}  # placeholder, overwritten below
             }
+
+            # BUG-14 fix: take a thread-safe snapshot
+            with self._health_lock:
+                metrics['components'] = dict(self.component_health)
 
             return metrics
 
@@ -306,8 +313,10 @@ class HeartbeatSender:
             'timestamp': datetime.utcnow().isoformat(),
             'status': 'healthy',
             'metrics': metrics,
-            'components': self.component_health
         }
+        # BUG-14 fix: thread-safe snapshot
+        with self._health_lock:
+            payload['components'] = dict(self.component_health)
 
         try:
             response = requests.post(
