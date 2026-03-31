@@ -77,7 +77,8 @@ class AgentInjectorService:
                 if ':assumed-role/' in self.backend_role_arn:
                     parts = self.backend_role_arn.split('/')
                     role_name = parts[1]
-                    account = self.backend_role_arn.split(':')[4]
+                    _arn_parts_ai = (self.backend_role_arn or '').split(':')
+                    account = _arn_parts_ai[4] if len(_arn_parts_ai) > 4 else ''
                     self.backend_role_arn = f"arn:aws:iam::{account}:role/{role_name}"
                     
                 logger.info(f"Auto-detected backend IAM role: {self.backend_role_arn}")
@@ -294,7 +295,8 @@ class AgentInjectorService:
                     # If so, use env/instance-profile credentials directly instead of AssumeRole.
                     try:
                         caller = sts_client.get_caller_identity()
-                        role_account_id = role_arn.split(':')[4]
+                        _arn_parts_ai2 = (role_arn or '').split(':')
+                        role_account_id = _arn_parts_ai2[4] if len(_arn_parts_ai2) > 4 else ''
                         if caller['Account'] == role_account_id:
                             logger.warning(
                                 f"AssumeRole AccessDenied for same-account role {role_arn}. "
@@ -694,11 +696,14 @@ class AgentInjectorService:
             try:
                 import boto3 as _b3
                 _asg = _b3.client('autoscaling', region_name=region,
-                    aws_access_key_id=credentials['AccessKeyId'],
-                    aws_secret_access_key=credentials['SecretAccessKey'],
-                    aws_session_token=credentials.get('SessionToken'),
+                    aws_access_key_id=credentials.get('access_key') or credentials.get('AccessKeyId'),
+                    aws_secret_access_key=credentials.get('secret_key') or credentials.get('SecretAccessKey'),
+                    aws_session_token=credentials.get('session_token') or credentials.get('SessionToken'),
                 )
-                _asgs = _asg.describe_auto_scaling_groups()['AutoScalingGroups']
+                _asgs = []
+                _asg_paginator = _asg.get_paginator('describe_auto_scaling_groups')
+                for _page in _asg_paginator.paginate():
+                    _asgs.extend(_page.get('AutoScalingGroups', []))
                 for _g in _asgs:
                     _tags = {t['Key']: t['Value'] for t in _g.get('Tags', [])}
                     if _tags.get('eks:cluster-name') == cluster_name or cluster_name in _g['AutoScalingGroupName']:
@@ -1441,7 +1446,10 @@ class AgentInjectorService:
                     )
                     logger.info("Orchestrator Deployment updated (already existed)")
                 else:
-                    logger.warning(f"Orchestrator Deployment creation failed (non-fatal): {e}")
+                    # Non-409 errors must propagate — a missing orchestrator means
+                    # no cordon/drain/terminate commands will be executed.
+                    logger.error(f"Orchestrator Deployment creation failed: {e}")
+                    raise
 
             logger.info("Agent deployment created successfully")
 

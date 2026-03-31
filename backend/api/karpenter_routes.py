@@ -23,7 +23,10 @@ from backend.core.dependencies import get_current_user, RequireAccess
 from backend.core.logger import logger
 
 
-# ─── Instance Specs: (vcpu, memory_gb, hourly_od_ap-south-1) ─────────────────
+# ─── Instance Specs: (vcpu, memory_gb, hourly_od_usd) — ap-south-1 fallback only ──
+# For accurate region-specific pricing, use _get_od_price() which reads from Redis
+# (populated by the pricing worker). INSTANCE_SPECS is used for vCPU/memory specs
+# and as a last-resort price fallback when Redis is unavailable.
 INSTANCE_SPECS: Dict[str, tuple] = {
     "t3.nano":    (2, 0.5,  0.0058), "t3.micro":   (2, 1.0,  0.0116),
     "t3.small":   (2, 2.0,  0.0232), "t3.medium":  (2, 4.0,  0.0464),
@@ -52,8 +55,24 @@ INSTANCE_SPECS: Dict[str, tuple] = {
 }
 
 
+def _get_od_price(instance_type: str, region: str = None, redis_client=None) -> Optional[float]:
+    """Get OD hourly price from Redis (region-accurate), falling back to INSTANCE_SPECS."""
+    if redis_client and region:
+        for key_fmt in (f"od_price:{region}:{instance_type}",
+                        f"ondemand_price:{region}:{instance_type}"):
+            try:
+                val = redis_client.get(key_fmt)
+                if val:
+                    return float(val)
+            except Exception:
+                pass
+    specs = INSTANCE_SPECS.get(instance_type)
+    return specs[2] if specs else None
+
+
 def _bin_pack_instance(current_type: str, cpu_pct: float, mem_pct: float,
-                        buffer_pct: float = 30.0):
+                        buffer_pct: float = 30.0, region: str = None,
+                        redis_client=None):
     """
     Bin-pack a node based on observed CPU/memory utilization.
 
@@ -62,51 +81,44 @@ def _bin_pack_instance(current_type: str, cpu_pct: float, mem_pct: float,
       - delta < 0: upsize recommended (monthly cost increase, but node is under-provisioned)
       - delta = 0: already optimal
 
-    Logic:
-      1. Compute required resources = observed * (1 + buffer_pct/100).
-      2. If required > current capacity → current node is over-utilised: find cheapest
-         larger type that satisfies required.
-      3. If required <= current capacity → under-utilised: find cheapest smaller type
-         that still satisfies required.
-
-    buffer_pct: safety headroom above observed P95 (default 30%).
+    When region and redis_client are provided, uses region-accurate OD pricing
+    from Redis. Falls back to INSTANCE_SPECS hardcoded ap-south-1 prices otherwise.
     """
     specs = INSTANCE_SPECS.get(current_type)
-    # Only bail when BOTH metrics are zero (no data at all).
-    # cpu_pct=0 is valid — idle node should still be downsized based on memory usage.
     if not specs or (cpu_pct <= 0 and mem_pct <= 0):
         return current_type, 0.0
 
-    c_vcpu, c_mem, c_hourly = specs
+    c_vcpu, c_mem, _fallback_hourly = specs
+    c_hourly = _get_od_price(current_type, region, redis_client) or _fallback_hourly
     buf = 1.0 + buffer_pct / 100.0
 
-    required_vcpu = max(0.25, (c_vcpu * cpu_pct / 100.0) * buf)
-    required_mem  = max(0.5,  (c_mem  * mem_pct / 100.0) * buf)
+    # P-M7: When one dimension is zero, use a minimal floor so bin-packing
+    # still selects a type that fits the non-zero dimension.
+    required_vcpu = max(0.25, (c_vcpu * max(cpu_pct, 0) / 100.0) * buf)
+    required_mem  = max(0.5,  (c_mem  * max(mem_pct, 0) / 100.0) * buf)
 
     current_fits = (c_vcpu >= required_vcpu and c_mem >= required_mem)
 
+    def _priced_candidates(filter_fn):
+        """Build candidate list with region-accurate pricing."""
+        result = []
+        for t, (v, m, _fh) in INSTANCE_SPECS.items():
+            h = _get_od_price(t, region, redis_client) or _fh
+            if filter_fn(h):
+                result.append((t, v, m, h))
+        return sorted(result, key=lambda x: x[3])
+
     if not current_fits:
-        # Over-utilised: find the cheapest type that is LARGER and fits required + buffer
-        candidates = sorted(
-            [(t, v, m, h) for t, (v, m, h) in INSTANCE_SPECS.items() if h > c_hourly],
-            key=lambda x: x[3]  # ascending price → cheapest upsize first
-        )
-        for t_name, vcpu, mem, hourly in candidates:
+        for t_name, vcpu, mem, hourly in _priced_candidates(lambda h: h > c_hourly):
             if vcpu >= required_vcpu and mem >= required_mem:
-                # negative delta = cost increase (necessary for headroom)
-                return t_name, round((c_hourly - hourly) * 720, 2)
-        return current_type, 0.0  # Already largest in catalog
+                return t_name, round((c_hourly - hourly) * 730, 2)
+        return current_type, 0.0
 
     else:
-        # Under-utilised: find the cheapest type that is SMALLER and still fits
-        candidates = sorted(
-            [(t, v, m, h) for t, (v, m, h) in INSTANCE_SPECS.items() if h < c_hourly],
-            key=lambda x: x[3]  # ascending price → cheapest downsize first
-        )
-        for t_name, vcpu, mem, hourly in candidates:
+        for t_name, vcpu, mem, hourly in _priced_candidates(lambda h: h < c_hourly):
             if vcpu >= required_vcpu and mem >= required_mem:
-                return t_name, round((c_hourly - hourly) * 720, 2)
-        return current_type, 0.0  # Already smallest that fits
+                return t_name, round((c_hourly - hourly) * 730, 2)
+        return current_type, 0.0
 
 
 # ─── Pydantic Schemas ────────────────────────────────────────────────────────
@@ -467,28 +479,6 @@ def update_karpenter_config(
             if _sf_max is not None:
                 sf_rules.max_downscale_percent = int(_sf_max)
 
-        # ── OPTIMIZATION TARGET: spot / on_demand ─────────────────────────
-        optimization_target = updates.get("optimization_target")
-        if optimization_target is not None:
-            # Synergy mode: both toggles ON → force to spot
-            _rebal = opt.auto_rebalance_enabled if auto_rebalancing is None else bool(auto_rebalancing)
-            _rsizing = opt.auto_rightsizing_enabled if auto_rightsizing is None else bool(auto_rightsizing)
-            if _rebal and _rsizing:
-                optimization_target = "spot"  # force-lock
-                logger.info(
-                    f"Synergy mode active for {cluster_id}: optimization_target force-locked to 'spot'"
-                )
-            opt.optimization_target = optimization_target
-        elif auto_rebalancing is not None or auto_rightsizing is not None:
-            # When toggle state changes, auto-lock if entering synergy mode
-            _rebal = opt.auto_rebalance_enabled
-            _rsizing = opt.auto_rightsizing_enabled
-            if _rebal and _rsizing and getattr(opt, 'optimization_target', 'spot') != 'spot':
-                opt.optimization_target = "spot"
-                logger.info(
-                    f"Both toggles now ON for {cluster_id}: auto-locked optimization_target to 'spot'"
-                )
-
         db.commit()
 
     # 3. Persist full config to Redis (strategy, families, UI settings, etc.)
@@ -498,7 +488,7 @@ def update_karpenter_config(
         _cfg_key = f"karpenter_config:{cluster_id}"
         _existing = _json.loads(_redis.get(_cfg_key) or '{}')
         _existing.update(updates)
-        _redis.set(_cfg_key, _json.dumps(_existing))
+        _redis.set(_cfg_key, _json.dumps(_existing), ex=86400)  # BUG-6 fix: 24h TTL prevents unbounded growth
     except Exception as _e:
         logger.warning(f"Could not persist Karpenter config to Redis: {_e}")
 
@@ -866,13 +856,23 @@ def get_karpenter_recommendations(
                     _tpl_max_mem = _c.get('max_memory') or 512
                     _tpl_allowed_families = _c.get('allowed_families') or None
                     _tpl_allowed_azs = _c.get('allowed_zones') or None
-                    logger.info(
+                    logger.debug(
                         f"Applying template '{_mapping.template_id}' constraints to cluster {cluster.id}: "
                         f"families={_tpl_allowed_families}, azs={_tpl_allowed_azs}, "
                         f"arch={_tpl_architectures}, max_vcpu={_tpl_max_vcpu}, max_mem={_tpl_max_mem}"
                     )
         except Exception as _te:
             logger.debug(f"No active template for cluster {cluster.id}: {_te}")
+
+        # Instantiate PoolRankingService once per cluster (not per instance) —
+        # ONNX model loading is expensive and increments the circuit breaker on failure.
+        _pool_ranking_svc = None
+        try:
+            from backend.services.pool_ranking_service import PoolRankingService as _PRS, NodeTemplate as _NT
+            from backend.core.redis_client import get_redis_client as _get_redis_svc
+            _pool_ranking_svc = _PRS(db, _get_redis_svc())
+        except Exception:
+            pass
 
         for instance in instances:
             instance_type = instance.instance_type or 'unknown'
@@ -883,7 +883,7 @@ def get_karpenter_recommendations(
 
             # Calculate real monthly cost from pricing table
             hourly_od = ONDEMAND_HOURLY.get(instance_type, 0.096)  # default ~m5.large
-            monthly_od = round(hourly_od * 720, 2)
+            monthly_od = round(hourly_od * 730, 2)
 
             # Determine node_type from WorkloadInspector first (K8s-aware classification)
             # K8s node name often matches the EC2 instance_id (i-xxxxxxxxx)
@@ -899,7 +899,8 @@ def get_karpenter_recommendations(
 
             # ── Bin-pack: find smaller right-sized instance ───────────────
             recommended_type, resize_savings = _bin_pack_instance(
-                instance_type, cpu_pct, mem_pct, buffer_pct=30.0
+                instance_type, cpu_pct, mem_pct, buffer_pct=30.0,
+                region=cluster.region, redis_client=_redis
             )
             # If template restricts allowed families, validate the bin-packed result.
             # If the recommended type's family is not in allowed_families, fall back
@@ -924,27 +925,22 @@ def get_karpenter_recommendations(
                         for _t, _v, _m, _h in _filtered_candidates:
                             if _v >= _req_vcpu and _m >= _req_mem:
                                 recommended_type = _t
-                                resize_savings = round((_c_hr - _h) * 720, 2)
+                                resize_savings = round((_c_hr - _h) * 730, 2)
                                 break
             hourly_rec = INSTANCE_SPECS.get(recommended_type, (None, None, hourly_od))[2]
 
             # ── Spot pool suggestion for stateless nodes ──────────────────
             spot_pool = None
-            if node_type == "stateless" and not is_spot:
+            if node_type == "stateless" and not is_spot and _pool_ranking_svc is not None:
                 try:
-                    import json as _sjson
-                    from backend.services.pool_ranking_service import PoolRankingService, NodeTemplate
-                    from backend.core.redis_client import get_redis_client as _get_redis_svc
-                    _redis_svc = _get_redis_svc()
-                    _svc = PoolRankingService(db, _redis_svc)
                     _rec_specs = INSTANCE_SPECS.get(recommended_type)
                     _max_vcpu = max(4, _rec_specs[0] * 2) if _rec_specs else 8
                     _max_mem  = max(8, _rec_specs[1] * 2) if _rec_specs else 16
                     # Merge per-instance size constraints with template-level constraints
                     _combined_max_vcpu = min(_max_vcpu, _tpl_max_vcpu)
                     _combined_max_mem  = min(_max_mem,  _tpl_max_mem)
-                    _pools = _svc.rank_pools(
-                        node_template=NodeTemplate(
+                    _pools = _pool_ranking_svc.rank_pools(
+                        node_template=_NT(
                             architecture=_tpl_architectures,
                             vcpu_range=(1, _combined_max_vcpu),
                             memory_range=(1, _combined_max_mem),
@@ -971,7 +967,7 @@ def get_karpenter_recommendations(
 
             # ── Compute combined savings ──────────────────────────────────
             if is_spot:
-                monthly_current = round(hourly_od * 720 * 0.3, 2)
+                monthly_current = round(hourly_od * 730 * 0.3, 2)
                 potential_savings = 0.0
                 savings_pct = 0
                 reason = "Already running on spot — lifecycle optimized"
@@ -988,7 +984,7 @@ def get_karpenter_recommendations(
                 if spot_pool and spot_pool["spot_price_hourly"] > 0:
                     # Combined: downsize OD + migrate to spot pool
                     target_hourly = spot_pool["spot_price_hourly"]
-                    potential_savings = max(0.0, round((hourly_od - target_hourly) * 720 + resize_savings, 2))
+                    potential_savings = max(0.0, round((hourly_od - target_hourly) * 730 + resize_savings, 2))
                     savings_pct = round(potential_savings / monthly_od * 100) if monthly_od > 0 else 70
                     reason = (f"Downsize to {recommended_type} + migrate to "
                               f"{spot_pool['instance_type']} spot ({spot_pool['predicted_savings_pct']}% savings)")
@@ -1028,7 +1024,7 @@ def get_karpenter_recommendations(
                 "cpu": cpu_pct,
                 "mem": mem_pct,
                 "current_cost_monthly": monthly_current,
-                "recommended_cost_monthly": round(hourly_rec * 720 * (0.3 if node_type == "stateless" else 1.0), 2),
+                "recommended_cost_monthly": round(hourly_rec * 730 * (0.3 if node_type == "stateless" else 1.0), 2),
                 "potential_savings": potential_savings,      # Negative if upsize
                 "savings_pct": savings_pct,
                 "resize_savings": resize_savings,           # Savings from bin-packing (negative = upsize)
@@ -2273,6 +2269,19 @@ def get_native_spot_status(
     if not cluster:
         raise HTTPException(status_code=404, detail=f"Cluster {cluster_id} not found")
 
+    # Cache result for 5 minutes — this endpoint makes 3 live AWS API calls which
+    # takes 2+ seconds and is called on every cluster detail page load.
+    import json as _json_ns
+    from backend.core.redis_client import get_redis_client as _get_redis
+    _cache_key = f"native_spot_status:{cluster_id}:{nodegroup_name or 'auto'}"
+    try:
+        _r = _get_redis()
+        _cached = _r.get(_cache_key)
+        if _cached:
+            return _json_ns.loads(_cached)
+    except Exception:
+        pass
+
     try:
         _, _, session = _load_platform_session(cluster, db)
     except HTTPException:
@@ -2295,6 +2304,13 @@ def get_native_spot_status(
     )
     result["nodegroup_name"] = ng_name
     result["cluster_id"] = cluster_id
+
+    # Store in Redis for 5 minutes
+    try:
+        _r.setex(_cache_key, 300, _json_ns.dumps(result))
+    except Exception:
+        pass
+
     return result
 
 

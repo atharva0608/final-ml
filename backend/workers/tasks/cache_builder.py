@@ -40,15 +40,16 @@ _REGION_AZS = {
     'ap-northeast-1':['ap-northeast-1a', 'ap-northeast-1b', 'ap-northeast-1c'],
 }
 
-# Family base OD prices ($/hr for .large) — used for fallback pricing
+# Family base OD prices ($/hr for .large, us-east-1 reference) — last-resort fallback
+# Real OD prices are fetched from AWS Pricing API via refresh_ondemand task
 _FAMILY_BASE_OD = {
     't2': 0.023, 't3': 0.0832, 't3a': 0.0752, 't4g': 0.0672,
     'm5': 0.096, 'm5a': 0.086, 'm6i': 0.096, 'm6a': 0.086, 'm6g': 0.077,
-    'm7i': 0.099, 'm7g': 0.080,
+    'm7i': 0.1008, 'm7g': 0.0816,
     'c5': 0.085, 'c5a': 0.077, 'c6i': 0.085, 'c6a': 0.077, 'c6g': 0.068,
-    'c7i': 0.088, 'c7g': 0.070,
+    'c7i': 0.089, 'c7g': 0.0725,
     'r5': 0.126, 'r5a': 0.113, 'r6i': 0.126, 'r6a': 0.113, 'r6g': 0.101,
-    'r7i': 0.130, 'r7g': 0.104,
+    'r7i': 0.1323, 'r7g': 0.1071,
     'i3': 0.156, 'i4i': 0.182,
 }
 _SIZE_MULT = {
@@ -72,6 +73,10 @@ def _estimate_od_price(instance_type: str) -> float:
 # Minimal fallback specs for common types (used when DB catalog is empty)
 # Format: instance_type → (vcpu, memory_gb, architecture)
 _FALLBACK_SPECS = {
+    "t2.nano":     (1,  0.5,  "amd64"), "t2.micro":    (1,  1,    "amd64"),
+    "t2.small":    (1,  2,    "amd64"), "t2.medium":   (2,  4,    "amd64"),
+    "t2.large":    (2,  8,    "amd64"), "t2.xlarge":   (4,  16,   "amd64"),
+    "t2.2xlarge":  (8,  32,   "amd64"),
     "t3.nano":     (2,  0.5,  "amd64"), "t3.micro":    (2,  1,    "amd64"),
     "t3.small":    (2,  2,    "amd64"), "t3.medium":   (2,  4,    "amd64"),
     "t3.large":    (2,  8,    "amd64"), "t3.xlarge":   (4,  16,   "amd64"),
@@ -168,24 +173,82 @@ def _lookup_od_price(r, region: str, instance_type: str) -> float:
     return 0.0
 
 
-def _lookup_interruption_rate(r, region: str, instance_type: str) -> float:
-    """Get spot advisor interruption rate pct from Redis. Returns 25.0 (worst-case) if not found."""
+def _lookup_interruption_rate(r, region: str, instance_type: str, db=None) -> float:
+    """Get spot advisor interruption rate pct from Redis → DB → family average → 15.0 fallback."""
+    _idx_to_pct = {0: 5.0, 1: 10.0, 2: 15.0, 3: 20.0, 4: 25.0}
+
+    # 1. Redis cache (fastest)
     try:
         raw = r.get(f"spot_advisor:{region}:{instance_type}:Linux")
         if raw:
             data = json.loads(raw)
             idx = data.get("interruption_index", 4)
-            _idx_to_pct = {0: 5.0, 1: 10.0, 2: 15.0, 3: 20.0, 4: 25.0}
             return _idx_to_pct.get(int(idx), 25.0)
     except Exception:
         pass
-    return 25.0  # worst-case default if not found
+
+    # 2. DB lookup (SpotAdvisorData table)
+    if db is not None:
+        try:
+            from backend.models.pricing import SpotAdvisorData
+            record = db.query(SpotAdvisorData).filter(
+                SpotAdvisorData.region == region,
+                SpotAdvisorData.instance_type == instance_type,
+                SpotAdvisorData.os_type == 'Linux',
+            ).first()
+            if record and record.interruption_index is not None:
+                pct = _idx_to_pct.get(record.interruption_index, 15.0)
+                # Backfill Redis so next lookup is fast
+                try:
+                    r.setex(
+                        f"spot_advisor:{region}:{instance_type}:Linux",
+                        3600,
+                        json.dumps({"interruption_index": record.interruption_index,
+                                    "savings_percentage": record.savings_percentage or 0})
+                    )
+                except Exception:
+                    pass
+                return pct
+        except Exception:
+            pass
+
+    # 3. Family average from Redis (e.g., t3a family)
+    try:
+        family = instance_type.split('.')[0]
+        _fam_cursor = 0
+        _fam_rates = []
+        while True:
+            _fam_cursor, _fam_keys = r.scan(
+                _fam_cursor, match=f"spot_advisor:{region}:{family}.*:Linux", count=50
+            )
+            for _fk in _fam_keys:
+                try:
+                    _fraw = r.get(_fk)
+                    if _fraw:
+                        _fidx = json.loads(_fraw).get("interruption_index")
+                        if _fidx is not None:
+                            _fam_rates.append(_idx_to_pct.get(int(_fidx), 15.0))
+                except Exception:
+                    pass
+            if _fam_cursor == 0:
+                break
+        if _fam_rates:
+            return round(sum(_fam_rates) / len(_fam_rates), 1)
+    except Exception:
+        pass
+
+    # 4. Conservative default (not worst-case — 15% = mid-range)
+    return 15.0
 
 
 def _lookup_specs(instance_type: str) -> tuple:
-    """Return (vcpu, memory_gb, architecture) for an instance type."""
+    """Return (vcpu, memory_gb, architecture, is_fallback) for an instance type.
+    
+    is_fallback=True when the type is completely unknown — callers should
+    abort ranking rather than proceeding with default floor values.
+    """
     if instance_type in _FALLBACK_SPECS:
-        return _FALLBACK_SPECS[instance_type]
+        return (*_FALLBACK_SPECS[instance_type], False)
     return _derive_specs_from_type(instance_type)
 
 
@@ -196,7 +259,7 @@ def _derive_specs_from_type(instance_type: str) -> tuple:
     """
     parts = instance_type.split('.')
     if len(parts) != 2:
-        return (0, 0.0, 'amd64')
+        return (0, 0.0, 'amd64', True)
     family, size = parts
 
     # vCPU counts by size
@@ -210,7 +273,7 @@ def _derive_specs_from_type(instance_type: str) -> tuple:
     }
     vcpu = vcpu_map.get(size, 0)
     if vcpu == 0:
-        return (0, 0.0, 'amd64')
+        return (0, 0.0, 'amd64', True)
 
     # Architecture: Graviton instances have "g" after a generation digit (e.g. c6g, m8g, c8gn, r6gd).
     # This regex matches digit-then-g which is the Graviton marker in AWS naming.
@@ -224,7 +287,7 @@ def _derive_specs_from_type(instance_type: str) -> tuple:
     # compute optimized: ~2 GB/vCPU at large (4GB / 2vCPU)
     # memory optimized: ~8 GB/vCPU at large (16GB / 2vCPU)
     # storage optimized: varies
-    family_prefix = family.rstrip('0123456789').lower()
+    family_prefix = family.lower()
 
     if family_prefix in ('t2', 't3', 't3a', 't4g'):
         # T-series: nano=0.5, micro=1, small=2, medium=4, large=8, xlarge=16, 2xl=32
@@ -247,7 +310,7 @@ def _derive_specs_from_type(instance_type: str) -> tuple:
         # default general purpose: ~4GB/vCPU
         mem = vcpu * 4.0
 
-    return (vcpu, round(mem, 2), arch)
+    return (vcpu, round(mem, 2), arch, False)
 
 
 def build_global_pool_cache(region: str, db=None):
@@ -397,14 +460,20 @@ def build_global_pool_cache(region: str, db=None):
                 continue
 
             # Instance specs
-            vcpu, memory_gb, arch = _lookup_specs(itype)
+            vcpu, memory_gb, arch, _ = _lookup_specs(itype)
             if vcpu == 0:
-                # Unknown type — still include but flag it
+                # N9 fix: Unknown instance type — skip entirely to prevent undersized replacement.
+                # A (0,0) fallback would bypass vCPU/memory floor filters downstream,
+                # allowing a 72-vCPU node to be replaced by a 2-vCPU instance.
+                logger.warning(
+                    "[cache_builder] Unknown instance type %s — spec lookup returned (0,0). "
+                    "Skipping to prevent undersized replacement.", itype
+                )
                 no_specs += 1
-                vcpu, memory_gb, arch = 1, 1.0, "amd64"  # minimal defaults
+                continue
 
             # Actual risk tier from spot advisor
-            interruption_rate = _lookup_interruption_rate(r, region, itype)
+            interruption_rate = _lookup_interruption_rate(r, region, itype, db=db)
             risk_tier = assign_risk_tier(interruption_rate)
 
             # ML score — computed after pool list is built via ONNX (see below).
@@ -442,12 +511,17 @@ def build_global_pool_cache(region: str, db=None):
         # ── ONNX ML scoring pass ──────────────────────────────────────────────
         # Replace the simple formula ml_score with real ONNX scores when db is available.
         # Without this, all pools use savings*safety which ignores historical volatility.
+        # NOTE: We disable the hard risk gate here (threshold=1.0) because
+        # the per-node and market-view endpoints apply their own risk ceiling.
+        # The cache should contain ALL scored pools so endpoints can filter.
         if db is not None:
             try:
                 from backend.services.pool_ranking_service import (
                     PoolRankingService, InstancePool
                 )
                 _prs = PoolRankingService(db, r)
+                # Disable hard risk gate for cache building — let endpoints filter
+                _prs.risk_threshold = 1.0
                 if _prs.classifier_session and _prs.regressor_session:
                     _instance_pools = [
                         InstancePool(
@@ -493,7 +567,7 @@ def build_global_pool_cache(region: str, db=None):
         # Limit to GLOBAL_CACHE_SIZE
         top_pools = pools[:GLOBAL_CACHE_SIZE]
 
-        # Store in Redis — use market_view_cache key (separate from pool_ranking_service's global_pool_rankings)
+        # Store in Redis — market_view_cache for Market View UI
         cache_key = key_market_view_cache(region)
         payload = json.dumps({
             'data': top_pools,
@@ -502,6 +576,45 @@ def build_global_pool_cache(region: str, db=None):
             'region': region,
         })
         r.setex(cache_key, 3600, payload)
+
+        # Also populate global_pool_rankings:{region} in the format expected by
+        # pool_ranking_service._pool_from_dict() so pool rankings API gets a cache hit
+        # instead of running the expensive inline pipeline (which blocks for 10+ minutes
+        # due to ONNX scoring 3000+ pools when the risk gate is tight).
+        try:
+            _now_iso = datetime.now(timezone.utc).isoformat()
+            _ranked_dicts = []
+            for _i, _p in enumerate(top_pools):
+                _savings = _p.get('predicted_savings', 0) or 0
+                _risk = _p.get('risk_probability', 0.20) or 0.20
+                _ml = _p.get('ml_score', _savings - _risk) or 0.0
+                _ranked_dicts.append({
+                    'instance_type': _p['instance_type'],
+                    'az': _p['az'],
+                    'architecture': _p.get('architecture', 'x86_64'),
+                    'vcpu': _p.get('vcpu', 2),
+                    'memory_gb': _p.get('memory_gb', 4.0),
+                    'spot_price': _p.get('spot_price', 0.0),
+                    'ondemand_price': _p.get('ondemand_price', 0.0),
+                    'spot_advisor_rank': int(_p.get('risk_tier', 2)),
+                    'has_capacity': True,
+                    'capacity_uncertain': False,
+                    'predicted_savings': round(float(_savings), 4),
+                    'risk_probability': round(float(_risk), 4),
+                    'ml_score': round(float(_ml), 6),
+                    'is_flagged': False,
+                    'rank': _i + 1,
+                    'timestamp': _now_iso,
+                    'capacity_status': None,
+                    'capacity_validated_at': None,
+                })
+            r.setex(f'global_pool_rankings:{region}', 3900, json.dumps(_ranked_dicts))
+            logger.info(
+                f"[cache_builder] Also wrote global_pool_rankings:{region} "
+                f"({len(_ranked_dicts)} pools) for pool rankings API"
+            )
+        except Exception as _gpr_err:
+            logger.warning(f"[cache_builder] global_pool_rankings cross-write failed: {_gpr_err}")
 
         logger.info(
             f"[cache_builder] Built pool cache for {region}: "
@@ -520,19 +633,17 @@ try:
     from backend.workers.app import app
 
     @app.task(name='build_global_pool_cache', bind=False)
-    def build_global_pool_cache_task(region: str = 'us-east-1', db=None):
-        """Celery task wrapper for build_global_pool_cache — creates a DB session for ONNX scoring."""
-        if db is None:
-            try:
-                from backend.models.base import SessionLocal
-                _db = SessionLocal()
-                try:
-                    return build_global_pool_cache(region, _db)
-                finally:
-                    _db.close()
-            except Exception:
-                pass
-        return build_global_pool_cache(region, db)
+    def build_global_pool_cache_task(region: str = 'us-east-1'):
+        """Celery task wrapper for build_global_pool_cache.
+        Opens a DB session so the 4-tier interruption_rate lookup (Redis → DB → family → default)
+        can use Tier 2 (SpotAdvisorData table) when Redis keys have expired.
+        """
+        from backend.models.base import get_db
+        db = next(get_db())
+        try:
+            return build_global_pool_cache(region, db=db)
+        finally:
+            db.close()
 
 except ImportError:
     logger.warning("[cache_builder] Celery not available, task scheduling disabled")

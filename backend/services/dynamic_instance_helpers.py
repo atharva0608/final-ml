@@ -24,9 +24,9 @@ logger = logging.getLogger(__name__)
 # ──────────────────────────────────────────────────────────────────────
 
 _FALLBACK_VCPU: Dict[str, int] = {
-    "t3.micro": 2, "t3.small": 2, "t3.medium": 2, "t3.large": 2,
+    "t3.nano": 2, "t3.micro": 2, "t3.small": 2, "t3.medium": 2, "t3.large": 2,
     "t3.xlarge": 4, "t3.2xlarge": 8,
-    "t3a.micro": 2, "t3a.small": 2, "t3a.medium": 2, "t3a.large": 2,
+    "t3a.nano": 2, "t3a.micro": 2, "t3a.small": 2, "t3a.medium": 2, "t3a.large": 2,
     "t3a.xlarge": 4, "t3a.2xlarge": 8,
     "t4g.micro": 2, "t4g.small": 2, "t4g.medium": 2, "t4g.large": 2,
     "t4g.xlarge": 4, "t4g.2xlarge": 8,
@@ -42,9 +42,9 @@ _FALLBACK_VCPU: Dict[str, int] = {
 }
 
 _FALLBACK_HOURLY: Dict[str, float] = {
-    "t3.micro": 0.0116, "t3.small": 0.0232, "t3.medium": 0.0464,
+    "t3.nano": 0.0058, "t3.micro": 0.0116, "t3.small": 0.0232, "t3.medium": 0.0464,
     "t3.large": 0.0928, "t3.xlarge": 0.1856, "t3.2xlarge": 0.3712,
-    "t3a.micro": 0.0104, "t3a.small": 0.0209, "t3a.medium": 0.0418,
+    "t3a.nano": 0.0047, "t3a.micro": 0.0104, "t3a.small": 0.0209, "t3a.medium": 0.0418,
     "t3a.large": 0.0836, "t3a.xlarge": 0.1672, "t3a.2xlarge": 0.3344,
     "t4g.micro": 0.0092, "t4g.small": 0.0184, "t4g.medium": 0.0368,
     "t4g.large": 0.0736, "t4g.xlarge": 0.1472, "t4g.2xlarge": 0.2944,
@@ -180,7 +180,7 @@ def load_instance_catalog_from_db(
                 "architecture": arch,
             }
 
-        logger.info(
+        logger.debug(
             f"Loaded {len(catalog)} instances from InstanceCatalog DB "
             f"(region={region})"
         )

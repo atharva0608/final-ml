@@ -70,14 +70,18 @@ def get_multi_cluster_summary(
     from backend.models.instance import Instance, InstanceLifecycle
     from backend.models.rebalancing_action import RebalancingAction
     from backend.models.account import Account
+    from backend.core.redis_client import get_redis_client
+    from backend.services.dynamic_instance_helpers import get_instance_hourly_price
 
     org_id = current_user.organization_id
+    redis = get_redis_client()
 
-    # Fetch all clusters for this org via account join
+    # Fetch all non-dismissed clusters for this org via account join
     clusters_q = (
         db.query(Cluster)
         .join(Account, Cluster.account_id == Account.id)
         .filter(Account.organization_id == org_id)
+        .filter(Cluster.is_dismissed == False)
         .all()
     )
 
@@ -116,10 +120,31 @@ def get_multi_cluster_summary(
             RebalancingAction.completed_at >= since_24h,
         ).count()
 
-        # Rough savings estimate: spot nodes save ~70% vs OD at ~$0.096/h (m5.large baseline)
-        _hourly_od_baseline = 0.096
-        _spot_discount = 0.70
-        monthly_savings = round(spot_count * _hourly_od_baseline * _spot_discount * 720, 2)
+        # Real savings: sum (OD_price - spot_price) per spot instance, projected monthly
+        spot_instances = db.query(Instance).filter(
+            Instance.cluster_id == c.id,
+            Instance.lifecycle == InstanceLifecycle.SPOT,
+            Instance.state == 'running',
+        ).all()
+
+        monthly_savings = 0.0
+        for si in spot_instances:
+            od_price = get_instance_hourly_price(db, redis, si.instance_type or 'm5.large', c.region or 'ap-south-1')
+            # Spot price from Redis
+            _sp_key = f"spot_price:{c.region or 'ap-south-1'}:{si.az or ''}:{si.instance_type}"
+            _sp_raw = None
+            try:
+                import json as _json_fleet
+                _sp_raw = redis.get(_sp_key)
+                if _sp_raw:
+                    _sp_val = float(_json_fleet.loads(_sp_raw).get("price", 0))
+                else:
+                    _sp_val = od_price * 0.35  # conservative fallback
+            except Exception:
+                _sp_val = od_price * 0.35
+            hourly_saving = max(0.0, od_price - _sp_val)
+            monthly_savings += hourly_saving * 730
+        monthly_savings = round(monthly_savings, 2)
 
         auto_rebalance = getattr(c, 'auto_rebalance_enabled', False) or False
 

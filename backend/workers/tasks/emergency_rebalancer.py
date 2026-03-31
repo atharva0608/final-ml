@@ -81,6 +81,19 @@ def emergency_rebalancer(
         redis.setex(key_blacklist_global(pool_key), POOL_TERMINATION_BLACKLIST_HOURS * 3600, '1')
         logger.info(f"[emergency] Blacklisted pool {pool_key} for {POOL_TERMINATION_BLACKLIST_HOURS}h")
 
+        # Update global EMA interruption tracker
+        try:
+            from backend.services.global_ema_service import update_ema_on_interruption
+            update_ema_on_interruption(
+                redis=redis, db=db, pool_key=pool_key,
+                instance_type=interrupted.instance_type,
+                az=interrupted.az,
+                region=cluster.region or "ap-south-1",
+                cluster_id=cluster_id,
+            )
+        except Exception as _ema_err:
+            logger.warning(f"[emergency] EMA update failed for {pool_key}: {_ema_err}")
+
         # Issue 14: Event-driven pool ranking refresh — trigger incremental rebuild
         # after a spot interruption so the ranking cache reflects the updated blacklist
         # without waiting for the next hourly build. Debounced to at most 1 refresh/60s.
@@ -265,8 +278,8 @@ def _execute_standby_failover(db, redis, cluster, interrupted, standby, action):
         logger.info(f"[emergency] Standby {standby.node_name} activated as normal node")
 
         # 6. Update action record
-        action.target_instance_type = standby.instance_type
-        action.target_az = standby.az
+        action.actual_instance_type = standby.instance_type
+        action.actual_az = standby.az
         action.status = "completed"
         action.completed_at = datetime.utcnow()
         db.commit()
@@ -308,7 +321,7 @@ def _execute_normal_emergency(db, redis, cluster, interrupted, action):
         # and action_type='emergency'. The auto_rebalancer will detect this
         # and handle it with priority (bypass double gate checks).
 
-        action.status = "pending"
+        action.status = "in_progress"
         action.action_metadata = {
             "emergency": True,
             "bypass_double_gate": True,

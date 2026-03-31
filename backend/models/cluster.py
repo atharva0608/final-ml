@@ -14,6 +14,7 @@ class ClusterStatus(enum.Enum):
     ERROR = "ERROR"
     TERMINATED = "TERMINATED"
     DISCONNECTED = "DISCONNECTED"
+    DEGRADED = "DEGRADED"     # Agent installed but cluster no longer found in AWS
 
 class ClusterType(enum.Enum):
     EKS = "EKS"
@@ -104,6 +105,9 @@ class Cluster(Base):
     hibernation_lock = Column(String(255), nullable=True)  # UUID of worker holding hibernation lock
     hibernation_lock_acquired_at = Column(DateTime, nullable=True)  # When lock was acquired
 
+    # Dismissed flag — prevents re-discovery after user removes the cluster
+    is_dismissed = Column(Boolean, default=False, nullable=False, server_default="false")
+
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -135,7 +139,6 @@ class ClusterOptimizationSettings(Base):
     auto_stateful_rightsizing_enabled = Column(Boolean, default=False)
     cooldown_override_minutes = Column(Integer, nullable=True)
     spot_join_timeout_minutes = Column(Integer, nullable=True)  # How long to wait for new spot node to join (default 30 min)
-    conservative_mode_enabled = Column(Boolean, default=True)
     manual_approval_required = Column(Boolean, default=False)
     target_spot_exposure_pct = Column(Integer, default=100)
     
@@ -143,13 +146,10 @@ class ClusterOptimizationSettings(Base):
     maintain_standby = Column(Boolean, default=False)
     diversify_pools = Column(Boolean, default=False)
     max_family_diversification_cap_pct = Column(Integer, default=40)
+    # 100% = all different types (strict); lower % allows more nodes to share the same type.
+    instance_type_diversification_pct = Column(Integer, default=100, server_default='100')
     failure_cooldown_minutes = Column(Integer, default=30)
     
-    # Billing model preference for right-sizing: "spot" or "on_demand".
-    # When both auto_rebalance_enabled AND auto_rightsizing_enabled are True
-    # (synergy mode), API force-locks this to "spot".
-    optimization_target = Column(String(20), default="spot")
-
     # Instance-Aware Rightsizing: when True, only generate recommendations
     # if a better spot pool exists (double gate: risk < current AND price < OD).
     instance_aware_rightsizing = Column(Boolean, default=False)
@@ -181,10 +181,25 @@ class ClusterOptimizationSettings(Base):
     # Celery beat schedule. Increase to reduce check frequency for stable clusters.
     check_interval_seconds = Column(Integer, default=15, nullable=False)
 
+    # CPU Architecture preference: "both", "amd64", or "arm64".
+    # Controls which architectures are considered for alternative pool selection.
+    architecture_preference = Column(String(10), default="both", nullable=False, server_default="both")
+
+    # Problem #11: Configurable drain timeout per cluster (default 15 min).
+    # Controls how long we wait for pods to gracefully terminate before forced termination.
+    drain_timeout_minutes = Column(Integer, default=15, nullable=True)
+
     # Issue 12: Configurable concurrent rebalancing actions per cluster.
     # Default NULL (treated as 1) preserves existing one-at-a-time behavior.
     # Set to >1 for clusters that can safely handle parallel node replacements.
     max_concurrent_rebalance_actions = Column(Integer, nullable=True)
+
+    # CAST-like attach-to-ASG mode: when True, the replacement Spot instance is
+    # attached to the source ASG after joining Kubernetes, and the source OD node
+    # is terminated with ShouldDecrementDesiredCapacity=False so the ASG desired
+    # capacity stays constant.  When False (default), the existing external-node
+    # mode is used (replacement lives outside the ASG).
+    attach_to_asg_enabled = Column(Boolean, default=False, nullable=False, server_default='false')
 
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
@@ -224,7 +239,6 @@ class StatefulRules(Base):
     __tablename__ = "stateful_rules"
     cluster_id = Column(String, ForeignKey("clusters.id"), primary_key=True)
     manual_resize_allowed = Column(Boolean, default=True)
-    show_ondemand_only = Column(Boolean, default=True)
     require_approval = Column(Boolean, default=True)
     block_spot_for_stateful = Column(Boolean, default=True)
     max_downscale_percent = Column(Integer, default=25)

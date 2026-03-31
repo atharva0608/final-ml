@@ -124,14 +124,54 @@ app.add_middleware(
 )
 
 
+# High-frequency paths that should only be logged at DEBUG level to avoid
+# flooding container logs.  Agent polling, health-checks, and frontend
+# polling endpoints land here.
+_QUIET_LOG_PATHS: set[str] = {
+    "/health",
+    "/api/v1/agents/actions/pending",
+    "/api/v1/agents/heartbeat",
+    "/api/v1/agent-metrics/batch",
+    "/api/v1/pod-metrics/batch",
+    "/api/v1/karpenter/recommendations",
+}
+
+# Prefix-based quiet paths for routes with dynamic segments (cluster_id, etc.)
+# Any request whose path starts with one of these prefixes is treated the same
+# as an exact match in _QUIET_LOG_PATHS.
+_QUIET_LOG_PREFIXES: tuple[str, ...] = (
+    "/api/v1/ascpai/clusters/",
+    "/api/v1/clusters/",
+    "/api/v1/ascpai/rebalancing/",
+)
+
+
 # Request logging middleware
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
     """Log all HTTP requests with timing"""
     start_time = time.time()
 
-    # Process request
-    response = await call_next(request)
+    # Process request — catch RuntimeError from Starlette BaseHTTPMiddleware
+    # when an unhandled exception in a route prevents a response from being
+    # returned (e.g. DB pool exhaustion, bad dependency injection). This stops
+    # the cascade: without the catch, the RuntimeError itself propagates and
+    # takes down the Uvicorn worker for that request.
+    try:
+        response = await call_next(request)
+    except RuntimeError as _mw_exc:
+        _duration_ms = (time.time() - start_time) * 1000
+        log_request(
+            method=request.method,
+            path=request.url.path,
+            status_code=500,
+            duration_ms=_duration_ms,
+            user_id=None,
+        )
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "Internal server error"},
+        )
 
     # Calculate duration
     duration_ms = (time.time() - start_time) * 1000
@@ -141,14 +181,27 @@ async def log_requests(request: Request, call_next):
     if hasattr(request.state, "user_context"):
         user_id = request.state.user_context.user_id
 
-    # Log request
-    log_request(
-        method=request.method,
-        path=request.url.path,
-        status_code=response.status_code,
-        duration_ms=duration_ms,
-        user_id=user_id
-    )
+    # Suppress high-frequency polling endpoints to DEBUG level
+    if request.url.path in _QUIET_LOG_PATHS or request.url.path.startswith(_QUIET_LOG_PREFIXES):
+        import logging as _logging
+        _api_logger = _logging.getLogger("api")
+        if _api_logger.isEnabledFor(_logging.DEBUG):
+            log_request(
+                method=request.method,
+                path=request.url.path,
+                status_code=response.status_code,
+                duration_ms=duration_ms,
+                user_id=user_id,
+            )
+    else:
+        # Log request at INFO (normal)
+        log_request(
+            method=request.method,
+            path=request.url.path,
+            status_code=response.status_code,
+            duration_ms=duration_ms,
+            user_id=user_id,
+        )
 
     # Add timing header
     response.headers["X-Process-Time"] = f"{duration_ms:.2f}ms"

@@ -57,6 +57,7 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://localhost,http://localhost:80,http://localhost:8000}
       CORS_ALLOW_CREDENTIALS: ${CORS_ALLOW_CREDENTIALS:-True}
       BACKEND_PUBLIC_URL: ${BACKEND_PUBLIC_URL}
+      AGENT_API_KEY: ${AGENT_API_KEY}
       PYTHONPATH: /app
     ports:
       - "8000:8000"

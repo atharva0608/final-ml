@@ -131,7 +131,8 @@ class OnboardingService:
             state.current_step = OnboardingStep.VERIFYING
             # Extract Account ID from Role ARN
             # arn:aws:iam::123456789012:role/...
-            account_id = role_arn.split(":")[4]
+            _arn_parts_ob = (role_arn or '').split(':')
+            account_id = _arn_parts_ob[4] if len(_arn_parts_ob) > 4 else ''
             state.aws_account_id = account_id
             
             # --- CRITICAL FIX: Create/Update Account Record for Discovery Worker ---

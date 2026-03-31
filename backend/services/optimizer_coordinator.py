@@ -564,11 +564,15 @@ class OptimizerCoordinator:
             # ── CIRCUIT BREAKER FAILURE RECORDING (Enhancement 10) ───────
             logger.error(f"Failed to execute proposal {proposal_id}: {e}")
 
-            # Record failure for circuit breaker
+            # Record failure for circuit breaker — P-H14 fix: use pipeline for atomic INCR+EXPIRE
             failure_key = f"resize:failure_count_24h:{cluster_id}"
-            count = self.redis.incr(failure_key)
-            if count == 1:
-                self.redis.expire(failure_key, 86400)  # 24h TTL
+            try:
+                _pipe = self.redis.pipeline()
+                _pipe.incr(failure_key)
+                _pipe.expire(failure_key, 86400)  # 24h TTL
+                _pipe.execute()
+            except Exception:
+                pass
 
             # Mark proposal as failed
             proposal.status = ProposalStatus.FAILED

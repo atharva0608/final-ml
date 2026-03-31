@@ -13,6 +13,9 @@ from sqlalchemy.orm import Session
 
 router = APIRouter(prefix="/installer", tags=["installer"])
 
+# Agent version — must match charts/spot-optimizer-agent/Chart.yaml appVersion
+CURRENT_AGENT_VERSION = "1.0.1"
+
 # Path to the install.sh template
 TEMPLATE_PATH = Path(__file__).parent.parent / "templates" / "install.sh"
 
@@ -66,7 +69,7 @@ async def get_linux_installer(
     # Note: The template uses ${VAR} syntax which works with string.Template
     manifest_k8s = manifest_template.safe_substitute(
         NAMESPACE="spot-optimizer",
-        AGENT_IMAGE=f"atharva608/spot-optimizer-agent:{'latest'}", # Static for now
+        AGENT_IMAGE=f"atharva608/spot-optimizer-agent:{CURRENT_AGENT_VERSION}",
         # Other env vars are handled by envFrom/ConfigMap in the manifest structure
         # Wait, the manifest itself relies on ConfigMap values which are set in the script below.
         # The manifest template I wrote uses ${NAMESPACE} and ${AGENT_IMAGE}.
@@ -84,7 +87,7 @@ set -e
 
 # --- Static Configuration ---
 NAMESPACE="spot-optimizer"
-AGENT_VERSION="latest"
+AGENT_VERSION="{CURRENT_AGENT_VERSION}"
 AGENT_IMAGE="atharva608/spot-optimizer-agent:${{AGENT_VERSION}}"
 
 # --- Dynamic Configuration (Auto-generated) ---

@@ -69,6 +69,7 @@ class ClusterMetrics(BaseModel):
     spot_ratio: float = 0.0
     monthly_cost: float = 0.0
     estimated_savings: float = 0.0
+    realized_savings: float = 0.0
     average_cpu_utilization: float = 0.0
 
 class MetricFilter(BaseModel):

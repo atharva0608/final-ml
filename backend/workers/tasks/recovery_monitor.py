@@ -84,12 +84,16 @@ def sync_instance_states(self):
                 ec2 = None
                 if cluster.aws_role_arn:
                     try:
-                        sts = boto3.client("sts", region_name=region, **base_creds)
-                        assumed = sts.assume_role(
-                            RoleArn=cluster.aws_role_arn,
-                            RoleSessionName="spot-recovery-sync",
-                            DurationSeconds=900,
-                        )
+                        sts = boto3.client("sts", region_name=region, **base_creds,
+                                           endpoint_url=f"https://sts.{region}.amazonaws.com")
+                        _assume_kwargs_sync = {
+                            "RoleArn": cluster.aws_role_arn,
+                            "RoleSessionName": "spot-recovery-sync",
+                            "DurationSeconds": 900,
+                        }
+                        if getattr(cluster, 'aws_external_id', None):
+                            _assume_kwargs_sync["ExternalId"] = cluster.aws_external_id
+                        assumed = sts.assume_role(**_assume_kwargs_sync)
                         c = assumed["Credentials"]
                         ec2 = boto3.client(
                             "ec2", region_name=region,
@@ -220,6 +224,39 @@ def scan_orphans(self):
                     continue
                 if redis.exists(f"node_joined:{iid}"):
                     continue
+                # Problem #18: Double-check before termination — look for node_name
+                # in DB (from agent heartbeat) and check for manual override key
+                _skip_terminate = False
+                try:
+                    # Check manual override
+                    if redis.exists(f"spot:prevent_orphan_termination:{iid}"):
+                        logger.info(f"[scan_orphans] Skipping {iid} — manual override key set")
+                        _skip_terminate = True
+                    if not _skip_terminate:
+                        from backend.models.instance import Instance as _InstOrph
+                        _db_inst = db.query(_InstOrph).filter(
+                            _InstOrph.instance_id == iid[:20]
+                        ).first()
+                        if _db_inst and _db_inst.node_name:
+                            # Agent has reported a node_name — instance has joined K8s
+                            logger.info(
+                                f"[scan_orphans] Skipping {iid} — has node_name={_db_inst.node_name} "
+                                f"in DB (agent heartbeat confirmed join)"
+                            )
+                            _skip_terminate = True
+                        elif _db_inst and hasattr(_db_inst, 'last_heartbeat') and _db_inst.last_heartbeat:
+                            # Check if agent heartbeat is recent (< 5 min)
+                            _hb_age = (now - _db_inst.last_heartbeat).total_seconds() if _db_inst.last_heartbeat else 99999
+                            if _hb_age < 300:
+                                logger.info(
+                                    f"[scan_orphans] Skipping {iid} — recent agent heartbeat "
+                                    f"({_hb_age:.0f}s ago)"
+                                )
+                                _skip_terminate = True
+                except Exception as _p18_err:
+                    logger.debug(f"[scan_orphans] Double-check failed for {iid}: {_p18_err}")
+                if _skip_terminate:
+                    continue
                 try:
                     ec2_client.terminate_instances(InstanceIds=[iid])
                     count += 1
@@ -273,12 +310,16 @@ def scan_orphans(self):
                         "sts", region_name=region,
                         aws_access_key_id=base_key,
                         aws_secret_access_key=base_secret,
+                        endpoint_url=f"https://sts.{region}.amazonaws.com",
                     )
-                    assumed = sts.assume_role(
-                        RoleArn=cluster.aws_role_arn,
-                        RoleSessionName="spot-orphan-scan",
-                        DurationSeconds=900,
-                    )
+                    _assume_kwargs_orphan = {
+                        "RoleArn": cluster.aws_role_arn,
+                        "RoleSessionName": "spot-orphan-scan",
+                        "DurationSeconds": 900,
+                    }
+                    if getattr(cluster, 'aws_external_id', None):
+                        _assume_kwargs_orphan["ExternalId"] = cluster.aws_external_id
+                    assumed = sts.assume_role(**_assume_kwargs_orphan)
                     c = assumed["Credentials"]
                     ec2_assumed = boto3.client(
                         "ec2", region_name=region,
@@ -388,12 +429,16 @@ def detect_karpenter_stalls(self):
                             "sts", region_name=region,
                             aws_access_key_id=pk.value,
                             aws_secret_access_key=ps.value,
+                            endpoint_url=f"https://sts.{region}.amazonaws.com",
                         )
-                        assumed = sts.assume_role(
-                            RoleArn=cluster.aws_role_arn,
-                            RoleSessionName="spot-karpenter-stall",
-                            DurationSeconds=900,
-                        )
+                        _assume_kwargs_karp = {
+                            "RoleArn": cluster.aws_role_arn,
+                            "RoleSessionName": "spot-karpenter-stall",
+                            "DurationSeconds": 900,
+                        }
+                        if getattr(cluster, 'aws_external_id', None):
+                            _assume_kwargs_karp["ExternalId"] = cluster.aws_external_id
+                        assumed = sts.assume_role(**_assume_kwargs_karp)
                         c = assumed["Credentials"]
                         ec2 = boto3.client(
                             "ec2", region_name=region,
@@ -458,11 +503,159 @@ def detect_karpenter_stalls(self):
 # Legacy task name alias (for backward compat with existing beat schedule)
 @app.task(name="recovery_monitor", bind=True, max_retries=1)
 def recovery_monitor(self):
-    """Alias: runs both sync + scan + karpenter stall detection."""
+    """Alias: runs both sync + scan + karpenter stall detection + stuck cordon recovery."""
+
+    def _safe_result(task_result, name: str):
+        """BUG-15 fix: isolate each subtask — one failure doesn't crash the umbrella."""
+        try:
+            return {"status": "ok", "result": task_result.result}
+        except Exception as e:
+            logger.error("recovery_monitor subtask %s failed: %s", name, e)
+            return {"status": "error", "error": str(e)}
+
     r1 = sync_instance_states.apply()
     r2 = scan_orphans.apply()
     r3 = detect_karpenter_stalls.apply()
-    return {"sync": r1.result, "scan": r2.result, "karpenter_stalls": r3.result}
+    r4 = recover_stuck_cordoned_nodes.apply()
+    return {
+        "sync": _safe_result(r1, "sync_instance_states"),
+        "scan": _safe_result(r2, "scan_orphans"),
+        "karpenter_stalls": _safe_result(r3, "detect_karpenter_stalls"),
+        "stuck_cordons": _safe_result(r4, "recover_stuck_cordoned_nodes"),
+    }
+
+
+# ── Task 3b: Recover stuck cordoned nodes (Z2 fix) ───────────────────────────
+
+@app.task(name="backend.workers.tasks.recovery_monitor.recover_stuck_cordoned_nodes",
+          bind=True, max_retries=1)
+def recover_stuck_cordoned_nodes(self):
+    """
+    Z2 fix: Detect nodes that were cordoned by the rebalancer but whose
+    RebalancingAction subsequently failed without a successful uncordon.
+
+    The backend does not have direct K8s API access, so we rely on DB state:
+    1. Find failed RebalancingActions where cordon was applied (step_2_cordon
+       timestamp exists in action_metadata).
+    2. Check that no pending UNCORDON_NODE AgentAction already exists for that node.
+    3. Check the cluster agent is online (last_heartbeat < 5 min).
+    4. Dispatch a new UNCORDON_NODE AgentAction.
+
+    Also catches in_progress/waiting_agent actions stuck for > 20 min past
+    cordon completion — indicates a stall that may have left the node cordoned.
+
+    Runs every 5 minutes via the recovery_monitor umbrella task.
+    """
+    from backend.models.base import get_db
+    from backend.models.rebalancing_action import RebalancingAction
+    from backend.models.agent_action import (
+        AgentAction, AgentActionType, AgentActionStatus,
+    )
+    from backend.models.cluster import Cluster
+    from backend.core.redis_client import get_redis_client
+    from datetime import datetime, timedelta
+
+    db = next(get_db())
+    redis = get_redis_client()
+    uncordons_queued = 0
+
+    try:
+        cutoff = datetime.utcnow() - timedelta(minutes=20)
+
+        # ── 1. Failed actions where cordon was applied ─────────────────────
+        failed_actions = db.query(RebalancingAction).filter(
+            RebalancingAction.status == 'failed',
+            RebalancingAction.completed_at >= datetime.utcnow() - timedelta(hours=2),
+        ).all()
+
+        # ── 2. Stuck waiting_agent/in_progress actions past cordon ─────────
+        stuck_actions = db.query(RebalancingAction).filter(
+            RebalancingAction.status.in_(['waiting_agent', 'in_progress']),
+            RebalancingAction.started_at <= cutoff,
+        ).all()
+
+        candidates = []
+        for action in failed_actions + stuck_actions:
+            meta = action.action_metadata or {}
+            # Only act on actions where cordon was successfully completed
+            if 'step_2_cordon' not in meta:
+                continue
+            node_name = meta.get('target_node_name') or meta.get('node_name')
+            if not node_name:
+                continue
+            candidates.append((action, node_name))
+
+        if not candidates:
+            return {"status": "ok", "uncordons_queued": 0}
+
+        for action, node_name in candidates:
+            try:
+                # Check cluster agent is online
+                cluster = db.query(Cluster).filter(Cluster.id == action.cluster_id).first()
+                if not cluster or not cluster.last_heartbeat:
+                    continue
+                hb_age = (datetime.utcnow() - cluster.last_heartbeat).total_seconds()
+                if hb_age > 300:  # Agent offline > 5 min — skip
+                    continue
+
+                # Check no pending/picked_up UNCORDON already exists for this node
+                existing_uncordon = db.query(AgentAction).filter(
+                    AgentAction.cluster_id == action.cluster_id,
+                    AgentAction.action_type == AgentActionType.UNCORDON_NODE,
+                    AgentAction.status.in_([AgentActionStatus.PENDING, AgentActionStatus.PICKED_UP]),
+                    AgentAction.payload.contains({"node_name": node_name}),
+                ).count()
+                if existing_uncordon > 0:
+                    continue
+
+                # Also skip if uncordon was recently completed (< 10 min ago)
+                recent_uncordon = db.query(AgentAction).filter(
+                    AgentAction.cluster_id == action.cluster_id,
+                    AgentAction.action_type == AgentActionType.UNCORDON_NODE,
+                    AgentAction.status == AgentActionStatus.COMPLETED,
+                    AgentAction.payload.contains({"node_name": node_name}),
+                    AgentAction.completed_at >= datetime.utcnow() - timedelta(minutes=10),
+                ).count()
+                if recent_uncordon > 0:
+                    continue
+
+                # Dispatch UNCORDON_NODE
+                uncordon_action = AgentAction(
+                    cluster_id=action.cluster_id,
+                    action_type=AgentActionType.UNCORDON_NODE,
+                    status=AgentActionStatus.PENDING,
+                    payload={"node_name": node_name},
+                    action_metadata={
+                        "recovery_reason": "Z2_stuck_cordon",
+                        "original_action_id": str(action.id),
+                    },
+                )
+                db.add(uncordon_action)
+                db.commit()
+                uncordons_queued += 1
+                logger.warning(
+                    f"[recovery/stuck-cordon] Queued UNCORDON_NODE for {node_name} "
+                    f"(failed action {action.id}, cluster {action.cluster_id})"
+                )
+
+            except Exception as node_err:
+                logger.debug(
+                    f"[recovery/stuck-cordon] Error processing action {action.id}: {node_err}"
+                )
+                db.rollback()
+
+        if uncordons_queued:
+            logger.warning(
+                f"[recovery/stuck-cordon] Queued {uncordons_queued} UNCORDON_NODE action(s)"
+            )
+
+        return {"status": "ok", "uncordons_queued": uncordons_queued}
+
+    except Exception as e:
+        logger.error(f"[recovery/stuck-cordon] Fatal: {e}")
+        return {"status": "error", "error": str(e)}
+    finally:
+        db.close()
 
 
 # ── Task 4: Cluster coverage computation (Fix 13 from changes.md) ────────────

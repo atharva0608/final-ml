@@ -286,6 +286,26 @@ def sync_karpenter_nodepools(self: Task) -> Dict[str, Any]:
         failed_count = 0
 
         for cluster in clusters:
+            # Skip clusters without an active agent heartbeat — NodePool sync requires
+            # Karpenter to be running. A cluster with no recent heartbeat is either a
+            # ghost cluster (agent removed / cluster deleted) or an unreachable endpoint.
+            # Avoids repeated 404/connection-refused errors in the worker logs.
+            if cluster.agent_installed != 'Y':
+                continue
+            if cluster.last_heartbeat:
+                from datetime import timezone
+                _hb = cluster.last_heartbeat
+                if _hb.tzinfo is None:
+                    _hb = _hb.replace(tzinfo=timezone.utc)
+                _mins_since_hb = (datetime.now(timezone.utc) - _hb).total_seconds() / 60
+                if _mins_since_hb > 30:
+                    logger.debug(
+                        f"[Karpenter] Skipping {cluster.name} — last heartbeat {_mins_since_hb:.0f} min ago"
+                    )
+                    continue
+            else:
+                # agent_installed='Y' but no heartbeat ever received — skip
+                continue
             try:
                 # Get ML rankings for this cluster's region
                 # Use cached rankings from Redis (updated by pool ranking pipeline)

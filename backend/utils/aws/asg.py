@@ -44,12 +44,15 @@ def get_assumed_credentials(cluster, db) -> dict:
     plat_key = pk.value if pk and pk.value else None
     plat_secret = ps.value if ps and ps.value else None
 
-    sts_kwargs = {"region_name": region}
+    sts_kwargs = {
+        "region_name": region,
+        # Use regional STS endpoint to avoid global endpoint connectivity issues
+        "endpoint_url": f"https://sts.{region}.amazonaws.com",
+    }
     if plat_key and plat_secret:
         sts_kwargs["aws_access_key_id"] = plat_key
         sts_kwargs["aws_secret_access_key"] = plat_secret
 
-    sts = boto3.client("sts", **sts_kwargs)
     assume_kw = {
         "RoleArn": role_arn,
         "RoleSessionName": "spot-rebalancer-asg-ops",
@@ -57,8 +60,29 @@ def get_assumed_credentials(cluster, db) -> dict:
     if external_id:
         assume_kw["ExternalId"] = external_id
 
-    assumed = sts.assume_role(**assume_kw)
-    creds = assumed["Credentials"]
+    # Retry STS assume-role up to 3 times on transient connectivity errors
+    import time as _t_sts
+    _last_err = None
+    for _sts_attempt in range(3):
+        try:
+            sts = boto3.client("sts", **sts_kwargs)
+            assumed = sts.assume_role(**assume_kw)
+            creds = assumed["Credentials"]
+            _last_err = None
+            break
+        except Exception as _sts_err:
+            _last_err = _sts_err
+            _err_str = str(_sts_err)
+            if "Could not connect" in _err_str or "EndpointConnectionError" in _err_str:
+                logger.warning(
+                    f"[get_assumed_credentials] STS attempt {_sts_attempt + 1}/3 failed: "
+                    f"{_sts_err} — retrying in {2 ** _sts_attempt}s"
+                )
+                _t_sts.sleep(2 ** _sts_attempt)
+                continue
+            raise  # Non-transient error — don't retry
+    if _last_err:
+        raise _last_err
     return {
         "aws_access_key_id": creds["AccessKeyId"],
         "aws_secret_access_key": creds["SecretAccessKey"],

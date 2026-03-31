@@ -13,6 +13,7 @@ from sqlalchemy import func
 from typing import List, Optional, Dict, Tuple
 from datetime import datetime, timedelta
 import statistics
+import math
 
 from backend.models.pod_metric import PodMetric
 from backend.models.cluster import Cluster
@@ -336,7 +337,7 @@ class RightSizingService:
             PodMetric.controller_name == controller_name,
             PodMetric.timestamp >= start_time,
             PodMetric.timestamp <= end_time
-        ).all()
+        ).order_by(PodMetric.timestamp).all()
 
         if len(metrics) < min_data_points:
             logger.debug(f"Insufficient data for {controller_name}: {len(metrics)} < {min_data_points}")
@@ -352,9 +353,9 @@ class RightSizingService:
 
         # Get current configuration from latest metric
         latest_metric = metrics[-1]  # Assuming ordered by timestamp
-        current_cpu_request = latest_metric.cpu_request_millicores
-        current_memory_request_bytes = latest_metric.memory_request_bytes
-        current_memory_request_mb = int(current_memory_request_bytes / (1024 * 1024)) if current_memory_request_bytes else None
+        current_cpu_request = latest_metric.cpu_request_millicores or None
+        current_memory_request_bytes = latest_metric.memory_request_bytes or None
+        current_memory_request_mb = math.ceil(current_memory_request_bytes / (1024 * 1024)) if current_memory_request_bytes else None
 
         # ── PHASE-AWARE SAFETY BUFFER (ENH 1) ──────────────────────────
         # Get phase-aware buffer (Phase 0=30%, Phase 1=25%, Phase 2=20%)
@@ -375,7 +376,7 @@ class RightSizingService:
                 cluster_obj = self.db.query(Cluster).filter(Cluster.id == cluster_id).first()
                 region = cluster_obj.region if cluster_obj else "us-east-1"
                 is_volatile = self.redis.get(f"spot:volatility_regime:{region}")
-                if is_volatile == b"true":
+                if is_volatile in (b"true", "true", b"active", "active"):
                     safety_buffer = max(safety_buffer, 35)  # Increase to at least 35% in volatile markets
                     logger.info(f"Volatile market: safety buffer increased to {safety_buffer}%")
         except Exception:
@@ -384,7 +385,7 @@ class RightSizingService:
         # Calculate recommended requests (P95 + dynamic buffer)
         recommended_cpu = int(cpu_stats['p95'] * (1 + safety_buffer / 100))
         recommended_memory_bytes = int(memory_stats['p95'] * (1 + safety_buffer / 100))
-        recommended_memory_mb = int(recommended_memory_bytes / (1024 * 1024))
+        recommended_memory_mb = math.ceil(recommended_memory_bytes / (1024 * 1024))
 
         # ── P99 FALLBACK FLOOR (ENH 3) ───────────────────────────────
         # Proposed size must exceed P99 * 1.3 to handle bursts safely
@@ -392,7 +393,7 @@ class RightSizingService:
         p99_memory_floor = int(memory_stats['p99'] * 1.3)
         recommended_cpu = max(recommended_cpu, p99_cpu_floor)
         recommended_memory_bytes = max(recommended_memory_bytes, p99_memory_floor)
-        recommended_memory_mb = int(recommended_memory_bytes / (1024 * 1024))
+        recommended_memory_mb = math.ceil(recommended_memory_bytes / (1024 * 1024))
 
         # Determine current replica count (approximate from distinct pods)
         replica_count = self.db.query(func.count(func.distinct(PodMetric.pod_name))).filter(
@@ -405,7 +406,7 @@ class RightSizingService:
         # Estimate costs
         current_cost = self._estimate_cost(
             cpu_millicores=current_cpu_request or cpu_stats['avg'],
-            memory_mb=current_memory_request_mb or int(memory_stats['avg'] / (1024 * 1024)),
+            memory_mb=current_memory_request_mb or math.ceil(memory_stats['avg'] / (1024 * 1024)),
             replica_count=replica_count
         )
 
@@ -462,10 +463,10 @@ class RightSizingService:
             current_replica_count=replica_count,
             cpu_p95_millicores=int(cpu_stats['p95']),
             cpu_p99_millicores=int(cpu_stats['p99']),
-            memory_p95_mb=int(memory_stats['p95'] / (1024 * 1024)),
-            memory_p99_mb=int(memory_stats['p99'] / (1024 * 1024)),
+            memory_p95_mb=math.ceil(memory_stats['p95'] / (1024 * 1024)),
+            memory_p99_mb=math.ceil(memory_stats['p99'] / (1024 * 1024)),
             cpu_avg_millicores=int(cpu_stats['avg']),
-            memory_avg_mb=int(memory_stats['avg'] / (1024 * 1024)),
+            memory_avg_mb=math.ceil(memory_stats['avg'] / (1024 * 1024)),
             recommended_cpu_request_millicores=recommended_cpu,
             recommended_memory_request_mb=recommended_memory_mb,
             current_cost_monthly=round(current_cost, 2),
@@ -518,7 +519,7 @@ class RightSizingService:
         if not sorted_values:
             return 0
 
-        index = int((percentile / 100) * len(sorted_values))
+        index = int((percentile / 100) * (len(sorted_values) - 1))
         index = min(index, len(sorted_values) - 1)  # Ensure within bounds
 
         return sorted_values[index]
@@ -614,19 +615,16 @@ class RightSizingService:
         """
         Calculate confidence level for recommendation based on data quality.
 
-        Args:
-            data_points: Number of metric data points collected
-            window_hours: Analysis window in hours
-            min_data_points: Minimum required data points
-
-        Returns:
-            Confidence level: HIGH, MEDIUM, or LOW
+        Considers both data point count and window coverage ratio to ensure
+        sparse data over long windows doesn't receive inflated confidence.
         """
-        # Grade confidence based on actual data points collected, not window coverage.
-        # Window coverage can be low in new/demo clusters; what matters is enough data for statistics.
-        if data_points >= min_data_points * 5:
+        # Window coverage: expect ~1 data point per 5 minutes (12/hour)
+        expected_points = max(1, window_hours * 12)
+        coverage_ratio = data_points / expected_points  # 0.0 – 1.0+
+
+        if data_points >= min_data_points * 5 and coverage_ratio >= 0.5:
             return "HIGH"
-        elif data_points >= min_data_points:
+        elif data_points >= min_data_points and coverage_ratio >= 0.2:
             return "MEDIUM"
         else:
             return "LOW"
@@ -672,7 +670,7 @@ class RightSizingService:
         # Filter by minimum savings percentage
         filtered_recs = [
             rec for rec in recommendations
-            if rec.savings_monthly_pct and rec.savings_monthly_pct >= min_savings_pct
+            if rec.savings_pct and rec.savings_pct >= min_savings_pct
         ]
 
         logger.info(
@@ -702,8 +700,8 @@ class RightSizingService:
         if template_constraints:
             template_filtered = []
             for rec in filtered_recs:
-                proposed_vcpu = max(1, int(rec.recommended_cpu_cores))
-                proposed_memory_gb = max(1, int(rec.recommended_memory_gb))
+                proposed_vcpu = max(1, int(rec.recommended_cpu_request_millicores / 1000))
+                proposed_memory_gb = max(1, int(rec.recommended_memory_request_mb / 1024))
                 proposed_type = self._suggest_instance_type(proposed_vcpu, proposed_memory_gb)
                 proposed_family = proposed_type.split('.')[0] if proposed_type else ""
 
@@ -750,8 +748,8 @@ class RightSizingService:
                 current_hourly_cost = 0.096  # Placeholder
 
                 # Calculate proposed instance type from resource requirements
-                proposed_vcpu = max(1, int(rec.recommended_cpu_cores))
-                proposed_memory_gb = max(1, int(rec.recommended_memory_gb))
+                proposed_vcpu = max(1, int(rec.recommended_cpu_request_millicores / 1000))
+                proposed_memory_gb = max(1, int(rec.recommended_memory_request_mb / 1024))
                 proposed_instance_type = self._suggest_instance_type(proposed_vcpu, proposed_memory_gb)
                 proposed_hourly_cost = self._estimate_instance_cost(proposed_vcpu, proposed_memory_gb, "m5")
 
@@ -769,12 +767,12 @@ class RightSizingService:
                     proposed_hourly_cost=proposed_hourly_cost,
                     estimated_hourly_savings=(current_hourly_cost - proposed_hourly_cost),
                     estimated_monthly_savings=rec.savings_monthly,
-                    savings_percentage=rec.savings_monthly_pct,
-                    avg_cpu_utilization_pct=rec.current_avg_cpu_pct,
-                    p95_cpu_utilization_pct=rec.current_p95_cpu_pct or rec.current_avg_cpu_pct,
-                    avg_memory_utilization_pct=rec.current_avg_memory_pct,
-                    p95_memory_utilization_pct=rec.current_p95_memory_pct or rec.current_avg_memory_pct,
-                    metric_sample_count=rec.sample_size,
+                    savings_percentage=rec.savings_pct,
+                    avg_cpu_utilization_pct=round(rec.cpu_avg_millicores / rec.current_cpu_request_millicores * 100, 2) if rec.current_cpu_request_millicores else 0,
+                    p95_cpu_utilization_pct=round(rec.cpu_p95_millicores / rec.current_cpu_request_millicores * 100, 2) if rec.current_cpu_request_millicores else 0,
+                    avg_memory_utilization_pct=round(rec.memory_avg_mb / rec.current_memory_request_mb * 100, 2) if rec.current_memory_request_mb else 0,
+                    p95_memory_utilization_pct=round(rec.memory_p95_mb / rec.current_memory_request_mb * 100, 2) if rec.current_memory_request_mb else 0,
+                    metric_sample_count=rec.data_points,
                     metric_window_hours=float(stability_window_hours),
                     status=ProposalStatus.PENDING
                 )

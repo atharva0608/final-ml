@@ -2653,9 +2653,12 @@ class HygieneService:
             # 3. Auto Scaling Groups
             try:
                 asg = session.client('autoscaling')
-                groups = asg.describe_auto_scaling_groups()
+                groups_list = []
+                asg_paginator = asg.get_paginator('describe_auto_scaling_groups')
+                for page in asg_paginator.paginate():
+                    groups_list.extend(page.get('AutoScalingGroups', []))
 
-                for group in groups.get('AutoScalingGroups', []):
+                for group in groups_list:
                     tags = group.get('Tags', [])
                     tag_keys = {t['Key'] for t in tags}
                     missing = [rt for rt in required_tags if rt not in tag_keys]

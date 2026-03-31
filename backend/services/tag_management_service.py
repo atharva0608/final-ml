@@ -42,10 +42,13 @@ class TagManagementService:
         
         # Assume role
         sts = boto3.client('sts')
-        assumed_role = sts.assume_role(
-            RoleArn=account.role_arn,
-            RoleSessionName=f"TagManagement-{service}-{account_id[:8]}"
-        )
+        _assume_kwargs = {
+            "RoleArn": account.role_arn,
+            "RoleSessionName": f"TagManagement-{service}-{account_id[:8]}"
+        }
+        if getattr(account, 'external_id', None):
+            _assume_kwargs["ExternalId"] = account.external_id
+        assumed_role = sts.assume_role(**_assume_kwargs)
         
         credentials = assumed_role['Credentials']
         

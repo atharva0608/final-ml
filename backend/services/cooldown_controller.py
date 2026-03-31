@@ -160,6 +160,7 @@ class CooldownController:
         On Redis restart, rehydrate via _rehydrate_from_db().
         Uses key prefix 'cooldown:' to namespace entries.
         """
+        _db = None
         try:
             from backend.models.system_config import SystemConfig
             from backend.models.base import get_db
@@ -172,9 +173,11 @@ class CooldownController:
                 cfg = SystemConfig(key=f"cooldown:{key}", value=expiry.isoformat())
                 _db.add(cfg)
             _db.commit()
-            _db.close()
         except Exception as e:
             logger.warning(f"[CooldownController] DB persist failed for {key}: {e}")
+        finally:
+            if _db:
+                _db.close()
 
     def _rehydrate_from_db(self, key: str) -> bool:
         """On Redis miss (ttl <= 0), check DB backup and restore if not expired.

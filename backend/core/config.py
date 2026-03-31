@@ -162,7 +162,7 @@ class Settings(BaseSettings):
 settings = Settings()
 
 # ── Spot Optimizer Global Constants ────────────────────────────────────────
-GLOBAL_CACHE_SIZE: int = 500
+GLOBAL_CACHE_SIZE: int = 5000
 GLOBAL_CACHE_TTL: int = 3600
 CAPACITY_SCORE_DIVISOR: int = 4
 RISK_TIER_THRESHOLDS: list = [0.05, 0.10, 0.15, 0.20]

@@ -546,26 +546,52 @@ class AWSPricingService:
         )
 
     def _get_required_instance_types_for_region(self, region: str) -> List[str]:
-        """Get all instance types used by clusters in a region."""
+        """Get ALL instance types that have spot prices in Redis for a region,
+        plus any types used by clusters.  This ensures refresh_ondemand fetches
+        OD prices for every type the cache_builder will need."""
+        instance_types = set()
+
+        # 1. Scan Redis spot_price:{region}:* keys → extract unique instance types
+        try:
+            cursor = 0
+            while True:
+                cursor, keys = self.redis.scan(
+                    cursor, match=f"spot_price:{region}:*", count=500
+                )
+                for key in keys:
+                    key_str = key.decode() if isinstance(key, bytes) else key
+                    parts = key_str.split(':')
+                    if len(parts) >= 4:
+                        itype = ':'.join(parts[3:])
+                        instance_types.add(itype)
+                if cursor == 0:
+                    break
+        except Exception as e:
+            logger.warning(f"Failed to scan spot_price keys for {region}: {e}")
+
+        # 2. Also include cluster-active types from DB
         try:
             clusters = self.db.query(Cluster).filter(Cluster.region == region).all()
-
-            instance_types = set()
-
-            # TODO: Query actual node pools / instances from clusters
-            # For now, return a default set
-            default_types = [
-                'm5.large', 'm5.xlarge', 'm5.2xlarge',
-                'c5.large', 'c5.xlarge', 'c5.2xlarge',
-                'r5.large', 'r5.xlarge', 'r5.2xlarge',
-                't3.medium', 't3.large', 't3.xlarge'
-            ]
-
-            return list(instance_types) if instance_types else default_types
-
+            for cluster in clusters:
+                if hasattr(cluster, 'instance_type') and cluster.instance_type:
+                    instance_types.add(cluster.instance_type)
         except Exception as e:
-            logger.error(f"Failed to get instance types for region {region}: {e}")
-            return []
+            logger.warning(f"Failed to query cluster types for {region}: {e}")
+
+        # 3. Always include a baseline set so common types are never missed
+        default_types = [
+            'm5.large', 'm5.xlarge', 'm5.2xlarge',
+            'c5.large', 'c5.xlarge', 'c5.2xlarge',
+            'r5.large', 'r5.xlarge', 'r5.2xlarge',
+            't3.medium', 't3.large', 't3.xlarge',
+        ]
+        instance_types.update(default_types)
+
+        logger.info(
+            f"[refresh_ondemand] {region}: {len(instance_types)} unique instance types "
+            f"to fetch OD prices for"
+        )
+        return list(instance_types)
 
     def _region_to_location(self, region: str) -> str:
         """Convert AWS region to pricing API location name."""

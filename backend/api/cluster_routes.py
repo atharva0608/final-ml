@@ -233,17 +233,59 @@ def delete_cluster(
     except Exception as e:
         logger.warning(f"Cluster {cluster_id} cleanup skipped — no account credentials: {e}")
 
-    # Delete DB row
+    # Soft-delete: mark as dismissed so discovery won't re-add it
     try:
-        service.delete_cluster(cluster_id, current_user.id)
-        return {"status": "success", "message": "Cluster deleted", "cleanup": cleanup_results}
-    except ResourceNotFoundError:
-        return {"status": "success", "message": "Cluster already deleted"}
-    except ValidationError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        from backend.models.cluster import ClusterStatus as _CS
+        cluster.is_dismissed = True
+        # Use INACTIVE for soft-delete marker; some deployed DBs don't include
+        # TERMINATED in the clusterstatus enum yet.
+        cluster.status = _CS.INACTIVE
+        db.commit()
+
+        # BUG-5 fix: Clean up Redis keys scoped to this cluster.
+        # Keys with short TTLs self-expire; only clean long-lived / no-TTL keys.
+        try:
+            from backend.core.redis_client import get_redis_client as _grc_b5
+            _r = _grc_b5()
+            _direct_keys = [
+                f"cluster_pools:{cluster_id}",
+                f"rebalance:lock:{cluster_id}",
+                f"spot:stabilization_lock:{cluster_id}",
+                f"spot:daily_count:{cluster_id}",
+                f"spot:last_check:{cluster_id}",
+                f"rebalance:active_count:{cluster_id}",
+                f"karpenter_config:{cluster_id}",
+            ]
+            for _dk in _direct_keys:
+                try:
+                    _r.delete(_dk)
+                except Exception:
+                    pass
+            # Scan-delete wildcard patterns (launch_blocked, cooldown, etc.)
+            for _pattern in [
+                f"spot:launch_blocked:{cluster_id}:*",
+                f"spot:cooldown:*:{cluster_id}",
+                f"lock:node_action:{cluster_id}:*",
+            ]:
+                try:
+                    _cursor = 0
+                    while True:
+                        _cursor, _keys = _r.scan(_cursor, match=_pattern, count=100)
+                        if _keys:
+                            _r.delete(*_keys)
+                        if _cursor == 0:
+                            break
+                except Exception:
+                    pass
+            logger.info(f"Cleared Redis keys for deleted cluster {cluster_id}")
+        except Exception as _redis_err:
+            logger.warning(f"Redis cleanup for cluster {cluster_id} failed (non-blocking): {_redis_err}")
+
+        logger.info(f"Cluster {cluster_id} ({cluster.name}) dismissed by {current_user.email}")
+        return {"status": "success", "message": "Cluster removed", "cleanup": cleanup_results}
     except Exception as e:
-        logger.error(f"Cluster {cluster_id} DB deletion failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Cluster deletion failed: {str(e)}")
+        logger.error(f"Cluster {cluster_id} dismiss failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Cluster removal failed: {str(e)}")
 
 @router.post("/install-script", response_model=InstallScriptResponse)
 def generate_install_script(
@@ -324,9 +366,13 @@ def auto_install_agent(
                 detail="Cluster must be associated with an AWS account with a valid role ARN"
             )
         
-        # Generate API key if not exists
-        if not cluster.api_key:
-            cluster.api_key = secrets.token_urlsafe(32)
+        # Always sync api_key to AGENT_API_KEY env var so verify_agent_token()
+        # accepts the agent's Bearer token.  Using a stale random key is the
+        # root cause of 401 CrashLoopBackOff on every reinstall.
+        import os as _os
+        _backend_key = _os.getenv("AGENT_API_KEY") or secrets.token_urlsafe(32)
+        if cluster.api_key != _backend_key:
+            cluster.api_key = _backend_key
             db.commit()
         
         # Trigger background task
@@ -406,16 +452,23 @@ def request_fallback_node(
     from backend.models.cluster import Cluster
     from backend.models.node_template import NodeTemplate
     import logging
+    import re as _re
     logger = logging.getLogger("api")
 
-    node_name     = payload.get("node_name")
-    reason        = payload.get("reason", "spot_interruption")
-    instance_type = payload.get("instance_type")
-    az            = payload.get("az")
+    def _sanitize_log(value, max_len: int = 100) -> str:
+        """BUG-16 fix: strip control characters and limit length for safe logging."""
+        if not isinstance(value, str):
+            return str(value)[:max_len] if value is not None else ""
+        return _re.sub(r'[\x00-\x1f\x7f]', '_', value)[:max_len]
+
+    node_name     = _sanitize_log(payload.get("node_name"))
+    reason        = _sanitize_log(payload.get("reason", "spot_interruption"))
+    instance_type = _sanitize_log(payload.get("instance_type"))
+    az            = _sanitize_log(payload.get("az"))
 
     logger.critical(
-        f"[FALLBACK] Spot interruption received — cluster={cluster_id} "
-        f"node={node_name} instance={instance_type} az={az} reason={reason}"
+        "[FALLBACK] Spot interruption received — cluster=%s node=%s instance=%s az=%s reason=%s",
+        cluster_id, node_name, instance_type, az, reason
     )
 
     try:
@@ -550,8 +603,9 @@ def disconnect_agent(
         raise HTTPException(status_code=404, detail="Cluster not found")
 
     from backend.models.cluster import ClusterStatus
-    # Rotate API key — existing agent pods will start receiving 401s
-    cluster.api_key = secrets.token_urlsafe(32)
+    import os as _os
+    # Rotate API key — must equal AGENT_API_KEY env var for verify_agent_token()
+    cluster.api_key = _os.getenv("AGENT_API_KEY") or secrets.token_urlsafe(32)
     cluster.agent_installed = "N"
     cluster.status = ClusterStatus.DISCONNECTED
     cluster.updated_at = datetime.utcnow()
@@ -665,7 +719,8 @@ def remove_agent(
     cluster.agent_installed = "N"
     cluster.status = ClusterStatus.DISCOVERED
     cluster.last_heartbeat = None
-    cluster.api_key = secrets.token_urlsafe(32)
+    import os as _os
+    cluster.api_key = _os.getenv("AGENT_API_KEY") or secrets.token_urlsafe(32)
     cluster.updated_at = datetime.utcnow()
 
     db.commit()
@@ -708,20 +763,20 @@ def get_cluster_optimization_settings(
             "instance_aware_rightsizing": automation.instance_aware_rightsizing if automation else False,
             "cooldown_override_minutes": automation.cooldown_override_minutes if automation else None,
             "spot_join_timeout_minutes": automation.spot_join_timeout_minutes if automation else None,
-            "conservative_mode_enabled": automation.conservative_mode_enabled if automation else True,
             "manual_approval_required": automation.manual_approval_required if automation else False,
             "target_spot_exposure_pct": automation.target_spot_exposure_pct if automation else 100,
             # Sub-toggles — required so the frontend doesn't overwrite them with stale defaults on save
             "maintain_standby": automation.maintain_standby if automation else False,
             "diversify_pools": automation.diversify_pools if automation else False,
             "max_family_diversification_cap_pct": automation.max_family_diversification_cap_pct if automation else 40,
+            "instance_type_diversification_pct": automation.instance_type_diversification_pct if automation else 100,
             "failure_cooldown_minutes": automation.failure_cooldown_minutes if automation else 30,
-            "optimization_target": automation.optimization_target if automation else "spot",
             "min_node_count": automation.min_node_count if automation else 1,
             "scale_down_threshold_pct": automation.scale_down_threshold_pct if automation else 20,
             "scale_down_stabilization_minutes": automation.scale_down_stabilization_minutes if automation else 15,
             "enable_ascp_auto_scaler": automation.enable_ascp_auto_scaler if automation else False,
             "check_interval_seconds": automation.check_interval_seconds if automation else 15,
+            "architecture_preference": automation.architecture_preference if automation else "both",
         },
         "optimization_strategy": {
             "strategy_type": strategy.strategy_type if strategy else "BALANCED",
@@ -745,7 +800,6 @@ def get_cluster_optimization_settings(
         },
         "stateful_rules": {
             "manual_resize_allowed": stateful.manual_resize_allowed if stateful else True,
-            "show_ondemand_only": stateful.show_ondemand_only if stateful else True,
             "require_approval": stateful.require_approval if stateful else True,
             "block_spot_for_stateful": stateful.block_spot_for_stateful if stateful else True,
             "max_downscale_percent": stateful.max_downscale_percent if stateful else 25

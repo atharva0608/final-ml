@@ -37,6 +37,8 @@ app = Celery(
         'backend.workers.tasks.auto_scaler',                  # ASCP: built-in optional auto-scaler
         'backend.workers.tasks.reconciliation_worker',        # Issue #34: EC2 vs DB reconciliation
         'backend.workers.tasks.health_monitor',              # Pillar 5: health scores + drift detection
+        'backend.workers.tasks.cache_builder',               # Global pool rankings cache builder
+        'backend.workers.tasks.global_ema_tasks',            # Global EMA: persist + decay
     ]
 )
 
@@ -51,6 +53,16 @@ app.conf.beat_schedule = {
     'zombie-cleanup-every-2-mins': {
         'task': 'backend.workers.tasks.health.cleanup_zombie_nodes',
         'schedule': 120.0,
+    },
+    # Z1 fix: Zombie OD Instance Cleanup (hourly) — terminates OD instances with no K8s node after 10 min
+    'zombie-od-cleanup-hourly': {
+        'task': 'backend.workers.tasks.health.cleanup_zombie_od_instances',
+        'schedule': 3600.0,
+    },
+    # Z5 fix: Cluster Pools Sync (30 min) — rebuilds cluster_pools Redis sets from DB state
+    'sync-cluster-pools-every-30-mins': {
+        'task': 'backend.workers.tasks.health.sync_cluster_pools',
+        'schedule': 1800.0,
     },
     # Agent Stale Detection (1 min) — resets agent_installed when heartbeat >5 min old
     'reset-stale-agents-every-minute': {
@@ -235,6 +247,11 @@ app.conf.beat_schedule = {
         'task': 'build_global_pool_cache',
         'schedule': 3600.0,
         'args': ['ap-southeast-1'],
+    },
+    # Global EMA decay — daily at 2 AM (30-day half-life decay of all pool interruption rates)
+    'global-ema-decay-daily': {
+        'task': 'global_ema.decay',
+        'schedule': crontab(minute=0, hour=2),
     },
     # Spot advisor scrape — every 12h (Bug 3: was daily/4h; 12h keeps data under 6h stale gate)
     # Re-writes all Redis keys each run to refresh 12h TTLs.

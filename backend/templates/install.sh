@@ -6,7 +6,7 @@ set -e
 # Version: 1.0.0
 # ============================================
 
-AGENT_VERSION="latest"
+AGENT_VERSION="1.0.0"
 AGENT_IMAGE="atharva608/spot-optimizer-agent:${AGENT_VERSION}"
 NAMESPACE="spot-optimizer"
 
@@ -117,7 +117,7 @@ spec:
       containers:
         - name: agent
           image: $AGENT_IMAGE
-          imagePullPolicy: Always
+          imagePullPolicy: IfNotPresent
           env:
             - name: API_KEY
               valueFrom:

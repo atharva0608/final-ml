@@ -21,7 +21,6 @@ class NodeTemplateConstraints(BaseModel):
     cross_az_rebalance: bool = True
     
     optimization_policy: OptimizationPolicy = OptimizationPolicy.COST_FIRST
-    risk_threshold: float = Field(default=10.0, ge=0.0, le=100.0)
     savings_threshold: float = Field(default=5.0, ge=0.0, le=100.0)
 
 # --- Template Registry (Layer 1) ---

@@ -72,7 +72,7 @@ async def receive_metrics_batch(
         total_cpu_usage = 0
         total_mem_usage = 0
 
-        logger.info(f"Processing {len(node_metrics)} node metrics for cluster {cluster_id}")
+        logger.debug(f"Processing {len(node_metrics)} node metrics for cluster {cluster_id}")
 
         for node in node_metrics:
             cpu_cap = node.get("cpu_capacity_millicores", 0)
@@ -80,7 +80,7 @@ async def receive_metrics_batch(
             mem_cap = node.get("memory_capacity_bytes", 0)
             mem_use = node.get("memory_usage_bytes", 0)
 
-            logger.info(f"Node {node.get('node_name')}: CPU cap={cpu_cap}, usage={cpu_use}, Mem cap={mem_cap}, usage={mem_use}")
+            logger.debug(f"Node {node.get('node_name')}: CPU cap={cpu_cap}, usage={cpu_use}, Mem cap={mem_cap}, usage={mem_use}")
 
             # CPU in millicores (1000 millicores = 1 core)
             total_cpu_capacity += cpu_cap
@@ -89,7 +89,7 @@ async def receive_metrics_batch(
             total_mem_capacity += mem_cap
             total_mem_usage += mem_use
 
-        logger.info(f"Totals - CPU cap={total_cpu_capacity}, usage={total_cpu_usage}, Mem cap={total_mem_capacity}, usage={total_mem_usage}")
+        logger.debug(f"Totals - CPU cap={total_cpu_capacity}, usage={total_cpu_usage}, Mem cap={total_mem_capacity}, usage={total_mem_usage}")
 
         # Upsert Instance records from live node metrics.
         # This is the authoritative path: if the daemon set reports a node as
@@ -197,7 +197,7 @@ async def receive_metrics_batch(
                 if not inst.node_name:
                     inst.node_name = node_name
                 inst.updated_at = datetime.utcnow()
-                logger.info(f"Updated instance {inst.instance_id} ({node_name}): CPU={cpu_util_pct}%, Mem={mem_util_pct}%")
+                logger.debug(f"Updated instance {inst.instance_id} ({node_name}): CPU={cpu_util_pct}%, Mem={mem_util_pct}%")
             else:
                 # No record — create one. The daemon set is the source of truth.
                 # Use short hostname as instance_id placeholder (VARCHAR(20) safe).
@@ -292,7 +292,7 @@ async def receive_metrics_batch(
         if total_nodes == 0:
             total_nodes = len(node_metrics)
 
-        logger.info(f"Total nodes from instances table: {total_nodes}")
+        logger.debug(f"Total nodes from instances table: {total_nodes}")
 
         _VCPU_MAP = {
             "t3.nano": 2, "t3.micro": 2, "t3.small": 2, "t3.medium": 2, "t3.large": 2, "t3.xlarge": 4, "t3.2xlarge": 8,
@@ -332,7 +332,7 @@ async def receive_metrics_batch(
         cluster.cpu_total = true_cluster_cpu_cores
         cluster.mem_total = true_cluster_mem_gb
 
-        logger.info(f"Updated cluster: node_count={cluster.node_count}, cpu_total={cluster.cpu_total}, mem_total={cluster.mem_total}")
+        logger.debug(f"Updated cluster: node_count={cluster.node_count}, cpu_total={cluster.cpu_total}, mem_total={cluster.mem_total}")
 
         # Calculate cluster usage percentages
         # Note: the total_cpu_usage / total_mem_usage from the agent batch is transient! 
@@ -357,7 +357,7 @@ async def receive_metrics_batch(
         cluster.cpu_usage_pct = total_cluster_cpu_util_pct
         cluster.mem_usage_pct = total_cluster_mem_util_pct
 
-        logger.info(f"About to commit - cluster.cpu_usage_pct={cluster.cpu_usage_pct}, cluster.mem_usage_pct={cluster.mem_usage_pct}")
+        logger.debug(f"About to commit - cluster.cpu_usage_pct={cluster.cpu_usage_pct}, cluster.mem_usage_pct={cluster.mem_usage_pct}")
 
         # Calculate spot vs on-demand from node labels
         spot_count = sum(1 for node in node_metrics
@@ -389,7 +389,7 @@ async def receive_metrics_batch(
 
         # Commit cluster updates (including usage percentages)
         db.commit()
-        logger.info(f"Committed - cluster.cpu_usage_pct={cluster.cpu_usage_pct}, cluster.mem_usage_pct={cluster.mem_usage_pct}")
+        logger.debug(f"Committed - cluster.cpu_usage_pct={cluster.cpu_usage_pct}, cluster.mem_usage_pct={cluster.mem_usage_pct}")
 
         # Cache latest metrics in Redis for fast access
         try:
@@ -464,7 +464,7 @@ async def get_latest_metrics(
             cache_key = f"metrics:cluster:{cluster_id}:summary"
             cached_data = redis_client.get(cache_key)
             if cached_data:
-                logger.info(f"Returning cached metrics for cluster {cluster_id}")
+                logger.debug(f"Returning cached metrics for cluster {cluster_id}")
                 return {
                     "cluster_id": cluster_id,
                     "metrics": eval(cached_data),

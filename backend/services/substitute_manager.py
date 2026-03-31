@@ -671,7 +671,32 @@ class SubstituteManager:
             import boto3
             from botocore.exceptions import ClientError
 
-            ec2 = boto3.client("ec2", region_name=cluster.region)
+            # ── P-C15 fix: use assumed-role creds for cross-account clusters ──
+            ec2_kwargs = {"region_name": cluster.region}
+            if cluster.aws_role_arn:
+                try:
+                    from backend.utils.aws.asg import get_assumed_credentials as _gac_sm
+                    from backend.models.base import get_db as _gdb_sm
+                    _db_sm = next(_gdb_sm())
+                    _creds_sm = _gac_sm(cluster, _db_sm)
+                    _db_sm.close()
+                    ec2_kwargs.update(_creds_sm)
+                except Exception as _cred_err:
+                    logger.warning(f"[SubstituteManager] Could not get assumed creds: {_cred_err}")
+            ec2 = boto3.client("ec2", **ec2_kwargs)
+
+            # ── P-C15 fix: look up ImageId from dry_run cache or use a placeholder ──
+            _image_id = None
+            try:
+                from backend.core.redis_client import get_redis_client as _grc_sm
+                _redis_sm = _grc_sm()
+                if _redis_sm:
+                    _ami_key = f"dry_run:ami:{cluster.region}"
+                    _image_id = _redis_sm.get(_ami_key)
+                    if isinstance(_image_id, bytes):
+                        _image_id = _image_id.decode()
+            except Exception:
+                pass
 
             # Prepare RunInstances parameters
             params = {
@@ -683,6 +708,8 @@ class SubstituteManager:
                     "AvailabilityZone": candidate["az"]
                 }
             }
+            if _image_id:
+                params["ImageId"] = _image_id
 
             if candidate["lifecycle"] == "spot":
                 params["InstanceMarketOptions"] = {

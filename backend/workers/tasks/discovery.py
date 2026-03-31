@@ -233,6 +233,42 @@ def discovery_worker_loop(self: Task) -> Dict[str, Any]:
                 continue
 
 
+        # ── Stale agent-node cleanup ─────────────────────────────────────
+        # Instances created by the in-cluster agent (via /metrics) have
+        # account_id=NULL and are invisible to the per-account stale-mark
+        # pass above.  If an agent-reported node hasn't been updated in
+        # 10 minutes it is almost certainly terminated (the agent sends
+        # metrics every ~30s).  Mark it terminated so the UI stops
+        # showing ghost nodes.
+        try:
+            _agent_stale_cutoff = datetime.utcnow() - timedelta(minutes=10)
+            _agent_stale = db.query(Instance).filter(
+                Instance.account_id.is_(None),
+                Instance.state == 'running',
+                Instance.updated_at < _agent_stale_cutoff,
+            ).all()
+            _agent_stale_count = 0
+            for _as in _agent_stale:
+                _as.state = 'terminated'
+                _as.updated_at = datetime.utcnow()
+                _agent_stale_count += 1
+                logger.info(
+                    f"[WORK-DISC-01] Marking agent-reported node "
+                    f"{_as.instance_id or _as.node_name} as terminated "
+                    f"(no metrics update for >10 min)"
+                )
+            if _agent_stale_count:
+                db.commit()
+                logger.info(
+                    f"[WORK-DISC-01] Marked {_agent_stale_count} stale "
+                    f"agent-reported node(s) as terminated"
+                )
+        except Exception as _agent_stale_err:
+            logger.warning(
+                f"[WORK-DISC-01] Agent stale-node cleanup failed: "
+                f"{_agent_stale_err}"
+            )
+
         duration = (datetime.utcnow() - start_time).total_seconds()
 
         result = {
@@ -301,7 +337,8 @@ def scan_account(account: Account, db: Session, redis_client) -> Dict[str, int]:
                 # Check if same-account scenario — if so, fall back to env credentials directly
                 try:
                     caller = sts_client.get_caller_identity()
-                    role_account_id = account.role_arn.split(':')[4]
+                    _arn_parts = (account.role_arn or '').split(':')
+                    role_account_id = _arn_parts[4] if len(_arn_parts) > 4 else ''
                     if caller['Account'] == role_account_id:
                         logger.warning(
                             f"[WORK-DISC-01] AssumeRole AccessDenied for same-account role "
@@ -521,6 +558,26 @@ def scan_eks_clusters(account: Account, eks_client, db: Session, credentials: Di
             ).first()
 
             if existing:
+                # If cluster was dismissed earlier, auto-revive when it is seen in AWS again.
+                if getattr(existing, 'is_dismissed', False):
+                    existing.is_dismissed = False
+                    if existing.agent_installed == 'Y' and existing.last_heartbeat:
+                        existing.status = ClusterStatus.ACTIVE
+                    else:
+                        existing.status = ClusterStatus.DISCOVERED
+                    logger.info(
+                        f"[WORK-DISC-01] Revived dismissed cluster {cluster_name} "
+                        f"({existing.id}) after AWS rediscovery"
+                    )
+
+                # If cluster was DEGRADED (missing from AWS previously), restore it
+                if existing.status == ClusterStatus.DEGRADED:
+                    if existing.agent_installed == 'Y' and existing.last_heartbeat:
+                        existing.status = ClusterStatus.ACTIVE
+                    else:
+                        existing.status = ClusterStatus.DISCOVERED
+                    logger.info(f"[WORK-DISC-01] Cluster {cluster_name} restored from DEGRADED → {existing.status.value}")
+
                 # Update existing cluster metadata (but don't change status if it's ACTIVE)
                 existing.version = cluster_data.get('version')
                 existing.endpoint = cluster_data.get('endpoint')
@@ -543,34 +600,89 @@ def scan_eks_clusters(account: Account, eks_client, db: Session, credentials: Di
                 if should_update_cost:
                     existing.last_cost_update = datetime.utcnow()
             else:
-                # Create new cluster with DISCOVERED status
-                import uuid
-                new_cluster = Cluster(
-                    id=str(uuid.uuid4()),
-                    account_id=account.id,
-                    name=cluster_name,
-                    arn=cluster_data.get('arn'),
-                    region=cluster_data.get('arn').split(':')[3] if cluster_data.get('arn') else (account.region or 'us-east-1'),
-                    endpoint=cluster_data.get('endpoint'),
-                    ca_data=cluster_data.get('certificateAuthority', {}).get('data'),
-                    version=cluster_data.get('version'),
-                    status=ClusterStatus.DISCOVERED,
+                # If this ARN was previously dismissed, revive the same row.
+                _dismissed = db.query(Cluster).filter(
+                    Cluster.account_id == account.id,
+                    Cluster.arn == cluster_data.get('arn'),
+                    Cluster.is_dismissed == True,
+                ).first()
+                if _dismissed:
+                    _dismissed.is_dismissed = False
+                    _dismissed.name = cluster_name
+                    _dismissed.version = cluster_data.get('version')
+                    _dismissed.endpoint = cluster_data.get('endpoint')
+                    _dismissed.ca_data = cluster_data.get('certificateAuthority', {}).get('data')
+                    _dismissed.region = (
+                        cluster_data.get('arn').split(':')[3]
+                        if cluster_data.get('arn') else (account.region or 'us-east-1')
+                    )
+                    _dismissed.monthly_cost = int(total_cost)
+                    _dismissed.estimated_savings = int(potential_savings)
+                    _dismissed.potential_savings_monthly = teaser_data['potential_savings_monthly']
+                    _dismissed.on_demand_node_count = teaser_data['on_demand_node_count']
+                    _dismissed.spot_count = teaser_data['spot_node_count']
+                    _dismissed.inventory_summary = teaser_data['inventory_summary']
+                    _dismissed.last_assessed = datetime.utcnow()
+                    _dismissed.updated_at = datetime.utcnow()
+                    _dismissed.status = (
+                        ClusterStatus.ACTIVE
+                        if _dismissed.agent_installed == 'Y' and _dismissed.last_heartbeat
+                        else ClusterStatus.DISCOVERED
+                    )
+                    if should_update_cost:
+                        _dismissed.last_cost_update = datetime.utcnow()
+                    existing = _dismissed
+                    logger.info(
+                        f"[WORK-DISC-01] Revived previously dismissed ARN for "
+                        f"{cluster_name} ({_dismissed.id})"
+                    )
+                else:
 
-                    monthly_cost=int(total_cost),
-                    estimated_savings=int(potential_savings),
-                    
-                    # Teaser Fields
-                    potential_savings_monthly=teaser_data['potential_savings_monthly'],
-                    on_demand_node_count=teaser_data['on_demand_node_count'],
-                    spot_count=teaser_data['spot_node_count'],
-                    inventory_summary=teaser_data['inventory_summary'],
-                    last_assessed=datetime.utcnow(),
-                    
-                    last_cost_update=datetime.utcnow() if should_update_cost else None
-                )
-                db.add(new_cluster)
+                    # Create new cluster with DISCOVERED status
+                    import uuid
+                    new_cluster = Cluster(
+                        id=str(uuid.uuid4()),
+                        account_id=account.id,
+                        name=cluster_name,
+                        arn=cluster_data.get('arn'),
+                        region=cluster_data.get('arn').split(':')[3] if cluster_data.get('arn') else (account.region or 'us-east-1'),
+                        endpoint=cluster_data.get('endpoint'),
+                        ca_data=cluster_data.get('certificateAuthority', {}).get('data'),
+                        version=cluster_data.get('version'),
+                        status=ClusterStatus.DISCOVERED,
+
+                        monthly_cost=int(total_cost),
+                        estimated_savings=int(potential_savings),
+
+                        # Teaser Fields
+                        potential_savings_monthly=teaser_data['potential_savings_monthly'],
+                        on_demand_node_count=teaser_data['on_demand_node_count'],
+                        spot_count=teaser_data['spot_node_count'],
+                        inventory_summary=teaser_data['inventory_summary'],
+                        last_assessed=datetime.utcnow(),
+
+                        last_cost_update=datetime.utcnow() if should_update_cost else None
+                    )
+                    db.add(new_cluster)
 
             db.commit()
+
+            # §2.3 (changes.md): Set discovery last-updated key per cluster so the
+            # auto_rebalancer can skip cycles where DB data is older than 5 minutes.
+            # TTL=600s: if discovery stops running, the key expires and rebalancer
+            # falls back to acting on DB data (fail-open, not fail-closed).
+            try:
+                from backend.core.redis_client import get_redis_client as _get_disc_redis
+                _disc_redis = _get_disc_redis()
+                if _disc_redis:
+                    _synced_id = existing.id if existing else new_cluster.id
+                    _disc_redis.setex(
+                        f"spot:discovery_last_updated:{_synced_id}",
+                        600,
+                        datetime.utcnow().isoformat(),
+                    )
+            except Exception:
+                pass
 
         # Return count + names; cleanup runs in scan_account after ALL regions are scanned
         return len(cluster_names), cluster_names
@@ -582,54 +694,69 @@ def scan_eks_clusters(account: Account, eks_client, db: Session, credentials: Di
 
 def _cleanup_deleted_clusters(account: Account, db: Session, all_discovered_names: set) -> None:
     """
-    Remove clusters from the DB that no longer exist in AWS across ALL regions.
+    Handle clusters from the DB that no longer exist in AWS across ALL regions.
+    - Agent-installed clusters → set DEGRADED (preserve data, show warning in UI)
+    - Non-agent clusters without user action → delete (auto-clear noise)
+    - Dismissed clusters → skip entirely
     Must be called once after all regions have been scanned.
     """
     db_clusters = db.query(Cluster).filter(Cluster.account_id == account.id).all()
-    clusters_to_cleanup = []
+    clusters_to_delete = []
+    clusters_to_degrade = []
 
     for db_cluster in db_clusters:
-        if db_cluster.name not in all_discovered_names:
-            # Grace period 1: never delete clusters created < 60 minutes ago
-            if db_cluster.created_at:
-                minutes_since_created = (datetime.utcnow() - db_cluster.created_at).total_seconds() / 60
-                if minutes_since_created < 60:
-                    logger.info(
-                        f"[WORK-DISC-01] Cluster {db_cluster.name} not in AWS but only "
-                        f"{minutes_since_created:.1f} mins old — skipping cleanup."
-                    )
-                    continue
+        # Skip dismissed clusters — user already removed them
+        if getattr(db_cluster, 'is_dismissed', False):
+            continue
 
-            # Grace period 2: agent installed — require 2h heartbeat absence
-            if db_cluster.agent_installed == 'Y':
-                if db_cluster.last_heartbeat:
-                    minutes_since_heartbeat = (datetime.utcnow() - db_cluster.last_heartbeat).total_seconds() / 60
-                    if minutes_since_heartbeat <= 120:
-                        logger.info(
-                            f"[WORK-DISC-01] Cluster {db_cluster.name} not in AWS but agent heartbeat "
-                            f"{minutes_since_heartbeat:.1f} mins ago — skipping cleanup."
-                        )
-                        continue
-                else:
-                    logger.info(f"[WORK-DISC-01] {db_cluster.name} not in AWS, agent installed, no heartbeat — skipping.")
-                    continue
+        # Skip clusters that were found in AWS
+        if db_cluster.name in all_discovered_names:
+            continue
 
-            # Standard cleanup: no agent, not in AWS
-            if db_cluster.last_heartbeat:
-                minutes_since_heartbeat = (datetime.utcnow() - db_cluster.last_heartbeat).total_seconds() / 60
-                if minutes_since_heartbeat <= 10:
-                    continue
+        # Grace period: never touch clusters created < 60 minutes ago
+        if db_cluster.created_at:
+            minutes_since_created = (datetime.utcnow() - db_cluster.created_at).total_seconds() / 60
+            if minutes_since_created < 60:
+                logger.info(
+                    f"[WORK-DISC-01] Cluster {db_cluster.name} not in AWS but only "
+                    f"{minutes_since_created:.1f} mins old — skipping cleanup."
+                )
+                continue
 
-            clusters_to_cleanup.append(db_cluster)
-            logger.info(f"[WORK-DISC-01] Marking cluster {db_cluster.name} for cleanup (not found in any AWS region).")
+        # ── Agent-installed clusters → DEGRADED (don't delete) ──
+        if db_cluster.agent_installed == 'Y':
+            if db_cluster.status != ClusterStatus.DEGRADED:
+                clusters_to_degrade.append(db_cluster)
+                logger.info(
+                    f"[WORK-DISC-01] Agent cluster {db_cluster.name} not found in AWS "
+                    f"— marking DEGRADED (preserving data)."
+                )
+            continue
 
-    for cluster in clusters_to_cleanup:
+        # ── Non-agent clusters → auto-clear ──
+        # Small grace: keep if heartbeat within last 10 min (unlikely for non-agent but safe)
+        if db_cluster.last_heartbeat:
+            minutes_since_heartbeat = (datetime.utcnow() - db_cluster.last_heartbeat).total_seconds() / 60
+            if minutes_since_heartbeat <= 10:
+                continue
+
+        clusters_to_delete.append(db_cluster)
+        logger.info(f"[WORK-DISC-01] Non-agent cluster {db_cluster.name} not in AWS — scheduling deletion.")
+
+    # Apply DEGRADED status
+    for cluster in clusters_to_degrade:
+        cluster.status = ClusterStatus.DEGRADED
+        cluster.updated_at = datetime.utcnow()
+        logger.info(f"[WORK-DISC-01] Set cluster {cluster.name} to DEGRADED")
+
+    # Delete non-agent orphan clusters
+    for cluster in clusters_to_delete:
         from backend.models.instance import Instance
         db.query(Instance).filter(Instance.cluster_id == cluster.id).delete()
         db.delete(cluster)
-        logger.info(f"[WORK-DISC-01] Removed deleted cluster: {cluster.name}")
+        logger.info(f"[WORK-DISC-01] Removed non-agent cluster: {cluster.name}")
 
-    if clusters_to_cleanup:
+    if clusters_to_degrade or clusters_to_delete:
         db.commit()
 
 

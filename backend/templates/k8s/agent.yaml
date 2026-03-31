@@ -68,7 +68,7 @@ spec:
       containers:
         - name: agent
           image: ${AGENT_IMAGE}
-          imagePullPolicy: Always
+          imagePullPolicy: IfNotPresent
           volumeMounts:
             - name: proc
               mountPath: /host/proc

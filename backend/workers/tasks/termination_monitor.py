@@ -100,12 +100,11 @@ def detect_termination_notice(
 
         # ── Issue #20 / Task 2.3: Deduplicate emergency events ───────────
         # SQS, IMDS, and EventBridge can all fire for the same interruption.
-        # Use a Redis NX lock per instance_id with a 2-minute TTL so only
-        # the first event triggers blacklist + rebalancer.  Subsequent events
-        # within the window are silently skipped.
+        # Problem #20: Extended dedup window from 2 min to 5 min to prevent
+        # duplicate emergency actions when signals arrive >2 min apart.
         if instance_id:
             _dedup_key = f"emergency:dedup:{instance_id}"
-            if not redis_client.set(_dedup_key, "1", nx=True, ex=120):
+            if not redis_client.set(_dedup_key, "1", nx=True, ex=300):
                 logger.info(
                     f"[termination_monitor] Dedup: skipping duplicate event "
                     f"for {instance_id} (pool={pool_key}, source={source})"
@@ -114,8 +113,45 @@ def detect_termination_notice(
                     "status": "deduplicated",
                     "instance_id": instance_id,
                     "pool_key": pool_key,
-                    "message": "Duplicate event suppressed (2-min dedup window)",
+                    "message": "Duplicate event suppressed (5-min dedup window)",
                 }
+            # Problem #20: Per-node emergency lock (2 min TTL) — prevents
+            # repeated emergency actions for the same node within a window.
+            # Z13 fix: reduced from 600s to 120s so the lock does not outlast
+            # the actual termination handling window.
+            _emerg_lock_key = f"emergency:rebalance:{instance_id}"
+            if redis_client.exists(_emerg_lock_key):
+                logger.info(
+                    f"[termination_monitor] Emergency lock active for {instance_id} "
+                    f"— skipping (already being handled)"
+                )
+                return {
+                    "status": "locked",
+                    "instance_id": instance_id,
+                    "pool_key": pool_key,
+                    "message": "Emergency lock active (2-min window)",
+                }
+            # Problem #20: Check DB for active rebalancing action on this source node
+            try:
+                from backend.models.rebalancing import RebalancingAction as _RA_dedup
+                _active_action = db.query(_RA_dedup).filter(
+                    _RA_dedup.status.in_(['in_progress', 'waiting_agent']),
+                    _RA_dedup.action_metadata.contains({"instance_id": instance_id}),
+                ).first()
+                if _active_action:
+                    logger.info(
+                        f"[termination_monitor] Active rebalancing action {_active_action.id} "
+                        f"exists for {instance_id} — skipping emergency creation"
+                    )
+                    return {
+                        "status": "active_action_exists",
+                        "instance_id": instance_id,
+                        "action_id": _active_action.id,
+                    }
+            except Exception:
+                pass
+            # Set per-node emergency lock
+            redis_client.setex(_emerg_lock_key, 120, "1")
 
         logger.info(f"Termination notice detected: {pool_key} (source: {source})")
 
@@ -149,6 +185,17 @@ def detect_termination_notice(
         db.commit()
 
         logger.info(f"Logged termination event: {pool_key} (event_id: {termination_event.id})")
+
+        # 2b. Update global EMA interruption tracker
+        try:
+            from backend.services.global_ema_service import update_ema_on_interruption
+            update_ema_on_interruption(
+                redis=redis_client, db=db, pool_key=pool_key,
+                instance_type=instance_type, az=az, region=region,
+                cluster_id=cluster_id,
+            )
+        except Exception as _ema_err:
+            logger.warning(f"[termination_monitor] EMA update failed for {pool_key}: {_ema_err}")
 
         # 3. Trigger emergency rebalancing if cluster_id provided
         rebalancing_triggered = False

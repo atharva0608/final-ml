@@ -259,6 +259,7 @@ def _handle_interruption_message(
         trigger='emergency',
         source_pool=source_pool,
         target_pool=target_pool,
+        source_instance_id=instance_id,
         status='in_progress',
         started_at=datetime.utcnow(),
         action_metadata={

@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from typing import Dict, Any, Optional
 from datetime import datetime
 import logging
+import os
 
 from ..models.base import get_db
 from ..models.cluster import Cluster, ClusterStatus
@@ -18,11 +19,33 @@ import uuid
 router = APIRouter(prefix="/api/v1/agents", tags=["agents"])
 logger = logging.getLogger(__name__)
 
+# N3 fix: Expected agent version — log warning on mismatch during registration.
+EXPECTED_AGENT_VERSION = "1.0.1"
+
+# BUG-10 fix: Agent endpoint authentication.
+# AGENT_API_KEY is the same value as the agent's API_KEY env var.
+# The agent already sends Authorization: Bearer {API_KEY} on all HTTP calls.
+AGENT_API_KEY = os.getenv("AGENT_API_KEY")
+
+
+def verify_agent_token(authorization: Optional[str] = Header(None)):
+    """Validate the agent's Bearer token against AGENT_API_KEY."""
+    if not AGENT_API_KEY:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="AGENT_API_KEY not configured on backend",
+        )
+    if authorization != f"Bearer {AGENT_API_KEY}":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid agent token",
+        )
+
 
 @router.post("/register")
 async def register_agent(
     payload: Dict[str, Any],
-    authorization: Optional[str] = Header(None),
+    _: None = Depends(verify_agent_token),
     db: Session = Depends(get_db)
 ):
     """
@@ -36,6 +59,13 @@ async def register_agent(
         agent_id = payload.get("agent_id")
         capabilities = payload.get("capabilities", [])
         version = payload.get("version")
+
+        # N3 fix: Warn on agent version mismatch (don't reject — just flag)
+        if version and version != EXPECTED_AGENT_VERSION:
+            logger.warning(
+                f"Agent {agent_id} on cluster {cluster_id} registered with version "
+                f"{version}, expected {EXPECTED_AGENT_VERSION} — protocol mismatch possible"
+            )
 
         if not cluster_id:
             raise HTTPException(
@@ -67,11 +97,11 @@ async def register_agent(
 
                 account = Account(
                     id=str(uuid.uuid4()),
-                    account_name=f"Auto-discovered account",
+                    account_name=f"Auto-discovered account for {cluster_id[:8]}",
                     organization_id=org.id,
-                    role_arn=f"arn:aws:iam::000000000000:role/spot-optimizer-{cluster_id[:8]}",
-                    external_id=str(uuid.uuid4()),
-                    is_validated="Y",
+                    role_arn=None,  # P-C19 fix: no placeholder ARN — operator must configure real credentials
+                    external_id=None,
+                    is_validated="N",  # Not validated — requires operator to set up proper IAM role
                     created_at=datetime.utcnow()
                 )
                 db.add(account)
@@ -119,10 +149,60 @@ async def register_agent(
         )
 
 
+# N5 fix: Agent-side action heartbeat endpoint.
+# The agent calls this every 30s while executing an action so the backend
+# knows the action is still alive even if the Celery worker's heartbeat loop
+# is lagging or dead. Prevents false mass-rollbacks on Celery stall.
+@router.post("/actions/{action_id}/heartbeat")
+async def action_heartbeat(action_id: int, _: None = Depends(verify_agent_token)):
+    """Refresh action_heartbeat:{id} in Redis. Called by agent every 30s during execution."""
+    try:
+        from backend.core.redis_client import get_redis_client
+        import time
+        _redis = get_redis_client()
+        _redis.setex(f"action_heartbeat:{action_id}", 120, str(time.time()))
+        return {"ok": True}
+    except Exception as e:
+        logger.warning(f"action_heartbeat update failed for {action_id}: {e}")
+        return {"ok": False}
+
+
+# BUG-1 fix: HTTP fallback endpoint for action results.
+# When WebSocket is down, the agent POSTs action results here directly.
+@router.post("/actions/{action_id}/result")
+async def action_result(action_id: int, payload: Dict[str, Any], _: None = Depends(verify_agent_token), db: Session = Depends(get_db)):
+    """Receive action result via HTTP fallback when WebSocket is unavailable."""
+    try:
+        from backend.models.agent_action import AgentAction
+        agent_action = db.query(AgentAction).filter(AgentAction.id == action_id).first()
+        if not agent_action:
+            raise HTTPException(status_code=404, detail=f"AgentAction {action_id} not found")
+        _status = payload.get("status", "completed")
+        agent_action.status = _status
+        agent_action.result = payload.get("result")
+        agent_action.error_message = payload.get("error")
+        agent_action.completed_at = datetime.utcnow()
+        db.commit()
+        # Clear heartbeat key so the rebalancer picks it up immediately
+        try:
+            from backend.core.redis_client import get_redis_client
+            get_redis_client().delete(f"action_heartbeat:{action_id}")
+        except Exception:
+            pass
+        logger.info(f"Action {action_id} result received via HTTP fallback: {_status}")
+        return {"ok": True, "action_id": action_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"action_result HTTP fallback failed for {action_id}: {e}")
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/deregister")
 async def deregister_agent(
     payload: Dict[str, Any],
-    authorization: Optional[str] = Header(None),
+    _: None = Depends(verify_agent_token),
     db: Session = Depends(get_db)
 ):
     """
@@ -170,7 +250,7 @@ async def deregister_agent(
 @router.post("/heartbeat")
 async def agent_heartbeat(
     payload: Dict[str, Any],
-    authorization: Optional[str] = Header(None),
+    _: None = Depends(verify_agent_token),
     db: Session = Depends(get_db)
 ):
     """
@@ -193,6 +273,12 @@ async def agent_heartbeat(
         cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
         if cluster:
             cluster.last_heartbeat = datetime.utcnow()
+            # If the stale-agent task previously reset agent_installed to 'N',
+            # restore it here so the UI stops showing the "Install Agent" prompt
+            # while the agent is clearly alive and sending heartbeats.
+            if cluster.agent_installed != 'Y':
+                cluster.agent_installed = 'Y'
+                cluster.status = ClusterStatus.ACTIVE
             db.commit()
 
         return {

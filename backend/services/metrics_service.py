@@ -428,6 +428,7 @@ class MetricsService:
             spot_ratio=spot_ratio,
             monthly_cost=float(cluster.monthly_cost or 0),
             estimated_savings=float(cluster.estimated_savings or 0),
+            realized_savings=float(cluster.realized_savings_monthly or 0),
             average_cpu_utilization=round(float(avg_cpu or 0), 2)
         )
 
@@ -497,7 +498,7 @@ class MetricsService:
             mtd_cost = float(cost_explorer_total)
 
             projected_monthly_cost = mtd_cost
-            logger.info(f"Using Cost Explorer data: ${mtd_cost:.2f} for user {user_id}")
+            logger.debug(f"Using Cost Explorer data: ${mtd_cost:.2f} for user {user_id}")
 
             # Get EC2-specific costs for spot/on-demand breakdown
             ec2_services = [
@@ -522,12 +523,34 @@ class MetricsService:
 
             ec2_cost = ec2_cost_query.scalar() or 0
 
+            # Use actual spot/on-demand instance ratio from DB instead of hardcoded split
+            _cluster_ids = [c.id for c in self.db.query(Cluster.id).filter(
+                Cluster.account_id.in_(org_account_ids)
+            ).all()]
 
+            _spot_count = 0
+            _od_count = 0
+            if _cluster_ids:
+                from sqlalchemy import or_ as _or
+                _inst_q = self.db.query(Instance).filter(
+                    _or(
+                        Instance.cluster_id.in_(_cluster_ids),
+                        and_(Instance.cluster_id.is_(None), Instance.account_id.in_(org_account_ids))
+                    ),
+                    Instance.state.in_(['running', 'pending']),
+                )
+                _spot_count = _inst_q.filter(Instance.lifecycle == InstanceLifecycle.SPOT).count()
+                _total_active = _inst_q.count()
+                _od_count = _total_active - _spot_count
 
-            # Estimate spot vs on-demand split (roughly 30% of EC2 is typically spot)
-            # This is approximate since Cost Explorer doesn't break down by lifecycle
-            spot_cost = Decimal(str(ec2_cost * 0.3))
-            on_demand_cost = Decimal(str(ec2_cost * 0.7))
+            _total_nodes = _spot_count + _od_count
+            if _total_nodes > 0 and ec2_cost > 0:
+                spot_ratio = _spot_count / _total_nodes
+                spot_cost = Decimal(str(round(ec2_cost * spot_ratio, 2)))
+                on_demand_cost = Decimal(str(round(ec2_cost * (1 - spot_ratio), 2)))
+            else:
+                spot_cost = Decimal('0.0')
+                on_demand_cost = Decimal(str(ec2_cost))
 
             return CostMetrics(
                 total_cost=Decimal(str(projected_monthly_cost)),
@@ -537,7 +560,7 @@ class MetricsService:
             )
 
         # FALLBACK: Calculate from EC2 instance pricing (less accurate, EC2 only)
-        logger.info(f"Cost Explorer data not available, falling back to EC2 instance calculation for user {user_id}")
+        logger.debug(f"Cost Explorer data not available, falling back to EC2 instance calculation for user {user_id}")
 
         instance_query = self.db.query(Instance).join(Account).filter(
             Account.organization_id == user.organization_id
@@ -626,13 +649,53 @@ class MetricsService:
             team_id
         )
 
-        # Calculate what it would cost if all were on-demand
-        # Assume 70% average spot discount
+        # Calculate what it would cost if all spot instances were on-demand.
+        # Use actual per-instance OD prices from the pricing helper instead of
+        # the old hardcoded 70% discount assumption.
         spot_cost_float = float(cost_metrics.spot_cost)
         on_demand_float = float(cost_metrics.on_demand_cost)
         total_cost_float = float(cost_metrics.total_cost)
-        
-        spot_equivalent_on_demand = spot_cost_float / 0.3 if spot_cost_float > 0 else 0.0
+
+        # Sum up actual OD prices for running spot instances
+        spot_equivalent_on_demand = 0.0
+        try:
+            from backend.utils.pricing_helper import get_pricing_helper
+            _ph = get_pricing_helper()
+            user = self.db.query(User).filter(User.id == user_id).first()
+            if user and user.organization_id:
+                _acc_ids = [a.id for a in self.db.query(Account.id).filter(
+                    Account.organization_id == user.organization_id).all()]
+                _cids = [c.id for c in self.db.query(Cluster.id).filter(
+                    Cluster.account_id.in_(_acc_ids)).all()]
+                from sqlalchemy import or_ as _or
+                _spot_q = self.db.query(Instance).filter(
+                    _or(
+                        Instance.cluster_id.in_(_cids),
+                        and_(Instance.cluster_id.is_(None), Instance.account_id.in_(_acc_ids))
+                    ),
+                    Instance.lifecycle == InstanceLifecycle.SPOT,
+                    Instance.state.in_(['running', 'pending']),
+                )
+                if cluster_id:
+                    _spot_q = _spot_q.filter(Instance.cluster_id == cluster_id)
+                for _si in _spot_q.all():
+                    _region = _si.az[:-1] if _si.az else 'us-east-1'
+                    _od_monthly = _ph.get_ec2_price(_region, _si.instance_type) if _si.instance_type else 0
+                    _od_hourly = _od_monthly / 730.0 if _od_monthly > 0 else 0
+                    # hours active in range
+                    _created = _si.created_at
+                    if _created and _created.tzinfo is None:
+                        from datetime import timezone as _tz
+                        _created = _created.replace(tzinfo=_tz.utc)
+                    _s = max(_created, start_date.replace(tzinfo=_tz.utc) if start_date.tzinfo is None else start_date) if _created else (start_date.replace(tzinfo=_tz.utc) if start_date.tzinfo is None else start_date)
+                    _e = min(datetime.now(timezone.utc), end_date.replace(tzinfo=timezone.utc) if end_date.tzinfo is None else end_date)
+                    _hrs = max(0, (_e - _s).total_seconds() / 3600)
+                    spot_equivalent_on_demand += _od_hourly * _hrs
+        except Exception as _e:
+            logger.warning(f"Failed to compute real OD equivalent for savings: {_e}")
+            # Fallback: assume average 65% discount (conservative)
+            spot_equivalent_on_demand = spot_cost_float / 0.35 if spot_cost_float > 0 else 0.0
+
         total_if_on_demand = on_demand_float + spot_equivalent_on_demand
 
         # Calculate savings

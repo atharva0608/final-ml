@@ -85,6 +85,9 @@ from backend.models.spot_advisor_rates import SpotAdvisorRate
 from backend.models.optimizer_proposal import OptimizerProposal, ProposalStatus
 from backend.models.substitute_nodes import SubstituteNode, SubstituteNodeState
 
+# Global EMA (cross-customer interruption tracker)
+from backend.models.global_pool_ema import GlobalPoolEMA, GlobalPoolEMAHistory
+
 __all__ = [
     "User",
     "Organization",
@@ -172,4 +175,7 @@ __all__ = [
     "ProposalStatus",
     "SubstituteNode",
     "SubstituteNodeState",
+    # Global EMA
+    "GlobalPoolEMA",
+    "GlobalPoolEMAHistory",
 ]

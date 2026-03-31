@@ -273,7 +273,7 @@ def parse_and_store_data(
                 "interruption_index": interruption_index,
                 "savings_percentage": savings_percentage
             })
-            redis_client.setex(cache_key, 43200, cache_value)  # Bug 3: 12h TTL (was 24h)
+            redis_client.setex(cache_key, 90000, cache_value)  # 25h TTL — survives between daily scrape runs
             stats["cache_keys_set"] += 1
 
         db.commit()
@@ -320,6 +320,7 @@ def get_spot_advisor_rating(
     # Cache miss - query database
     logger.debug(f"[SVC-SCRAPE-01] Cache miss for {instance_type} in {region}, querying database")
 
+    _db_created = db is None
     if db is None:
         db = next(get_db())
 
@@ -348,7 +349,7 @@ def get_spot_advisor_rating(
             return None
 
     finally:
-        if db:
+        if _db_created and db:
             db.close()
 
 
@@ -377,6 +378,7 @@ def get_low_interruption_instances(
         f"(interruption <= {max_interruption_index}, savings >= {min_savings}%)"
     )
 
+    _db_created = db is None
     if db is None:
         db = next(get_db())
 
@@ -403,7 +405,7 @@ def get_low_interruption_instances(
         return instances
 
     finally:
-        if db:
+        if _db_created and db:
             db.close()
 
 
@@ -467,6 +469,7 @@ def refresh_cache_for_region(
     """
     logger.info(f"[SVC-SCRAPE-01] Refreshing cache for region {region}")
 
+    _db_created = db is None
     if db is None:
         db = next(get_db())
 
@@ -496,7 +499,7 @@ def refresh_cache_for_region(
         return count
 
     finally:
-        if db:
+        if _db_created and db:
             db.close()
 
 

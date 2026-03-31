@@ -5,7 +5,7 @@ Tracks auto-rebalancing actions triggered by:
 - Graceful: 10-minute proactive rebalancing to safer pools
 """
 
-from sqlalchemy import Column, Integer, String, DateTime, Float, Text, func, Index
+from sqlalchemy import Column, Integer, String, DateTime, Float, Text, func, Index, ForeignKey
 from sqlalchemy.dialects.postgresql import JSONB
 from backend.models.base import Base
 
@@ -19,7 +19,7 @@ class RebalancingAction(Base):
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    cluster_id = Column(String(100), nullable=False, index=True)
+    cluster_id = Column(String(100), ForeignKey("clusters.id", ondelete="CASCADE"), nullable=False, index=True)
     trigger = Column(String(20), nullable=False)  # 'emergency' or 'graceful'
     source_pool = Column(String(100), nullable=False)  # 'instance_type:az' (e.g., 'm5.xlarge:aps1-az1')
     target_pool = Column(String(100), nullable=False)  # 'instance_type:az' (new safe pool)

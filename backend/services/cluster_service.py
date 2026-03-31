@@ -205,7 +205,10 @@ class ClusterService:
                         aws_session_token=creds['SessionToken'],
                         region_name=region
                     )
-                    cluster_names = eks.list_clusters().get('clusters', [])
+                    cluster_names = []
+                    paginator = eks.get_paginator('list_clusters')
+                    for page in paginator.paginate():
+                        cluster_names.extend(page.get('clusters', []))
                 except Exception:
                     continue  # Region not accessible — skip silently
 
@@ -394,7 +397,7 @@ class ClusterService:
             account = Account(
                 id=str(uuid.uuid4()),
                 organization_id=user.organization_id,
-                aws_account_id=connect_data.role_arn.split(':')[4],
+                aws_account_id=(connect_data.role_arn or '').split(':')[4] if len((connect_data.role_arn or '').split(':')) > 4 else '',
                 role_arn="", 
                 status=AccountStatus.ACTIVE,
                 created_at=datetime.utcnow(),
@@ -498,12 +501,14 @@ class ClusterService:
         # SUPER_ADMIN can see all clusters across all organizations
         if user.role == "SUPER_ADMIN":
             query = self.db.query(Cluster).join(Account).filter(
-                Cluster.status != ClusterStatus.PENDING
+                Cluster.status != ClusterStatus.PENDING,
+                Cluster.is_dismissed == False,
             )
         else:
             query = self.db.query(Cluster).join(Account).filter(
                 Account.organization_id == user.organization_id,
-                Cluster.status != ClusterStatus.PENDING  # Exclude PENDING (unverified) clusters
+                Cluster.status != ClusterStatus.PENDING,  # Exclude PENDING (unverified) clusters
+                Cluster.is_dismissed == False,             # Exclude dismissed clusters
             )
 
         # Apply filters
@@ -776,6 +781,27 @@ class ClusterService:
         except Exception:
             pass
 
+        # Rightsizing proposals (no ondelete=CASCADE — must delete explicitly)
+        try:
+            from backend.models.rightsizing_proposal import RightsizingProposal
+            self.db.query(RightsizingProposal).filter(RightsizingProposal.cluster_id == cluster_id).delete(synchronize_session=False)
+        except Exception:
+            pass
+
+        # Hibernation schedule ↔ cluster join table (no CASCADE on FK)
+        try:
+            from backend.models.hibernation_schedule_clusters import hibernation_schedule_clusters as _hsc
+            self.db.execute(_hsc.delete().where(_hsc.c.cluster_id == cluster_id))
+        except Exception:
+            pass
+
+        # Cluster cooldown states (Redis-restart resilience table added 2026-03-25)
+        try:
+            from backend.models.cluster import ClusterCooldownState
+            self.db.query(ClusterCooldownState).filter(ClusterCooldownState.cluster_id == cluster_id).delete(synchronize_session=False)
+        except Exception:
+            pass
+
         # Clear Redis warm spare & substitute state for this cluster
         try:
             from backend.core.redis_client import get_redis_client
@@ -1033,7 +1059,7 @@ echo "✅ Agent successfully deployed!"
                 account_id=account.id,
                 region=request.region or 'us-east-1',
                 status=ClusterStatus.PENDING,
-                api_key=secrets.token_urlsafe(32)
+                api_key=os.getenv("AGENT_API_KEY") or secrets.token_urlsafe(32)
             )
             self.db.add(cluster)
             self.db.commit()

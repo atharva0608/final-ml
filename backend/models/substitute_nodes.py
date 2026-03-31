@@ -1,7 +1,7 @@
 """
 SubstituteNode model — tracks substitute nodes launched during rebalancing.
 """
-from sqlalchemy import Column, String, DateTime, Enum
+from sqlalchemy import Column, String, DateTime, Enum, ForeignKey
 from backend.models.base import Base
 from uuid import uuid4
 from datetime import datetime
@@ -19,7 +19,7 @@ class SubstituteNode(Base):
     __tablename__ = 'substitute_nodes'
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid4()))
-    cluster_id = Column(String(36), nullable=False, index=True)
+    cluster_id = Column(String(36), ForeignKey("clusters.id", ondelete="CASCADE"), nullable=False, index=True)
     instance_id = Column(String(50), nullable=True)
     instance_type = Column(String(50))
     az = Column(String(50))

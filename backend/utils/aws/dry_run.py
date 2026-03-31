@@ -12,7 +12,7 @@ DryRun=True with InstanceMarketOptions.MarketType=spot returns:
 
 Results cached in Redis:
   pass → 600s TTL (10 min)
-  fail → 300s TTL  (5 min, retry sooner on constrained pools)
+  fail → 60s TTL  (1 min, retry quickly — reduces cross-cluster blocking)
 
 AMI ID is resolved once per region via describe_images and cached 24h.
 """
@@ -26,19 +26,21 @@ from redis import Redis
 from backend.core.logger import logger
 
 
-DRY_RUN_PASS_TTL = 480  # 8 minutes (Issue 3b: was 600s — must refresh before next beat cycle)
-DRY_RUN_FAIL_TTL = 300  # 5 minutes — retry failed pools sooner
+DRY_RUN_PASS_TTL = 900  # 15 minutes (Problem #4: was 480s — stale capacity could cause launch failures)
+DRY_RUN_FAIL_TTL = 60  # N8 fix: 60s (was 300s) — retry failed pools faster, reduces cross-cluster blocking
 DRY_RUN_CACHE_TTL = DRY_RUN_PASS_TTL  # backward-compat alias
 
 _AMI_CACHE_TTL = 86400  # 24 hours
 
 
-def _get_ami_for_region(ec2, region: str, redis: Optional[Redis]) -> Optional[str]:
+def _get_ami_for_region(ec2, region: str, redis: Optional[Redis], architecture: str = "amd64") -> Optional[str]:
     """
-    Return a recent Amazon Linux 2 AMI ID for the given region.
+    Return a recent Amazon Linux 2 AMI ID for the given region and architecture.
     Cached in Redis for 24 hours to avoid repeated describe_images calls.
+
+    architecture: "amd64" (x86_64) or "arm64"
     """
-    cache_key = f"dry_run:ami:{region}"
+    cache_key = f"dry_run:ami:{region}:{architecture}"
     if redis:
         try:
             cached = redis.get(cache_key)
@@ -47,11 +49,17 @@ def _get_ami_for_region(ec2, region: str, redis: Optional[Redis]) -> Optional[st
         except Exception:
             pass
 
+    # Build name filter based on architecture
+    if architecture == "arm64":
+        name_filter = 'amzn2-ami-hvm-*-arm64-gp2'
+    else:
+        name_filter = 'amzn2-ami-hvm-*-x86_64-gp2'
+
     try:
         resp = ec2.describe_images(
             Owners=['amazon'],
             Filters=[
-                {'Name': 'name', 'Values': ['amzn2-ami-hvm-*-x86_64-gp2']},
+                {'Name': 'name', 'Values': [name_filter]},
                 {'Name': 'state', 'Values': ['available']},
             ],
         )
@@ -66,7 +74,59 @@ def _get_ami_for_region(ec2, region: str, redis: Optional[Redis]) -> Optional[st
                 pass
         return ami_id
     except Exception as e:
-        logger.debug(f"[dry_run] describe_images failed for {region}: {e}")
+        logger.debug(f"[dry_run] describe_images failed for {region}/{architecture}: {e}")
+        return None
+
+
+def get_eks_ami(region: str, architecture: str = "amd64", redis: Optional[Redis] = None) -> Optional[str]:
+    """
+    Return the latest EKS-optimized AMI ID for the given region and architecture.
+    Checks for EKS-specific AMIs first, falls back to generic Amazon Linux 2.
+    Cached in Redis for 24 hours.
+
+    architecture: "amd64" (x86_64) or "arm64"
+    """
+    cache_key = f"dry_run:ami:{region}:{architecture}"
+    if redis:
+        try:
+            cached = redis.get(cache_key)
+            if cached:
+                return cached.decode() if isinstance(cached, bytes) else cached
+        except Exception:
+            pass
+
+    try:
+        import boto3
+        ec2 = boto3.client("ec2", region_name=region)
+
+        # Try EKS-optimized AMIs first (AWS account 602401143452)
+        if architecture == "arm64":
+            eks_name_filter = 'amazon-eks-arm64-node-*'
+        else:
+            eks_name_filter = 'amazon-eks-node-*'
+
+        resp = ec2.describe_images(
+            Owners=['602401143452'],
+            Filters=[
+                {'Name': 'name', 'Values': [eks_name_filter]},
+                {'Name': 'state', 'Values': ['available']},
+            ],
+        )
+        images = sorted(resp.get('Images', []), key=lambda x: x.get('CreationDate', ''), reverse=True)
+
+        if not images:
+            # Fallback to generic Amazon Linux 2
+            return _get_ami_for_region(ec2, region, redis, architecture)
+
+        ami_id = images[0]['ImageId']
+        if redis:
+            try:
+                redis.setex(cache_key, _AMI_CACHE_TTL, ami_id)
+            except Exception:
+                pass
+        return ami_id
+    except Exception as e:
+        logger.debug(f"[dry_run] get_eks_ami failed for {region}/{architecture}: {e}")
         return None
 
 
@@ -124,8 +184,14 @@ def dry_run_pool(
 
         ec2 = boto3.client("ec2", **client_kwargs)
 
-        # Get AMI ID for this region (needed by run_instances)
-        ami_id = _get_ami_for_region(ec2, region, redis)
+        # Detect architecture from instance type family for correct AMI selection
+        _ARM64_FAMILIES = {'t4g', 'c6g', 'c7g', 'm6g', 'm7g', 'r6g', 'r7g',
+                           'c6gn', 'c6gd', 'm6gd', 'r6gd', 'a1', 'hpc7g'}
+        _family = instance_type.split('.')[0] if instance_type else ''
+        _arch = "arm64" if _family in _ARM64_FAMILIES else "amd64"
+
+        # Get AMI ID for this region and architecture (needed by run_instances)
+        ami_id = _get_ami_for_region(ec2, region, redis, _arch)
         if not ami_id:
             # Fall back to describe_instance_type_offerings if AMI lookup fails
             logger.debug(f"[dry_run] AMI lookup failed for {region}, falling back to offerings check")
