@@ -50,14 +50,35 @@ def _compute_cluster_coverage(db: Session, redis, cluster) -> dict:
     Returns the ClusterCoverageReport dict.
     """
     try:
-        from backend.core.decision_engine import DecisionEngine
-        de = DecisionEngine(redis, db)
+        from backend.services.pool_ranking_service import PoolRankingService
+        from backend.core.redis_client import get_redis_client as _grc_cov
+        _prs_cov = PoolRankingService(db, _grc_cov())
 
         instances = db.query(Instance).filter(
             Instance.cluster_id == cluster.id,
             Instance.state == 'running',
-            Instance.instance_id.like('i-%'),
+            Instance.instance_id.like('i-%') | Instance.instance_id.like('ip-%'),
         ).all()
+
+        # ── Filter out replacement instances from active migrations ────────
+        # Replacement nodes are part of an ongoing migration and should not
+        # appear as separate entries in the coverage / dropdown.
+        _active_replacement_ids = set()
+        try:
+            _active_actions = db.query(RebalancingAction).filter(
+                RebalancingAction.cluster_id == cluster.id,
+                RebalancingAction.status.in_(['in_progress', 'waiting_agent', 'pending']),
+            ).all()
+            for _aa in _active_actions:
+                _meta = _aa.action_metadata or {}
+                _repl_id = _meta.get('replacement_spot_instance_id')
+                if _repl_id:
+                    _active_replacement_ids.add(_repl_id)
+        except Exception as _mig_err:
+            logger.warning(f"[coverage] migration filter failed: {_mig_err}")
+
+        if _active_replacement_ids:
+            instances = [i for i in instances if i.instance_id not in _active_replacement_ids]
 
         if not instances:
             report = {
@@ -81,7 +102,7 @@ def _compute_cluster_coverage(db: Session, redis, cluster) -> dict:
         for inst in instances:
             try:
                 from backend.workers.tasks.cache_builder import _lookup_specs as _cb_specs
-                _vcpu, _mem, _arch = _cb_specs(inst.instance_type)
+                _vcpu, _mem, _arch, _ = _cb_specs(inst.instance_type)
             except Exception:
                 _vcpu, _mem, _arch = 0, 0.0, 'amd64'
             node_info = {
@@ -96,7 +117,12 @@ def _compute_cluster_coverage(db: Session, redis, cluster) -> dict:
                     'architecture': _arch or 'amd64',
                 },
             }
-            alternatives = de.rank_for_node(cluster.id, node_info, region)
+            alternatives = _prs_cov.rank_pools_for_node(
+                node_info=node_info,
+                cluster_id=cluster.id,
+                region=region,
+                include_dynamic_filters=True,
+            )
             alt_count = len(alternatives)
 
             if alt_count >= 3:
@@ -127,6 +153,9 @@ def _compute_cluster_coverage(db: Session, redis, cluster) -> dict:
                 "architecture": getattr(inst, 'architecture', 'amd64'),
                 "lifecycle": inst.lifecycle.value if inst.lifecycle else 'on-demand',
                 "status": status,
+                # node_health_status: K8s / collector health (READY, UNKNOWN, CALIBRATING).
+                # UNKNOWN = EC2 running in AWS but K8s node is gone (orphaned/failed-terminate).
+                "node_health_status": getattr(inst, 'status', None) or 'READY',
                 "alternative_count": alt_count,
                 "best_pool": best_pool,
                 "best_saving_pct": best_saving_pct,
@@ -216,18 +245,27 @@ def reconciliation_worker():
         logger.info(f"[reconcile] Checking {len(clusters)} active cluster(s)")
 
         for cluster in clusters:
-            # Skip if any in-progress or waiting_agent RebalancingAction exists —
-            # the rebalancer is actively terminating/launching; don't interfere.
-            in_progress_count = db.query(RebalancingAction).filter(
+            # Z14: Instead of skipping the entire cluster when actions are in progress,
+            # collect the specific instance IDs involved in active actions and skip
+            # only those during reconciliation — prevents ghost rows accumulating
+            # in clusters that rebalance frequently.
+            _active_actions = db.query(RebalancingAction).filter(
                 RebalancingAction.cluster_id == cluster.id,
                 RebalancingAction.status.in_(['in_progress', 'waiting_agent']),
-            ).count()
-            if in_progress_count:
+            ).all()
+            _protected_instance_ids = set()
+            for _aa in _active_actions:
+                if _aa.source_instance_id:
+                    _protected_instance_ids.add(_aa.source_instance_id)
+                # Replacement spot ID lives in action_metadata
+                _repl_id = (_aa.action_metadata or {}).get('replacement_spot_instance_id')
+                if _repl_id:
+                    _protected_instance_ids.add(_repl_id)
+            if _protected_instance_ids:
                 logger.debug(
-                    f"[reconcile] Skipping cluster {cluster.id} — "
-                    f"{in_progress_count} action(s) in progress"
+                    f"[reconcile] Cluster {cluster.id}: protecting {len(_protected_instance_ids)} "
+                    f"instance(s) involved in active actions"
                 )
-                continue
 
             try:
                 # Get account for this cluster
@@ -267,7 +305,12 @@ def reconciliation_worker():
 
                 missed = 0
                 terminated = 0
+                _skipped_protected = 0
                 for db_inst in db_instances:
+                    # Z14: Skip instances actively managed by the rebalancer
+                    if db_inst.instance_id in _protected_instance_ids:
+                        _skipped_protected += 1
+                        continue
                     miss_key = f"{_MISS_KEY_PREFIX}{db_inst.instance_id}"
                     if db_inst.instance_id not in live_ids:
                         miss_count = int(redis.incr(miss_key) or 0)
@@ -290,11 +333,12 @@ def reconciliation_worker():
                         # Instance is alive — clear any accumulated miss counter
                         redis.delete(miss_key)
 
-                if missed or terminated:
+                if missed or terminated or _skipped_protected:
                     db.commit()
                     logger.info(
                         f"[reconcile] Cluster {cluster.id}: "
                         f"{missed} missed, {terminated} newly terminated"
+                        + (f", {_skipped_protected} skipped (active action)" if _skipped_protected else "")
                     )
 
                 # Compute per-node coverage report after reconciliation

@@ -83,6 +83,7 @@ async def report_spot_interruption(req: SpotInterruptionRequest):
                 trigger="emergency",
                 source_pool=req.instance_id,
                 target_pool="auto",
+                source_instance_id=req.instance_id,
                 status="in_progress",
                 started_at=datetime.utcnow(),
                 action_metadata={
@@ -337,6 +338,13 @@ async def receive_node_metrics(req: NodeMetricsRequest):
                     if mem_pct is not None:
                         inst.memory_util = mem_pct
                     inst.updated_at = datetime.utcnow()
+                    # Mark the node as confirmed present in K8s. This timestamp is used
+                    # by cleanup_zombie_nodes (health.py) to detect nodes whose EC2 is
+                    # still running in AWS but whose K8s node has been deleted (orphaned).
+                    inst.last_heartbeat = datetime.utcnow()
+                    # Clear any stale UNKNOWN status set while the agent was offline
+                    if inst.status == 'UNKNOWN':
+                        inst.status = 'READY'
 
             db.commit()
             return {"status": "stored", "cpu_pct": cpu_pct, "mem_pct": mem_pct}
