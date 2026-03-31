@@ -4,6 +4,7 @@ set -e
 echo "🧹 Cleaning up old agent resources..."
 kubectl delete configmap spot-agent-config -n spot-optimizer --ignore-not-found=true
 kubectl delete daemonset spot-agent -n spot-optimizer --ignore-not-found=true
+kubectl delete deployment spot-orchestrator -n spot-optimizer --ignore-not-found=true
 kubectl delete clusterrole spot-agent-role --ignore-not-found=true
 kubectl delete clusterrolebinding spot-agent-binding --ignore-not-found=true
 kubectl delete serviceaccount spot-agent-sa -n spot-optimizer --ignore-not-found=true

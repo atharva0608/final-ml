@@ -65,7 +65,7 @@ Before creating actions, three safety gates are checked:
 
   Gate 4: Distributed Lock (per cluster)
     Serializes all K8s operations on a cluster. One drain at a time.
-    Key: lock:node_action:{cluster_id} (timeout: 180s)
+    Key: lock:node_action:{cluster_id} (timeout: 1200s / 20 min)
 
 INSTANCE COOLDOWN
 ------------------

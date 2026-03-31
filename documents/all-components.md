@@ -673,6 +673,10 @@ The stale `RebalancingAction` expiry loop (>45 min `in_progress`/`waiting_agent`
 
 **P-M6 — Interval gate fires at default 15s**: Per-cluster interval gate condition changed from `_check_interval > 15` to `_check_interval >= 15`. The `spot:last_check:{cluster_id}` key was never written at the default 15s interval, making Celery backpressure burst protection non-functional for all intervals ≤ 15s.
 
+**P-M2 — EC2 terminate failure cooldown extended to 4h**: `spot:term_failed:{instance_id}` TTL increased from 5400s (90 min) to 14400s (4 hours). The 90-min window was too short for operator review — after expiry the rebalancer retried with both the OD node and the orphan spot still running (cluster at N+1, double billing).
+
+**P-M3 — RC3 streak TTL doubled to 10 minutes**: `rc3:sync_od_streak:{aws_iid}` TTL increased from 300s (5 min) to 600s (10 min). The original 5-min TTL exactly matched the Celery beat cycle period — any beat jitter of ≥1 second caused the streak key to expire between observations 2 and 3, silently resetting the counter and delaying SPOT→OD lifecycle changes by up to 15 min (3 extra observations). With 600s TTL (2× cycle window), expiry-at-boundary races are eliminated.
+
 ---
 
 ## API Client Module Index (`frontend/src/services/api.js` — 605 lines)
@@ -1128,6 +1132,8 @@ Additional Redis keys written by the 15s rebalancer loop for safety, monitoring,
 | `spot:launch_blocked:{cluster_id}:{type}:{az}` | 300s (Issue 11) | Inline pool block set when a launched instance fails to join K8s (`node_joined:` key absent after `spot_join_timeout`). Pool selection skips this pool+AZ for 5 min to prevent orphan accumulation. |
 | `ranking_refresh_pending:{region}` | 60s (Issue 14) | Debounce key preventing more than 1 `build_global_pool_cache` dispatch per region per 60s. Set by `emergency_rebalancer.py` after `report_termination` and by `auto_rebalancer.py` after `report_launch_failure`. |
 | `spot:term_failed:{instance_id}` | 14400s / 4h (P-M2 fix: was 5400s / 90 min) | Blocks retry of EC2 terminate for a specific instance after API failure. 4h gives operators time to investigate before auto-retry; prevents re-attempt while cluster is at N+1. |
+| `spot:node_active_action:{instance_id}` | 600s / 10 min (changes.md §2.2 — implemented 2026-03-26) | Per-node overlapping drain prevention. Set by auto_rebalancer when creating a new OD→spot action. Checked before action creation — if key exists, the instance is already being migrated and is skipped. Cleared in the completion handler on both success and failure paths. |
+| `spot:discovery_last_updated:{cluster_id}` | 600s / 10 min (changes.md §2.3 — implemented 2026-03-26) | Written by `discovery.py:scan_eks_clusters` after each cluster sync (`db.commit()`). Allows the auto_rebalancer to detect stale DB state (key absent = discovery hasn't run in >10 min). Check guard in auto_rebalancer not yet wired (available for future use). |
 
 ### New Debug API Endpoint (Task 13) — `GET /api/v1/ascpai/clusters/{cluster_id}/nodes/{node_id}/status`
 
@@ -1338,3 +1344,103 @@ These are components defined **inline inside parent files** — they are NOT sep
 | `InterruptionHeatmap` | 5 minutes (300,000ms) via `useAdaptivePolling` | `/api/v1/ascpai/interruption-heatmap?days=30` + volatility/status |
 | `ClusterHealthTimeline` | One-time on mount | `/metrics/cluster/{id}/health-timeline` |
 | `useAdaptivePolling` hook | Adaptive (backs off when tab hidden) | Configurable per consumer |
+
+---
+
+## 24. Backend-Only Features (No Frontend UI)
+
+The following backend features exist and are fully functional but have **no corresponding frontend component**. Operators interact with them only via API or Redis/DB directly.
+
+| Feature | Backend Location | Access Method | Notes |
+|---|---|---|---|
+| **SubstituteManager / Warm Spare** | `backend/services/substitute_manager.py` | `GET /api/v1/clusters/{id}/substitute/status` | No frontend widget; maintain_standby toggle is in `OptimizationSettingsTab` (ClusterList.jsx) but warm-spare status itself is API-only |
+| **Pool Rotation Service** | `backend/services/pool_rotation_service.py` | `POST /api/v1/pool-rotation/clusters/{id}/force` | Force-rotation endpoint exists; no UI for viewing rotation history or current pool health scores |
+| **ASCP Built-in Auto-Scaler** | `backend/workers/tasks/auto_scaler.py` | `ClusterOptimizationSettings.enable_ascp_auto_scaler` (DB toggle) | No UI toggle; must be enabled directly via DB or API patch to settings |
+| **ClusterCooldownState lock visibility** | `backend/models/cluster.py` | `GET /api/v1/clusters/{id}` (no dedicated endpoint) | The DB-backed stabilization lock table is not surfaced in the UI; `spot:stabilization_lock` Redis TTL is shown in the stabilization card but the DB table is invisible |
+| **NodeAlternativeCache** | `backend/models/cluster.py` | `GET /api/v1/clusters/{id}/nodes/{node_id}/alternatives` | Per-node alternative pool list is available via API but no frontend component renders it |
+| **Circuit Breaker Admin** | `backend/api/admin_routes.py` | `GET /api/v1/admin/circuit-breakers` | Accessible only to SUPER_ADMIN role; no standard user UI |
+| **Instability Propagator events** | `backend/services/instability_propagator.py` | Redis keys `propagator:pool_pressure:*` | Propagator adjusts pool scoring internally; no events visible in UI |
+
+---
+
+## 25. Known Operational Gaps
+
+| Gap | Details | Workaround |
+|---|---|---|
+| **ClusterBaseline missing for legacy clusters** | Clusters onboarded before the `ClusterBaseline` table was added have no savings anchor row. `SavingsCalculator` returns $0 for these clusters. | Manually `INSERT INTO cluster_baselines (cluster_id, baseline_monthly_cost, ...) VALUES (...)` or trigger a recalculate via API once OD price data is available. |
+| **Pricing queue not consumed without `-Q pricing` flag** | Celery worker started without `-Q celery,pricing` never consumes pricing tasks → spot prices go stale. | In `docker-compose.yml`, celery-worker command must include `-Q celery,pricing`. Emergency worker should use `-Q emergency`. |
+| **SpotPriceHistory `az` column legacy name** | DB table has `az` column (NOT NULL) but `Instance` model uses `availability_zone`. Batch DB inserts fail silently; Redis writes succeed. | Redis-based pricing pipeline (not DB) is the authoritative path for spot prices. |
+| **No Prometheus metrics for circuit breaker / rate limiter** | `cb:state:{cluster_id}` Redis keys are used internally but not exported as Prometheus gauges. | Use `GET /api/v1/admin/circuit-breakers` for a current snapshot. Alerting requires custom polling script. |
+| **discovery_last_updated check not wired** | `spot:discovery_last_updated:{cluster_id}` is written by discovery.py but the auto_rebalancer main loop does not yet check it for staleness. | Current staleness protection: per-cycle DB reads + instance state reconciliation pass. |
+
+---
+
+## 26. Bug Fix Log — Session 2 (2026-03-26)
+
+41 bugs fixed across 20+ files. Summary by category:
+
+### Decision Engine (P-C11, P-C12, P-C13, P-M29)
+- **P-C11**: `PoolRankingService` arg order corrected in `decision_engine.py` (`(self.db, self.redis)` not `(self.redis, self.db)`)
+- **P-C12**: Non-existent `refresh_global_rankings()` replaced with `build_global_pool_cache()`
+- **P-C13**: Redis key corrected from `spot:global_rankings:{region}` → `global_pool_rankings:{region}` (both read locations)
+- **P-M29**: `_check_volatility_regime()` now accepts `b"true"`, `"true"`, `b"active"`, `"active"` (not just bytes literal)
+
+### Right-Sizing Service (P-C6, P-C7, P-H6, P-H7, P-M8)
+- **P-C6**: Added `.order_by(PodMetric.timestamp)` to pod metrics query in `rightsizing_service.py`
+- **P-C7**: Volatility check fixed — `b"true"` never matched `decode_responses=True` string output
+- **P-H6**: Percentile formula: `int((p/100) * (len-1))` not `int((p/100) * len)` (off-by-one)
+- **P-H7**: Added `or None` guards for NULL CPU/memory request fields
+- **P-M8**: Memory MB conversion uses `math.ceil()` not `int()` truncation
+
+### Emergency Rebalancer (P-C16, P-H16)
+- **P-C16**: `status = "in_progress"` (was `"pending"` — never consumed by any processor)
+- **P-H16**: Fixed column names: `actual_instance_type`/`actual_az` (not `target_instance_type`/`target_az`)
+
+### Pool Ranking Service (P-C14, P-M22, P-M25)
+- **P-C14**: `_get_spot_advisor_data()` returns `{}` not `None` on exception
+- **P-M22**: `_step4_blacklist_check` failure_count default: `or 1` → `or 0`
+- **P-M25**: vCPU lower bound: `max(1, vcpu - 1)` → `max(1, vcpu)`
+
+### Cross-Account Auth (P-C15, P-H11, P-H18)
+- **P-C15**: `substitute_manager.py` — assumed-role creds + `ImageId` from Redis cache
+- **P-H11**: `tag_management_service.py` — `ExternalId` added to assume_role
+- **P-H18**: `recovery_monitor.py` — `ExternalId` added to all 3 assume_role calls
+
+### Auto-Rebalancer (P-H5, P-H17)
+- **P-H5**: Diversification guard: empty `target_az` skips occupancy check
+- **P-H17**: ASG resume exception handler passes Cluster object not ARN string
+
+### Redis / DB Safety (P-H14, P-H27, P-H28, P-M11, P-M28)
+- **P-H14**: `optimizer_coordinator.py` — atomic Redis pipeline for INCR+EXPIRE
+- **P-H27**: `spot_advisor_scraper.py` — session close only if this function created it
+- **P-H28**: ARN `split(':')[4]` guarded with `len() > 4` check in 5 files
+- **P-M11**: `rebalancing_action.py` — `ForeignKey("clusters.id", ondelete="CASCADE")` added
+- **P-M28**: `cooldown_controller.py` — `_db.close()` moved to `finally` block
+
+### Karpenter Routes (P-M24)
+- **P-M24**: All `* 720` monthly cost multipliers → `* 730` hours
+
+### Frontend (P-C17, P-C18, P-C19, P-H19–P-H26, P-M17–P-M21, P-M26)
+- **P-C17/C18** (`RightSizingDashboard.jsx`): Fake safety panel + exposure charts removed, replaced with honest placeholders
+- **P-C19** (`agents.py`): `000000000000` placeholder ARN → `role_arn=None, is_validated="N"`
+- **P-H19** (`RightSizingDashboard.jsx`): Guard for synthetic `"stateful-*"` node IDs
+- **P-H20/H21/H22** (`RightSizingKarpenterTab.jsx`): `|| 128` fallback, 94% hardcode, fake SVG charts — all removed
+- **P-H23/H24** (`PoolRankings.jsx`): useEffect dependency fixes (interval thrash + polling reset)
+- **P-H25** (`OverviewTab.jsx`): NaN guard on null spot price multiply
+- **P-H26** (`useASCPStore.js`, `api.js`): Default region `'ap-south-1'` → `null`
+- **P-M17/M18** (`DecisionEngineV3Dashboard.jsx`, `RightSizingDashboard.jsx`): `retryCount` state for retry button
+- **P-M19/M20/M21** (`RightSizingDashboard.jsx`): Fake candidates, fake timestamps, hardcoded 50% — all removed
+- **P-M26** (`api.js`): Duplicate `assignRole` removed
+
+### Fix Status Totals (2026-03-26)
+| Status | Critical | High | Medium | Total |
+|---|---|---|---|---|
+| **FIXED** | 17 | 24 | 25 | **66** |
+| **PARTIALLY FIXED** | 2 | 2 | 1 | **5** |
+| **N/A (removed)** | 0 | 1 | 3 | **4** |
+| **Total** | **19** | **28** | **29** | **76** |
+
+Partially fixed (no full resolution yet):
+- **P-C8**: `INSTANCE_SPECS` in `karpenter_routes.py` still has hardcoded ap-south-1 reference prices
+- **P-H10**: DryRun global budget (200/hr) can still starve under high load
+- **P-M23**: `spot * 3.0` last-resort OD fallback for instance types not in `_ONDEMAND_FALLBACK` table

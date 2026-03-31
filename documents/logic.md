@@ -3,7 +3,7 @@
 > **Source of truth**: Extracted exclusively from `.py`, `.jsx`, `.js` files in this repository.
 > **Files analyzed**: 150+ backend Python services, 37 Celery workers, 60+ models, 6 core modules, 1 guardrail engine, 3 hibernation strategies.
 > **Zero `.md` or `.txt` files referenced.**
-> **Last updated**: 2026-03-23 — Full refresh: state-machine rebalancer (Pillar 1), BlacklistService with exponential backoff & cascade dampener, CooldownController with DB persistence, Karpenter emergency direct-EC2 path, recovery monitor Karpenter stall detection, org-level spend velocity guard, 13-step execution controller, GLOBAL_CACHE_LIMIT 100→1500, n=n blacklist replacement, fallback scoring, schema validation (Pillar 6), all engine line counts verified, new models (NodeAlternativeCache, ClusterBaseline, StatefulRules), APScheduler background jobs, updated Redis key registry. Session 2026-03-23 (gap analysis): decision_engine_service report_termination 24h→15min, NodeTemplate.source_od_price + price gate in _apply_client_filters, OverviewTab IP hostname→instance_type, node-recommendations per-node arch filter, ranking_version:{region} counter on blacklist events, hibernation _check_matrix_overlap DAILY/MONTHLY fixed.
+> **Last updated**: 2026-03-27 — Session updates: node-recommendations pool-level diversification (occupied_pools exclusion + 15% interruption hard cap, Pass 2 relaxation bug fix), coverage cache invalidation after successful rebalance, frontend dropdown reset on terminated node, auto-rebalancer rollback/failure/cleanup verified. Previous: architecture_preference added to ClusterOptimizationSettings (both/amd64/arm64), per-node alternatives pipeline expanded (arch_pref gate, blacklist gate from Redis risky_pools, diversification cap max 2/family, risk_ceiling_pct fix read from OptimizationStrategy), Market View tab removed from PoolRankings.jsx frontend (backend endpoint retained), chart height improvements. Previous: 2026-03-23 — Full refresh: state-machine rebalancer (Pillar 1), BlacklistService with exponential backoff & cascade dampener, CooldownController with DB persistence, Karpenter emergency direct-EC2 path, recovery monitor Karpenter stall detection, org-level spend velocity guard, 13-step execution controller, GLOBAL_CACHE_LIMIT 100→1500, n=n blacklist replacement, fallback scoring, schema validation (Pillar 6), all engine line counts verified, new models (NodeAlternativeCache, ClusterBaseline, StatefulRules), APScheduler background jobs, updated Redis key registry. Session 2026-03-23 (gap analysis): decision_engine_service report_termination 24h→15min, NodeTemplate.source_od_price + price gate in _apply_client_filters, OverviewTab IP hostname→instance_type, node-recommendations per-node arch filter, ranking_version:{region} counter on blacklist events, hibernation _check_matrix_overlap DAILY/MONTHLY fixed.
 
 ---
 
@@ -429,6 +429,14 @@ RANKING_CACHE_TTL          = 3600   # 1 hour
 ### `rank_for_node(node, cluster)` — line 66
 Returns top `ScoredPool` list for a specific running node. Applies node template + blacklist filters.
 
+> **Updated 2026-03-27** — The ASCPAI per-node alternatives endpoint (`ascpai_routes.py`) now applies additional gates on top of `rank_for_node()`:
+> 1. **Architecture preference gate** — reads `ClusterOptimizationSettings.architecture_preference` (`both`/`amd64`/`arm64`); `both` falls back to the node's own arch.
+> 2. **Blacklist gate** — loads `risky_pools` Redis set; filters out any pool where `{instance_type}:{az}` appears in the set.
+> 3. **Interruption rate hard cap** — pools with AWS Spot Advisor interruption rate ≥ 15% are always excluded.
+> 4. **Negative savings gating** — if any positive-savings pools exist, negative-savings pools are hidden entirely. If zero positive pools, negatives are allowed up to the user-configured `risk_savings_tradeoff_pct`.
+> 5. **Diversification — occupied pool exclusion** — when `diversify_pools` is enabled, queries all running instances in the cluster; excludes pools whose `instance_type:az` is already in use. Also caps max 2 entries per instance family. Falls back to family-cap-only if strict mode yields < 3 results.
+> 6. **Risk ceiling fix** — `risk_ceiling_pct` is now read from `OptimizationStrategy` (was incorrectly read from `ClusterOptimizationSettings`).
+
 ### `rank_for_template(template_spec)` — line 141
 Returns top pools matching a size specification (vCPU range, memory range, architecture).
 
@@ -638,6 +646,21 @@ Guard 3 — Classification Guard (WorkloadInspector)
   Cache ABSENT → trigger async re-classification + _record_skip + skip entire cluster (no fall-through)
   Cache PRESENT → delete class_miss_streak:{cluster_id}; OD node's node_name not in cache → skip that node
   ~9-min race window after new node joins (APScheduler runs every 10 min)
+
+Per-instance checks (inside `for instance in on_demand_instances` loop):
+
+Guard 4 — Per-Node Active Action Lock (changes.md §2.2 — implemented 2026-03-26)
+  Redis key: spot:node_active_action:{instance_id}  (TTL = 600s, set on action creation)
+  If key exists: skip this instance (node already has an in-flight cordon/drain/replace action).
+  Lock cleared by completion handler on SUCCESS path (after resetting failure counter)
+  and on FAILURE path (after setting backoff key). This prevents overlapping drains where
+  two 15s cycles both create actions for the same source node, causing cluster growth.
+
+Guard 5 — Discovery Sync Staleness (changes.md §2.3 — key written, main-loop check not yet wired)
+  Redis key: spot:discovery_last_updated:{cluster_id}  (TTL = 600s, written by discovery.py)
+  discovery.py:scan_eks_clusters writes this key after each cluster DB commit.
+  auto_rebalancer check NOT YET implemented in the main loop — available for future
+  use to skip clusters whose discovery data is >10 min stale.
 ```
 
 ## 4.7 Safety Gates (in `execute_rebalancing_action()` — line 771)
@@ -1285,6 +1308,7 @@ permanently wrote OD to DB. The spot assertion key (300s TTL) bridges this gap.
 | `scale_down_stabilization_minutes` | 15 | Wait before scale-down fires |
 | `enable_ascp_auto_scaler` | false | Built-in auto-scaler (off by default) |
 | `check_interval_seconds` | 15 | Per-cluster rebalance check interval |
+| `architecture_preference` | "both" | CPU architecture filter for alternative pools: `"both"` (match node arch), `"amd64"` (force x86_64), `"arm64"` (force ARM) |
 
 ### `OptimizationStrategy` — lines 157–175
 | Field | Default | Purpose |
@@ -1360,17 +1384,16 @@ Prefix: `/api/v1/ascpai`
 | `/v3/cooldown/{cluster_id}` | GET | 1114 | Cooldown status + remaining_seconds |
 | `/v3/workload-status/{cluster_id}` | GET | 1140 | STATELESS / STATEFUL / MIXED / EMPTY |
 | `/v3/substitute/{cluster_id}` | GET | 1181 | Standby node status |
-| `/clusters/{cluster_id}/node-recommendations` | GET | 1302 | Per-node optimization recommendations |
+| `/clusters/{cluster_id}/node-recommendations` | GET | 1302 | Per-node optimization recommendations. Pass 1: pool-level diversification (`_occupied_pools` exclusion of `(instance_type, az)` pairs from running instances + type-level exclusion) + 15% interruption hard cap. Pass 2: relaxes diversity (no exclusion), keeps 15% cap. Sorted by risk then savings. |
 | `/clusters/{cluster_id}/impact` | GET | 1700 | Projected savings from recommendations |
 | `/v3/rebalancing-context/{cluster_id}` | GET | 1818 | Unified: cooldown + next-target + daily-limit |
-| `/clusters/{cluster_id}/market-view` | GET | 2265 | Per-cluster pool market view filtered by source node vCPU/memory/arch/OD price ceiling |
 | `/clusters/{cluster_id}/nodes/{node_id}/status` | GET | ~2674 | Per-node debug status: lifecycle, cooldowns, suppression, spot assertion TTL |
 | `/health` | GET | 778 | ASCP.AI system health: ML pipeline status, circuit breaker state, `ml_fail_count_10min` |
 | `/blacklist/check` | GET | 388 | Quick check if a single instance_type + AZ is currently blacklisted; returns status, risk score, reason, TTL |
 | `/v3/metrics` | GET | 1073 | All Decision Engine v3 observability counters from `spot:metrics:*` Redis keys |
 | `/volatility/status` | GET | 1237 | Current volatility regime (NORMAL/HIGH/CRITICAL); polled every 10 min by VolatilityMonitor |
 | `/clusters/{cluster_id}/coverage` | GET | 2181 | ClusterCoverageReport: total/covered/at-risk/stranded/immovable nodes + per-node summary; cached 300s |
-| `/clusters/{cluster_id}/nodes/{node_id}/alternatives` | GET | 2228 | Per-node alternative pool list using `rank_for_node()`; paginated (`?page=1&page_size=20`) |
+| `/clusters/{cluster_id}/nodes/{node_id}/alternatives` | GET | 2228 | Per-node alternative pool list. Pipeline: arch_pref gate → blacklist gate → size gate → interruption hard cap (≥15% excluded) → risk ceiling → positive/negative savings split (negatives hidden when positives exist, else capped at tradeoff_pct) → diversification (exclude occupied instance_type:az + max 2/family, fallback to family-cap-only if <3 results) |
 | `/clusters/{cluster_id}/dry-run-check` | POST | 2646 | Queues background dry-run capacity checks for `pool_keys`; results reflected on next market-view poll |
 | `/clusters/{cluster_id}/nodes/{node_id}/pool-audit` | GET | 2763 | Most recent `rank_for_node()` rejection audit: raw_pool_count, eligible_count, rejection_reasons (TTL 300s) |
 | `/clusters/{cluster_id}/savings` | GET | 2836 | Savings anchored to ClusterBaseline: baseline/current costs, realized_savings (monthly/pct/annual), gap vs estimated |
@@ -1417,68 +1440,6 @@ needing Redis CLI access. `spot_assertion=true` means `spot:asserted_spot:{id}` 
 ```
 
 `expires_at` and `next_check_at` are **absolute UTC timestamps**, not relative seconds, so the frontend countdown survives page refresh.
-
-### Market View vs Generic Rankings — Two Separate Surfaces
-
-```
-POST /api/v1/ascpai/pools/rankings
-  Used by: PoolRankings.jsx (ASCP.AI page), GlobalRankingsCard.jsx
-  Context: Fleet-wide, no source node, uses m5.large neutral baseline
-  Purpose: Top pools globally — fleet overview page
-
-  Known limitation (GlobalRankingsCard): The m5.large baseline is hardcoded and NOT
-  cluster-specific. In regions where m5.large is not representative (e.g., ap-south-1
-  dominated by t3 families), the savings % shown will be anchored to a reference node
-  that does not reflect the user's actual fleet pricing. Intentional for a neutral global
-  view — cluster-specific rankings require PoolRankings.jsx with clusterId param.
-
-GET /api/v1/ascpai/clusters/{id}/market-view
-  Used by: PoolRankings.jsx Market View tab (ASCP.AI page, per-cluster context)
-  Context: Per-cluster — filters by source node vCPU/memory/arch/OD price ceiling
-  Purpose: Pools compatible with THIS cluster's specific nodes
-
-ClusterDetails.jsx does NOT have a Market View tab — cluster detail uses Overview/
-Optimization Settings/Node Template/Activity Log tabs only. The market-view endpoint
-is wired to the ASCP.AI page where cluster context is passed via clusterId param.
-```
-
-### Market View Pricing Data Pipeline
-
-```
-AWS EC2 describe_spot_price_history (paginator, all AZs, no filter)
-  ↓  [workers.pricing.refresh_regional_pricing / workers.pricing.ingest_spot_prices]
-  ↓  AWSPricingService._refresh_regional_pricing()
-  ↓  Redis key: spot_price:{region}:{az}:{instance_type}
-  ↓  Value format: JSON {"price": "0.0124", "timestamp": "2026-03-24T..."}  ← MUST be JSON
-  ↓
-AWS Pricing API get_products (per instance type)
-  ↓  [workers.pricing.refresh_ondemand]
-  ↓  AWSPricingService.get_ondemand_price()
-  ↓  Redis key 1: od_price:{region}:{instance_type}      (read by AWSPricingService)
-  ↓  Redis key 2: ondemand_price:{region}:{instance_type} (read by cache_builder._lookup_od_price)
-  ↓  Value format: plain string "0.0464"
-  ↓
-cache_builder.build_global_pool_cache()  [beat: global-pool-cache-rebuild-{region}, hourly]
-  ↓  Scans spot_price:{region}:* keys → json.loads(raw).get('price') → spot_price float
-  ↓  Calls _lookup_od_price() → tries ondemand_price: key first, od_price: key as fallback
-  ↓  savings_pct = (od_price - spot_price) / od_price * 100
-  ↓  Redis key: market_view_cache:{region}  (TTL 1h)
-  ↓
-GET /api/v1/ascpai/clusters/{id}/market-view
-  ↓  Reads market_view_cache:{region}
-  ↓  Filters by source node arch/vcpu/memory/od_price ceiling
-```
-
-**Key format invariants (DO NOT CHANGE without updating both writer and reader):**
-- Spot price value stored as JSON object (not plain string) — `cache_builder` uses `json.loads(raw).get('price')`
-- OD price value stored as plain string float — `_lookup_od_price()` uses `float(raw)` directly
-- `ondemand_price:{region}:{type}` key populated by BOTH `pricing_collector.py` (ingest_spot_prices path) AND `aws_pricing_service.get_ondemand_price()` (refresh_ondemand path)
-
-**Spot_advisor fallback path** (when no `spot_price:*` keys exist):
-- `cache_builder` falls back to `spot_advisor:{region}:{type}:Linux` keys
-- Uses real `savings_percentage` field from spot_advisor data (not hardcoded 70%)
-- Default `savings_frac = 0.70` only when spot_advisor has no savings_percentage entry
-- All fallback pools marked `_is_estimated: True`
 
 ## 13.2 Cluster Routes — `backend/api/cluster_routes.py`
 
@@ -1585,6 +1546,8 @@ Router prefix: `/pool-rotation` → full path: `/api/v1/pool-rotation/...`
 | `/notifications/{cluster_id}` | `/api/v1/pool-rotation/notifications/{cluster_id}` | DELETE | Clear rotation notifications (mark as read) |
 
 ## 13.6a Pool Rotation Service Logic — `backend/services/pool_rotation_service.py`
+
+> See also: **main-2-updated.md § "Pool Rotation Service"** for operator-level summary and force-rotation instructions.
 
 **Purpose**: Maintains fresh pool availability and auto-fails over to backup AZs when primary AZs become fully blacklisted.
 
@@ -2129,6 +2092,8 @@ GET /api/v1/clusters/{id}/nodes/detailed
 | `spot:launch_blocked:{cluster_id}:{type}:{az}` | 300 s (Issue 11: set on no-join timeout) | `auto_rebalancer.py` (set when `node_joined:{instance_id}` absent after `spot_join_timeout`) | `auto_rebalancer.py` pool selection — skip pool for this cluster for 5 min after a no-join timeout |
 | `ranking_refresh_pending:{region}` | 60 s (Issue 14: debounce key) | `emergency_rebalancer.py` (after `report_termination`); `auto_rebalancer.py` (after `report_launch_failure`) | Both files check this key before dispatching `build_global_pool_cache` Celery task — ensures at most 1 refresh per region per 60s |
 | `spot:term_failed:{instance_id}` | 14400 s / 4 h (P-M2 fix: was 5400 s / 90 min — extended to give operators time to investigate before auto-retry; prevents re-attempt while cluster is at N+1) | `auto_rebalancer.py` (set on EC2 terminate API failure) | `auto_rebalancer.py` (blocks retry of terminate for this instance during TTL) |
+| `spot:node_active_action:{instance_id}` | 600 s / 10 min (changes.md §2.2) | `auto_rebalancer.py` — set immediately after `db.add(rebalancing_action)` when a new OD→spot action is created | `auto_rebalancer.py` — per-node guard: skips instance if key exists (prevents overlapping drains); cleared in both success and failure completion handlers |
+| `spot:discovery_last_updated:{cluster_id}` | 600 s / 10 min (changes.md §2.3) | `discovery.py:scan_eks_clusters` — set after each `db.commit()` inside the cluster loop, written as ISO timestamp | `auto_rebalancer.py` — (guard NOT yet implemented in main loop; key is set by discovery and available for future staleness checks) |
 
 ---
 
@@ -2178,6 +2143,48 @@ GET /api/v1/clusters/{id}/nodes/detailed
 | **P-M4: Pool rankings cache miss caused DB overload** | When `global_pool_rankings:{region}` key was absent (Redis restart), Guard 2.5 logged a warning but continued processing → 240 full DB pipeline calls/hour per cluster exhausted DB connection pool | Added `_pm4_skip_cluster = True` + `continue` when key is absent; CRITICAL log still emitted via dedup key | `auto_rebalancer.py` Guard 2.5 |
 | **P-M5: scan_orphans Pass 1 scanned wrong account** | Pass 1 (platform creds) always ran even in all-cross-account deployments → EC2 `describe_instances` in platform account found no matching instances (correct) but wasted API quota every 5 min | Added pre-check: Pass 1 only runs when at least one cluster has `aws_role_arn IS NULL` | `recovery_monitor.py:scan_orphans()` |
 | **P-M6: Interval gate never fired at default 15s** | Per-cluster interval gate condition was `_check_interval > 15` (strict greater-than) → `spot:last_check:{cluster_id}` key never written at default 15s → Celery backpressure burst protection non-functional at all configured intervals ≤ 15s | Changed condition to `_check_interval >= 15` (inclusive) | `auto_rebalancer.py` per-cluster interval gate |
+| **P-C6: Pod metrics query missing ORDER BY** | `_get_pod_metrics()` in `rightsizing_service.py` had no `order_by` on the PodMetric query; `metrics[-1]` returned a random row, not the most recent sample → stale/incorrect P95 usage data fed to right-sizing recommendations | Added `.order_by(PodMetric.timestamp)` to the query | `rightsizing_service.py:_get_pod_metrics()` |
+| **P-C7: Volatility key bytes comparison in rightsizing_service** | `redis.get()` result compared with `b"true"` (bytes literal); Redis client uses `decode_responses=True` → always returns string → `b"true" != "true"` → all nodes treated as non-volatile regardless of actual state | Fixed to accept `b"true"`, `"true"`, `b"active"`, `"active"` (covers both decode_responses settings) | `rightsizing_service.py:_get_volatility_data()` |
+| **P-C11: PoolRankingService arg order swap in decision_engine** | `PoolRankingService(self.redis, self.db)` — args reversed; constructor expects `(db: Session, redis: Redis)` → DB queries ran with a Redis client as `Session`, crashing all decision engine calls | Corrected to `PoolRankingService(self.db, self.redis)` | `decision_engine.py:~85` |
+| **P-C12: Non-existent method `refresh_global_rankings`** | `decision_engine.py` called `ranking_svc.refresh_global_rankings(region)` — method does not exist on `PoolRankingService`; the correct method is `build_global_pool_cache` → `AttributeError` on every call | Replaced with `ranking_svc.build_global_pool_cache(region)` | `decision_engine.py:~92` |
+| **P-C13: Decision engine reads wrong Redis key** | `decision_engine.py` read `spot:global_rankings:{region}` (never written); `PoolRankingService.build_global_pool_cache()` writes `global_pool_rankings:{region}` → all ranking lookups returned `None` | Changed both read locations to `global_pool_rankings:{region}` | `decision_engine.py:~106,~230` |
+| **P-C14: `_get_spot_advisor_data` returns None on exception** | On any DB error in the inner try/except, the function rolled back but returned `None` implicitly; callers didn't guard for `None` → `TypeError` unpacking `None` as dict | Added explicit `return {}` after `db.rollback()` in the except block | `pool_ranking_service.py:_get_spot_advisor_data()` |
+| **P-C15: DryRun in substitute_manager used default creds + no ImageId** | `substitute_manager.py` created EC2 client with `boto3.client("ec2", ...)` (platform creds, cross-account blind) and called `run_instances` with no `ImageId` → `InvalidParameterValue` always | Added assumed-role credential lookup from `get_assumed_credentials`; reads `ImageId` from `dry_run:ami:{region}` Redis cache | `substitute_manager.py` |
+| **P-C16: Emergency action stuck in `pending` state forever** | `_execute_normal_emergency()` set `action.status = "pending"` — no processor ever picks up `pending` RebalancingActions; only `in_progress` is consumed by the rebalancer loop | Changed to `action.status = "in_progress"` | `emergency_rebalancer.py:_execute_normal_emergency()` |
+| **P-C17: Hardcoded fake safety panel in RightSizingDashboard** | `ResizeGuardMonitoringPanel` showed hardcoded fake metrics (scores, percentages, threat levels) for all clusters regardless of actual state | Replaced all hardcoded values with "—" / "N/A" placeholders | `RightSizingDashboard.jsx` |
+| **P-C18: Fabricated exposure snapshot charts** | `ExposureSnapshot` section used hardcoded conic gradient `background` style and hardcoded percentage strings for CPU/Memory/Storage donut charts — entirely fabricated | Replaced with "Data pending (connect cluster metrics)" text placeholders | `RightSizingDashboard.jsx` |
+| **P-C19: Placeholder `000000000000` AWS account ARN in auto-discovery** | `agents.py` `auto_discover_accounts()` created an `Account` with `role_arn=f"arn:aws:iam::000000000000:role/..."` — a permanently invalid fake ARN that would be used for real AWS calls | Changed to `role_arn=None`, `is_validated="N"` with comment requiring operator configuration | `backend/routers/agents.py` |
+| **P-H5: Diversification guard empty target_az bypass** | When `target_az = ""` (empty string), the occupancy check `(candidate_type, "") not in _occupied_exec` always returned `True` → all candidate types passed the diversification guard, making it non-functional | Normalized to `_target_az_norm = target_az or ''`; skip occupancy check entirely when AZ is empty | `auto_rebalancer.py` diversification guard |
+| **P-H6: Percentile off-by-one (P95 returns P100)** | `int((percentile / 100) * len(sorted_values))` returns index equal to `len` at P100 (one past end) → `IndexError` or returns last element for P95+ | Changed to `int((percentile / 100) * (len(sorted_values) - 1))` | `rightsizing_service.py:_calc_percentile()` |
+| **P-H7: Null CPU/memory request crash in rightsizing** | `current_cpu_request_millicores` and `current_memory_request_mb` read directly from metric; if DB field is NULL → `TypeError` in arithmetic downstream | Added `or None` guards: `current_cpu_request = latest_metric.cpu_request_millicores or None` | `rightsizing_service.py` |
+| **P-H11: Missing ExternalId in tag_management_service assume_role** | `sts.assume_role()` in `tag_management_service.py` omitted `ExternalId` → cross-account assume_role fails for accounts where the IAM trust policy requires ExternalId | Added `ExternalId` to `_assume_kwargs` when `account.external_id` is set | `tag_management_service.py` |
+| **P-H14: INCR + EXPIRE race condition in optimizer_coordinator** | `self.redis.incr(failure_key)` followed by `self.redis.expire(failure_key, 86400)` — two separate commands; if process killed between them, counter key has no TTL → accumulates forever | Wrapped in Redis pipeline: `pipe.incr(); pipe.expire(); pipe.execute()` (atomic) | `optimizer_coordinator.py` |
+| **P-H16: Emergency rebalancer writes wrong RebalancingAction columns** | `action.target_instance_type = standby.instance_type` and `action.target_az = standby.az` — those columns do not exist; actual columns are `actual_instance_type` and `actual_az` | Fixed to `action.actual_instance_type` and `action.actual_az` | `emergency_rebalancer.py` |
+| **P-H17: ASG resume passes string instead of Cluster object** | In the exception handler, `_gac_err(_cl_err.aws_role_arn, _rgn_err, ...)` passed the role ARN string to `get_assumed_credentials()` which expects a `Cluster` ORM object | Fixed to `_gac_err(_cl_err, db)` — passes the Cluster object and db session | `auto_rebalancer.py` ASG resume exception handler |
+| **P-H18: Recovery monitor assume_role missing ExternalId** | `sts.assume_role()` in `recovery_monitor.py` (3 separate calls) passed `RoleArn` but not `ExternalId` → cross-account role assumption fails when trust policy requires ExternalId | Added `ExternalId` (from `cluster.aws_external_id`) to all 3 assume_role calls when set | `recovery_monitor.py` |
+| **P-H19: Stateful resize uses synthetic fake node ID** | `RightSizingDashboard.jsx` stateful resize path could pass a synthetic frontend ID (e.g., `"stateful-1"`) as `node.id` to the API → 404 or wrong node resize | Added guard: shows alert and returns early if `node.id` starts with `"stateful-"` or is null/undefined | `RightSizingDashboard.jsx` |
+| **P-H20: `clusters.length \|\| 128` fallback creates fake total** | `RightSizingKarpenterTab.jsx` displayed `{clusters.length \|\| 128}` — showed "128 clusters" when no clusters loaded instead of "0" | Changed to `{clusters.length}` | `RightSizingKarpenterTab.jsx` |
+| **P-H21: Hardcoded 94% efficiency in Karpenter tab** | `RightSizingKarpenterTab.jsx` showed hardcoded `94%` efficiency and `~2%`/`~5%` trend values | Replaced with "—" placeholder | `RightSizingKarpenterTab.jsx` |
+| **P-H22: Fake SVG donut + bar charts in Karpenter tab** | `RightSizingKarpenterTab.jsx` contained a hardcoded `<svg>` donut chart and a fake CSS bar chart with static colored divs | Replaced with `<div>Data pending</div>` placeholders | `RightSizingKarpenterTab.jsx` |
+| **P-H23: TTL countdown useEffect interval thrash** | `PoolRankings.jsx` TTL countdown effect had `[ttlCounters]` as dependency — every new pool lookup creates a new object reference → countdown resets on each fetch | Changed to `[Object.keys(ttlCounters).length]` — only re-runs when number of tracked keys changes | `PoolRankings.jsx` TTL countdown effect |
+| **P-H24: Polling timer resets on each market view fetch** | `PoolRankings.jsx` polling effect included `marketViewPools` in its dependency array → every successful fetch triggered re-creation of the setInterval → timer reset to 0 on each poll | Removed `marketViewPools` from polling effect dependency array | `PoolRankings.jsx` polling effect |
+| **P-H25: OverviewTab NaN on null spot price** | `OverviewTab.jsx` computed `price = r.target_spot_price > 0 ? r.target_spot_price : null` then `d.qty * d.hourly` — when `hourly` was null, result was `NaN` displayed as "NaN/hr" | `price` defaults to `0`; all quantity × hourly uses `d.hourly \|\| 0` | `OverviewTab.jsx` |
+| **P-H26: Hardcoded `'ap-south-1'` default region in store/API** | `useASCPStore.js:fetchPoolRankings` and `api.js:getRankings`/`getRankingsForTemplate` defaulted to `'ap-south-1'` → queries always targeted one region; other regions never loaded | Changed default to `null`; `getRankings` fallback `\|\| 'ap-south-1'` changed to `\|\| undefined` | `useASCPStore.js`, `api.js` |
+| **P-H27: spot_advisor_scraper closes caller's session** | Functions in `spot_advisor_scraper.py` accepting a `db` parameter closed the session in `finally` block even when the caller owned it → caller's session invalidated after scraper call | Added `_db_created = db is None` flag; `finally` block only calls `_db.close()` when `_db_created=True` | `spot_advisor_scraper.py` |
+| **P-H28: Unguarded ARN split IndexError on malformed ARN** | `role_arn.split(':')[4]` in 5 files crashed with `IndexError` when `role_arn` was `None`, empty, or non-standard format | Added bounds check: `_arn_parts = (arn or '').split(':'); account_id = _arn_parts[4] if len(_arn_parts) > 4 else ''` | `discovery.py`, `cluster_service.py`, `onboarding_service.py`, `agent_injector.py` |
+| **P-M8: Integer truncation on memory MB conversion** | `int(pod_memory_bytes / (1024 * 1024))` truncates toward zero — could recommend a container with 1 MB less than needed | Changed to `math.ceil(...)` (rounds up, ensures node always fits the pod) | `rightsizing_service.py` |
+| **P-M11: No FK on RebalancingAction.cluster_id** | `cluster_id` column in `rebalancing_actions` had no `ForeignKey` constraint → DB allowed orphan rows referencing deleted clusters | Changed to `Column(String(100), ForeignKey("clusters.id", ondelete="CASCADE"), ...)` | `backend/models/rebalancing_action.py` |
+| **P-M17: Decision Engine retry button no-op** | `DecisionEngineV3Dashboard.jsx` retry button called `setError(null)` and `setLoading(true)` but did not trigger the fetch useEffect (deps: `[clusterId]`) → data never reloaded | Added `retryCount` state; retry onClick calls `setRetryCount(c => c + 1)`; added to useEffect deps | `DecisionEngineV3Dashboard.jsx` |
+| **P-M18: Right-Sizing retry button fragile setState** | `RightSizingDashboard.jsx` retry button set `loading=true` inline but the fetch useEffect dep `[clusterId]` meant it never re-ran | Same `retryCount` pattern as P-M17 | `RightSizingDashboard.jsx` |
+| **P-M19: Fabricated candidate instance sizes** | `RightSizingDashboard.jsx` showed alternate candidates via `.replace('large','xlarge')` string manipulation and hardcoded `c6g.large` — not from API | Replaced with "Additional candidates pending API integration" message | `RightSizingDashboard.jsx` |
+| **P-M20: Hardcoded execution timeline timestamps** | `RightSizingDashboard.jsx` displayed hardcoded timeline entries with static timestamps (`14:30`, `14:32`, `14:35`) | Replaced with "Timeline data not available for this resize plan" | `RightSizingDashboard.jsx` |
+| **P-M21: Hardcoded 50% max downscale pct** | `RightSizingDashboard.jsx` showed hardcoded "50%" instead of reading `karpenterConfig.stateful_max_downscale_pct` | Changed to read from `karpenterConfig?.stateful_max_downscale_pct`, fallback `'25%'` | `RightSizingDashboard.jsx` |
+| **P-M22: Blacklist failure_count inconsistency** | `_step4_blacklist_check()` defaulted `failure_count = int(...) or 1` (starts at 1) while `rank_for_node()` used `or 0`; first failure in `_step4_blacklist_check` would score as if it were a repeat | Changed default to `or 0` (consistent with `rank_for_node`) | `pool_ranking_service.py:_step4_blacklist_check()` |
+| **P-M24: 720 vs 730 hours/month in Karpenter cost estimates** | `karpenter_routes.py` used `* 720` for monthly cost calculations instead of the standard 730 h/month | Changed all `* 720` to `* 730` | `karpenter_routes.py` |
+| **P-M25: vCPU range undersized in pool ranking** | `rank_pools_for_size()` set `vcpu_min = max(1, vcpu - 1)` — included pools with 1 fewer vCPU than the node being replaced | Changed to `vcpu_min = max(1, vcpu)` | `pool_ranking_service.py:rank_pools_for_size()` |
+| **P-M26: Duplicate `assignRole` definition in api.js** | `api.js` defined `assignRole` function twice — second definition silently overwrote first | Removed duplicate definition | `frontend/src/services/api.js` |
+| **P-M28: CooldownController DB session leak** | `_persist_cooldown()` opened a DB session via `next(get_db())` but `_db.close()` was only called in the success path — exceptions left sessions open | Moved `_db.close()` to `finally` block | `backend/services/cooldown_controller.py:_persist_cooldown()` |
+| **P-M29: Decision engine volatility bytes comparison** | `_check_volatility_regime()` compared `is_volatile == b"true"` — bytes literal never matches when `decode_responses=True`; all nodes treated as non-volatile in DE | Changed to accept all forms: `is_volatile in (b"true", "true", b"active", "active")` | `decision_engine.py:_check_volatility_regime()` |
 
 ---
 
@@ -2237,7 +2244,9 @@ ITN and AWS Rebalance Recommendations **ALWAYS** blacklist (deterministic).
 Write-through backup: every `record_switch()`/`record_pool_failure()` persists expiry timestamp to `system_configs` table. On Redis miss (restart), `_rehydrate_from_db()` restores TTL.
 
 ### Stabilization Lock — lines 356–401
-`STABILIZATION_LOCK_TTL = 300` (5 min). Acquired after any execution action; prevents optimization while cluster stabilizes. Emergency override: `release_stabilization_lock()`.
+`STABILIZATION_LOCK_TTL = 60` (1 min). Acquired after any execution action; prevents optimization while cluster stabilizes. Emergency override: `release_stabilization_lock()`.
+
+> **Note**: changes.md §2.1 proposes increasing this to 300s (5 min minimum) but this has not been implemented — the value was reverted to 60s (see Issue 1 in cooldown_controller.py comments). The higher value caused rebalancer stalls on clusters with 15s check cycles.
 
 ---
 
