@@ -2081,8 +2081,10 @@ async def get_rebalancing_context(
         ).first()
         _cooldown_min = getattr(_opt, 'cooldown_override_minutes', None) if _opt else None
         _POST_REBALANCE_COOLDOWN_S = (_cooldown_min * 60) if (_cooldown_min and _cooldown_min > 0) else 3600
+        _check_interval = max(15, int(getattr(_opt, 'check_interval_seconds', 15) or 15))
     except Exception:
         _POST_REBALANCE_COOLDOWN_S = 3600
+        _check_interval = 15
 
     try:
         redis = get_redis_client()
@@ -2232,8 +2234,21 @@ async def get_rebalancing_context(
             (_now + timedelta(seconds=remaining_seconds)).isoformat() + "Z"
             if cooldown_active and remaining_seconds > 0 else None
         )
-        # next_check_at: absolute timestamp of the next rebalancer cycle (~15s)
-        _next_check_at = (_now + timedelta(seconds=15)).isoformat() + "Z"
+        # next_check_at: use the Redis gate TTL for the cluster's actual check interval.
+        # spot:last_check:{cluster_id} is set by the rebalancer with ex=check_interval-14;
+        # its remaining TTL tells us exactly how many seconds until the next cycle fires.
+        _last_check_ttl = -1
+        try:
+            if redis:
+                _last_check_ttl = redis.ttl(f"spot:last_check:{cluster_id}")
+        except Exception:
+            pass
+        if _last_check_ttl and _last_check_ttl > 0:
+            # Gate is active: next cycle fires when this key expires
+            _next_check_at = (_now + timedelta(seconds=_last_check_ttl)).isoformat() + "Z"
+        else:
+            # Gate expired or doesn't exist (default 15s interval): next beat is imminent
+            _next_check_at = (_now + timedelta(seconds=min(15, _check_interval))).isoformat() + "Z"
 
         return {
             "cluster_id": cluster_id,
@@ -2250,6 +2265,7 @@ async def get_rebalancing_context(
             },
             "next_target": next_target,
             "next_check_at": _next_check_at,
+            "check_interval_seconds": _check_interval,
             "timestamp": _now.isoformat() + "Z",
         }
 
@@ -2262,7 +2278,8 @@ async def get_rebalancing_context(
             "active_action_id": None,
             "cooldown": {"active": False, "remaining_seconds": 0, "expires_at": None, "reason": None},
             "next_target": None,
-            "next_check_at": (_fb_now + timedelta(seconds=15)).isoformat() + "Z",
+            "next_check_at": (_fb_now + timedelta(seconds=_check_interval)).isoformat() + "Z",
+            "check_interval_seconds": _check_interval,
             "timestamp": _fb_now.isoformat() + "Z",
         }
 

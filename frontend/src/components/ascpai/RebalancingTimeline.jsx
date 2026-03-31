@@ -70,6 +70,8 @@ const RebalancingTimeline = ({ clusterId, actions: externalActions }) => {
     // Absolute timestamps from backend — survive page refresh
     const [cooldownExpiresAt, setCooldownExpiresAt] = useState(null);   // ISO "...Z"
     const [nextCheckAt, setNextCheckAt] = useState(null);               // ISO "...Z"
+    // Configured check interval from backend settings (seconds)
+    const [checkIntervalSeconds, setCheckIntervalSeconds] = useState(15);
     // Tick counter just to force re-renders every second
     const [, setTick] = useState(0);
 
@@ -79,7 +81,7 @@ const RebalancingTimeline = ({ clusterId, actions: externalActions }) => {
         : 0;
     const nextCycleSeconds = nextCheckAt
         ? Math.max(0, Math.floor((new Date(nextCheckAt) - Date.now()) / 1000))
-        : 15;
+        : checkIntervalSeconds;
 
     // Fetch data if no external actions are provided (when rendered directly on dashboard)
     useEffect(() => {
@@ -107,9 +109,12 @@ const RebalancingTimeline = ({ clusterId, actions: externalActions }) => {
                             setCooldownData(null);
                             setCooldownExpiresAt(null);
                         }
-                        // Always update next-check timestamp from backend
+                        // Sync next-check timestamp and configured interval from backend
                         if (ctxRes.data.next_check_at) {
                             setNextCheckAt(ctxRes.data.next_check_at);
+                        }
+                        if (ctxRes.data.check_interval_seconds) {
+                            setCheckIntervalSeconds(ctxRes.data.check_interval_seconds);
                         }
                         setNextNodeData(ctxRes.data.next_target || null);
                         setDailyLimitReached(ctxRes.data.daily_limit_reached || false);
@@ -124,8 +129,11 @@ const RebalancingTimeline = ({ clusterId, actions: externalActions }) => {
         };
 
         fetchData();
-        const intervalId = setInterval(fetchData, 15000);
+        // Poll at half the configured check interval so we're always within ~1 cycle of accurate data
+        const _pollMs = Math.max(10000, checkIntervalSeconds * 500);
+        const intervalId = setInterval(fetchData, _pollMs);
         return () => clearInterval(intervalId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [clusterId, externalActions]);
 
     // Per-second tick — only triggers re-renders, countdown computed from absolute timestamps
@@ -257,8 +265,15 @@ const RebalancingTimeline = ({ clusterId, actions: externalActions }) => {
                                 </div>
                             </div>
                         </div>
-                        <div style={{ fontSize: 10, color: T.textFaint, fontStyle: 'italic' }}>
-                            ⏱ Synced from backend
+                        <div style={{ textAlign: 'right' }}>
+                            <div style={{ fontSize: 10, color: T.textFaint, fontStyle: 'italic' }}>
+                                ⏱ Synced from backend
+                            </div>
+                            <div style={{ fontSize: 9, color: T.textFaint, marginTop: 1 }}>
+                                cycle every {checkIntervalSeconds >= 60
+                                    ? `${Math.round(checkIntervalSeconds / 60)}m`
+                                    : `${checkIntervalSeconds}s`}
+                            </div>
                         </div>
                     </div>
                 </div>

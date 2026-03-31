@@ -193,9 +193,28 @@ const ClusterDetails = ({ clusterId, onClose }) => {
       // Fetch Karpenter install status separately (non-critical)
       try {
         const karpenterRes = await karpenterAPI.getInstallStatus(clusterId);
-        setKarpenterInstallStatus(karpenterRes.data);
+        let karpStatus = karpenterRes.data;
+        // If install-status says not installed, run live detection as a fallback.
+        // This catches manually-installed Karpenter where no AgentAction exists.
+        if (!karpStatus?.karpenter_installed) {
+          try {
+            const detectRes = await karpenterAPI.detectKarpenter(clusterId);
+            if (detectRes.data?.detected) {
+              // Live detection found Karpenter — override the install-status result
+              karpStatus = {
+                ...karpStatus,
+                karpenter_installed: true,
+                detected_via: 'live_detection',
+                karpenter_mode: detectRes.data.karpenter_mode,
+                status: 'installed',
+                message: `Karpenter detected in cluster (mode=${detectRes.data.karpenter_mode}).`,
+              };
+            }
+          } catch (_) { /* detection failure is non-critical */ }
+        }
+        setKarpenterInstallStatus(karpStatus);
         // For non-Karpenter clusters: fetch native ASG spot status
-        if (!karpenterRes.data?.karpenter_installed) {
+        if (!karpStatus?.karpenter_installed) {
           nativeSpotAPI.getStatus(clusterId)
             .then(r => setNativeSpotStatus(r.data))
             .catch(() => { });

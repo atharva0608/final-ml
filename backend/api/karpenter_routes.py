@@ -1843,51 +1843,101 @@ def get_karpenter_install_status(
     db: Session = Depends(get_db)
 ) -> Dict[str, Any]:
     from backend.models.agent_action import AgentAction, AgentActionType, AgentActionStatus
+    from backend.models.cluster import Cluster
 
-    # Get the most recent install or uninstall action
+    # ── 1. Check AgentAction history (authoritative for platform-managed installs) ──
     latest = db.query(AgentAction).filter(
         AgentAction.cluster_id == cluster_id,
         AgentAction.action_type.in_([AgentActionType.INSTALL_KARPENTER, AgentActionType.UNINSTALL_KARPENTER])
     ).order_by(AgentAction.created_at.desc()).first()
 
-    if not latest:
-        # No INSTALL/UNINSTALL action on record — Karpenter was never installed
-        # via this platform.  karpenter_mode column alone is NOT sufficient proof
-        # of installation (it can be set by config saves without a real install).
-        # Only a completed INSTALL_KARPENTER AgentAction is authoritative.
+    if latest:
+        action_type = latest.action_type.value
+        action_status = latest.status.value
+
+        if action_type == "INSTALL_KARPENTER" and action_status == "COMPLETED":
+            installed = True
+        elif action_type == "UNINSTALL_KARPENTER" and action_status == "COMPLETED":
+            installed = False
+        elif action_status in ("PENDING", "PICKED_UP"):
+            installed = None  # In progress
+        else:
+            installed = False
+
         return {
             "cluster_id": cluster_id,
-            "karpenter_installed": False,
-            "last_action": None,
-            "status": "not_installed",
-            "message": "No install action found. Install Karpenter via the Karpenter Manager.",
+            "karpenter_installed": installed,
+            "last_action": {
+                "id": latest.id,
+                "type": action_type,
+                "status": action_status,
+                "created_at": latest.created_at.isoformat() if latest.created_at else None,
+                "completed_at": latest.completed_at.isoformat() if latest.completed_at else None,
+                "error_message": latest.error_message,
+                "result": latest.result,
+            }
         }
 
-    action_type = latest.action_type.value
-    action_status = latest.status.value
+    # ── 2. No AgentAction record — Karpenter may have been installed manually ──
+    # Fallback 1: check cluster.karpenter_mode (set by detect or config)
+    cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+    if cluster and cluster.karpenter_mode is not None:
+        _mode = cluster.karpenter_mode.value if cluster.karpenter_mode else None
+        return {
+            "cluster_id": cluster_id,
+            "karpenter_installed": True,
+            "detected_via": "cluster_karpenter_mode",
+            "karpenter_mode": _mode,
+            "last_action": None,
+            "status": "installed",
+            "message": f"Karpenter detected via cluster configuration (mode={_mode}).",
+        }
 
-    # Derive installed state
-    if action_type == "INSTALL_KARPENTER" and action_status == "COMPLETED":
-        installed = True
-    elif action_type == "UNINSTALL_KARPENTER" and action_status == "COMPLETED":
-        installed = False
-    elif action_status in ("PENDING", "PICKED_UP"):
-        installed = None  # In progress
-    else:
-        installed = False  # Failed or expired
+    # Fallback 2: check Redis detection key (set by detect_karpenter_in_cluster)
+    try:
+        from backend.core.redis_client import get_redis_client
+        _redis = get_redis_client()
+        _redis_key = f"spot:karpenter:installed:{cluster_id}"
+        _redis_val = _redis.get(_redis_key) if _redis else None
+        if _redis_val:
+            return {
+                "cluster_id": cluster_id,
+                "karpenter_installed": True,
+                "detected_via": "redis_detection_key",
+                "karpenter_mode": _redis_val if isinstance(_redis_val, str) else _redis_val.decode("utf-8"),
+                "last_action": None,
+                "status": "installed",
+                "message": "Karpenter detected via live cluster detection.",
+            }
+    except Exception:
+        pass
 
+    # Fallback 3: run live detection now (checks NodePool CRD via agent result)
+    try:
+        from backend.services.karpenter_service import KarpenterService
+        _svc = KarpenterService(db_session=db)
+        _detected = _svc.detect_karpenter_in_cluster(cluster_id, db)
+        if _detected.get("detected"):
+            _mode = _detected.get("karpenter_mode", "unknown")
+            return {
+                "cluster_id": cluster_id,
+                "karpenter_installed": True,
+                "detected_via": "live_detection",
+                "karpenter_mode": _mode,
+                "last_action": None,
+                "status": "installed",
+                "message": f"Karpenter detected live in cluster (mode={_mode}).",
+            }
+    except Exception:
+        pass
+
+    # Nothing found — genuinely not installed
     return {
         "cluster_id": cluster_id,
-        "karpenter_installed": installed,
-        "last_action": {
-            "id": latest.id,
-            "type": action_type,
-            "status": action_status,
-            "created_at": latest.created_at.isoformat() if latest.created_at else None,
-            "completed_at": latest.completed_at.isoformat() if latest.completed_at else None,
-            "error_message": latest.error_message,
-            "result": latest.result,
-        }
+        "karpenter_installed": False,
+        "last_action": None,
+        "status": "not_installed",
+        "message": "Karpenter not detected. Install via the Karpenter Manager or run detection.",
     }
 
 

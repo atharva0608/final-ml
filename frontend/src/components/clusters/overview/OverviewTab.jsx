@@ -237,6 +237,8 @@ const OverviewTab = ({
 
     /* ── Karpenter ─────────────────────────────────────────────────────── */
     const karpInstalled = karpenterInstallStatus?.karpenter_installed;
+    const karpMode = karpenterInstallStatus?.karpenter_mode;
+    const karpDetectedVia = karpenterInstallStatus?.detected_via;
 
     /* ── Optimization ──────────────────────────────────────────────────── */
     // Agent is active if the cluster status is 'active' (agent_installed field is unreliable)
@@ -586,12 +588,19 @@ const OverviewTab = ({
                                 }`}>
                                     {karpInstalled ? 'INSTALLED' : 'NOT INSTALLED'}
                                 </span>
+                                {karpInstalled && karpMode && (
+                                    <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded uppercase tracking-wide bg-blue-50 text-blue-600 border border-blue-100">
+                                        {karpMode}
+                                    </span>
+                                )}
                             </div>
                             <p className="text-xs text-gray-500">
                                 {karpInstalled
                                     ? spotCount > 0
                                         ? `Active — managing ${spotCount} spot node${spotCount > 1 ? 's' : ''}`
-                                        : 'Installed — will provision spot nodes when rebalancer triggers'
+                                        : karpDetectedVia
+                                            ? 'Detected in cluster — will provision spot nodes when rebalancer triggers'
+                                            : 'Installed — will provision spot nodes when rebalancer triggers'
                                     : 'Not installed — required for spot node provisioning'}
                             </p>
                         </div>

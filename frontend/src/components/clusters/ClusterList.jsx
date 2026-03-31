@@ -1097,7 +1097,27 @@ const ClusterDetail = ({ cluster, onClose }) => {
 
   const fetchKarpenterStatus = React.useCallback(() => {
     return karpenterAPI.getInstallStatus(cluster.id)
-      .then(res => { setKarpenterInstallStatus(res.data); return res.data; })
+      .then(async res => {
+        let data = res.data;
+        // If install-status says not installed, run live detection as fallback
+        // (catches Karpenter installed manually outside the platform).
+        if (!data?.karpenter_installed) {
+          try {
+            const detectRes = await karpenterAPI.detectKarpenter(cluster.id);
+            if (detectRes.data?.detected) {
+              data = {
+                ...data,
+                karpenter_installed: true,
+                detected_via: 'live_detection',
+                karpenter_mode: detectRes.data.karpenter_mode,
+                status: 'installed',
+              };
+            }
+          } catch (_) { /* non-critical */ }
+        }
+        setKarpenterInstallStatus(data);
+        return data;
+      })
       .catch(() => { setKarpenterInstallStatus(null); return null; });
   }, [cluster.id]);
 
