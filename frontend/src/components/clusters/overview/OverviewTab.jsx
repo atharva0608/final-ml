@@ -98,8 +98,8 @@ const ConfigTable = ({ rows, title, accent, totalLabel, totalMonthly, totalInsta
                                             </div>
                                         </div>
                                     </td>
-                                    <td className="px-4 py-3 text-right text-gray-600">${r.hourly.toFixed(2)} <span className="text-[9px] text-gray-400">/ h</span></td>
-                                    <td className="px-4 py-3 text-right text-gray-600">${r.totalHourly.toFixed(2)} <span className="text-[9px] text-gray-400">/ h</span></td>
+                                    <td className="px-4 py-3 text-right text-gray-600">${r.hourly.toFixed(4)} <span className="text-[9px] text-gray-400">/ h</span></td>
+                                    <td className="px-4 py-3 text-right text-gray-600">${r.totalHourly.toFixed(4)} <span className="text-[9px] text-gray-400">/ h</span></td>
                                     <td className="px-4 py-3 text-right font-medium text-gray-900">{fmtMo(r.totalMonthly)} <span className="text-[9px] text-gray-400">/ mo</span></td>
                                 </tr>
                             ))
@@ -136,7 +136,7 @@ const CostTooltip = ({ active, payload, label }) => {
                 <div key={i} className="flex items-center gap-2">
                     <span className="w-2 h-2 rounded-full" style={{ background: p.color }} />
                     <span className="text-gray-600">{p.name}:</span>
-                    <span className="font-semibold">{fmt$(p.value)}/h</span>
+                    <span className="font-semibold">{fmt$(p.value)}/mo</span>
                 </div>
             ))}
             {payload.length === 2 && payload[0].value > 0 && (
@@ -192,9 +192,12 @@ const OverviewTab = ({
     const emptyNodes     = nodesList.filter(n => n.classification === 'EMPTY' || !n.classification).length;
 
     /* ── Costs — derive from nodeRecommendations when metrics are stale ─ */
-    // current_cost = OD hourly rate; target_spot_price = spot hourly rate; 730h/mo
+    // current_cost = hourly rate of current instance (spot price if already spot, OD price if OD)
+    // od_cost = OD hourly rate (always)
+    // target_spot_price = best available spot hourly rate
     const calcMonthly = (nodeRecommendations || []).reduce(
         (s, r) => s + (r.current_cost || 0) * 730, 0);
+    // Potential additional savings = OD nodes not yet on spot
     const calcSavings = (nodeRecommendations || [])
         .filter(r => r.lifecycle !== 'spot' && r.lifecycle !== 'SPOT')
         .reduce((s, r) => {
@@ -203,10 +206,24 @@ const OverviewTab = ({
             const od = r.current_cost || 0;
             return s + Math.max(0, od - r.target_spot_price) * 730;
         }, 0);
-    const totalCost       = metrics?.monthly_cost || cluster?.monthly_cost || calcMonthly || 0;
-    const realizedSavings = metrics?.realized_savings || 0;
-    const addlPotential   = metrics?.estimated_savings || cluster?.estimated_savings || calcSavings || 0;
-    const savingsPct      = totalCost > 0 ? (addlPotential / totalCost) * 100 : 0;
+    // Realized savings = spot nodes already running: (od_equivalent - actual_spot) × 730h/mo
+    // od_cost field (from API) = OD price for node; current_cost = actual spot price for spot nodes
+    // Guard: both prices must be > 0; current_cost=0 means price unavailable, not free
+    const calcRealized = (nodeRecommendations || [])
+        .filter(r => r.lifecycle === 'spot' || r.lifecycle === 'SPOT')
+        .reduce((s, r) => {
+            const od = r.od_cost || 0;
+            const spot = r.current_cost || 0;
+            if (od > 0 && spot > 0 && od > spot) return s + (od - spot) * 730;
+            return s;
+        }, 0);
+    // Prefer live nodeRecommendations data over stale DB values when available
+    const totalCost       = calcMonthly > 0 ? calcMonthly : (metrics?.monthly_cost ?? cluster?.monthly_cost ?? 0);
+    const realizedSavings = calcRealized > 0 ? calcRealized : (metrics?.realized_savings ?? 0);
+    const addlPotential   = calcSavings > 0 ? calcSavings : (metrics?.estimated_savings ?? cluster?.estimated_savings ?? 0);
+    // savingsPct = total savings (realized + potential) vs all-OD baseline
+    const allODBaseline   = totalCost + realizedSavings;
+    const savingsPct      = allODBaseline > 0 ? ((realizedSavings + addlPotential) / allODBaseline) * 100 : 0;
 
     /* ── Agent ─────────────────────────────────────────────────────────── */
     const isHealthy = ['active', 'ACTIVE'].includes(cluster?.status || '');
@@ -252,8 +269,8 @@ const OverviewTab = ({
         return Object.entries(byType)
             .map(([type, d]) => ({
                 type, qty: d.qty, hourly: d.hourly, isSpot: d.isSpot,
-                totalHourly: d.qty * d.hourly,
-                totalMonthly: d.qty * d.hourly * 730,
+                totalHourly: d.qty * (d.hourly || 0),
+                totalMonthly: d.qty * (d.hourly || 0) * 730,
                 vcpu: typeSpecs[type]?.vcpu || 0,
                 memGib: typeSpecs[type]?.mem || 0,
             }))
@@ -271,7 +288,7 @@ const OverviewTab = ({
         (nodeRecommendations || []).forEach(r => {
             const t = r.target_type || r.current_type;
             if (!t) return;
-            const price = r.target_spot_price > 0 ? r.target_spot_price : null;
+            const price = (r.target_spot_price != null && r.target_spot_price > 0) ? r.target_spot_price : 0;
             const isSpot = r.target_type !== r.current_type || r.lifecycle === 'spot';
             if (!byType[t]) byType[t] = { qty: 0, hourly: price, isSpot };
             byType[t].qty++;
@@ -279,8 +296,8 @@ const OverviewTab = ({
         return Object.entries(byType)
             .map(([type, d]) => ({
                 type, qty: d.qty, hourly: d.hourly, isSpot: d.isSpot,
-                totalHourly: d.qty * d.hourly,
-                totalMonthly: d.qty * d.hourly * 730,
+                totalHourly: d.qty * (d.hourly || 0),
+                totalMonthly: d.qty * (d.hourly || 0) * 730,
                 vcpu: typeSpecs[type]?.vcpu || 0,
                 memGib: typeSpecs[type]?.mem || 0,
             }))
@@ -302,15 +319,19 @@ const OverviewTab = ({
         return pts
             .filter(p => new Date(p.timestamp).getTime() >= cutoff)
             .map(p => ({
-                time: new Date(p.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-                current: +p.value.toFixed(2),
-                optimal: +(p.value * (1 - frac)).toFixed(2),
+                // Daily data points — convert to monthly equivalent (×30) so chart
+                // Y-axis scale matches the $/mo KPI cards above.
+                time: new Date(p.timestamp).toLocaleDateString([], { month: 'numeric', day: 'numeric' }),
+                current: +(p.value * 30).toFixed(2),
+                optimal: +(p.value * (1 - frac) * 30).toFixed(2),
             }));
     }, [costTrends, trendWindow, totalCost, addlPotential]);
 
-    const avgHourly       = trendData.length ? trendData.reduce((s, d) => s + d.current, 0) / trendData.length : totalCost / 730;
-    const avgOptimal      = trendData.length ? trendData.reduce((s, d) => s + d.optimal, 0) / trendData.length : Math.max(0, totalCost - addlPotential) / 730;
-    const availSavingsPct = avgHourly > 0 ? ((avgHourly - avgOptimal) / avgHourly) * 100 : savingsPct;
+    // trendData values are already $/month (daily × 30); average = avg monthly cost over window.
+    // Fallback uses totalCost/addlPotential directly (already monthly).
+    const avgMonthly      = trendData.length ? trendData.reduce((s, d) => s + d.current, 0) / trendData.length : totalCost;
+    const avgMonthlyOpt   = trendData.length ? trendData.reduce((s, d) => s + d.optimal, 0) / trendData.length : Math.max(0, totalCost - addlPotential);
+    const availSavingsPct = avgMonthly > 0 ? ((avgMonthly - avgMonthlyOpt) / avgMonthly) * 100 : savingsPct;
 
     /* ── Spot analysis rows ────────────────────────────────────────────── */
     const spotAnalysisRows = useMemo(() =>
@@ -325,7 +346,7 @@ const OverviewTab = ({
             replicas: 1,
             currentType: (r.lifecycle === 'spot' || r.lifecycle === 'SPOT') ? 'SPOT' : 'ON DEMAND',
             recommendation: (r.lifecycle === 'spot' || r.lifecycle === 'SPOT') ? 'STABLE' : 'SPOT',
-            savings: r.projected_savings_pct || 0,
+            savings: r.projected_savings_pct ?? 0,
         })),
     [nodeRecommendations]);
 
@@ -694,7 +715,7 @@ const OverviewTab = ({
                         <div>
                             <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1">Current Average Cost</p>
                             <p className="text-2xl font-bold text-slate-800">
-                                {formatCurrency(avgHourly * 730)} <span className="text-xs text-gray-400">/mo</span>
+                                {formatCurrency(avgMonthly)} <span className="text-xs text-gray-400">/mo</span>
                             </p>
                             <div className="w-full h-1 bg-blue-100 rounded-full mt-2">
                                 <div className="w-full h-full bg-blue-500 rounded-full" />
@@ -703,7 +724,7 @@ const OverviewTab = ({
                         <div>
                             <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1">Optimal Average Cost</p>
                             <p className="text-2xl font-bold text-green-600">
-                                {formatCurrency(avgOptimal * 730)} <span className="text-xs text-gray-400">/mo</span>
+                                {formatCurrency(avgMonthlyOpt)} <span className="text-xs text-gray-400">/mo</span>
                             </p>
                             <div className="w-full h-1 bg-green-100 rounded-full mt-2">
                                 <div className="w-3/5 h-full bg-green-500 rounded-full" />
@@ -717,9 +738,9 @@ const OverviewTab = ({
                     
                     <div className="lg:col-span-3 h-80 relative">
                         <div className="flex justify-between text-[9px] text-gray-400 border-b border-gray-50 pb-1 mb-2">
-                            <span>$ {Math.ceil(Math.max(...trendData.map(d => d.current), 100))}</span>
+                            <span>$ {Math.ceil(Math.max(...trendData.map(d => d.current), totalCost, 1))}</span>
                             <span className="flex items-center">
-                                Hourly cost
+                                Monthly cost equiv.
                                 <svg className="w-3 h-3 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M19 9l-7 7-7-7" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2"></path></svg>
                             </span>
                         </div>

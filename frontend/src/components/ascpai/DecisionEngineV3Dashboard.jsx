@@ -21,6 +21,7 @@ const DecisionEngineV3Dashboard = ({ clusterId, clusterRegion = 'ap-south-1', cl
     // Substitute live state
     const [substituteStatus, setSubstituteStatus] = useState(null);
     const [error, setError] = useState(null);
+    const [retryCount, setRetryCount] = useState(0);
 
     const [config, setConfig] = useState({
         rightsizing: cluster?.rightsizing_enabled || false,
@@ -105,7 +106,7 @@ const DecisionEngineV3Dashboard = ({ clusterId, clusterRegion = 'ap-south-1', cl
             const interval = setInterval(fetchData, 30000);
             return () => clearInterval(interval);
         }
-    }, [clusterId]);
+    }, [clusterId, retryCount]);
 
 
     const handleConfigChange = (section, key, value) => {
@@ -148,7 +149,7 @@ const DecisionEngineV3Dashboard = ({ clusterId, clusterRegion = 'ap-south-1', cl
                         <p className="text-xs text-red-600 mt-0.5">{error}</p>
                     </div>
                     <button
-                        onClick={() => { setError(null); setLoading(true); }}
+                        onClick={() => { setError(null); setLoading(true); setRetryCount(c => c + 1); }}
                         className="px-3 py-1.5 text-xs font-medium text-red-700 bg-white border border-red-300 rounded-md hover:bg-red-50"
                     >
                         Retry
@@ -399,9 +400,20 @@ const DecisionEngineV3Dashboard = ({ clusterId, clusterRegion = 'ap-south-1', cl
                             if (reason.includes('catastrophic')) { color = count > 0 ? 'text-red-600' : 'text-green-600'; bg = count > 0 ? 'bg-red-50' : 'bg-green-50'; }
                             else if (reason.includes('pricing') || reason.includes('diversity')) { color = 'text-yellow-600'; bg = 'bg-yellow-50'; }
                             else if (reason.includes('ev_not')) { color = 'text-blue-600'; bg = 'bg-blue-50'; }
+                            const tooltips = {
+                                risk_ceiling_exceeded: 'Optimization was rejected because the spot interruption risk exceeds the configured risk ceiling threshold.',
+                                ev_not_positive: 'Expected value calculation was not positive — the cost savings do not outweigh the migration risk.',
+                                pricing_stale: 'Spot pricing data is too old to make a reliable optimization decision.',
+                                diversity_violation: 'Moving to this pool would violate instance type diversification requirements.',
+                                catastrophic_risk: 'The target pool has extremely high interruption frequency, making migration unsafe.',
+                                cooldown_active: 'This node was recently optimized and is in a cooldown period to prevent thrashing.',
+                                no_better_pool: 'No available spot pool offers better pricing or lower risk than the current placement.',
+                                pdb_conflict: 'Pod Disruption Budget constraints prevent draining this node safely.',
+                            };
+                            const tooltip = tooltips[reason] || `Rejection reason: ${reason.replace(/_/g, ' ')}`;
                             return (
-                                <div key={reason} className={`p-3 rounded-lg ${bg}`}>
-                                    <div className="text-xs text-gray-500 mb-1 truncate" title={reason}>{reason.replace(/_/g, ' ')}</div>
+                                <div key={reason} className={`p-3 rounded-lg ${bg} cursor-help`} title={tooltip}>
+                                    <div className="text-xs text-gray-500 mb-1 truncate">{reason.replace(/_/g, ' ')}</div>
                                     <div className={`text-xl font-bold ${color}`}>{count}</div>
                                 </div>
                             );

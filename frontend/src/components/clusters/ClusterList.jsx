@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { createPortal } from 'react-dom';
-import { clusterAPI, karpenterAPI } from '../../services/api';
+import { clusterAPI, karpenterAPI, ascpaiAPI } from '../../services/api';
 import { useClusterStore, useHeaderStore } from '../../store/useStore';
 import { formatCurrency } from '../../utils/formatters';
 import toast from 'react-hot-toast';
@@ -74,6 +74,7 @@ const typeBg = {
 const statusConfig = {
   healthy: { color: C.green, bg: C.greenBg, border: C.greenBorder, label: "Healthy", dot: C.green },
   warning: { color: C.amber, bg: C.amberBg, border: C.amberBorder, label: "Warning", dot: C.amber },
+  degraded: { color: "#dc2626", bg: "#fef2f2", border: "#fecaca", label: "Degraded", dot: "#dc2626" },
   "no-agent": { color: C.subtle, bg: "#f3f4f6", border: C.border, label: "No Agent", dot: C.subtle },
 };
 
@@ -103,6 +104,7 @@ const ToggleSwitch = ({ checked, onChange, disabled }) => (
 
 const OptimizationSettingsTab = ({ cluster }) => {
   const [loading, setLoading] = useState(true);
+  const [archConflict, setArchConflict] = useState(null); // { conflict: bool, template_archs, resolved }
   const [settings, setSettings] = useState({
     auto_rebalance_enabled: false,
     auto_rightsizing_enabled: false,
@@ -115,11 +117,13 @@ const OptimizationSettingsTab = ({ cluster }) => {
     cooldown_override_minutes: 60,
     diversify_pools: false,
     max_family_diversification_cap_pct: 40,
+    instance_type_diversification_pct: 100,
     min_node_count: 1,
     scale_down_threshold_pct: 20,
     scale_down_stabilization_minutes: 15,
     enable_ascp_auto_scaler: false,
-    check_interval_seconds: 15
+    check_interval_seconds: 15,
+    architecture_preference: 'both'
   });
 
   useEffect(() => {
@@ -136,11 +140,13 @@ const OptimizationSettingsTab = ({ cluster }) => {
             cooldown_override_minutes: res.data.automation_controls?.cooldown_override_minutes ?? 60,
             diversify_pools: res.data.automation_controls?.diversify_pools ?? false,
             max_family_diversification_cap_pct: res.data.automation_controls?.max_family_diversification_cap_pct ?? 40,
+            instance_type_diversification_pct: res.data.automation_controls?.instance_type_diversification_pct ?? 100,
             min_node_count: res.data.automation_controls?.min_node_count ?? 1,
             scale_down_threshold_pct: res.data.automation_controls?.scale_down_threshold_pct ?? 20,
             scale_down_stabilization_minutes: res.data.automation_controls?.scale_down_stabilization_minutes ?? 15,
             enable_ascp_auto_scaler: res.data.automation_controls?.enable_ascp_auto_scaler ?? false,
             check_interval_seconds: res.data.automation_controls?.check_interval_seconds ?? 15,
+            architecture_preference: res.data.automation_controls?.architecture_preference ?? 'both',
             auto_rightsizing_enabled: res.data.automation_controls?.auto_rightsizing_enabled ?? false,
             optimization_target: res.data.automation_controls?.optimization_target ?? 'spot',
             optimization_target_locked: res.data.automation_controls?.optimization_target_locked ?? false,
@@ -161,6 +167,21 @@ const OptimizationSettingsTab = ({ cluster }) => {
     fetchSettings();
     return () => mounted = false;
   }, [cluster.id]);
+
+  // Fetch effective config to detect architecture conflicts with node template
+  useEffect(() => {
+    let mounted = true;
+    ascpaiAPI.getEffectiveConfiguration(cluster.id).then(res => {
+      if (mounted && res.data) {
+        setArchConflict({
+          conflict: res.data.architecture_conflict || false,
+          template_archs: res.data.template_architectures,
+          resolved: res.data.resolved_architecture,
+        });
+      }
+    }).catch(() => {});
+    return () => mounted = false;
+  }, [cluster.id, settings.architecture_preference]);
 
   const updateSetting = async (key, value) => {
     const prev = { ...settings };
@@ -247,6 +268,104 @@ const OptimizationSettingsTab = ({ cluster }) => {
 
       <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: 20 }}>
 
+        {/* CPU Architecture Preference */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18 }}>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: C.text }}>CPU Architecture</div>
+            <div style={{ fontSize: 11, color: C.subtle, marginTop: 4 }}>Select which CPU architectures to include in alternative pool selection and rebalancing</div>
+          </div>
+          <select
+            value={settings.architecture_preference}
+            onChange={(e) => updateSetting('architecture_preference', e.target.value)}
+            style={{
+              padding: "6px 10px", borderRadius: 6,
+              border: `1px solid ${archConflict?.conflict ? '#e74c3c' : C.border}`,
+              background: C.surface, color: C.text,
+              fontSize: 12, outline: "none", cursor: 'pointer',
+              minWidth: 120, fontFamily: 'inherit',
+            }}
+          >
+            <option value="both">Both (x86 + ARM)</option>
+            <option value="amd64">x86 / AMD64 Only</option>
+            <option value="arm64">ARM64 / Graviton Only</option>
+          </select>
+        </div>
+        {archConflict?.conflict && (
+          <div style={{
+            fontSize: 11, color: '#e74c3c', marginTop: -10, marginBottom: 18, padding: '6px 10px',
+            background: 'rgba(231,76,60,0.08)', borderRadius: 6, border: '1px solid rgba(231,76,60,0.2)'
+          }}>
+            ⚠ Your node template restricts architecture to [{archConflict.template_archs?.join(', ')}], but you selected "{settings.architecture_preference}". No spot pools will match — rebalancing will be unable to find candidates.
+          </div>
+        )}
+
+        {/* Diversify Pools */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: settings.diversify_pools ? 12 : 18 }}>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 600, color: C.text }}>Diversify Spot Pools</div>
+            <div style={{ fontSize: 11, color: C.subtle, marginTop: 4 }}>Spread pods across multiple instance sizes to lower interruption risk</div>
+          </div>
+          <ToggleSwitch
+            checked={settings.diversify_pools}
+            onChange={(val) => updateSetting('diversify_pools', val)}
+          />
+        </div>
+
+        {settings.diversify_pools && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 18 }}>
+            {/* Max Family Diversification Cap */}
+            <div style={{ width: "100%", padding: "12px 16px", background: C.surfaceHover, borderRadius: 8, border: `1px solid ${C.border}` }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 500, color: C.text }}>Max Family Diversification Cap</div>
+                  <div style={{ fontSize: 10, color: C.muted, marginTop: 2 }}>Limit instances of the same family (e.g., c5, m5) to a % of total nodes.</div>
+                </div>
+                <div style={{ fontSize: 14, fontWeight: 700, color: C.accent }}>{settings.max_family_diversification_cap_pct}%</div>
+              </div>
+              <input
+                type="range"
+                min="10"
+                max="100"
+                step="5"
+                value={settings.max_family_diversification_cap_pct}
+                onChange={e => updateSetting('max_family_diversification_cap_pct', parseInt(e.target.value))}
+                style={{ width: "100%", accentColor: C.accent, cursor: "pointer" }}
+              />
+            </div>
+
+            {/* Instance Type Diversification */}
+            <div style={{ width: "100%", padding: "12px 16px", background: C.surfaceHover, borderRadius: 8, border: `1px solid ${C.border}` }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 500, color: C.text }}>Instance Type Diversification</div>
+                  <div style={{ fontSize: 10, color: C.muted, marginTop: 2 }}>
+                    {settings.instance_type_diversification_pct === 100
+                      ? 'Strict — every node gets a unique instance type (different type + AZ).'
+                      : `Relaxed — up to ${Math.max(1, Math.round(3 * (1 - settings.instance_type_diversification_pct / 100)))} nodes may share the same type (across different AZs).`
+                    }
+                  </div>
+                </div>
+                <div style={{ fontSize: 14, fontWeight: 700, color: C.accent }}>{settings.instance_type_diversification_pct}%</div>
+              </div>
+              <input
+                type="range"
+                min="0"
+                max="100"
+                step="10"
+                value={settings.instance_type_diversification_pct}
+                onChange={e => updateSetting('instance_type_diversification_pct', parseInt(e.target.value))}
+                style={{ width: "100%", accentColor: C.accent, cursor: "pointer" }}
+              />
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 9, color: C.muted, marginTop: 4 }}>
+                <span>0% — All same type OK</span>
+                <span>100% — All unique types</span>
+              </div>
+            </div>
+          </div>
+        )}
+
+        <div style={{ height: 1, background: C.border, margin: "0 0 18px 0" }} />
+
         {/* Auto Rebalance */}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18 }}>
           <div>
@@ -272,41 +391,6 @@ const OptimizationSettingsTab = ({ cluster }) => {
                 checked={settings.maintain_standby}
                 onChange={(val) => updateSetting('maintain_standby', val)}
               />
-            </div>
-
-            {/* Diversify Pools */}
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 16 }}>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flex: "1 1 100%" }}>
-                <div>
-                  <div style={{ fontSize: 13, fontWeight: 500, color: C.text }}>Diversify Spot Pools</div>
-                  <div style={{ fontSize: 11, color: C.subtle, marginTop: 2 }}>Spread pods across multiple instance sizes to lower interruption risk</div>
-                </div>
-                <ToggleSwitch
-                  checked={settings.diversify_pools}
-                  onChange={(val) => updateSetting('diversify_pools', val)}
-                />
-              </div>
-
-              {settings.diversify_pools && (
-                <div style={{ width: "100%", padding: "12px 16px", background: C.surfaceHover, borderRadius: 8, border: `1px solid ${C.border}` }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                    <div>
-                      <div style={{ fontSize: 12, fontWeight: 500, color: C.text }}>Max Family Diversification Cap</div>
-                      <div style={{ fontSize: 10, color: C.muted, marginTop: 2 }}>Limit instances of the same family (e.g., c5, m5) to a % of total nodes.</div>
-                    </div>
-                    <div style={{ fontSize: 14, fontWeight: 700, color: C.accent }}>{settings.max_family_diversification_cap_pct}%</div>
-                  </div>
-                  <input
-                    type="range"
-                    min="10"
-                    max="100"
-                    step="5"
-                    value={settings.max_family_diversification_cap_pct}
-                    onChange={e => updateSetting('max_family_diversification_cap_pct', parseInt(e.target.value))}
-                    style={{ width: "100%", accentColor: C.accent, cursor: "pointer" }}
-                  />
-                </div>
-              )}
             </div>
 
             {/* Failure Cooldown */}
@@ -1033,7 +1117,7 @@ const ClusterDetail = ({ cluster, onClose }) => {
           karpenterPollRef.current = null;
         }
       });
-    }, 4000);
+    }, 10000); // 10s — was 4s; no need to poll faster than every 10s for install status
 
     return () => {
       if (karpenterPollRef.current) clearInterval(karpenterPollRef.current);
@@ -1810,14 +1894,19 @@ export default function ClustersPage() {
   // Ref so the node-details interval can access the latest mappedClusters
   // without being in the effect dependency array (avoids infinite fetch loop).
   const mappedClustersRef = useRef([]);
+  // Track whether first fetch has completed — avoids reading `clusters` state
+  // inside fetchData (which would recreate the callback on every poll and cause
+  // an infinite re-render loop via the useEffect([fetchData]) below).
+  const hasInitialDataRef = useRef(false);
 
   const fetchData = useCallback(async () => {
     // Only show loading spinner on initial empty load — background polls
     // must NOT blank out the existing cluster list.
-    if (!clusters || clusters.length === 0) setLoading(true);
+    if (!hasInitialDataRef.current) setLoading(true);
     try {
       const clusterRes = await clusterAPI.list({});
       const newClusters = clusterRes.data.clusters || [];
+      hasInitialDataRef.current = true;
       setClusters(newClusters);
       // Clear selected panel if the selected cluster was deleted
       setSelected(prev => {
@@ -1832,7 +1921,7 @@ export default function ClustersPage() {
     } finally {
       setLoading(false);
     }
-  }, [clusters, setClusters, setLoading]);
+  }, [setClusters, setLoading]);
 
   const handleRefresh = useCallback(() => {
     // Don't clear nodeDetails — keep showing stale data while new data loads
@@ -1850,11 +1939,17 @@ export default function ClustersPage() {
     };
   }, [fetchData, handleRefresh]);
 
-  // Fetch rightsizing recommendations for all clusters (background, non-blocking)
+  // Fetch rightsizing recommendations for agent-connected clusters only (background, non-blocking)
+  // Dep: cluster IDs string — avoids re-firing on every clusters array reference change (30s poll)
+  const _agentClusterIds = useMemo(
+    () => clusters.filter(c => c.agent_installed === 'Y' || c.agent_installed === true).map(c => c.id).sort().join(','),
+    [clusters]
+  );
   useEffect(() => {
-    if (clusters.length === 0) return;
+    if (!_agentClusterIds) return;
+    const agentClusters = clusters.filter(c => c.agent_installed === 'Y' || c.agent_installed === true);
     Promise.allSettled(
-      clusters.map(c =>
+      agentClusters.map(c =>
         karpenterAPI.getRecommendations(c.id)
           .then(res => ({ id: c.id, recs: res.data?.recommendations || [] }))
           .catch(() => ({ id: c.id, recs: [] }))
@@ -1872,7 +1967,7 @@ export default function ClustersPage() {
       });
       setRightsizingData(rd);
     });
-  }, [clusters]);
+  }, [_agentClusterIds]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Map API clusters to UI expected format
   const mappedClusters = useMemo(() => {
@@ -1883,7 +1978,12 @@ export default function ClustersPage() {
       let agentHealthy = false;
       let mappedStatus = "no-agent";
 
-      if (agentInstalled) {
+      // Backend DEGRADED status = agent installed but cluster no longer found in AWS
+      if (c.status === 'DEGRADED') {
+        mappedStatus = "degraded";
+        agentInstalled = true;
+        agentHealthy = false;
+      } else if (agentInstalled) {
         // Three-tier heartbeat freshness check:
         //   < 90s  → healthy (agent sends every 30s; allow 2 missed beats)
         //   90s–5m → warning (degraded / slow heartbeat)

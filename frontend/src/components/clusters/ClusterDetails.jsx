@@ -25,10 +25,18 @@ const CONDITION_STYLES = {
   'STABLE': 'bg-green-50 text-green-700 border-green-200',
 };
 
+const CONDITION_TOOLTIPS = {
+  'AWAITING_SPOT': 'This on-demand node is eligible for spot conversion. A suitable spot pool will be selected when conditions are favorable.',
+  'REBALANCE:RISK_HIGH': 'Current spot pool has elevated interruption risk. The node will be migrated to a safer pool when one is available.',
+  'REBALANCE:BETTER_POOL': 'A more cost-effective or lower-risk spot pool has been identified for this node.',
+  'STABLE': 'This node is optimally placed. No rebalancing action is needed.',
+};
+
 const NodeConditionBadge = ({ node, rec, isInFlight }) => {
   if (isInFlight) {
     return (
-      <span className="px-2 py-0.5 text-xs rounded-full border bg-indigo-50 text-indigo-700 border-indigo-200 flex items-center gap-1 whitespace-nowrap">
+      <span className="px-2 py-0.5 text-xs rounded-full border bg-indigo-50 text-indigo-700 border-indigo-200 flex items-center gap-1 whitespace-nowrap"
+            title="Node is actively being migrated to a new spot pool.">
         <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full animate-pulse inline-block" />
         Rebalancing...
       </span>
@@ -46,8 +54,9 @@ const NodeConditionBadge = ({ node, rec, isInFlight }) => {
     'STABLE': `Stable${riskPct}`,
   };
   const poolHint = node.best_available_pool || rec?.target_type || null;
+  const tooltip = CONDITION_TOOLTIPS[cond] || 'Node status is being evaluated.';
   return (
-    <div>
+    <div title={tooltip}>
       <span className={`px-2 py-0.5 text-xs rounded-full border ${style} whitespace-nowrap`}>
         {labels[cond] || 'Stable'}
       </span>
@@ -90,6 +99,7 @@ const ClusterDetails = ({ clusterId, onClose }) => {
   const [karpenterActionLoading, setKarpenterActionLoading] = useState(false);
   const [nativeSpotStatus, setNativeSpotStatus] = useState(null);
   const [nativeSpotLoading, setNativeSpotLoading] = useState(false);
+  const [fetchError, setFetchError] = useState(null);
   const navigate = useNavigate();
 
   // Build per-node recommendation lookup (keyed by node_name)
@@ -144,6 +154,7 @@ const ClusterDetails = ({ clusterId, onClose }) => {
   const fetchClusterDetails = async () => {
     // Only set loading=true if we have no cluster data yet (avoids blanking the UI on refresh)
     if (!cluster) setLoading(true);
+    setFetchError(null);
     try {
       // Fetch cluster data, metrics, policy, schedule, utilization, workload type, and detailed nodes in parallel
       const [clusterRes, metricsRes, policyRes, scheduleRes, utilRes, workloadRes, nodesRes, optRes, recRes, rebalRes, rsizeRes, costTRes] = await Promise.allSettled([
@@ -194,6 +205,7 @@ const ClusterDetails = ({ clusterId, onClose }) => {
       }
     } catch (error) {
       toast.error('Failed to load cluster details');
+      setFetchError(error.message || 'Failed to load cluster details');
     } finally {
       setLoading(false);
     }
@@ -329,6 +341,20 @@ const ClusterDetails = ({ clusterId, onClose }) => {
 
   return (
     <div className="flex-1 overflow-y-auto bg-white flex flex-col">
+      {fetchError && !loading && (
+        <div className="mx-8 mt-4 p-4 bg-red-50 border border-red-200 rounded-lg flex items-center justify-between">
+          <div>
+            <p className="text-sm font-medium text-red-800">Failed to load cluster details</p>
+            <p className="text-xs text-red-600 mt-0.5">{fetchError}</p>
+          </div>
+          <button
+            onClick={handleRefresh}
+            className="px-3 py-1.5 text-xs font-medium text-red-700 bg-white border border-red-300 rounded-md hover:bg-red-50"
+          >
+            Retry
+          </button>
+        </div>
+      )}
       <div className="w-full">
         {/* Header */}
         <header className="sticky top-0 bg-white border-b border-gray-200 px-8 py-4 flex items-center justify-between z-20">
@@ -474,6 +500,89 @@ const ClusterDetails = ({ clusterId, onClose }) => {
                 </div>
 
                 <div className="space-y-0 divide-y divide-gray-100">
+                  {/* CPU Architecture Preference */}
+                  <div className="flex items-center justify-between py-2.5">
+                    <div>
+                      <div className="text-xs font-semibold text-gray-800">CPU Architecture</div>
+                      <div className="text-[11px] text-gray-500 mt-0.5">Select which CPU architectures to include in alternative pool selection and rebalancing</div>
+                    </div>
+                    <select
+                      value={optSettings?.automation_controls?.architecture_preference ?? 'both'}
+                      onChange={e => handleOptConfigChange("automation_controls", "architecture_preference", e.target.value)}
+                      className="text-xs border border-gray-200 rounded px-2 py-1 text-gray-700 focus:outline-none focus:ring-1 focus:ring-blue-400 ml-4 shrink-0 cursor-pointer"
+                    >
+                      <option value="both">Both (x86 + ARM)</option>
+                      <option value="amd64">x86 / AMD64 Only</option>
+                      <option value="arm64">ARM64 / Graviton Only</option>
+                    </select>
+                  </div>
+
+                  {/* Diversify Pools */}
+                  <div className="flex items-center justify-between py-2.5">
+                    <div>
+                      <div className="text-xs font-semibold text-gray-800">Diversify Spot Pools</div>
+                      <div className="text-[11px] text-gray-500 mt-0.5">Spread across multiple instance pools to lower interruption risk</div>
+                    </div>
+                    <label className="relative inline-flex items-center cursor-pointer ml-4 shrink-0">
+                      <input type="checkbox" className="sr-only peer"
+                        checked={!!optSettings?.automation_controls?.diversify_pools}
+                        onChange={e => handleOptConfigChange("automation_controls", "diversify_pools", e.target.checked)} />
+                      <div className="w-9 h-5 bg-gray-200 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-indigo-600" />
+                    </label>
+                  </div>
+
+                  {/* Diversify sub-settings — shown when Diversify Spot Pools is ON */}
+                  {optSettings?.automation_controls?.diversify_pools && (
+                    <div className="ml-4 pl-3 border-l-2 border-indigo-100 py-2 space-y-3">
+                      {/* Max Family Diversification Cap */}
+                      <div>
+                        <div className="flex items-center justify-between mb-1">
+                          <div>
+                            <div className="text-[12px] font-medium text-gray-700">Max Family Diversification Cap</div>
+                            <div className="text-[10px] text-gray-400 mt-0.5">Limit instances of the same family (e.g. c5, m5) to a % of total nodes.</div>
+                          </div>
+                          <span className="text-xs font-bold text-indigo-600 ml-4 shrink-0">
+                            {optSettings?.automation_controls?.max_family_diversification_cap_pct ?? 40}%
+                          </span>
+                        </div>
+                        <input
+                          type="range" min="10" max="100" step="5"
+                          value={optSettings?.automation_controls?.max_family_diversification_cap_pct ?? 40}
+                          onChange={e => handleOptConfigChange("automation_controls", "max_family_diversification_cap_pct", parseInt(e.target.value))}
+                          className="w-full accent-indigo-600 cursor-pointer"
+                        />
+                      </div>
+
+                      {/* Instance Type Diversification */}
+                      <div>
+                        <div className="flex items-center justify-between mb-1">
+                          <div>
+                            <div className="text-[12px] font-medium text-gray-700">Instance Type Diversification</div>
+                            <div className="text-[10px] text-gray-400 mt-0.5">
+                              {(optSettings?.automation_controls?.instance_type_diversification_pct ?? 100) === 100
+                                ? 'Strict — every node gets a unique instance type (different type + AZ).'
+                                : `Relaxed — up to ${Math.max(1, Math.round(3 * (1 - (optSettings?.automation_controls?.instance_type_diversification_pct ?? 100) / 100)))} nodes may share the same type (across different AZs).`
+                              }
+                            </div>
+                          </div>
+                          <span className="text-xs font-bold text-indigo-600 ml-4 shrink-0">
+                            {optSettings?.automation_controls?.instance_type_diversification_pct ?? 100}%
+                          </span>
+                        </div>
+                        <input
+                          type="range" min="0" max="100" step="10"
+                          value={optSettings?.automation_controls?.instance_type_diversification_pct ?? 100}
+                          onChange={e => handleOptConfigChange("automation_controls", "instance_type_diversification_pct", parseInt(e.target.value))}
+                          className="w-full accent-indigo-600 cursor-pointer"
+                        />
+                        <div className="flex justify-between text-[9px] text-gray-400 mt-1">
+                          <span>0% — All same type OK</span>
+                          <span>100% — All unique types</span>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
                   {/* Auto Rebalance */}
                   <div className="flex items-center justify-between py-2.5">
                     <div>
@@ -491,19 +600,6 @@ const ClusterDetails = ({ clusterId, onClose }) => {
                   {/* Sub-settings — shown when Auto Rebalance is ON */}
                   {optSettings?.automation_controls?.auto_rebalance_enabled && (
                     <div className="ml-4 pl-3 border-l-2 border-gray-100 py-2 space-y-2.5">
-                      {/* Diversify Pools */}
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <div className="text-[12px] font-medium text-gray-700">Diversify Spot Pools</div>
-                          <div className="text-[10px] text-gray-400 mt-0.5">Spread across multiple instance pools to lower interruption risk</div>
-                        </div>
-                        <label className="relative inline-flex items-center cursor-pointer ml-4 shrink-0">
-                          <input type="checkbox" className="sr-only peer"
-                            checked={!!optSettings?.automation_controls?.diversify_pools}
-                            onChange={e => handleOptConfigChange("automation_controls", "diversify_pools", e.target.checked)} />
-                          <div className="w-9 h-5 bg-gray-200 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-indigo-600" />
-                        </label>
-                      </div>
                       {/* Maintain Standby */}
                       <div className="flex items-center justify-between">
                         <div>

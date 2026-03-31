@@ -14,7 +14,7 @@ const useASCPStore = create((set, get) => ({
 
     // ─── Pool Rankings Actions ─────────────────────────────────────────────
 
-    fetchPoolRankings: async (template = null, region = 'ap-south-1', limit = 20) => {
+    fetchPoolRankings: async (template = null, region = null, limit = 20) => {
         try {
             set({ isLoading: true, error: null });
             // Use default template if none provided

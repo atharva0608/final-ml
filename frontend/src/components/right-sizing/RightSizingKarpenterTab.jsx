@@ -181,7 +181,7 @@ export default function RightSizingMonitoringDashboard() {
             recommended: r.recommended_type || r.current_type || 'unknown',
             cpu: r.cpu ?? 0,
             mem: r.mem ?? 0,
-            savings: Math.round(r.potential_savings || 0),
+            savings: Math.round(r.potential_savings ?? 0),
             savings_pct: r.savings_pct ?? 0,
             resize_savings: r.resize_savings ?? 0,
             spot_pool: r.spot_pool || null,
@@ -203,9 +203,9 @@ export default function RightSizingMonitoringDashboard() {
             recommended: r.recommended_type || r.current_type || 'unknown',
             cpu: r.cpu ?? 0,
             mem: r.mem ?? 0,
-            savings: Math.round(r.potential_savings || 0),
+            savings: Math.round(r.potential_savings ?? 0),
             savings_pct: r.savings_pct ?? 0,
-            resize_savings: Math.round(r.resize_savings || 0),
+            resize_savings: Math.round(r.resize_savings ?? 0),
             reason: r.reason || '',
             status: 'Ready',
           }));
@@ -218,10 +218,9 @@ export default function RightSizingMonitoringDashboard() {
   }, [selectedClusterId]);
 
   const activeTargetsCount = statelessNodes.filter(n => n.savings > 0).length + statefulNodes.filter(n => n.savings > 0).length;
-  // Use sum of savings but if 0, put some dummy values for the dashboard effect if no data to show visually
   const totalSavings = statelessNodes.reduce((a, b) => a + Number(b.savings), 0) + statefulNodes.reduce((a, b) => a + Number(b.savings), 0);
-  const displaySavings = totalSavings > 0 ? (totalSavings / 1000).toFixed(1) : "14.2";
-  const displayActiveTargets = activeTargetsCount > 0 ? activeTargetsCount : 42;
+  const displaySavings = (totalSavings / 1000).toFixed(1);
+  const displayActiveTargets = activeTargetsCount;
 
   const eligibleStatefulNodes = statefulNodes.filter(n => n.savings > 0);
 
@@ -266,10 +265,9 @@ export default function RightSizingMonitoringDashboard() {
             </div>
           </div>
           <div className="flex items-baseline gap-3">
-            <div className="text-[32px] font-extrabold text-slate-800 leading-none">{clusters.length || 128}</div>
-            <div className="text-[13px] font-bold text-emerald-500 flex items-center">
-              <svg className="w-3 h-3 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" /></svg>
-              ~2%
+            <div className="text-[32px] font-extrabold text-slate-800 leading-none">{clusters.length}</div>
+            <div className="text-[13px] font-bold text-slate-400 flex items-center">
+              —
             </div>
           </div>
         </div>
@@ -283,9 +281,8 @@ export default function RightSizingMonitoringDashboard() {
           </div>
           <div className="flex items-baseline gap-3">
             <div className="text-[32px] font-extrabold text-slate-800 leading-none">{displayActiveTargets}</div>
-            <div className="text-[13px] font-bold text-orange-500 flex items-center">
-              <svg className="w-3 h-3 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M13 17h8m0 0V9m0 8l-8-8-4 4-6-6" /></svg>
-              ~5%
+            <div className="text-[13px] font-bold text-slate-400 flex items-center">
+              —
             </div>
           </div>
         </div>
@@ -299,9 +296,8 @@ export default function RightSizingMonitoringDashboard() {
           </div>
           <div className="flex items-baseline gap-3">
             <div className="text-[32px] font-extrabold text-slate-800 leading-none">${displaySavings}k</div>
-            <div className="text-[13px] font-bold text-orange-500 flex items-center">
-              <svg className="w-3 h-3 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M13 17h8m0 0V9m0 8l-8-8-4 4-6-6" /></svg>
-              ~12%
+            <div className="text-[13px] font-bold text-slate-400 flex items-center">
+              —
             </div>
           </div>
         </div>
@@ -314,10 +310,9 @@ export default function RightSizingMonitoringDashboard() {
             </div>
           </div>
           <div className="flex items-baseline gap-3">
-            <div className="text-[32px] font-extrabold text-slate-800 leading-none">94%</div>
-            <div className="text-[13px] font-bold text-emerald-500 flex items-center">
-              <svg className="w-3 h-3 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" /></svg>
-              ~1%
+            <div className="text-[32px] font-extrabold text-slate-800 leading-none">—</div>
+            <div className="text-[13px] font-bold text-slate-400 flex items-center">
+              —
             </div>
           </div>
         </div>
@@ -345,31 +340,7 @@ export default function RightSizingMonitoringDashboard() {
                 <div>
                   <div className="text-[11px] font-bold text-slate-500 uppercase tracking-widest mb-8">Availability Strategy</div>
                   <div className="flex justify-center mb-10">
-                    <div className="relative w-28 h-28">
-                      {/* Fake donut using SVG borders */}
-                      <svg viewBox="0 0 36 36" className="w-full h-full rotate-[-90deg]">
-                        {/* Background ring (Spot) */}
-                        <path className="text-blue-100" strokeWidth="5.5" stroke="currentColor" fill="none"
-                          d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
-                        {/* Foreground ring (On-Demand) 75% */}
-                        <path className="text-blue-500" strokeWidth="5.5" strokeDasharray="75, 100" stroke="currentColor" fill="none"
-                          d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
-                      </svg>
-                      <div className="absolute inset-0 flex flex-col items-center justify-center pt-2">
-                        <span className="text-[24px] font-extrabold text-blue-600 leading-none">75%</span>
-                        <span className="text-[9px] uppercase font-bold text-slate-500 mt-1 tracking-widest">On-Demand</span>
-                      </div>
-                    </div>
-                  </div>
-                  <div className="flex gap-4">
-                    <div className="flex-1 bg-slate-50 rounded-xl p-3 text-center border border-slate-100">
-                      <div className="text-[10px] font-bold text-slate-500 mb-1">Spot Instances</div>
-                      <div className="text-[14px] font-extrabold text-slate-800">284</div>
-                    </div>
-                    <div className="flex-1 bg-slate-50 rounded-xl p-3 text-center border border-slate-100">
-                      <div className="text-[10px] font-bold text-slate-500 mb-1">On-Demand</div>
-                      <div className="text-[14px] font-extrabold text-slate-800">812</div>
-                    </div>
+                    <div className="flex items-center justify-center w-28 h-28 rounded-full bg-slate-100 text-slate-400 text-xs text-center">Data<br/>pending</div>
                   </div>
                 </div>
 
@@ -477,29 +448,7 @@ export default function RightSizingMonitoringDashboard() {
             {/* RESOURCE ALLOCATION BY INSTANCE FAMILY */}
             <div className="bg-white rounded-xl border border-slate-200 shadow-[0_2px_4px_rgba(0,0,0,0.02)] overflow-hidden p-6 pb-4">
               <div className="text-[11px] font-extrabold text-slate-600 uppercase tracking-widest mb-12">RESOURCE ALLOCATION BY INSTANCE FAMILY</div>
-              <div className="flex items-end justify-between h-32 px-10 gap-12">
-                {/* Fake Bar Chart */}
-                <div className="flex-1 flex flex-col items-center gap-3 w-full">
-                  <div className="w-full bg-slate-100 rounded-t-sm border border-slate-200 border-b-0" style={{ height: '30%' }}></div>
-                  <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">M-Family</div>
-                </div>
-                <div className="flex-1 flex flex-col items-center gap-3 w-full">
-                  <div className="w-full bg-slate-100 rounded-t-sm border border-slate-200 border-b-0" style={{ height: '50%' }}></div>
-                  <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">C-Family</div>
-                </div>
-                <div className="flex-1 flex flex-col items-center gap-3 w-full">
-                  <div className="w-full bg-indigo-500 rounded-t-sm" style={{ height: '80%' }}></div>
-                  <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">R-Family</div>
-                </div>
-                <div className="flex-1 flex flex-col items-center gap-3 w-full">
-                  <div className="w-full bg-slate-100 rounded-t-sm border border-slate-200 border-b-0" style={{ height: '40%' }}></div>
-                  <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">T-Family</div>
-                </div>
-                <div className="flex-1 flex flex-col items-center gap-3 w-full">
-                  <div className="w-full bg-slate-100 rounded-t-sm border border-slate-200 border-b-0" style={{ height: '60%' }}></div>
-                  <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">G-Family</div>
-                </div>
-              </div>
+              <div className="flex items-center justify-center w-full h-32 bg-slate-50 rounded text-slate-400 text-xs">Chart data pending</div>
             </div>
 
           </div>
@@ -676,9 +625,9 @@ export default function RightSizingMonitoringDashboard() {
                     <td className="py-4 px-6 font-bold text-emerald-600">${n.savings}/mo</td>
                     <td className="py-4 px-6">
                       {n.status === "Blocked by Policy" ? (
-                        <span className="text-orange-500 font-bold tracking-tight">Blocked by Policy</span>
+                        <span className="text-orange-500 font-bold tracking-tight" title={n.reason || 'Cluster policy prevents optimization of this stateful node (e.g., max downscale limit, manual approval required).'}>Blocked by Policy</span>
                       ) : (
-                        <span className="text-emerald-500 font-bold tracking-tight">Approved by Policy</span>
+                        <span className="text-emerald-500 font-bold tracking-tight" title="This node meets all policy requirements and is approved for right-sizing.">Approved by Policy</span>
                       )}
                     </td>
                     <td className="py-4 px-6 text-right">

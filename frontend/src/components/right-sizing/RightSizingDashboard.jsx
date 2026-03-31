@@ -148,27 +148,17 @@ function ClusterHealthExposureBar({ statelessCount, statefulCount, eligibleCount
         <SectionLabel>Exposure Snapshot</SectionLabel>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 24 }}>
           {/* Charts placeholders */}
-          <div style={{ background: T.bg, borderRadius: 8, border: `1px solid ${T.borderLight}`, padding: "16px", display: "flex", flexDirection: "column", alignItems: "center" }}>
-            <h4 style={{ margin: "0 0 12px", fontSize: 13, color: T.textMid }}>Spot vs On-Demand Gauge</h4>
-            <div style={{ width: "100%", height: "100px", background: "#e5e7eb", borderRadius: "100px 100px 0 0", position: "relative", overflow: "hidden" }}>
-              <div style={{ position: "absolute", bottom: 0, left: 0, width: "60%", height: "100%", background: T.primary, transformOrigin: "bottom center" }}></div>
-            </div>
-            <p style={{ fontSize: 12, color: T.textMuted, marginTop: 12 }}>Spot: 60% → 78% (Proj)</p>
+          <div style={{ background: T.bg, borderRadius: 8, border: `1px solid ${T.borderLight}`, padding: "16px", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: 132 }}>
+            <h4 style={{ margin: "0 0 8px", fontSize: 13, color: T.textMid }}>Spot vs On-Demand Gauge</h4>
+            <p style={{ fontSize: 12, color: T.textMuted, textAlign: "center" }}>Data pending<br />(connect cluster metrics)</p>
           </div>
-          <div style={{ background: T.bg, borderRadius: 8, border: `1px solid ${T.borderLight}`, padding: "16px", display: "flex", flexDirection: "column", alignItems: "center" }}>
-            <h4 style={{ margin: "0 0 12px", fontSize: 13, color: T.textMid }}>AZ Distribution Pie</h4>
-            <div style={{ width: "100px", height: "100px", background: "conic-gradient(#4f46e5 0% 33%, #0891b2 33% 66%, #10b981 66% 100%)", borderRadius: "50%" }}></div>
-            <p style={{ fontSize: 12, color: T.textMuted, marginTop: 12 }}>Imbalance Risk: <span style={{ color: T.amber, fontWeight: 600 }}>MEDIUM</span></p>
+          <div style={{ background: T.bg, borderRadius: 8, border: `1px solid ${T.borderLight}`, padding: "16px", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: 132 }}>
+            <h4 style={{ margin: "0 0 8px", fontSize: 13, color: T.textMid }}>AZ Distribution</h4>
+            <p style={{ fontSize: 12, color: T.textMuted, textAlign: "center" }}>Data pending<br />(connect cluster metrics)</p>
           </div>
-          <div style={{ background: T.bg, borderRadius: 8, border: `1px solid ${T.borderLight}`, padding: "16px", display: "flex", flexDirection: "column", alignItems: "center" }}>
-            <h4 style={{ margin: "0 0 12px", fontSize: 13, color: T.textMid }}>Instance Family Bar</h4>
-            <div style={{ width: "100%", display: "flex", alignItems: "flex-end", gap: 8, height: "100px", background: "transparent" }}>
-              <div style={{ flex: 1, background: T.greyBorder, height: "40%" }}></div>
-              <div style={{ flex: 1, background: T.primary, height: "70%" }}></div>
-              <div style={{ flex: 1, background: T.cyan, height: "55%" }}></div>
-              <div style={{ flex: 1, background: T.amber, height: "20%" }}></div>
-            </div>
-            <p style={{ fontSize: 12, color: T.textMuted, marginTop: 12 }}>ARM: 20% → 55% (Proj)</p>
+          <div style={{ background: T.bg, borderRadius: 8, border: `1px solid ${T.borderLight}`, padding: "16px", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: 132 }}>
+            <h4 style={{ margin: "0 0 8px", fontSize: 13, color: T.textMid }}>Instance Family</h4>
+            <p style={{ fontSize: 12, color: T.textMuted, textAlign: "center" }}>Data pending<br />(connect cluster metrics)</p>
           </div>
         </div>
       </Card>
@@ -184,32 +174,32 @@ function ResizeGuardMonitoringPanel() {
         <SectionLabel>Guard &amp; Stability Panel</SectionLabel>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <span style={{ fontSize: 12, fontWeight: 600, color: T.textMuted }}>Cluster Safety Score:</span>
-          <span style={{ background: T.greenLight, color: T.green, padding: "4px 8px", borderRadius: 12, fontSize: 14, fontWeight: 800 }}>98/100</span>
+          <span style={{ background: T.bg, color: T.textMuted, padding: "4px 8px", borderRadius: 12, fontSize: 14, fontWeight: 800 }}>—/100</span>
         </div>
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", gap: 12 }}>
         <div style={{ padding: 12, borderRadius: 8, background: T.bg, border: `1px solid ${T.borderLight}` }}>
-          <div style={{ fontSize: 20, fontWeight: 800, color: T.text }}>0</div>
+          <div style={{ fontSize: 20, fontWeight: 800, color: T.text }}>—</div>
           <div style={{ fontSize: 10, color: T.textMuted, fontWeight: 600, marginTop: 4 }}>Rollbacks (24h)</div>
         </div>
         <div style={{ padding: 12, borderRadius: 8, background: T.bg, border: `1px solid ${T.borderLight}` }}>
-          <div style={{ fontSize: 20, fontWeight: 800, color: T.amber }}>2</div>
+          <div style={{ fontSize: 20, fontWeight: 800, color: T.amber }}>—</div>
           <div style={{ fontSize: 10, color: T.textMuted, fontWeight: 600, marginTop: 4 }}>Guard Triggers</div>
         </div>
         <div style={{ padding: 12, borderRadius: 8, background: T.greenLight, border: `1px solid ${T.greenBorder}` }}>
-          <div style={{ fontSize: 12, fontWeight: 700, color: T.green, marginTop: 6 }}>HEALTHY</div>
-          <div style={{ fontSize: 10, color: T.green, fontWeight: 600, marginTop: 4 }}>Circuit Breaker</div>
+          <div style={{ fontSize: 12, fontWeight: 700, color: T.textMuted, marginTop: 6 }}>N/A</div>
+          <div style={{ fontSize: 10, color: T.textMuted, fontWeight: 600, marginTop: 4 }}>Circuit Breaker</div>
         </div>
         <div style={{ padding: 12, borderRadius: 8, background: T.bg, border: `1px solid ${T.borderLight}` }}>
-          <div style={{ fontSize: 20, fontWeight: 800, color: T.text }}>5</div>
+          <div style={{ fontSize: 20, fontWeight: 800, color: T.text }}>—</div>
           <div style={{ fontSize: 10, color: T.textMuted, fontWeight: 600, marginTop: 4 }}>Max Concurrent</div>
         </div>
         <div style={{ padding: 12, borderRadius: 8, background: T.bg, border: `1px solid ${T.borderLight}` }}>
-          <div style={{ fontSize: 20, fontWeight: 800, color: T.primary }}>1</div>
+          <div style={{ fontSize: 20, fontWeight: 800, color: T.primary }}>—</div>
           <div style={{ fontSize: 10, color: T.textMuted, fontWeight: 600, marginTop: 4 }}>Currently Running</div>
         </div>
         <div style={{ padding: 12, borderRadius: 8, background: T.bg, border: `1px solid ${T.borderLight}` }}>
-          <div style={{ fontSize: 20, fontWeight: 800, color: T.text }}>3</div>
+          <div style={{ fontSize: 20, fontWeight: 800, color: T.text }}>—</div>
           <div style={{ fontSize: 10, color: T.textMuted, fontWeight: 600, marginTop: 4 }}>Queue Length</div>
         </div>
       </div>
@@ -236,7 +226,7 @@ function StatelessDetailedDrawer({ node, onClose, isAutoOn }) {
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 20 }}>
           <div style={{ padding: 16, background: T.bg, borderRadius: 8, border: `1px solid ${T.border}` }}>
             <div style={{ fontSize: 12, color: T.textMuted, fontWeight: 600 }}>Top Candidate Sizes</div>
-            <div style={{ fontSize: 14, fontWeight: 600, color: T.text, marginTop: 4 }}>1. {node.recommended}<br />2. {node.recommended.replace('large', 'xlarge')}<br />3. c6g.large</div>
+            <div style={{ fontSize: 14, fontWeight: 600, color: T.text, marginTop: 4 }}>1. {node.recommended}<br /><span style={{ color: T.textMuted, fontSize: 12 }}>Additional candidates pending API integration</span></div>
           </div>
           <div style={{ padding: 16, background: T.bg, borderRadius: 8, border: `1px solid ${T.border}` }}>
             <div style={{ fontSize: 12, color: T.textMuted, fontWeight: 600 }}>Diversification Check</div>
@@ -309,6 +299,10 @@ function StatefulProposalModal({ node, onClose, requireApproval = true }) {
           <button onClick={onClose} style={{ padding: "8px 16px", borderRadius: 6, border: `1px solid ${T.border}`, background: T.surface, color: T.textMid, fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Cancel</button>
           <button
             onClick={() => {
+              if (!node.id || String(node.id).startsWith('stateful-')) {
+                alert('Cannot apply: this recommendation has not been saved to the backend yet. Please refresh and try again.');
+                return;
+              }
               karpenterAPI.applyRecommendation(node.id, {
                 instance_id: node.name,
                 recommended_type: node.recommended,
@@ -435,7 +429,7 @@ function StatelessSection({ nodes, isAutoOn }) {
                         <div>
                           <div style={{ fontWeight: 600, color: T.cyan, fontSize: 12 }}>{n.spot_pool.instance_type}</div>
                           <div style={{ fontSize: 11, color: T.textMuted }}>{n.spot_pool.az} · risk {n.spot_pool.risk_score}</div>
-                          {n.spot_pool.predicted_savings_pct > 0 && (
+                          {n.spot_pool.predicted_savings_pct != null && (
                             <div style={{ fontSize: 11, color: T.green, fontWeight: 600 }}>−{n.spot_pool.predicted_savings_pct}% vs OD</div>
                           )}
                         </div>
@@ -450,7 +444,7 @@ function StatelessSection({ nodes, isAutoOn }) {
                     ) : (
                       <div>
                         <span style={{ color: T.green }}>${n.savings}/mo</span>
-                        {n.savings_pct > 0 && (
+                        {n.savings_pct != null && (
                           <span style={{ fontSize: 11, color: T.green, marginLeft: 4, fontWeight: 700 }}>({n.savings_pct}%)</span>
                         )}
                       </div>
@@ -464,20 +458,30 @@ function StatelessSection({ nodes, isAutoOn }) {
                   </td>
                   <td style={{ padding: "12px 16px" }}>
                     {n.is_upsize ? (
-                      <Badge color={T.red} bg={T.redLight}><FiAlertTriangle size={12} style={{ marginRight: 2 }} />Scale Up</Badge>
+                      <span title="This node is under-provisioned and needs to scale up to handle its workload">
+                        <Badge color={T.red} bg={T.redLight}><FiAlertTriangle size={12} style={{ marginRight: 2 }} />Scale Up</Badge>
+                      </span>
                     ) : n.cooldown ? (
-                      <Badge color={T.amber} bg={T.amberLight}><FiClock size={12} style={{ marginRight: 2 }} />Cooldown</Badge>
+                      <span title="This node was recently optimized. A cooldown period prevents re-optimization to ensure stability.">
+                        <Badge color={T.amber} bg={T.amberLight}><FiClock size={12} style={{ marginRight: 2 }} />Cooldown</Badge>
+                      </span>
                     ) : n.confidence < 60 ? (
-                      <Badge color={T.red} bg={T.redLight}>High Volatility</Badge>
+                      <span title="Spot market prices for this instance type are highly volatile. Optimization is paused until prices stabilize.">
+                        <Badge color={T.red} bg={T.redLight}>High Volatility</Badge>
+                      </span>
                     ) : (
                       <Badge color={T.green} bg={T.greenLight}>Ready</Badge>
                     )}
                   </td>
                   <td style={{ padding: "12px 16px" }}>
                     {n.is_actionable === false ? (
-                      <Badge color={T.textMuted} bg={T.bg} style={{ border: `1px solid ${T.border}` }}>No Better Pool</Badge>
+                      <span title={n.reason || 'No spot pool offers better pricing or lower risk than the current configuration. The node is already optimally placed.'}>
+                        <Badge color={T.textMuted} bg={T.bg} style={{ border: `1px solid ${T.border}` }}>No Better Pool</Badge>
+                      </span>
                     ) : n.is_actionable === true ? (
-                      <Badge color={T.green} bg={T.greenLight}>✓ Actionable</Badge>
+                      <span title="A better spot pool has been identified with favorable pricing and acceptable risk levels.">
+                        <Badge color={T.green} bg={T.greenLight}>✓ Actionable</Badge>
+                      </span>
                     ) : (
                       <span style={{ fontSize: 12, color: T.textFaint }}>—</span>
                     )}
@@ -512,9 +516,7 @@ function StatelessSection({ nodes, isAutoOn }) {
       {/* Execution Timeline preview */}
       <div style={{ marginTop: 16, padding: "16px 20px", background: T.bg, borderRadius: 8, border: `1px solid ${T.borderLight}`, fontSize: 12, color: T.textMuted }}>
         <strong style={{ color: T.textMid }}>Execution Timeline:</strong>
-        <span style={{ marginLeft: 12 }}>✓ Resize proposed (14:30)</span>
-        <span style={{ marginLeft: 12 }}>✓ PDB checks passed (14:32)</span>
-        <span style={{ marginLeft: 12 }}>✓ Substitute provisioned &amp; attached (14:35)</span>
+        <span style={{ marginLeft: 12, color: T.textMuted }}>Timeline data not available — connect to resize proposal API</span>
       </div>
 
       <StatelessDetailedDrawer node={selectedNode} onClose={() => setSelectedNode(null)} isAutoOn={isAutoOn} />
@@ -524,7 +526,7 @@ function StatelessSection({ nodes, isAutoOn }) {
 
 
 // Stateful Section (Grey Accent)
-function StatefulSection({ nodes, requireApproval = true }) {
+function StatefulSection({ nodes, requireApproval = true, karpenterConfig = null }) {
   const [selectedNode, setSelectedNode] = useState(null);
 
   const eligibleNodes = nodes.filter(n => n.savings > 0 && n.status !== "Blocked by Policy");
@@ -557,7 +559,7 @@ function StatefulSection({ nodes, requireApproval = true }) {
           </div>
           <div>
             <div style={{ fontSize: 11, color: T.textMuted, textTransform: "uppercase", fontWeight: 600 }}>Max Downscale Allowed</div>
-            <div style={{ fontSize: 20, fontWeight: 800, color: T.amber, marginTop: 4 }}>50%</div>
+            <div style={{ fontSize: 20, fontWeight: 800, color: T.amber, marginTop: 4 }}>{karpenterConfig?.stateful_max_downscale_pct != null ? `${karpenterConfig.stateful_max_downscale_pct}%` : '25%'}</div>
           </div>
         </div>
 
@@ -843,6 +845,7 @@ export default function RightSizingMonitoringDashboard() {
   const [rebalanceState, setRebalanceState] = useState(false); // auto_rebalance_enabled
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [retryCount, setRetryCount] = useState(0);
   const [searchParams] = useSearchParams();
   const activeTab = searchParams.get('tab') || 'karpenter';
 
@@ -955,7 +958,7 @@ export default function RightSizingMonitoringDashboard() {
             recommended: r.recommended_type || r.current_type || 'unknown',
             cpu: r.cpu ?? 0,
             mem: r.mem ?? 0,
-            savings: Math.round(r.potential_savings || 0),
+            savings: Math.round(r.potential_savings ?? 0),
             savings_pct: r.savings_pct ?? 0,
             resize_savings: r.resize_savings ?? 0,          // can be negative (upsize)
             spot_pool: r.spot_pool || null,
@@ -977,9 +980,9 @@ export default function RightSizingMonitoringDashboard() {
             recommended: r.recommended_type || r.current_type || 'unknown',
             cpu: r.cpu ?? 0,
             mem: r.mem ?? 0,
-            savings: Math.round(r.potential_savings || 0),
+            savings: Math.round(r.potential_savings ?? 0),
             savings_pct: r.savings_pct ?? 0,
-            resize_savings: Math.round(r.resize_savings || 0),
+            resize_savings: Math.round(r.resize_savings ?? 0),
             reason: r.reason || '',
             status: 'Ready',
           }));
@@ -994,7 +997,7 @@ export default function RightSizingMonitoringDashboard() {
       setError(err.message || 'Failed to load recommendations');
       setLoading(false);
     });
-  }, [selectedClusterId]);
+  }, [selectedClusterId, retryCount]);
 
   return (
     <div style={{ fontFamily: "'Inter', 'Segoe UI', system-ui, sans-serif", color: T.text, padding: "24px 28px", maxWidth: 1440, margin: "0 auto" }}>
@@ -1023,7 +1026,7 @@ export default function RightSizingMonitoringDashboard() {
             <span style={{ fontSize: 12, color: "#ef4444", marginLeft: 8 }}>{error}</span>
           </div>
           <button
-            onClick={() => { setError(null); setSelectedClusterId(prev => { setLoading(true); return prev; }); }}
+            onClick={() => { setError(null); setLoading(true); setRetryCount(c => c + 1); }}
             style={{ padding: "4px 12px", fontSize: 12, fontWeight: 600, color: "#dc2626", background: "#fff", border: "1px solid #fca5a5", borderRadius: 6, cursor: "pointer" }}
           >
             Retry
@@ -1074,6 +1077,7 @@ export default function RightSizingMonitoringDashboard() {
               <StatefulSection
                 nodes={statefulNodes}
                 requireApproval={karpenterConfig?.stateful_require_approval ?? true}
+                karpenterConfig={karpenterConfig}
               />
             </>
           )}

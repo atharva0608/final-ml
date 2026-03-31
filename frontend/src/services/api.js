@@ -7,6 +7,7 @@ const API_URL = process.env.REACT_APP_API_URL || '';
 
 const api = axios.create({
     baseURL: API_URL,
+    timeout: 15000,  // 15s — prevents infinite loading when backend is slow or DB pool is exhausted
     headers: {
         'Content-Type': 'application/json',
     },
@@ -302,8 +303,8 @@ export const hygieneAPI = {
 // ASCPAi Pool Selection & Termination Monitoring API
 export const ascpaiAPI = {
     // Pool Rankings - Get ML-scored pool recommendations
-    getRankings: (template, region = 'ap-south-1', limit = 10, clusterId = null, currentNodeContext = null) => {
-        const params = { region: region || 'ap-south-1', limit };
+    getRankings: (template, region = null, limit = 10, clusterId = null, currentNodeContext = null) => {
+        const params = { region: region || undefined, limit };
         if (clusterId) params.cluster_id = clusterId;
 
         // Add current node context for real savings calculation
@@ -316,7 +317,7 @@ export const ascpaiAPI = {
     },
 
     // Get rankings using a saved template ID
-    getRankingsForTemplate: (templateId, region = 'ap-south-1', limit = 10) =>
+    getRankingsForTemplate: (templateId, region = null, limit = 10) =>
         api.post('/api/v1/ascpai/pools/rankings', null, {
             params: { template_id: templateId, region, limit }
         }),
@@ -428,7 +429,6 @@ export const rolesAPI = {
     createRole: (data) => api.post('/api/v1/roles', data),
     updateRole: (id, data) => api.put(`/api/v1/roles/${id}`, data),
     deleteRole: (id) => api.delete(`/api/v1/roles/${id}`),
-    assignRole: (userId, roleId) => api.post('/api/v1/roles/assign', { user_id: userId, role_id: roleId }),
     assignRole: (userId, roleId) => api.post('/api/v1/roles/assign', { user_id: userId, role_id: roleId }),
     seed: () => api.post('/api/v1/roles/seed'),
 };
